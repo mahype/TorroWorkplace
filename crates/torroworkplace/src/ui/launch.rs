@@ -151,6 +151,19 @@ pub enum Open {
     /// MCP connections without any server, the PDF tool as it starts and the assistant without it
     /// ([`demo_connections_empty`]).
     ConnectionsEmpty,
+    /// The install dialog of GitHub's entry (task MA.8), the demo's GitHub server taken out first
+    /// ([`demo_uninstalled`]): its token field, its tools with their access, "Install".
+    CatalogInstall,
+    /// The same dialog after "Install" with a token typed: the tools the server reported, which
+    /// "Allow tools" allows ([`demo_answer`] installs nothing).
+    CatalogInstallTools,
+    /// The page of "Time" (task MA.8): running, its tools allowed, its output.
+    ExtensionDetail,
+    /// The page of "Time" with a tool changed since it was allowed ([`demo_review`]): "Changed since
+    /// you allowed it" and "Allow tools".
+    ExtensionReview,
+    /// The page of "GitHub", stopped after errors, with its stored token and its output.
+    ExtensionCrashed,
     /// Appearance with the demo's designs, fonts and colour schemes ([`demo_looks`]), one of each
     /// broken; the design `--design` names is drawn, else the standard.
     Design,
@@ -180,7 +193,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 93] = [
+    pub const ALL: [(&'static str, Open); 98] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -255,6 +268,11 @@ impl Open {
         ("connect-client-other", Open::ConnectClientOther),
         ("connections", Open::Connections),
         ("connections-empty", Open::ConnectionsEmpty),
+        ("catalog-install", Open::CatalogInstall),
+        ("catalog-install-tools", Open::CatalogInstallTools),
+        ("extension-detail", Open::ExtensionDetail),
+        ("extension-review", Open::ExtensionReview),
+        ("extension-crashed", Open::ExtensionCrashed),
         ("design", Open::Design),
         ("design-schemes", Open::DesignSchemes),
         ("design-switched", Open::DesignSwitched),
@@ -1165,6 +1183,86 @@ pub fn demo_connections_empty(data: &mut Data) {
     }
 }
 
+/// `--open catalog-install` (task MA.8): the demo's GitHub server taken out, so its catalog entry,
+/// which needs nothing the demo lacks, can be installed.
+pub fn demo_uninstalled(data: &mut Data) {
+    if let super::connections::Listing::Entries(servers) = &mut data.extensions {
+        servers.retain(|server| server.id != "github");
+    }
+}
+
+/// `--open extension-review` (task MA.8): "Time" reported a changed `convert_time` since its tools were
+/// allowed, so that one waits and the others stay allowed.
+pub fn demo_review(data: &mut Data) {
+    use torro_ipc::extensions::{Status as ServerStatus, ToolState};
+    let super::connections::Listing::Entries(servers) = &mut data.extensions else { return };
+    let Some(time) = servers.iter_mut().find(|server| server.id == "time") else { return };
+    time.status = ServerStatus::Review;
+    for tool in time.tools.iter_mut().filter(|tool| tool.name == "convert_time") {
+        tool.state = ToolState::Review;
+        tool.description = "Convert a time between time zones, also for a date in the past".into();
+    }
+    time.fingerprint = Some("demo-time-changed".into());
+}
+
+/// What the demo answers for the server `id` of an `extensions.*` request (task MA.8): the server as
+/// the demo lists it, else the catalog entry of that id as just installed – switched off, its tools
+/// as the catalog names them waiting for a person, its secrets stored. Nothing is kept.
+fn demo_server(id: &str, data: &Data) -> Option<torro_ipc::extensions::ExtensionInfo> {
+    use torro_ipc::extensions::{
+        ExtensionInfo, ExtensionTool, SecretInfo, ServerSpec, Source, Status as ServerStatus, ToolState,
+    };
+    if let Some(server) = data.extensions.entries().iter().find(|server| server.id == id) {
+        return Some(server.clone());
+    }
+    let entry = data.catalog.entries().iter().find(|entry| entry.id == id)?;
+    let tools = entry
+        .tools
+        .iter()
+        .map(|tool| ExtensionTool {
+            extension: entry.id.clone(),
+            extension_name: entry.name.clone(),
+            name: tool.name.clone(),
+            tool_name: torro_ipc::extensions::tool_name(&entry.id, &tool.name),
+            description: String::new(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            access: tool.access,
+            state: ToolState::Review,
+        })
+        .collect();
+    Some(ExtensionInfo {
+        id: entry.id.clone(),
+        name: entry.name.clone(),
+        source: Source::Catalog { entry: entry.id.clone(), version: entry.version.clone() },
+        server: ServerSpec::Stdio { command: "demo".into(), args: Vec::new(), env: BTreeMap::new() },
+        enabled: false,
+        status: ServerStatus::Review,
+        tools,
+        secrets: entry.secrets.iter().map(|secret| SecretInfo { name: secret.name.clone(), stored: true }).collect(),
+        notes: Vec::new(),
+        fingerprint: Some(format!("demo-{}", entry.id)),
+    })
+}
+
+/// The demo's output of the server `id`: what such a server writes to stderr. GitHub's, stopped after
+/// errors, says why: the token was refused.
+fn demo_logs(id: &str) -> Vec<String> {
+    let lines: &[&str] = match id {
+        "github" => &[
+            "time=2026-10-24T09:12:03Z level=INFO msg=\"starting server\" version=2.0.3",
+            "time=2026-10-24T09:12:04Z level=ERROR msg=\"failed to get user\" error=\"401 Bad credentials\"",
+            "GitHub MCP Server running on stdio",
+            "Error: unauthorized: check GITHUB_PERSONAL_ACCESS_TOKEN",
+        ],
+        "time" => &[
+            "Starting MCP server for time (local time zone: Europe/Berlin)",
+            "Processing request of type ListToolsRequest",
+        ],
+        _ => &[],
+    };
+    lines.iter().map(|line| line.to_string()).collect()
+}
+
 /// The demo's screens (task WS.6): the wide main screen the templates were saved on, and a
 /// second one beside it, in logical pixels.
 pub fn demo_screens() -> Vec<ScreenInfo> {
@@ -1542,6 +1640,17 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                 })?;
             Some(Response::Connected { account, calendars: true, tasks: true })
         }
+        // MCP connections (task MA.8): installing, allowing, switching and updating answer with the
+        // server as the demo has it (or the catalog entry as just installed); nothing changes.
+        Request::InstallExtension { from: torro_ipc::extensions::InstallFrom::Catalog { entry, .. } } => {
+            Some(Response::Extension { extension: demo_server(entry, data)? })
+        }
+        Request::ConfirmExtensionTools { id, .. }
+        | Request::GetExtension { id }
+        | Request::SetExtensionEnabled { id, .. }
+        | Request::UpdateExtension { id, .. } => Some(Response::Extension { extension: demo_server(id, data)? }),
+        Request::SetExtensionSecret { .. } | Request::RemoveExtension { .. } => Some(Response::Ok),
+        Request::ReadExtensionLogs { id } => Some(Response::Logs { lines: demo_logs(id) }),
         Request::ClientActivity { id } => {
             let client = client_of(id)?;
             Some(Response::Activity { entries: demo_activity(client, Utc::now()) })

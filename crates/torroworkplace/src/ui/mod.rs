@@ -307,6 +307,12 @@ pub enum Action {
     Pick(connections::Chooser),
     /// Load everything again now, as the timer does: "Retry" in a group whose list failed.
     Reload,
+    /// Send this request for MCP connections (task MA.8) and hand the answer back to that section
+    /// only, with what it was for ([`connections::Asked`]), as the core gave it: a refusal stays a
+    /// `Response::Error` with its code, so the install dialog and a server's page show their
+    /// outcome themselves ([`connections::answered`]). Then reload, as for [`Action::Send`]. The
+    /// demo answers from [`launch::demo_answer`].
+    AskConnections(connections::Asked, Request),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -434,6 +440,12 @@ pub enum Message {
     Sent(Result<Response, String>),
     /// The answer to an [`Action::Ask`], with what it was for; `Err` only when no answer came.
     Answered(workspaces::Asked, Result<Response, String>),
+    /// The answer to an [`Action::AskConnections`], with what it was for; `Err` only when no answer
+    /// came.
+    ConnectionsAnswered(connections::Asked, Result<Response, String>),
+    /// The catalog of MCP servers (`extensions.list_catalog`), asked for only while MCP connections is
+    /// open ([`Ui::reload`]): the core looks for programs on disk for it each time.
+    Catalog(connections::Listing<torro_ipc::extensions::CatalogEntry>),
     /// The desktop's light/dark preference (once at start, then whenever it changes).
     SystemMode(Mode),
     /// Reload everything (every few seconds, and "Retry" when the core does not answer).
@@ -889,6 +901,30 @@ impl Ui {
                 launch::demo_connections_empty(&mut self.data);
                 vec![Message::Select(Section::Connections)]
             }
+            // GitHub's install dialog (task MA.8), its server taken out first; with a token typed and
+            // "Install" pressed, the tools it reported.
+            Open::CatalogInstall | Open::CatalogInstallTools => {
+                launch::demo_uninstalled(&mut self.data);
+                let step = |message| Message::Connections(message);
+                let mut messages =
+                    vec![Message::Select(Section::Connections), step(connections::Message::Install("github".into()))];
+                if open == Open::CatalogInstallTools {
+                    let token = torro_ipc::Secret::new("github_pat_demo");
+                    let name = "GITHUB_PERSONAL_ACCESS_TOKEN".to_string();
+                    messages.push(step(connections::Message::TypeSecret(name, token)));
+                    messages.push(step(connections::Message::SubmitInstall));
+                }
+                messages
+            }
+            // A server's page (task MA.8): "Time" running or with a changed tool, "GitHub" stopped
+            // after errors.
+            Open::ExtensionDetail | Open::ExtensionReview | Open::ExtensionCrashed => {
+                if open == Open::ExtensionReview {
+                    launch::demo_review(&mut self.data);
+                }
+                let id = if open == Open::ExtensionCrashed { "github" } else { "time" };
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Open(id.into()))]
+            }
             Open::Setup(step) => {
                 self.setup = Some(setup::State::new(step, &self.data.settings));
                 vec![]
@@ -951,9 +987,14 @@ impl Ui {
         }
     }
 
-    /// Loads everything from the service; the demo has none and keeps its sample data.
+    /// Loads everything from the service; the demo has none and keeps its sample data. The catalog of
+    /// MCP servers only while MCP connections is open: the core looks for programs on disk for it.
     fn reload(&self) -> Task<Message> {
-        if self.launch.demo { Task::none() } else { load() }
+        match (self.launch.demo, self.section) {
+            (true, _) => Task::none(),
+            (false, Section::Connections) => Task::batch([load(), load_catalog()]),
+            (false, _) => load(),
+        }
     }
 
     /// The first [`Ui::reload`], after the core answers: one started just now does not listen yet
@@ -1016,6 +1057,8 @@ impl Ui {
                     Section::Accounts => accounts::opened(&mut self.accounts),
                     // Which agent each hook client reports for (task S.35).
                     Section::Mcp => mcp::opened(),
+                    // The catalog is asked for only while the section is open (task MA.8).
+                    Section::Connections => Action::Reload,
                     _ => Action::None,
                 }
             }
@@ -1057,7 +1100,10 @@ impl Ui {
                 // `--setup-if-open` (an app's "Open Settings", task W.9): the setup, at the app's step,
                 // as long as it is not done; decided once, with the first settings that came.
                 let first = !self.loaded;
+                // The catalog comes apart from the rest ([`Message::Catalog`]): a reload keeps it.
+                let catalog = std::mem::take(&mut self.data.catalog);
                 self.data = *data;
+                self.data.catalog = catalog;
                 if first && self.launch.setup_if_open && !self.launch.demo && self.data.error.is_none() {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
                     if self.data.settings.setup.state != SetupState::Done {
@@ -1151,6 +1197,14 @@ impl Ui {
                 let mut tasks: Vec<Task<Message>> = next.into_iter().map(|action| self.perform(action)).collect();
                 tasks.push(self.reload());
                 return Task::batch(tasks);
+            }
+            Message::ConnectionsAnswered(asked, result) => {
+                let next = connections::answered(&mut self.connections, asked, &result);
+                return Task::batch([self.perform(next), self.reload()]);
+            }
+            Message::Catalog(catalog) => {
+                self.data.catalog = catalog;
+                Action::None
             }
             Message::SystemMode(mode) => {
                 self.system_mode = mode;
@@ -1302,7 +1356,16 @@ impl Ui {
                 Some(response) => self.update(Message::Answered(asked, Ok(response))),
                 None => Task::none(),
             },
-            Action::Ask(asked, request) => ask(asked, request),
+            Action::Ask(asked, request) => ask(request, move |result| Message::Answered(asked, result)),
+            Action::AskConnections(asked, request) if self.launch.demo => {
+                match launch::demo_answer(&request, &self.data) {
+                    Some(response) => self.update(Message::ConnectionsAnswered(asked, Ok(response))),
+                    None => Task::none(),
+                }
+            }
+            Action::AskConnections(asked, request) => {
+                ask(request, move |result| Message::ConnectionsAnswered(asked, result))
+            }
             Action::SendAll(requests) if self.launch.demo => {
                 let answers: Vec<Response> =
                     requests.iter().filter_map(|request| launch::demo_answer(request, &self.data)).collect();
@@ -1542,10 +1605,12 @@ impl Ui {
     /// foot. The rail (U.2) has no room for the version line. Where the window has the band (macOS),
     /// "General" sits there in the top right corner instead (U.10).
     fn sidebar(&self, mode: SidebarMode, switcher: &Anchor) -> Element<'_, Message> {
+        // The sidebar may draw in a theme of its own (a design pack's sidebar colours).
+        let palette = palette(&theme::sidebar_theme(&self.theme()));
         let item = |section: Section| {
             widgets::sidebar_item_in(
                 mode,
-                section.icon(),
+                self.mark(section, &palette),
                 section.label(),
                 self.trail(section),
                 section == self.section,
@@ -1571,11 +1636,27 @@ impl Ui {
         )
     }
 
+    /// What stands in front of a section in the sidebar and the section menu: its icon, for MCP
+    /// connections with a dot in a status colour while a server needs the person (task MA.8,
+    /// [`connections::alert`]): the dot is a shape, so the state does not rest on colour alone, and
+    /// the icon stays the section's own (issue #248). The text colours: the status colours are too
+    /// light for a small dot on light surfaces.
+    fn mark(&self, section: Section, palette: &theme::Palette) -> widgets::Mark {
+        match (section, connections::alert(&self.data)) {
+            (Section::Connections, Some(widgets::Status::Error)) => {
+                widgets::Mark::Badged(section.icon(), palette.error_text)
+            }
+            (Section::Connections, Some(_)) => widgets::Mark::Badged(section.icon(), palette.attention_text),
+            _ => widgets::Mark::Icon(section.icon()),
+        }
+    }
+
     /// The section menu of the medium and narrow layouts: the sidebar's sections, "General" in a
     /// part of its own as at the sidebar's foot.
     fn nav_menu(&self) -> Element<'_, Message> {
+        let palette = palette(&self.theme());
         let entry = |section: Section| {
-            MenuItem::new(section.icon(), section.label(), Message::Select(section))
+            MenuItem::new(self.mark(section, &palette), section.label(), Message::Select(section))
                 .trail(self.trail(section))
                 .current(section == self.section)
         };
@@ -1609,6 +1690,9 @@ impl Ui {
                 .map(|e| e.map(Message::Workspaces)),
             Section::Api => api::overlay(&self.api, &self.data).map(|e| e.map(Message::Api)),
             Section::Mcp => mcp::overlay(&self.mcp, &self.data).map(|e| e.map(Message::Mcp)),
+            Section::Connections => {
+                connections::overlay(&self.connections, &self.data).map(|e| e.map(Message::Connections))
+            }
             Section::Appearance => general::overlay(&self.general, &self.data).map(|e| e.map(Message::General)),
             _ => None,
         }
@@ -1813,17 +1897,30 @@ fn load() -> Task<Message> {
                 other => Err(other),
             });
             data.extensions = connections::Listing::from_result(servers.await);
-            let catalog = listing(&socket, Request::ListCatalog, |answer| match answer {
-                Response::Catalog { entries } => Ok(entries),
-                other => Err(other),
-            });
-            data.catalog = connections::Listing::from_result(catalog.await);
             data
         },
         move |data| {
             timing::took("load", started);
             Message::Loaded(Box::new(data))
         },
+    )
+}
+
+/// Loads the catalog of MCP servers (task MA.8), apart from [`load`]: [`Ui::reload`] asks for it only
+/// while MCP connections is open. A failure is shown in its group.
+fn load_catalog() -> Task<Message> {
+    Task::perform(
+        async {
+            let Some(socket) = torro_ipc::socket_path() else {
+                return connections::Listing::Failed(tr("No home directory").into());
+            };
+            let catalog = listing(&socket, Request::ListCatalog, |answer| match answer {
+                Response::Catalog { entries } => Ok(entries),
+                other => Err(other),
+            });
+            connections::Listing::from_result(catalog.await)
+        },
+        Message::Catalog,
     )
 }
 
@@ -2001,15 +2098,16 @@ fn send(request: Request) -> Task<Message> {
     )
 }
 
-/// Sends one request for the page that will match its answer ([`Action::Ask`]). The core's answer
-/// comes back as it is, a refusal with its code; `Err` only when no answer came.
-fn ask(asked: workspaces::Asked, request: Request) -> Task<Message> {
+/// Sends one request for the page that will match its answer ([`Action::Ask`],
+/// [`Action::AskConnections`]) and hands the answer to `answered`. The core's answer comes back as
+/// it is, a refusal with its code; `Err` only when no answer came.
+fn ask(request: Request, answered: impl FnOnce(Result<Response, String>) -> Message + Send + 'static) -> Task<Message> {
     Task::perform(
         async move {
             let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
             client::call(&socket, &request).await.map_err(|err| err.to_string())
         },
-        move |result| Message::Answered(asked, result),
+        answered,
     )
 }
 
@@ -2788,6 +2886,43 @@ mod tests {
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = empty.window(class);
         }
+    }
+
+    /// Task MA.8: the demo states open the install dialog over the window, at its form or at the
+    /// tools the server reported, and a server's page with its output read; the section's row is
+    /// marked while a server needs the person, the others are not; a reload keeps the catalog, which
+    /// is asked for apart.
+    #[test]
+    fn the_install_dialog_and_a_server_s_page_open_as_demo_states() {
+        let form = started(&["--demo", "--open", "catalog-install"]);
+        assert_eq!(form.section, Section::Connections);
+        assert!(form.page_overlay().is_some() && matches!(form.cover(), Cover::Dialog));
+        let tools = started(&["--demo", "--open", "catalog-install-tools"]);
+        assert!(tools.page_overlay().is_some(), "the dialog at the tools the demo reported");
+        for (name, id) in [("extension-detail", "time"), ("extension-review", "time"), ("extension-crashed", "github")]
+        {
+            let ui = started(&["--demo", "--open", name]);
+            assert_eq!(ui.connections.page, connections::Page::Server(id.into()), "{name}");
+            assert!(ui.page_header(SizeClass::Wide).sub_page.is_some() && ui.page_overlay().is_none(), "{name}");
+        }
+        let review = started(&["--demo", "--open", "extension-review"]);
+        let time = connections::server_of(&review.data, "time").expect("Time");
+        assert_eq!(time.status, torro_ipc::extensions::Status::Review);
+
+        let mut ui = started(&["--demo", "--open", "connections"]);
+        let palette = palette(&ui.theme());
+        let icon = Section::Connections.icon();
+        assert_eq!(ui.mark(Section::Connections, &palette), widgets::Mark::Badged(icon, palette.error_text));
+        assert_eq!(ui.mark(Section::Mcp, &palette), widgets::Mark::Icon(Section::Mcp.icon()));
+        ui.data.extensions = connections::Listing::Entries(Vec::new());
+        assert_eq!(ui.mark(Section::Connections, &palette), widgets::Mark::Icon(icon));
+
+        let catalog = ui.data.catalog.clone();
+        assert!(!catalog.entries().is_empty());
+        let _ = ui.update(Message::Loaded(Box::default()));
+        assert_eq!(ui.data.catalog, catalog, "a reload without the catalog keeps it");
+        let _ = ui.update(Message::Catalog(connections::Listing::Failed("unsupported".into())));
+        assert_eq!(ui.data.catalog, connections::Listing::Failed("unsupported".into()));
     }
 
     /// The sidebar is the suite's own list – Overview, Accounts, AI, API, MCP,

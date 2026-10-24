@@ -243,7 +243,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   Größen, drei Designs); Übersetzungen in `de.rs` („MCP connections“ → „MCP-Anbindungen“).
 
 ### MA.8 Katalog, Installieren und Seite eines Servers
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.2, MA.5, MA.7 · **Dateien:** `crates/torroworkplace/src/ui/connections.rs`,
   `crates/torroworkplace/src/ui/{mod,launch}.rs`, `crates/torro-core/src/i18n/de.rs`
 - Katalog: je Eintrag Name, Herausgeber, Lizenz, Link, „Experimental“, Voraussetzungen mit fehlenden in Attention
