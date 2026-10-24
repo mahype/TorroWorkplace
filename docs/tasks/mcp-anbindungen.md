@@ -260,7 +260,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   ohne Fehlendes kein „Install…“; Sichtprüfung aller neuen Zustände in allen Größen; Übersetzungen in `de.rs`.
 
 ### MA.9 Eigener Server: Formular und eingefügter `mcpServers`-Block
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.8 · **Dateien:** `crates/torroworkplace/src/ui/connections.rs`,
   `crates/torroworkplace/src/ui/launch.rs`, `crates/torro-core/src/i18n/de.rs`
 - „Add server…“: Art (Command / Address), Name, Kennung (aus dem Namen vorgeschlagen), Befehl, Argumente (je Zeile

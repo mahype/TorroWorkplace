@@ -925,6 +925,22 @@ impl Ui {
                 let id = if open == Open::ExtensionCrashed { "github" } else { "time" };
                 vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Open(id.into()))]
             }
+            // A server of one's own (task MA.9): the form filled in from a pasted block, the field
+            // with a block of two servers, or the choice among them.
+            Open::CustomServer | Open::CustomServerPaste | Open::CustomServerChoose => {
+                use connections::Message as Step;
+                let block = if open == Open::CustomServer { launch::DEMO_PASTE_ONE } else { launch::DEMO_PASTE_TWO };
+                let mut messages = vec![
+                    Message::Select(Section::Connections),
+                    Message::Connections(Step::AddServer),
+                    Message::Connections(Step::OpenPaste),
+                    Message::Connections(Step::PasteText(connections::Typed::paste(block))),
+                ];
+                if open != Open::CustomServerPaste {
+                    messages.push(Message::Connections(Step::FillFromPaste));
+                }
+                messages
+            }
             Open::Setup(step) => {
                 self.setup = Some(setup::State::new(step, &self.data.settings));
                 vec![]
@@ -2923,6 +2939,20 @@ mod tests {
         assert_eq!(ui.data.catalog, catalog, "a reload without the catalog keeps it");
         let _ = ui.update(Message::Catalog(connections::Listing::Failed("unsupported".into())));
         assert_eq!(ui.data.catalog, connections::Listing::Failed("unsupported".into()));
+    }
+
+    /// Task MA.9: the demo states of a server of one's own open its dialog over the window – the form
+    /// filled in from a pasted block, the field with a block, the choice of its servers – and the list
+    /// has "Add server…" in its header.
+    #[test]
+    fn the_form_of_one_s_own_server_opens_as_demo_states() {
+        for name in ["custom-server", "custom-server-paste", "custom-server-choose"] {
+            let ui = started(&["--demo", "--open", name]);
+            assert_eq!(ui.section, Section::Connections, "{name}");
+            assert!(ui.page_overlay().is_some() && matches!(ui.cover(), Cover::Dialog), "{name}");
+            assert_eq!(ui.page_header(SizeClass::Wide).actions.len(), 1, "{name}");
+            assert!(connections::escape(&ui.connections).is_some(), "{name}");
+        }
     }
 
     /// The sidebar is the suite's own list – Overview, Accounts, AI, API, MCP,

@@ -52,18 +52,32 @@
 //! dialog and the page show their outcome themselves. A secret is a [`Secret`] from the key press
 //! on, so it never shows in `Debug`.
 //!
-//! Where the next task builds on this: MA.9 (a server of one's own) puts "Add server…" into the
-//! actions of [`header`] on the list and its form into [`State`] and [`overlay`]; after its
-//! `install_extension` it goes on as the catalog does, through [`Install`]'s step of the reported
-//! tools ([`Step::Tools`], [`tools_dialog`]) and [`Message::AllowTools`].
+//! **A server of one's own** (task MA.9): "Add server…" in the [`header`] of the list opens its form
+//! ([`Custom`], [`overlay`]): a command or an address, a name, the id proposed from the name
+//! ([`suggested_id`], [`valid_id`]), the program with one argument per line or the address, and
+//! the variables or headers as rows with a "Secret" switch, on for names that look like one
+//! ([`looks_secret`]). Every value is a [`Secret`] from the first key; one marked secret goes out
+//! as [`Value::Secret`], the others as [`Value::Plain`]. "Paste configuration" fills the form from
+//! an `mcpServers` block ([`parse_mcp_servers`]); a block with several servers lists them, and each
+//! gets a form of its own, one after the other. What the form can check itself – name, id, command
+//! or address, the names of the rows and the variables Torro never passes on ([`blocked_env`]) –
+//! shows at its field after the first "Add server" ([`check`]); what only the core can tell (an
+//! address that is neither `https://` nor on this computer, a program that does not start) comes
+//! back as its sentence in the dialog. "Add server" sends one `extensions.install_extension` with
+//! `custom`; then it goes on as the catalog does, through [`Install`]'s step of the reported tools
+//! ([`Step::Tools`], [`tools_dialog`]) and [`Message::AllowTools`]. On the page of one's own server
+//! "Update…" opens the same form filled in from it (its name and id stay); a stored secret left
+//! empty goes out as [`Value::Stored`] and keeps its value – the core keeps it only for the same
+//! program and arguments or the same address, and says so when it does not.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, row, svg, text, text_editor, toggler};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::{Alignment, Element, Fill, Length, Theme};
 
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{Paper, PdfTemplate, PdfTemplateId, ToolId};
@@ -74,7 +88,8 @@ use torro_gui::widgets::{self, Status as Dot};
 use torro_gui::{style, typo};
 use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area};
 use torro_ipc::extensions::{
-    CatalogEntry, CrashReason, ExtensionInfo, ExtensionTool, InstallFrom, ServerSpec, Source, Status, ToolState,
+    CatalogEntry, CrashReason, ExtensionInfo, ExtensionTool, InstallFrom, MAX_ID_CHARS, ParseError, ServerSpec, Source,
+    Status, ToolState, Value, blocked_env, parse_mcp_servers, valid_env_name, valid_header_name, valid_id,
 };
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{Request, Response, Secret, SettingKey};
@@ -94,6 +109,16 @@ const EVEN_MARGINS: [u8; 8] = [5, 10, 15, 20, 25, 30, 40, 50];
 
 /// The output field of a server's page shows this many lines before it scrolls.
 const OUTPUT_LINES: f32 = 12.0;
+
+/// The arguments field of a server of one's own shows this many lines before it scrolls.
+const ARGUMENT_LINES: f32 = 3.0;
+
+/// The field a configuration is pasted into shows this many lines before it scrolls.
+const PASTE_LINES: f32 = 10.0;
+
+/// A variable or header whose name holds one of these, in any case, is marked secret at first
+/// ([`looks_secret`]): `GITHUB_TOKEN`, `API_KEY`, `Authorization`.
+const SECRET_WORDS: [&str; 5] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH"];
 
 /// What the core answered to one list request of this section (`extensions.list_catalog`,
 /// `extensions.list_extensions`): the entries, or why there are none. The shell fills it with each
@@ -152,8 +177,12 @@ pub struct State {
     draft: Option<Draft>,
     /// Shown above the page until the next chooser opens.
     problem: Option<String>,
-    /// The install dialog of a catalog entry while it is open.
+    /// The install dialog of a catalog entry while it is open; also the step of the reported tools
+    /// after a server of one's own was added.
     install: Option<Install>,
+    /// The form of a server of one's own while it is open (task MA.9). Under the install dialog
+    /// while that shows the tools of the server just added, so the next pasted server follows.
+    custom: Option<Box<Custom>>,
     /// What the page of a server shows besides its data; new with every page opened.
     server: ServerState,
 }
@@ -161,7 +190,8 @@ pub struct State {
 /// The install dialog (task MA.8): first the form, then the tools the server reported.
 #[derive(Debug)]
 pub struct Install {
-    /// The catalog entry ([`CatalogEntry::id`]); installed, the server has this id.
+    /// The catalog entry ([`CatalogEntry::id`]); installed, the server has this id. For a server
+    /// of one's own (only at [`Step::Tools`]) the id it was added with.
     entry: String,
     /// What is typed into the fields of the entry's secrets, by name: [`Secret`]s from the first
     /// key, so `Debug` never shows them. Sent with "Install", dropped with the dialog.
@@ -205,6 +235,259 @@ pub enum Step {
 struct Problem {
     what: Option<&'static str>,
     why: String,
+}
+
+/// The form of a server of one's own (task MA.9): "Add server…" on the list, or "Update…" on the
+/// page of one's own server, filled in from it. "Add server" sends it as one
+/// `extensions.install_extension` with `custom` ([`submit_custom`]), "Save" as
+/// `extensions.update_extension`.
+#[derive(Debug)]
+pub struct Custom {
+    /// The id of the server being updated; its name and id stay. `None` while one is added.
+    updating: Option<String>,
+    kind: Kind,
+    name: String,
+    id: String,
+    /// The person typed the id: it no longer follows the name.
+    id_typed: bool,
+    command: String,
+    /// The arguments of the command, one per line.
+    args: text_editor::Content,
+    url: String,
+    /// The variables of a command or the headers of an address, as listed; kept when the kind
+    /// changes, so nothing typed is lost.
+    values: Vec<Entry>,
+    /// "Add server" or "Save" was pressed once: from now on the fields say what is wrong.
+    tried: bool,
+    /// The request is on its way: its button says so and takes no second press.
+    busy: bool,
+    /// Why the core refused the last request.
+    problem: Option<Problem>,
+    step: CustomStep,
+    /// The servers of the block pasted last, each filled into the form on its own ([`Message::ChoosePasted`]).
+    pasted: Vec<Pasted>,
+    /// Which of [`Custom::pasted`] the form holds: added, it leaves the list.
+    chosen: Option<usize>,
+}
+
+impl Custom {
+    /// An empty form for a new server, a command.
+    fn new() -> Custom {
+        Custom {
+            updating: None,
+            kind: Kind::Command,
+            name: String::new(),
+            id: String::new(),
+            id_typed: false,
+            command: String::new(),
+            args: text_editor::Content::new(),
+            url: String::new(),
+            values: Vec::new(),
+            tried: false,
+            busy: false,
+            problem: None,
+            step: CustomStep::Form,
+            pasted: Vec::new(),
+            chosen: None,
+        }
+    }
+
+    /// The form of "Update…" for `server`, filled in from it: its values as they are, a secret as
+    /// [`Entry::stored`], which an empty field keeps.
+    fn editing(server: &ExtensionInfo) -> Custom {
+        let mut custom = Custom::new();
+        custom.fill(&Pasted::of(server.name.clone(), server.server.clone(), false));
+        (custom.updating, custom.id, custom.id_typed) = (Some(server.id.clone()), server.id.clone(), true);
+        custom
+    }
+
+    /// The form filled in with `from`, as if typed: nothing tried yet, no refusal.
+    fn fill(&mut self, from: &Pasted) {
+        self.kind = from.kind;
+        self.name.clone_from(&from.name);
+        self.command.clone_from(&from.command);
+        self.args = text_editor::Content::with_text(&from.args.join("\n"));
+        self.url.clone_from(&from.url);
+        self.values = from.values.clone();
+        (self.tried, self.problem, self.step) = (false, None, CustomStep::Form);
+    }
+
+    /// The pasted server at `at` in the form, with an id proposed from its name.
+    fn choose(&mut self, at: usize, data: &Data) {
+        let Some(from) = self.pasted.get(at).cloned() else { return };
+        self.fill(&from);
+        self.id = suggested_id(&self.name, |id| server_of(data, id).is_some());
+        (self.id_typed, self.chosen) = (false, Some(at));
+    }
+
+    /// The name and id as they go out: the name without white space around it.
+    fn name(&self) -> &str {
+        self.name.trim()
+    }
+}
+
+/// What a server of one's own is: a program this computer starts, or an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// [`ServerSpec::Stdio`]: a command with arguments and variables.
+    Command,
+    /// [`ServerSpec::Http`]: an address with headers.
+    Address,
+}
+
+/// One variable or header of the form.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Entry {
+    name: String,
+    /// What is typed: a [`Secret`] whether marked secret or not, so `Debug` never shows it – the
+    /// switch may be flipped after the value was typed.
+    value: Secret,
+    /// Goes out as [`Value::Secret`], the field hides it.
+    secret: bool,
+    /// The person flipped "Secret": it no longer follows the name ([`looks_secret`]).
+    secret_set: bool,
+    /// The core keeps a secret under this name for the server being updated: an empty field keeps
+    /// it ([`Value::Stored`]).
+    stored: bool,
+}
+
+impl Entry {
+    /// The row of `name` with `value`. `guess`: whether "Secret" follows the name ([`looks_secret`])
+    /// for a plain value – a pasted block marks nothing; a server being updated says what it holds.
+    fn of(name: &str, value: &Value, guess: bool) -> Entry {
+        let (value, secret, stored) = match value {
+            Value::Plain(text) => (Secret::new(text.as_str()), guess && looks_secret(name), false),
+            Value::Secret(secret) => (secret.clone(), true, false),
+            Value::Stored { .. } => (Secret::default(), true, true),
+        };
+        Entry { name: name.to_string(), value, secret, secret_set: !guess, stored }
+    }
+
+    /// A row the person left empty: it goes nowhere and says nothing.
+    fn is_empty(&self) -> bool {
+        self.name.trim().is_empty() && self.value.is_blank() && !self.stored
+    }
+
+    /// A new name: "Secret" follows it until the person flips it, and a stored secret belonged to
+    /// the old name.
+    fn rename(&mut self, name: String) {
+        if name != self.name {
+            self.stored = false;
+        }
+        if !self.secret_set {
+            self.secret = looks_secret(&name);
+        }
+        self.name = name;
+    }
+
+    /// How the value goes out: a secret as typed, or kept when it is stored and nothing is typed;
+    /// else plain.
+    fn wire(&self) -> Value {
+        match (self.secret, self.stored && self.value.is_blank()) {
+            (true, true) => Value::Stored { secret: true },
+            (true, false) => Value::Secret(self.value.clone()),
+            (false, _) => Value::Plain(self.value.expose().to_string()),
+        }
+    }
+}
+
+/// The steps of the form of a server of one's own.
+#[derive(Debug)]
+enum CustomStep {
+    /// The fields.
+    Form,
+    /// "Paste configuration": the field the block is pasted into, and why the last one could not
+    /// be read.
+    Paste { text: Hidden, problem: Option<String> },
+    /// The pasted block names several servers ([`Custom::pasted`]): one is chosen for the form.
+    Choose,
+}
+
+/// The text of a pasted block: it may hold tokens, so `Debug` never shows it.
+pub struct Hidden(text_editor::Content);
+
+impl fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Hidden(…)")
+    }
+}
+
+/// An edit of a field of several lines of the form (the arguments, the pasted block): `Debug`
+/// never shows what it inserts, which may be a token.
+#[derive(Clone, PartialEq)]
+pub struct Typed(text_editor::Action);
+
+impl Typed {
+    /// `text` pasted at the cursor, as the clipboard does: what the demo pastes.
+    pub fn paste(text: &str) -> Typed {
+        Typed(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text.to_string()))))
+    }
+}
+
+impl fmt::Debug for Typed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Typed(…)")
+    }
+}
+
+/// One server of a pasted block as the form takes it ([`Custom::fill`]): its values as
+/// [`Secret`]s at once, so the block's tokens never show in `Debug`.
+#[derive(Debug, Clone, PartialEq)]
+struct Pasted {
+    name: String,
+    kind: Kind,
+    command: String,
+    args: Vec<String>,
+    url: String,
+    values: Vec<Entry>,
+}
+
+impl Pasted {
+    /// The server `name` of a block or of the core, `guess` as for [`Entry::of`].
+    fn of(name: String, spec: ServerSpec, guess: bool) -> Pasted {
+        let values = spec.values().iter().map(|(name, value)| Entry::of(name, value, guess)).collect();
+        match spec {
+            ServerSpec::Stdio { command, args, .. } => {
+                Pasted { name, kind: Kind::Command, command, args, url: String::new(), values }
+            }
+            ServerSpec::Http { url, .. } => {
+                Pasted { name, kind: Kind::Address, command: String::new(), args: Vec::new(), url, values }
+            }
+        }
+    }
+
+    /// What runs, for its row in the choice: the program with its arguments, or the address.
+    fn address(&self) -> String {
+        match self.kind {
+            Kind::Command => std::iter::once(self.command.as_str())
+                .chain(self.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Kind::Address => self.url.clone(),
+        }
+    }
+}
+
+/// What the form can tell itself is wrong ([`check`]), by field: the sentence for the person.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Checked {
+    name: Option<&'static str>,
+    id: Option<&'static str>,
+    /// The command or the address.
+    target: Option<&'static str>,
+    /// Per row of [`Custom::values`].
+    values: Vec<Option<&'static str>>,
+}
+
+impl Checked {
+    fn any(&self) -> bool {
+        self.name.is_some() || self.id.is_some() || self.target.is_some() || self.values.iter().any(Option::is_some)
+    }
+
+    /// The sentence at the row `at`.
+    fn value(&self, at: usize) -> Option<&'static str> {
+        self.values.get(at).copied().flatten()
+    }
 }
 
 /// What a server's page holds besides the server's data, which comes with every reload.
@@ -259,7 +542,8 @@ struct Replacing {
 /// it ([`answered`]): each carries the catalog entry or the server's id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Asked {
-    /// `extensions.install_extension` of the dialog for this catalog entry.
+    /// `extensions.install_extension` of the dialog for this catalog entry, or of the form of a
+    /// server of one's own with this id.
     Install(String),
     /// `extensions.confirm_tools` of this server, from the dialog or its page.
     Allow(String),
@@ -271,7 +555,7 @@ pub enum Asked {
     Secret(String),
     /// `extensions.read_logs` for the server's page.
     Logs(String),
-    /// `extensions.update_extension` on the server's page.
+    /// `extensions.update_extension` on the server's page, or of the form "Update…" of one's own.
     Update(String),
     /// `extensions.remove_extension` on the server's page.
     Remove(String),
@@ -365,8 +649,50 @@ pub enum Message {
     /// "Allow tools" in the dialog or on a server's page: `extensions.confirm_tools` for the server
     /// with the fingerprint of the list that is shown ([`ExtensionInfo::fingerprint`]).
     AllowTools(String, String),
-    /// "Cancel", "Not now", a click next to the dialog or Escape.
+    /// "Cancel", "Not now", a click next to the dialog or Escape: closes the dialog on top – the
+    /// install dialog, else the form of a server of one's own.
     CloseInstall,
+    /// "Add server…" on the list: the empty form of a server of one's own (task MA.9).
+    AddServer,
+    /// "Update…" on the page of one's own server: the form filled in from it.
+    EditServer(String),
+    /// Command or address in the form.
+    CustomKind(Kind),
+    /// What is typed into the name; the id follows it until it is typed itself.
+    CustomName(String),
+    /// What is typed into the id.
+    CustomId(String),
+    /// What is typed into the command.
+    CustomCommand(String),
+    /// An edit of the arguments, one per line.
+    CustomArgs(Typed),
+    /// What is typed into the address.
+    CustomUrl(String),
+    /// "Add variable" or "Add header": an empty row.
+    AddValue,
+    /// What is typed into the name of the row at this place.
+    ValueName(usize, String),
+    /// What is typed into the value of the row at this place.
+    ValueText(usize, Secret),
+    /// "Secret" at the row at this place: on or off.
+    ValueSecret(usize, bool),
+    /// "Remove" at the row at this place.
+    RemoveValue(usize),
+    /// "Add server" or "Save" in the form: `extensions.install_extension` or
+    /// `extensions.update_extension`, once nothing the form checks is wrong.
+    SubmitCustom,
+    /// "Paste configuration": the field for an `mcpServers` block.
+    OpenPaste,
+    /// An edit of the pasted block.
+    PasteText(Typed),
+    /// "Fill in": the form from the pasted block, or the choice of its servers.
+    FillFromPaste,
+    /// One server of the pasted block, by its place: into the form.
+    ChoosePasted(usize),
+    /// "Choose another" in the form: the servers of the pasted block again.
+    ShowPasted,
+    /// "Back" from the pasted block or the choice, or Escape there: the form.
+    BackToForm,
     /// The switch on a server's page.
     Enable(String, bool),
     /// "Replace…" or "Enter…" at the secret with this name on a server's page.
@@ -476,9 +802,71 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             ask(Asked::Allow(id.clone()), Request::ConfirmExtensionTools { id, fingerprint })
         }
         Message::CloseInstall => {
-            state.install = None;
+            if state.install.take().is_none() {
+                state.custom = None;
+            }
             Action::None
         }
+        Message::AddServer => {
+            state.custom = Some(Box::new(Custom::new()));
+            Action::None
+        }
+        Message::EditServer(id) => {
+            if let Some(server) = server_of(data, &id).filter(|server| server.source == Source::Custom) {
+                state.custom = Some(Box::new(Custom::editing(server)));
+            }
+            Action::None
+        }
+        Message::CustomKind(kind) => edit(state, |custom| custom.kind = kind),
+        Message::CustomName(name) => edit(state, |custom| {
+            custom.name = name;
+            if !custom.id_typed && custom.updating.is_none() {
+                custom.id = suggested_id(&custom.name, |id| server_of(data, id).is_some());
+            }
+        }),
+        // An id typed away follows the name again.
+        Message::CustomId(id) => edit(state, |custom| (custom.id_typed, custom.id) = (!id.is_empty(), id)),
+        Message::CustomCommand(command) => edit(state, |custom| custom.command = command),
+        Message::CustomArgs(Typed(action)) => edit(state, |custom| custom.args.perform(action)),
+        Message::CustomUrl(url) => edit(state, |custom| custom.url = url),
+        Message::AddValue => edit(state, |custom| custom.values.push(Entry::default())),
+        Message::ValueName(at, name) => edit(state, |custom| {
+            if let Some(entry) = custom.values.get_mut(at) {
+                entry.rename(name);
+            }
+        }),
+        Message::ValueText(at, value) => edit(state, |custom| {
+            if let Some(entry) = custom.values.get_mut(at) {
+                entry.value = value;
+            }
+        }),
+        Message::ValueSecret(at, on) => edit(state, |custom| {
+            if let Some(entry) = custom.values.get_mut(at) {
+                (entry.secret, entry.secret_set) = (on, true);
+            }
+        }),
+        Message::RemoveValue(at) => edit(state, |custom| {
+            if at < custom.values.len() {
+                custom.values.remove(at);
+            }
+        }),
+        Message::SubmitCustom => submit_custom(state, data),
+        Message::OpenPaste => edit(state, |custom| {
+            custom.step = CustomStep::Paste { text: Hidden(text_editor::Content::new()), problem: None };
+        }),
+        Message::PasteText(Typed(action)) => edit(state, |custom| {
+            if let CustomStep::Paste { text, .. } = &mut custom.step {
+                text.0.perform(action);
+            }
+        }),
+        Message::FillFromPaste => edit(state, |custom| fill_from_paste(custom, data)),
+        Message::ChoosePasted(at) => edit(state, |custom| custom.choose(at, data)),
+        Message::ShowPasted => edit(state, |custom| {
+            if !custom.pasted.is_empty() {
+                custom.step = CustomStep::Choose;
+            }
+        }),
+        Message::BackToForm => edit(state, |custom| custom.step = CustomStep::Form),
         Message::Enable(id, enabled) => {
             (state.server.waiting, state.server.problem) = (Some(Waiting::Switch), None);
             ask(Asked::Switch(id.clone()), Request::SetExtensionEnabled { id, enabled })
@@ -575,6 +963,84 @@ fn submit_install(state: &mut State, data: &Data) -> Action {
     ask(Asked::Install(entry.id.clone()), Request::InstallExtension { from })
 }
 
+/// `change` applied to the open form of a server of one's own; nothing without one.
+fn edit(state: &mut State, change: impl FnOnce(&mut Custom)) -> Action {
+    if let Some(custom) = state.custom.as_deref_mut() {
+        change(custom);
+    }
+    Action::None
+}
+
+/// "Fill in": the pasted block read with [`parse_mcp_servers`]. One server goes into the form, several
+/// are listed to choose from; a block that cannot be read stays with the sentence why.
+fn fill_from_paste(custom: &mut Custom, data: &Data) {
+    let CustomStep::Paste { text, problem } = &mut custom.step else { return };
+    match parse_mcp_servers(&text.0.text()) {
+        Err(why) => *problem = Some(paste_problem(&why)),
+        Ok(servers) => {
+            custom.pasted = servers.into_iter().map(|(name, spec)| Pasted::of(name, spec, true)).collect();
+            match custom.pasted.len() {
+                1 => custom.choose(0, data),
+                _ => custom.step = CustomStep::Choose,
+            }
+        }
+    }
+}
+
+/// "Add server" or "Save" in the form: nothing while it is on its way or off the form; with
+/// anything the form checks wrong, only the fields say so from now on ("Add server" stays pressable,
+/// design skill, section 5); else exactly one `extensions.install_extension` with `custom` – or
+/// `extensions.update_extension` for a server being updated – with the values as [`Entry::wire`]
+/// sends them.
+fn submit_custom(state: &mut State, data: &Data) -> Action {
+    let Some(custom) =
+        state.custom.as_deref_mut().filter(|custom| !custom.busy && matches!(custom.step, CustomStep::Form))
+    else {
+        return Action::None;
+    };
+    custom.tried = true;
+    if check(custom, data).any() {
+        return Action::None;
+    }
+    (custom.busy, custom.problem) = (true, None);
+    let server = spec(custom);
+    match custom.updating.clone() {
+        Some(id) => ask(Asked::Update(id.clone()), Request::UpdateExtension { id, server: Some(server) }),
+        None => {
+            let (id, name) = (custom.id.clone(), custom.name().to_string());
+            ask(
+                Asked::Install(id.clone()),
+                Request::InstallExtension { from: InstallFrom::Custom { id, name, server } },
+            )
+        }
+    }
+}
+
+/// The program or address the form describes, as `extensions.install_extension` takes it: the
+/// arguments one per line without white space around them and empty lines dropped, the rows left
+/// empty dropped, names without white space around them.
+fn spec(custom: &Custom) -> ServerSpec {
+    let values: BTreeMap<String, Value> = custom
+        .values
+        .iter()
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| (entry.name.trim().to_string(), entry.wire()))
+        .collect();
+    match custom.kind {
+        Kind::Command => ServerSpec::Stdio {
+            command: custom.command.trim().to_string(),
+            args: arguments(&custom.args.text()),
+            env: values,
+        },
+        Kind::Address => ServerSpec::Http { url: custom.url.trim().to_string(), headers: values },
+    }
+}
+
+/// One argument per line of `text`, without white space around it; empty lines dropped.
+fn arguments(text: &str) -> Vec<String> {
+    text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect()
+}
+
 /// "Save" in the dialog of a secret: nothing while it is on its way or without a server's page;
 /// with an empty field, only the dialog says so; else `extensions.set_secret`.
 fn submit_replacement(state: &mut State) -> Action {
@@ -622,6 +1088,24 @@ pub fn answered(state: &mut State, asked: Asked, result: &Result<Response, Strin
     let outcome = outcome(result);
     let removing = matches!(asked, Asked::Remove(_));
     match asked {
+        // The form of one's own server that waits for it, for a new server or one being updated.
+        Asked::Install(id) if custom_waits(state, None, &id) => {
+            custom_installed(state, id, outcome);
+            Action::None
+        }
+        Asked::Update(id) if custom_waits(state, Some(&id), &id) => {
+            if let Some(custom) = state.custom.as_deref_mut() {
+                custom.busy = false;
+                match outcome {
+                    Outcome::Refused(code, why) => {
+                        custom.problem = Some(Problem { what: custom_problem(code, true), why })
+                    }
+                    // Saved: the page shows the server as reloaded, with what waits for the person.
+                    _ => state.custom = None,
+                }
+            }
+            Action::None
+        }
         // Only the form that waits for it takes the answer.
         Asked::Install(entry) => {
             let Some(install) = state
@@ -717,6 +1201,46 @@ pub fn answered(state: &mut State, asked: Asked, result: &Result<Response, Strin
     }
 }
 
+/// Whether the form of a server of one's own waits for the answer about `id`: the one being
+/// updated (`updating`), or a new one with that id (`None`).
+fn custom_waits(state: &State, updating: Option<&str>, id: &str) -> bool {
+    state.custom.as_deref().is_some_and(|custom| {
+        custom.busy && custom.updating.as_deref() == updating && (updating.is_some() || custom.id == id)
+    })
+}
+
+/// The answer to "Add server": added, the install dialog shows the tools it reported ([`Step::Tools`])
+/// over the form, which goes on with the next server of a pasted block or closes; refused, the
+/// form says why.
+fn custom_installed(state: &mut State, id: String, outcome: Outcome<'_>) {
+    let Some(custom) = state.custom.as_deref_mut() else { return };
+    custom.busy = false;
+    match outcome {
+        Outcome::Server(server) => {
+            let mut pasted = std::mem::take(&mut custom.pasted);
+            if let Some(at) = custom.chosen.filter(|at| *at < pasted.len()) {
+                pasted.remove(at);
+            }
+            state.custom =
+                (!pasted.is_empty()).then(|| Box::new(Custom { pasted, step: CustomStep::Choose, ..Custom::new() }));
+            state.install = Some(Install { step: Step::Tools(Box::new(server.clone())), ..Install::new(id) });
+        }
+        Outcome::Refused(code, why) => custom.problem = Some(Problem { what: custom_problem(code, false), why }),
+        Outcome::Logs(_) | Outcome::Done => {}
+    }
+}
+
+/// What a refused "Add server" or "Save" means for the person, by the core's code: the id taken
+/// (`conflict`), else that it could not be added or updated – the core's sentence says why (an
+/// address it does not reach, a program that does not start, a secret to type again).
+fn custom_problem(code: Option<&str>, updating: bool) -> Option<&'static str> {
+    match (code, updating) {
+        (Some("conflict"), false) => Some(tr("Another server has this id already.")),
+        (_, false) => Some(tr("It could not be added.")),
+        (_, true) => Some(tr("It could not be updated.")),
+    }
+}
+
 /// What a refused install means for the person, by the core's code: something to install first
 /// (`unsupported`, the core names it), the id taken (`conflict`), else that it did not install.
 fn install_problem(code: Option<&str>) -> Option<&'static str> {
@@ -733,6 +1257,12 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.install.is_some() {
         return Some(Message::CloseInstall);
     }
+    if let Some(custom) = &state.custom {
+        return Some(match custom.step {
+            CustomStep::Form => Message::CloseInstall,
+            CustomStep::Paste { .. } | CustomStep::Choose => Message::BackToForm,
+        });
+    }
     if state.server.replacing.is_some() {
         return Some(Message::CloseReplacement);
     }
@@ -747,8 +1277,8 @@ pub fn escape(state: &State) -> Option<Message> {
 }
 
 /// The header bar: on a page below the list its name (the templates', a server's) with a back
-/// button; the list has no actions yet ("Add server…" comes with task MA.9).
-pub fn header<'a>(state: &'a State, data: &'a Data, _class: SizeClass) -> Header<'a, Message> {
+/// button; on the list "Add server…" (task MA.9), as an icon in a narrow window.
+pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     match &state.page {
         Page::PdfTemplates => {
             Header { sub_page: Some((tr("PDF templates").to_string(), Message::Back)), actions: vec![] }
@@ -757,15 +1287,28 @@ pub fn header<'a>(state: &'a State, data: &'a Data, _class: SizeClass) -> Header
             let name = server_of(data, id).map_or_else(|| id.clone(), |server| server.name.clone());
             Header { sub_page: Some((name, Message::Back)), actions: vec![] }
         }
-        Page::List => Header::default(),
+        Page::List => {
+            let add = Some(Message::AddServer);
+            let button = match class {
+                SizeClass::Wide | SizeClass::Medium => {
+                    widgets::text_button(Some(Icon::Plus), tr("Add server…"), style::button::primary, add)
+                }
+                _ => widgets::compact_button(Icon::Plus, tr("Add server…"), style::button::primary, add),
+            };
+            Header { sub_page: None, actions: vec![button] }
+        }
     }
 }
 
-/// The dialog the section has open, laid over the whole window by the shell: installing, a secret
-/// to replace, or the question before a server is removed.
+/// The dialog the section has open, laid over the whole window by the shell: installing (also the
+/// tools of a server of one's own just added), the form of a server of one's own, a secret to
+/// replace, or the question before a server is removed.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     if let Some(install) = &state.install {
         return install_dialog(install, data);
+    }
+    if let Some(custom) = &state.custom {
+        return Some(custom_dialog(custom, data));
     }
     let Page::Server(id) = &state.page else { return None };
     let server = server_of(data, id)?;
@@ -1269,14 +1812,20 @@ fn crash_reason(reason: CrashReason) -> &'static str {
 }
 
 /// Where the server comes from: a catalog entry in its version, with "Update" when the catalog has
-/// another one; one's own with its program or address (changing it comes with task MA.9).
+/// another one; one's own with its program or address and "Update…", the form filled in from it
+/// (task MA.9).
 fn source_row<'a>(page: &ServerState, data: &'a Data, server: &'a ExtensionInfo, words: bool) -> Element<'a, Message> {
     let Source::Catalog { entry, version } = &server.source else {
         let label = match server.server {
             ServerSpec::Stdio { .. } => tr("Program"),
             ServerSpec::Http { .. } => tr("Address"),
         };
-        return setting_row(None, label, Some(address(&server.server)), Space::new());
+        let press = page.waiting.is_none().then(|| Message::EditServer(server.id.clone()));
+        let button = match words {
+            true => widgets::text_button(None, tr("Update…"), style::button::secondary, press),
+            false => widgets::icon_button(Icon::SquarePen, tr("Update…"), press),
+        };
+        return setting_row(None, label, Some(address(&server.server)), button);
     };
     let label = trf("Version {version}", &[("version", version)]);
     let Some(newer) = update_available(data, server) else {
@@ -1453,35 +2002,44 @@ fn remove_group<'a>(page: &ServerState, words: bool) -> Element<'a, Message> {
 
 // ----- Dialogs -----------------------------------------------------------------------------------
 
-/// The install dialog: the form of a catalog entry, or the tools the installed server reported.
-/// `None` when the entry left the catalog meanwhile.
+/// The install dialog: the form of a catalog entry, or the tools the installed server reported –
+/// of a catalog entry or of one's own. `None` when the entry of the form left the catalog meanwhile.
 fn install_dialog<'a>(install: &'a Install, data: &'a Data) -> Option<Element<'a, Message>> {
-    let entry = data.catalog.entries().iter().find(|entry| entry.id == install.entry)?;
+    let entry = data.catalog.entries().iter().find(|entry| entry.id == install.entry);
     let content = match &install.step {
-        Step::Form => form_dialog(install, entry),
-        Step::Tools(server) => tools_dialog(install, entry, server),
+        Step::Form => form_dialog(install, entry?),
+        Step::Tools(server) => {
+            // A server of one's own may have the id of an entry that is not installed.
+            let entry = entry.filter(|_| matches!(server.source, Source::Catalog { .. }));
+            tools_dialog(install, entry, server)
+        }
     };
     Some(dialog(content, widgets::DIALOG_WIDTH, Message::CloseInstall))
 }
 
-/// The head of the install dialog: `title`, then who makes the entry in which version, and
-/// "Experimental".
-fn dialog_head<'a>(title: String, entry: &'a CatalogEntry) -> Element<'a, Message> {
+/// The head of a dialog of this section: `title`, then the `facts` line when there is one, and the
+/// close button.
+fn dialog_head<'a>(title: String, facts: Option<Element<'a, Message>>) -> Element<'a, Message> {
+    let words = column![typo::text(typo::title(), title)].push(facts).spacing(space::xs()).width(Fill);
+    let close = widgets::icon_button(Icon::X, tr("Close"), Some(Message::CloseInstall));
+    row![words, close].spacing(space::m()).align_y(Alignment::Start).into()
+}
+
+/// Who makes a catalog entry in which version, and "Experimental": the facts line of its dialogs.
+fn entry_facts(entry: &CatalogEntry) -> Element<'_, Message> {
     let mut facts = row![widgets::ellipsized(typo::meta(), facts(entry), theme::text_3)]
         .spacing(space::s())
         .align_y(Alignment::Center);
     if entry.experimental {
         facts = facts.push(widgets::pill(None, tr("Experimental")));
     }
-    let words = column![typo::text(typo::title(), title), facts].spacing(space::xs()).width(Fill);
-    let close = widgets::icon_button(Icon::X, tr("Close"), Some(Message::CloseInstall));
-    row![words, close].spacing(space::m()).align_y(Alignment::Start).into()
+    facts.into()
 }
 
 /// The form: what the entry does, that it runs as the person, a hidden field per secret with where
 /// to get one, and its tools with the access each needs; "Install" sends it.
 fn form_dialog<'a>(install: &'a Install, entry: &'a CatalogEntry) -> Element<'a, Message> {
-    let head = dialog_head(trf("Install {name}", &[("name", &entry.name)]), entry);
+    let head = dialog_head(trf("Install {name}", &[("name", &entry.name)]), Some(entry_facts(entry)));
     let mut body = column![
         typo::text(typo::body(), entry.description.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
         runs_as_you(),
@@ -1503,7 +2061,8 @@ fn form_dialog<'a>(install: &'a Install, entry: &'a CatalogEntry) -> Element<'a,
         false => widgets::text_button(None, tr("Install"), style::button::primary, Some(Message::SubmitInstall)),
     };
     let wait = install.busy.then(|| tr("The first start can take a few minutes while the program is downloaded."));
-    let foot = dialog_foot(install.problem.as_ref(), wait, tr("Cancel"), install_button);
+    let cancel = (tr("Cancel"), Message::CloseInstall);
+    let foot = dialog_foot(install.problem.clone(), wait, cancel, Some(install_button));
     torro_gui::dialog::frame(head, body, foot, space::xl())
 }
 
@@ -1549,13 +2108,18 @@ fn secret_field<'a>(install: &'a Install, secret: &'a torro_ipc::extensions::Cat
 
 /// The tools the installed server reported, each with its state, access and what it says it does,
 /// and "Allow tools" for exactly this list; "Not now" leaves it installed and switched off, its
-/// page has the same button. Who may use it is the clients' rights.
+/// page has the same button. Who may use it is the clients' rights. The head names the catalog
+/// `entry`'s facts, or for a server of one's own (`None`) what runs.
 pub fn tools_dialog<'a>(
     install: &'a Install,
-    entry: &'a CatalogEntry,
+    entry: Option<&'a CatalogEntry>,
     server: &'a ExtensionInfo,
 ) -> Element<'a, Message> {
-    let head = dialog_head(trf("Allow the tools of {name}?", &[("name", &server.name)]), entry);
+    let facts = match entry {
+        Some(entry) => entry_facts(entry),
+        None => widgets::ellipsized(typo::meta(), address(&server.server), theme::text_3),
+    };
+    let head = dialog_head(trf("Allow the tools of {name}?", &[("name", &server.name)]), Some(facts));
     let mut rows: Vec<Element<'a, Message>> = server.tools.iter().map(|tool| tool_row(server, tool)).collect();
     if rows.is_empty() {
         rows.push(setting_row(None, tr("It reported no tools"), None, Space::new()));
@@ -1570,17 +2134,18 @@ pub fn tools_dialog<'a>(
     ]
     .spacing(space::l());
     let allow = allow_button(server, install.busy, false, true);
-    let foot = dialog_foot(install.problem.as_ref(), None, tr("Not now"), allow);
+    let foot = dialog_foot(install.problem.clone(), None, (tr("Not now"), Message::CloseInstall), Some(allow));
     torro_gui::dialog::frame(head, body, foot, space::xl())
 }
 
-/// The foot of the install dialog: why the last request failed (what it means, then the core's
-/// sentence), a quiet note while it waits, then `cancel` and the primary button at the right.
+/// The foot of a dialog of this section: why the last request failed (what it means, then the
+/// core's sentence when there is one), a quiet note while it waits, then the `cancel` button with
+/// its message and the primary button at the right.
 fn dialog_foot<'a>(
-    problem: Option<&'a Problem>,
+    problem: Option<Problem>,
     wait: Option<&'a str>,
-    cancel: &'a str,
-    primary: Element<'a, Message>,
+    (cancel, on_cancel): (&'a str, Message),
+    primary: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let mut foot = column![].spacing(space::s());
     if let Some(problem) = problem {
@@ -1588,21 +2153,251 @@ fn dialog_foot<'a>(
         if let Some(what) = problem.what {
             said = said.push(error_text(what));
         }
-        said = said
-            .push(typo::text(typo::meta(), problem.why.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+        if !problem.why.is_empty() {
+            said =
+                said.push(typo::text(typo::meta(), problem.why).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+        }
         foot = foot.push(said);
     }
     if let Some(wait) = wait {
         foot = foot.push(typo::text(typo::meta(), wait).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
     }
-    let buttons = row![
-        Space::new().width(Fill),
-        widgets::text_button(None, cancel, style::button::secondary, Some(Message::CloseInstall)),
-        primary,
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
+    let buttons =
+        row![Space::new().width(Fill), widgets::text_button(None, cancel, style::button::secondary, Some(on_cancel)),]
+            .push(primary)
+            .spacing(space::s())
+            .align_y(Alignment::Center);
     foot.push(buttons).into()
+}
+
+// ----- The form of a server of one's own (task MA.9) ----------------------------------------------
+
+/// The dialog of a server of one's own at its step: the form, the field for a pasted block, or the
+/// choice among the servers of one.
+fn custom_dialog<'a>(custom: &'a Custom, data: &'a Data) -> Element<'a, Message> {
+    let content = match &custom.step {
+        CustomStep::Form => custom_form(custom, data),
+        CustomStep::Paste { text, problem } => paste_dialog(text, problem.as_deref()),
+        CustomStep::Choose => choose_dialog(custom),
+    };
+    dialog(content, widgets::DIALOG_WIDTH, Message::CloseInstall)
+}
+
+/// The form: "Paste configuration" (only when adding), that it runs as the person, what it is and
+/// how it is reached, and its variables or headers. After the first try each field says what is
+/// wrong with it, and the foot says to look; what the core refused shows in the foot.
+fn custom_form<'a>(custom: &'a Custom, data: &'a Data) -> Element<'a, Message> {
+    let checked = if custom.tried { check(custom, data) } else { Checked::default() };
+    let title = match &custom.updating {
+        Some(_) => trf("Update {name}", &[("name", &custom.name)]),
+        None => tr("Add an MCP server").to_string(),
+    };
+    let mut body = column![].spacing(space::l());
+    if custom.updating.is_none() {
+        body = body.push(paste_offer(custom));
+    }
+    body = body.push(runs_as_you()).push(server_group(custom, &checked)).push(values_group(custom, &checked));
+    body = body.push(
+        typo::text(typo::meta(), tr("Its tools are listed once it has started. None is offered until you allow them."))
+            .style(theme::text_2)
+            .wrapping(Wrapping::WordOrGlyph),
+    );
+    let (label, busy) = match custom.updating {
+        Some(_) => (tr("Save"), tr("Saving…")),
+        None => (tr("Add server"), tr("Adding…")),
+    };
+    let primary = match custom.busy {
+        true => widgets::busy_button(busy, style::button::primary),
+        false => widgets::text_button(None, label, style::button::primary, Some(Message::SubmitCustom)),
+    };
+    let problem = custom.problem.clone().or_else(|| {
+        checked.any().then(|| Problem { what: Some(tr("Correct the marked fields.")), why: String::new() })
+    });
+    let wait = custom.busy.then(|| tr("The first start can take a few minutes while the program is downloaded."));
+    let foot = dialog_foot(problem, wait, (tr("Cancel"), Message::CloseInstall), Some(primary));
+    torro_gui::dialog::frame(dialog_head(title, None), body, foot, space::xl())
+}
+
+/// "Paste configuration" at the top of a new form, and, while a pasted block named several
+/// servers, which of them the form holds with "Choose another".
+fn paste_offer(custom: &Custom) -> Element<'_, Message> {
+    let (sentence, label, press) = match custom.pasted.len() {
+        0 | 1 => (
+            tr("Copied a configuration from another app? Paste it to fill in the form.").to_string(),
+            tr("Paste configuration"),
+            Message::OpenPaste,
+        ),
+        n => (trf("One of {n} pasted servers.", &[("n", &n)]), tr("Choose another"), Message::ShowPasted),
+    };
+    let text = typo::text(typo::body(), sentence).style(theme::text_2).wrapping(Wrapping::WordOrGlyph).width(Fill);
+    let button = widgets::text_button(None, label, style::button::secondary, Some(press));
+    row![text, button].spacing(space::l()).align_y(Alignment::Center).into()
+}
+
+/// "Server": command or address; the name and the id (only a name and id to read when updating);
+/// the command with its arguments, or the address.
+fn server_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Message> {
+    let active = match custom.kind {
+        Kind::Command => 0,
+        Kind::Address => 1,
+    };
+    let kinds = widgets::segmented(
+        [(tr("Command"), Message::CustomKind(Kind::Command)), (tr("Address"), Message::CustomKind(Kind::Address))],
+        active,
+    );
+    let mut rows = vec![setting_row(None, tr("Type"), None, kinds)];
+    match &custom.updating {
+        Some(id) => {
+            let detail = trf("Its tools are offered as ext_{id}_…", &[("id", id)]);
+            rows.push(setting_row(None, custom.name.as_str(), Some(detail), Space::new()));
+        }
+        None => {
+            let name =
+                field(tr("Weather"), &custom.name).on_input(Message::CustomName).on_submit(Message::SubmitCustom);
+            rows.push(form_field(tr("Name"), None, name.into(), checked.name));
+            let hint = match custom.id.is_empty() {
+                true => tr("Lowercase letters, digits and hyphens. Its tools are offered under it.").to_string(),
+                false => trf("Its tools are offered as ext_{id}_…", &[("id", &custom.id)]),
+            };
+            let id = field("weather", &custom.id).on_input(Message::CustomId).on_submit(Message::SubmitCustom);
+            rows.push(form_field(tr("Id"), Some(hint), id.into(), checked.id));
+        }
+    }
+    match custom.kind {
+        Kind::Command => {
+            let command =
+                field("uvx", &custom.command).on_input(Message::CustomCommand).on_submit(Message::SubmitCustom);
+            let hint = tr("A program such as npx, uvx or docker, or its full path. No shell runs it.");
+            rows.push(form_field(tr("Command"), Some(hint.to_string()), command.into(), checked.target));
+            let args = text_editor(&custom.args)
+                .on_action(|action| Message::CustomArgs(Typed(action)))
+                .placeholder(tr("One argument per line"))
+                .font(typo::body().font)
+                .size(typo::body().size)
+                .line_height(typo::body().line_height)
+                .padding(style::INPUT_PADDING)
+                .wrapping(Wrapping::WordOrGlyph)
+                .height(lines_height(ARGUMENT_LINES, typo::body()))
+                .style(style::text_editor);
+            rows.push(form_field(tr("Arguments"), Some(tr("One per line.").to_string()), args.into(), None));
+        }
+        Kind::Address => {
+            let url = field("https://", &custom.url).on_input(Message::CustomUrl).on_submit(Message::SubmitCustom);
+            let hint = tr("An address that speaks Streamable HTTP: https://, or http:// on this computer only.");
+            rows.push(form_field(tr("Address"), Some(hint.to_string()), url.into(), checked.target));
+        }
+    }
+    widgets::group(tr("Server"), rows, None)
+}
+
+/// "Variables" of a command or "Headers" of an address: a row per entry with name, value, "Secret"
+/// and "Remove", then "Add variable" or "Add header".
+fn values_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Message> {
+    let (title, add) = match custom.kind {
+        Kind::Command => (tr("Variables"), tr("Add variable")),
+        Kind::Address => (tr("Headers"), tr("Add header")),
+    };
+    let mut rows: Vec<Element<'a, Message>> = custom
+        .values
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| entry_row(custom.kind, at, entry, checked.value(at)))
+        .collect();
+    let add = widgets::text_button(Some(Icon::Plus), add, style::button::ghost, Some(Message::AddValue));
+    rows.push(row_frame(add, false));
+    let footer = tr("A value marked Secret is kept in the system keychain; only this server gets it, when it starts.");
+    widgets::group(title, rows, Some(footer.to_string()))
+}
+
+/// One variable or header: its name, its value (hidden while it is a secret; a stored one says so
+/// and stays while nothing is typed), "Secret" and "Remove"; below, after the first try, what is
+/// wrong with it.
+fn entry_row<'a>(kind: Kind, at: usize, entry: &'a Entry, problem: Option<&'static str>) -> Element<'a, Message> {
+    let placeholder = match kind {
+        Kind::Command => tr("NAME"),
+        Kind::Address => tr("Header name"),
+    };
+    let name = field(placeholder, &entry.name)
+        .on_input(move |name| Message::ValueName(at, name))
+        .on_submit(Message::SubmitCustom)
+        .width(Length::FillPortion(2));
+    let hint = if entry.secret && entry.stored { tr("Stored – type to replace") } else { tr("Value") };
+    let value = field(hint, entry.value.expose())
+        .secure(entry.secret)
+        .on_input(move |value| Message::ValueText(at, Secret::new(value)))
+        .on_submit(Message::SubmitCustom)
+        .width(Length::FillPortion(3));
+    let secret = widgets::choice_chip(tr("Secret"), None, entry.secret, Some(Message::ValueSecret(at, !entry.secret)));
+    let remove = widgets::icon_button(Icon::X, tr("Remove"), Some(Message::RemoveValue(at)));
+    let line = row![name, value, secret, remove].spacing(space::s()).align_y(Alignment::Center);
+    let lines = column![line].push(problem.map(error_text)).spacing(space::xs());
+    container(lines).width(Fill).padding([space::s(), space::l()]).into()
+}
+
+/// A field of the form with its label above it, a quiet line about it, and after the first try
+/// what is wrong with it – the layout of a secret's field in the install dialog.
+fn form_field<'a>(
+    label: &'a str,
+    hint: Option<String>,
+    control: Element<'a, Message>,
+    problem: Option<&'static str>,
+) -> Element<'a, Message> {
+    let mut lines = column![widgets::ellipsized(typo::body(), label, theme::text)].spacing(space::xs());
+    if let Some(hint) = hint {
+        lines = lines.push(typo::text(typo::meta(), hint).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+    }
+    let lines = lines.push(control).push(problem.map(error_text));
+    container(lines).width(Fill).padding([space::m(), space::l()]).into()
+}
+
+/// "Paste configuration": what to paste, the field, why the last block could not be read; "Back"
+/// to the form and "Fill in".
+fn paste_dialog<'a>(text: &'a Hidden, problem: Option<&'a str>) -> Element<'a, Message> {
+    let field = text_editor(&text.0)
+        .on_action(|action| Message::PasteText(Typed(action)))
+        .placeholder("{ \"mcpServers\": { … } }")
+        .font(typo::meta().font)
+        .size(typo::meta().size)
+        .line_height(typo::meta().line_height)
+        .padding(style::INPUT_PADDING)
+        .wrapping(Wrapping::WordOrGlyph)
+        .height(lines_height(PASTE_LINES, typo::meta()))
+        .style(style::text_editor);
+    let sentence = tr(
+        "Paste the mcpServers block from the settings of Claude Desktop, Cursor or another app. It fills in the form; nothing is added yet.",
+    );
+    let body = column![typo::text(typo::body(), sentence).style(theme::text_2).wrapping(Wrapping::WordOrGlyph), field]
+        .push(problem.map(error_text))
+        .spacing(space::l());
+    let fill = widgets::text_button(None, tr("Fill in"), style::button::primary, Some(Message::FillFromPaste));
+    let foot = dialog_foot(None, None, (tr("Back"), Message::BackToForm), Some(fill));
+    torro_gui::dialog::frame(dialog_head(tr("Paste configuration").to_string(), None), body, foot, space::xl())
+}
+
+/// The servers of a pasted block: each a row with what runs, which fills it into the form.
+fn choose_dialog(custom: &Custom) -> Element<'_, Message> {
+    let rows = custom
+        .pasted
+        .iter()
+        .enumerate()
+        .map(|(at, pasted)| {
+            let row = setting_row(None, pasted.name.as_str(), Some(pasted.address()), chevron());
+            pressable(row, Some(Message::ChoosePasted(at)))
+        })
+        .collect();
+    let sentence = tr("Choose one to fill in the form. Once it is added, the others are listed here again.");
+    let body = column![
+        typo::text(typo::body(), sentence).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+        widgets::group(tr("Pasted servers"), rows, None),
+    ]
+    .spacing(space::l());
+    let foot = dialog_foot(None, None, (tr("Cancel"), Message::CloseInstall), None);
+    torro_gui::dialog::frame(dialog_head(tr("Choose a server").to_string(), None), body, foot, space::xl())
+}
+
+/// The room of a field of several lines: `lines` of `level` and the padding of a field.
+fn lines_height(lines: f32, level: typo::Level) -> f32 {
+    lines * typo::line_height(level) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
 }
 
 /// The dialog of one secret of the server: the hidden field, a sentence when it is empty after the
@@ -1695,6 +2490,112 @@ pub fn alert(data: &Data) -> Option<Dot> {
         return Some(Dot::Error);
     }
     servers.iter().any(|server| server.status == Status::Review).then_some(Dot::Attention)
+}
+
+/// Whether a variable or header called `name` looks like a secret: it holds `KEY`, `TOKEN`,
+/// `SECRET`, `PASSWORD` or `AUTH`, in any case. Its row starts with "Secret" on.
+pub fn looks_secret(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    SECRET_WORDS.iter().any(|word| upper.contains(word))
+}
+
+/// The id proposed for a server called `name` ([`valid_id`]): its letters and digits in lower
+/// case, every other run of characters one hyphen, from its first letter on, at most
+/// [`MAX_ID_CHARS`]; with `-2`, `-3` … when `taken` says an installed server has it. Empty when the
+/// name has no letter a-z.
+pub fn suggested_id(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut id = String::new();
+    for c in name.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_lowercase() || (c.is_ascii_digit() && !id.is_empty()) {
+            id.push(c);
+        } else if !id.is_empty() && !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    let cut = |id: &str, room: usize| id.chars().take(room).collect::<String>().trim_end_matches('-').to_string();
+    let base = cut(&id, MAX_ID_CHARS);
+    if base.is_empty() || !taken(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| {
+            let suffix = format!("-{n}");
+            format!("{}{suffix}", cut(&base, MAX_ID_CHARS - suffix.len()))
+        })
+        .find(|id| !taken(id))
+        .unwrap_or(base)
+}
+
+/// What is wrong with the form that it can tell itself, by field ([`Checked`]): a name, a valid id
+/// no installed server has (only when adding), a command or an address, and per row a name that
+/// can name a variable or header, is not blocked ([`blocked_env`]) and not listed twice, and a
+/// secret's value (a stored one may stay empty). Rows left empty are not checked; they go nowhere.
+/// The address itself (`https://`, or `http://` on this computer) is the core's to check.
+fn check(custom: &Custom, data: &Data) -> Checked {
+    let adding = custom.updating.is_none();
+    let name = (adding && custom.name().is_empty()).then(|| tr("Enter a name."));
+    let id = match adding {
+        false => None,
+        true if !valid_id(&custom.id) => {
+            Some(tr("Use up to 24 lowercase letters, digits and hyphens, starting with a letter."))
+        }
+        true if server_of(data, &custom.id).is_some() => Some(tr("Another server has this id already.")),
+        true => None,
+    };
+    let target = match custom.kind {
+        Kind::Command => custom.command.trim().is_empty().then(|| tr("Enter the program to start.")),
+        Kind::Address => custom.url.trim().is_empty().then(|| tr("Enter the address.")),
+    };
+    let values = custom
+        .values
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| entry_problem(custom.kind, &custom.values[..at], entry))
+        .collect();
+    Checked { name, id, target, values }
+}
+
+/// What is wrong with the row `entry` after the rows `before` it, for a command's variables or an
+/// address's headers.
+fn entry_problem(kind: Kind, before: &[Entry], entry: &Entry) -> Option<&'static str> {
+    if entry.is_empty() {
+        return None;
+    }
+    let name = entry.name.trim();
+    let twice = |other: &Entry| match kind {
+        Kind::Command => other.name.trim() == name,
+        // Header names are the same in any case.
+        Kind::Address => other.name.trim().eq_ignore_ascii_case(name),
+    };
+    match kind {
+        _ if name.is_empty() => Some(tr("Give it a name.")),
+        Kind::Command if !valid_env_name(name) => Some(tr("A variable's name has no spaces and no =.")),
+        Kind::Command if blocked_env(name) => Some(tr("Torro Workplace never passes this variable on to a server.")),
+        Kind::Address if !valid_header_name(name) => Some(tr("A header's name has no spaces and no colon.")),
+        _ if before.iter().any(twice) => Some(tr("This name is listed twice.")),
+        _ if entry.secret && entry.value.is_blank() && !entry.stored => Some(tr("Enter its value.")),
+        _ => None,
+    }
+}
+
+/// Why a pasted block could not be read, as a sentence for the person in the suite's language. The
+/// names are the block's; a reason or the parser's position stays English, as the core gives it.
+fn paste_problem(error: &ParseError) -> String {
+    match error {
+        ParseError::Json(at) => trf("This isn't a configuration Torro Workplace can read ({at}).", &[("at", at)]),
+        ParseError::NoServers => tr("There is no server in it.").to_string(),
+        ParseError::Invalid { server, reason } => {
+            trf("{server} can't be added: {reason}.", &[("server", server), ("reason", reason)])
+        }
+        ParseError::Blocked { server, variable } => trf(
+            "{server} would get the variable {variable}, which Torro Workplace never passes on to a server. Remove it and paste again.",
+            &[("server", server), ("variable", variable)],
+        ),
+        ParseError::Transport { server, transport } => trf(
+            "{server} speaks {transport}, which Torro Workplace doesn't support. Only addresses with Streamable HTTP work.",
+            &[("server", server), ("transport", transport)],
+        ),
+    }
 }
 
 /// The catalog entry `entry` when "Install…" is offered for it: it is in the catalog, nothing it
@@ -2458,5 +3359,399 @@ mod tests {
             }
             let _ = view(&State::default(), &full, class);
         }
+    }
+
+    // ----- Task MA.9: a server of one's own -----------------------------------------------------
+
+    /// A block as another app has it: a command with arguments, a token and a plain variable.
+    const BLOCK: &str = r#"{"mcpServers": {"Weather API": {"command": "uvx", "args": ["mcp-weather", "--units", "metric"],
+        "env": {"WEATHER_API_TOKEN": "tok_pasted_123", "WEATHER_REGION": "eu"}}}}"#;
+
+    /// The form after "Add server…" with `block` pasted and "Fill in" pressed.
+    fn pasted(block: &str, data: &Data) -> State {
+        let mut state = State::default();
+        let steps =
+            [Message::AddServer, Message::OpenPaste, Message::PasteText(Typed::paste(block)), Message::FillFromPaste];
+        for message in steps {
+            assert!(matches!(update(&mut state, message.clone(), data), Action::None), "{message:?} sends nothing");
+        }
+        state
+    }
+
+    /// The open form of a server of one's own.
+    fn form(state: &State) -> &Custom {
+        state.custom.as_deref().expect("the form is open")
+    }
+
+    /// Acceptance: a pasted block with `env` fills the form – name, the id proposed from it, command,
+    /// one argument per line – and the token's row is marked secret, the other one not.
+    #[test]
+    fn a_pasted_block_fills_the_form_and_marks_the_token_secret() {
+        let data = launch::demo_data();
+        let state = pasted(BLOCK, &data);
+        let custom = form(&state);
+        assert!(matches!(custom.step, CustomStep::Form), "one server: straight into the form");
+        assert_eq!(
+            (custom.kind, custom.name.as_str(), custom.id.as_str(), custom.command.as_str()),
+            (Kind::Command, "Weather API", "weather-api", "uvx")
+        );
+        assert_eq!(arguments(&custom.args.text()), ["mcp-weather", "--units", "metric"]);
+        let row = |name: &str| custom.values.iter().find(|entry| entry.name == name).expect(name);
+        let token = row("WEATHER_API_TOKEN");
+        assert!(token.secret && !token.stored, "a token is a secret");
+        assert_eq!(token.value, Secret::new("tok_pasted_123"));
+        assert!(!row("WEATHER_REGION").secret);
+        assert!(!custom.tried && check(custom, &data) == Checked { values: vec![None, None], ..Checked::default() });
+    }
+
+    /// Acceptance: a blocked variable shows its sentence at its row, only after the first try, and
+    /// nothing goes out; pasted, the block says so in one sentence.
+    #[test]
+    fn a_blocked_variable_shows_its_error_at_the_row() {
+        let data = launch::demo_data();
+        let mut state = pasted(BLOCK, &data);
+        let _ = update(&mut state, Message::AddValue, &data);
+        let at = form(&state).values.len() - 1;
+        let _ = update(&mut state, Message::ValueName(at, "ld_preload".into()), &data);
+        let _ = update(&mut state, Message::ValueText(at, Secret::new("/tmp/hook.so")), &data);
+        assert!(!form(&state).tried, "nothing is said before the first try");
+        assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::None), "nothing goes out");
+        let custom = form(&state);
+        assert!(custom.tried && !custom.busy);
+        let checked = check(custom, &data);
+        assert_eq!(checked.value(at), Some(tr("Torro Workplace never passes this variable on to a server.")));
+        assert_eq!((checked.name, checked.id, checked.target, checked.value(0)), (None, None, None, None), "only it");
+        assert!(overlay(&state, &data).is_some());
+        // Removed, the form goes out.
+        let _ = update(&mut state, Message::RemoveValue(at), &data);
+        assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::AskConnections(..)));
+
+        let blocked = r#""mcpServers": {"notes": {"command": "notes", "env": {"PATH": "/tmp"}}}"#;
+        let mut state = State::default();
+        for message in [Message::AddServer, Message::OpenPaste, Message::PasteText(Typed::paste(blocked))] {
+            let _ = update(&mut state, message, &data);
+        }
+        let _ = update(&mut state, Message::FillFromPaste, &data);
+        let CustomStep::Paste { problem: Some(problem), .. } = &form(&state).step else {
+            panic!("the block stays with its sentence")
+        };
+        let expected = paste_problem(&ParseError::Blocked { server: "notes".into(), variable: "PATH".into() });
+        assert_eq!(problem, &expected);
+        assert!(problem.contains("PATH"));
+        let _ = update(&mut state, Message::PasteText(Typed::paste("not json")), &data);
+        let _ = update(&mut state, Message::FillFromPaste, &data);
+        assert!(matches!(&form(&state).step, CustomStep::Paste { problem: Some(_), .. }));
+        assert_eq!(escape(&state), Some(Message::BackToForm));
+    }
+
+    /// Acceptance: "Add server" sends exactly one `install_extension` with `custom`, the secret as
+    /// `Secret`, the plain value as it is; the answer goes on as the catalog does: the reported tools,
+    /// "Allow tools" with their fingerprint.
+    #[test]
+    fn adding_sends_exactly_one_install_with_the_secrets_as_secrets() {
+        let data = launch::demo_data();
+        let mut state = pasted(BLOCK, &data);
+        let (what, request) = asked(update(&mut state, Message::SubmitCustom, &data));
+        let env = BTreeMap::from([
+            ("WEATHER_API_TOKEN".to_string(), Value::Secret(Secret::new("tok_pasted_123"))),
+            ("WEATHER_REGION".to_string(), Value::Plain("eu".into())),
+        ]);
+        let args = vec!["mcp-weather".to_string(), "--units".into(), "metric".into()];
+        let server = ServerSpec::Stdio { command: "uvx".into(), args, env };
+        let from = InstallFrom::Custom { id: "weather-api".into(), name: "Weather API".into(), server };
+        let expected = Request::InstallExtension { from };
+        assert_eq!((what.clone(), request.clone()), (Asked::Install("weather-api".into()), expected));
+        assert!(form(&state).busy);
+        assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::None), "on its way: once");
+        assert!(!format!("{request:?}").contains("tok_pasted_123"), "a request shows no secret either");
+
+        let answer = launch::demo_answer(&request, &data).expect("the demo adds it");
+        let _ = answered(&mut state, what, &Ok(answer));
+        assert!(state.custom.is_none(), "one server: the form has done its job");
+        assert_eq!(state.install.as_ref().and_then(Install::installed), Some("weather-api"));
+        assert!(overlay(&state, &data).is_some(), "the tools it reported, with no catalog entry");
+        let (what, request) =
+            asked(update(&mut state, Message::AllowTools("weather-api".into(), "demo-weather-api".into()), &data));
+        let confirm =
+            Request::ConfirmExtensionTools { id: "weather-api".into(), fingerprint: "demo-weather-api".into() };
+        assert_eq!((what, request), (Asked::Allow("weather-api".into()), confirm));
+    }
+
+    /// What only the core can tell comes back as its sentence in the form, with what that means: an
+    /// address it does not take, an id in use. Typing on is possible, and the next try goes out.
+    #[test]
+    fn the_core_s_refusal_shows_in_the_form() {
+        let data = launch::demo_data();
+        let mut state = State::default();
+        for message in [
+            Message::AddServer,
+            Message::CustomKind(Kind::Address),
+            Message::CustomName("Team wiki".into()),
+            Message::CustomUrl("http://example.com/mcp".into()),
+        ] {
+            let _ = update(&mut state, message, &data);
+        }
+        let (what, request) = asked(update(&mut state, Message::SubmitCustom, &data));
+        let server = ServerSpec::Http { url: "http://example.com/mcp".into(), headers: BTreeMap::new() };
+        let from = InstallFrom::Custom { id: "team-wiki".into(), name: "Team wiki".into(), server };
+        assert_eq!(request, Request::InstallExtension { from });
+        let message = "http:// only for localhost, 127.0.0.1 and ::1".to_string();
+        let _ = answered(&mut state, what, &Ok(Response::Error { code: "error".into(), message: message.clone() }));
+        let custom = form(&state);
+        assert_eq!(custom.problem, Some(Problem { what: Some(tr("It could not be added.")), why: message }));
+        assert!(!custom.busy && matches!(custom.step, CustomStep::Form));
+        let _ = view(&state, &data, SizeClass::Wide);
+        assert!(overlay(&state, &data).is_some());
+
+        let (what, _) = asked(update(&mut state, Message::SubmitCustom, &data));
+        let refused = Ok(Response::Error { code: "conflict".into(), message: "in use".into() });
+        let _ = answered(&mut state, what, &refused);
+        assert_eq!(
+            form(&state).problem.as_ref().and_then(|problem| problem.what),
+            Some(tr("Another server has this id already."))
+        );
+        // An answer for another id does not reach the form.
+        let _ = asked(update(&mut state, Message::SubmitCustom, &data));
+        let _ = answered(&mut state, Asked::Install("other".into()), &refused);
+        assert!(form(&state).busy);
+    }
+
+    /// What the form checks itself after the first try: a name, a valid id no server has, the
+    /// command or the address, row names, names listed twice and an empty secret.
+    #[test]
+    fn the_form_checks_what_it_can_tell_itself() {
+        let data = launch::demo_data();
+        let mut state = State::default();
+        let _ = update(&mut state, Message::AddServer, &data);
+        assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::None));
+        let checked = check(form(&state), &data);
+        assert_eq!(checked.name, Some(tr("Enter a name.")));
+        assert!(checked.id.is_some());
+        assert_eq!(checked.target, Some(tr("Enter the program to start.")));
+        let _ = update(&mut state, Message::CustomKind(Kind::Address), &data);
+        assert_eq!(check(form(&state), &data).target, Some(tr("Enter the address.")));
+
+        let _ = update(&mut state, Message::CustomName("Time".into()), &data);
+        assert_eq!(form(&state).id, "time-2", "Time is installed: the proposal moves on");
+        let _ = update(&mut state, Message::CustomId("time".into()), &data);
+        assert_eq!(check(form(&state), &data).id, Some(tr("Another server has this id already.")));
+        let _ = update(&mut state, Message::CustomName("Clock".into()), &data);
+        assert_eq!(form(&state).id, "time", "typed: it no longer follows the name");
+        let _ = update(&mut state, Message::CustomId("Bad_Id".into()), &data);
+        assert!(check(form(&state), &data).id.is_some());
+        let _ = update(&mut state, Message::CustomId(String::new()), &data);
+        let _ = update(&mut state, Message::CustomName("Clock".into()), &data);
+        assert_eq!(form(&state).id, "clock", "typed away: it follows the name again");
+
+        // Headers: an invalid name, one listed twice in another case, an empty secret, an empty row.
+        for (at, name) in ["Bad Header", "Authorization", "authorization", ""].into_iter().enumerate() {
+            let _ = update(&mut state, Message::AddValue, &data);
+            let _ = update(&mut state, Message::ValueName(at, name.into()), &data);
+        }
+        let _ = update(&mut state, Message::ValueText(0, Secret::new("x")), &data);
+        let _ = update(&mut state, Message::ValueText(2, Secret::new("y")), &data);
+        let custom = form(&state);
+        assert!(custom.values[1].secret && custom.values[2].secret, "Authorization looks like a secret");
+        let checked = check(custom, &data);
+        assert_eq!(checked.value(0), Some(tr("A header's name has no spaces and no colon.")));
+        assert_eq!(checked.value(1), Some(tr("Enter its value.")));
+        assert_eq!(checked.value(2), Some(tr("This name is listed twice.")));
+        assert_eq!(checked.value(3), None, "an empty row goes nowhere");
+        // The switch is the person's once flipped; the name no longer moves it.
+        let _ = update(&mut state, Message::ValueSecret(1, false), &data);
+        let _ = update(&mut state, Message::ValueName(1, "X-Api-Token".into()), &data);
+        assert!(!form(&state).values[1].secret);
+    }
+
+    /// The id proposed from the name, and which names start as secrets.
+    #[test]
+    fn the_id_follows_the_name_and_secrets_follow_theirs() {
+        let none = |_: &str| false;
+        assert_eq!(suggested_id("Weather API", none), "weather-api");
+        assert_eq!(suggested_id("  2 fast · 4 you! ", none), "fast-4-you");
+        assert_eq!(suggested_id("Grüße", none), "gr-e");
+        assert_eq!(suggested_id("Ärger", none), "rger");
+        assert_eq!(suggested_id("42", none), "");
+        let long = suggested_id("A very long name for a server of one's own", none);
+        assert!(valid_id(&long) && long.len() <= MAX_ID_CHARS, "{long}");
+        let taken = |id: &str| ["time", "time-2"].contains(&id);
+        assert_eq!(suggested_id("Time", taken), "time-3");
+        let full = "abcdefghijklmnopqrstuvwx";
+        assert_eq!(suggested_id(full, |id| id == full), "abcdefghijklmnopqrstuv-2");
+        for name in ["GITHUB_TOKEN", "api_key", "Authorization", "DB_PASSWORD", "client_secret", "X-Auth"] {
+            assert!(looks_secret(name), "{name}");
+        }
+        for name in ["REGION", "HOME_DIR", "Accept"] {
+            assert!(!looks_secret(name), "{name}");
+        }
+    }
+
+    /// Several servers in a block: a choice, each into a form of its own; added, the tools it
+    /// reported come first, then the choice of the others again.
+    #[test]
+    fn several_pasted_servers_get_a_form_each() {
+        let data = launch::demo_data();
+        let mut state = pasted(launch::DEMO_PASTE_TWO, &data);
+        assert!(matches!(form(&state).step, CustomStep::Choose));
+        assert_eq!(form(&state).pasted.len(), 2);
+        assert_eq!(escape(&state), Some(Message::BackToForm));
+        let wiki = form(&state).pasted.iter().position(|pasted| pasted.name == "team-wiki").expect("listed");
+        let _ = update(&mut state, Message::ChoosePasted(wiki), &data);
+        let custom = form(&state);
+        assert_eq!(
+            (custom.kind, custom.name.as_str(), custom.url.as_str()),
+            (Kind::Address, "team-wiki", "https://wiki.example.org/mcp")
+        );
+        assert!(custom.values.iter().all(|entry| entry.secret), "Authorization is a secret");
+        let (what, request) = asked(update(&mut state, Message::SubmitCustom, &data));
+        let Request::InstallExtension { from: InstallFrom::Custom { server: ServerSpec::Http { headers, .. }, .. } } =
+            &request
+        else {
+            panic!("an address: {request:?}")
+        };
+        assert!(matches!(headers.get("Authorization"), Some(Value::Secret(_))));
+        let _ = answered(&mut state, what, &Ok(launch::demo_answer(&request, &data).expect("added")));
+        assert_eq!(state.install.as_ref().and_then(Install::installed), Some("team-wiki"));
+        let custom = form(&state);
+        assert!(matches!(custom.step, CustomStep::Choose) && custom.pasted.len() == 1, "the other one waits");
+        assert_eq!(custom.pasted[0].name, "weather");
+        // "Not now" closes only the tools; the choice comes back.
+        let _ = update(&mut state, Message::CloseInstall, &data);
+        assert!(state.install.is_none() && state.custom.is_some());
+        let _ = update(&mut state, Message::ChoosePasted(0), &data);
+        assert_eq!(form(&state).command, "uvx");
+        assert_eq!(escape(&state), Some(Message::CloseInstall));
+        let _ = update(&mut state, Message::CloseInstall, &data);
+        assert!(state.custom.is_none());
+    }
+
+    /// "Update…" on the page of one's own server: the form filled in from it, its name and id kept;
+    /// a stored secret left empty goes out as `Stored`, a typed one as `Secret`; "Save" sends exactly
+    /// one `update_extension`. A catalog server has no such form.
+    #[test]
+    fn updating_one_s_own_server_keeps_its_stored_secrets() {
+        let mut data = launch::demo_data();
+        if let Listing::Entries(servers) = &mut data.extensions {
+            let notes = servers.iter_mut().find(|server| server.id == "notes").expect("Notes");
+            notes.server = ServerSpec::Stdio {
+                command: "/usr/local/bin/notes-mcp".into(),
+                args: vec!["--stdio".into()],
+                env: BTreeMap::from([
+                    ("NOTES_DIR".to_string(), Value::Plain("~/Notes".into())),
+                    ("NOTES_TOKEN".to_string(), Value::Stored { secret: true }),
+                ]),
+            };
+        }
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Open("notes".into()), &data);
+        let _ = update(&mut state, Message::EditServer("time".into()), &data);
+        assert!(state.custom.is_none(), "a catalog server is updated from the catalog");
+        let _ = update(&mut state, Message::EditServer("notes".into()), &data);
+        let custom = form(&state);
+        assert_eq!(
+            (custom.updating.as_deref(), custom.id.as_str(), custom.name.as_str()),
+            (Some("notes"), "notes", "Notes")
+        );
+        assert!(custom.values.iter().any(|entry| entry.name == "NOTES_TOKEN" && entry.secret && entry.stored));
+        assert!(custom.values.iter().any(|entry| entry.name == "NOTES_DIR" && !entry.secret), "plain stays plain");
+        let _ = view(&state, &data, SizeClass::Wide);
+        assert!(overlay(&state, &data).is_some());
+
+        let (what, request) = asked(update(&mut state, Message::SubmitCustom, &data));
+        let env = BTreeMap::from([
+            ("NOTES_DIR".to_string(), Value::Plain("~/Notes".into())),
+            ("NOTES_TOKEN".to_string(), Value::Stored { secret: true }),
+        ]);
+        let server =
+            ServerSpec::Stdio { command: "/usr/local/bin/notes-mcp".into(), args: vec!["--stdio".into()], env };
+        assert_eq!(
+            (what.clone(), request),
+            (Asked::Update("notes".into()), Request::UpdateExtension { id: "notes".into(), server: Some(server) })
+        );
+        let message = "the stored secrets belong to another program: enter them again".to_string();
+        let _ = answered(&mut state, what, &Ok(Response::Error { code: "error".into(), message: message.clone() }));
+        assert_eq!(form(&state).problem, Some(Problem { what: Some(tr("It could not be updated.")), why: message }));
+        assert!(state.server.problem.is_none(), "the form says it, not the page");
+
+        let at = form(&state).values.iter().position(|entry| entry.name == "NOTES_TOKEN").expect("its row");
+        let _ = update(&mut state, Message::ValueText(at, Secret::new("tok_new")), &data);
+        let (what, request) = asked(update(&mut state, Message::SubmitCustom, &data));
+        let Request::UpdateExtension { server: Some(ServerSpec::Stdio { env, .. }), .. } = &request else {
+            panic!("an update: {request:?}")
+        };
+        assert_eq!(env.get("NOTES_TOKEN"), Some(&Value::Secret(Secret::new("tok_new"))));
+        let _ = answered(
+            &mut state,
+            what,
+            &Ok(Response::Extension { extension: server_of(&data, "notes").cloned().expect("Notes") }),
+        );
+        assert!(state.custom.is_none() && state.page == Page::Server("notes".into()), "saved: back on its page");
+    }
+
+    /// Acceptance: what is typed or pasted into the form never shows in the state's `Debug`: the
+    /// block while it is in its field, its values in the form and in the choice, a typed secret.
+    #[test]
+    fn secrets_of_the_form_never_show_in_the_debug_of_the_state() {
+        let data = launch::demo_data();
+        let mut state = State::default();
+        for message in
+            [Message::AddServer, Message::OpenPaste, Message::PasteText(Typed::paste(launch::DEMO_PASTE_TWO))]
+        {
+            assert!(!format!("{message:?}").contains("demo-not-a-real"), "{message:?}");
+            let _ = update(&mut state, message, &data);
+        }
+        let mut seen = vec![format!("{state:?}")];
+        let _ = update(&mut state, Message::FillFromPaste, &data);
+        seen.push(format!("{state:?}"));
+        let _ = update(&mut state, Message::ChoosePasted(1), &data);
+        let _ = update(&mut state, Message::AddValue, &data);
+        let at = form(&state).values.len() - 1;
+        let typed = Message::ValueText(at, Secret::new("typed_secret_789"));
+        assert!(!format!("{typed:?}").contains("typed_secret_789"));
+        let _ = update(&mut state, typed, &data);
+        seen.push(format!("{state:?}"));
+        for debug in seen {
+            assert!(debug.contains("Custom"), "{debug}");
+            assert!(!debug.contains("demo-not-a-real") && !debug.contains("typed_secret_789"), "{debug}");
+        }
+    }
+
+    /// Every state of the form builds in every size, its header action too: empty and tried, filled
+    /// in, busy, the pasted block with its sentence, the choice, "Update…" and the tools of a server
+    /// of one's own just added.
+    #[test]
+    fn the_form_of_one_s_own_server_builds_in_every_size() {
+        let data = launch::demo_data();
+        let mut tried = State::default();
+        let _ = update(&mut tried, Message::AddServer, &data);
+        let _ = update(&mut tried, Message::AddValue, &data);
+        let _ = update(&mut tried, Message::SubmitCustom, &data);
+        let filled = pasted(BLOCK, &data);
+        let mut busy = pasted(BLOCK, &data);
+        let _ = update(&mut busy, Message::SubmitCustom, &data);
+        let mut paste = State::default();
+        for message in
+            [Message::AddServer, Message::OpenPaste, Message::PasteText(Typed::paste("{")), Message::FillFromPaste]
+        {
+            let _ = update(&mut paste, message, &data);
+        }
+        let choose = pasted(launch::DEMO_PASTE_TWO, &data);
+        let mut editing = State::default();
+        let _ = update(&mut editing, Message::Open("notes".into()), &data);
+        let _ = update(&mut editing, Message::EditServer("notes".into()), &data);
+        let mut tools = pasted(BLOCK, &data);
+        let (what, request) = asked(update(&mut tools, Message::SubmitCustom, &data));
+        let _ = answered(&mut tools, what, &Ok(launch::demo_answer(&request, &data).expect("added")));
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
+            for state in [&tried, &filled, &busy, &paste, &choose, &editing, &tools] {
+                let _ = view(state, &data, class);
+                assert!(overlay(state, &data).is_some());
+            }
+            assert_eq!(header(&State::default(), &data, class).actions.len(), 1, "Add server…");
+        }
+        assert_eq!(
+            asked(update(&mut State::default(), Message::Open("notes".into()), &data)).0,
+            Asked::Logs("notes".into())
+        );
     }
 }

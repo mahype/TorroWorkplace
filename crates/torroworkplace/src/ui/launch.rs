@@ -164,6 +164,13 @@ pub enum Open {
     ExtensionReview,
     /// The page of "GitHub", stopped after errors, with its stored token and its output.
     ExtensionCrashed,
+    /// The form of a server of one's own (task MA.9), filled in from a pasted block
+    /// ([`DEMO_PASTE_ONE`]): a command with arguments, its API key marked secret, a plain variable.
+    CustomServer,
+    /// "Paste configuration" with a block of two servers typed in ([`DEMO_PASTE_TWO`]).
+    CustomServerPaste,
+    /// The choice among the two servers of that block, after "Fill in".
+    CustomServerChoose,
     /// Appearance with the demo's designs, fonts and colour schemes ([`demo_looks`]), one of each
     /// broken; the design `--design` names is drawn, else the standard.
     Design,
@@ -193,7 +200,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 98] = [
+    pub const ALL: [(&'static str, Open); 101] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -273,6 +280,9 @@ impl Open {
         ("extension-detail", Open::ExtensionDetail),
         ("extension-review", Open::ExtensionReview),
         ("extension-crashed", Open::ExtensionCrashed),
+        ("custom-server", Open::CustomServer),
+        ("custom-server-paste", Open::CustomServerPaste),
+        ("custom-server-choose", Open::CustomServerChoose),
         ("design", Open::Design),
         ("design-schemes", Open::DesignSchemes),
         ("design-switched", Open::DesignSwitched),
@@ -1205,6 +1215,92 @@ pub fn demo_review(data: &mut Data) {
     time.fingerprint = Some("demo-time-changed".into());
 }
 
+/// The `mcpServers` block `--open custom-server` pastes (task MA.9): one server, a command with
+/// arguments, an API key (marked secret by its name) and a plain variable. Not a real key.
+pub const DEMO_PASTE_ONE: &str = r#"{
+  "mcpServers": {
+    "weather": {
+      "command": "uvx",
+      "args": ["mcp-weather", "--units", "metric"],
+      "env": { "WEATHER_API_KEY": "demo-not-a-real-key", "WEATHER_REGION": "eu" }
+    }
+  }
+}"#;
+
+/// The block `--open custom-server-paste` and `custom-server-choose` paste: a command and an address
+/// with a sign-in header. Not a real token.
+pub const DEMO_PASTE_TWO: &str = r#"{
+  "mcpServers": {
+    "weather": {
+      "command": "uvx",
+      "args": ["mcp-weather"],
+      "env": { "WEATHER_API_KEY": "demo-not-a-real-key" }
+    },
+    "team-wiki": {
+      "type": "http",
+      "url": "https://wiki.example.org/mcp",
+      "headers": { "Authorization": "Bearer demo-not-a-real-token" }
+    }
+  }
+}"#;
+
+/// What the demo answers to "Add server" for a server of one's own (task MA.9): the server as the
+/// core would store it – switched off, every secret stored and never sent back, two tools waiting
+/// for a person. Nothing starts and nothing is kept.
+fn demo_custom(
+    id: &str,
+    name: &str,
+    server: &torro_ipc::extensions::ServerSpec,
+) -> torro_ipc::extensions::ExtensionInfo {
+    use torro_ipc::api::Access;
+    use torro_ipc::extensions::{
+        ExtensionInfo, ExtensionTool, SecretInfo, ServerSpec, Source, Status as ServerStatus, ToolState, Value,
+    };
+    let stored = |values: &BTreeMap<String, Value>| -> BTreeMap<String, Value> {
+        values
+            .iter()
+            .map(|(name, value)| match value {
+                Value::Plain(_) => (name.clone(), value.clone()),
+                Value::Secret(_) | Value::Stored { .. } => (name.clone(), Value::Stored { secret: true }),
+            })
+            .collect()
+    };
+    let spec = match server {
+        ServerSpec::Stdio { command, args, env } => {
+            ServerSpec::Stdio { command: command.clone(), args: args.clone(), env: stored(env) }
+        }
+        ServerSpec::Http { url, headers } => ServerSpec::Http { url: url.clone(), headers: stored(headers) },
+    };
+    let secrets = server
+        .values()
+        .iter()
+        .filter(|(_, value)| !matches!(value, Value::Plain(_)))
+        .map(|(name, _)| SecretInfo { name: name.clone(), stored: true })
+        .collect();
+    let tool = |tool: &str, description: &str| ExtensionTool {
+        extension: id.into(),
+        extension_name: name.into(),
+        name: tool.into(),
+        tool_name: torro_ipc::extensions::tool_name(id, tool),
+        description: description.into(),
+        input_schema: serde_json::json!({ "type": "object" }),
+        access: Access::Delete,
+        state: ToolState::Review,
+    };
+    ExtensionInfo {
+        id: id.into(),
+        name: name.into(),
+        source: Source::Custom,
+        server: spec,
+        enabled: false,
+        status: ServerStatus::Review,
+        tools: vec![tool("search", "Search what the server knows"), tool("fetch", "Fetch one entry by its id")],
+        secrets,
+        notes: Vec::new(),
+        fingerprint: Some(format!("demo-{id}")),
+    }
+}
+
 /// What the demo answers for the server `id` of an `extensions.*` request (task MA.8): the server as
 /// the demo lists it, else the catalog entry of that id as just installed – switched off, its tools
 /// as the catalog names them waiting for a person, its secrets stored. Nothing is kept.
@@ -1644,6 +1740,14 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         // server as the demo has it (or the catalog entry as just installed); nothing changes.
         Request::InstallExtension { from: torro_ipc::extensions::InstallFrom::Catalog { entry, .. } } => {
             Some(Response::Extension { extension: demo_server(entry, data)? })
+        }
+        // As the core: an id in use is a conflict.
+        Request::InstallExtension { from: torro_ipc::extensions::InstallFrom::Custom { id, name, server } } => {
+            if data.extensions.entries().iter().any(|server| &server.id == id) {
+                let message = format!("a server with the id {id} is installed already");
+                return Some(Response::Error { code: "conflict".into(), message });
+            }
+            Some(Response::Extension { extension: demo_custom(id, name, server) })
         }
         Request::ConfirmExtensionTools { id, .. }
         | Request::GetExtension { id }
