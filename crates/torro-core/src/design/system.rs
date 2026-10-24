@@ -78,10 +78,8 @@ impl SystemFonts {
     /// reasons. Ids are `system:<family>`.
     pub fn list(&self) -> Vec<Listed<FontSet>> {
         let families = self.families();
-        // "System" stands for the interface font already; its alias would be a second entry for it.
         let examined: Vec<(String, Result<FontSet, Vec<DesignError>>)> = families
             .iter()
-            .filter(|family| !system_aliases().contains(&family.name.as_str()))
             .filter_map(|family| {
                 self.font(family, &format!("{SYSTEM_PREFIX}{}", family.name)).map(|r| (family.name.clone(), r))
             })
@@ -93,7 +91,9 @@ impl SystemFonts {
             .unwrap_or_else(|| Err(not_found(SYSTEM_ID)));
         let mut listed =
             vec![Listed { id: SYSTEM_ID.to_string(), about: system_about(), standard: false, result: system }];
-        listed.extend(examined.into_iter().map(|(name, result)| Listed {
+        // "System" stands for the interface font already; its alias would be a second entry for it.
+        let families = examined.into_iter().filter(|(name, _)| !system_aliases().contains(&name.as_str()));
+        listed.extend(families.map(|(name, result)| Listed {
             id: format!("{SYSTEM_PREFIX}{name}"),
             about: About { name, ..About::default() },
             standard: false,
@@ -431,8 +431,11 @@ mod tests {
     #[test]
     fn the_interface_font_is_listed_once() {
         let fonts = fonts(vec![face("Inter-Regular.ttf", "System Font", 400), face("Lato-Regular.ttf", "Lato", 400)]);
-        let ids: Vec<String> = fonts.list().into_iter().map(|entry| entry.id).collect();
+        let listed = fonts.list();
+        let ids: Vec<&str> = listed.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(ids, [SYSTEM_ID, "system:Lato"]);
+        let system = listed[0].result.as_ref().map(|font| font.fonts.text.family.as_str());
+        assert_eq!(system, Ok("System Font"), "listed as usable, not only loadable");
         assert_eq!(fonts.load(SYSTEM_ID).map(|font| font.fonts.text.family), Ok("System Font".to_string()));
     }
 
