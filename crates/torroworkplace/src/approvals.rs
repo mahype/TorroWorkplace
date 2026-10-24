@@ -393,8 +393,8 @@ pub struct MailFacts {
     /// summary then shows the account id the command runs with.
     pub account: Option<String>,
     /// How many messages the command names (`ids`), known or not. For `mail.save_attachments`
-    /// (task M12.3) how many files it saves: the parts it names, else the stored attachments that
-    /// are not inline; 0 when the store does not know them yet.
+    /// (task M12.3) how many files it saves: the parts it names, else the message's attachments that
+    /// are not inline (from the store, else fetched once); 0 when they could not be read.
     pub count: usize,
     /// The subjects of the named messages the store holds, in the order of `ids`.
     pub subjects: Vec<String>,

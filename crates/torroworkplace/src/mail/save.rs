@@ -462,8 +462,10 @@ pub async fn to_approve(mail: &MailService, reach: Reach<'_>, id: &str, parts: &
     }
     let count = match (named.len(), &known) {
         (0, Some(known)) => known.iter().filter(|attachment| !attachment.inline).count(),
-        (0, None) => 0,
-        (named, _) => named,
+        (named, Some(_)) => named,
+        // Not known: no number from the request in front of a person, the summary says "the
+        // attachments".
+        (_, None) => 0,
     };
     Ok(ToApprove { account: located.account, subject: message.summary.subject, count })
 }
@@ -481,6 +483,10 @@ async fn known_attachments(
 ) -> Option<Vec<AttachmentInfo>> {
     if message.text.is_some() {
         return Some(message.attachments.clone());
+    }
+    // The server's BODYSTRUCTURE said there are none: nothing worth fetching the whole mail for.
+    if !message.summary.has_attachments {
+        return Some(Vec::new());
     }
     let raw = read::fetch_raw(mail, located).await.ok()?;
     Some(mime::read(&raw).ok()?.attachments)
@@ -1490,5 +1496,9 @@ pub(crate) mod tests {
         assert_eq!((targets, files), (vec![made], Vec::new()));
         let gone = to_approve(&service, Reach::Suite, &id, &[]).await.expect("still in the store");
         assert_eq!(gone.count, 0, "nothing known to count");
+        // Parts named while the mail cannot be read are no number in front of a person.
+        let named: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
+        let named = to_approve(&service, Reach::Suite, &id, &named).await.expect("still in the store");
+        assert_eq!(named.count, 0, "no count from the request");
     }
 }
