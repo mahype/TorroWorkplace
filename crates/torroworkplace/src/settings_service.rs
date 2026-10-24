@@ -29,8 +29,8 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
-    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Maps, Night,
-    PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice,
+    self, AssistantDefault, ComponentSwitch, FolderChange, Language, ListOrderEntry, MailAppearance, MailFormat, Maps,
+    Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice,
     WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
@@ -164,8 +164,9 @@ impl SettingsStore {
     ///
     /// Nor does a client switch on one of the assistant's own tools (point 9, issue #225): a tool
     /// stays on only when it is on as stored and in `new`, the PDF folder and the logos of the
-    /// templates stay as stored (`torro_core::settings::Tools::from_client`); the other fields of
-    /// the templates come from `new`, refused like in [`SettingsStore::update`] when they do not fit.
+    /// templates stay as stored, and so do the allowed folders (issue #304,
+    /// `torro_core::settings::Tools::from_client`); the other fields of the templates come from `new`,
+    /// refused like in [`SettingsStore::update`] when they do not fit.
     ///
     /// Nor does a client turn maps on or name another search or tile service (task TE.1): maps stay
     /// on only when on as stored and in `new`, both addresses stay as stored; `new` without `maps`
@@ -235,8 +236,12 @@ impl SettingsStore {
     /// when it is removed or equals the stored one, read under the same lock as the write. The core
     /// refuses a new path before (point 9, `Core::switches_on_for_people`); this keeps a path a
     /// person removed between that check and the write removed. A design sets its suggestions as in
-    /// [`SettingsStore::set`].
+    /// [`SettingsStore::set`]. The allowed folders are never a client's (point 9, issue #304): the core
+    /// refuses them before (`Request::kept_for_people`), and this refuses them too.
     pub fn set_by_client(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
+        if key == SettingKey::AllowedFolder {
+            return Err("only a person manages the allowed folders".into());
+        }
         let change = Change::parse(key, value)?;
         self.change(|settings| {
             let change = change.limited_for_clients(settings);
@@ -402,6 +407,10 @@ impl SettingsStore {
         if new.tools.pdf != old.tools.pdf {
             new.tools.pdf.check_changes(&old.tools.pdf)?;
         }
+        // And the allowed folders (issue #304): at most 50, absolute, each once – on both ways in.
+        if new.tools.folders != old.tools.folders {
+            new.tools.check_folders()?;
+        }
         // The addresses of maps too (task TE.1): one with a key in its query must not get in through
         // `update_settings` either.
         new.maps.check_changes(&old.maps)?;
@@ -560,6 +569,10 @@ enum Change {
     PdfFolder(Option<String>),
     /// One PDF template, replaced whole. Who may set its logo is the core's check, as for the folder.
     PdfTemplate(PdfTemplateId, PdfTemplate),
+    /// One allowed folder added, given another access or removed (issue #304). Only a person's
+    /// (`Request::kept_for_people`, [`SettingsStore::set_by_client`]); the list's limits are checked
+    /// after it is applied ([`torro_core::settings::Tools::check_folders`]).
+    AllowedFolder(FolderChange),
     /// The modifiers of the template keys (issue #243).
     WorkspaceShortcuts(torro_core::settings::ShortcutModifiers),
     /// A change of maps and the place search (task TE.1): the fields it names, checked against the
@@ -625,6 +638,7 @@ impl Change {
                 let (id, template) = PdfTemplate::from_value(value)?;
                 Change::PdfTemplate(id, template)
             }
+            SettingKey::AllowedFolder => Change::AllowedFolder(FolderChange::from_value(value)?),
             SettingKey::WorkspaceShortcuts => {
                 Change::WorkspaceShortcuts(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
@@ -689,6 +703,7 @@ impl Change {
             Change::ToolEnabled(switch) => settings.tools.set_on(switch.tool, switch.enabled),
             Change::PdfFolder(folder) => settings.tools.pdf.folder = folder,
             Change::PdfTemplate(id, template) => *settings.tools.pdf.template_mut(id) = template,
+            Change::AllowedFolder(change) => settings.tools.change_folder(change),
             Change::WorkspaceShortcuts(modifiers) => settings.workspaces.modifiers = modifiers,
             // Checked when parsed; an address only when it changes, so one edited into the file by
             // hand does not keep maps from being turned off.
@@ -1851,6 +1866,71 @@ mod tests {
         store.update(sent).expect("a template within bounds");
         assert_eq!(store.current().tools.pdf.note.font_size_pt, 12);
     }
+
+    /// Issue #304: a person adds a folder, changes its access and removes it, one at a time; a value that
+    /// does not fit, a 51st folder and a path twice are refused and change nothing. A client changes
+    /// none of it, not one at a time and not with whole settings, where the stored ones stay.
+    #[test]
+    fn allowed_folders_are_a_persons_one_at_a_time() {
+        use torro_core::settings::{AllowedFolder, FolderAccess};
+        let (_dir, store) = store();
+        let docs = absolute("/Users/anna/Documents");
+        let out = absolute("/Users/anna/Out");
+        store.set(SettingKey::AllowedFolder, &json!({"path": docs, "access": "read"})).expect("added");
+        store.set(SettingKey::AllowedFolder, &json!({"path": out, "access": "read_write"})).expect("added");
+        store.set(SettingKey::AllowedFolder, &json!({"path": docs, "access": "read_write"})).expect("wider");
+        let both = vec![
+            AllowedFolder { path: docs.clone(), access: FolderAccess::ReadWrite },
+            AllowedFolder { path: out.clone(), access: FolderAccess::ReadWrite },
+        ];
+        assert_eq!(store.current().tools.folders, both);
+        for value in [
+            json!({"path": "Documents", "access": "read"}),
+            json!({"path": docs, "access": "write"}),
+            json!({"path": docs}),
+            json!(docs),
+        ] {
+            assert!(store.set(SettingKey::AllowedFolder, &value).is_err(), "{value}");
+        }
+        assert_eq!(store.current().tools.folders, both, "a refused value changes nothing");
+
+        // A client: neither one at a time nor with whole settings, and the stored ones stay.
+        let removal = json!({"path": docs, "access": null});
+        assert!(store.set_by_client(SettingKey::AllowedFolder, &removal).is_err());
+        let mut sent = store.current();
+        sent.tools.folders = vec![AllowedFolder { path: absolute("/"), access: FolderAccess::ReadWrite }];
+        sent.quiet_when_busy = !sent.quiet_when_busy;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let kept = store.current();
+        assert_eq!(kept.tools.folders, both, "the stored ones stay");
+        assert_eq!(kept.quiet_when_busy, sent.quiet_when_busy, "the rest is taken");
+        sent.tools.folders.clear();
+        store.update_keeping_hidden(sent).expect("written");
+        assert_eq!(store.current().tools.folders, both, "and are not removed");
+
+        store.set(SettingKey::AllowedFolder, &removal).expect("removed");
+        assert_eq!(store.current().tools.folders, both[1..]);
+        for at in 1..MAX_ALLOWED {
+            let path = absolute(&format!("/f{at}"));
+            store.set(SettingKey::AllowedFolder, &json!({"path": path, "access": "read"})).expect("fits");
+        }
+        assert_eq!(store.current().tools.folders.len(), MAX_ALLOWED);
+        let one_more = json!({"path": absolute("/f-more"), "access": "read"});
+        assert!(store.set(SettingKey::AllowedFolder, &one_more).is_err_and(|why| why.contains("50")));
+        assert_eq!(store.current().tools.folders.len(), MAX_ALLOWED, "nothing written");
+
+        // The person's whole settings are checked the same way.
+        let mut twice = store.current();
+        twice.tools.folders.push(twice.tools.folders[0].clone());
+        assert!(store.update(twice).is_err());
+        let mut relative = store.current();
+        relative.tools.folders[0].path = "Documents".into();
+        assert!(store.update(relative).is_err());
+        assert_eq!(store.current().tools.folders.len(), MAX_ALLOWED);
+    }
+
+    /// The most allowed folders (issue #304).
+    const MAX_ALLOWED: usize = torro_core::settings::MAX_ALLOWED_FOLDERS;
 
     /// Issue #225, point 9: one setting at a time, a client keeps or removes a path but never sets
     /// a new one, even when the core's check saw the stored one and a person changed it meanwhile.

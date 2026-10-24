@@ -322,7 +322,8 @@ pub(crate) mod tests {
     }
 
     /// Issue #225: the commands of an own tool that is switched off or not selected are denied, those
-    /// of a usable one and listing the tools are not.
+    /// of a usable one and listing the tools are not. With only `pdf` usable the six commands of `files`
+    /// are denied (issue #304); with every tool none.
     #[test]
     fn a_run_denies_the_tools_it_may_not_use() {
         let denied_with = |tools: &[ToolId]| {
@@ -336,7 +337,21 @@ pub(crate) mod tests {
         }
         assert!(!none.contains(&format!("{TOOL_PREFIX}tools_list_tools")), "listing stays");
         let pdf = denied_with(&[ToolId::Pdf]);
-        assert!(!pdf.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{pdf:?}");
+        for command in ["tools_create_pdf", "tools_open_file", "tools_list_tools"] {
+            assert!(!pdf.contains(&format!("{TOOL_PREFIX}{command}")), "{command}");
+        }
+        for command in [
+            "tools_list_folder",
+            "tools_find_files",
+            "tools_create_folder",
+            "tools_copy_file",
+            "tools_move_file",
+            "tools_trash_file",
+        ] {
+            assert!(pdf.contains(&format!("{TOOL_PREFIX}{command}")), "{command}");
+        }
+        let all = denied_with(&ToolId::ALL);
+        assert!(!all.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{all:?}");
     }
 
     /// Issue #131: every offered model is one `--model` takes, and only Haiku takes no effort.

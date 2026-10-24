@@ -39,8 +39,8 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
-use torro_ipc::api::{Access, Area};
-use torro_ipc::tools::ToolInfo;
+use torro_ipc::api::Area;
+use torro_ipc::tools::{ToolInfo, access_to_use};
 use torro_ipc::{Request, SettingKey};
 
 use super::{Action, AppAction, access};
@@ -280,6 +280,7 @@ fn wrapping_row<'a>(label: &'a str, detail: &'a str, control: impl Into<Element<
 fn switch_label(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Make PDFs"),
+        ToolId::Files => tr("Organize files"),
     }
 }
 
@@ -400,12 +401,14 @@ fn choose_button<'a>(words: bool, message: Message) -> Element<'a, Message> {
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
 
 /// Whether the assistant may use `tool`, after its client's rights as `clients.list_clients` lists
-/// them: write access to `tools` and the tool in its selection – what `tools.list_tools` calls
-/// `allowed` for a client key (this window asks with the app key, which may use every tool). The
-/// switch is the other half. `false` while the assistant is off.
+/// them: the access the tool needs in `tools` ([`access_to_use`]: write for `pdf`, read for `files`)
+/// and the tool in its selection – what `tools.list_tools` calls `allowed` for a client key (this
+/// window asks with the app key, which may use every tool). The switch is the other half. `false`
+/// while the assistant is off.
 pub fn assistant_may_use(data: &Data, tool: ToolId) -> bool {
-    super::client(data)
-        .is_some_and(|client| client.rights.area(Area::Tools).allows(Access::Write) && client.rights.reaches_tool(tool))
+    super::client(data).is_some_and(|client| {
+        client.rights.area(Area::Tools).allows(access_to_use(tool)) && client.rights.reaches_tool(tool)
+    })
 }
 
 /// "Letter", "Report", "Note": the template's name, told apart from the paper "US Letter" and a
@@ -661,6 +664,9 @@ mod tests {
         rights(&mut data).tools = Selection::All;
         rights(&mut data).set_level(Area::Tools, Level::Read, Vec::new);
         assert!(!assistant_may_use(&data, ToolId::Pdf), "reading only");
+        assert!(assistant_may_use(&data, ToolId::Files), "reading is enough to organize files (issue #304)");
+        rights(&mut data).tools = Selection::Only(vec!["pdf".into()]);
+        assert!(!assistant_may_use(&data, ToolId::Files), "files not in the selection");
         assert!(!assistant_may_use(&turned_off(&data), ToolId::Pdf));
         let mut state = State::default();
         assert_eq!(update(&mut state, Message::Access, &data), Act::Open("access"));

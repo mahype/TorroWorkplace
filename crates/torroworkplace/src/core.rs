@@ -4510,7 +4510,15 @@ impl Core {
             // through `handle_client` and `run_approved`, which name it as the files' maker; without
             // that id no file of the register is reached.
             request @ Request::ListTools => self.tools_request(request, reach, Maker::App).await,
-            request @ (Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. }) => {
+            request @ (Request::CreatePdf { .. }
+            | Request::OpenFile { .. }
+            | Request::SaveFileAs { .. }
+            | Request::ListFolder { .. }
+            | Request::FindFiles { .. }
+            | Request::CreateFolder { .. }
+            | Request::CopyFile { .. }
+            | Request::MoveFile { .. }
+            | Request::TrashFile { .. }) => {
                 match reach {
                     Reach::Suite => self.tools_request(request, reach, Maker::App).await,
                     Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -6813,6 +6821,8 @@ impl Core {
     /// The `tools.*` requests (issue #225, task WZ.4) for `reach`, files made and reached as
     /// `maker`: the switch once more (for the app key too, [`Core::tool_off`]), then the handlers
     /// of [`crate::tools`] with the settings of now. `tools.save_file_as` is the app key's only.
+    /// The commands of the tool `files` (issue #304) answer `unsupported` until their handlers come
+    /// (tasks WD.2, WD.3).
     async fn tools_request(&self, request: Request, reach: Reach<'_>, maker: Maker<'_>) -> Response {
         if let Some(refused) = self.tool_off(&request) {
             return refused.response();
@@ -6825,6 +6835,18 @@ impl Core {
             }
             (Request::OpenFile { file }, maker) => self.tools.open_file(&file, maker).await,
             (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
+            (
+                Request::ListFolder { .. }
+                | Request::FindFiles { .. }
+                | Request::CreateFolder { .. }
+                | Request::CopyFile { .. }
+                | Request::MoveFile { .. }
+                | Request::TrashFile { .. },
+                _,
+            ) => Response::Error {
+                code: "unsupported".into(),
+                message: tr("Organizing files is not available in this version yet.").into(),
+            },
             (other, _) => Refused::Forbidden { command: other.operation().name() }.response(),
         }
     }
@@ -10776,6 +10798,109 @@ mod tests {
         let tools = settings(&core).await.tools;
         assert!(!tools.is_on(ToolId::Pdf), "off once the person allowed it");
         assert_eq!((tools.pdf.folder, tools.pdf.note.logo, tools.pdf.note.font_size_pt), (None, None, 9));
+    }
+
+    /// Issue #304, point 9: the allowed folders are a person's alone. A client with every right gets
+    /// `forbidden` for `set_setting allowed_folder` whatever the value – removing one with `access: null`
+    /// too – and for `update_settings` that changes them in any way; nobody is asked to approve it. The
+    /// app key adds and removes.
+    #[tokio::test]
+    async fn only_people_manage_the_allowed_folders() {
+        use serde_json::json;
+        use torro_core::settings::{AllowedFolder, FolderAccess};
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let docs = dir.path().join("Documents").to_string_lossy().into_owned();
+        let folder = |access: serde_json::Value| Request::SetSetting {
+            key: SettingKey::AllowedFolder,
+            value: json!({"path": docs, "access": access}),
+        };
+        let nothing_asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty() };
+
+        for refused in [folder(json!("read")), folder(json!("read_write")), folder(json!(null))] {
+            let answer = ask(&core, Some(&key), refused.clone()).await;
+            assert_eq!(code(&answer), "forbidden", "{refused:?}");
+            assert!(message(&answer).contains(&Lack::ForPeople.message()), "{answer:?}");
+        }
+        assert!(settings(&core).await.tools.folders.is_empty());
+        let mut with_folder = settings(&core).await;
+        with_folder.tools.folders = vec![AllowedFolder { path: docs.clone(), access: FolderAccess::Read }];
+        let update = Request::UpdateSettings { settings: with_folder.clone() };
+        assert_eq!(code(&ask(&core, Some(&key), update).await), "forbidden");
+        assert!(nothing_asked().await, "nothing to approve");
+
+        // The person adds it; a client can neither widen nor remove it.
+        assert_eq!(ask(&core, Some(&app_key), folder(json!("read"))).await, Response::Ok);
+        assert_eq!(settings(&core).await.tools.folders, with_folder.tools.folders);
+        let mut wider = with_folder.clone();
+        wider.tools.folders[0].access = FolderAccess::ReadWrite;
+        let mut removed = with_folder.clone();
+        removed.tools.folders.clear();
+        for whole in [wider, removed] {
+            assert_eq!(code(&ask(&core, Some(&key), Request::UpdateSettings { settings: whole }).await), "forbidden");
+        }
+        assert_eq!(code(&ask(&core, Some(&key), folder(json!(null))).await), "forbidden");
+        assert!(nothing_asked().await, "nothing to approve");
+        assert_eq!(settings(&core).await.tools.folders, with_folder.tools.folders, "still there");
+        // The stored ones sent back unchanged are an admin change like any other.
+        let same = waits(ask(&core, Some(&key), Request::UpdateSettings { settings: with_folder }).await);
+        assert_eq!(same.command, "settings.update_settings");
+        assert_eq!(ask(&core, Some(&app_key), folder(json!(null))).await, Response::Ok);
+        assert!(settings(&core).await.tools.folders.is_empty(), "the person removes it");
+    }
+
+    /// Issue #304, task WD.1: the commands of the tool `files` go by its switch and selection like the PDF
+    /// tool's, and with them answer `unsupported` until their handlers come (WD.2, WD.3). Listing and
+    /// finding need read access to `tools` only.
+    #[tokio::test]
+    async fn the_files_tool_goes_by_its_switch_and_selection() {
+        use torro_core::settings::ToolId;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        let (id, key) = client(&core, rights.clone()).await;
+        let list = || Request::ListFolder { path: None };
+        let switch = |on: bool| Request::SetSetting {
+            key: torro_ipc::SettingKey::ToolEnabled,
+            value: serde_json::json!({"tool": "files", "enabled": on}),
+        };
+
+        let off = Lack::ToolOff { tool: ToolId::Files }.message();
+        for key in [&key, &app_key] {
+            let refused = ask(&core, Some(key), list()).await;
+            assert!(code(&refused) == "forbidden" && message(&refused).contains(&off), "{refused:?}");
+        }
+        assert_eq!(ask(&core, Some(&app_key), switch(true)).await, Response::Ok);
+        let refused = ask(&core, Some(&key), list()).await;
+        let not_granted = Lack::Tool { tool: ToolId::Files }.message();
+        assert!(code(&refused) == "forbidden" && message(&refused).contains(&not_granted), "{refused:?}");
+        let Response::Tools { tools } = ask(&core, Some(&key), Request::ListTools).await else { panic!("the tools") };
+        let files = tools.iter().find(|tool| tool.id == ToolId::Files).expect("listed");
+        assert_eq!((files.enabled, files.allowed), (true, false));
+
+        rights.tools = Selection::Only(vec!["files".into()]);
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        let Response::Tools { tools } = ask(&core, Some(&key), Request::ListTools).await else { panic!("the tools") };
+        assert!(tools.iter().any(|tool| tool.id == ToolId::Files && tool.allowed), "reading is enough");
+        let path = || dir.path().join("a.txt").to_string_lossy().into_owned();
+        for request in [list(), Request::FindFiles { folder: path(), name: "a".into() }] {
+            assert_eq!(code(&ask(&core, Some(&key), request).await), "unsupported");
+        }
+        let copy = Request::CopyFile { from: path(), to: path() };
+        let refused = ask(&core, Some(&key), copy.clone()).await;
+        assert_eq!(code(&refused), "forbidden", "copying writes");
+        for request in [list(), copy, Request::TrashFile { path: path() }] {
+            assert_eq!(code(&ask(&core, Some(&app_key), request).await), "unsupported");
+        }
     }
 
     /// The answer's file of a `tools.create_pdf`, also as an approval kept it.

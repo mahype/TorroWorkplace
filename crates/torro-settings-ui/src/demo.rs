@@ -501,6 +501,10 @@ impl Demo {
                     ToolId::Pdf => {
                         tr("Makes PDFs from the assistant's text, set after the templates in its settings.").to_string()
                     }
+                    ToolId::Files => tr(
+                        "Lists, finds, copies and moves files in the allowed folders, without reading what they hold.",
+                    )
+                    .to_string(),
                 },
                 enabled: self.settings.tools.is_on(id),
                 allowed: true,

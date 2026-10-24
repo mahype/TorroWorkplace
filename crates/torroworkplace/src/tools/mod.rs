@@ -1,5 +1,7 @@
 //! The assistant's own tools (concept "Eigene Werkzeuge" in `docs/assistent.md`, issue #225): abilities only the
-//! assistant and the bots have, each with a switch and settings of its own. The first one makes PDFs.
+//! assistant and the bots have, each with a switch and settings of its own. The first one makes PDFs; the second,
+//! `files` (issue #304, "Werkzeug Dateien"), organizes files in the folders a person allowed – its commands answer
+//! `unsupported` until its handlers are here (tasks WD.2, WD.3).
 //!
 //! - `pdf`: sets a PDF from Markdown and one of the three page templates (task WZ.3).
 //! - `place`: where a new file goes and what it is called (task WZ.4).
@@ -23,7 +25,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Settings, ToolId};
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area, Rights};
-use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolInfo};
+use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolInfo, access_to_use};
 
 pub use files::{FileEntry, Maker, Register};
 
@@ -193,7 +195,8 @@ impl Tools {
 }
 
 /// `tools.list_tools` for `reach`: every tool with whether a person switched it on (`settings`) and whether the
-/// key may use it: the app key always; a client with write access to `tools` and the tool in its selection.
+/// key may use it: the app key always; a client with the access the tool needs in `tools` ([`access_to_use`]:
+/// write for `pdf`, read for `files`) and the tool in its selection.
 pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Response {
     let tools = ToolId::ALL
         .into_iter()
@@ -204,7 +207,7 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
             enabled: settings.is_on(id),
             allowed: match reach {
                 Reach::Suite => true,
-                Reach::Client(rights) => rights.area(Area::Tools).allows(Access::Write) && rights.reaches_tool(id),
+                Reach::Client(rights) => rights.area(Area::Tools).allows(access_to_use(id)) && rights.reaches_tool(id),
             },
         })
         .collect();
@@ -215,6 +218,9 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
 fn description(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Makes PDFs from the assistant's text, set after the templates in its settings."),
+        ToolId::Files => {
+            tr("Lists, finds, copies and moves files in the allowed folders, without reading what they hold.")
+        }
     }
 }
 
@@ -503,9 +509,11 @@ pub(crate) mod tests {
             other => panic!("expected tools, got {other:?}"),
         };
         let suite = listed(&settings, Reach::Suite);
-        assert_eq!(suite.len(), 1);
+        assert_eq!(suite.len(), 2);
         assert_eq!((suite[0].id, suite[0].enabled, suite[0].allowed), (ToolId::Pdf, false, true));
         assert_eq!(suite[0].description, tr(description(ToolId::Pdf)));
+        assert_eq!((suite[1].id, suite[1].enabled, suite[1].allowed), (ToolId::Files, false, true));
+        assert_eq!((suite[1].name.as_str(), suite[1].description.as_str()), ("Files", description(ToolId::Files)));
         settings.set_on(ToolId::Pdf, true);
         let mut rights = RightsTemplate::ReadOnly.rights();
         assert!(!listed(&settings, Reach::Client(&rights))[0].allowed, "reading only");
@@ -515,6 +523,33 @@ pub(crate) mod tests {
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let client = listed(&settings, Reach::Client(&rights));
         assert!(client[0].allowed && client[0].enabled);
+        assert!(!client[1].allowed && !client[1].enabled, "files: neither selected nor switched on");
+    }
+
+    /// Issue #304: `files` is allowed with read access to `tools` (listing and finding change nothing) and the
+    /// tool in the selection; its switch is its own.
+    #[test]
+    fn files_are_allowed_with_reading_and_the_selection() {
+        let mut settings = torro_core::settings::Tools::default();
+        settings.set_on(ToolId::Files, true);
+        let files =
+            |settings: &torro_core::settings::Tools, rights: &Rights| match list(settings, Reach::Client(rights)) {
+                Response::Tools { tools } => tools.into_iter().find(|tool| tool.id == ToolId::Files).expect("listed"),
+                other => panic!("expected tools, got {other:?}"),
+            };
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.tools = Selection::Only(vec!["files".into()]);
+        let read = files(&settings, &rights);
+        assert!(read.allowed && read.enabled, "reading is enough");
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        assert!(!files(&settings, &rights).allowed, "not in the selection");
+        rights.tools = Selection::All;
+        rights.areas.remove(&Area::Tools);
+        assert!(!files(&settings, &rights).allowed, "no access to tools");
+        settings.set_on(ToolId::Files, false);
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        let off = files(&settings, &rights);
+        assert!(off.allowed && !off.enabled, "allowed, but switched off");
     }
 
     #[test]

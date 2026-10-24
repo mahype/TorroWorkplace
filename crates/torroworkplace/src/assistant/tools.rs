@@ -36,6 +36,7 @@ use torro_ipc::api::{
     ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Lack, Mcp, Operation, Rights, Selection, own_memory,
 };
 use torro_ipc::assistant::Mode;
+use torro_ipc::tools::access_to_use;
 use torro_ipc::{Request, Response};
 
 /// At most this many tools are offered at once, [`FIND_TOOLS`] included.
@@ -166,15 +167,17 @@ pub fn with_tools_on(rights: &Rights, on: &BTreeSet<ToolId>) -> Rights {
     cut
 }
 
-/// The assistant's own tools an answer may use (issue #225): with write access to `tools` (their
-/// commands make and open files), the area among `areas` (not turned off for the conversation nor
-/// withheld) and each tool in the selection of `rights`, which come cut to the switched-on tools
-/// ([`with_tools_on`]). What the prompt names and what engine B leaves to the agent.
+/// The assistant's own tools an answer may use (issue #225): with the access each tool needs in `tools`
+/// ([`access_to_use`]: write for `pdf`, whose commands make and open files, read for `files`, issue
+/// #304), the area among `areas` (not turned off for the conversation nor withheld) and each tool in the
+/// selection of `rights`, which come cut to the switched-on tools ([`with_tools_on`]). What the prompt
+/// names and what engine B leaves to the agent.
 pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
-    if !areas.contains(&Area::Tools) || !rights.area(Area::Tools).allows(Access::Write) {
+    if !areas.contains(&Area::Tools) {
         return Vec::new();
     }
-    ToolId::ALL.into_iter().filter(|tool| rights.reaches_tool(*tool)).collect()
+    let held = rights.area(Area::Tools);
+    ToolId::ALL.into_iter().filter(|tool| held.allows(access_to_use(*tool)) && rights.reaches_tool(*tool)).collect()
 }
 
 /// The tool named `name` if the model may call it at all: one of the catalogue in an area a person
@@ -486,8 +489,9 @@ pub fn is_small(id: &str, local: bool) -> bool {
 mod tests {
     use torro_ipc::api::{AreaRights, Level, RightsTemplate};
 
-    /// Issue #225: an own tool is usable only with write access to `tools`, the area in the answer
-    /// and the tool selected (and switched on, which the rights come cut to).
+    /// Issue #225: an own tool is usable only with the access it needs in `tools` (write for `pdf`, read
+    /// for `files`, issue #304), the area in the answer and the tool selected (and switched on, which the
+    /// rights come cut to).
     #[test]
     fn an_own_tool_is_usable_with_writing_the_area_and_the_selection() {
         let mut rights = Rights::assistant();
@@ -498,7 +502,11 @@ mod tests {
         assert!(usable_tools(&with_tools_on(&rights, &BTreeSet::new()), &[Area::Tools]).is_empty(), "off");
         let mut reading = rights.clone();
         reading.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
-        assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "listing only");
+        assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "listing only: not enough for pdf");
+        reading.tools = Selection::Only(vec!["pdf".into(), "files".into()]);
+        assert_eq!(usable_tools(&reading, &[Area::Tools]), vec![ToolId::Files], "reading is enough for files");
+        rights.tools = Selection::All;
+        assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Pdf, ToolId::Files], "writing: both");
         reading.areas.remove(&Area::Tools);
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "no access");
     }

@@ -1030,7 +1030,7 @@ WD.1 (Gerüst) ──┬── WD.2 (Kern: Ordner, auflisten, suchen, anlegen, k
 - Tests: alle Wurzeln als Parameter (`Roots`), Temp-Verzeichnisse, nie das echte Home und nie der echte Papierkorb.
 
 ### WD.1 Gerüst: Werkzeug `files`, Einstellung `allowed_folder`, Requests, Katalog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/settings.rs`,
   `crates/torro-ipc/src/{lib,api,tools}.rs`, `crates/torroworkplace/src/{core,settings_service,audit,daemon,mcp}.rs`,
   `crates/torroworkplace/src/{tools/mod,pim}.rs`, `crates/torroworkplace/src/assistant/prompt.rs`,

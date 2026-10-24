@@ -5247,6 +5247,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose a logo", "Logo wählen"),
     ("Pictures", "Bilder"),
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
+    // The tool files (WD.1, #304): its switch, what it does, its tool lines in the chat
+    ("Organize files", "Dateien ordnen"),
+    (
+        "Lists, finds, copies and moves files in the allowed folders, without reading what they hold.",
+        "Listet, sucht, kopiert und verschiebt Dateien in den freigegebenen Ordnern, ohne ihren Inhalt zu lesen.",
+    ),
+    ("Organizing files is not available in this version yet.", "Dateien ordnen geht in dieser Version noch nicht."),
+    ("Listed folder", "Ordner aufgelistet"),
+    ("Found files", "Dateien gefunden"),
+    ("Made folder", "Ordner angelegt"),
+    ("Copied file", "Datei kopiert"),
+    ("Moved file", "Datei verschoben"),
+    ("Moved to trash", "In den Papierkorb gelegt"),
     // The rights editor › the selection of tools (WZ.7, #225)
     (
         "Includes tools added later. Each works only while it is on in the assistant's settings.",

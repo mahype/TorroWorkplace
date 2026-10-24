@@ -411,6 +411,13 @@ pub fn ids(request: &Request) -> Vec<String> {
         // Markdown, the template or a path.
         Request::ListTools | Request::CreatePdf { .. } => Vec::new(),
         Request::OpenFile { file } | Request::SaveFileAs { file, .. } => vec![random("file", file)],
+        // The tool `files` (issue #304): nothing at all, every field is a path or a name searched for.
+        Request::ListFolder { .. }
+        | Request::FindFiles { .. }
+        | Request::CreateFolder { .. }
+        | Request::CopyFile { .. }
+        | Request::MoveFile { .. }
+        | Request::TrashFile { .. } => Vec::new(),
         mail @ (Request::MailFolders { .. }
         | Request::MailAccountStats { .. }
         | Request::GetMailCachePolicy { .. }
@@ -859,6 +866,18 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&save), vec!["file:1a2b3c4d".to_string()]);
         let open = super::ids(&Request::OpenFile { file: "/Users/anna/Salary.pdf".into() }).join(" ");
         assert!(open.starts_with("file:hash:") && !open.contains("Salary"), "{open}");
+        // The tool `files` (issue #304): never a path or a name searched for.
+        let path = || "/Users/anna/Salary/2026.pdf".to_string();
+        for request in [
+            Request::ListFolder { path: Some(path()) },
+            Request::FindFiles { folder: path(), name: "salary".into() },
+            Request::CreateFolder { path: path() },
+            Request::CopyFile { from: path(), to: path() },
+            Request::MoveFile { from: path(), to: path() },
+            Request::TrashFile { path: path() },
+        ] {
+            assert!(super::ids(&request).is_empty(), "{request:?}");
+        }
     }
 
     /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they

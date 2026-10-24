@@ -312,6 +312,11 @@ fn own_tools(context: &Context<'_>) -> Vec<String> {
         .into_iter()
         .map(|tool| match tool {
             ToolId::Pdf => "PDF (tools_create_pdf makes a PDF from your Markdown and saves it on this computer)".into(),
+            ToolId::Files => {
+                "Files (tools_list_folder lists the allowed folders without a path, then what is in them; \
+                              find, make folders, copy, move and trash only there, never reading what a file holds)"
+                    .into()
+            }
         })
         .collect();
     if tools.is_empty() {
