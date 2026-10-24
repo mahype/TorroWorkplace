@@ -1477,6 +1477,11 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             "Make the PDF \"{title}\" with the template {template}",
             &[("title", &quote(title)), ("template", &template_word(template.unwrap_or_default()))],
         ),
+        // Saving attachments (issue #290). The names (subject, target) come from the core's store
+        // with task M12.3; until then nothing of the client's text is shown.
+        Request::SaveMailAttachments { .. } => tr("Save attachments of an unknown mail").to_string(),
+        Request::UpdateSaveTarget { .. } => tr("Change an unknown save target").to_string(),
+        Request::RemoveSaveTarget { .. } => tr("Remove an unknown save target").to_string(),
         Request::OpenFile { .. } => match &facts.name {
             Some(title) => trf("Open the PDF \"{title}\"", &[("title", &quote(title))]),
             None => tr("Open an unknown file").to_string(),

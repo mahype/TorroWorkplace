@@ -891,6 +891,16 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    synchronisierten Verzeichnis brächte Inhalte ohne Sende-Freigabe vom Rechner. Der Dienst vergleicht mit dem
    gespeicherten Stand (wie beim Mikrofon über `settings.update_settings`); entfernen darf jeder mit Admin.
 
+   Ebenso **Anhänge von Mails ablegen** (Issue #290): Den **Ordner eines Ablageziels** setzt nur ein Mensch.
+   `mail.create_save_target` gibt es nur mit dem App-Schlüssel (`Mcp::Never`), weil ein neues Ziel immer einen
+   Ordner setzt; `mail.update_save_target` (Admin, mit MCP-Tool) nimmt von einem Client nur den gespeicherten
+   Ordner an, ein anderer gibt `forbidden`. Ebenso den **Downloads-Ordner** (`mail_downloads_folder`): Der Dienst
+   vergleicht mit dem gespeicherten Stand, auch über `settings.update_settings`; entfernen (zurück zum Ordner des
+   Systems) darf jeder mit Admin. Und `mail.save_attachments` mit **`to: file` oder `to: folder`** („Save as…“,
+   „Save all to folder…“) nur mit dem App-Schlüssel (`Request::kept_for_people`): Den Pfad wählt ein Mensch im
+   Dialog des Systems. Clients speichern nach `downloads` oder in ein Ziel (`{"target": …}`), mit der gewöhnlichen
+   Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`).
+
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
 

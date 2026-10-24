@@ -13,6 +13,8 @@
 //!   phishing – with where that came from ([`MailCategory`]). Its words live in
 //!   `torro_core::category`.
 //! - [`order`]: newest or oldest first ([`Order`]), for mail and for the inbox.
+//! - [`save_target`]: where attachments are saved ([`SaveTarget`]): a folder with schemes for
+//!   subfolders and file names, and when a target is suggested (issue #290).
 //! - [`html`] and [`markup`]: formatted mail (issue #125): the safe subset of HTML the suite
 //!   sends, its plain text and the signature in it; the compose window's marks rendered to it.
 //!
@@ -29,6 +31,7 @@ pub mod html;
 pub mod markup;
 pub mod message;
 pub mod order;
+pub mod save_target;
 
 pub use account::{
     ACCOUNT_PREFIX, BackupPreferences, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify,
@@ -40,3 +43,4 @@ pub use message::{
     MessageSummary, MessageTraits, Role,
 };
 pub use order::Order;
+pub use save_target::{DateSource, FileKind, OnConflict, SaveTarget, SaveTargetSpec, SuggestWhen};

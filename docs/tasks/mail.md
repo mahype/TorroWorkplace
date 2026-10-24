@@ -1175,7 +1175,7 @@ Reihenfolge der Umsetzung: M12.1 bis M12.7 nacheinander (Übersetzungen in `de.r
 nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
 
 ### M12.1 API-Gerüst: Ablageziele, Speichern, Einstellungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/{lib,save_target}.rs` (neu),
   `crates/torro-ipc/src/{lib,api,mail}.rs`, `crates/torro-core/src/settings.rs`,
   `crates/torroworkplace/src/{settings_service,core,pim,audit,daemon,approvals}.rs`, `docs/api-reference.md`,

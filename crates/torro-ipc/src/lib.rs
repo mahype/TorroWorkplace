@@ -48,7 +48,8 @@ use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo
 /// Newest or oldest first for `mail.search_messages` and `inbox.list_items` (task E8.15).
 pub use torro_mail::Order;
 use torro_mail::{
-    Draft, Endpoint, Flag, Folder, InvitationAnswer, MailSettings, Message, MessageSummary, Notify, Role, Services,
+    Draft, Endpoint, Flag, Folder, InvitationAnswer, MailSettings, Message, MessageSummary, Notify, Role, SaveTarget,
+    SaveTargetSpec, Services,
 };
 use torro_pim::model::GitHubLabel;
 use torro_pim::model::{Geo, SeriesScope};
@@ -2428,6 +2429,61 @@ pub enum Request {
         /// The attachment: its `part` from `attachments` of `mail.get_message`.
         attachment: String,
     },
+    // Saving attachments (issue #290, wire types in [`mail`]). Save targets are the same for every
+    // mail account and kept in `<data>/mail/save-targets.json`, not in the settings.
+    /// The save targets, the Downloads folder and, with `id`, where each attachment of that message
+    /// would go ([`Response::SaveTargets`]). `files` names every attachment that is not `inline`;
+    /// it stays empty while the core has not read the message's text yet. `not-found` for an `id`
+    /// in an account the caller does not reach.
+    #[serde(rename = "mail.list_save_targets")]
+    ListSaveTargets {
+        /// A message (`m:…`) to plan its attachments for; left out, only the targets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// Adds a save target ([`Response::SaveTarget`], with its new id). App key only and never an
+    /// MCP tool (point 9 of "Was nie nach außen geht"): a new target always sets a folder. `error`
+    /// for a name that is empty, too long or taken, a folder that is not absolute, a scheme with an
+    /// unknown placeholder, or too many targets.
+    #[serde(rename = "mail.create_save_target")]
+    CreateSaveTarget {
+        /// The new target.
+        target: SaveTargetSpec,
+    },
+    /// Replaces a save target whole ([`Response::SaveTarget`]). A client must send the folder as
+    /// stored; any other folder is `forbidden` (only a person sets one). `not-found` for an unknown
+    /// id, `error` as for `mail.create_save_target`.
+    #[serde(rename = "mail.update_save_target")]
+    UpdateSaveTarget {
+        /// The target's id from `mail.list_save_targets`.
+        id: String,
+        /// The target as it is to be.
+        target: SaveTargetSpec,
+    },
+    /// Removes a save target ([`Response::SaveTargets`], without `files`); files saved with it stay
+    /// where they are. A click on an attachment that saved to it opens again (setting
+    /// `mail_attachment_click` back to `open`). `not-found` for an unknown id.
+    #[serde(rename = "mail.remove_save_target")]
+    RemoveSaveTarget {
+        /// The target's id from `mail.list_save_targets`.
+        id: String,
+    },
+    /// Saves attachments of a message ([`Response::SavedAttachments`]); a file is never overwritten
+    /// except for `to: file`. A file that fails is listed and the others are saved all the same.
+    /// `not-found` for a message the caller does not reach, an unknown part or target, or a target
+    /// whose folder is missing; `forbidden` for `to: file` or `folder` from a client; `error` for
+    /// `to: file` with more than one attachment.
+    #[serde(rename = "mail.save_attachments")]
+    SaveMailAttachments {
+        /// The message's id (`m:…`).
+        id: String,
+        /// The attachments by their `part` from `attachments` of `mail.get_message`; empty for all
+        /// that are not `inline`.
+        #[serde(default)]
+        parts: Vec<String>,
+        /// Where the files go.
+        to: mail::SaveTo,
+    },
     /// Adds and removes flags of messages on the server ([`Response::Ok`]).
     #[serde(rename = "mail.set_flags")]
     SetMailFlags {
@@ -3085,6 +3141,16 @@ pub enum SettingKey {
     /// default) or `"text"` (its plain text). The reader can still switch a single mail. Open
     /// windows follow (`torro_core::settings::MailFormat`).
     MailView,
+    /// What a click on an attachment's name in the mail window does (issue #290): `"open"` (the
+    /// default), `"downloads"`, `"save_as"` (the system's save dialog), `"suggested"` (the target
+    /// suggested with certainty, else open) or `{"target": "<id from mail.list_save_targets>"}`
+    /// (`torro_core::settings::AttachmentClick`). The triangle beside it always offers every way.
+    MailAttachmentClick,
+    /// The folder "Save to Downloads" saves attachments in (issue #290): an absolute path, or `null`
+    /// (or `""`) for the system's Downloads folder; removing it brings that one back
+    /// (`torro_core::settings::MailAttachments::downloads`). Only the app key may set a folder other
+    /// than the one stored (point 9); any client allowed to change settings may send `null`.
+    MailDownloadsFolder,
     /// The colours of a mail's content in the reader (task M9.5): `"app"` (like the suite's
     /// `appearance`, the default), `"light"` (the mail's own colours) or `"dark"` (recoloured for a
     /// dark background, pictures unchanged). Only the mail, never the rest of the window. Open
@@ -3688,6 +3754,34 @@ pub enum Response {
         size: u64,
         /// The MIME type: `application/pdf`.
         content_type: String,
+    },
+    /// The save targets ([`Request::ListSaveTargets`], [`Request::RemoveSaveTarget`]). Names and
+    /// paths in `files` come from the message: data from outside.
+    SaveTargets {
+        /// Every save target, in the order the person keeps them.
+        targets: Vec<SaveTarget>,
+        /// The Downloads folder as "Save to Downloads" uses it, an absolute path.
+        downloads: String,
+        /// With `id`: one plan per attachment that is not `inline`, in the message's order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<mail::AttachmentPlan>,
+    },
+    /// A save target as stored ([`Request::CreateSaveTarget`], [`Request::UpdateSaveTarget`]).
+    SaveTarget {
+        target: SaveTarget,
+    },
+    /// What [`Request::SaveMailAttachments`] did. File names are data from outside.
+    SavedAttachments {
+        /// The files written.
+        #[serde(default)]
+        saved: Vec<mail::SavedFile>,
+        /// The files not written because a file with the same content is there already (a target
+        /// with "Skip if identical"); `path` is that file.
+        #[serde(default)]
+        skipped: Vec<mail::SavedFile>,
+        /// The attachments that could not be saved, with why.
+        #[serde(default)]
+        failed: Vec<mail::FailedFile>,
     },
     /// A draft as saved ([`Request::SaveDraft`]), with its id.
     MailDraft {

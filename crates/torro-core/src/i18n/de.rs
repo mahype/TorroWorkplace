@@ -5434,4 +5434,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "„{key}“ ist {value}; erlaubt sind 0 (aus) oder {min} bis {max}.",
     ),
     ("Widen the window to expand actions", "Fenster verbreitern, um die Aktionen auszuklappen"),
+    // Saving attachments (issue #290): approvals until the core names mail and target (M12.3).
+    ("Change an unknown save target", "Ein unbekanntes Ablageziel ändern"),
+    ("Remove an unknown save target", "Ein unbekanntes Ablageziel entfernen"),
+    ("Save attachments of an unknown mail", "Anhänge einer unbekannten E-Mail speichern"),
 ];

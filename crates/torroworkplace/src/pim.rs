@@ -1268,6 +1268,11 @@ impl PimService {
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
             | Request::GetMailAttachment { .. }
+            | Request::ListSaveTargets { .. }
+            | Request::CreateSaveTarget { .. }
+            | Request::UpdateSaveTarget { .. }
+            | Request::RemoveSaveTarget { .. }
+            | Request::SaveMailAttachments { .. }
             | Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }

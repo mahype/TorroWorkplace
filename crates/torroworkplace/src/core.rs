@@ -4438,6 +4438,16 @@ impl Core {
                 // in the stack already when the inbox's quiet asks the core again.
                 Box::pin(crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request)).await
             }
+            // Saving attachments (issue #290): rights and the paths kept for people were checked
+            // before. The handler (task M12.3) resolves `id` in the stores `reach` sees only.
+            Request::ListSaveTargets { .. }
+            | Request::CreateSaveTarget { .. }
+            | Request::UpdateSaveTarget { .. }
+            | Request::RemoveSaveTarget { .. }
+            | Request::SaveMailAttachments { .. } => Response::Error {
+                code: "unsupported".into(),
+                message: "saving attachments is not available in this version yet".into(),
+            },
             // Sending (task M3.3): the person sends any draft; a client's send carries its id and
             // never reaches here unnamed (`Core::handle_client`, `Core::run_approved`).
             request @ Request::SendDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
@@ -7904,8 +7914,11 @@ impl Core {
     ///   the assistant (point 9, issue #225); or that sets the PDF folder or a template's logo to a path
     ///   other than the stored one (`torro_core::settings::Tools::needs_a_person`); or that turns maps on
     ///   or names another search or tile service than the stored one (task TE.1,
-    ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay),
-    /// - `settings.set_setting pdf_folder` with a folder other than the stored one,
+    ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay); or that
+    ///   sets the Downloads folder of attachments to a path other than the stored one (issue #290,
+    ///   `torro_core::settings::MailAttachments::needs_a_person`),
+    /// - `settings.set_setting pdf_folder` or `mail_downloads_folder` with a folder other than the
+    ///   stored one,
     /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template.
     ///
     /// Removing a folder or a logo, keeping the stored one and every other field of a template are
@@ -7922,6 +7935,14 @@ impl Core {
                     || now.tools.needs_a_person(&settings.tools)
                     // Maps on, or another search or tile service (task TE.1).
                     || now.maps.needs_a_person(&settings.maps)
+                    // The folder of "Save to Downloads" (issue #290, point 9).
+                    || now.mail_attachments.needs_a_person(&settings.mail_attachments)
+            }
+            Request::SetSetting { key: SettingKey::MailDownloadsFolder, value } => {
+                let Ok(Some(folder)) = torro_core::settings::MailAttachments::downloads_from(value) else {
+                    return false;
+                };
+                self.settings.current().mail_attachments.downloads.as_ref() != Some(&folder)
             }
             Request::SetSetting { key: SettingKey::PdfFolder, value } => {
                 let Ok(Some(folder)) = torro_core::settings::PdfSettings::folder_from(value) else { return false };
@@ -10776,6 +10797,55 @@ mod tests {
         let tools = settings(&core).await.tools;
         assert!(!tools.is_on(ToolId::Pdf), "off once the person allowed it");
         assert_eq!((tools.pdf.folder, tools.pdf.note.logo, tools.pdf.note.font_size_pt), (None, None, 9));
+    }
+
+    /// Issue #290, point 9: no client sets the folder of "Save to Downloads", not with every right,
+    /// neither one setting at a time nor with the whole settings, and nobody is asked to approve it;
+    /// removing it and keeping the stored one are admin changes after approval. Nor does a client
+    /// save attachments to a path (`to: file | folder`); to Downloads or a target it gets past the
+    /// rights (the handler comes with task M12.3).
+    #[tokio::test]
+    async fn only_people_set_the_downloads_folder_and_choose_paths_for_attachments() {
+        use serde_json::json;
+        use torro_ipc::SettingKey;
+        use torro_ipc::mail::SaveTo;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let folder = dir.path().join("Ablage").to_string_lossy().into_owned();
+        let downloads_to =
+            |path: Option<&str>| Request::SetSetting { key: SettingKey::MailDownloadsFolder, value: json!(path) };
+
+        assert_eq!(code(&ask(&core, Some(&key), downloads_to(Some(&folder))).await), "forbidden");
+        let mut whole = settings(&core).await;
+        whole.mail_attachments.downloads = Some(folder.clone());
+        let update = Request::UpdateSettings { settings: whole };
+        assert_eq!(code(&ask(&core, Some(&key), update).await), "forbidden");
+        assert_eq!(settings(&core).await.mail_attachments.downloads, None, "nothing changed");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        assert_eq!(ask(&core, Some(&app_key), downloads_to(Some(&folder))).await, Response::Ok);
+        assert_eq!(settings(&core).await.mail_attachments.downloads.as_deref(), Some(&*folder));
+        for request in [downloads_to(Some(&folder)), downloads_to(None)] {
+            let asked = waits(ask(&core, Some(&key), request).await);
+            let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+            assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        }
+        assert_eq!(settings(&core).await.mail_attachments.downloads, None, "removed once the person allowed it");
+
+        let save = |to| Request::SaveMailAttachments { id: "m:1".into(), parts: Vec::new(), to };
+        for to in [SaveTo::File(dir.path().join("a.pdf").to_string_lossy().into_owned()), SaveTo::Folder(folder)] {
+            assert_eq!(code(&ask(&core, Some(&key), save(to.clone())).await), "forbidden", "{to:?}");
+        }
+        for to in [SaveTo::Downloads, SaveTo::Target("0a1b2c3d".into())] {
+            let answer = ask(&core, Some(&key), save(to.clone())).await;
+            assert!(!matches!(&answer, Response::Error { code, .. } if code == "forbidden"), "{to:?}: {answer:?}");
+        }
     }
 
     /// The answer's file of a `tools.create_pdf`, also as an approval kept it.

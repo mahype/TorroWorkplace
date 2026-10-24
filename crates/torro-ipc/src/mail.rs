@@ -218,6 +218,91 @@ impl MoveRole {
     }
 }
 
+/// Where `mail.save_attachments` puts the files (issue #290): `"downloads"`, `{"target": "<id>"}`,
+/// `{"file": "<path>"}` or `{"folder": "<path>"}`. Only the app key may send `file` and `folder`
+/// ([`Request::kept_for_people`], point 9 of "Was nie nach außen geht"): a client never names a
+/// place on the person's computer, it names the Downloads folder or a target a person set up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveTo {
+    /// The Downloads folder (setting `mail_downloads_folder`, else the system's). A file of the
+    /// same name there is kept, the new one gets a number (`Invoice (2).pdf`).
+    Downloads,
+    /// A save target by its id from `mail.list_save_targets`: its folder, its subfolders and file
+    /// name after its schemes, each file by its own date, and its rule for a file of the same name.
+    Target(String),
+    /// Exactly this file, an absolute path a person chose in the system's save dialog, for one
+    /// attachment only. A file there is replaced: the dialog asked. App key only.
+    File(String),
+    /// An existing folder, an absolute path a person chose in the system's folder dialog ("Save all
+    /// to folder…"). A file of the same name there is kept, as with `downloads`. App key only.
+    Folder(String),
+}
+
+/// Where one attachment of a message would go, for `mail.list_save_targets` with `id`: its name and
+/// the place in each target. The reader shows the paths in the menu of the attachment.
+///
+/// Names come from the message: data from outside, cleaned so they stay one piece below the folder,
+/// never instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentPlan {
+    /// The attachment's MIME part, as `attachments` of `mail.get_message` names it.
+    pub part: String,
+    /// The attachment's file name, cleaned as a save to Downloads would write it; what the save
+    /// dialog starts with.
+    pub file_name: String,
+    /// The place in each save target, in the order of the targets. A target whose scheme cannot be
+    /// resolved for this file has none.
+    #[serde(default)]
+    pub places: Vec<PlannedPlace>,
+    /// The ids of the targets suggested for this attachment, in the order of the targets.
+    #[serde(default)]
+    pub suggested: Vec<String>,
+    /// The first suggested target that a click on "Suggested target, else open" saves to: one whose
+    /// conditions hold without a category the model only guessed. `None` when there is none; the
+    /// click opens the file then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sure: Option<String>,
+}
+
+/// Where in one save target an attachment would go ([`AttachmentPlan::places`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedPlace {
+    /// The target's id.
+    pub target: String,
+    /// The subfolders below the target's folder, each one cleaned piece: `["2026", "03"]`.
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// The file name in the last of them, before a number is added for a file of the same name.
+    pub file: String,
+}
+
+/// One attachment `mail.save_attachments` wrote, or found there already with the same content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFile {
+    /// The attachment's MIME part.
+    pub part: String,
+    /// The file's absolute path.
+    pub path: String,
+}
+
+/// One attachment `mail.save_attachments` could not save; the others are saved all the same.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedFile {
+    /// The attachment's MIME part.
+    pub part: String,
+    /// Its file name from the message, for the person: data from outside.
+    pub name: String,
+    /// A fixed code: `not-found`, `forbidden`, `error` …
+    pub code: String,
+    /// What went wrong, for people; never a path.
+    pub message: String,
+}
+
 /// Where the messages of a `mail.search_messages` page came from. Since issue #136 every search
 /// is answered from the core's own index, so pages say `cache`; `live` stays readable for answers
 /// of older cores.
@@ -459,7 +544,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_ID_BYTES: usize = 300;
 
 /// The `error` answer for a mail request that breaks a limit, before anything is looked at:
-/// `ids` empty or over [`MAX_IDS`], a search `limit` of 0 or over [`MAX_LIMIT`], a `query` over
+/// `ids` empty or over [`MAX_IDS`], more than [`MAX_ATTACHMENTS`] `parts` to save, a search `limit` of 0 or over [`MAX_LIMIT`], a `query` over
 /// [`MAX_QUERY_CHARS`] characters, a draft with more than [`MAX_RECIPIENTS`] recipients, more than
 /// [`MAX_ATTACHMENTS`] attachments or a text over [`MAX_BODY_BYTES`], and any id, folder, cursor or
 /// attachment part over [`MAX_ID_BYTES`]. `None` for every request within them and for every other
@@ -491,6 +576,9 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
                 return refuse(format!("the query may hold at most {MAX_QUERY_CHARS} characters"));
             }
             None
+        }
+        Request::SaveMailAttachments { parts, .. } if parts.len() > MAX_ATTACHMENTS => {
+            refuse(format!("at most {MAX_ATTACHMENTS} attachments per call, or none for all"))
         }
         Request::SaveDraft { draft } => {
             if draft.to.len() + draft.cc.len() + draft.bcc.len() > MAX_RECIPIENTS {
@@ -528,6 +616,15 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
         Request::SearchMail { folder, cursor, .. } => folder.iter().chain(cursor).map(String::as_str).collect(),
         Request::MoveMail { to: MoveTarget::Folder(folder), .. } => vec![folder],
         Request::GetMailAttachment { attachment, .. } => vec![attachment],
+        // Save targets (issue #290): their ids and the parts, as short as the core's own.
+        Request::UpdateSaveTarget { id, .. } | Request::RemoveSaveTarget { id } => vec![id],
+        Request::SaveMailAttachments { parts, to, .. } => {
+            let target = match to {
+                SaveTo::Target(target) => Some(target.as_str()),
+                _ => None,
+            };
+            parts.iter().map(String::as_str).chain(target).collect()
+        }
         Request::MailBackupCreate { file_name, .. } => file_name.iter().map(String::as_str).collect(),
         Request::MailBackupStatus { job, .. } | Request::MailBackupCancel { job, .. } => vec![job],
         Request::MailBackupVerify { file, .. } | Request::MailRestorePlan { file, .. } => vec![file],
@@ -574,8 +671,9 @@ impl Request {
         }
     }
 
-    /// Every message id a request names, in order: `id`/`ids`, a draft's own id, the message it
-    /// answers and the messages it forwards parts of. Empty for every other request. If one of
+    /// Every message id a request names, in order: `id`/`ids` (also of `mail.list_save_targets` and
+    /// `mail.save_attachments`), a draft's own id, the message it answers and the messages it
+    /// forwards parts of. Empty for every other request. If one of
     /// them is in an account the caller does not reach, the whole call is `not-found` (checked
     /// before anything is read).
     pub fn message_ids(&self) -> Vec<&str> {
@@ -583,6 +681,8 @@ impl Request {
             Request::GetMail { id, .. }
             | Request::GetMailThread { id }
             | Request::GetMailAttachment { id, .. }
+            | Request::SaveMailAttachments { id, .. }
+            | Request::ListSaveTargets { id: Some(id) }
             | Request::SendDraft { id } => vec![id.as_str()],
             Request::SetMailFlags { ids, .. } | Request::MoveMail { ids, .. } | Request::DeleteMail { ids, .. } => {
                 ids.iter().map(String::as_str).collect()
@@ -625,6 +725,93 @@ mod tests {
 
     fn refused(request: &Request) -> bool {
         matches!(limit_refusal(request), Some(Response::Error { code, .. }) if code == "error")
+    }
+
+    /// Issue #290: `to` is a word for Downloads and an object for the rest; plans and results read
+    /// back as written, with `fileName` in camelCase.
+    #[test]
+    fn save_types_round_trip() {
+        for (to, wire) in [
+            (SaveTo::Downloads, serde_json::json!("downloads")),
+            (SaveTo::Target("0a1b2c3d".into()), serde_json::json!({"target": "0a1b2c3d"})),
+            (SaveTo::File("/Users/anna/Rechnung.pdf".into()), serde_json::json!({"file": "/Users/anna/Rechnung.pdf"})),
+            (SaveTo::Folder("/Users/anna/Ablage".into()), serde_json::json!({"folder": "/Users/anna/Ablage"})),
+        ] {
+            assert_eq!(serde_json::to_value(&to).expect("writes"), wire);
+            assert_eq!(serde_json::from_value::<SaveTo>(wire).expect("reads"), to);
+        }
+        assert!(serde_json::from_value::<SaveTo>(serde_json::json!({"path": "/tmp"})).is_err());
+
+        let plan = AttachmentPlan {
+            part: "2".into(),
+            file_name: "Rechnung_2026-03-28_4711.pdf".into(),
+            places: vec![PlannedPlace {
+                target: "0a1b2c3d".into(),
+                folders: vec!["2026".into(), "03".into()],
+                file: "Rechnung_2026-03-28_4711.pdf".into(),
+            }],
+            suggested: vec!["0a1b2c3d".into()],
+            sure: Some("0a1b2c3d".into()),
+        };
+        let json = serde_json::to_value(&plan).expect("writes");
+        assert_eq!(json["fileName"], "Rechnung_2026-03-28_4711.pdf");
+        assert_eq!(json["places"][0]["folders"], serde_json::json!(["2026", "03"]));
+        assert_eq!(serde_json::from_value::<AttachmentPlan>(json).expect("reads"), plan);
+        let unsure = serde_json::json!({"part": "3", "fileName": "a.pdf"});
+        let read: AttachmentPlan = serde_json::from_value(unsure).expect("lists may be left out");
+        assert!(read.places.is_empty() && read.suggested.is_empty() && read.sure.is_none());
+
+        let saved = Response::SavedAttachments {
+            saved: vec![SavedFile { part: "2".into(), path: "/Users/anna/Rechnungen/2026/03/a.pdf".into() }],
+            skipped: vec![SavedFile { part: "3".into(), path: "/Users/anna/Rechnungen/2026/03/b.pdf".into() }],
+            failed: vec![FailedFile {
+                part: "4".into(),
+                name: "c.pdf".into(),
+                code: "error".into(),
+                message: "too large".into(),
+            }],
+        };
+        let json = serde_json::to_value(&saved).expect("writes");
+        assert_eq!(json["result"], "saved-attachments");
+        assert_eq!(serde_json::from_value::<Response>(json).expect("reads"), saved);
+
+        let target = torro_mail::SaveTarget {
+            id: "0a1b2c3d".into(),
+            spec: torro_mail::SaveTargetSpec::new("Invoices", "/Users/anna/Rechnungen"),
+        };
+        let listed = Response::SaveTargets {
+            targets: vec![target.clone()],
+            downloads: "/Users/anna/Downloads".into(),
+            files: vec![plan],
+        };
+        let json = serde_json::to_value(&listed).expect("writes");
+        assert_eq!(json["result"], "save-targets");
+        assert_eq!(serde_json::from_value::<Response>(json).expect("reads"), listed);
+        let removed = Response::SaveTargets { targets: Vec::new(), downloads: "/d".into(), files: Vec::new() };
+        let json = serde_json::to_value(&removed).expect("writes");
+        assert!(json.get("files").is_none(), "no files without an id: {json}");
+        assert_eq!(serde_json::from_value::<Response>(json).expect("reads"), removed);
+        let one = Response::SaveTarget { target };
+        let json = serde_json::to_value(&one).expect("writes");
+        assert_eq!(json["result"], "save-target");
+        assert_eq!(json["target"]["fileName"], "{name}.{ext}");
+        assert_eq!(serde_json::from_value::<Response>(json).expect("reads"), one);
+    }
+
+    /// Issue #290: saving names its message (for the reach check), its parts and target are ids
+    /// within the limits, and at most [`MAX_ATTACHMENTS`] parts go in one call.
+    #[test]
+    fn saving_attachments_names_its_message_and_keeps_the_limits() {
+        let save = |parts: Vec<String>, to| Request::SaveMailAttachments { id: "m:1".into(), parts, to };
+        assert_eq!(save(Vec::new(), SaveTo::Downloads).message_ids(), ["m:1"]);
+        assert_eq!(Request::ListSaveTargets { id: Some("m:2".into()) }.message_ids(), ["m:2"]);
+        assert!(Request::ListSaveTargets { id: None }.message_ids().is_empty());
+        assert!(!refused(&save(vec!["2".into(); MAX_ATTACHMENTS], SaveTo::Downloads)));
+        assert!(refused(&save(vec!["2".into(); MAX_ATTACHMENTS + 1], SaveTo::Downloads)));
+        let long = "x".repeat(MAX_ID_BYTES + 1);
+        assert!(refused(&save(vec![long.clone()], SaveTo::Downloads)));
+        assert!(refused(&save(Vec::new(), SaveTo::Target(long.clone()))));
+        assert!(refused(&Request::RemoveSaveTarget { id: long }));
     }
 
     #[test]
