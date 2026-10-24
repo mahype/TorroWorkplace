@@ -1,0 +1,69 @@
+# Rosé Pine – after the open Rosé Pine palette by mvllow (MIT), github.com/rose-pine/palette, task FS.3, issue #292.
+# Light is Dawn, dark is the main Rosé Pine; iris as the accent, subtle as the muted text (its muted is meant for
+# disabled things), no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Rosé Pine"
+version = "1.0.0"
+author = "Torro, after Rosé Pine by mvllow (MIT)"
+description = "The Rosé Pine colour scheme: Dawn and Rosé Pine, soft iris accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #908CAA → #9895B2; error #EB6F92 → #EB7093.
+# Rosé Pine has no green and no orange: ok is foam in dark and pine in light; the calendar is pine, foam, gold, love
+# and rose.
+[colors.dark]
+bg = "#191724"
+panel = "#1F1D2E"
+raised = "#262435"
+hover = "#2A2839"
+selected = "#302E40"
+menu = "#2B293A"
+text = "#E0DEF4"
+text_2 = "#C0BDD6"
+text_3 = "#9895B2"
+line = "#E0DEF412"
+line_strong = "#E0DEF422"
+line_selected = "#E0DEF451"
+focus_ring = "#C4A7E7"
+accent = "#C4A7E7"
+on_accent = "#191724"
+ok = "#9CCFD8"
+attention = "#F6C177"
+error = "#EB7093"
+merged = "#C4A7E7"
+calendar = ["#31748F", "#9CCFD8", "#F6C177", "#EB6F92", "#EBBCBA"]
+night = "#1C1A29"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text #575279 → #504C70 (titles stand out from the muted text, text reads on events); text_3
+# #797593 → #6B6787; accent #907AA9 → #846B9F; attention #EA9D34 → #C47914; error #B4637A → #B15D75; calendar[3]
+# #EA9D34 → #CC7E15; calendar[5] #D7827E → #D37671.
+# Rosé Pine has no green and no orange: ok is foam in dark and pine in light; the calendar is pine, foam, gold, love
+# and rose.
+[colors.light]
+bg = "#FAF4ED"
+panel = "#FFFAF3"
+raised = "#FBF6F0"
+hover = "#F7F2ED"
+selected = "#F1ECE9"
+menu = "#FFFAF3"
+text = "#504C70"
+text_2 = "#5C587A"
+text_3 = "#6B6787"
+line = "#504C7014"
+line_strong = "#504C7026"
+line_selected = "#504C705F"
+focus_ring = "#846B9F"
+accent = "#846B9F"
+on_accent = "#FFFFFF"
+ok = "#286983"
+attention = "#C47914"
+error = "#B15D75"
+merged = "#907AA9"
+calendar = ["#286983", "#56949F", "#CC7E15", "#B4637A", "#D37671"]
+night = "#FCF7F0"

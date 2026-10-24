@@ -1,0 +1,38 @@
+# Synthwave ’84 – after the open SynthWave '84 theme by Robb Owen (MIT), github.com/robb0wen/synthwave-vscode
+# (themes/synthwave-color-theme.json), task FS.4, issue #292. Dark only; the pink accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+dark_only = true
+
+[about]
+name = "Synthwave ’84"
+version = "1.0.0"
+author = "Torro, after SynthWave '84 by Robb Owen (MIT)"
+description = "The Synthwave ’84 colour scheme: dark purple, neon pink accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #848BBD → #939AC5; error #FE4450 → #FE6D76.
+# Its blue and cyan are one neon cyan: the fifth calendar colour is its yellow.
+[colors.dark]
+bg = "#262335"
+panel = "#241B2F"
+raised = "#2C2336"
+hover = "#30283A"
+selected = "#383042"
+menu = "#31293B"
+text = "#FFFFFF"
+text_2 = "#CED2E5"
+text_3 = "#939AC5"
+line = "#FFFFFF12"
+line_strong = "#FFFFFF22"
+line_selected = "#FFFFFF4F"
+focus_ring = "#FF7EDB"
+accent = "#FF7EDB"
+on_accent = "#262335"
+ok = "#72F1B8"
+attention = "#FEDE5D"
+error = "#FE6D76"
+merged = "#B893CE"
+calendar = ["#03EDF9", "#72F1B8", "#FF8B39", "#FF7EDB", "#FEDE5D"]
+night = "#251F32"

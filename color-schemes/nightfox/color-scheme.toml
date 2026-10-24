@@ -1,0 +1,65 @@
+# Nightfox – after the open Nightfox colour scheme by James Simpson (EdenEast, MIT), github.com/EdenEast/nightfox.nvim
+# (lua/nightfox/palette/dayfox.lua, nightfox.lua), task FS.2, issue #292. Light is Dayfox, dark is Nightfox; the
+# blue accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Nightfox"
+version = "1.0.0"
+author = "Torro, after Nightfox by James Simpson (MIT)"
+description = "The Nightfox colour scheme: Dayfox and Nightfox, blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #738091 → #87929F; error #C94F6D → #D4748C.
+[colors.dark]
+bg = "#192330"
+panel = "#131A24"
+raised = "#1A202A"
+hover = "#1D242D"
+selected = "#242A33"
+menu = "#1E252E"
+text = "#CDCECF"
+text_2 = "#AEB3B9"
+text_3 = "#87929F"
+line = "#CDCECF12"
+line_strong = "#CDCECF22"
+line_selected = "#CDCECF50"
+focus_ring = "#719CD6"
+accent = "#719CD6"
+on_accent = "#192330"
+ok = "#81B29A"
+attention = "#F4A261"
+error = "#D4748C"
+merged = "#9D79D6"
+calendar = ["#719CD6", "#81B29A", "#F4A261", "#D67AD2", "#63CDCF"]
+night = "#161E2A"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: panel #E4DCD4 → #E8E2DB (for the standard's category colours, which a scheme cannot set); text_3
+# #837A72 → #645767.
+# Dayfox's orange is a dusty rose: the third calendar colour and attention are its yellow, an orange.
+[colors.light]
+bg = "#F6F2EE"
+panel = "#E8E2DB"
+raised = "#E4DDD8"
+hover = "#E0DAD5"
+selected = "#DAD3D1"
+menu = "#F6F2EE"
+text = "#3D2B5A"
+text_2 = "#4F3F60"
+text_3 = "#645767"
+line = "#3D2B5A14"
+line_strong = "#3D2B5A26"
+line_selected = "#3D2B5A5C"
+focus_ring = "#2848A9"
+accent = "#2848A9"
+on_accent = "#FFFFFF"
+ok = "#396847"
+attention = "#AC5402"
+error = "#A5222F"
+merged = "#6E33CE"
+calendar = ["#2848A9", "#396847", "#AC5402", "#A440B5", "#287980"]
+night = "#EFEAE4"

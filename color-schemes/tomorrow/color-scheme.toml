@@ -1,0 +1,65 @@
+# Tomorrow – after the open Tomorrow theme by Chris Kempson (MIT), github.com/chriskempson/tomorrow-theme, task FS.3,
+# issue #292. Light is Tomorrow, dark is Tomorrow Night; the blue accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Tomorrow"
+version = "1.0.0"
+author = "Torro, after Tomorrow by Chris Kempson (MIT)"
+description = "The Tomorrow colour scheme: Tomorrow and Tomorrow Night, calm blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #969896 → #A0A2A0; error #CC6666 → #D98E8E.
+# Tomorrow has no magenta: the fourth calendar colour is its purple.
+[colors.dark]
+bg = "#1D1F21"
+panel = "#282A2E"
+raised = "#2D3033"
+hover = "#313336"
+selected = "#36383C"
+menu = "#313337"
+text = "#C5C8C6"
+text_2 = "#B4B7B5"
+text_3 = "#A0A2A0"
+line = "#C5C8C612"
+line_strong = "#C5C8C622"
+line_selected = "#C5C8C655"
+focus_ring = "#81A2BE"
+accent = "#81A2BE"
+on_accent = "#1D1F21"
+ok = "#B5BD68"
+attention = "#F0C674"
+error = "#D98E8E"
+merged = "#B294BB"
+calendar = ["#81A2BE", "#B5BD68", "#DE935F", "#B294BB", "#8ABEB7"]
+night = "#222428"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text #4D4D4C → #494948 (titles stand out from the muted text, text reads on events); text_3
+# #8E908C → #646462; attention #F5871F → #CC6809; calendar[3] #F5871F → #D46C09; calendar[5] #3E999F → #3C959A.
+# Tomorrow has no magenta: the fourth calendar colour is its purple.
+[colors.light]
+bg = "#FFFFFF"
+panel = "#EFEFEF"
+raised = "#EBEBEB"
+hover = "#E8E8E7"
+selected = "#E2E2E2"
+menu = "#FFFFFF"
+text = "#494948"
+text_2 = "#555554"
+text_3 = "#646462"
+line = "#49494814"
+line_strong = "#49494826"
+line_selected = "#4949485E"
+focus_ring = "#4271AE"
+accent = "#4271AE"
+on_accent = "#FFFFFF"
+ok = "#718C00"
+attention = "#CC6809"
+error = "#C82829"
+merged = "#8959A8"
+calendar = ["#4271AE", "#718C00", "#D46C09", "#8959A8", "#3C959A"]
+night = "#F7F7F7"

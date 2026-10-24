@@ -1,0 +1,66 @@
+# Kanagawa – after the open Kanagawa colour scheme by Tommaso Laurenzi (MIT), github.com/rebelot/kanagawa.nvim
+# (lua/kanagawa/colors.lua, themes.lua), task FS.2, issue #292. Light is Lotus, dark is Wave; the blue accent, no
+# logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Kanagawa"
+version = "1.0.0"
+author = "Torro, after Kanagawa by Tommaso Laurenzi (MIT)"
+description = "The Kanagawa colour scheme: Lotus and Wave, ink blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #727169 → #A9A693; error #E46876 → #EA8A94.
+[colors.dark]
+bg = "#1F1F28"
+panel = "#2A2A37"
+raised = "#30303C"
+hover = "#34343E"
+selected = "#3A3A43"
+menu = "#35343F"
+text = "#DCD7BA"
+text_2 = "#C5C1A8"
+text_3 = "#A9A693"
+line = "#DCD7BA12"
+line_strong = "#DCD7BA22"
+line_selected = "#DCD7BA54"
+focus_ring = "#7E9CD8"
+accent = "#7E9CD8"
+on_accent = "#1F1F28"
+ok = "#98BB6C"
+attention = "#FFA066"
+error = "#EA8A94"
+merged = "#957FB8"
+calendar = ["#7E9CD8", "#98BB6C", "#FFA066", "#D27E99", "#6A9589"]
+night = "#242430"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text #545464 → #40404C (titles stand out from the muted text, text reads on events); panel
+# #E7DBA0 → #ECE3B5 (for the standard's category colours, which a scheme cannot set); text_3 #8A8980 → #5C5B60;
+# attention #CC6D00 → #BD6500; error #C84053 → #C4384C; calendar[2] #6F894E → #6E884E; calendar[3] #CC6D00 → #C36800;
+# calendar[5] #4E8CA2 → #4B879C.
+[colors.light]
+bg = "#F2ECBC"
+panel = "#ECE3B5"
+raised = "#E8DFB2"
+hover = "#E4DCB0"
+selected = "#DED6AD"
+menu = "#F2ECBC"
+text = "#40404C"
+text_2 = "#4D4C55"
+text_3 = "#5C5B60"
+line = "#40404C14"
+line_strong = "#40404C26"
+line_selected = "#40404C5E"
+focus_ring = "#4D699B"
+accent = "#4D699B"
+on_accent = "#FFFFFF"
+ok = "#6F894E"
+attention = "#BD6500"
+error = "#C4384C"
+merged = "#624C83"
+calendar = ["#4D699B", "#6E884E", "#C36800", "#B35B79", "#4B879C"]
+night = "#EFE8B9"

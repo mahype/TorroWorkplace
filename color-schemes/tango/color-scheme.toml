@@ -1,0 +1,69 @@
+# Tango – after the palette of the Tango Desktop Project (public domain), tango.freedesktop.org, task FS.3, issue
+# #292. Light is built from Aluminium 1, 2 and 6, dark from Aluminium 6, 5 and 1; Sky Blue as the accent, no logo
+# of its own. Tango has one palette with three shades per hue: light takes the darker, dark the lighter shades.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Tango"
+version = "1.0.0"
+author = "Torro, after the Tango palette (public domain)"
+description = "The Tango colour scheme: aluminium greys, sky blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #BABDB6 → #BDC0B9; accent #729FCF → #73A0CF; attention #FCAF3E → #FCB03F; error #EF2929 →
+# #F9ABAB.
+# panel is moved from Aluminium 5 #555753 to #3A3E3F, 30 % of the way from Aluminium 6: on Aluminium 5 neither the
+# muted text nor red text reach 4.5:1 apart from white. Tango has no cyan: the fifth calendar colour is Chocolate 1;
+# merged is Plum 1.
+[colors.dark]
+bg = "#2E3436"
+panel = "#3A3E3F"
+raised = "#404445"
+hover = "#444849"
+selected = "#4A4E4F"
+menu = "#454949"
+text = "#EEEEEC"
+text_2 = "#D8D9D5"
+text_3 = "#BDC0B9"
+line = "#EEEEEC12"
+line_strong = "#EEEEEC22"
+line_selected = "#EEEEEC56"
+focus_ring = "#73A0CF"
+accent = "#73A0CF"
+on_accent = "#2E3436"
+ok = "#8AE234"
+attention = "#FCB03F"
+error = "#F9ABAB"
+merged = "#AD7FA8"
+calendar = ["#729FCF", "#8AE234", "#FCAF3E", "#AD7FA8", "#E9B96E"]
+night = "#34393B"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: panel #D3D7CF → #E1E4DE (for the standard's category colours, which a scheme cannot set); text_3
+# #888A85 → #585C5B; calendar[2] #4E9A06 → #4A9106; calendar[5] #C17D11 → #B17210.
+# Tango has no cyan: the fifth calendar colour is Chocolate 2; merged is Plum 2.
+[colors.light]
+bg = "#EEEEEC"
+panel = "#E1E4DE"
+raised = "#DDE0DA"
+hover = "#D9DCD6"
+selected = "#D3D6D1"
+menu = "#EEEEEC"
+text = "#2E3436"
+text_2 = "#414647"
+text_3 = "#585C5B"
+line = "#2E343614"
+line_strong = "#2E343626"
+line_selected = "#2E34365C"
+focus_ring = "#3465A4"
+accent = "#3465A4"
+on_accent = "#FFFFFF"
+ok = "#4E9A06"
+attention = "#CE5C00"
+error = "#CC0000"
+merged = "#75507B"
+calendar = ["#3465A4", "#4A9106", "#CE5C00", "#75507B", "#B17210"]
+night = "#E8E9E5"

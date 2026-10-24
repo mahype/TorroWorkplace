@@ -1,0 +1,38 @@
+# Sonokai – after the open Sonokai colour scheme by sainnhe (MIT), github.com/sainnhe/sonokai
+# (autoload/sonokai.vim, style default), task FS.4, issue #292. Dark only; its blue as the accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+dark_only = true
+
+[about]
+name = "Sonokai"
+version = "1.0.0"
+author = "Torro, after Sonokai by sainnhe (MIT)"
+description = "The Sonokai colour scheme: warm dark greys, bright blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #7F8490 → #B1B4BA; error #FC5D7C → #FD95AA.
+# Sonokai has no cyan and no magenta: the fourth calendar colour is its purple, the fifth its yellow.
+[colors.dark]
+bg = "#2C2E34"
+panel = "#33353F"
+raised = "#393B45"
+hover = "#3D3F48"
+selected = "#43454E"
+menu = "#3E3F49"
+text = "#E2E2E3"
+text_2 = "#CCCDD1"
+text_3 = "#B1B4BA"
+line = "#E2E2E312"
+line_strong = "#E2E2E322"
+line_selected = "#E2E2E356"
+focus_ring = "#76CCE0"
+accent = "#76CCE0"
+on_accent = "#2C2E34"
+ok = "#9ED072"
+attention = "#E7C664"
+error = "#FD95AA"
+merged = "#B39DF3"
+calendar = ["#76CCE0", "#9ED072", "#F39660", "#B39DF3", "#E7C664"]
+night = "#30323A"

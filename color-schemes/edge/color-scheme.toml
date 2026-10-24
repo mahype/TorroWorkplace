@@ -1,0 +1,67 @@
+# Edge – after the open Edge colour scheme by sainnhe (MIT), github.com/sainnhe/edge (autoload/edge.vim), task FS.2,
+# issue #292. Light is its light palette, dark its default style; the blue accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Edge"
+version = "1.0.0"
+author = "Torro, after Edge by sainnhe (MIT)"
+description = "The Edge colour scheme: clean greys, calm blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text #C5CDD9 → #D4DAE3 (titles stand out from the muted text, text reads on events); text_3
+# #758094 → #ABB3C1; error #EC7279 → #F19A9F.
+# Edge has no orange and no magenta: the third calendar colour is its yellow, the fourth its purple.
+[colors.dark]
+bg = "#2C2E34"
+panel = "#33353F"
+raised = "#393B45"
+hover = "#3C3E48"
+selected = "#41444E"
+menu = "#3D3F49"
+text = "#D4DAE3"
+text_2 = "#C2C8D4"
+text_3 = "#ABB3C1"
+line = "#D4DAE312"
+line_strong = "#D4DAE322"
+line_selected = "#D4DAE356"
+focus_ring = "#6CB6EB"
+accent = "#6CB6EB"
+on_accent = "#2C2E34"
+ok = "#A0C980"
+attention = "#DEB974"
+error = "#F19A9F"
+merged = "#D38AEA"
+calendar = ["#6CB6EB", "#A0C980", "#DEB974", "#D38AEA", "#5DBBC1"]
+night = "#30323A"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text #4B505B → #464A55 (titles stand out from the muted text, text reads on events); text_3
+# #8790A0 → #5F6572; accent #5079BE → #4B75BC; attention #BE7E05 → #B47705; error #D05858 → #CB4747; calendar[3]
+# #BE7E05 → #BC7C05.
+# Edge has no orange and no magenta: the third calendar colour is its yellow, the fourth its purple.
+[colors.light]
+bg = "#FAFAFA"
+panel = "#EEF1F4"
+raised = "#EAEDF0"
+hover = "#E6E9ED"
+selected = "#E1E4E7"
+menu = "#FAFAFA"
+text = "#464A55"
+text_2 = "#515662"
+text_3 = "#5F6572"
+line = "#464A5514"
+line_strong = "#464A5526"
+line_selected = "#464A555E"
+focus_ring = "#4B75BC"
+accent = "#4B75BC"
+on_accent = "#FFFFFF"
+ok = "#608E32"
+attention = "#B47705"
+error = "#CB4747"
+merged = "#B05CCC"
+calendar = ["#5079BE", "#608E32", "#BC7C05", "#B05CCC", "#3A8B84"]
+night = "#F4F5F7"

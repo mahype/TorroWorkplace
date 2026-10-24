@@ -1,0 +1,67 @@
+# Ayu – after the open ayu colours by Konstantin Pschera (MIT), github.com/ayu-theme/ayu-colors (themes/light.yaml,
+# themes/mirage.yaml), task FS.2, issue #292. Light is ayu Light, dark is ayu Mirage; the orange and yellow
+# accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Ayu"
+version = "1.0.0"
+author = "Torro, after ayu by Konstantin Pschera (MIT)"
+description = "The ayu colour scheme: Light and Mirage, warm orange and yellow accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #707A8C → #979CA3.
+# ayu has no magenta: the fourth calendar colour is its purple.
+[colors.dark]
+bg = "#242936"
+panel = "#1F2430"
+raised = "#252A35"
+hover = "#292D38"
+selected = "#2F333D"
+menu = "#292E39"
+text = "#CCCAC2"
+text_2 = "#B9BAB7"
+text_3 = "#979CA3"
+line = "#CCCAC212"
+line_strong = "#CCCAC222"
+line_selected = "#CCCAC253"
+focus_ring = "#FFCC66"
+accent = "#FFCC66"
+on_accent = "#242936"
+ok = "#D5FF80"
+attention = "#FFA659"
+error = "#F28779"
+merged = "#DFBFFF"
+calendar = ["#73D0FF", "#D5FF80", "#FFA659", "#DFBFFF", "#5CCFE6"]
+night = "#222733"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text #5C6166 → #4B4F53 (titles stand out from the muted text, text reads on events); text_3
+# #828E9F → #636A74; accent #F29718 → #A96609; attention #EBA400 → #B47E00; error #F07171 → #EA3737; calendar[1]
+# #22A4E6 → #1897D7; calendar[2] #86B300 → #749B00; calendar[3] #FA8532 → #ED6606; calendar[5] #55B4D4 → #309ABE.
+# ayu has no magenta: the fourth calendar colour is its purple.
+[colors.light]
+bg = "#FCFCFC"
+panel = "#F8F9FA"
+raised = "#F4F5F6"
+hover = "#F0F1F2"
+selected = "#EAEBED"
+menu = "#FCFCFC"
+text = "#4B4F53"
+text_2 = "#565B62"
+text_3 = "#636A74"
+line = "#4B4F5314"
+line_strong = "#4B4F5326"
+line_selected = "#4B4F535E"
+focus_ring = "#A96609"
+accent = "#A96609"
+on_accent = "#FFFFFF"
+ok = "#86B300"
+attention = "#B47E00"
+error = "#EA3737"
+merged = "#A37ACC"
+calendar = ["#1897D7", "#749B00", "#ED6606", "#A37ACC", "#309ABE"]
+night = "#FAFBFB"

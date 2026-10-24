@@ -1,0 +1,15 @@
+Source: http://tango.freedesktop.org/Tango_Desktop_Project, as archived at
+https://web.archive.org/web/2020/http://tango.freedesktop.org/Tango_Desktop_Project (retrieved 2026-10-23)
+
+The colours of this scheme come from the palette of the Tango Desktop Project. The palette is in the
+public domain; the project's page says:
+
+  "The Tango base icon theme is released to the Public Domain. The palette is in public domain.
+  Developers, feel free to ship it along with your application."
+
+and asks to attribute the project:
+
+  "Though the tango-icon-theme package is released to the Public Domain, we ask that you still please
+  attribute the Tango Desktop Project, for all the hard work we've done. Thanks."
+
+This colour scheme is based on the Tango palette of the Tango Desktop Project (tango.freedesktop.org).

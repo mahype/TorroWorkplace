@@ -1,0 +1,62 @@
+# Slate – after the open Radix Colors by WorkOS (MIT), github.com/radix-ui/colors, task FS.3, issue #292. Light and
+# dark are its Slate scale (steps 1, 2, 12 and 11), the accent Blue 9; status and calendar colours are step 11 of
+# Green, Orange, Red, Purple, Blue, Pink and Cyan. No logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Slate"
+version = "1.0.0"
+author = "Torro, after Slate (MIT)"
+description = "The Slate colour scheme: cool neutral greys, bright blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+[colors.dark]
+bg = "#111113"
+panel = "#18191B"
+raised = "#1F2022"
+hover = "#242527"
+selected = "#2B2C2E"
+menu = "#252628"
+text = "#EDEEF0"
+text_2 = "#D2D4D8"
+text_3 = "#B0B4BA"
+line = "#EDEEF012"
+line_strong = "#EDEEF022"
+line_selected = "#EDEEF04E"
+focus_ring = "#0090FF"
+accent = "#0090FF"
+on_accent = "#111113"
+ok = "#3DD68C"
+attention = "#FFA057"
+error = "#FF9592"
+merged = "#D19DFF"
+calendar = ["#70B8FF", "#3DD68C", "#FFA057", "#FF8DCC", "#4CCCE6"]
+night = "#141517"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: accent #0090FF → #0077D2.
+[colors.light]
+bg = "#FCFCFD"
+panel = "#F9F9FB"
+raised = "#F3F4F6"
+hover = "#EFEFF1"
+selected = "#E7E8EA"
+menu = "#FCFCFD"
+text = "#1C2024"
+text_2 = "#3B3F44"
+text_3 = "#60646C"
+line = "#1C202414"
+line_strong = "#1C202426"
+line_selected = "#1C202458"
+focus_ring = "#0077D2"
+accent = "#0077D2"
+on_accent = "#FFFFFF"
+ok = "#218358"
+attention = "#CC4E00"
+error = "#CE2C31"
+merged = "#8145B5"
+calendar = ["#0D74CE", "#218358", "#CC4E00", "#C2298A", "#107D98"]
+night = "#FBFBFC"

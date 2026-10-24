@@ -1,0 +1,65 @@
+# Tokyo Night – after the open Tokyo Night theme by Enkia (MIT), github.com/enkia/tokyo-night-vscode-theme
+# (themes/tokyo-night-color-theme.json, tokyo-night-light-color-theme.json), task FS.3, issue #292. Light is Tokyo
+# Night Light, dark is Tokyo Night; the blue accent, no logo of its own. Dark text is its editor foreground
+# #A9B1D6 and the muted text its comment colour #51597D.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Tokyo Night"
+version = "1.0.0"
+author = "Torro, after Tokyo Night by Enkia (MIT)"
+description = "The Tokyo Night colour scheme: deep night blues, bright blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #51597D → #838BAF.
+[colors.dark]
+bg = "#1A1B26"
+panel = "#16161E"
+raised = "#1B1B24"
+hover = "#1E1F28"
+selected = "#23242F"
+menu = "#1F1F29"
+text = "#A9B1D6"
+text_2 = "#98A0C4"
+text_3 = "#838BAF"
+line = "#A9B1D612"
+line_strong = "#A9B1D622"
+line_selected = "#A9B1D652"
+focus_ring = "#7AA2F7"
+accent = "#7AA2F7"
+on_accent = "#1A1B26"
+ok = "#9ECE6A"
+attention = "#E0AF68"
+error = "#F7768E"
+merged = "#9D7CD8"
+calendar = ["#7AA2F7", "#9ECE6A", "#FF9E64", "#BB9AF7", "#7DCFFF"]
+night = "#181822"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: panel #D6D8DF → #E1E2E7 (for the standard's category colours, which a scheme cannot set); text_3
+# #707280 → #575B70.
+[colors.light]
+bg = "#E6E7ED"
+panel = "#E1E2E7"
+raised = "#DDDEE3"
+hover = "#D9DAE1"
+selected = "#D3D5DC"
+menu = "#E6E7ED"
+text = "#343B59"
+text_2 = "#444963"
+text_3 = "#575B70"
+line = "#343B5914"
+line_strong = "#343B5926"
+line_selected = "#343B595D"
+focus_ring = "#2959AA"
+accent = "#2959AA"
+on_accent = "#FFFFFF"
+ok = "#385F0D"
+attention = "#8F5E15"
+error = "#8C4351"
+merged = "#7B43BA"
+calendar = ["#2959AA", "#385F0D", "#965027", "#65359D", "#006C86"]
+night = "#E3E4EA"
