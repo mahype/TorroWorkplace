@@ -397,6 +397,13 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
 - **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius `radius::md()`, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `typo::caption()`-
   Titel; Trenner `LINE`.
+- **Menü mit Suche** (#299, `widgets::search_menu(id, suche, on_input, on_submit, einträge, breite)`): für lange
+  Auswahlen (die Schriften in Appearance, über 150 auf einem Mac). Karte wie ein Menü (`MENU`, `LINE_STRONG`,
+  `style::MENU_INSET`, höchstens `size::panel()` hoch, darunter rollt es), oben ein flaches Suchfeld
+  (`style::text_input_flat`, Icon `Search` in `TEXT_3`, Platzhalter „Search“, `size::control()` hoch), darunter eine
+  `LINE`, darunter die Einträge des Aufrufers. Der Aufrufer filtert selbst (ohne Groß/Klein) und lässt Titel ohne
+  Treffer weg; ohne Treffer steht „No matches“ in `TEXT_3`. Beim Öffnen fokussiert er das Feld (`id`), Enter wählt
+  den ersten Treffer (`on_submit`), Escape schließt. Anschauen: `cargo run -p torro-gui --example gallery -- --blocks`.
 - **Schwebende Karte** (`widgets::popover`): 320 breit, `MENU`, Radius 10, Innenrand 16, Kopf mit
   Kalender/Liste, Titel `typo::title()`, Eigenschaftszeilen, unten Aktionen.
 - **Icons** nur aus `torro_gui::icon` (Lucide-SVG), nie Unicode-Glyphen wie ⟳ ‹ › ✓.

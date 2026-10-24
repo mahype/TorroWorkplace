@@ -194,7 +194,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
   `origin`/`kind` als `Folder`/`None`. `list_fonts` bei `System` ohne `license`. `torro-api-review` ohne Befund.
 
 ### SR.3 torro-gui: Baustein „Menü mit Suche“
-- [ ] erledigt
+- [x] erledigt (2026-10-24: `widgets::search_menu`; Sichtprüfung in der Galerie `--blocks` dunkel, hell und Console mit `--shot` auf macOS)
 - **Modell:** Opus · **Braucht:** SR.2 · **Dateien:** `crates/torro-gui/src/widgets.rs`,
   `crates/torro-gui/examples/gallery.rs`, `.claude/skills/torro-design/SKILL.md`
 - Ein Baustein für lange Auswahlen in einem schwebenden Menü: oben ein Suchfeld (`style::text_input_flat`, Icon
