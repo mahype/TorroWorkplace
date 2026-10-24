@@ -2788,8 +2788,8 @@ fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
 /// `docs/prototypes/inbox/mail-anhaenge.html`): a framed block (`widgets::file_block`) whose head says
 /// "Attachments" and "{n} files · {size}" ([`files_meta`]), with "Save all ▾" at its right from two
 /// attachments on ([`save_all_control`]), and under it each attachment as a split chip
-/// ([`attachment_chips`]). [`space::s()`] above it, [`space::l()`] below and `side` at the sides; the
-/// chips wrap on a line `room` wide. The triangles' menus hang at `anchors`. `None` while the mail
+/// ([`attachment_chips`]), which scroll inside the block beyond two lines. [`space::s()`] above it,
+/// [`space::l()`] below and `side` at the sides; the chips wrap on a line `room` wide. The triangles' menus hang at `anchors`. `None` while the mail
 /// loads, after an error and for a mail without attachments (inline pictures are none).
 pub fn attachment_line<'a>(
     reading: &Reading<'_>,
@@ -2798,10 +2798,11 @@ pub fn attachment_line<'a>(
     side: f32,
 ) -> Option<Element<'a, Message>> {
     let files = files_of(reading)?;
-    let action = save_all_control(reading, &files, anchors);
+    let action = save_all_control(reading, &files, anchors, false);
     let head = widgets::file_block_head(tr("Attachments"), files_meta(&files), action);
-    // The block's frame and its inner padding take from the chips' line.
-    let inner = (room - 2.0 * (space::s() + size::HAIRLINE)).max(0.0);
+    // The block's frame and its inner padding at the sides (`widgets::file_block`) take from the
+    // chips' line.
+    let inner = (room - 2.0 * (space::m() + size::HAIRLINE)).max(0.0);
     let block = widgets::file_block(head, attachment_chips(reading, &files, anchors, inner));
     Some(
         container(block)
@@ -2829,20 +2830,25 @@ fn files_meta(files: &[&AttachmentInfo]) -> String {
     format!("{count} · {}", size_text(files.iter().map(|file| file.size).sum()))
 }
 
-/// "Save all ▾" (`widgets::split_action`) from two attachments on, `None` for one: the click does what
-/// the setting says for all of them ([`Message::SaveAll`], [`all_act`]), the triangle opens their menu
-/// ([`Message::AskSaveAll`]) at `anchors.save_all`.
+/// "Save all ▾" from two attachments on, `None` for one: the click does what the setting says for all
+/// of them ([`Message::SaveAll`], [`all_act`]), the triangle ("More ways to save all") opens their menu
+/// ([`Message::AskSaveAll`]) at `anchors.save_all`. In the reader's block a ghost
+/// (`widgets::split_action`), whose head frames it; `framed` (`widgets::split_action_framed`) over the
+/// panel's rows, where nothing else does.
 fn save_all_control<'a>(
     reading: &Reading<'_>,
     files: &[&AttachmentInfo],
     anchors: &detail::Anchors,
+    framed: bool,
 ) -> Option<Element<'a, Message>> {
     (files.len() >= 2).then(|| {
         let id = reading.id.to_owned();
-        // No tooltip of its own: its triangle has one, and two would stand over each other.
-        widgets::split_action(
+        let control = if framed { widgets::split_action_framed } else { widgets::split_action };
+        // No tooltip on the action: its triangle has one, and two would stand over each other.
+        control(
             Icon::Download,
             tr("Save all"),
+            tr("More ways to save all"),
             Some(Message::SaveAll(id.clone())),
             Some(Message::AskSaveAll(id)),
             Some(&anchors.save_all),
@@ -2851,7 +2857,8 @@ fn save_all_control<'a>(
 }
 
 /// The chips of the attachments `files`, wrapping on a line `room` wide, [`space::s()`] apart
-/// ([`attachment_chip`]).
+/// ([`attachment_chip`]). At most [`FILE_LINES`] lines show; more scroll inside the block (scroll bar
+/// beside the chips only then), so a mail with many attachments keeps its text in a low window.
 fn attachment_chips<'a>(
     reading: &Reading<'_>,
     files: &[&AttachmentInfo],
@@ -2859,7 +2866,35 @@ fn attachment_chips<'a>(
     room: f32,
 ) -> Element<'a, Message> {
     let chips = files.iter().enumerate().map(|(at, file)| attachment_chip(reading, at, file, anchors, room));
-    row(chips).spacing(space::s()).wrap().vertical_spacing(space::s()).into()
+    let chips = row(chips).spacing(space::s()).wrap().vertical_spacing(space::s());
+    container(bounded_scroll(chips)).max_height(chips_max_height()).into()
+}
+
+/// How many lines of chips the reader's attachment block shows before it scrolls.
+const FILE_LINES: f32 = 2.0;
+
+/// How many attachment rows the panel shows before they scroll.
+const FILE_ROWS: f32 = 4.0;
+
+/// The most the chips of the reader's block take: [`FILE_LINES`] chips and the gaps between them.
+fn chips_max_height() -> f32 {
+    FILE_LINES * size::control() + (FILE_LINES - 1.0) * space::s()
+}
+
+/// The most the panel's attachment rows take: [`FILE_ROWS`] rows of `size::control()`.
+fn rows_max_height() -> f32 {
+    FILE_ROWS * size::control()
+}
+
+/// `content` in a vertical scrollable as high as it is, up to what its parent allows: the suite's
+/// scroll bar, which takes its room beside the content only while there is something to scroll, so
+/// it never covers a chip's triangle or a row's.
+fn bounded_scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    scrollable(content)
+        .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
+        .style(style::scrollable)
+        .width(Fill)
+        .into()
 }
 
 /// The attachment `file`, the `at`-th of the mail's, as a split chip (`widgets::split_file_chip`) on
@@ -3046,19 +3081,23 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 }
 
 /// The mail's attachments as rows (task M12.6, design B of `docs/prototypes/inbox/mail-anhaenge.html`):
-/// "Attachments" over them with "Save all ▾" at its right from two on ([`save_all_control`]), then
-/// one row each ([`attachment_row`]). For the panel – its footer in the mail window ([`panel_foot`]),
-/// over the mail in the hub and the App Feed ([`Bars::Split`]). `None` where [`files_of`] has none.
+/// "Attachments" and "{n} files · {size}" ([`files_meta`]) over them with "Save all ▾" at its right
+/// from two on ([`save_all_control`], framed), then one row each ([`attachment_row`]); beyond
+/// [`FILE_ROWS`] rows they scroll, so the footer never pushes the mail out of a low panel. For the
+/// panel – its footer in the mail window ([`panel_foot`]), over the mail in the hub and the App Feed
+/// ([`Bars::Split`]). `None` where [`files_of`] has none.
 fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Option<Element<'a, Message>> {
     let files = files_of(reading)?;
-    let title = typo::text(typo::caption(), tr("Attachments")).style(theme::text_3);
-    let mut head = row![container(title).width(Fill)].align_y(Alignment::Center);
-    if let Some(all) = save_all_control(reading, &files, anchors) {
+    let title = typo::text(typo::caption(), tr("Attachments")).style(theme::text_3).wrapping(Wrapping::None);
+    let meta = typo::text(typo::meta().tabular(), files_meta(&files)).style(theme::text_3).wrapping(Wrapping::None);
+    let mut head = row![container(title).width(Fill).clip(true), meta].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(all) = save_all_control(reading, &files, anchors, true) {
         head = head.push(all);
     }
     let head = container(head).padding(Padding { bottom: space::xs(), ..style::ITEM_PADDING });
     let rows = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
-    Some(column![head].extend(rows).into())
+    let rows = container(bounded_scroll(column(rows))).max_height(rows_max_height());
+    Some(column![head, rows].into())
 }
 
 /// The attachment `file`, the `at`-th of the mail's, as a row: the paperclip, its name and size – a
@@ -4041,6 +4080,23 @@ mod tests {
         assert_eq!(chip_name_room("3 KB", 0.0), 0.0, "never below nothing");
     }
 
+    /// Design review of #290 (state "full"): a mail with many attachments (the demo's minutes,
+    /// `m:w6`) keeps its block to two lines of chips and the panel's footer to four rows; the rest
+    /// scrolls inside them, so the mail keeps its room in a low window.
+    #[test]
+    fn many_attachments_scroll_inside_their_block_and_rows() {
+        let anchors = detail::Anchors::default();
+        assert_eq!(chips_max_height(), 2.0 * size::control() + space::s());
+        assert_eq!(rows_max_height(), 4.0 * size::control());
+        reading_of("m:w6", MailFormat::Text, true, |reading| {
+            let files = files_of(reading).expect("the minutes and the slides");
+            assert!(files.len() > 2 * FILE_ROWS as usize, "more than fit: {}", files.len());
+            assert!(files.len() as f32 * size::control() > rows_max_height(), "the rows would not fit");
+            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_some());
+            assert!(attachment_rows(reading, &anchors).is_some());
+        });
+    }
+
     /// The demo's plans for the mail `id` (task M12.6), as `mail.list_save_targets` answers them.
     fn saving_of(id: &str) -> SaveTargets {
         let demo = DemoSource::new(now());
@@ -4061,14 +4117,14 @@ mod tests {
         reading_of("m:p3", MailFormat::Text, true, |reading| {
             let files = files_of(reading).expect("two files");
             assert_eq!(files.len(), 2);
-            assert!(save_all_control(reading, &files, &anchors).is_some(), "two: Save all");
+            assert!(save_all_control(reading, &files, &anchors, true).is_some(), "two: Save all");
             assert!(file_words(reading).contains(&two));
             assert_eq!(files_meta(&files), format!("{} · {}", trf("{n} files", &[("n", &2)]), size_text(144_690)));
             assert!(attachment_rows(reading, &anchors).is_some() && !panel_foot(reading, &anchors).is_empty());
         });
         reading_of("m:w1", MailFormat::Text, true, |reading| {
             let files = files_of(reading).expect("one file");
-            assert!(save_all_control(reading, &files, &anchors).is_none(), "one: no Save all");
+            assert!(save_all_control(reading, &files, &anchors, false).is_none(), "one: no Save all");
             let one = trf("Save attachments ({n})", &[("n", &1)]);
             assert!(file_words(reading).contains(&one));
         });

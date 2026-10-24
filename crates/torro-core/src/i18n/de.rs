@@ -5498,6 +5498,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Too many files of this name are in the folder.", "Im Ordner liegen zu viele Dateien mit diesem Namen."),
     ("Torro Workplace may not write to this folder.", "Torro Workplace darf nicht in diesen Ordner schreiben."),
     ("More ways to open or save", "Weitere Wege zum Öffnen oder Speichern"),
+    ("More ways to save all", "Weitere Wege, alle zu speichern"),
     // Saving attachments in the mail window: block, menus, rail and hint (M12.6).
     ("1 file", "1 Datei"),
     ("{n} files", "{n} Dateien"),

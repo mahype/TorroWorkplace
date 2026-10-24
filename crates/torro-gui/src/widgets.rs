@@ -10,7 +10,7 @@
 //! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
 //! mail window (task E11.1) the chips of attachments ([`file_chip`]); for saving them (task M12.5) the split
 //! chip with a menu at its triangle ([`split_file_chip`]), the block that holds them ([`file_block`]) and the
-//! "Save all" action ([`split_action`]); for the mail's actions at its
+//! "Save all" action ([`split_action`], framed [`split_action_framed`]); for the mail's actions at its
 //! right edge (task E14.1):
 //! the action rail ([`action_rail`] with [`RailGroup`]s of [`RailItem`]s, collapsed or expanded,
 //! [`RailMode`]) and the layer of an open group ([`rail_flyout`]). For the compact Appearance page
@@ -820,16 +820,28 @@ fn split_divider(strong: bool) -> impl Fn(&Theme) -> rule::Style + Copy {
 }
 
 /// The triangle of a split control: a quiet part with a chevron down (14, `text_2`) that opens the
-/// menu, the tooltip "More ways to open or save", and the anchor of the menu when there is one.
+/// menu, `tip` as its tooltip, and the anchor of the menu when there is one.
 fn split_menu<'a, M: Clone + 'a>(
     on_menu: Option<M>,
     anchor: Option<&Anchor>,
     corners: border::Radius,
+    tip: impl IntoFragment<'a>,
 ) -> Element<'a, M> {
     let chevron =
         container(toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text2)).center_y(Fill).padding([0.0, space::s()]);
     let trigger = button(chevron).height(Fill).style(split_part(corners, true)).on_press_maybe(on_menu);
-    with_tooltip(anchored_if(anchor, trigger), tr("More ways to open or save"))
+    with_tooltip(anchored_if(anchor, trigger), tip)
+}
+
+/// The frame of a framed split control ([`split_file_chip`], [`split_action_framed`]): `raised` with a
+/// `line_strong` border, radius [`radius::sm()`].
+fn split_frame(theme: &Theme) -> container::Style {
+    let p = palette(theme);
+    container::Style {
+        background: Some(Background::Color(p.raised)),
+        border: border::rounded(radius::sm()).color(p.line_strong).width(LINE),
+        ..container::Style::default()
+    }
 }
 
 /// A file attachment as a chip with a menu: [`file_chip`]'s part that opens the file (paperclip,
@@ -858,34 +870,64 @@ pub fn split_file_chip<'a, M: Clone + 'a>(
         .on_press_maybe(on_open);
     let open_tip = open_tip.into_fragment();
     let open: Element<'a, M> = if open_tip.is_empty() { open.into() } else { with_tooltip(open, open_tip) };
-    let parts =
-        row![open, rule::vertical(LINE).style(split_divider(true)), split_menu(on_menu, anchor, split_corners(false)),]
-            .height(Fill);
-    container(parts)
-        .height(size::control())
-        .style(|t| container::Style {
-            background: Some(Background::Color(palette(t).raised)),
-            border: border::rounded(radius::sm()).color(palette(t).line_strong).width(LINE),
-            ..container::Style::default()
-        })
-        .into()
+    let triangle = split_menu(on_menu, anchor, split_corners(false), tr("More ways to open or save"));
+    let parts = row![open, rule::vertical(LINE).style(split_divider(true)), triangle].height(Fill);
+    container(parts).height(size::control()).style(split_frame).into()
 }
 
 /// "Save all" and its menu as one ghost control (task M12.5): no surface and no frame, so it does
 /// not look like an attachment; the action with `which` (Download) and `label` in `text_2`, a quiet
-/// hairline and the triangle beside it as in [`split_file_chip`]. [`size::control_sm()`] high, shown
-/// from two attachments on.
+/// hairline and the triangle beside it as in [`split_file_chip`], with `menu_tip` as the triangle's
+/// tooltip ("More ways to save all"). [`size::control_sm()`] high, shown from two attachments on. For
+/// the head of a [`file_block`], whose band and frame hold it; where it stands alone, take
+/// [`split_action_framed`].
 ///
 /// ```ignore
-/// widgets::split_action(Icon::Download, tr("Save all"), Some(Msg::SaveAll), Some(Msg::SaveAllMenu), Some(&anchor))
+/// widgets::split_action(Icon::Download, tr("Save all"), tr("More ways to save all"), Some(Msg::SaveAll), Some(Msg::SaveAllMenu), Some(&anchor))
 /// ```
 pub fn split_action<'a, M: Clone + 'a>(
     which: Icon,
     label: impl IntoFragment<'a>,
+    menu_tip: impl IntoFragment<'a>,
     on_press: Option<M>,
     on_menu: Option<M>,
     anchor: Option<&Anchor>,
 ) -> Element<'a, M> {
+    split_action_parts(which, label, menu_tip, on_press, on_menu, anchor, false).height(size::control_sm()).into()
+}
+
+/// [`split_action`] in a frame like a secondary button (`raised`, `line_strong` border, radius
+/// [`radius::sm()`], the hairline between the parts in `line_strong`), [`size::control_sm()`] high: for
+/// "Save all ▾" where no block frames it, e.g. over the attachment rows of the panel (task M12.6), so
+/// its hairline does not stand alone.
+///
+/// ```ignore
+/// widgets::split_action_framed(Icon::Download, tr("Save all"), tr("More ways to save all"), Some(Msg::SaveAll), Some(Msg::SaveAllMenu), None)
+/// ```
+pub fn split_action_framed<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    menu_tip: impl IntoFragment<'a>,
+    on_press: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+) -> Element<'a, M> {
+    let parts = split_action_parts(which, label, menu_tip, on_press, on_menu, anchor, true).height(Fill);
+    container(parts).height(size::control_sm()).style(split_frame).into()
+}
+
+/// The two parts of a split action and the hairline between them: the action (`which`, `label` in
+/// `text_2`) and the triangle with `menu_tip`. The hairline is `line_strong` in a frame (`framed`),
+/// like a chip's, and the quieter `line` on a band without one.
+fn split_action_parts<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    menu_tip: impl IntoFragment<'a>,
+    on_press: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+    framed: bool,
+) -> iced::widget::Row<'a, M> {
     let content =
         row![toned(which, icon::SIZE_SM, Tone::Text2), typo::text(typo::caption(), label).style(theme::text_2)]
             .spacing(ICON_GAP)
@@ -895,9 +937,8 @@ pub fn split_action<'a, M: Clone + 'a>(
         .padding([0.0, space::s()])
         .style(split_part(split_corners(true), true))
         .on_press_maybe(on_press);
-    row![open, rule::vertical(LINE).style(split_divider(false)), split_menu(on_menu, anchor, split_corners(false))]
-        .height(size::control_sm())
-        .into()
+    let triangle = split_menu(on_menu, anchor, split_corners(false), menu_tip);
+    row![open, rule::vertical(LINE).style(split_divider(framed)), triangle]
 }
 
 /// The head of an attachment block (see [`file_block`]): a band with the paperclip, `title` in
@@ -932,7 +973,8 @@ pub fn file_block_head<'a, M: 'a>(
 
 /// The block around a set of attachments (task M12.5, mail reader): `head` (see
 /// [`file_block_head`]) as a band with a [`LINE`] under it, then `content` with [`space::s()`]
-/// around, all in a `line_strong` frame with radius [`radius::sm()`].
+/// above and below and [`space::m()`] at the sides – the head's own inset, so the chips start under
+/// its paperclip – all in a `line_strong` frame with radius [`radius::sm()`].
 ///
 /// ```ignore
 /// widgets::file_block(widgets::file_block_head(title, meta, None), chips)
@@ -941,7 +983,7 @@ pub fn file_block<'a, M: 'a>(head: impl Into<Element<'a, M>>, content: impl Into
     let body = column![
         head.into(),
         rule::horizontal(LINE).style(style::rule),
-        container(content).padding(space::s()).width(Fill),
+        container(content).padding([space::s(), space::m()]).width(Fill),
     ];
     container(body)
         .width(Fill)
@@ -1926,9 +1968,12 @@ pub fn menu_item<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
 }
 
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
-    let height = if item.detail.is_some() { style::MENU_ITEM_HEIGHT * 2.0 } else { style::MENU_ITEM_HEIGHT };
+    let height = menu_entry_height(item.detail.is_some());
     let label: Element<'a, M> = match item.detail {
         Some(detail) => column![menu_label(item.label), detail_line(detail)].width(Fill).into(),
+        // Without tags nothing takes from the label's width: clip it as every menu did before
+        // (task M12.5 must not move the entries of the suite's other menus).
+        None if item.tags.is_empty() => line_label(typo::body(), item.label),
         None => menu_label(item.label),
     };
     let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
@@ -1956,26 +2001,38 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
         .into()
 }
 
+/// How high a menu entry is: [`style::MENU_ITEM_HEIGHT`], and with a detail line that line's height
+/// of `typo::meta()` more, so title and detail stand close together in the middle of the entry with
+/// the same air above and below as a one-line entry has.
+fn menu_entry_height(detail: bool) -> f32 {
+    if detail { style::MENU_ITEM_HEIGHT + typo::line_height(typo::meta()) } else { style::MENU_ITEM_HEIGHT }
+}
+
 /// The label of a menu entry, cut with "…" to the width the tags and trail leave it (measured when
 /// laid out) instead of clipped mid-letter: the same look as [`line_label`] otherwise.
 fn menu_label<'a, M: 'a>(label: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
     let label = label.to_string();
-    responsive(move |size| {
+    measured_line(typo::body(), move |size| {
         let shown = typo::ellipsize(&label, typo::body(), size.width);
         typo::text(typo::body(), shown).wrapping(Wrapping::None).into()
     })
-    .into()
 }
 
 /// The second line of a menu entry: `typo::meta()` in `text_3`, cut with "…" to the width the
 /// label column has, which the tags behind the label take from (measured when laid out).
 fn detail_line<'a, M: 'a>(detail: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
     let detail = detail.to_string();
-    responsive(move |size| {
+    measured_line(typo::meta(), move |size| {
         let shown = typo::ellipsize(&detail, typo::meta(), size.width);
         typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
     })
-    .into()
+}
+
+/// A line of text in `level` built by `view` from the width it gets, exactly one line of `level`
+/// high: `responsive` alone takes all the height it is offered, and its text would then sit at the
+/// top of the entry instead of in its middle.
+fn measured_line<'a, M: 'a>(level: typo::Level, view: impl Fn(Size) -> Element<'a, M> + 'a) -> Element<'a, M> {
+    container(responsive(view)).width(Fill).height(typo::line_height(level)).into()
 }
 
 /// A [`MenuTag`] behind the label of a menu entry: `typo::caption()` in `text_3`, with the sparkles
@@ -5640,10 +5697,17 @@ mod tests {
             Some(&anchor),
         );
         let _: Element<'_, Msg> = split_file_chip("travel-policy.pdf", "", "", None, None, None);
-        let _: Element<'_, Msg> = split_action(Icon::Download, "Save all", Some(Msg::Go), Some(Msg::Close), None);
-        let _: Element<'_, Msg> = split_action(Icon::Save, "Save all", None, None, Some(&anchor));
-        let head =
-            file_block_head("2 attachments", "3 KB", Some(split_action(Icon::Download, "Save all", None, None, None)));
+        let tip = "More ways to save all";
+        let _: Element<'_, Msg> = split_action(Icon::Download, "Save all", tip, Some(Msg::Go), Some(Msg::Close), None);
+        let _: Element<'_, Msg> = split_action(Icon::Save, "Save all", tip, None, None, Some(&anchor));
+        let _: Element<'_, Msg> =
+            split_action_framed(Icon::Download, "Save all", tip, Some(Msg::Go), Some(Msg::Close), Some(&anchor));
+        let _: Element<'_, Msg> = split_action_framed(Icon::Download, "Save all", "", None, None, None);
+        let head = file_block_head(
+            "2 attachments",
+            "3 KB",
+            Some(split_action(Icon::Download, "Save all", tip, None, None, None)),
+        );
         let chips: Element<'_, Msg> = row![file_chip("a.pdf", "", None)].into();
         let _: Element<'_, Msg> = file_block(head, chips);
     }
@@ -5661,6 +5725,18 @@ mod tests {
         assert!(item.detail.is_some());
         assert!(MenuItem::new(Icon::Folder, "Plain", Msg::Go).detail.is_none());
         let _: Element<'_, Msg> = menu_item(item);
+        let _: Element<'_, Msg> = menu_item(MenuItem::new(Icon::Folder, "Tagged", Msg::Go).tag("Click", false));
+    }
+
+    /// Design review of #290: an entry without a detail keeps the height every menu had; one with a
+    /// detail grows by one line of `meta`, not by a whole entry, so its two lines stay together.
+    #[test]
+    fn a_detail_adds_one_meta_line_to_a_menu_entry() {
+        assert_eq!(menu_entry_height(false), style::MENU_ITEM_HEIGHT);
+        assert_eq!(menu_entry_height(true), style::MENU_ITEM_HEIGHT + typo::line_height(typo::meta()));
+        // Title and detail fit in it with air above and below.
+        let lines = typo::line_height(typo::body()) + typo::line_height(typo::meta());
+        assert!(menu_entry_height(true) > lines);
     }
 
     /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take

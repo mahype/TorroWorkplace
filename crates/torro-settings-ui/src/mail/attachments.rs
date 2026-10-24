@@ -48,7 +48,7 @@ use torro_mail::{
 };
 
 use super::{AppAction, FolderFor};
-use crate::parts::{confirm, dialog, field, picker, pressable, row_frame, setting_row};
+use crate::parts::{confirm, dialog, field, pressable, row_frame, setting_row};
 use crate::{Action, Data};
 
 /// The id of the editor's name field: "Save" with a mistake in the name goes there.
@@ -95,6 +95,10 @@ const MONTHS: [&str; 12] = [
 #[derive(Debug, Default)]
 pub struct State {
     editor: Option<Editor>,
+    /// The menu of "Click on an attachment ▾" is open.
+    click_menu: bool,
+    /// Where that menu hangs: at its button on the page, laid out in the same frame.
+    click_anchor: Anchor,
 }
 
 impl State {
@@ -126,6 +130,8 @@ pub enum Condition {
 pub enum Message {
     /// "Click on an attachment" was set.
     Click(AttachmentClick),
+    /// "Click on an attachment ▾": open its menu, or close it again.
+    OpenClick,
     /// "Change…" at the Downloads folder: the window opens the system's chooser.
     ChangeDownloads,
     /// The window's chooser closed with a folder for `FolderFor` ([`super::folder_chosen`]).
@@ -285,8 +291,17 @@ impl Mistakes {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
     match message {
         Message::Click(click) => {
+            state.click_menu = false;
             let value = serde_json::to_value(&click).unwrap_or_default();
             Action::send(Request::SetSetting { key: SettingKey::MailAttachmentClick, value })
+        }
+        Message::OpenClick => {
+            state.click_menu = !state.click_menu;
+            Action::None
+        }
+        Message::CloseMenu if state.click_menu => {
+            state.click_menu = false;
+            Action::None
         }
         Message::ChangeDownloads => Action::App(AppAction::PickFolder(FolderFor::Downloads)),
         Message::FolderChosen(FolderFor::Downloads, path) => {
@@ -403,6 +418,7 @@ fn editor_update(editor: &mut Editor, message: Message, data: &Data) -> (Action<
         }
         // Handled by `update`, which owns the page.
         Message::Click(_)
+        | Message::OpenClick
         | Message::ChangeDownloads
         | Message::FolderChosen(FolderFor::Downloads, _)
         | Message::Add
@@ -415,6 +431,9 @@ fn editor_update(editor: &mut Editor, message: Message, data: &Data) -> (Action<
 /// What Escape means here: close the open menu, then the question, then the dialog. `None` while
 /// no dialog is open – then the settings close as before.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.click_menu {
+        return Some(Message::CloseMenu);
+    }
     let editor = state.editor.as_ref()?;
     Some(if editor.menu.is_some() {
         Message::CloseMenu
@@ -607,7 +626,7 @@ fn click_choices(data: &Data) -> Vec<ClickChoice> {
     choices
 }
 
-/// "Click on an attachment" as a choice of a pick list.
+/// A choice of "Click on an attachment": what it sets and the words of its menu entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ClickChoice {
     click: AttachmentClick,
@@ -704,18 +723,23 @@ fn example_value(placeholder: &str, from: DateSource) -> String {
 // ----- Page (C) -----------------------------------------------------------------------------
 
 /// The section's page: "Clicking an attachment" and "Save targets". The editor is the [`overlay`].
-pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    column![clicking_group(data), targets_group(data)].spacing(layout::section_gap()).into()
+pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    column![clicking_group(state, data), targets_group(data)].spacing(layout::section_gap()).into()
 }
 
-/// "Clicking an attachment": the click and the Downloads folder.
-fn clicking_group(data: &Data) -> Element<'_, Message> {
-    let choices = click_choices(data);
+/// The choice "Click on an attachment" holds now. A target that is gone opens the file (the core sets
+/// it back), so the button says "Open".
+fn chosen_click(choices: &[ClickChoice], data: &Data) -> Option<usize> {
     let held = &data.settings.mail_attachments.click;
-    // A target that is gone opens the file (the core sets it back), so the list says "Open".
-    let chosen = choices.iter().find(|choice| &choice.click == held).or(choices.first()).cloned();
-    let click = match chosen {
-        Some(chosen) => picker(choices, chosen, |choice: ClickChoice| Message::Click(choice.click)),
+    choices.iter().position(|choice| &choice.click == held).or((!choices.is_empty()).then_some(0))
+}
+
+/// "Clicking an attachment": the click and the Downloads folder. The click is a menu button
+/// (`widgets::select_button`) like "Insert ▾" in the editor, its menu the [`overlay`] of the page.
+fn clicking_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let choices = click_choices(data);
+    let click = match chosen_click(&choices, data).and_then(|at| choices.get(at)) {
+        Some(chosen) => widgets::select_button(&state.click_anchor, chosen.label.clone(), Message::OpenClick),
         None => blank().into(),
     };
     let downloads = Some(data.downloads.clone()).filter(|path| !path.is_empty());
@@ -733,6 +757,22 @@ fn clicking_group(data: &Data) -> Element<'_, Message> {
         ],
         None,
     )
+}
+
+/// The menu of "Click on an attachment ▾" at its button: every choice, the held one marked.
+fn click_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let choices = click_choices(data);
+    let held = chosen_click(&choices, data);
+    let items = choices
+        .into_iter()
+        .enumerate()
+        .map(|(at, choice)| {
+            let item = MenuItem::new(Icon::Plus, choice.label, Message::Click(choice.click));
+            MenuItem { mark: None, ..item }.current(held == Some(at))
+        })
+        .collect();
+    let card = widgets::menu(vec![widgets::MenuSection::new(items)]);
+    widgets::floating(&state.click_anchor, Placement::Below(Align::End), card, Message::CloseMenu)
 }
 
 /// "Save targets": one row per target and "Add save target".
@@ -791,6 +831,9 @@ struct Anchors {
 /// save target?" instead while it is asked. `None` while no editor is open. `class` is the window's
 /// size class: narrow windows put the labels above the fields.
 pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option<Element<'a, Message>> {
+    if state.click_menu && state.editor.is_none() {
+        return Some(click_menu(state, data));
+    }
     let editor = state.editor.as_ref()?;
     if editor.deleting {
         return Some(confirm(
@@ -915,17 +958,13 @@ fn suggest_part<'a>(editor: &'a Editor, data: &'a Data, anchors: &Anchors, stack
         .into_iter()
         .map(|condition| {
             let label = condition_label(data, &condition);
-            let chip =
-                widgets::chip(Some(Mark::Icon(Icon::X)), label.clone(), Some(Message::RemoveCondition(condition)));
-            widgets::with_tooltip(chip, trf("Remove {condition}", &[("condition", &label)]))
+            let tip = trf("Remove {condition}", &[("condition", &label)]);
+            widgets::with_tooltip(condition_chip(label, Message::RemoveCondition(condition)), tip)
         })
         .collect();
-    let add = widgets::text_button(
-        Some(Icon::Plus),
-        tr("Add condition"),
-        style::button::ghost,
-        Some(Message::OpenConditions),
-    );
+    // A chip like the conditions, so it lines up in their grid instead of a taller button that
+    // wraps with its own padding.
+    let add = widgets::chip(Some(Mark::Icon(Icon::Plus)), tr("Add condition"), Some(Message::OpenConditions));
     chips.push(widgets::anchored(&anchors.conditions, add));
     let explained = match editor.conditions().is_empty() {
         true => tr("Never suggested."),
@@ -951,6 +990,23 @@ fn suggest_part<'a>(editor: &'a Editor, data: &'a Data, anchors: &Anchors, stack
     ]
     .spacing(space::m())
     .into()
+}
+
+/// A condition of "Suggest when" as a chip (`style::button::chip`, as high as `widgets::chip`): its
+/// words, then ✕ at the right, where a chip that removes something has it – `widgets::chip` leads with
+/// its mark, which would read as the condition's icon. A click sends `on_press`.
+fn condition_chip<'a>(label: String, on_press: Message) -> Element<'a, Message> {
+    let x = torro_gui::icon::icon(Icon::X, torro_gui::icon::SIZE_SM)
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
+    let content = row![typo::text(typo::meta(), label).wrapping(Wrapping::None), x]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+    iced::widget::button(container(content).center_y(Fill))
+        .height(style::CHIP_HEIGHT)
+        .padding(style::CHIP_PADDING)
+        .style(style::button::chip)
+        .on_press(on_press)
+        .into()
 }
 
 /// The live preview at the fixed example: where the invoice would go, and why.
@@ -1206,6 +1262,29 @@ mod tests {
     fn clear(state: &mut State, data: &Data, scheme: Scheme) {
         let _ = update(state, Message::Type(scheme, text_editor::Action::SelectAll), data);
         let _ = update(state, Message::Type(scheme, text_editor::Action::Edit(Edit::Backspace)), data);
+    }
+
+    /// Design review of #290: "Click on an attachment ▾" is a menu button like "Insert ▾". Its menu
+    /// is the page's overlay while open; a choice, Escape and a click beside it close it again.
+    #[test]
+    fn the_click_menu_opens_and_closes() {
+        let mut state = State::default();
+        let data = data();
+        assert!(overlay(&state, &data, SizeClass::Wide).is_none() && escape(&state).is_none());
+        let _ = update(&mut state, Message::OpenClick, &data);
+        assert!(state.click_menu && overlay(&state, &data, SizeClass::Wide).is_some());
+        assert!(matches!(escape(&state), Some(Message::CloseMenu)), "Escape closes the menu first");
+        let _ = update(&mut state, Message::CloseMenu, &data);
+        assert!(!state.click_menu && escape(&state).is_none(), "then Escape is the window's again");
+        let _ = update(&mut state, Message::OpenClick, &data);
+        let _ = update(&mut state, Message::OpenClick, &data);
+        assert!(!state.click_menu, "the button closes its menu, too");
+        let _ = update(&mut state, Message::OpenClick, &data);
+        let _ = update(&mut state, Message::Click(AttachmentClick::SaveAs), &data);
+        assert!(!state.click_menu, "a choice closes it");
+        let choices = click_choices(&data);
+        assert_eq!(chosen_click(&choices, &data), Some(0), "the demo's setting opens the file");
+        let _: Element<'_, Message> = view(&state, &data);
     }
 
     /// The choice of "Click on an attachment" is one `set_setting` with its key; a target is sent

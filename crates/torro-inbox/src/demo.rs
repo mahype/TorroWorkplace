@@ -862,8 +862,23 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             from: ("Jonas Weber", "jonas.weber@work.example.org"),
             minutes: 3 * 24 * 60,
             flags: READ,
-            text: "Here are the minutes from Monday. Open points are at the end.",
-            attachments: &[("minutes-monday.txt", "text/plain", 1_180)],
+            text: "Here are the minutes from Monday and the slides of every talk. Open points are at the end.",
+            // Many files (design review of #290): the reader's block shows two lines of chips and the
+            // panel four rows, the rest scrolls inside them.
+            attachments: &[
+                ("minutes-monday.txt", "text/plain", 1_180),
+                ("slides-welcome.pdf", "application/pdf", 412_300),
+                ("slides-roadmap-2027.pdf", "application/pdf", 1_820_400),
+                ("slides-sidebar-drafts.pdf", "application/pdf", 2_310_900),
+                ("slides-mail-reader.pdf", "application/pdf", 1_204_700),
+                ("slides-calendar.pdf", "application/pdf", 988_100),
+                ("slides-tasks.pdf", "application/pdf", 760_200),
+                ("slides-settings.pdf", "application/pdf", 530_800),
+                ("slides-accessibility.pdf", "application/pdf", 640_500),
+                ("slides-release-plan.pdf", "application/pdf", 301_900),
+                ("photo-whiteboard.jpg", "image/jpeg", 2_904_300),
+                ("attendees.csv", "text/csv", 1_020),
+            ],
             category: Some(MailCategory::by_model(Category::Document, 0.84)),
             ..Letter::new("m:w6", WORK, "inbox", "Minutes from Monday")
         },

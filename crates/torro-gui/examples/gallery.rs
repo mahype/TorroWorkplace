@@ -2530,18 +2530,21 @@ fn mailbar() -> Element<'static, Msg> {
     .spacing(space::s())
     .wrap()
     .vertical_spacing(space::s());
-    let save_all = widgets::split_action(Icon::Download, "Save all", Some(Msg::Noop), Some(Msg::Noop), None);
+    let tip = "More ways to save all";
+    let save_all = widgets::split_action(Icon::Download, "Save all", tip, Some(Msg::Noop), Some(Msg::Noop), None);
     let block = widgets::file_block(widgets::file_block_head("3 attachments", "188 KB", Some(save_all)), chips);
+    let framed = widgets::split_action_framed(Icon::Download, "Save all", tip, Some(Msg::Noop), Some(Msg::Noop), None);
     let menu = widgets::menu(vec![MenuSection::new(vec![
         MenuItem::new(Icon::Folder, "Invoices", Msg::Noop)
             .detail("~/Documents/Invoices/2026/10")
             .tag("Click", false)
             .tag("Suggested", true),
         MenuItem::new(Icon::Download, "Save to Downloads", Msg::Noop).detail("~/Downloads"),
+        MenuItem::new(Icon::Save, "Save as…", Msg::Noop),
     ])]);
     let reader_end = column![
         rule::horizontal(1).style(style::rule),
-        container(column![block, menu].spacing(space::m())).padding([space::s(), space::xl()]),
+        container(column![block, row![framed], menu].spacing(space::m())).padding([space::s(), space::xl()]),
     ]
     .width(720);
 
