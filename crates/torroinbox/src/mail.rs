@@ -3278,8 +3278,10 @@ pub enum FileAct {
 }
 
 /// What a click on the name of the attachment `part` does (task M12.6) with the setting `click` and
-/// the mail's plans `saving` (`None` while they load): Open, Save to Downloads and Save as… as set; a
-/// target only while `saving` lists it – one that is gone opens; "Suggested target, else open" the
+/// the mail's plans `saving` (`None` while they load or when they could not be loaded): Open, Save to
+/// Downloads and Save as… as set; a target while `saving` lists it – one that is gone opens –, and
+/// without plans the target all the same: the core knows its targets and answers for one that is
+/// gone, where opening instead would do something else unasked. "Suggested target, else open" the
 /// plan's `sure` target – one whose conditions hold without a category the model only guessed
 /// (decision 4 of issue #290) –, else it opens.
 pub fn click_act(click: &AttachmentClick, saving: Option<&SaveTargets>, part: &str) -> FileAct {
@@ -3287,7 +3289,7 @@ pub fn click_act(click: &AttachmentClick, saving: Option<&SaveTargets>, part: &s
         AttachmentClick::Open => FileAct::Open,
         AttachmentClick::Downloads => FileAct::Downloads,
         AttachmentClick::SaveAs => FileAct::Choose,
-        AttachmentClick::Target(id) => listed(saving, id).unwrap_or(FileAct::Open),
+        AttachmentClick::Target(id) => set_target(saving, id, FileAct::Open),
         AttachmentClick::Suggested => saving
             .and_then(|saving| saving.plan(part)?.sure.as_deref())
             .and_then(|id| listed(saving, id))
@@ -3297,12 +3299,22 @@ pub fn click_act(click: &AttachmentClick, saving: Option<&SaveTargets>, part: &s
 
 /// What a click on "Save all" does (task M12.6): Open and "Suggested target, else open" save to
 /// Downloads – there is nothing to open for several files, and each file has its own suggestion –,
-/// Save as… asks for a folder, a target saves there while `saving` lists it, else to Downloads.
+/// Save as… asks for a folder, a target saves there while `saving` lists it or without plans (as in
+/// [`click_act`]), one that is gone to Downloads.
 pub fn all_act(click: &AttachmentClick, saving: Option<&SaveTargets>) -> FileAct {
     match click {
         AttachmentClick::Open | AttachmentClick::Suggested | AttachmentClick::Downloads => FileAct::Downloads,
         AttachmentClick::SaveAs => FileAct::Choose,
-        AttachmentClick::Target(id) => listed(saving, id).unwrap_or(FileAct::Downloads),
+        AttachmentClick::Target(id) => set_target(saving, id, FileAct::Downloads),
+    }
+}
+
+/// The target `id` of the setting: while `saving` lists it, `gone` when it lists it no longer, and
+/// the target unchecked without plans – the core says when it is gone.
+fn set_target(saving: Option<&SaveTargets>, id: &str, gone: FileAct) -> FileAct {
+    match saving {
+        Some(_) => listed(saving, id).unwrap_or(gone),
+        None => FileAct::Target(id.to_owned()),
     }
 }
 
@@ -3313,8 +3325,8 @@ fn listed(saving: Option<&SaveTargets>, id: &str) -> Option<FileAct> {
 
 /// The words of `act` – for "Save all" (`all`) or one attachment: "Open", "Save to Downloads" / "Save
 /// all to Downloads", "Save as…" / "Save all to folder…", "Save to Invoices" with the target's name
-/// from `saving` ("Save to Unknown target" for one it does not list, which [`click_act`] never
-/// gives).
+/// from `saving` ("Save to Unknown target" for one it does not list: the setting's target while the
+/// plans are not in, [`click_act`]).
 pub fn act_words(act: &FileAct, saving: Option<&SaveTargets>, all: bool) -> String {
     match (act, all) {
         (FileAct::Open, _) => tr("Open").to_owned(),
@@ -3479,20 +3491,29 @@ pub async fn show_folder(folder: PathBuf) -> Result<(), String> {
     start(opener(&folder))
 }
 
-/// The words of where a save to `to` went, for its hint ([`saved_text`]): "Downloads", the target with
-/// the subfolders of the attachment `part` ([`place_words`]; for all of them the target alone), the
-/// name of the folder chosen, or of the file's folder for "Save as…".
-pub fn save_place(to: &SaveTo, saving: Option<&SaveTargets>, part: Option<&str>) -> String {
+/// The words of where a save to `to` goes, for its hint ([`saved_text`]), taken when it is sent – the
+/// person may open another mail before the answer: "Downloads", the target with the subfolders of the
+/// attachment `part` ([`place_words`]; for all of them the target alone), the name of the folder
+/// chosen, or of the file's folder for "Save as…". `None` for a target `saving` does not list (no
+/// plans yet): the hint then names the folder the file went to ([`saved_place`]).
+pub fn save_place(to: &SaveTo, saving: Option<&SaveTargets>, part: Option<&str>) -> Option<String> {
     let named = |path: &Path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     match to {
-        SaveTo::Downloads => tr("Downloads").to_owned(),
-        SaveTo::Target(id) => match saving {
-            Some(saving) => place_words(saving, id, part),
-            None => tr("Unknown target").to_owned(),
-        },
-        SaveTo::File(file) => Path::new(file).parent().map(named).unwrap_or_default(),
-        SaveTo::Folder(folder) => named(Path::new(folder)),
+        SaveTo::Downloads => Some(tr("Downloads").to_owned()),
+        SaveTo::Target(id) => {
+            saving.filter(|saving| saving.target(id).is_some()).map(|saving| place_words(saving, id, part))
+        }
+        SaveTo::File(file) => Some(Path::new(file).parent().map(named).unwrap_or_default()),
+        SaveTo::Folder(folder) => Some(named(Path::new(folder))),
     }
+}
+
+/// The words of where a save went for its hint: `place` as [`save_place`] took it, else the name of
+/// the folder the first file went to ([`saved_folder`]).
+pub fn saved_place(place: Option<String>, saved: &SavedAttachments) -> String {
+    place
+        .or_else(|| saved_folder(saved)?.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_default()
 }
 
 /// The name the save dialog of "Save as…" starts with (task M12.6): the plan's cleaned name, else the
@@ -4145,7 +4166,7 @@ mod tests {
         assert_eq!(click_act(&AttachmentClick::SaveAs, None, "2"), FileAct::Choose);
         let target = AttachmentClick::Target("demo-invoices".into());
         assert_eq!(click_act(&target, Some(&saving), "2"), invoices());
-        assert_eq!(click_act(&target, None, "2"), FileAct::Open, "not known yet: open");
+        assert_eq!(click_act(&target, None, "2"), invoices(), "no plans: the core decides");
         assert_eq!(click_act(&AttachmentClick::Target("gone".into()), Some(&saving), "2"), FileAct::Open);
         assert_eq!(click_act(&AttachmentClick::Suggested, Some(&saving), "2"), FileAct::Open, "a guessed category");
         saving.files[0].sure = Some("demo-invoices".into());
@@ -4161,6 +4182,8 @@ mod tests {
         ] {
             assert_eq!(all_act(&click, Some(&saving)), act, "{click:?}");
         }
+        let target = AttachmentClick::Target("demo-invoices".into());
+        assert_eq!(all_act(&target, None), invoices(), "no plans: not silently to Downloads");
         assert_eq!(act_words(&invoices(), Some(&saving), false), trf("Save to {target}", &[("target", &"Invoices")]));
         assert_eq!(act_words(&FileAct::Choose, None, true), tr("Save all to folder…"));
     }
@@ -4224,25 +4247,31 @@ mod tests {
         let path = "/home/anna/Documents/Invoices/2026/09/invoice-2026-09-30.pdf";
         assert_eq!(one.saved.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), [path]);
         assert!(!Path::new(path).exists(), "nothing written");
-        let place = save_place(&SaveTo::Target("demo-invoices".into()), Some(&saving), Some("2"));
+        let place = saved_place(save_place(&SaveTo::Target("demo-invoices".into()), Some(&saving), Some("2")), &one);
         assert_eq!(place, "Invoices › 2026 › 09");
         assert_eq!(saved_text(&one, &place), trf("Saved to {where}", &[("where", &place)]));
         assert_eq!(saved_folder(&one), Some(PathBuf::from("/home/anna/Documents/Invoices/2026/09")));
 
         let all = demo_saved(&mail, &[], &SaveTo::Downloads).expect("planned");
         assert_eq!(all.saved.len(), 2);
-        let place = save_place(&SaveTo::Downloads, Some(&saving), None);
+        let place = saved_place(save_place(&SaveTo::Downloads, Some(&saving), None), &all);
         assert_eq!(
             saved_text(&all, &place),
             trf("{n} attachments saved to {where}", &[("n", &2), ("where", &tr("Downloads"))])
         );
         assert_eq!(
-            save_place(&SaveTo::Target("demo-invoices".into()), Some(&saving), None),
-            "Invoices",
+            save_place(&SaveTo::Target("demo-invoices".into()), Some(&saving), None).as_deref(),
+            Some("Invoices"),
             "all: the target"
         );
-        assert_eq!(save_place(&SaveTo::Folder("/home/anna/Bills".into()), None, None), "Bills");
-        assert_eq!(save_place(&SaveTo::File("/home/anna/Bills/a.pdf".into()), None, Some("2")), "Bills");
+        assert_eq!(save_place(&SaveTo::Folder("/home/anna/Bills".into()), None, None).as_deref(), Some("Bills"));
+        assert_eq!(
+            save_place(&SaveTo::File("/home/anna/Bills/a.pdf".into()), None, Some("2")).as_deref(),
+            Some("Bills")
+        );
+        // No plans when it was sent (the mail's targets could not be loaded): the folder it went to.
+        let unplanned = save_place(&SaveTo::Target("demo-invoices".into()), None, Some("2"));
+        assert_eq!((unplanned.as_deref(), saved_place(unplanned.clone(), &one).as_str()), (None, "09"));
         assert_eq!(demo_saved(&mail, &["9".into()], &SaveTo::Downloads), Err(InboxError::NotFound));
         assert!(demo_saved(&mail, &[], &SaveTo::File("/tmp/a.pdf".into())).is_err(), "one file at a time");
         assert_eq!(saved_folder(&SavedAttachments::default()), None);

@@ -2800,11 +2800,13 @@ pub enum Message {
     SaveAsChosen(String, String, Option<std::path::PathBuf>),
     /// The folder dialog of "Save all to folder…" answered for the message, alike.
     FolderChosen(String, Option<std::path::PathBuf>),
-    /// `mail.save_attachments` answered: the message, the part (`None`: all) and where to, for the
-    /// hint, and what was saved.
-    AttachmentsSaved(String, Option<String>, SaveTo, Result<SavedAttachments, String>),
+    /// `mail.save_attachments` answered: the words of where, taken when it was sent
+    /// ([`mail::save_place`]), for the hint, and what was saved.
+    AttachmentsSaved(Option<String>, Result<SavedAttachments, String>),
     /// "Show in folder" in the hint after saving (task M12.6).
     ShowInFolder,
+    /// The file manager was asked to show that folder.
+    FolderShown(Result<(), String>),
     /// "Manage save targets…" in an attachment's menu: Settings › Attachments of the mail window.
     ManageSaveTargets,
     /// A web address under a mail's or an entry's text ("Links") was clicked.
@@ -4349,6 +4351,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return Task::none();
                 }
                 let first = self.launch.open == Some(Open::AttachmentSaved) && self.hint.is_none();
+                // Said, not kept silently: without plans a click on a target still goes there
+                // ([`mail::click_act`]), but the menus lack the targets.
+                if let Err(err) = &result {
+                    self.error = Some(Failure::new(tr("Couldn't load the save targets."), err.clone()));
+                }
                 self.saving = Some((id.clone(), result));
                 // `--open attachment-saved`: the save that makes the hint, once the plans are in.
                 if first && let Some(saving) = self.saving_of(&id) {
@@ -4381,7 +4388,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             },
             // Cancelled in the dialog: nothing is sent, nothing is said.
             Message::SaveAsChosen(_, _, None) | Message::FolderChosen(_, None) => {}
-            Message::AttachmentsSaved(id, part, to, Ok(saved)) => {
+            Message::AttachmentsSaved(place, Ok(saved)) => {
                 if saved.saved.is_empty() && saved.skipped.is_empty() {
                     // Nothing lies anywhere: say why, as the core said it (a folder macOS keeps closed).
                     if let Some(failed) = saved.failed.first() {
@@ -4389,19 +4396,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     }
                     return Task::none();
                 }
-                let place = mail::save_place(&to, self.saving_of(&id), part.as_deref());
+                let place = mail::saved_place(place, &saved);
                 let (text, folder) = (mail::saved_text(&saved, &place), mail::saved_folder(&saved));
                 self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
             }
-            Message::AttachmentsSaved(_, _, _, Err(err)) => {
+            Message::AttachmentsSaved(_, Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't save the attachments."), err));
             }
             Message::ShowInFolder => {
                 if let Some(folder) = self.hint.as_ref().and_then(|hint| hint.folder.clone()) {
                     #[cfg(test)]
                     self.sent.push(Sent::ShowFolder(folder.clone()));
-                    return Task::perform(mail::show_folder(folder), Message::LinkOpened);
+                    return Task::perform(mail::show_folder(folder), Message::FolderShown);
                 }
+            }
+            Message::FolderShown(Ok(())) => {}
+            Message::FolderShown(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't show the folder."), err));
             }
             Message::ManageSaveTargets => {
                 self.close_menus();
@@ -4850,18 +4861,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// `mail.save_attachments` for the attachment `part` of the mail `id` (`None`: all) to `to`; the
-    /// answer comes back with what it was for, so the hint can say where ([`Message::AttachmentsSaved`]).
+    /// words of where go along now, so the hint can say where even when another mail is open by the
+    /// time the answer comes ([`Message::AttachmentsSaved`]).
     fn save_files(&mut self, id: String, part: Option<String>, to: SaveTo) -> Task<Message> {
         let parts: Vec<String> = part.iter().cloned().collect();
         #[cfg(test)]
         self.sent.push(Sent::Save(id.clone(), parts.clone(), to.clone()));
+        let place = mail::save_place(&to, self.saving_of(&id), part.as_deref());
         let inbox = self.inbox.clone();
         Task::perform(
             async move {
-                let saved = MailSource::save_attachments(inbox.as_ref(), id.clone(), parts, to.clone()).await;
-                (id, part, to, saved.map_err(|err| err.to_string()))
+                let saved = MailSource::save_attachments(inbox.as_ref(), id, parts, to).await;
+                saved.map_err(|err| err.to_string())
             },
-            |(id, part, to, saved)| Message::AttachmentsSaved(id, part, to, saved),
+            move |saved| Message::AttachmentsSaved(place.clone(), saved),
         )
     }
 
@@ -13412,6 +13425,23 @@ mod tests {
         app
     }
 
+    /// Review of PR #308: the save targets could not be loaded – that is said, and with a target as
+    /// the click "Save all" and a click on a name still go to it instead of silently to Downloads or
+    /// open; the core answers for a target that is gone.
+    #[test]
+    fn without_plans_the_click_still_goes_to_its_target() {
+        let mut app = invoice();
+        app.look.click = AttachmentClick::Target("demo-invoices".into());
+        let _ = app.update(Message::SaveTargets("m:p3".into(), Err("the core is busy".into())));
+        let failure = app.error.take().expect("said");
+        assert_eq!((failure.what, failure.why.as_str()), (tr("Couldn't load the save targets."), "the core is busy"));
+        let target = SaveTo::Target("demo-invoices".into());
+        let _ = app.update(Message::SaveAll("m:p3".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), target.clone())));
+        let _ = app.update(Message::OpenAttachment("m:p3".into(), "2".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], target)));
+    }
+
     /// Task M12.6: the plans answer for the mail held only. A's answer arriving after B was opened and
     /// answered would put A's plans under B's attachments; it is dropped, B's stay.
     #[test]
@@ -13551,7 +13581,10 @@ mod tests {
         ));
         let Some(Sent::Save(id, parts, to)) = app.sent.last().cloned() else { panic!("a save") };
         let saved = block_on(MailSource::save_attachments(app.inbox.as_ref(), id.clone(), parts, to.clone()));
-        let _ = app.update(Message::AttachmentsSaved(id, Some("2".into()), to, saved.map_err(|err| err.to_string())));
+        let place = mail::save_place(&to, app.saving_of(&id), Some("2"));
+        // Another mail opened before the answer: the hint still says where the file went.
+        app.saving = None;
+        let _ = app.update(Message::AttachmentsSaved(place, saved.map_err(|err| err.to_string())));
         let hint = app.hint.clone().expect("a hint");
         assert_eq!(hint.text, trf("Saved to {where}", &[("where", &"Invoices › 2026 › 09")]));
         assert_eq!(hint.undo, None);
@@ -13560,6 +13593,9 @@ mod tests {
         let _ = app.view();
         let _ = app.update(Message::ShowInFolder);
         assert_eq!(app.sent.last(), Some(&Sent::ShowFolder(folder)));
+        let _ = app.update(Message::FolderShown(Err("no file manager".into())));
+        let failure = app.error.take().expect("said");
+        assert_eq!((failure.what, failure.why.as_str()), (tr("Couldn't show the folder."), "no file manager"));
 
         let file = |part: &str, path: &str| torro_ipc::mail::SavedFile { part: part.into(), path: path.into() };
         let partly = SavedAttachments {
@@ -13572,12 +13608,12 @@ mod tests {
             }],
             ..SavedAttachments::default()
         };
-        let _ = app.update(Message::AttachmentsSaved("m:p3".into(), None, SaveTo::Downloads, Ok(partly.clone())));
+        let _ = app.update(Message::AttachmentsSaved(Some(tr("Downloads").to_owned()), Ok(partly.clone())));
         let text = app.hint.as_ref().map(|hint| hint.text.clone());
         assert_eq!(text, Some(trf("{n} saved, {name} failed", &[("n", &1), ("name", &"usage-september.pdf")])));
         app.hint = None;
         let none = SavedAttachments { saved: Vec::new(), ..partly };
-        let _ = app.update(Message::AttachmentsSaved("m:p3".into(), None, SaveTo::Downloads, Ok(none)));
+        let _ = app.update(Message::AttachmentsSaved(Some(tr("Downloads").to_owned()), Ok(none)));
         assert_eq!(
             (app.hint.as_ref(), app.error.as_ref().map(|failure| failure.why.as_str())),
             (None, Some("Disk full"))
