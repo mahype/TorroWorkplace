@@ -1123,7 +1123,7 @@ WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) �
   Hauptinhalt aus einer Artikel-Seite ohne Navigation und Skripte, Kürzen, falscher Typ abgelehnt.
 
 ### WEB.4 Kern: Befehle, Schlüssel und SearXNG-Prüfung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WEB.2, WEB.3 · **Dateien:** `crates/torroworkplace/src/core.rs`,
   `crates/torroworkplace/src/tools/{mod,web/mod}.rs`, `crates/torroworkplace/src/approvals.rs`,
   `crates/torro-core/src/account.rs` (`websearch-`), `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`

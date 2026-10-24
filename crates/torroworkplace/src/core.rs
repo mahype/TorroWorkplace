@@ -4268,6 +4268,12 @@ impl Core {
                 }
             }
             Request::SetSetting { key, value } => {
+                // A new SearXNG address answers in JSON before it is stored (issue #305).
+                if key == SettingKey::SearxngAddress
+                    && let Some(refused) = self.searxng_refusal(&value).await
+                {
+                    return refused;
+                }
                 // A client keeps or removes the PDF paths but never sets one (point 9, issue #225),
                 // judged again under the settings lock.
                 let set = match client {
@@ -4613,8 +4619,9 @@ impl Core {
             | Request::WebSearch { .. }
             | Request::FetchPage { .. }
             | Request::ListSearchProviders) => self.tools_request(request, reach, Maker::App).await,
-            // The key of a web search provider (issue #305): the handler comes with task WEB.4.
-            Request::SetSearchKey { .. } => web_not_yet("accounts.set_search_key"),
+            // The key of a web search provider (issue #305): the app key's only, kept back from every
+            // client by its rights; into the keychain, never into an answer.
+            Request::SetSearchKey { provider, key } => self.tools.web().set_key(provider, key).await,
             request @ (Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. }) => {
                 match reach {
                     Reach::Suite => self.tools_request(request, reach, Maker::App).await,
@@ -6978,11 +6985,14 @@ impl Core {
             }
             (Request::OpenFile { file }, maker) => self.tools.open_file(&file, maker).await,
             (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
-            // The tool `web` (issue #305): switch and selection are checked like the PDF tool's; the
-            // handlers come with task WEB.4.
-            (request @ (Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders), _) => {
-                web_not_yet(request.operation().name())
+            // The tool `web` (issue #305, task WEB.4): switch and selection are checked like the PDF
+            // tool's, before; a client over API and MCP waits for no approval (they only read). Every
+            // client's address obeys `robots.txt`: only the assistant knows what the person wrote.
+            (Request::WebSearch { query, count, language }, _) => {
+                self.tools.web().search(&settings.web_search, &query, count, language.as_deref()).await
             }
+            (Request::FetchPage { url }, _) => self.tools.web().fetch(&url, false).await,
+            (Request::ListSearchProviders, _) => self.tools.web().list(&settings.web_search).await,
             (other, _) => Refused::Forbidden { command: other.operation().name() }.response(),
         }
     }
@@ -8108,6 +8118,18 @@ impl Core {
         }
     }
 
+    /// Why the SearXNG address in `value` (`settings.set_setting searxng_address`, issue #305) is not
+    /// stored: an address other than the stored one is asked once whether it answers in JSON
+    /// ([`crate::tools::web::Web::check_searxng`]). `None` for `null`, the stored address and a
+    /// value the settings refuse anyway (they say why).
+    async fn searxng_refusal(&self, value: &serde_json::Value) -> Option<Response> {
+        let Ok(Some(address)) = torro_core::settings::WebSearch::address_from(value) else { return None };
+        if self.settings.current().web_search.searxng.as_deref() == Some(address.as_str()) {
+            return None;
+        }
+        self.tools.web().check_searxng(&address).await.err()
+    }
+
     /// `calendar.search_places` and `calendar.map_preview` (tasks TE.1, TE.5): `error` outside the
     /// limits ([`torro_ipc::pim::limit_refusal`]), `unsupported` while maps are off, so nothing is
     /// sent and nothing read. With maps on [`crate::places::Places`] asks the services of the
@@ -8770,12 +8792,6 @@ fn my_access(
     // outside its selection.
     let access = access.with_tools_on(tools.enabled.iter().copied().collect());
     Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
-}
-
-/// `unsupported` for a command of the web (issue #305) whose handler is not there yet (task WEB.4):
-/// nothing is searched, read or stored.
-fn web_not_yet(command: &str) -> Response {
-    Response::Error { code: "unsupported".into(), message: format!("{command} is not carried out yet") }
 }
 
 /// `forbidden` with [`torro_ipc::api::Lack::Tool`] for a command of one of the assistant's own
@@ -11556,8 +11572,26 @@ mod tests {
         use serde_json::json;
         use torro_core::settings::SearchProviderId;
         use torro_ipc::SettingKey;
+        // The person's SearXNG, in the local network (task WEB.4 asks it before the address is stored).
+        let searx = httpmock::MockServer::start_async().await;
+        searx
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/search").query_param("format", "json");
+                then.status(200).header("content-type", "application/json").body(r#"{"results":[]}"#);
+            })
+            .await;
+        // One that answers its results page instead: JSON is off there.
+        searx
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/html/search");
+                then.status(200).header("content-type", "text/html").body("<html>SearXNG</html>");
+            })
+            .await;
+        let local = searx.base_url();
         let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
+        let http = crate::tools::web::providers::http_client().expect("a client");
+        let web = crate::tools::web::testing::offline().with_http(http);
+        let core = core(dir.path()).with_tools(crate::tools::Tools::new(crate::tools::Roots::default()).with_web(web));
         let mut rights = RightsTemplate::FullAccess.rights();
         for area in Area::ALL {
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
@@ -11586,18 +11620,24 @@ mod tests {
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
 
         // The person switches two on and sets the address; one in the local network is fine.
-        for request in [switch("duckduckgo", true), switch("wikipedia", true), address(json!("http://10.0.0.5:8888"))] {
+        for request in [switch("duckduckgo", true), switch("wikipedia", true), address(json!(local))] {
             assert_eq!(ask(&core, Some(&app_key), request).await, Response::Ok);
         }
         let refused = address(json!("https://search.example.org/?key=1"));
         assert_eq!(code(&ask(&core, Some(&app_key), refused).await), "error", "a query is refused even then");
+        let no_json = ask(&core, Some(&app_key), address(json!(format!("{local}/html")))).await;
+        assert_eq!(code(&no_json), "unsupported");
+        assert_eq!(
+            message(&no_json),
+            tr("This SearXNG instance does not answer in JSON. Turn on the json format in its settings.")
+        );
         let set = settings(&core).await.web_search;
         let both = std::collections::BTreeSet::from([SearchProviderId::Duckduckgo, SearchProviderId::Wikipedia]);
         assert_eq!(set.providers, both);
-        assert_eq!(set.searxng.as_deref(), Some("http://10.0.0.5:8888"));
+        assert_eq!(set.searxng.as_deref(), Some(local.as_str()));
 
         // The stored address again sets nothing anew: an admin change, which waits for the person.
-        let asked = waits(ask(&core, Some(&key), address(json!("http://10.0.0.5:8888"))).await);
+        let asked = waits(ask(&core, Some(&key), address(json!(local))).await);
         assert_eq!(asked.command, "settings.set_setting");
         // Off and removing, one at a time and in the whole settings: run once the person allows them.
         let mut off = Box::new(settings(&core).await);
@@ -11610,27 +11650,38 @@ mod tests {
         }
         let kept = settings(&core).await.web_search;
         assert!(kept.providers.is_empty(), "off once the person allowed it");
-        assert_eq!(kept.searxng.as_deref(), Some("http://10.0.0.5:8888"), "whole settings keep the address");
+        assert_eq!(kept.searxng.as_deref(), Some(local.as_str()), "whole settings keep the address");
         let asked = waits(ask(&core, Some(&key), address(json!(null))).await);
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert_eq!(settings(&core).await.web_search.searxng, None, "removed once the person allowed it");
     }
 
-    /// Issue #305, decisions 20 and 26: the web's commands are checked like the PDF tool's – the switch
-    /// for everyone, `web` only when a person named it in the client's selection, reading in `tools`
-    /// is enough – and until their handlers come (task WEB.4) answer `unsupported`, asking no one.
-    /// `tools.list_tools` and `assistant.my_access` never let "all tools" stand for `web`.
+    /// The core with the web `web` (task WEB.4) and an audit log in `dir`, nothing of the person's.
+    fn with_web(dir: &std::path::Path, web: crate::tools::web::Web) -> Core {
+        audited(dir).with_tools(crate::tools::Tools::new(crate::tools::Roots::default()).with_web(web))
+    }
+
+    /// Issue #305, decisions 20 and 26, task WEB.4: the web's commands are checked like the PDF
+    /// tool's – the switch for everyone, `web` only when a person named it in the client's
+    /// selection, reading in `tools` is enough – and then run without asking anyone, also for a
+    /// client asking before every change. No provider on is `not-connected`. The log names the
+    /// commands, never the words or the address. `tools.list_tools` and `assistant.my_access`
+    /// never let "all tools" stand for `web`.
     #[tokio::test]
     async fn the_web_is_checked_like_a_tool_and_reached_only_when_named() {
-        use torro_core::settings::ToolId;
+        use torro_core::settings::{SearchProviderId, ToolId};
+        use torro_ipc::api::Confirm;
         let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
+        let duckduckgo = crate::tools::web::testing::FakeProvider::finding(SearchProviderId::Duckduckgo);
+        let web = crate::tools::web::testing::offline().with_providers(vec![duckduckgo.clone()]);
+        let core = with_web(dir.path(), web);
         let app_key = crate::clients::tests::app_key(dir.path());
-        let search = || Request::WebSearch { query: "Lisbon".into(), count: None, language: None };
-        let fetch = || Request::FetchPage { url: "https://example.org/".into() };
+        let search = || Request::WebSearch { query: "Lisbon trams".into(), count: None, language: None };
+        let fetch = || Request::FetchPage { url: "https://lisbon.example.org/trams".into() };
         let mut rights = RightsTemplate::FullAccess.rights();
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        rights.confirm = Confirm::OnEveryChange;
         // So it may ask its own access (issue #134).
         rights.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
         let (id, key) = client(&core, rights.clone()).await;
@@ -11657,19 +11708,114 @@ mod tests {
 
         rights.tools = Selection::Only(vec!["web".into()]);
         core.clients.update(&id, rights.clone()).await.expect("updated");
-        for request in [search(), fetch(), Request::ListSearchProviders] {
-            assert_eq!(code(&ask(core, Some(key), request.clone()).await), "unsupported", "{request:?}");
-        }
+        let none = ask(core, Some(key), search()).await;
+        assert_eq!(code(&none), "not-connected");
+        assert_eq!(
+            message(&none),
+            tr("No web search provider is on. A person chooses one in the assistant's settings.")
+        );
+        assert_eq!(duckduckgo.calls(), 0, "nothing goes out while no provider is on");
+        let switch = serde_json::json!({"provider": "duckduckgo", "enabled": true});
+        let switch = Request::SetSetting { key: SettingKey::SearchProvider, value: switch };
+        assert_eq!(ask(core, Some(&app_key), switch).await, Response::Ok);
+        let Response::SearchResults { results } = ask(core, Some(key), search()).await else { panic!("results") };
+        assert_eq!((results.asked, results.untrusted), (vec![SearchProviderId::Duckduckgo], true));
+        assert_eq!(duckduckgo.calls(), 1);
+        // The offline reader resolves no name, so the site's robots.txt cannot be read: refused.
+        assert_eq!(code(&ask(core, Some(key), fetch()).await), "unsupported");
+        assert!(matches!(ask(core, Some(key), Request::ListSearchProviders).await, Response::SearchProviders { .. }));
         let Response::Tools { tools } = ask(core, Some(key), Request::ListTools).await else { panic!("the tools") };
         assert!(allowed(&tools, ToolId::Web) && !allowed(&tools, ToolId::Pdf), "reading is enough for web only");
         let access = my_access_of(&ask(core, Some(key), Request::MyAccess).await);
         assert!(access.rights.reaches_tool(ToolId::Web), "named, so reached");
-        let set_key = Request::SetSearchKey {
-            provider: torro_core::settings::SearchProviderId::Brave,
-            key: Some(torro_ipc::Secret::new("BSA_secret")),
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(log.contains("tools.web_search") && log.contains("tools.fetch_page"), "{log}");
+        assert!(!log.contains("Lisbon") && !log.contains("lisbon.example.org"), "no words, no address: {log}");
+    }
+
+    /// Issue #305, point 5, task WEB.4: the key of a search provider is the person's alone. A client
+    /// gets `forbidden` whatever its rights and is never asked about; the app key stores it in the
+    /// keychain and removes it with `null`. No answer and no list holds the key.
+    #[tokio::test]
+    async fn only_people_store_a_search_key_and_no_answer_holds_it() {
+        use torro_core::settings::SearchProviderId;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = Arc::new(crate::tools::web::testing::MemoryKeys::default());
+        let core = with_web(dir.path(), crate::tools::web::testing::offline_with(keys.clone()));
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let set = |key: Option<&str>| Request::SetSearchKey {
+            provider: SearchProviderId::Brave,
+            key: key.map(torro_ipc::Secret::new),
         };
-        assert_eq!(code(&ask(core, Some(key), set_key.clone()).await), "forbidden", "a key is the person's");
-        assert_eq!(code(&ask(core, Some(&app_key), set_key).await), "unsupported");
+
+        assert_eq!(code(&ask(&core, Some(&key), set(Some("BSA_secret"))).await), "forbidden", "a key is the person's");
+        assert_eq!(code(&ask(&core, Some(&key), set(None)).await), "forbidden", "removing one too");
+        assert_eq!(keys.stored(SearchProviderId::Brave), None);
+        assert_eq!(ask(&core, Some(&app_key), set(Some("BSA_secret"))).await, Response::Ok);
+        assert_eq!(keys.stored(SearchProviderId::Brave).as_deref(), Some("BSA_secret"), "in the keychain");
+        let wrong =
+            Request::SetSearchKey { provider: SearchProviderId::Wikipedia, key: Some(torro_ipc::Secret::new("x")) };
+        assert_eq!(code(&ask(&core, Some(&app_key), wrong).await), "error", "Wikipedia needs no key");
+
+        for asker in [&key, &app_key] {
+            let listed = ask(&core, Some(asker), Request::ListSearchProviders).await;
+            let Response::SearchProviders { providers } = &listed else { panic!("the providers, got {listed:?}") };
+            let brave = providers.iter().find(|info| info.id == SearchProviderId::Brave).expect("Brave");
+            assert_eq!(brave.key, torro_ipc::web::KeyState::Stored);
+            let json = serde_json::to_string(&listed).expect("json");
+            assert!(!json.contains("BSA_secret"), "{json}");
+        }
+        assert_eq!(ask(&core, Some(&app_key), set(None)).await, Response::Ok);
+        assert_eq!(keys.stored(SearchProviderId::Brave), None, "removed");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(log.contains("accounts.set_search_key") && !log.contains("BSA_secret"), "{log}");
+    }
+
+    /// Task WEB.4: a page a client picked obeys the site's `robots.txt`; one it allows comes as
+    /// Markdown marked as text from outside, without asking anyone.
+    #[tokio::test]
+    async fn a_client_reads_a_page_only_as_robots_txt_allows() {
+        use torro_core::settings::ToolId;
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/robots.txt");
+                then.status(200).body("User-agent: *\nDisallow: /private\n");
+            })
+            .await;
+        let page = "<html><head><title>Trams</title></head><body><p>Tram 28 runs to Prazeres.</p></body></html>";
+        for path in ["/trams", "/private"] {
+            server
+                .mock_async(|when, then| {
+                    when.method(httpmock::Method::GET).path(path);
+                    then.status(200).header("content-type", "text/html").body(page);
+                })
+                .await;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fetcher = crate::tools::web::testing::fetcher_on(server.port(), &["lisbon.example.org"]);
+        let core = with_web(dir.path(), crate::tools::web::testing::offline().with_fetcher(fetcher));
+        let mut on = settings(&core).await;
+        on.tools.set_on(ToolId::Web, true);
+        assert_eq!(core.handle(Request::UpdateSettings { settings: on }).await, Response::Ok);
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.tools = Selection::Only(vec!["web".into()]);
+        let (_, key) = client(&core, rights).await;
+        let at = |path: &str| Request::FetchPage { url: format!("http://lisbon.example.org:{}{path}", server.port()) };
+
+        let Response::WebPage { page } = ask(&core, Some(&key), at("/trams")).await else { panic!("the page") };
+        assert!(page.markdown.contains("Tram 28") && page.untrusted, "{page:?}");
+        let refused = ask(&core, Some(&key), at("/private")).await;
+        assert_eq!(code(&refused), "unsupported");
+        assert_eq!(message(&refused), tr(crate::tools::web::fetch::FetchError::Robots.reason()));
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
     }
 

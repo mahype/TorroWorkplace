@@ -5348,6 +5348,60 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The site answered with an error.", "Die Website hat mit einem Fehler geantwortet."),
     ("The site cannot be reached.", "Die Website ist nicht erreichbar."),
     ("The page could not be read.", "Die Seite konnte nicht gelesen werden."),
+    // Commands of the tool web, search keys and the SearXNG check (WEB.4, #305)
+    ("Enter the search words.", "Gib die Suchwörter ein."),
+    (
+        "The search words are one line of at most 400 characters.",
+        "Die Suchwörter sind eine Zeile mit höchstens 400 Zeichen.",
+    ),
+    ("A web search gives at most 10 results.", "Eine Websuche liefert höchstens 10 Treffer."),
+    (
+        "The web cannot be searched: no connection to the internet could be set up.",
+        "Im Web kann nicht gesucht werden: Es ließ sich keine Verbindung ins Internet aufbauen.",
+    ),
+    (
+        "No web search provider is on. A person chooses one in the assistant's settings.",
+        "Kein Websuche-Anbieter ist eingeschaltet. Ein Mensch wählt einen in den Einstellungen des Assistenten.",
+    ),
+    (
+        "The web search providers that are on need a key, and none is stored. \
+         A person adds one in the assistant's settings.",
+        "Die eingeschalteten Websuche-Anbieter brauchen einen Schlüssel, und keiner ist gespeichert. \
+         Ein Mensch trägt ihn in den Einstellungen des Assistenten ein.",
+    ),
+    ("The search provider cannot be reached.", "Der Suchanbieter ist nicht erreichbar."),
+    ("The search provider gave no usable answer.", "Der Suchanbieter hat keine brauchbare Antwort gegeben."),
+    (
+        "The web search providers are busy. Try again in a few seconds.",
+        "Die Websuche-Anbieter sind ausgelastet. Versuch es in ein paar Sekunden noch einmal.",
+    ),
+    (
+        "The web search providers that are on rest after a block or a limit: {providers}. Try again after {time}.",
+        "Die eingeschalteten Websuche-Anbieter pausieren nach einer Sperre oder einem Limit: {providers}. \
+         Versuch es nach {time} Uhr noch einmal.",
+    ),
+    ("{provider} needs no key.", "{provider} braucht keinen Schlüssel."),
+    ("Paste the whole key.", "Füge den ganzen Schlüssel ein."),
+    (
+        "The system keychain did not take the key. Try again.",
+        "Der Schlüsselbund des Systems hat den Schlüssel nicht angenommen. Versuch es noch einmal.",
+    ),
+    (
+        "The SearXNG address cannot be checked: no connection could be set up.",
+        "Die SearXNG-Adresse kann nicht geprüft werden: Es ließ sich keine Verbindung aufbauen.",
+    ),
+    (
+        "This SearXNG instance cannot be reached. Check the address.",
+        "Diese SearXNG-Instanz ist nicht erreichbar. Prüf die Adresse.",
+    ),
+    (
+        "This SearXNG instance asks to wait. Try again later.",
+        "Diese SearXNG-Instanz bittet zu warten. Versuch es später noch einmal.",
+    ),
+    (
+        "This SearXNG instance does not answer in JSON. Turn on the json format in its settings.",
+        "Diese SearXNG-Instanz antwortet nicht in JSON. Schalte in ihren Einstellungen das Format json ein.",
+    ),
     ("Moved, changed, deleted or out of reach.", "Verschoben, geändert, gelöscht oder nicht mehr erreichbar."),
     ("Put them in a PDF for the team.", "Mach daraus eine PDF fürs Team."),
     (
