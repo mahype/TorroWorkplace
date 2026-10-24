@@ -1389,7 +1389,7 @@ nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
   Sichtprüfung (`torro-design`) der drei Zustände in Schmal, Mittel, Breit, hell und dunkel, Standard und Console.
 
 ### M12.7 Einstellungen › Mail › Attachments
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M12.2, M12.6 · **Dateien:** `crates/torro-settings-ui/src/{lib,mail,demo}.rs`,
   `crates/torro-settings-ui/src/mail/attachments.rs` (neu), `crates/torroinbox/src/app.rs`,
   `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`

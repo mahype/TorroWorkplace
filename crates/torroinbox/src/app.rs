@@ -2035,6 +2035,17 @@ async fn choose_save_folder() -> Option<std::path::PathBuf> {
     dialog.pick_folder().await.map(|folder| folder.path().to_path_buf())
 }
 
+/// Asks for a folder with the system's chooser for Settings › Attachments (task M12.7): the Downloads
+/// folder or the folder of a save target; `None` when it is cancelled.
+async fn choose_settings_folder(purpose: settings_mail::FolderFor) -> Option<std::path::PathBuf> {
+    let title = match purpose {
+        settings_mail::FolderFor::Downloads => tr("Choose the Downloads folder"),
+        settings_mail::FolderFor::Target => tr("Choose the folder of the save target"),
+    };
+    let dialog = rfd::AsyncFileDialog::new().set_title(title);
+    dialog.pick_folder().await.map(|folder| folder.path().to_path_buf())
+}
+
 /// Asks for a backup folder or a `.zip` archive with the system's chooser, for "Choose…" on a mail
 /// account's backup page; `None` when it is cancelled.
 async fn choose_backup_path(chooser: settings_mail::BackupChooser) -> Option<std::path::PathBuf> {
@@ -2054,7 +2065,7 @@ fn settings_update(
     sections: &mut SettingsState,
     message: SettingsMessage,
     data: &torro_settings_ui::Data,
-) -> torro_settings_ui::Action<()> {
+) -> torro_settings_ui::Action<settings_mail::AppAction> {
     match (sections, message) {
         (SettingsState::Inbox(state), SettingsMessage::Inbox(message)) => settings_inbox::update(state, message, data),
         (SettingsState::Mail(state), SettingsMessage::Mail(message)) => settings_mail::update(state, message, data),
@@ -2074,16 +2085,15 @@ fn is_mail_backup_request(request: &torro_ipc::Request) -> bool {
     )
 }
 
-/// What Escape means in the open section before it closes the settings (task E15.5): `None`
-/// lets the settings close.
+/// What Escape means in the open section before it closes the settings (task E15.5, the dialog of
+/// Attachments in task M12.7): `None` lets the settings close.
 fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
+    let SettingsState::Mail(state) = &pane.sections else { return None };
     // Only where the editor shows: a page left open behind another section must not take Escape.
-    if pane.host.current().id != CATEGORIZATION_SECTION {
-        return None;
-    }
-    match &pane.sections {
-        SettingsState::Mail(state) => settings_mail::escape(state).map(SettingsMessage::Mail),
-        SettingsState::Inbox(_) => None,
+    match pane.host.current().id {
+        CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
+        ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
+        _ => None,
     }
 }
 
@@ -2091,8 +2101,8 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
 const CATEGORIZATION_SECTION: &str = "categorization";
 
 /// The mail window's section with the save targets (task M12.7), where "Manage save targets…" leads
-/// (task M12.6). Until it exists the settings open at their first section.
-const ATTACHMENTS_SECTION: &str = "attachments";
+/// (task M12.6).
+const ATTACHMENTS_SECTION: &str = settings_mail::ATTACHMENTS_SECTION;
 
 /// The page of the open section, as the host takes it.
 fn settings_page<'a>(
@@ -2692,6 +2702,9 @@ pub enum Message {
     MailBackupAnswered(String, Box<Result<torro_ipc::Response, String>>),
     /// What the system's chooser of a backup page returned: a path, or `None` when it was cancelled.
     BackupChosen(settings_mail::BackupChooser, Option<std::path::PathBuf>),
+    /// What the system's folder chooser of Settings › Attachments returned (task M12.7): the folder
+    /// for the Downloads folder or a save target, or `None` when it was cancelled.
+    SettingsFolderChosen(settings_mail::FolderFor, Option<std::path::PathBuf>),
     /// Open the control centre: what an entry about the suite links to ([`App::open_entry`] with
     /// `Link::App` on `torroworkplace`). Its own message, never the gear's – an entry must not be
     /// able to open a settings section in this window (task S.20).
@@ -4070,6 +4083,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             // Cancelled: the field keeps what it had.
             Message::BackupChosen(_, None) => {}
+            Message::SettingsFolderChosen(purpose, Some(path)) => {
+                let chosen = SettingsMessage::Mail(settings_mail::folder_chosen(purpose, path));
+                return self.update(Message::SettingsPage(chosen));
+            }
+            // Cancelled: nothing is sent and the field keeps what it had.
+            Message::SettingsFolderChosen(_, None) => {}
             Message::MailBackupAnswered(account, answer) => {
                 if let Some(pane) = self.settings.as_mut()
                     && let SettingsState::Mail(state) = &mut pane.sections
@@ -5671,7 +5690,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.staged_backup = None;
         settings_mail::stage_backup(state, &account, scene);
         let open = settings_mail::Message::Accounts(settings_mail::accounts::Message::Open(account));
-        let _ = settings_mail::update::<()>(state, open, pane.host.data());
+        let _ = settings_mail::update(state, open, pane.host.data());
     }
 
     /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or
@@ -5712,7 +5731,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// What the host asks of the window: the browser and the control centre are the window's;
     /// everything else the host did itself.
-    fn settings_outcome(&mut self, outcome: Outcome<()>) -> Task<Message> {
+    fn settings_outcome(&mut self, outcome: Outcome<settings_mail::AppAction>) -> Task<Message> {
         match outcome {
             Outcome::None => Task::none(),
             Outcome::Work(task) => task.map(Message::SettingsHost),
@@ -5737,9 +5756,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 connect::open_section(&section);
                 Task::none()
             }
-            // No section of these windows needs what only the window itself can do.
-            Outcome::App(()) => Task::none(),
+            // "Change…" and "Choose…" of Attachments (task M12.7): only the window opens the
+            // system's chooser, and what was chosen goes back to the page
+            // ([`Message::SettingsFolderChosen`]).
+            Outcome::App(settings_mail::AppAction::PickFolder(purpose)) => {
+                Task::perform(choose_settings_folder(purpose), move |path| Message::SettingsFolderChosen(purpose, path))
+            }
         }
+    }
+
+    /// The dialog of the open settings section over the window – the editor of a save target in
+    /// Attachments (task M12.7) – while one is open.
+    fn settings_dialog(&self, class: SizeClass) -> Option<Element<'_, Message>> {
+        let pane = self.settings.as_ref()?;
+        let SettingsState::Mail(state) = &pane.sections else { return None };
+        settings_mail::overlay(state, pane.host.data(), pane.host.current().id, class)
+            .map(|dialog| dialog.map(|message| Message::SettingsPage(SettingsMessage::Mail(message))))
     }
 
     /// The header bar and the content area of the open settings, as the host draws them.
@@ -7759,7 +7791,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.is_glance() {
             return Cover::Nothing;
         }
-        let question = self.menu == Some(Menu::DeleteForGood);
+        // A dialog of the settings (the save target's editor) covers the band like the window's own.
+        let question = self.menu == Some(Menu::DeleteForGood) || self.settings_dialog(class).is_some();
         Cover::dialog(question).or(Cover::panel(class, self.panel_open())).or(Cover::drawer(class, self.drawer))
     }
 
@@ -7884,10 +7917,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // The app switcher cannot be open at the same time: every `Message::Switcher` shows
             // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
             // the calendar and the tasks app.
+            // A dialog of the section (the save target's editor) lies over everything; the host's
+            // menu cannot be open with it, as a click next to that menu only closes it.
+            let overlay = self.settings_dialog(class).or(frame.overlay);
             return shell::shell(class, sidebar, frame.header, frame.body, None)
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
-                .overlay(frame.overlay)
+                .overlay(overlay)
                 .into();
         }
         let header = self.header(class, &nav, &accounts);
@@ -14847,8 +14883,8 @@ mod tests {
         for (words, ids) in [
             (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
-            // Mail settings include categorization and storage controls.
-            (vec!["--view", "mail"], vec!["accounts", "reading", "categorization", "storage"]),
+            // Mail settings include attachments (task M12.7), categorization and storage controls.
+            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization", "storage"]),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
@@ -14970,6 +15006,35 @@ mod tests {
         let _ = app.update(Message::OpenSettings);
         assert_eq!(accounts(&app), before, "the backup page remains after closing the settings");
         assert!(before.contains("demo-job"), "{before}");
+    }
+
+    /// Task M12.7: "Manage save targets…" opens Settings › Attachments; the editor of a target lies
+    /// over the window as a dialog, and Escape closes it before it closes the settings.
+    #[test]
+    fn the_save_targets_editor_is_a_dialog_over_the_window() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::ManageSaveTargets);
+        let data =
+            block_on(torro_settings_ui::load(Arc::new(torro_settings_ui::demo::Demo::new()), settings_mail::wanted()));
+        let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, ATTACHMENTS_SECTION);
+        let id = pane.host.data().save_targets.first().map(|target| target.id.clone()).expect("demo targets");
+        assert!(app.settings_dialog(SizeClass::Wide).is_none());
+
+        let edit = settings_mail::Message::Attachments(settings_mail::attachments::Message::Edit(id));
+        let _ = app.update(Message::SettingsPage(SettingsMessage::Mail(edit)));
+        assert!(app.settings_dialog(SizeClass::Wide).is_some(), "the editor is open");
+        assert_eq!(app.cover(), Cover::Dialog);
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_some() && app.settings_dialog(SizeClass::Wide).is_none(), "Escape closed the dialog");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none(), "then the settings");
+
+        // A cancelled chooser sends nothing.
+        let _ = app.update(Message::ManageSaveTargets);
+        let _ = app.update(Message::SettingsFolderChosen(settings_mail::FolderFor::Downloads, None));
+        assert!(app.settings.is_some());
     }
 
     /// `--demo --open backup…` opens the mail window's settings at the first account's backup page
