@@ -72,6 +72,10 @@ impl PdfFonts {
     /// (`Settings::font`, task L.22). The standard's when the font cannot be
     /// loaded or printpdf cannot read its files ([`PdfFonts::of`]), so a PDF is always set.
     pub fn of_font(dir: Option<&Path>, id: &str) -> PdfFonts {
+        // A font of the computer is never embedded (issue #299): no scan of the installed fonts for it.
+        if design::is_system_id(id) {
+            return PdfFonts::standard();
+        }
         let font = dir.and_then(|dir| design::load_font(dir, id).ok());
         PdfFonts::of_pack(font.as_ref())
     }

@@ -655,7 +655,7 @@ Sie **nutzt sie nur mit und gibt sie nicht weiter**: Nichts wird kopiert, die Da
 prüfen, und gespeichert wird nur die Id in `Settings::font`. Das Format der Einstellungen bleibt gleich.
 
 - **Ids:** `system` ist der Eintrag „System“, die Oberflächenschrift des Betriebssystems, beim Laden jedes Mal neu
-  aufgelöst: auf macOS `System Font` (SF), auf Windows die erste von `Segoe UI Variable Text`, `Segoe UI Variable`,
+  aufgelöst: auf macOS `System Font` (SF, als Familie nicht noch einmal gelistet), auf Windows die erste von `Segoe UI Variable Text`, `Segoe UI Variable`,
   `Segoe UI`, auf Linux die Familie von `fc-match -f '%{family[0]}' sans-serif`. `system:<Familie>` ist eine
   installierte Familie (`system:Avenir Next`). Ordner-Ids sind `a-z0-9-`, keine kann mit `system:` beginnen;
   `system` selbst ist wie `torro` als Ordnername gesperrt.
@@ -667,7 +667,8 @@ prüfen, und gespeichert wird nur die Id in `Settings::font`. Das Format der Ein
   nur, wo ein aufrechter Schnitt genau das Gewicht hat, sonst der nächste (`Font::nearest`); ein variabler regulärer
   Schnitt mit Achse `wght` gilt als Regular, Medium und SemiBold, nicht als Bold (Iced zeichnet SF bei 500 und 600 aus
   der Achse und fällt bei 700 auf eine andere Schrift). Sind die zehn Ziffern gleich breit, bleibt `numbers` die
-  Familie, sonst die eingebaute Inter Tabular. Der Größenausgleich kommt aus der x-Höhe, die Regeln für Schriften
+  Familie, sonst die eingebaute Inter Tabular; dann ist der Größenausgleich höchstens 1,11, damit die geliehenen
+  Ziffern in die Zeitachse passen (sonst würden Schriften mit kleiner x-Höhe wie Georgia abgelehnt). Der Größenausgleich kommt aus der x-Höhe, die Regeln für Schriften
   gelten wie bei einem Ordner. Lizenz, Art (`kind`) und Version bleiben leer.
 - **Gründe** nennen nur die Familie, nie einen Dateipfad (er verriete Benutzernamen und Home-Verzeichnis).
 - **Fehlt die Schrift** auf einem Rechner (deinstalliert, anderer Rechner), zeichnen die Apps mit dem Standard;

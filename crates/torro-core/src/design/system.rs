@@ -22,7 +22,9 @@ use fontdb::{Database, FaceInfo};
 
 use super::files::font_info_at;
 use super::font::{BUILTIN_WIDEST_FIGURE, size_adjust_for};
-use super::{About, DesignError, Face, Font, FontSet, Fonts, Listed, Part, SYSTEM_ID, SYSTEM_PREFIX, rules};
+use super::{
+    About, DIGIT_MAX_EM, DesignError, Face, Font, FontSet, Fonts, Listed, Part, SYSTEM_ID, SYSTEM_PREFIX, rules,
+};
 
 /// The longest family name taken in, in characters.
 const NAME_MAX: usize = 64;
@@ -76,8 +78,10 @@ impl SystemFonts {
     /// reasons. Ids are `system:<family>`.
     pub fn list(&self) -> Vec<Listed<FontSet>> {
         let families = self.families();
+        // "System" stands for the interface font already; its alias would be a second entry for it.
         let examined: Vec<(String, Result<FontSet, Vec<DesignError>>)> = families
             .iter()
+            .filter(|family| !system_aliases().contains(&family.name.as_str()))
             .filter_map(|family| {
                 self.font(family, &format!("{SYSTEM_PREFIX}{}", family.name)).map(|r| (family.name.clone(), r))
             })
@@ -169,7 +173,7 @@ impl SystemFonts {
         } else {
             (standard.fonts.numbers.clone(), Some(BUILTIN_WIDEST_FIGURE))
         };
-        let factor = examined.x_height.map_or(1.0, size_adjust_for);
+        let factor = figures_adjust(examined.x_height.map_or(1.0, size_adjust_for), examined.equal_figures);
         let problems = rules::font(None, factor, &numbers.family, widest);
         if !problems.is_empty() {
             return Some(Err(problems));
@@ -233,6 +237,22 @@ fn examine(data: &[u8], index: u32) -> Option<Examined> {
 /// Whether a face with these glyphs sets English and German text: A–Z, a–z and [`LETTERS`].
 fn latin(has_glyph: impl Fn(char) -> bool) -> bool {
     ('A'..='Z').chain('a'..='z').chain(LETTERS).all(has_glyph)
+}
+
+/// The size adjustment of a family: `factor` from its x-height, but for one that draws its figures in
+/// Inter Tabular (`equal_figures` false) at most what keeps those within [`DIGIT_MAX_EM`] – 0.72 / 0.648,
+/// cut to 1.110. Decided in the planning of #299: such a family gets Inter Tabular instead of being
+/// refused, and a small x-height (Georgia, Didot) would otherwise widen the borrowed figures past the
+/// time axis. Its text is then drawn a little smaller than Inter's x-height asks for.
+fn figures_adjust(factor: f32, equal_figures: bool) -> f32 {
+    let most = (DIGIT_MAX_EM / BUILTIN_WIDEST_FIGURE * 1000.0).floor() / 1000.0;
+    if equal_figures { factor } else { factor.min(most) }
+}
+
+/// Names under which the interface font is installed a second time, left out of the families because
+/// "System" stands for it: macOS lists SF as the family "System Font".
+fn system_aliases() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") { &["System Font"] } else { &[] }
 }
 
 /// The families that stand for the system's interface font, the first installed one wins: SF on
@@ -390,6 +410,30 @@ mod tests {
         assert_eq!(present_weights(&[400], false), [true, false, false, false]);
         assert_eq!(present_weights(&[400, 700], false), [true, false, false, true]);
         assert_eq!(present_weights(&[300, 500, 600], false), [false, true, true, false]);
+    }
+
+    /// Decided in the planning of #299, and kept by the review: a family with proportional figures and a
+    /// small x-height is drawn a little smaller so the borrowed Inter Tabular still fits the time axis,
+    /// instead of being refused. Its own equal figures follow its own size adjustment.
+    #[test]
+    fn borrowed_figures_hold_the_size_adjustment_down() {
+        let most = figures_adjust(1.15, false);
+        assert!((most - 1.110).abs() < 1e-6, "{most}");
+        assert_eq!(rules::font(None, most, "Inter Tabular", Some(BUILTIN_WIDEST_FIGURE)), Vec::new());
+        assert!(!rules::font(None, 1.15, "Inter Tabular", Some(BUILTIN_WIDEST_FIGURE)).is_empty(), "uncapped");
+        assert_eq!(figures_adjust(1.15, true), 1.15, "its own figures");
+        assert_eq!(figures_adjust(1.05, false), 1.05, "below the cap nothing changes");
+    }
+
+    /// macOS installs SF a second time as "System Font": "System" stands for it, so it is no family
+    /// entry of its own, while "System" itself resolves to it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_interface_font_is_listed_once() {
+        let fonts = fonts(vec![face("Inter-Regular.ttf", "System Font", 400), face("Lato-Regular.ttf", "Lato", 400)]);
+        let ids: Vec<String> = fonts.list().into_iter().map(|entry| entry.id).collect();
+        assert_eq!(ids, [SYSTEM_ID, "system:Lato"]);
+        assert_eq!(fonts.load(SYSTEM_ID).map(|font| font.fonts.text.family), Ok("System Font".to_string()));
     }
 
     /// Decided in the planning of #299: proportional figures make a family take Inter Tabular for its
