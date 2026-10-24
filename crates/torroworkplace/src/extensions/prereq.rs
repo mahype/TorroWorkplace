@@ -62,7 +62,8 @@ pub fn program_name(prerequisite: &Prerequisite) -> &str {
 /// The first executable called `name` on [`Roots::path`], then in [`Roots::usual`]; on Windows `name.exe`
 /// or `name.cmd`, as `client_setup` looks for commands. An absolute `name` is taken as it is when it is an
 /// executable. `None` when nothing is found, and for a relative path (`./server`, `bin/server`): a server
-/// starts only a program by name or by absolute path.
+/// starts only a program by name or by absolute path. Only absolute folders are looked in: a relative one on
+/// the `PATH` (`.`, `bin`) would depend on the folder the service happens to run in.
 pub fn find(name: &str, roots: &Roots) -> Option<Found> {
     let path = Path::new(name);
     if path.is_absolute() {
@@ -78,6 +79,7 @@ pub fn find(name: &str, roots: &Roots) -> Option<Found> {
         .iter()
         .cloned()
         .chain(roots.usual())
+        .filter(|dir| dir.is_absolute())
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|candidate| is_executable(candidate))
         .map(found)
@@ -254,6 +256,26 @@ mod tests {
         let relative = if cfg!(windows) { ".\\server.exe" } else { "./server" };
         assert_eq!(find(relative, &roots), None);
         assert_eq!(find("", &roots), None);
+    }
+
+    /// H9 of the API review: a relative folder on the `PATH` (here one that leads to the program from the
+    /// folder the tests run in) is not looked in, the same folder named absolutely is; nor does it reach the
+    /// `PATH` of a server's process.
+    #[cfg(unix)]
+    #[test]
+    fn relative_folders_on_the_path_are_not_looked_in() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let uvx = program(dir.path(), "uvx");
+        let here = std::env::current_dir().expect("current dir");
+        let up: PathBuf = here.components().skip(1).map(|_| Path::new("..")).collect();
+        let relative = up.join(dir.path().strip_prefix("/").expect("absolute"));
+        assert!(relative.is_relative() && relative.join("uvx").is_file(), "{relative:?} leads to the program");
+        let roots = Roots { path: vec![relative.clone(), PathBuf::from(".")], home: None, fixed: Vec::new() };
+        assert_eq!(find("uvx", &roots), None);
+        let absolute = Roots { path: vec![dir.path().to_path_buf()], ..roots.clone() };
+        assert_eq!(find("uvx", &absolute).map(|found| found.program), Some(uvx.clone()));
+        let dirs = crate::extensions::env::path_dirs(&found(uvx), &roots);
+        assert_eq!(dirs, vec![dir.path().to_path_buf()], "only the program's own folder");
     }
 
     #[test]

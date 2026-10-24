@@ -658,6 +658,11 @@ impl Clients {
         let record = &mut state.clients[index].record;
         let mut rights = mode.narrow(&record.rights);
         rights.areas.retain(|area, _| !without.contains(area));
+        // The servers' tools need no level in the area (`Rights::allows`), only one per server: without the
+        // area the key gets none of them either (F3 of the API review).
+        if without.contains(&Area::Extensions) {
+            rights.extensions.clear();
+        }
         let caller = Caller::Client { id: record.id.clone(), rights };
         if note_use(record, Utc::now()) {
             drop(state);
@@ -2648,5 +2653,27 @@ pub(crate) mod tests {
         clients.remove(&assistant.id).await.expect("removed");
         assert_eq!(code(clients.admit(Some(lent.key()), &Request::CalendarCollections)), "unauthorized");
         assert!(matches!(clients.lend(&assistant.id, "claude-code", &[]), Err(ClientsError::NotFound(_))));
+    }
+
+    /// F3 of the API review: a key lent without `extensions` has no level for any MCP server either, whose
+    /// tools need none in the area; lent without something else it keeps them.
+    #[tokio::test]
+    async fn a_key_lent_without_extensions_has_no_level_for_a_server() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients =
+            Clients::open(&app_key_file(dir.path()), &clients_file(dir.path()), Box::new(MemoryKeychain::default()))
+                .expect("opens");
+        let mut rights = Rights::assistant();
+        rights.extensions.insert("time".into(), torro_ipc::api::Level::Full);
+        let (assistant, own) = clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("added");
+        let levels = |key: &Key| match clients.admit(Some(key), &Request::ListExtensionTools) {
+            Ok(Caller::Client { rights, .. }) => rights.extensions,
+            other => panic!("admitted, got {other:?}"),
+        };
+        let without = clients.lend(&assistant.id, "claude-code", &[Area::Extensions]).expect("lent");
+        assert!(levels(without.key()).is_empty());
+        let with = clients.lend(&assistant.id, "claude-code", &[Area::Mail]).expect("lent");
+        assert_eq!(levels(with.key()).len(), 1);
+        assert_eq!(levels(&own).len(), 1, "its own key keeps them");
     }
 }

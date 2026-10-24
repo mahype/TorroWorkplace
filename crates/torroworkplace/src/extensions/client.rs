@@ -340,12 +340,15 @@ pub fn allow(tool: &ReportedTool, access: Access) -> AllowedTool {
 ///
 /// - [`ToolState::Unsupported`] when its name makes no name towards agents ([`tool_name`]: too long, other
 ///   characters); `tool_name` is `None` then;
-/// - [`ToolState::Allowed`] when `allowed` has a tool of that name with the same [`fingerprint`]; its access is
-///   the one allowed;
-/// - [`ToolState::Review`] otherwise: new, or its description or input schema changed since.
+/// - [`ToolState::Allowed`] when `allowed` has a tool of that name with the same [`fingerprint`] and the access
+///   a call needs now (`access`) is no higher than the one allowed; its access is the one of now (a lower one
+///   is taken as it is);
+/// - [`ToolState::Review`] otherwise: new, its description or input schema changed since, or it needs a higher
+///   access now than when a person allowed it (the catalog rates it higher since an update).
 ///
-/// A tool in `allowed` that `reported` no longer has is left out. `access` gives the access of a tool not
-/// allowed (from the catalog entry: `Delete` when it names none, always for a person's own server).
+/// A tool in `allowed` that `reported` no longer has is left out. `access` gives the access a call of a tool
+/// needs now (from the catalog entry: `Delete` when it names none; for a person's own server the caller gives
+/// the one allowed, else `Delete`).
 pub fn tool_states(
     id: &str,
     name: &str,
@@ -360,7 +363,10 @@ pub fn tool_states(
             let kept = allowed.iter().find(|known| known.name == tool.name && known.fingerprint == fingerprint(tool));
             let (state, access) = match (&outward, kept) {
                 (None, _) => (ToolState::Unsupported, access(&tool.name)),
-                (Some(_), Some(kept)) => (ToolState::Allowed, kept.access),
+                (Some(_), Some(kept)) => match access(&tool.name) {
+                    now if kept.access.covers(now) => (ToolState::Allowed, now),
+                    higher => (ToolState::Review, higher),
+                },
                 (Some(_), None) => (ToolState::Review, access(&tool.name)),
             };
             ExtensionTool {
@@ -607,7 +613,7 @@ mod tests {
         let (connection, server) = connected(&fixture).await;
         let first = connection.list_tools(WAIT).await.expect("listed");
         let allowed: Vec<AllowedTool> = first.iter().map(|tool| allow(tool, Access::Read)).collect();
-        let states = tool_states("time", "Time", &first, &allowed, |_| Access::Delete);
+        let states = tool_states("time", "Time", &first, &allowed, |_| Access::Read);
         assert!(states.iter().all(|tool| tool.state == ToolState::Allowed && tool.access == Access::Read));
 
         let mut changes = connection.tools_changed();
@@ -622,7 +628,9 @@ mod tests {
         tokio::time::timeout(WAIT, changes.changed()).await.expect("in time").expect("heard");
 
         let now = connection.list_tools(WAIT).await.expect("listed");
-        let states = tool_states("time", "Time", &now, &allowed, |_| Access::Delete);
+        // The catalog rates `now` as before, every other tool `delete`.
+        let rating = |name: &str| if name == "now" { Access::Read } else { Access::Delete };
+        let states = tool_states("time", "Time", &now, &allowed, rating);
         let state = |name: &str| states.iter().find(|tool| tool.name == name).map(|tool| (tool.state, tool.access));
         assert_eq!(state("now"), Some((ToolState::Allowed, Access::Read)), "unchanged stays allowed");
         assert_eq!(state("zone"), Some((ToolState::Review, Access::Delete)), "changed description");
@@ -636,6 +644,26 @@ mod tests {
         // A tool the server no longer reports is gone.
         let gone = tool_states("time", "Time", &now[..1], &allowed, |_| Access::Delete);
         assert_eq!(gone.len(), 1);
+    }
+
+    /// H2 of the API review: a tool allowed with `read` that the catalog rates `write` now waits for a person
+    /// again; one rated lower now is allowed with the lower access.
+    #[test]
+    fn a_tool_rated_higher_since_it_was_allowed_waits_for_a_person() {
+        let tools = [reported("now", "The time"), reported("zone", "A zone")];
+        let allowed = [allow(&tools[0], Access::Read), allow(&tools[1], Access::Write)];
+        let states = tool_states("time", "Time", &tools, &allowed, |name| match name {
+            "now" => Access::Write,
+            _ => Access::Read,
+        });
+        let state = |name: &str| states.iter().find(|tool| tool.name == name).map(|tool| (tool.state, tool.access));
+        assert_eq!(state("now"), Some((ToolState::Review, Access::Write)), "rated higher");
+        assert_eq!(state("zone"), Some((ToolState::Allowed, Access::Read)), "rated lower");
+        let same = tool_states("time", "Time", &tools, &allowed, |name| match name {
+            "now" => Access::Read,
+            _ => Access::Write,
+        });
+        assert!(same.iter().all(|tool| tool.state == ToolState::Allowed));
     }
 
     #[tokio::test]

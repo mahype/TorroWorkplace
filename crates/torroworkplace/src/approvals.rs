@@ -520,10 +520,14 @@ impl Origin {
     }
 
     /// `rights` without the areas [`Origin::without`] names, as the lent key had them, and in the
-    /// permission mode [`Origin::mode`] (issue #132).
+    /// permission mode [`Origin::mode`] (issue #132). Without `extensions` also without a level for any MCP
+    /// server ([`Rights::extensions`]): their tools need none in the area.
     pub fn narrow(&self, rights: &Rights) -> Rights {
         let mut rights = self.mode.narrow(rights);
         rights.areas.retain(|area, _| !self.without.contains(area));
+        if self.without.contains(&Area::Extensions) {
+            rights.extensions.clear();
+        }
         rights
     }
 
@@ -4358,6 +4362,12 @@ pub(crate) mod tests {
             .insert(Area::Mail, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
         assert_eq!(origin.narrow(&rights).area(Area::Mail), torro_ipc::api::AreaRights::NONE);
         assert_eq!(origin.narrow(&rights).area(Area::Calendar), rights.area(Area::Calendar), "the rest stays");
+        // F3 of the API review: without `extensions` no level for a server either; without mail it stays.
+        let mut servers = rights.clone();
+        servers.extensions.insert("time".into(), torro_ipc::api::Level::Full);
+        assert_eq!(origin.narrow(&servers).extensions, servers.extensions);
+        let no_servers = Origin { without: vec![Area::Extensions], ..origin.clone() };
+        assert!(no_servers.narrow(&servers).extensions.is_empty());
         // Issue #132: the mode of the answer that asked narrows what an allowed command runs with.
         let read_only = Origin { mode: Mode::ReadOnly, ..origin.clone() };
         let mut writing = rights.clone();

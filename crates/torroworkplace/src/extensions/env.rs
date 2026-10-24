@@ -96,11 +96,13 @@ pub fn service_env() -> BTreeMap<String, String> {
 
 /// The folders of the `PATH` a server's process gets, in order: the folder its program was found in
 /// (`found`, so `npx` finds the `node` next to it), the service's `PATH` ([`Roots::path`]), then the usual
-/// folders ([`Roots::usual`]). Each folder once, at its first place.
+/// folders ([`Roots::usual`]). Each folder once, at its first place; a relative one (`.` on the service's
+/// `PATH`) is left out, as [`super::prereq::find`] does not look in it either: in the server's working folder
+/// it would name a folder the server writes itself.
 pub fn path_dirs(found: &Found, roots: &Roots) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     for dir in std::iter::once(found.dir.clone()).chain(roots.path.iter().cloned()).chain(roots.usual()) {
-        if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+        if dir.is_absolute() && !dirs.contains(&dir) {
             dirs.push(dir);
         }
     }

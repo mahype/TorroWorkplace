@@ -5741,4 +5741,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("What the agent gives the tool:", "Was der Agent dem Werkzeug übergibt:"),
     ("{text}… +{n} characters", "{text}… +{n} Zeichen"),
     ("“{name}” isn't a secret of this MCP server.", "„{name}“ ist kein Geheimnis dieses MCP-Servers."),
+    // MCP servers: fixes after the API review (issue #302).
+    ("The MCP server is switched off.", "Der MCP-Server ist ausgeschaltet."),
+    (
+        "The arguments of this tool call are too long. A tool of an MCP server takes at most {n} KB.",
+        "Die Argumente dieses Werkzeugaufrufs sind zu lang. Ein Werkzeug eines MCP-Servers nimmt höchstens {n} KB.",
+    ),
+    (
+        "The tool “{name}” isn't offered: its name doesn't fit the rules for tool names (at most {n} characters with the server's id: letters, digits, _ and -).",
+        "Das Werkzeug „{name}“ wird nicht angeboten: Sein Name passt nicht zu den Regeln für Werkzeugnamen (höchstens {n} Zeichen mit der Kennung des Servers: Buchstaben, Ziffern, _ und -).",
+    ),
 ];

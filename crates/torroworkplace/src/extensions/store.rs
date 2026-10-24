@@ -198,9 +198,15 @@ impl Store {
     /// The working folder of the server `id`, `<dir>/<id>/work`, created for the owner only (0700 on Unix):
     /// where its process starts (task MA.4).
     pub fn work_dir(&self, id: &str) -> Result<PathBuf, StoreError> {
-        let work = self.server_dir(id)?.join("work");
+        let work = self.work_path(id)?;
         create_private_dir(&work).map_err(|err| StoreError::Io { path: work.clone(), err })?;
         Ok(work)
+    }
+
+    /// Where [`Store::work_dir`] is, without making it: for a call, whose server may be removed meanwhile (the
+    /// supervisor makes the folder once it knows the server is not stopped, `super::supervisor::Launch`).
+    pub fn work_path(&self, id: &str) -> Result<PathBuf, StoreError> {
+        Ok(self.server_dir(id)?.join("work"))
     }
 
     /// Removes the folder of the server `id` with everything in it (`extensions.remove_extension`); one that
@@ -322,12 +328,15 @@ pub fn redacted(spec: &ServerSpec) -> ServerSpec {
 
 /// Whether the secrets stored for `old` may stay when a server's spec is replaced by `new`
 /// (`extensions.update_extension`): only when the secrets would still go to the same place. For a program
-/// the command is the same; for an address scheme, host and port are (the path may change). From one kind
-/// to the other they never stay. When this is `false`, [`save_secrets`] removes them, so a changed command
+/// the command and its arguments are the same (`npx` with another package in its arguments is another
+/// program); for an address scheme, host and port are (the path may change). From one kind to the other they
+/// never stay. When this is `false`, [`save_secrets`] removes them, so a changed command
 /// or address never gets a secret meant for the one before.
 pub fn keeps_secrets(old: &ServerSpec, new: &ServerSpec) -> bool {
     match (old, new) {
-        (ServerSpec::Stdio { command: old, .. }, ServerSpec::Stdio { command: new, .. }) => old == new,
+        (ServerSpec::Stdio { command: old, args: old_args, .. }, ServerSpec::Stdio { command: new, args, .. }) => {
+            old == new && old_args == args
+        }
         (ServerSpec::Http { url: old, .. }, ServerSpec::Http { url: new, .. }) => {
             matches!((origin(old), origin(new)), (Some(old), Some(new)) if old == new)
         }
@@ -641,8 +650,11 @@ mod tests {
     fn a_server_has_a_private_working_folder_that_goes_with_it() {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::in_data(dir.path());
+        let path = store.work_path("time").expect("a path");
+        assert!(!path.exists(), "only the path, nothing made");
         let work = store.work_dir("time").expect("made");
         assert_eq!(work, dir.path().join("extensions/time/work"));
+        assert_eq!(work, path);
         assert!(work.is_dir());
         #[cfg(unix)]
         {
@@ -654,6 +666,7 @@ mod tests {
         assert!(!dir.path().join("extensions/time").exists());
         store.remove_files("time").expect("removing again is fine");
         assert!(matches!(store.work_dir(".."), Err(StoreError::InvalidId(_))));
+        assert!(matches!(store.work_path(".."), Err(StoreError::InvalidId(_))));
         assert!(matches!(store.remove_files(""), Err(StoreError::InvalidId(_))));
     }
 
@@ -686,13 +699,30 @@ mod tests {
         let secrets = MemorySecrets::default();
         let old = save_secrets(&secrets, "github", None, &github()).expect("stored");
 
-        // Same command, the secret given as stored: it stays.
-        let mut same = old.clone();
-        if let ServerSpec::Stdio { args, .. } = &mut same {
-            args[3] = "ghcr.io/github/github-mcp-server:v0.21.0".into();
-        }
+        // Same command and arguments, the secret given as stored: it stays.
+        let same = old.clone();
         save_secrets(&secrets, "github", Some(&old), &same).expect("updated");
         assert_eq!(secrets.keys(), ["ext:github:GITHUB_PERSONAL_ACCESS_TOKEN"]);
+
+        // H3 of the API review: the same command with other arguments (another package or image) is another
+        // program, and the token is not handed on.
+        let mut other_image = same.clone();
+        if let ServerSpec::Stdio { args, .. } = &mut other_image {
+            args[3] = "ghcr.io/attacker/server:latest".into();
+        }
+        assert!(!keeps_secrets(&same, &other_image));
+        let npx = |package: &str| ServerSpec::Stdio {
+            command: "npx".into(),
+            args: vec!["-y".into(), package.into()],
+            env: same.values().clone(),
+        };
+        assert!(!keeps_secrets(&npx("@scope/server@1"), &npx("@evil/server@1")));
+        assert!(keeps_secrets(&npx("@scope/server@1"), &npx("@scope/server@1")));
+        save_secrets(&secrets, "github", Some(&old), &old).expect("stored again");
+
+        save_secrets(&secrets, "github", Some(&same), &other_image).expect("updated");
+        assert_eq!(secrets.keys(), Vec::<String>::new(), "gone with other arguments");
+        save_secrets(&secrets, "github", None, &github()).expect("stored again");
 
         // Another command: the secret is gone, the name waits for a new one.
         let other = ServerSpec::Stdio { command: "/tmp/evil".into(), args: Vec::new(), env: same.values().clone() };

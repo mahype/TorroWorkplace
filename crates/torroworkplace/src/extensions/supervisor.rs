@@ -13,9 +13,13 @@
 //! - **Crashes:** a server that ends by itself, fails to start or breaks the protocol starts again on the next
 //!   need; the third failure within 5 minutes leaves it [`Status::Crashed`] until a person switches it on again
 //!   ([`Supervisor::reset`]).
+//! - **Stopped on purpose:** a server ended by [`Supervisor::stop`] or [`Supervisor::forget`] (switched off,
+//!   removed) is not started again, not even by a call that began before, until [`Supervisor::reset`]
+//!   ([`SupervisorError::Stopped`]). So a call that read the store just before a person switched the server off
+//!   or removed it cannot start it again with the old secrets, nor make its deleted folder again.
 //! - **The process tree:** a program starts with an empty environment and exactly `super::env::child_env`, in
 //!   its working folder `<data>/extensions/<id>/work` (the caller's [`Launch::work_dir`], from
-//!   `super::store::Store::work_dir`), as the leader of a process group on Unix and in a Job Object on Windows
+//!   `super::store::Store::work_path`, made here right before the start), as the leader of a process group on Unix and in a Job Object on Windows
 //!   (without a console window). Ending it closes its stdin, waits [`Timing::stop_grace`] and then kills the
 //!   whole group or job, so `docker run -i` ends its container and a `sleep` it started goes too. When the
 //!   program ends by itself, what it left behind is killed at once.
@@ -26,7 +30,7 @@
 //! output. Which tools a person allowed, rights and approvals are the caller's (task MA.5); the supervisor runs
 //! what it is given.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -111,7 +115,9 @@ pub struct Launch {
     pub server: ServerSpec,
     /// Its stored secrets by name (`super::store::read_secrets`); they go to this server only.
     pub secrets: BTreeMap<String, Secret>,
-    /// Where its program runs: `super::store::Store::work_dir` (made, 0700). Not used for an address.
+    /// Where its program runs: `super::store::Store::work_path`. The supervisor makes it (0700) right before
+    /// it starts the program, after it checked the server is not stopped on purpose, so a server removed
+    /// meanwhile gets no folder again. Not used for an address.
     pub work_dir: PathBuf,
 }
 
@@ -136,6 +142,9 @@ pub enum SupervisorError {
     Closed,
     /// The server answered the call with something that is no answer; it keeps running.
     Protocol,
+    /// The server was stopped on purpose ([`Supervisor::stop`], [`Supervisor::forget`]: switched off,
+    /// removed) and is not started until [`Supervisor::reset`]. Not counted as a failure.
+    Stopped,
 }
 
 impl fmt::Display for SupervisorError {
@@ -153,6 +162,7 @@ impl fmt::Display for SupervisorError {
             SupervisorError::CallTimeout => tr("The MCP server didn't answer in time.").into(),
             SupervisorError::Closed => reason_text(CrashReason::Exited),
             SupervisorError::Protocol => reason_text(CrashReason::Protocol),
+            SupervisorError::Stopped => tr("The MCP server is switched off.").into(),
         };
         f.write_str(&text)
     }
@@ -188,6 +198,9 @@ pub struct Supervisor {
     base_env: BTreeMap<String, String>,
     timing: Timing,
     servers: Mutex<HashMap<String, Arc<Server>>>,
+    /// The ids stopped on purpose ([`Supervisor::stop`], [`Supervisor::forget`]) and not reset since: not
+    /// started. Kept apart from `servers`, so a server forgotten stays stopped for a call that still holds it.
+    stopped: Mutex<HashSet<String>>,
     changes: Arc<watch::Sender<u64>>,
 }
 
@@ -206,6 +219,7 @@ impl Supervisor {
             base_env,
             timing,
             servers: Mutex::new(HashMap::new()),
+            stopped: Mutex::new(HashSet::new()),
             changes: Arc::new(watch::channel(0).0),
         }
     }
@@ -223,7 +237,7 @@ impl Supervisor {
     /// The tools of the server as it reports them now, starting it first when it does not run
     /// ([`Purpose`] sets the time limit of the start). A running server's list is the one it last reported,
     /// read again after each `notifications/tools/list_changed`. Fails with [`SupervisorError::Crashed`]
-    /// while it is crashed.
+    /// while it is crashed and with [`SupervisorError::Stopped`] while it is stopped on purpose.
     pub async fn tools(&self, launch: &Launch, purpose: Purpose) -> Result<Vec<ReportedTool>, SupervisorError> {
         let (server, generation, _) = self.ensure(launch, purpose).await?;
         let state = lock(&server.state);
@@ -301,9 +315,12 @@ impl Supervisor {
         self.changes.subscribe()
     }
 
-    /// Ends the server if it runs (switched off, updated, removed); not a failure. It starts again on the next
-    /// call.
+    /// Ends the server if it runs (switched off, installed and not yet allowed, updated while off); not a
+    /// failure. It is not started again, by no call and no tool list, until [`Supervisor::reset`]: also not by
+    /// a call that began before and starts it after this ([`SupervisorError::Stopped`]).
     pub async fn stop(&self, id: &str) {
+        // Marked before the turn is taken: a start that waits for the turn sees it, one under way is ended.
+        lock(&self.stopped).insert(id.to_string());
         let Some(server) = self.get(id) else { return };
         let _turn = server.turn.lock().await;
         let run = lock(&server.state).run.take();
@@ -313,9 +330,11 @@ impl Supervisor {
         }
     }
 
-    /// Forgets the failures of the server, so a crashed one starts again on the next call: when a person
-    /// switches it on (`extensions.set_enabled`) or installs or updates it.
+    /// Forgets the failures of the server, so a crashed one starts again on the next call, and lifts a
+    /// [`Supervisor::stop`] or [`Supervisor::forget`]: when a person switches it on (`extensions.set_enabled`),
+    /// allows its tools, or installs or updates it.
     pub fn reset(&self, id: &str) {
+        lock(&self.stopped).remove(id);
         let Some(server) = self.get(id) else { return };
         let mut state = lock(&server.state);
         state.failures.clear();
@@ -324,7 +343,8 @@ impl Supervisor {
         self.bump();
     }
 
-    /// Ends the server and forgets it with its output: when it is removed (`extensions.remove_extension`).
+    /// Ends the server and forgets it with its output: when it is removed (`extensions.remove_extension`). Like
+    /// [`Supervisor::stop`] it is not started again until [`Supervisor::reset`] (installing it again).
     pub async fn forget(&self, id: &str) {
         self.stop(id).await;
         lock(&self.servers).remove(id);
@@ -365,6 +385,11 @@ impl Supervisor {
         let server =
             lock(&self.servers).entry(launch.id.clone()).or_insert_with(|| Arc::new(Server::new(&launch.id))).clone();
         let _turn = server.turn.lock().await;
+        // Under the turn: a `stop` marks before it takes the turn, so either it ends what starts here or this
+        // sees the mark.
+        if lock(&self.stopped).contains(&launch.id) {
+            return Err(SupervisorError::Stopped);
+        }
         let stale = {
             let mut state = lock(&server.state);
             if let Some(reason) = state.crashed {
@@ -454,6 +479,8 @@ impl Supervisor {
                 let dirs = env::path_dirs(&found, &self.roots);
                 let vars = env::child_env(&launch.server, &launch.secrets, &self.base_env, &dirs)
                     .map_err(SupervisorError::Setup)?;
+                crate::clients::create_private_dir(&launch.work_dir)
+                    .map_err(|_| SupervisorError::Failed(CrashReason::SpawnFailed))?;
                 let (process, stdout, stdin) = Process::spawn(&found.program, args, vars, &launch.work_dir, output)
                     .map_err(|_| SupervisorError::Failed(CrashReason::SpawnFailed))?;
                 (client::connect((stdout, stdin)).await.map_err(failed)?, Some(process))
@@ -829,6 +856,7 @@ mod tests {
     fn errors_say_what_happened_in_words() {
         assert_eq!(SupervisorError::CallTimeout.to_string(), tr("The MCP server didn't answer in time."));
         assert_eq!(SupervisorError::Closed.to_string(), tr("The MCP server stopped unexpectedly."));
+        assert_eq!(SupervisorError::Stopped.to_string(), tr("The MCP server is switched off."));
         let setup = SupervisorError::Setup(EnvError::MissingSecret { name: "TOKEN".into() });
         assert!(setup.to_string().contains("TOKEN"));
         let defaults = Timing::default();
@@ -945,8 +973,39 @@ mod tests {
 
             supervisor.stop("fixture").await;
             assert_eq!(supervisor.status("fixture"), Status::Stopped);
+            supervisor.reset("fixture");
             let again = supervisor.call(&launch, "echo", JsonObject::new()).await.expect("started again");
             assert_eq!(text(&again), "pong from-keychain");
+            supervisor.stop_all().await;
+        }
+
+        /// F1 of the API review: a server stopped on purpose (switched off) or forgotten (removed) is not
+        /// started again by a call that already holds its launch, and gets no working folder again, until
+        /// `reset`.
+        #[tokio::test]
+        async fn a_stopped_or_forgotten_server_stays_stopped_until_reset() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let supervisor = supervisor(quick());
+            let work = dir.path().join("fixture/work");
+            let launch = launch(&work, &[]);
+            supervisor.tools(&launch, Purpose::Use).await.expect("started, its folder made");
+            assert!(work.is_dir());
+
+            supervisor.stop("fixture").await;
+            assert_eq!(supervisor.call(&launch, "echo", JsonObject::new()).await, Err(SupervisorError::Stopped));
+            assert_eq!(supervisor.tools(&launch, Purpose::Use).await, Err(SupervisorError::Stopped));
+            assert_eq!(supervisor.status("fixture"), Status::Stopped, "not started again");
+            supervisor.reset("fixture");
+            supervisor.call(&launch, "echo", JsonObject::new()).await.expect("switched on again");
+
+            supervisor.forget("fixture").await;
+            std::fs::remove_dir_all(dir.path().join("fixture")).expect("removed as `remove_files` does");
+            assert_eq!(supervisor.call(&launch, "echo", JsonObject::new()).await, Err(SupervisorError::Stopped));
+            assert!(!dir.path().join("fixture").exists(), "no folder made again");
+            assert_eq!(supervisor.status("fixture"), Status::Stopped);
+            supervisor.reset("fixture");
+            supervisor.tools(&launch, Purpose::Install).await.expect("installed again");
+            assert!(work.is_dir());
             supervisor.stop_all().await;
         }
 
@@ -1001,6 +1060,7 @@ mod tests {
             assert!(gone(pid).await, "the grandchild is gone");
 
             // Also when the server ends by itself, and when the whole service ends.
+            supervisor.reset("fixture");
             supervisor.tools(&launch, Purpose::Use).await.expect("started");
             let pid = std::fs::read_to_string(dir.path().join("grandchild.pid")).expect("pid").trim().to_string();
             assert!(alive(&pid));
