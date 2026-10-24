@@ -1335,7 +1335,7 @@ nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
   Vertragstest „Tool ↔ Katalog“ grün.
 
 ### M12.5 `torro-gui`: geteilter Chip, Anhangblock, Menüeinträge mit Pfad
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** M12.1 · **Dateien:** `crates/torro-gui/src/{widgets,icon}.rs`,
   `crates/torro-gui/assets/icons/{download,save}.svg` (neu), `crates/torro-gui/examples/gallery.rs`
 - **Oberfläche:** Bausteine für M12.6. **API/MCP:** keine.

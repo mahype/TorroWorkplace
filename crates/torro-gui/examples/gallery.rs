@@ -12,7 +12,8 @@
 //! reading text), `-- --mailbar` the mail's action rail (task E14.1: collapsed, with an open group
 //! at the top and one at the foot, without its button as in the panel, expanded; an item off) and
 //! the mail window's parts (task
-//! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips),
+//! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips; task M12.5:
+//! the split chips with their menu, the attachment block with "Save all", a menu with details and tags),
 //! `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
@@ -2505,17 +2506,30 @@ fn mailbar() -> Element<'static, Msg> {
         .collect();
     let styles = column![line("cell", cells), line("pill", pills), line("text_input_flat", flat),].spacing(space::l());
 
+    // The attachment block of the reader (M12.5): three split chips, "Save all" in its head, and the
+    // menu of a chip beside it with a detail line and both tags.
     let chips = row![
-        widgets::file_chip("budget-q4.csv", "3 KB", Some(Msg::Noop)),
-        widgets::file_chip("travel-policy.pdf", "184 KB", Some(Msg::Noop)),
-        widgets::file_chip("no-size.txt", "", None),
+        widgets::split_file_chip("budget-q4.csv", "3 KB", Some(Msg::Noop), Some(Msg::Noop), None),
+        widgets::split_file_chip("travel-policy.pdf", "184 KB", Some(Msg::Noop), Some(Msg::Noop), None),
+        widgets::split_file_chip("no-size.txt", "", None, None, None),
     ]
     .spacing(space::s())
     .wrap()
     .vertical_spacing(space::s());
-    let reader_end =
-        column![rule::horizontal(1).style(style::rule), container(chips).padding([space::s(), space::xl()]),]
-            .width(720);
+    let save_all = widgets::split_action(Icon::Download, "Save all", Some(Msg::Noop), Some(Msg::Noop), None);
+    let block = widgets::file_block(widgets::file_block_head("3 attachments", "188 KB", Some(save_all)), chips);
+    let menu = widgets::menu(vec![MenuSection::new(vec![
+        MenuItem::new(Icon::Folder, "Invoices", Msg::Noop)
+            .detail("~/Documents/Invoices/2026/10")
+            .tag("Click", false)
+            .tag("Suggested", true),
+        MenuItem::new(Icon::Download, "Save to Downloads", Msg::Noop).detail("~/Downloads"),
+    ])]);
+    let reader_end = column![
+        rule::horizontal(1).style(style::rule),
+        container(column![block, menu].spacing(space::m())).padding([space::s(), space::xl()]),
+    ]
+    .width(720);
 
     column![
         section("Action rail of a mail (E14.1)", action_rails()),

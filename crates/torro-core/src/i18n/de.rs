@@ -5497,4 +5497,5 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("There can be at most 50 save targets.", "Es kann höchstens 50 Ablageziele geben."),
     ("Too many files of this name are in the folder.", "Im Ordner liegen zu viele Dateien mit diesem Namen."),
     ("Torro Workplace may not write to this folder.", "Torro Workplace darf nicht in diesen Ordner schreiben."),
+    ("More ways to open or save", "Weitere Wege zum Öffnen oder Speichern"),
 ];

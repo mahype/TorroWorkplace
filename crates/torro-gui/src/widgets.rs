@@ -8,7 +8,9 @@
 //! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
 //! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
 //! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
-//! mail window (task E11.1) the chips of attachments ([`file_chip`]); for the mail's actions at its
+//! mail window (task E11.1) the chips of attachments ([`file_chip`]); for saving them (task M12.5) the split
+//! chip with a menu at its triangle ([`split_file_chip`]), the block that holds them ([`file_block`]) and the
+//! "Save all" action ([`split_action`]); for the mail's actions at its
 //! right edge (task E14.1):
 //! the action rail ([`action_rail`] with [`RailGroup`]s of [`RailItem`]s, collapsed or expanded,
 //! [`RailMode`]) and the layer of an open group ([`rail_flyout`]). For the compact Appearance page
@@ -752,6 +754,16 @@ pub fn file_chip<'a, M: Clone + 'a>(
     size_text: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    button(container(file_chip_content(name, size_text)).center_y(Fill))
+        .height(size::control())
+        .padding([0.0, space::m()])
+        .style(style::button::secondary)
+        .on_press_maybe(on_press)
+        .into()
+}
+
+/// The paperclip, name and size of an attachment, as in a file chip.
+fn file_chip_content<'a, M: 'a>(name: impl IntoFragment<'a>, size_text: impl IntoFragment<'a>) -> Element<'a, M> {
     let mut content = row![toned(Icon::Paperclip, icon::SIZE_SM, Tone::Text3), typo::text(typo::body(), name)]
         .spacing(ICON_GAP)
         .align_y(Alignment::Center);
@@ -759,11 +771,178 @@ pub fn file_chip<'a, M: Clone + 'a>(
     if !size_text.is_empty() {
         content = content.push(typo::text(typo::meta(), size_text).style(theme::text_3).wrapping(Wrapping::None));
     }
-    button(container(content).center_y(Fill))
-        .height(size::control())
+    content.into()
+}
+
+/// The corners of one part of a split control: the outer ones on its side, radius [`radius::sm()`].
+fn split_corners(left: bool) -> border::Radius {
+    let r = radius::sm();
+    if left {
+        border::Radius { top_left: r, bottom_left: r, ..border::Radius::default() }
+    } else {
+        border::Radius { top_right: r, bottom_right: r, ..border::Radius::default() }
+    }
+}
+
+/// A part of a split control: no surface at rest, `hover` on hover and `selected` when pressed,
+/// the word in `text` – or in `text_2` when `quiet`, so an action reads as an action, not a file.
+/// Off, the part is faded like every disabled control ([`style::DISABLED_ALPHA`]).
+fn split_part(corners: border::Radius, quiet: bool) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
+    move |theme, status| {
+        let p = palette(theme);
+        let rest = if quiet { p.text_2 } else { p.text };
+        let (background, text) = match status {
+            button::Status::Active => (None, rest),
+            button::Status::Hovered => (Some(p.hover), p.text),
+            button::Status::Pressed => (Some(p.selected), p.text),
+            button::Status::Disabled => (None, Color { a: style::DISABLED_ALPHA, ..rest }),
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: text,
+            border: border::Border { radius: corners, ..border::Border::default() },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// A rule between the two parts of a split control: `line` in an action, `line_strong` on a chip.
+fn split_divider(strong: bool) -> impl Fn(&Theme) -> rule::Style + Copy {
+    move |theme| {
+        let p = palette(theme);
+        rule::Style {
+            color: if strong { p.line_strong } else { p.line },
+            radius: border::Radius::default(),
+            fill_mode: rule::FillMode::Full,
+            snap: true,
+        }
+    }
+}
+
+/// The triangle of a split control: a quiet part with a chevron down (14, `text_2`) that opens the
+/// menu, the tooltip "More ways to open or save", and the anchor of the menu when there is one.
+fn split_menu<'a, M: Clone + 'a>(
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+    corners: border::Radius,
+) -> Element<'a, M> {
+    let chevron =
+        container(toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text2)).center_y(Fill).padding([0.0, space::s()]);
+    let trigger = button(chevron).height(Fill).style(split_part(corners, true)).on_press_maybe(on_menu);
+    with_tooltip(anchored_if(anchor, trigger), tr("More ways to open or save"))
+}
+
+/// A file attachment as a chip with a menu: [`file_chip`]'s part that opens the file (paperclip,
+/// `name`, `size_text`), a hairline in `line_strong`, and at the right the triangle that opens the
+/// menu of ways to open or save (task M12.5). The two parts have their own hover, the frame is
+/// shared; the chip is [`size::control()`] high. `on_open` and `on_menu` show their part off when
+/// `None`; `anchor` is where the menu floats (`anchored_if`).
+///
+/// ```ignore
+/// widgets::split_file_chip(&a.name, format_size(a.size), Some(Msg::Open(i)), Some(Msg::Menu(i)), Some(&anchor))
+/// ```
+pub fn split_file_chip<'a, M: Clone + 'a>(
+    name: impl IntoFragment<'a>,
+    size_text: impl IntoFragment<'a>,
+    on_open: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+) -> Element<'a, M> {
+    let open = button(container(file_chip_content(name, size_text)).center_y(Fill))
+        .height(Fill)
         .padding([0.0, space::m()])
-        .style(style::button::secondary)
-        .on_press_maybe(on_press)
+        .style(split_part(split_corners(true), false))
+        .on_press_maybe(on_open);
+    let parts =
+        row![open, rule::vertical(LINE).style(split_divider(true)), split_menu(on_menu, anchor, split_corners(false)),]
+            .height(Fill);
+    container(parts)
+        .height(size::control())
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).raised)),
+            border: border::rounded(radius::sm()).color(palette(t).line_strong).width(LINE),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// "Save all" and its menu as one ghost control (task M12.5): no surface and no frame, so it does
+/// not look like an attachment; the action with `which` (Download) and `label` in `text_2`, a quiet
+/// hairline and the triangle beside it as in [`split_file_chip`]. [`size::control_sm()`] high, shown
+/// from two attachments on.
+///
+/// ```ignore
+/// widgets::split_action(Icon::Download, tr("Save all"), Some(Msg::SaveAll), Some(Msg::SaveAllMenu), Some(&anchor))
+/// ```
+pub fn split_action<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    on_press: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+) -> Element<'a, M> {
+    let content =
+        row![toned(which, icon::SIZE_SM, Tone::Text2), typo::text(typo::caption(), label).style(theme::text_2)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
+    let open = button(container(content).center_y(Fill))
+        .height(Fill)
+        .padding([0.0, space::s()])
+        .style(split_part(split_corners(true), true))
+        .on_press_maybe(on_press);
+    row![open, rule::vertical(LINE).style(split_divider(false)), split_menu(on_menu, anchor, split_corners(false))]
+        .height(size::control_sm())
+        .into()
+}
+
+/// The head of an attachment block (see [`file_block`]): a band with the paperclip, `title` in
+/// `typo::body_strong()` and `meta` in `typo::meta()` in `text_3`, and `action` at its right end.
+///
+/// ```ignore
+/// widgets::file_block_head("3 attachments", "1.2 MB", Some(widgets::split_action(…)))
+/// ```
+pub fn file_block_head<'a, M: 'a>(
+    title: impl IntoFragment<'a>,
+    meta: impl IntoFragment<'a>,
+    action: Option<Element<'a, M>>,
+) -> Element<'a, M> {
+    let mut head = row![
+        toned(Icon::Paperclip, icon::SIZE, Tone::Text3),
+        container(typo::text(typo::body_strong(), title).wrapping(Wrapping::None)).width(Fill).clip(true),
+        typo::text(typo::meta().tabular(), meta).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(ICON_GAP)
+    .align_y(Alignment::Center);
+    if let Some(action) = action {
+        head = head.push(action);
+    }
+    container(head)
+        .height(size::control())
+        .padding(Padding::new(0.0).left(space::m()).right(space::s()))
+        .center_y(Fill)
+        .width(Fill)
+        .into()
+}
+
+/// The block around a set of attachments (task M12.5, mail reader): `head` (see
+/// [`file_block_head`]) as a band with a [`LINE`] under it, then `content` with [`space::s()`]
+/// around, all in a `line_strong` frame with radius [`radius::sm()`].
+///
+/// ```ignore
+/// widgets::file_block(widgets::file_block_head(title, meta, None), chips)
+/// ```
+pub fn file_block<'a, M: 'a>(head: impl Into<Element<'a, M>>, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let body = column![
+        head.into(),
+        rule::horizontal(LINE).style(style::rule),
+        container(content).padding(space::s()).width(Fill),
+    ];
+    container(body)
+        .width(Fill)
+        .style(|t| container::Style {
+            border: border::rounded(radius::sm()).color(palette(t).line_strong).width(LINE),
+            ..container::Style::default()
+        })
         .into()
 }
 
@@ -1634,14 +1813,63 @@ pub struct MenuItem<'a, M> {
     pub trail: Trail,
     /// Marks the current choice.
     pub current: bool,
+    /// A second line under the label in `text_3` ([`MenuItem::detail`]), e.g. the folder a save goes to.
+    pub detail: Option<iced::widget::text::Fragment<'a>>,
+    /// Words between the label and the trail, at most two ([`MenuItem::tag`]).
+    pub tags: Vec<MenuTag<'a>>,
     /// Sent when the entry is clicked; the app closes the menu itself.
     pub on_press: M,
 }
 
+/// A word at the end of a [`MenuItem`] (task M12.5), e.g. "Click" or "Suggested"; with `sparkles`
+/// the Torro sparkles in front of it, for a suggestion the model made.
+#[derive(Debug, Clone)]
+pub struct MenuTag<'a> {
+    /// The word, through `tr` like every label.
+    pub label: iced::widget::text::Fragment<'a>,
+    /// Whether the sparkles of the AI stand in front of the word.
+    pub sparkles: bool,
+}
+
+/// How many [`MenuTag`]s an entry shows: a third word would crowd the label out.
+const MENU_TAGS: usize = 2;
+
 impl<'a, M> MenuItem<'a, M> {
     /// An entry with `mark` and `label` that sends `on_press`; no trail, not current.
     pub fn new(mark: impl Into<Mark>, label: impl IntoFragment<'a>, on_press: M) -> Self {
-        Self { mark: Some(mark.into()), label: label.into_fragment(), trail: Trail::None, current: false, on_press }
+        Self {
+            mark: Some(mark.into()),
+            label: label.into_fragment(),
+            trail: Trail::None,
+            current: false,
+            detail: None,
+            tags: Vec::new(),
+            on_press,
+        }
+    }
+
+    /// The same entry with `text` as a second line in `typo::meta()` in `text_3`, cut with "…" when
+    /// it is too long. The entry is twice as high as one without it.
+    ///
+    /// ```ignore
+    /// MenuItem::new(Icon::Folder, tr("Save to Downloads"), Message::SaveTo(ToDownloads))
+    ///     .detail("~/Downloads")
+    /// ```
+    pub fn detail(self, text: impl IntoFragment<'a>) -> Self {
+        Self { detail: Some(text.into_fragment()), ..self }
+    }
+
+    /// The same entry with the word `label` after its label, before the trail; with `sparkles` the
+    /// AI's sparkles in `accent` in front of it. At most two words are shown; a third is left out.
+    ///
+    /// ```ignore
+    /// MenuItem::new(Icon::Folder, "Invoices", Message::Save(id)).tag("Suggested", true)
+    /// ```
+    pub fn tag(mut self, label: impl IntoFragment<'a>, sparkles: bool) -> Self {
+        if self.tags.len() < MENU_TAGS {
+            self.tags.push(MenuTag { label: label.into_fragment(), sparkles });
+        }
+        self
     }
 
     /// The same entry with `trail` at the end.
@@ -1692,11 +1920,20 @@ pub fn menu_item<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
 }
 
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
+    let height = if item.detail.is_some() { style::MENU_ITEM_HEIGHT * 2.0 } else { style::MENU_ITEM_HEIGHT };
+    let label: Element<'a, M> = match item.detail {
+        Some(detail) => column![menu_label(item.label), detail_line(detail)].width(Fill).into(),
+        None => menu_label(item.label),
+    };
     let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(mark) = item.mark {
         content = content.push(mark_view(mark, Scale::Row, Tone::Text));
     }
-    content = content.push(line_label(typo::body(), item.label)).push(trail_view(item.trail));
+    content = content.push(label);
+    for tag in item.tags {
+        content = content.push(tag_view(tag));
+    }
+    content = content.push(trail_view(item.trail));
     if item.current {
         content = content.push(container(blank()).width(ICON_GAP).height(ICON_GAP).style(|t| container::Style {
             background: Some(Background::Color(palette(t).text_2)),
@@ -1706,11 +1943,44 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
     }
     button(container(content).center_y(Fill))
         .width(Fill)
-        .height(style::MENU_ITEM_HEIGHT)
+        .height(height)
         .padding(style::ITEM_PADDING)
         .style(style::button::menu_item(false))
         .on_press(item.on_press)
         .into()
+}
+
+/// The label of a menu entry, cut with "…" to the width the tags and trail leave it (measured when
+/// laid out) instead of clipped mid-letter: the same look as [`line_label`] otherwise.
+fn menu_label<'a, M: 'a>(label: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
+    let label = label.to_string();
+    responsive(move |size| {
+        let shown = typo::ellipsize(&label, typo::body(), size.width);
+        typo::text(typo::body(), shown).wrapping(Wrapping::None).into()
+    })
+    .into()
+}
+
+/// The second line of a menu entry: `typo::meta()` in `text_3`, cut with "…" to the width the
+/// label column has, which the tags behind the label take from (measured when laid out).
+fn detail_line<'a, M: 'a>(detail: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
+    let detail = detail.to_string();
+    responsive(move |size| {
+        let shown = typo::ellipsize(&detail, typo::meta(), size.width);
+        typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+    })
+    .into()
+}
+
+/// A [`MenuTag`] behind the label of a menu entry: `typo::caption()` in `text_3`, with the sparkles
+/// of the AI in `accent` in front of it when it has them.
+fn tag_view<'a, M: 'a>(tag: MenuTag<'a>) -> Element<'a, M> {
+    let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
+    if tag.sparkles {
+        let sparkles = icon(Icon::Sparkles, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).accent) });
+        content = content.push(sparkles);
+    }
+    content.push(typo::text(typo::caption(), tag.label).style(theme::text_3).wrapping(Wrapping::None)).into()
 }
 
 /// A menu card: `menu` surface, `line_strong` border, radius 8, shadow, 4 inside, [`menu_width()`]
@@ -5348,6 +5618,37 @@ mod tests {
     fn the_attachment_chips_build_on_and_off() {
         let _: Element<'_, Msg> = file_chip("budget-q4.csv", "3 KB", Some(Msg::Go));
         let _: Element<'_, Msg> = file_chip("travel-policy.pdf", "", None);
+    }
+
+    /// Task M12.5: the split chip, the save-all action and the block build on, off and with or
+    /// without an anchor for their menu.
+    #[test]
+    fn the_split_chips_and_the_block_build_on_and_off() {
+        let anchor = Anchor::new();
+        let _: Element<'_, Msg> =
+            split_file_chip("budget-q4.csv", "3 KB", Some(Msg::Go), Some(Msg::Close), Some(&anchor));
+        let _: Element<'_, Msg> = split_file_chip("travel-policy.pdf", "", None, None, None);
+        let _: Element<'_, Msg> = split_action(Icon::Download, "Save all", Some(Msg::Go), Some(Msg::Close), None);
+        let _: Element<'_, Msg> = split_action(Icon::Save, "Save all", None, None, Some(&anchor));
+        let head =
+            file_block_head("2 attachments", "3 KB", Some(split_action(Icon::Download, "Save all", None, None, None)));
+        let chips: Element<'_, Msg> = row![file_chip("a.pdf", "", None)].into();
+        let _: Element<'_, Msg> = file_block(head, chips);
+    }
+
+    /// Task M12.5: a menu entry takes a detail line and at most two tags; a third is left out.
+    #[test]
+    fn menu_entries_take_a_detail_and_two_tags() {
+        let item = MenuItem::new(Icon::Folder, "Invoices", Msg::Go)
+            .detail("~/Documents/Invoices/2026/10")
+            .tag("Click", false)
+            .tag("Suggested", true)
+            .tag("Third", false);
+        assert_eq!(item.tags.len(), 2);
+        assert!(item.tags[1].sparkles && !item.tags[0].sparkles);
+        assert!(item.detail.is_some());
+        assert!(MenuItem::new(Icon::Folder, "Plain", Msg::Go).detail.is_none());
+        let _: Element<'_, Msg> = menu_item(item);
     }
 
     /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take
