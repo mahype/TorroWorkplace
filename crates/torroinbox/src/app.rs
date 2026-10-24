@@ -7264,9 +7264,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.pinned_mail = Some(id.clone());
         // Its invitation's calendars and overlaps (task E8.3c), as for a mail read from the list.
         let invite = self.ask_invite_side(&id, mail.summary.invite.as_ref());
+        // Where its attachments would go (task M12.6), as for a mail read from the list.
+        let files = mail.attachments.iter().any(|file| !file.inline);
         self.letter = Some(Letter { id: id.clone(), loaded: Some(Ok(mail)) });
         let read = if unread { self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None) } else { Task::none() };
-        Task::batch([self.load(), invite, read])
+        let saving = if files { self.ask_save_targets(&id) } else { Task::none() };
+        Task::batch([self.load(), invite, read, saving])
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -15969,6 +15972,21 @@ mod tests {
             pinned(App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut hub);
         assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
+    }
+
+    /// Review of PR #308: a mail with attachments the window starts on (`--message`, no entry) asks
+    /// where they would go, as one read from the list does; one without attachments does not.
+    #[test]
+    fn the_mail_of_message_asks_where_its_attachments_go() {
+        let mut app = mail_window_on("m:w9");
+        let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:p3".into())).map(Box::new);
+        let _ = app.update(Message::StartMail("m:p3".into(), mail.map_err(|err| err.to_string())));
+        assert!(app.sent.contains(&Sent::SaveTargets("m:p3".into())), "the invoice's PDFs");
+        let mut app = mail_window_on("m:w9");
+        let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:w9".into())).map(Box::new);
+        assert!(mail.as_ref().is_ok_and(|mail| mail.attachments.iter().all(|file| file.inline)), "none to save");
+        let _ = app.update(Message::StartMail("m:w9".into(), mail.map_err(|err| err.to_string())));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::SaveTargets(_))));
     }
 
     #[test]
