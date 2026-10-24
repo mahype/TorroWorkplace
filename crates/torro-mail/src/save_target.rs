@@ -321,6 +321,13 @@ pub fn clean_segment(text: &str) -> String {
     clean_name(text, false)
 }
 
+/// [`clean_segment`] for a file name: when it is longer than 120 bytes, the cut falls before its
+/// extension (up to ten letters or digits after the last dot), so `Invoice….pdf` stays a PDF – as
+/// [`resolve`] shortens the file name of a scheme. Empty stays empty.
+pub fn clean_file_name(text: &str) -> String {
+    clean_name(text, true)
+}
+
 /// The first date in a file name, in one of the forms `2026-03-28`, `28.03.2026` or `20260328`;
 /// `None` when there is none.
 ///

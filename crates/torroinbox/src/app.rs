@@ -2385,8 +2385,8 @@ pub struct App<S> {
     /// M9.7, [`App::follow_html`]); `None` while no mail with HTML is held.
     html: Option<mail::HtmlMail>,
     /// The save targets and the plans of the attachments of a mail (task M12.6,
-    /// `mail.list_save_targets`), asked once its text is in: the message's id and the answer. Only the
-    /// one of the mail held counts ([`App::saving_of`]).
+    /// `mail.list_save_targets`), asked once its text is in: the message's id and the answer. Only an
+    /// answer for the mail held is taken, and only the one of the mail held counts ([`App::saving_of`]).
     saving: Option<(String, Result<SaveTargets, String>)>,
     /// The settings `mail_view` and `mail_appearance` as last read, with `--mail-view` and
     /// `--mail-colors` over them ([`App::take_look`]).
@@ -4283,6 +4283,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 return self.file_act(id, Some(part), act);
             }
             Message::SaveTargets(id, result) => {
+                // A late answer for a mail no longer held would replace the plans of the one shown.
+                if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
+                    return Task::none();
+                }
                 let first = self.launch.open == Some(Open::AttachmentSaved) && self.hint.is_none();
                 self.saving = Some((id.clone(), result));
                 // `--open attachment-saved`: the save that makes the hint, once the plans are in.
@@ -4710,9 +4714,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.detail.is_some() || (self.view.is_mail() && self.reading)
     }
 
-    /// Whether the open menu for an entry hangs at the panel's (or reader's) buttons rather than at
-    /// the cursor row's (issue #122): where it was clicked; opened by a key, at the panel while it is
-    /// open – the row may lie under it.
     /// The save targets and plans of the mail `id` (task M12.6), once they are in for it.
     fn saving_of(&self, id: &str) -> Option<&SaveTargets> {
         match &self.saving {
@@ -4803,6 +4804,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         )
     }
 
+    /// Whether the open menu for an entry hangs at the panel's (or reader's) buttons rather than at
+    /// the cursor row's (issue #122): where it was clicked; opened by a key, at the panel while it is
+    /// open – the row may lie under it.
     fn menu_from_panel(&self) -> bool {
         match self.menu_at {
             MenuAt::Row => false,
@@ -13191,6 +13195,24 @@ mod tests {
         let _ = app.update(Message::SaveTargets("m:p3".into(), saving.map_err(|err| err.to_string())));
         assert!(app.saving_of("m:p3").is_some_and(|saving| saving.files.len() == 2));
         app
+    }
+
+    /// Task M12.6: the plans answer for the mail held only. A's answer arriving after B was opened and
+    /// answered would put A's plans under B's attachments; it is dropped, B's stay.
+    #[test]
+    fn a_late_answer_for_another_mail_keeps_the_plans_of_the_one_held() {
+        let mut app = invoice();
+        let _ = app.update(Message::SelectMail("m:p1".into()));
+        deliver_letter(&mut app, "m:p1");
+        let answer = |app: &App<DemoSource>| {
+            block_on(MailSource::save_targets(app.inbox.as_ref(), Some("m:p3".into()))).map_err(|err| err.to_string())
+        };
+        let held = answer(&app);
+        let _ = app.update(Message::SaveTargets("m:p1".into(), held));
+        let late = answer(&app);
+        let _ = app.update(Message::SaveTargets("m:p3".into(), late));
+        assert_eq!(app.saving.as_ref().map(|(id, _)| id.as_str()), Some("m:p1"), "the late answer was dropped");
+        assert!(app.saving_of("m:p1").is_some() && app.saving_of("m:p3").is_none());
     }
 
     /// Task M12.6: a click on an attachment's name does what the setting says – open, Downloads, the

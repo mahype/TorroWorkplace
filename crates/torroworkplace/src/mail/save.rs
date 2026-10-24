@@ -4,9 +4,10 @@
 //!
 //! **Targets** are the same for every mail account and live in their own file, not in the
 //! settings, so `settings.update_settings` never writes them. Only a person sets a folder (point 9
-//! of "Was nie nach außen geht"): the core refuses a client's other folder before
-//! (`Core::switches_on_for_people`), and [`SaveTargets::update_by_client`] keeps the stored one
-//! under the same lock as the write, so a folder a person changed meanwhile stays theirs.
+//! of "Was nie nach außen geht"): the core refuses a client's other folder before anyone is asked
+//! and again when the approval runs (`Core::switches_on_for_people`, so an approval whose folder a
+//! person changed meanwhile ends `forbidden`), and [`SaveTargets::update_by_client`] keeps the
+//! stored one under the same lock as the write, for a change between that last check and the write.
 //!
 //! **Paths** come from the target's schemes ([`torro_mail::save_target::resolve`]): every value
 //! from the mail is one cleaned name, folders come only from a `/` in the scheme. The folder of a
@@ -213,8 +214,9 @@ impl SaveTargets {
 
     /// [`SaveTargets::update`] for a client: the folder is the stored one, read under the same lock
     /// as the write, whatever `spec` says. The core refused another folder before
-    /// (`Core::switches_on_for_people`); this keeps a folder a person changed between that check (or
-    /// the approval) and the write.
+    /// (`Core::switches_on_for_people`, before asking and again when the approval runs, so a folder a
+    /// person changed while the approval waited ends it `forbidden`); this only covers a folder a
+    /// person changes between that last check and the write.
     pub fn update_by_client(
         &self,
         id: &str,
@@ -434,8 +436,9 @@ pub struct ToApprove {
     pub account: String,
     /// Its subject as the store holds it.
     pub subject: String,
-    /// How many files the call saves: the parts named, or with none named the stored attachments
-    /// that are not `inline`; 0 when the store does not know them yet.
+    /// How many files the call saves: the parts named, or with none named the attachments that are
+    /// not `inline` ([`known_attachments`]); 0 when they could not be read (the message could not
+    /// be fetched).
     pub count: usize,
 }
 
@@ -446,27 +449,48 @@ pub async fn to_approve(mail: &MailService, reach: Reach<'_>, id: &str, parts: &
     let stores = mail.stores(reach).await;
     let located = read::locate(&stores, id).await?;
     let message = read::stored_message(&located).await?;
-    // A part named twice is one file; once the store knows the attachments, a part it does not know
+    let known = known_attachments(mail, &located, &message).await;
+    // A part named twice is one file; once the attachments are known, a part the mail does not have
     // is refused here, so nobody approves a call that would end in `not-found`.
     let mut named: Vec<&String> = parts.iter().collect();
     named.sort();
     named.dedup();
-    let known = |part: &String| message.attachments.iter().any(|attachment| &attachment.part == part);
-    if message.text.is_some() && !named.iter().all(|part| known(part)) {
+    if let Some(known) = &known
+        && !named.iter().all(|part| known.iter().any(|attachment| &attachment.part == *part))
+    {
         return Err(read::no_attachment());
     }
-    let count = match (named.len(), &message.text) {
-        (0, Some(_)) => message.attachments.iter().filter(|attachment| !attachment.inline).count(),
+    let count = match (named.len(), &known) {
+        (0, Some(known)) => known.iter().filter(|attachment| !attachment.inline).count(),
         (0, None) => 0,
         (named, _) => named,
     };
     Ok(ToApprove { account: located.account, subject: message.summary.subject, count })
 }
 
+/// The attachments of the stored `message`, `inline` ones included: the store's once it has read the
+/// message's text, else those of the message fetched once ([`read::fetch_raw`]). Not only a mail
+/// whose text is on its way lacks it: the store drops the text again (`prune_bodies_for` after
+/// reading, at once with headers only and else for mail older than `BODY_RETENTION_DAYS`), so an
+/// older mail never has it. `None` when the fetch fails (offline, gone from the server,
+/// unreadable): the caller goes on without them.
+async fn known_attachments(
+    mail: &MailService,
+    located: &read::Located,
+    message: &torro_mail::Message,
+) -> Option<Vec<AttachmentInfo>> {
+    if message.text.is_some() {
+        return Some(message.attachments.clone());
+    }
+    let raw = read::fetch_raw(mail, located).await.ok()?;
+    Some(mime::read(&raw).ok()?.attachments)
+}
+
 // ----- mail.list_save_targets -----
 
-/// The targets and, for `id`, the plan of each attachment of the stored message that is not
-/// `inline` ([`plan`]); no plans while the store has not read the message's text.
+/// The targets and, for `id`, the plan of each attachment of the message that is not `inline`
+/// ([`plan`], the attachments from [`known_attachments`]); no plans when they cannot be read, the
+/// targets all the same.
 async fn list(
     mail: &MailService,
     reach: Reach<'_>,
@@ -477,13 +501,12 @@ async fn list(
     let stores = mail.stores(reach).await;
     let located = read::locate(&stores, id).await?;
     let message = read::stored_message(&located).await?;
-    if message.text.is_none() {
+    let Some(attachments) = known_attachments(mail, &located, &message).await else {
         return Ok((targets, Vec::new()));
-    }
+    };
     let account = account_name(mail, &located.account).await;
     let months = month_names();
-    let files = message
-        .attachments
+    let files = attachments
         .iter()
         .filter(|attachment| !attachment.inline)
         .map(|attachment| plan(&targets, &message.summary, attachment, &account, &months))
@@ -559,10 +582,11 @@ fn facts_of(
 }
 
 /// The name an attachment gets in Downloads or a chosen folder: its last part after `/` or `\`,
-/// cleaned ([`super::safe_file_name`], then [`torro_mail::save_target::clean_segment`] for the names
-/// Windows reserves); `attachment` when nothing is left.
+/// cleaned as a target's scheme cleans it ([`torro_mail::save_target::clean_file_name`]: the names
+/// Windows reserves, at most 120 bytes with the extension kept); `attachment` when nothing is left.
 fn downloads_name(name: Option<&str>) -> String {
-    let cleaned = torro_mail::save_target::clean_segment(&super::safe_file_name(name.unwrap_or_default()));
+    let last = name.unwrap_or_default().rsplit(['/', '\\']).next().unwrap_or_default();
+    let cleaned = torro_mail::save_target::clean_file_name(last);
     if cleaned.is_empty() { "attachment".to_string() } else { cleaned }
 }
 
@@ -1311,6 +1335,28 @@ pub(crate) mod tests {
         assert!(picture.suggested.is_empty() && picture.sure.is_none());
     }
 
+    /// A name longer than a file system takes is cut before its extension, for Downloads and a chosen
+    /// folder as for a target's scheme: `Invoice….pdf` stays a PDF.
+    #[test]
+    fn a_long_name_keeps_its_extension() {
+        let long = format!("Rechnung {}.pdf", "x".repeat(187));
+        assert_eq!(long.len(), 200);
+        let name = downloads_name(Some(&long));
+        assert!(name.len() <= 120 && name.ends_with(".pdf"), "{name}");
+        let attachment = AttachmentInfo {
+            part: "2".into(),
+            filename: Some(long),
+            content_type: "application/pdf".into(),
+            size: 3,
+            inline: false,
+            content_id: None,
+        };
+        let targets = vec![SaveTarget { id: "any".into(), spec: spec("Any", Path::new("/Users/anna/Belege")) }];
+        let planned = plan(&targets, &summary(), &attachment, "Privat", &month_names());
+        assert_eq!(planned.file_name, name);
+        assert_eq!(planned.places[0].file, name, "the same name as the target's \"{{name}}.{{ext}}\"");
+    }
+
     /// The service with Anna's account on `server`, synced once.
     async fn synced(dir: &Path, server: &FakeImap) -> MailService {
         let secrets = MemoryTokens::default();
@@ -1342,10 +1388,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// The whole way through the service: the plan from the stored message (none while its text is
-    /// not kept), the files saved to a target once fetched, by the mail's day on this computer's
-    /// clock; a missing folder stops the call, and a client without the account finds neither the
-    /// message to plan nor to save.
+    /// The whole way through the service: the plan from the stored message, the files saved to a
+    /// target once fetched, by the mail's day on this computer's clock; a missing folder stops the
+    /// call, and a client without the account finds neither the message to plan nor to save.
     #[tokio::test]
     async fn attachments_are_planned_and_saved_from_the_reachable_stores_only() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1373,11 +1418,6 @@ pub(crate) mod tests {
             ["Rechnung_2026-03-28_4711.pdf", "Liste.pdf"]
         );
         assert_eq!(files[0].places[0].folders, [year.clone(), month.clone()]);
-        let old = Request::ListSaveTargets { id: Some(message_id(&service, "Ihre Rechnung").await) };
-        let Response::SaveTargets { files: unknown, .. } = answer(&service, Reach::Suite, &context, old).await else {
-            panic!("targets")
-        };
-        assert!(unknown.is_empty(), "the text of an old mail is not kept: {unknown:?}");
 
         let all =
             Request::SaveMailAttachments { id: id.clone(), parts: Vec::new(), to: SaveTo::Target(made.id.clone()) };
@@ -1414,5 +1454,41 @@ pub(crate) mod tests {
         let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
         assert_eq!(code(&answer(&service, client, &context, save).await), "not-found");
         assert_eq!(fs::read_dir(&downloads).expect("readable").count(), 1, "nothing more was saved");
+    }
+
+    /// The store drops the text of an older mail again (`prune_bodies_for`: at once with headers only,
+    /// else after `BODY_RETENTION_DAYS`), so the attachments come from the message fetched once: the
+    /// plans and the approval know them, and a part the mail does not have is refused before anyone is
+    /// asked. When the message cannot be fetched there are no plans, and the targets come all the same.
+    #[tokio::test]
+    async fn a_mail_without_its_text_is_planned_from_the_server() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let uid = server.add("INBOX", &raw_with(&[("Rechnung.pdf", b"pdf"), ("Liste.pdf", b"list")]), &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Ihre Rechnung").await;
+        let stores = service.stores(Reach::Suite).await;
+        let stored = read::stored_message(&read::locate(&stores, &id).await.expect("found")).await.expect("stored");
+        assert!(stored.text.is_none(), "the text of an old mail is not kept");
+        let context = Context { downloads: None, categories: Category::BUILT_IN.to_vec() };
+        let made = service.save_targets().create(spec("Invoices", dir.path()), &context.categories).expect("stored");
+        let list = Request::ListSaveTargets { id: Some(id.clone()) };
+
+        let listed = answer(&service, Reach::Suite, &context, list.clone()).await;
+        let Response::SaveTargets { files, .. } = listed else { panic!("targets: {listed:?}") };
+        let names: Vec<&str> = files.iter().map(|plan| plan.file_name.as_str()).collect();
+        assert_eq!(names, ["Rechnung.pdf", "Liste.pdf"]);
+        assert_eq!(files[0].places[0].target, made.id);
+        let all = to_approve(&service, Reach::Suite, &id, &[]).await.expect("in reach");
+        assert_eq!((all.subject.as_str(), all.count), ("Ihre Rechnung", 2));
+        let unknown = to_approve(&service, Reach::Suite, &id, &["9".into()]).await.expect_err("no such part");
+        assert_eq!(code(&unknown), "not-found");
+
+        server.expunge("INBOX", uid);
+        let listed = answer(&service, Reach::Suite, &context, list).await;
+        let Response::SaveTargets { targets, files, .. } = listed else { panic!("targets: {listed:?}") };
+        assert_eq!((targets, files), (vec![made], Vec::new()));
+        let gone = to_approve(&service, Reach::Suite, &id, &[]).await.expect("still in the store");
+        assert_eq!(gone.count, 0, "nothing known to count");
     }
 }

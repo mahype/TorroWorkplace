@@ -11016,12 +11016,20 @@ mod tests {
         let done = Response::SaveTarget { target: torro_mail::SaveTarget { id: made.id.clone(), spec: changed } };
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(done) });
 
-        // The person moves the folder while the client's change waits: the person's stays.
+        // The person moves the folder while the client's change waits: run, the approval finds the
+        // client's folder no longer the stored one and ends `forbidden` (`run_approved` checks
+        // `switches_on_for_people` again); the person's stays. `update_by_client` only covers a move
+        // between that check and the write.
         let asked = waits(ask(&core, Some(&key), renamed).await);
         assert_eq!(asked.summary, trf("Change save target \"{name}\"", &[("name", &"Bills")]));
         let moved = Request::UpdateSaveTarget { id: made.id.clone(), target: spec("Bills", &folder("Belege")) };
         save_target(ask(&core, Some(&app_key), moved).await);
-        ask(&core, Some(&app_key), decide(&asked.id, true)).await;
+        let refused = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(
+            matches!(&refused.state, torro_ipc::ApprovalState::Done { response } if code(response) == "forbidden"),
+            "{:?}",
+            refused.state
+        );
         let stored = core.mail.save_targets().get(&made.id).expect("read").expect("there");
         assert_eq!(stored.spec.folder, folder("Belege"));
 
