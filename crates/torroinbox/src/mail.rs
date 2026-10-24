@@ -2799,10 +2799,7 @@ pub fn attachment_line<'a>(
 ) -> Option<Element<'a, Message>> {
     let files = files_of(reading)?;
     let action = save_all_control(reading, &files, anchors);
-    // `file_block_head` centres its band with `center_y(Fill)`, which makes it fill the reader's height
-    // beside the scrolling mail; its fixed height here keeps the band one control high.
     let head = widgets::file_block_head(tr("Attachments"), files_meta(&files), action);
-    let head = container(head).height(size::control());
     // The block's frame and its inner padding take from the chips' line.
     let inner = (room - 2.0 * (space::s() + size::HAIRLINE)).max(0.0);
     let block = widgets::file_block(head, attachment_chips(reading, &files, anchors, inner));
@@ -2884,8 +2881,7 @@ fn attachment_chip<'a>(
     let open = Some(Message::OpenAttachment(reading.id.to_owned(), file.part.clone()));
     let menu = Some(Message::AskAttachment(reading.id.to_owned(), at));
     let anchor = (reading.file_menu == Some(at)).then_some(&anchors.attachment);
-    let chip = widgets::split_file_chip(shown, weight, open, menu, anchor);
-    widgets::with_tooltip(chip, click_tooltip(reading, file))
+    widgets::split_file_chip(shown, weight, click_tooltip(reading, file), open, menu, anchor)
 }
 
 /// The name of an attachment on one line, else "Attachment".

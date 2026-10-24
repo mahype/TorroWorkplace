@@ -2509,9 +2509,23 @@ fn mailbar() -> Element<'static, Msg> {
     // The attachment block of the reader (M12.5): three split chips, "Save all" in its head, and the
     // menu of a chip beside it with a detail line and both tags.
     let chips = row![
-        widgets::split_file_chip("budget-q4.csv", "3 KB", Some(Msg::Noop), Some(Msg::Noop), None),
-        widgets::split_file_chip("travel-policy.pdf", "184 KB", Some(Msg::Noop), Some(Msg::Noop), None),
-        widgets::split_file_chip("no-size.txt", "", None, None, None),
+        widgets::split_file_chip(
+            "budget-q4.csv",
+            "3 KB",
+            "Open: budget-q4.csv",
+            Some(Msg::Noop),
+            Some(Msg::Noop),
+            None
+        ),
+        widgets::split_file_chip(
+            "travel-policy.pdf",
+            "184 KB",
+            "Open: travel-policy.pdf",
+            Some(Msg::Noop),
+            Some(Msg::Noop),
+            None
+        ),
+        widgets::split_file_chip("no-size.txt", "", "", None, None, None),
     ]
     .spacing(space::s())
     .wrap()

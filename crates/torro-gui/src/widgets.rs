@@ -836,14 +836,17 @@ fn split_menu<'a, M: Clone + 'a>(
 /// `name`, `size_text`), a hairline in `line_strong`, and at the right the triangle that opens the
 /// menu of ways to open or save (task M12.5). The two parts have their own hover, the frame is
 /// shared; the chip is [`size::control()`] high. `on_open` and `on_menu` show their part off when
-/// `None`; `anchor` is where the menu floats (`anchored_if`).
+/// `None`; `anchor` is where the menu floats (`anchored_if`). `open_tip` is the tooltip of the part
+/// that opens ("Open: invoice.pdf"), none when empty – it sits on that part alone, so it never stands
+/// over the triangle's own.
 ///
 /// ```ignore
-/// widgets::split_file_chip(&a.name, format_size(a.size), Some(Msg::Open(i)), Some(Msg::Menu(i)), Some(&anchor))
+/// widgets::split_file_chip(&a.name, format_size(a.size), "Open: a.pdf", Some(Msg::Open(i)), Some(Msg::Menu(i)), Some(&anchor))
 /// ```
 pub fn split_file_chip<'a, M: Clone + 'a>(
     name: impl IntoFragment<'a>,
     size_text: impl IntoFragment<'a>,
+    open_tip: impl IntoFragment<'a>,
     on_open: Option<M>,
     on_menu: Option<M>,
     anchor: Option<&Anchor>,
@@ -853,6 +856,8 @@ pub fn split_file_chip<'a, M: Clone + 'a>(
         .padding([0.0, space::m()])
         .style(split_part(split_corners(true), false))
         .on_press_maybe(on_open);
+    let open_tip = open_tip.into_fragment();
+    let open: Element<'a, M> = if open_tip.is_empty() { open.into() } else { with_tooltip(open, open_tip) };
     let parts =
         row![open, rule::vertical(LINE).style(split_divider(true)), split_menu(on_menu, anchor, split_corners(false)),]
             .height(Fill);
@@ -916,10 +921,11 @@ pub fn file_block_head<'a, M: 'a>(
     if let Some(action) = action {
         head = head.push(action);
     }
+    // `center_y` with the control's height, not `Fill`: `Fill` would replace the band's height and let
+    // it take half a reader.
     container(head)
-        .height(size::control())
         .padding(Padding::new(0.0).left(space::m()).right(space::s()))
-        .center_y(Fill)
+        .center_y(size::control())
         .width(Fill)
         .into()
 }
@@ -5625,9 +5631,15 @@ mod tests {
     #[test]
     fn the_split_chips_and_the_block_build_on_and_off() {
         let anchor = Anchor::new();
-        let _: Element<'_, Msg> =
-            split_file_chip("budget-q4.csv", "3 KB", Some(Msg::Go), Some(Msg::Close), Some(&anchor));
-        let _: Element<'_, Msg> = split_file_chip("travel-policy.pdf", "", None, None, None);
+        let _: Element<'_, Msg> = split_file_chip(
+            "budget-q4.csv",
+            "3 KB",
+            "Open: budget-q4.csv",
+            Some(Msg::Go),
+            Some(Msg::Close),
+            Some(&anchor),
+        );
+        let _: Element<'_, Msg> = split_file_chip("travel-policy.pdf", "", "", None, None, None);
         let _: Element<'_, Msg> = split_action(Icon::Download, "Save all", Some(Msg::Go), Some(Msg::Close), None);
         let _: Element<'_, Msg> = split_action(Icon::Save, "Save all", None, None, Some(&anchor));
         let head =
