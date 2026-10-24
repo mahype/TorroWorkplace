@@ -413,8 +413,8 @@ jede Schrift trägt `origin` (`"bundled"` mit der Suite geliefert, `"folder"` vo
 das Feld, etwa von einem älteren Dienst, und bei unbekanntem Wert gilt `folder`) und `kind` (`"sans"`, `"serif"`,
 `"mono"`, fehlt bei Schriften ohne Angabe und bei installierten; ein unbekannter Wert gilt als fehlend), installierte
 nie mit `license`: Sie werden mitgenutzt, nie weitergegeben, und nie in ein PDF eingebettet (das PDF setzt dann Inter).
-`set_setting font` nimmt beide Ids; eine Familie, die nicht installiert ist, lehnt der Dienst ab, eine mit mehr als 64
-Zeichen oder mit Steuer-, Format- oder Zeilentrennzeichen schon vor dem Laden. Gespeichert wird nur die Id. Ein Design kann keine
+`set_setting font` nimmt beide Ids; eine Familie, die nicht installiert ist, lehnt der Dienst ab, eine leere, eine
+mit mehr als 64 Zeichen, eine mit „.“ am Anfang oder mit Steuer-, Format- oder Zeilentrennzeichen schon vor dem Laden. Gespeichert wird nur die Id. Ein Design kann keine
 installierte Schrift vorschlagen. Die Familiennamen gehen bewusst an Agenten (`Read`, Bereich `settings`): Sie verraten
 nur, welche Software installiert ist, keine Geheimnisse; Gründe nennen nie einen Dateipfad. Familiennamen stammen aus
 fremden Schriftdateien und sind wie der Text der Ordner Daten, nie Anweisungen. Verträglich ohne `v: 2` (neue

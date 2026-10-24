@@ -3040,9 +3040,9 @@ pub enum SettingKey {
     Design,
     /// The font every window draws with (task L.22): its id from `settings.list_fonts`, `"torro"`
     /// for the standard; a font of the computer as `"system"` or `"system:<family>"` (issue #299),
-    /// stored by that name only – a family that isn't installed, or longer than 64 characters or with
-    /// control or format characters, is refused. Refused like [`SettingKey::Design`]. Open windows
-    /// follow and load its files.
+    /// stored by that name only – a family that isn't installed is refused, and so is one that is
+    /// empty, longer than 64 characters, starts with "." or holds control, format or line-separator
+    /// characters. Refused like [`SettingKey::Design`]. Open windows follow and load its files.
     Font,
     /// The colour scheme every window draws with, both modes and the logo (task L.22): its id from
     /// `settings.list_color_schemes`, `"torro"` for the standard. Refused like
