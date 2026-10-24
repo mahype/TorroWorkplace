@@ -3934,7 +3934,7 @@ E17.1 Bausteine in torro-gui ── E17.2 Mail-Fenster: Klickregel und Darstellu
   `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 
 ### E17.2 Mail-Fenster: Gruppe zeigt ihre Mail, Unterkategorien eingerückt
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E17.1 · **Dateien:** `crates/torroinbox/src/app.rs`
 - `App::category_group_view(group) -> View`: `View::Category(CategoryView::of_group(group, …))` über den Katalog
   **ohne** `look.hidden_categories` (Entscheidung 5); daraus baut der Klick die gezeigte Ansicht.
