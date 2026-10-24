@@ -451,7 +451,8 @@ impl ServerHandler for TorroMcp {
     }
 }
 
-/// Every tool: one per catalogue command with [`Mcp::Tool`], in catalogue order, built once.
+/// Every tool: one per catalogue command with [`Mcp::Tool`], in catalogue order, built once, but
+/// `extensions.call_tool` ([`offered`]).
 ///
 /// Name [`Command::tool_name`], description [`Command::description`], input
 /// [`Command::input_schema`] (or the easier input of [`easy_input_schema`]), annotations from
@@ -461,7 +462,7 @@ pub fn tools() -> &'static [Tool] {
     TOOLS.get_or_init(|| {
         CATALOGUE
             .iter()
-            .filter(|command| command.mcp == Mcp::Tool)
+            .filter(|command| offered(command))
             .map(|command| {
                 let schema = easy_input_schema(command.name).or_else(|| command.input_schema()).map(Schema::to_value);
                 let mut schema = match schema {
@@ -476,6 +477,15 @@ pub fn tools() -> &'static [Tool] {
             .collect()
     })
 }
+
+/// The commands with [`Mcp::Tool`] that are a tool of their own: all but `extensions.call_tool`
+/// (issue #302), whose calls come as one tool per server tool, `ext_<server>_<tool>` (task MA.6).
+fn offered(command: &Command) -> bool {
+    command.mcp == Mcp::Tool && command.name != CALL_TOOL
+}
+
+/// The catalogue name of the command a server tool's call becomes ([`offered`]).
+const CALL_TOOL: &str = "extensions.call_tool";
 
 /// Where the catalogue's schema says less than the request takes, the tool says more: the
 /// `value` of `settings.set_setting` is any JSON in the request, but every setting takes a
@@ -508,7 +518,9 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 ///   traits keep a rule for every source of the kind and close or move entries there (task E8.6a).
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
-///   `apps`, `approvals`, `inbox`, `tools`: a PDF is made and kept here, issue #225); calendar, tasks and accounts talk to servers, so their hint is
+///   `apps`, `approvals`, `inbox`, `tools`: a PDF is made and kept here, issue #225; `extensions`:
+///   listing, switching off and removing servers changes only the core's store, issue #302 – the
+///   servers' own tools are not these); calendar, tasks and accounts talk to servers, so their hint is
 ///   left open, and so is it for `inbox.create_task_from_item` and `inbox.create_event_from_item`
 ///   (task E8.5b), which write a task or an event to the server, and for
 ///   `inbox.suggest_task_from_item` and `inbox.suggest_event_from_item` (issue #120), which ask an
@@ -535,9 +547,14 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         .idempotent(read_only || IDEMPOTENT.contains(&command.name));
     match command.area {
         Area::Inbox if WRITES_TO_A_SERVER.contains(&command.name) => hints,
-        Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox | Area::Tools => {
-            hints.open_world(false)
-        }
+        Area::System
+        | Area::Workspaces
+        | Area::Settings
+        | Area::Apps
+        | Area::Approvals
+        | Area::Inbox
+        | Area::Tools
+        | Area::Extensions => hints.open_world(false),
         _ if STAYS_HERE.contains(&command.name) => hints.open_world(false),
         _ => hints,
     }
@@ -620,7 +637,8 @@ pub enum ToolError {
 
 /// The one request a call of the tool `tool` with `arguments` stands for.
 ///
-/// Only commands with [`Mcp::Tool`] have a tool; any other name is [`ToolError::UnknownTool`].
+/// Only commands with [`Mcp::Tool`] have a tool, `extensions.call_tool` excepted ([`offered`]); any
+/// other name is [`ToolError::UnknownTool`].
 /// The arguments are the request's fields, and only those the tool's input schema lists
 /// ([`tools`]): anything else, `method` included, is [`ToolError::Input`], so a typo never goes
 /// unnoticed and the tool alone decides the command. The tools with easier inputs
@@ -630,7 +648,7 @@ pub enum ToolError {
 pub fn request_for<Tz: TimeZone>(tool: &str, arguments: JsonObject, zone: &Tz) -> Result<Request, ToolError> {
     let command = CATALOGUE
         .iter()
-        .find(|command| command.mcp == Mcp::Tool && command.tool_name() == tool)
+        .find(|command| offered(command) && command.tool_name() == tool)
         .ok_or(ToolError::UnknownTool)?;
     refuse_short_changes(command.name, &arguments)?;
     refuse_unknown_arguments(tool, &arguments)?;
@@ -1375,7 +1393,13 @@ mod tests {
 
     #[test]
     fn every_catalogue_tool_has_a_tool_and_every_tool_a_catalogue_entry() {
-        let wanted: BTreeSet<String> = CATALOGUE.iter().filter(|c| c.mcp == Mcp::Tool).map(|c| c.tool_name()).collect();
+        // Issue #302: `extensions.call_tool` is no tool of its own; its calls come as one tool per
+        // server tool (task MA.6).
+        let wanted: BTreeSet<String> = CATALOGUE
+            .iter()
+            .filter(|c| c.mcp == Mcp::Tool && c.name != "extensions.call_tool")
+            .map(|c| c.tool_name())
+            .collect();
         let offered: Vec<String> = tools().iter().map(|tool| tool.name.to_string()).collect();
         let unique: BTreeSet<String> = offered.iter().cloned().collect();
         assert_eq!(unique.len(), offered.len(), "tool names are unique");
@@ -1386,7 +1410,42 @@ mod tests {
             assert_eq!(request_for(&command.tool_name(), JsonObject::new(), &Utc), Err(ToolError::UnknownTool));
         }
         assert!(unique.iter().all(|name| !name.starts_with("clients_")));
+        assert!(!unique.contains("extensions_call_tool"));
+        let call = args(json!({"extension": "time", "tool": "get_current_time"}));
+        assert_eq!(request_for("extensions_call_tool", call, &Utc), Err(ToolError::UnknownTool));
         assert!(CATALOGUE.iter().any(|c| c.mcp == Mcp::Never), "the clients commands stay out");
+    }
+
+    /// Issue #302: agents list the servers, the catalog and the server tools, switch a server off and
+    /// remove one; installing, allowing tools, updating, secrets and output are no tools (point 10).
+    /// Managing servers stays on this computer.
+    #[test]
+    fn mcp_servers_are_managed_by_people_and_listed_by_agents() {
+        let names: BTreeSet<String> = tools().iter().map(|tool| tool.name.to_string()).collect();
+        for name in [
+            "extensions_list_extensions",
+            "extensions_get_extension",
+            "extensions_list_catalog",
+            "extensions_list_tools",
+            "extensions_set_enabled",
+            "extensions_remove_extension",
+        ] {
+            assert!(names.contains(name), "{name}");
+            let hints = tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
+            assert_eq!(hints.and_then(|h| h.open_world_hint), Some(false), "{name} stays on this computer");
+        }
+        for name in [
+            "extensions_install_extension",
+            "extensions_confirm_tools",
+            "extensions_update_extension",
+            "extensions_set_secret",
+            "extensions_read_logs",
+        ] {
+            assert!(!names.contains(name), "{name}");
+        }
+        let off = request_for("extensions_set_enabled", args(json!({"id": "time", "enabled": false})), &Utc);
+        assert_eq!(off, Ok(Request::SetExtensionEnabled { id: "time".into(), enabled: false }));
+        assert_eq!(request_for("extensions_list_tools", JsonObject::new(), &Utc), Ok(Request::ListExtensionTools));
     }
 
     /// Issue #225: agents list the tools, make a PDF and open it; saving it where a person chose is
@@ -1447,6 +1506,7 @@ mod tests {
                     | Area::Approvals
                     | Area::Inbox
                     | Area::Tools
+                    | Area::Extensions
             ) && !WRITES_TO_A_SERVER.contains(&command.name)
                 || STAYS_HERE.contains(&command.name);
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);

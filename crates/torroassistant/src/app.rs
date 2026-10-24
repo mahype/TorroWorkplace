@@ -229,6 +229,7 @@ pub enum Dialog {
 
 /// What the window knows of the assistant's own client (kind `assistant`).
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant, reason = "one value per window; the rights grew with MCP servers (#302)")]
 pub enum Access {
     /// Not asked yet, or the core did not answer.
     Unknown,

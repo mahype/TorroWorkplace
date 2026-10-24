@@ -5634,4 +5634,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{placeholder}” is not a placeholder. Insert lists them all.",
         "„{placeholder}“ ist kein Platzhalter. „Einfügen“ zeigt alle.",
     ),
+    // MCP connections: the area, a server tool refused, what a server needs (MA.1, #302)
+    (
+        "Connected MCP servers: listing, switching off, removing",
+        "Angebundene MCP-Server: anzeigen, ausschalten, entfernen",
+    ),
+    ("Extensions", "Erweiterungen"),
+    ("Needs Docker", "Braucht Docker"),
+    ("Needs Node.js (npx)", "Braucht Node.js (npx)"),
+    ("Needs uv (uvx)", "Braucht uv (uvx)"),
+    ("Needs {program}", "Braucht {program}"),
+    ("No access to this tool of the MCP server", "Kein Zugriff auf dieses Werkzeug des MCP-Servers"),
+    (
+        "The assistant may not use this tool of the MCP server.",
+        "Der Assistent darf dieses Werkzeug des MCP-Servers nicht verwenden.",
+    ),
 ];

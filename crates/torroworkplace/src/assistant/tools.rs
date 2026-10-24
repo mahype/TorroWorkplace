@@ -103,8 +103,9 @@ impl Tool {
 /// Commands with an MCP tool the assistant's model is never offered nor may call ([`callable`]).
 /// `calendar.map_preview` answers a PNG in Base64, which as a tool result would blow the limit of
 /// what a result may hold and say nothing a model can read; the editor shows the map, and the model
-/// has the event's `geo` and `location` (finding 9 of the review of #278).
-const NOT_FOR_MODELS: [&str; 1] = ["calendar.map_preview"];
+/// has the event's `geo` and `location` (finding 9 of the review of #278). `extensions.list_tools`
+/// (issue #302): the model gets the server tools one by one, as tools of their own (task MA.6).
+const NOT_FOR_MODELS: [&str; 2] = ["calendar.map_preview", "extensions.list_tools"];
 
 /// Every command with an MCP tool, as the model sees it: the MCP tool's name, description and
 /// input schema, without [`NOT_FOR_MODELS`]. Built once.
@@ -454,6 +455,7 @@ pub fn lack_summary(lack: Lack, engine: &str) -> String {
         Lack::Denied { area: a } => trf("Turned off in {area}", &[("area", &area(a))]),
         Lack::ToolOff { tool } => trf("{tool} is switched off", &[("tool", &tool.title())]),
         Lack::Tool { tool } => trf("No access to the tool {tool}", &[("tool", &tool.title())]),
+        Lack::Extension => tr("No access to this tool of the MCP server").into(),
     }
 }
 
@@ -570,6 +572,8 @@ mod tests {
             lack_summary(Lack::Tool { tool: pdf }, "Ollama"),
             trf("No access to the tool {tool}", &[("tool", &"PDF")])
         );
+        // Issue #302: a server's tool refused names no server: `Lack` carries fixed words only.
+        assert_eq!(lack_summary(Lack::Extension, "Ollama"), tr("No access to this tool of the MCP server"));
     }
 
     /// #231: a command switched off for the assistant is not offered, its neighbours are, and what

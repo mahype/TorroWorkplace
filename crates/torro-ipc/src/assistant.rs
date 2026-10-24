@@ -145,9 +145,9 @@ impl Mode {
         *self == Mode::Default
     }
 
-    /// `rights` in this mode: [`Mode::ReadOnly`] caps every area at read, switches admin and sending
-    /// off; [`Mode::Ask`] asks before every change; [`Mode::Default`] leaves them. Never more than
-    /// `rights`.
+    /// `rights` in this mode: [`Mode::ReadOnly`] caps every area and every MCP server
+    /// ([`Rights::extensions`]) at read, switches admin and sending off; [`Mode::Ask`] asks before
+    /// every change; [`Mode::Default`] leaves them. Never more than `rights`.
     pub fn narrow(self, rights: &Rights) -> Rights {
         let mut rights = rights.clone();
         match self {
@@ -157,6 +157,9 @@ impl Mode {
                 for held in rights.areas.values_mut() {
                     held.level = held.level.min(Level::Read);
                     held.admin = false;
+                }
+                for level in rights.extensions.values_mut() {
+                    *level = (*level).min(Level::Read);
                 }
                 rights.outbound = Outbound::Never;
             }
@@ -444,9 +447,9 @@ impl MyAccess {
 }
 
 /// Takes `area` out of `rights` with what it selects: an area the client does not get here names
-/// none of its calendars, lists, repositories, mail accounts or tools either (a mail account's id is
-/// its address, which the data rule keeps from an agent), and without mail no mail account's inbox
-/// source.
+/// none of its calendars, lists, repositories, mail accounts, tools or MCP servers either (a mail
+/// account's id is its address, which the data rule keeps from an agent), and without mail no mail
+/// account's inbox source.
 fn close(rights: &mut Rights, area: Area) {
     rights.areas.remove(&area);
     let nothing = || Selection::Only(Vec::new());
@@ -456,6 +459,9 @@ fn close(rights: &mut Rights, area: Area) {
         Area::Github => rights.github_repos = nothing(),
         Area::Inbox => rights.inbox_sources = nothing(),
         Area::Tools => rights.tools = nothing(),
+        // Switched off for a conversation, the area takes every server's tools with it: their
+        // command is `extensions.call_tool` (issue #302).
+        Area::Extensions => rights.extensions.clear(),
         Area::Mail => {
             rights.mail_accounts = nothing();
             if let Selection::Only(keys) = &mut rights.inbox_sources {
@@ -622,8 +628,11 @@ mod tests {
         rights.areas.insert(Area::Tasks, crate::api::AreaRights { level: Level::Write, admin: false });
         rights.outbound = Outbound::Free;
         rights.confirm = Confirm::Never;
+        rights.extensions = [("github".to_string(), Level::Full), ("time".to_string(), Level::Read)].into();
         let read = Mode::ReadOnly.narrow(&rights);
         assert!(read.areas.values().all(|held| held.level <= Level::Read && !held.admin));
+        // Issue #302: every MCP server at read at most, none opened.
+        assert_eq!(read.extensions, [("github".to_string(), Level::Read), ("time".to_string(), Level::Read)].into());
         assert_eq!(read.outbound, Outbound::Never);
         assert_eq!(read.area(Area::Github), rights.area(Area::Github), "closed stays closed");
         let ask = Mode::Ask.narrow(&rights);
@@ -636,7 +645,10 @@ mod tests {
                 assert!(!narrowed.allows(operation) || rights.allows(operation), "{mode:?} widened {}", command.name);
                 // What every client may (asking the person, `approvals.ask_permission`) is no grant; the core
                 // refuses it in a read-only answer as well (`Mode::refuses`).
-                let granted = command.area.grantable() && narrowed.allows(operation);
+                // A server's tool is no grant of its area either: its level is the server's, and the
+                // core refuses it by the tool's access (issue #302).
+                let granted =
+                    command.area.grantable() && command.name != "extensions.call_tool" && narrowed.allows(operation);
                 assert!(!granted || !mode.refuses(operation), "{mode:?} {}", command.name);
             }
         }
@@ -667,6 +679,12 @@ mod tests {
         assert_eq!(access.rights.task_lists, Selection::Only(Vec::new()));
         assert_eq!(access.rights.inbox_sources, Selection::Only(vec!["agent:claude-code".into()]));
         assert_eq!(access.rights.calendars, Selection::All, "the rest stays");
+
+        // Issue #302: `extensions` switched off takes every server's level with it.
+        let mut servers = Rights::assistant();
+        servers.extensions = [("time".to_string(), crate::api::Level::Read)].into();
+        let access = MyAccess::of(servers, None).switching_off(&[Area::Extensions]);
+        assert!(access.rights.extensions.is_empty());
     }
 
     /// Issue #225: the switched-on tools travel apart from the rights, left out when the core says

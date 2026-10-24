@@ -1212,6 +1212,7 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         outbound: Outbound::Never,
         confirm: Confirm::Never,
         denied: Default::default(),
+        extensions: Default::default(),
     };
     let mut assistant = Rights::assistant();
     set(&mut assistant, Area::Calendar, Level::Write, false);

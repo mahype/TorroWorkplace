@@ -1323,6 +1323,19 @@ impl PimService {
             Request::ListTools | Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. } => {
                 return None;
             }
+            // No collection: MCP servers are the core's own (issue #302); their rights are per server.
+            Request::ListExtensions
+            | Request::GetExtension { .. }
+            | Request::ListCatalog
+            | Request::ListExtensionTools
+            | Request::CallExtensionTool { .. }
+            | Request::SetExtensionEnabled { .. }
+            | Request::InstallExtension { .. }
+            | Request::ConfirmExtensionTools { .. }
+            | Request::UpdateExtension { .. }
+            | Request::SetExtensionSecret { .. }
+            | Request::ReadExtensionLogs { .. }
+            | Request::RemoveExtension { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

@@ -374,6 +374,7 @@ pub fn area_name(area: Area) -> &'static str {
         Area::Assistant => tr("Assistant"),
         Area::Bots => tr("Bots"),
         Area::Tools => tr("Tools"),
+        Area::Extensions => tr("Extensions"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
         Area::Clients => tr("API and MCP"),
@@ -503,6 +504,8 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>, who: Answerer<'_>) -
             trf("The tool {tool} is switched off in the assistant's settings.", &[("tool", &tool.title())])
         }
         Lack::Tool { tool } => trf("The assistant may not use the tool {tool}.", &[("tool", &tool.title())]),
+        // Issue #302: the level for the server, or the tool switched off; both are its rights.
+        Lack::Extension => tr("The assistant may not use this tool of the MCP server.").to_owned(),
     };
     (text, lack.in_rights())
 }
@@ -988,6 +991,10 @@ mod tests {
         let not_granted = hint(Lack::Tool { tool: pdf });
         assert_eq!(not_granted, (tool("The assistant may not use the tool {tool}."), true));
         assert_eq!(area_name(Area::Tools), tr("Tools"));
+        // Issue #302: a server's tool refused is the assistant's rights.
+        let server = hint(Lack::Extension);
+        assert_eq!(server, (tr("The assistant may not use this tool of the MCP server.").to_owned(), true));
+        assert_eq!(area_name(Area::Extensions), tr("Extensions"));
     }
 
     /// Task WZ.8: the tool lines of the PDF tool say what was done; a file card says its template

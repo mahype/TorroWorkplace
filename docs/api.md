@@ -86,6 +86,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
 | `tools` ²² | `list_tools` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten) | | |
+| `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret` (die letzten vier **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 
@@ -734,6 +735,19 @@ Client ohne Löschrecht bekommt dann `forbidden` (oder eine Freigabe-Anfrage), b
 `not-found` für ein fehlendes Vorkommen sehen könnte; ein Kalender, den er nicht sehen darf, bleibt `not-found`. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
 die ganze Serie.
 
+²⁵ **MCP-Anbindungen** (Issue #302, [erweiterungen.md](erweiterungen.md), Aufgaben
+[tasks/mcp-anbindungen.md](tasks/mcp-anbindungen.md)): Der Dienst ist MCP-Client fremder Server (Programm über
+stdio oder Adresse über Streamable HTTP). Der Bereich `extensions` verwaltet sie (auflisten, Katalog, ausschalten,
+entfernen) und steht in den Vorlagen wie jeder Bereich. Die Werkzeuge eines Servers dagegen öffnet keine Stufe in
+`extensions`, sondern eine **Stufe je Server** (`Rights::extensions`, Kennung → Stufe, fehlt = Kein Zugriff; siehe
+„Rechte“). `list_tools` und `call_tool` brauchen deshalb keine Stufe im Bereich; der Dienst prüft je Server
+(`Rights::allows_extension`). `call_tool` steht im Katalog mit `Delete`, gebraucht wird aber der Zugriff des
+Werkzeugs (`Read`, `Write` oder `Delete` aus dem Katalog-Eintrag, ohne Angabe `Delete`; Hinweise des Servers zählen
+nicht), auch für Freigaben und Nur-Lese-Unterhaltungen. Nach außen heißt jedes Werkzeug `ext_<id>_<werkzeug>`;
+`extensions_call_tool` ist deshalb kein eigenes MCP-Tool. Ein Server ohne Stufe verhält sich für den Client wie nicht
+vorhanden (`not-found`); zu niedrige Stufe oder ein gesperrtes Werkzeug ist `forbidden` (`Lack::Extension`).
+Beschreibungen, Schemas und Antworten eines Servers sind fremder Text (`untrusted`).
+
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
 Merkmal einer Zeile da und verraten trotzdem, wer dem Menschen schreibt und wie oft; darum gelten für
@@ -902,6 +916,18 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Vorlage (`pdf_template`): Beides sind Pfade, das Logo liest eine Datei in eine PDF, und ein Ordner in einem
    synchronisierten Verzeichnis brächte Inhalte ohne Sende-Freigabe vom Rechner. Der Dienst vergleicht mit dem
    gespeicherten Stand (wie beim Mikrofon über `settings.update_settings`); entfernen darf jeder mit Admin.
+10. **Einen MCP-Server installieren, einschalten, seinen Werkzeugen zustimmen, ihn aktualisieren, seine
+   Geheimnisse setzen und seine Ausgaben lesen** (Issue #302, Fußnote ²⁵): `extensions.install_extension`,
+   `extensions.confirm_tools`, `extensions.update_extension`, `extensions.set_secret` und `extensions.read_logs`
+   nur mit dem App-Schlüssel (`Mcp::Never`), `extensions.set_enabled` mit `enabled: true` wie das Mikrofon nach dem
+   Wert (`Request::kept_for_people`): Jeder Client bekommt `forbidden`, auch mit Admin-Rechten, und niemand wird um
+   eine Freigabe gefragt. Ausschalten und Entfernen (mit Freigabe) dürfen Agenten. Grund: Ein Server ist ein
+   Programm, das mit den Rechten der Person auf ihrem Rechner läuft; wer ihn installiert oder einschaltet,
+   entscheidet, welcher Code dort läuft und welche Werkzeuge Agenten bekommen. Seine Ausgaben (stderr) können alles
+   enthalten, was er gelesen hat, und sein Status nennt deshalb nur feste Fehlerarten (`exited`, `start_timeout`,
+   `spawn_failed`, `protocol`), nie seinen Text. Geheimnisse eines Servers liegen im Schlüsselbund
+   (`ext:<id>:<NAME>`) und gehen nur beim Start an genau diesen Server; jede Antwort nennt nur „gespeichert“ oder
+   „fehlt“ (Punkt 1).
 
    Ebenso **Anhänge von Mails ablegen** (Issue #290): Den **Ordner eines Ablageziels** setzt nur ein Mensch.
    `mail.create_save_target` gibt es nur mit dem App-Schlüssel (`Mcp::Never`), weil ein neues Ziel immer einen
@@ -946,6 +972,12 @@ dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
   Wird ein Konto entfernt (`accounts.remove_account`), fallen das Konto und seine Sammlungen aus
   allen Auswahlen (M2.7b); wird dieselbe Adresse später neu verbunden, bekommt kein Agent seinen
   Zugriff von selbst zurück.
+- **Je MCP-Server eine Stufe** (Issue #302, Fußnote ²⁵): `Rights::extensions` (Kennung des Servers → Kein Zugriff ·
+  Lesen · Lesen und Schreiben · Voll; fehlt sie, kein Zugriff). Sie deckt die Werkzeuge des Servers nach ihrem
+  Zugriff ab. Keine Vorlage öffnet einen Server, auch *Full access* nicht (wie Assistent und Bots), und auch die
+  Stufe im Bereich `extensions` nicht. Ein einzelnes Werkzeug lässt sich sperren: `ext.<id>.<werkzeug>` in
+  `Rights::denied`. Wird ein Server entfernt, fällt er mit seinen gesperrten Werkzeugen aus den Rechten aller
+  Clients.
 - **Freigabe vorher**: Nie · Beim Löschen (Standard) · Bei jeder Änderung.
 - **Nach außen** (Mail senden, M2.1): Nie · Mit Freigabe (Standard, in allen Vorlagen) · Frei. Senden ist kein
   gewöhnliches Schreiben: Es verlässt den Rechner und lässt sich nicht zurückholen. Es gilt die strengere

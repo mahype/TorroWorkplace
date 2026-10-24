@@ -68,7 +68,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   (`#[cfg(unix)]`; Windows wird nur gebaut). Alle Wurzeln (Daten, Home, PATH) als Parameter.
 
 ### MA.1 Gerüst: Bereich `extensions`, Requests, Katalog, Rechte
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
   `crates/torro-ipc/src/extensions.rs` (neu), `crates/torroworkplace/src/{core,audit,daemon,pim,mcp,clients}.rs`,
   `crates/torroworkplace/src/assistant/{tools,prompt}.rs`, `crates/torroworkplace/src/ui/*.rs` und

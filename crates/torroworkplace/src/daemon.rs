@@ -923,6 +923,25 @@ fn describe(request: &Request) -> String {
         Request::CreatePdf { .. } => "make a PDF".into(),
         Request::OpenFile { file } => format!("open file {file}"),
         Request::SaveFileAs { file, .. } => format!("save file {file} elsewhere"),
+        // MCP servers (issue #302): the server and the tool, never arguments, commands or secrets.
+        Request::ListExtensions => "mcp servers".into(),
+        Request::GetExtension { id } => format!("mcp server {id}"),
+        Request::ListCatalog => "mcp catalog".into(),
+        Request::ListExtensionTools => "mcp server tools".into(),
+        Request::CallExtensionTool { extension, tool, .. } => format!("call {tool} of mcp server {extension}"),
+        Request::SetExtensionEnabled { id, enabled: true } => format!("switch on mcp server {id}"),
+        Request::SetExtensionEnabled { id, enabled: false } => format!("switch off mcp server {id}"),
+        Request::InstallExtension { from: torro_ipc::extensions::InstallFrom::Catalog { entry, .. } } => {
+            format!("install mcp server {entry} from the catalog")
+        }
+        Request::InstallExtension { from: torro_ipc::extensions::InstallFrom::Custom { id, .. } } => {
+            format!("install own mcp server {id}")
+        }
+        Request::ConfirmExtensionTools { id, .. } => format!("allow tools of mcp server {id}"),
+        Request::UpdateExtension { id, .. } => format!("update mcp server {id}"),
+        Request::SetExtensionSecret { id, .. } => format!("secret of mcp server {id}"),
+        Request::ReadExtensionLogs { id } => format!("output of mcp server {id}"),
+        Request::RemoveExtension { id } => format!("remove mcp server {id}"),
         Request::GetMailCachePolicy { account } => format!("cache policy of {account}"),
         Request::SetMailCachePolicy { policy } => format!("set cache policy of {}", policy.account),
         Request::PreviewMailCache { account, .. } => format!("cache estimate of {account}"),

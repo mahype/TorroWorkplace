@@ -648,6 +648,7 @@ pub fn area_label(area: Area) -> &'static str {
         Area::Assistant => tr("Assistant"),
         Area::Bots => tr("Bots"),
         Area::Tools => tr("Tools"),
+        Area::Extensions => tr("Extensions"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
         Area::Clients => tr("API and MCP"),
@@ -669,6 +670,7 @@ fn area_detail(area: Area) -> &'static str {
         Area::Assistant => tr("Chats with the assistant, which acts with its own rights"),
         Area::Bots => tr("Bots and asking them, which act with their own rights"),
         Area::Tools => tr("The assistant's own tools, such as making PDFs"),
+        Area::Extensions => tr("Connected MCP servers: listing, switching off, removing"),
         Area::Settings => tr("Settings of the suite"),
         Area::Apps => tr("Opening the suite's apps"),
         Area::System | Area::Clients | Area::Approvals => "",
@@ -1823,8 +1825,8 @@ mod tests {
         let mut wide = RightsTemplate::ReadOnly.rights();
         wide.confirm = Confirm::Never;
         let first = format!("{}, {}, {}", tr("Workspaces"), tr("Calendar"), tr("Tasks"));
-        // GitHub, Inbox, Mail, Accounts, AI, Tools, Settings, Apps follow.
-        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &8)]));
+        // GitHub, Inbox, Mail, Accounts, AI, Tools, Extensions, Settings, Apps follow.
+        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &9)]));
         // A command switched off makes a template custom.
         let mut narrowed = RightsTemplate::ReadOnly.rights();
         narrowed.denied.insert("calendar.list_events".into());

@@ -4616,6 +4616,23 @@ impl Core {
                     Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 }
             }
+            // MCP servers (issue #302): the commands and their rights are there, the servers follow
+            // (tasks MA.2 to MA.5).
+            request @ (Request::ListExtensions
+            | Request::GetExtension { .. }
+            | Request::ListCatalog
+            | Request::ListExtensionTools
+            | Request::CallExtensionTool { .. }
+            | Request::SetExtensionEnabled { .. }
+            | Request::InstallExtension { .. }
+            | Request::ConfirmExtensionTools { .. }
+            | Request::UpdateExtension { .. }
+            | Request::SetExtensionSecret { .. }
+            | Request::ReadExtensionLogs { .. }
+            | Request::RemoveExtension { .. }) => Response::Error {
+                code: "unsupported".into(),
+                message: format!("{} is not available in this version yet", request.operation().name()),
+            },
         }
     }
 
@@ -10909,6 +10926,54 @@ mod tests {
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(!settings(&core).await.voice.enabled, "off once the person allowed it");
+    }
+
+    /// Issue #302 (task MA.1): until the servers are built (tasks MA.2 to MA.5) their commands answer
+    /// `unsupported`; what only a person does (point 10) is `forbidden` for a client before anything
+    /// else, also with every right, and nobody is asked to approve it.
+    #[tokio::test]
+    async fn mcp_servers_answer_unsupported_and_people_keep_theirs() {
+        use torro_ipc::extensions::InstallFrom;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let id = || "time".to_string();
+        let call = Request::CallExtensionTool {
+            extension: id(),
+            tool: "get_current_time".into(),
+            arguments: Default::default(),
+        };
+        let for_people = [
+            Request::InstallExtension { from: InstallFrom::Catalog { entry: id(), secrets: Default::default() } },
+            Request::ConfirmExtensionTools { id: id(), fingerprint: "ab".into() },
+            Request::UpdateExtension { id: id(), server: None },
+            Request::SetExtensionSecret { id: id(), name: "KEY".into(), value: torro_ipc::Secret::new("k") },
+            Request::ReadExtensionLogs { id: id() },
+            Request::SetExtensionEnabled { id: id(), enabled: true },
+        ];
+        let for_clients = [
+            Request::ListExtensions,
+            Request::GetExtension { id: id() },
+            Request::ListCatalog,
+            Request::ListExtensionTools,
+            call,
+            Request::SetExtensionEnabled { id: id(), enabled: false },
+        ];
+        for request in for_people.iter().chain(&for_clients).chain([&Request::RemoveExtension { id: id() }]) {
+            assert_eq!(code(&core.handle(request.clone()).await), "unsupported", "{request:?}");
+        }
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        rights.extensions.insert(id(), Level::Full);
+        let (_, key) = client(&core, rights).await;
+        for request in for_people {
+            assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "forbidden", "{request:?}");
+        }
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        for request in for_clients {
+            assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "unsupported", "{request:?}");
+        }
     }
 
     /// Issue #225, point 9 of "Was nie nach außen geht": no client switches a tool of the assistant
