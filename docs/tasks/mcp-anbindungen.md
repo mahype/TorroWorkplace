@@ -152,7 +152,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   an; `PATH` enthält den Ordner des Programms vorn; `http://example.com` abgelehnt, `http://127.0.0.1` erlaubt.
 
 ### MA.4 Kern: MCP-Client und Prozessaufsicht
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.3 · **Dateien:** `Cargo.toml` (Wurzel: `rmcp` zusätzlich `client`,
   `transport-child-process`, `transport-streamable-http-client-reqwest`, `reqwest`; neu `process-wrap` 10.0.1 mit
   `tokio1`, `process-group`, `job-object`, `creation-flags`, `kill-on-drop`; unter Windows `windows` 0.62.2 mit

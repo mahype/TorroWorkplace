@@ -5677,4 +5677,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{name}” isn't a valid name for a variable or header.",
         "„{name}“ ist kein gültiger Name für eine Variable oder einen Header.",
     ),
+    // MCP servers: starting and calling them (task MA.4).
+    (
+        "The program this MCP server needs isn't installed on this computer.",
+        "Das Programm, das dieser MCP-Server braucht, ist auf diesem Computer nicht installiert.",
+    ),
+    (
+        "The MCP server failed three times within five minutes. Switch it off and on again to try again.",
+        "Der MCP-Server ist innerhalb von fünf Minuten dreimal ausgefallen. Schalte ihn aus und wieder ein, um es erneut zu versuchen.",
+    ),
+    ("The MCP server didn't answer in time.", "Der MCP-Server hat nicht rechtzeitig geantwortet."),
+    ("The MCP server stopped unexpectedly.", "Der MCP-Server wurde unerwartet beendet."),
+    ("The MCP server didn't start in time.", "Der MCP-Server ist nicht rechtzeitig gestartet."),
+    ("The MCP server's program couldn't be started.", "Das Programm des MCP-Servers konnte nicht gestartet werden."),
+    (
+        "The MCP server sent something Torro Workplace doesn't understand.",
+        "Der MCP-Server hat etwas gesendet, das Torro Workplace nicht versteht.",
+    ),
 ];

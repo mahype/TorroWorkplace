@@ -16,7 +16,8 @@
 //! tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
 //! state directory before the core starts ([`claim_service`]), and when it ends it stops the socket
 //! server and releases the template keys it bound on Hyprland ([`Core::release_template_keys`]), after
-//! which nothing binds them again.
+//! which nothing binds them again, and ends the MCP servers it started with their process trees
+//! ([`crate::extensions::supervisor::Supervisor::stop_all`]).
 //!
 //! Where the main thread goes depends on the system. On Linux it waits for the service
 //! (`block_on`); ksni runs its D-Bus task on the same runtime. On macOS and Windows the tray
@@ -456,6 +457,13 @@ async fn serve(shows: Shows) -> Result<(), String> {
     if tokio::time::timeout(RELEASE_WAIT, core.release_template_keys()).await.is_err() {
         eprintln!("torroworkplace: the template keys were not released in time; the next start releases them");
     }
+    // The MCP servers (task MA.4) go with the service, each with everything it started. Bounded too: each gets
+    // its grace time, then its tree is killed; a tree that is not killed by then dies with this process at the
+    // latest through its kill-on-drop.
+    let servers = crate::extensions::supervisor::Supervisor::service();
+    if tokio::time::timeout(EXTENSIONS_WAIT, servers.stop_all()).await.is_err() {
+        eprintln!("torroworkplace: the MCP servers did not end in time");
+    }
     let _ = std::fs::remove_file(&socket);
     result
 }
@@ -465,6 +473,9 @@ const SERVICE_LOCK: &str = "service.lock";
 
 /// How long the end of the service waits for the template keys to be released.
 const RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// How long the end of the service waits for its MCP servers: their grace time of 3 s and a little.
+const EXTENSIONS_WAIT: Duration = Duration::from_secs(5);
 
 /// How long the start waits for its own socket to answer before it gives up on the setup
 /// ([`once_listening`]).

@@ -53,6 +53,8 @@ sha2.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true
+# The processes of MCP servers (task MA.4): the whole tree ends with the server.
+process-wrap.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
 # The built-in catalog of MCP servers (task MA.2): `assets/extensions/catalog.toml`.
@@ -79,6 +81,8 @@ ksni.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+# `CREATE_NO_WINDOW` for the processes of MCP servers (task MA.4).
+windows.workspace = true
 winreg.workspace = true
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
