@@ -5694,4 +5694,51 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The MCP server sent something Torro Workplace doesn't understand.",
         "Der MCP-Server hat etwas gesendet, das Torro Workplace nicht versteht.",
     ),
+    // MCP servers: commands, rights and approvals (task MA.5).
+    (
+        "A server from the catalog is updated from the catalog. Leave out its settings.",
+        "Ein Server aus dem Katalog wird aus dem Katalog aktualisiert. Lass seine Einstellungen weg.",
+    ),
+    (
+        "Allow the tools of this MCP server before you switch it on.",
+        "Erlaube die Werkzeuge dieses MCP-Servers, bevor du ihn einschaltest.",
+    ),
+    (
+        "An MCP server with the id “{id}” is installed already.",
+        "Ein MCP-Server mit der Kennung „{id}“ ist schon installiert.",
+    ),
+    ("Give the MCP server a name.", "Gib dem MCP-Server einen Namen."),
+    (
+        "Give the new program or address of the MCP server.",
+        "Gib das neue Programm oder die neue Adresse des MCP-Servers an.",
+    ),
+    ("Remove MCP server “{name}”", "MCP-Server „{name}“ entfernen"),
+    ("Switch off MCP server “{name}”", "MCP-Server „{name}“ ausschalten"),
+    ("The MCP server can't be shown.", "Der MCP-Server kann nicht angezeigt werden."),
+    (
+        "The MCP servers can't be read or stored on this computer. The service's log says why.",
+        "Die MCP-Server können auf diesem Computer nicht gelesen oder gespeichert werden. Das Protokoll des Dienstes sagt, warum.",
+    ),
+    (
+        "The tools of this MCP server changed since you saw them. Look at them again.",
+        "Die Werkzeuge dieses MCP-Servers haben sich geändert, seit du sie gesehen hast. Sieh sie dir noch einmal an.",
+    ),
+    ("There is no MCP server “{id}”.", "Es gibt keinen MCP-Server „{id}“."),
+    ("There is no MCP server “{id}” in the catalog.", "Im Katalog gibt es keinen MCP-Server „{id}“."),
+    (
+        "This MCP server has no tool “{tool}” you may use.",
+        "Dieser MCP-Server hat kein Werkzeug „{tool}“, das du nutzen darfst.",
+    ),
+    (
+        "Use 1 to 24 lowercase letters, digits and dashes for the id, starting with a letter.",
+        "Verwende für die Kennung 1 bis 24 Kleinbuchstaben, Ziffern und Bindestriche, beginnend mit einem Buchstaben.",
+    ),
+    ("Use “{tool}” of {extension}", "„{tool}“ von {extension} verwenden"),
+    (
+        "Use “{tool}” of {extension}, with what the agent gives it: {arguments}",
+        "„{tool}“ von {extension} verwenden, mit dem, was der Agent übergibt: {arguments}",
+    ),
+    ("What the agent gives the tool:", "Was der Agent dem Werkzeug übergibt:"),
+    ("{text}… +{n} characters", "{text}… +{n} Zeichen"),
+    ("“{name}” isn't a secret of this MCP server.", "„{name}“ ist kein Geheimnis dieses MCP-Servers."),
 ];

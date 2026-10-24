@@ -1020,6 +1020,38 @@ impl Clients {
         Ok(())
     }
 
+    /// Takes the MCP server `id` out of every client's rights before the server is removed
+    /// (`extensions.remove_extension`, issue #302, [`Rights::remove_extension`]): its level and every tool
+    /// of it in `denied`. Otherwise a server installed again later under the same id would open to the
+    /// clients that had the old one, without a person asking for it. Writes `clients.json` (atomically, all
+    /// clients in one write) only when something changed; when that fails, memory goes back as well and the
+    /// error says so.
+    pub async fn forget_extension(&self, id: &str) -> Result<(), ClientsError> {
+        let _changing = self.shared.changing.lock().await;
+        let before: Vec<(String, Rights)> = {
+            let mut state = self.lock();
+            let mut before = Vec::new();
+            for entry in &mut state.clients {
+                let old = entry.record.rights.clone();
+                entry.record.rights.remove_extension(id);
+                if entry.record.rights != old {
+                    before.push((entry.record.id.clone(), old));
+                }
+            }
+            before
+        };
+        if before.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = self.persist().await {
+            for (client, old) in before {
+                let _ = self.with_client(&client, |record| record.rights = old);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// Removes a client. Its key stops working at once, even when the file or the keychain
     /// cannot be updated; that is then reported as an error.
     pub async fn remove(&self, id: &str) -> Result<(), ClientsError> {
@@ -2001,6 +2033,33 @@ pub(crate) mod tests {
         good.denied.insert(torro_ipc::extensions::denied_name("time", "convert_time"));
         clients.update(&id, good.clone()).await.expect("a server's id");
         assert_eq!(clients.list()[0].rights, good, "the level and the tool switched off are kept");
+    }
+
+    /// Issue #302 (task MA.5): removing a server takes its level and its tools in `denied` out of every
+    /// client, on disk too; another server's and the commands switched off stay.
+    #[tokio::test]
+    async fn forgetting_a_server_takes_it_out_of_every_client() {
+        use torro_ipc::extensions::denied_name;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let mut rights = read_only();
+        rights.extensions = [("time".to_string(), Level::Full), ("github".to_string(), Level::Read)].into();
+        rights.denied =
+            [denied_name("time", "convert_time"), denied_name("github", "get_me"), "tasks.list_lists".to_string()]
+                .into();
+        let (first, _) = clients.add("Claude Code", "claude-code", rights.clone()).await.expect("added");
+        let (second, _) = clients.add("Backup", "script", read_only()).await.expect("added");
+        clients.forget_extension("time").await.expect("forgotten");
+
+        let mut expected = rights;
+        expected.extensions.remove("time");
+        expected.denied.remove(&denied_name("time", "convert_time"));
+        let rights_of = |clients: &Clients, id: &str| {
+            clients.list().into_iter().find(|info| info.id == id).map(|info| info.rights).expect("the client")
+        };
+        assert_eq!(rights_of(&clients, &first.id), expected);
+        assert_eq!(rights_of(&clients, &second.id), read_only(), "unchanged");
+        assert_eq!(rights_of(&open_in(dir.path()), &first.id), expected, "stored");
     }
 
     #[tokio::test]

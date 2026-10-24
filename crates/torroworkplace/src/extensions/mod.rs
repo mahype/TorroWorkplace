@@ -9,54 +9,100 @@
 //! - `client`: the MCP connection to one server, and what a person allowed compared with what it reports
 //!   (task MA.4).
 //! - `supervisor`: the processes and connections of all servers, their time limits and restarts (task MA.4).
+//!
+//! [`Extensions`] answers the `extensions.*` requests (task MA.5). Rights are not checked here but by the core
+//! before (`Core::extension_refusal`): a level per server and per tool access. What is checked here for every
+//! key, the app key too, is what a person decided: a server switched off and a tool not allowed (or changed
+//! since) are `not-found`. Who asks only changes what an answer shows ([`crate::pim::Reach`]): a key that is
+//! not the app key sees no server it has no level for, and how a server is set up only in [`store::redacted`]
+//! form. No answer ever holds a secret's value.
 
 pub mod catalog;
-// The handlers of task MA.5 are the first to start servers; until then only tests and the end of the service
-// (`Supervisor::stop_all`) reach this code.
-#[allow(dead_code, reason = "the supervisor uses it; the handlers of task MA.5 start servers through it")]
 pub mod client;
-#[allow(dead_code, reason = "the supervisor uses it; the handlers of task MA.5 start servers through it")]
 pub mod env;
 pub mod prereq;
-#[allow(dead_code, reason = "the handlers of task MA.5 read and write it")]
+#[allow(dead_code, reason = "`Store::dir` has no caller outside the tests yet")]
 pub mod store;
-#[allow(dead_code, reason = "the handlers of task MA.5 start servers through it; the service stops it")]
+#[allow(dead_code, reason = "`Supervisor::changes` waits for a live status in the control centre (task MA.8)")]
 pub mod supervisor;
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
-use torro_ipc::extensions::CatalogEntry;
+use torro_core::i18n::{tr, trf};
+use torro_ipc::Response;
+use torro_ipc::Secret;
+use torro_ipc::api::{Access, Level};
+use torro_ipc::extensions::{
+    CatalogEntry, ExtensionInfo, ExtensionTool, InstallFrom, Prerequisite, SecretInfo, ServerSpec, Source, Status,
+    ToolState, Value, tool_name, valid_id,
+};
 
 use self::catalog::CatalogError;
 use self::prereq::Roots;
-use self::supervisor::{Supervisor, Timing};
+use self::store::{SecretStore, Store, StoreError, StoredExtension};
+use self::supervisor::{Launch, Purpose, Supervisor, SupervisorError, Timing};
+use crate::pim::Reach;
 
-/// The core's MCP servers. [`Extensions::system`] looks for programs where the service does; tests bring
-/// their own roots ([`Extensions::with_roots`]).
-#[derive(Debug, Clone)]
+/// The core's MCP servers. [`Extensions::system`] looks for programs where the service does and keeps the
+/// servers in the core's data folder; tests bring their own roots ([`Extensions::with_roots`]) and store
+/// ([`Extensions::with_store`]).
+#[derive(Clone)]
 pub struct Extensions {
     /// Where the programs a server needs are looked for.
     roots: Roots,
     /// Their processes and connections.
     supervisor: Arc<Supervisor>,
+    /// Where they are kept; `None` without a home directory (and in tests that bring none): then none is
+    /// installed and none can be.
+    store: Option<Store>,
+    /// Where their secrets are: the keychain, a map in tests.
+    secrets: Arc<dyn SecretStore>,
+    /// Held while the file is read, changed and written, so two changes never write over each other.
+    changing: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl fmt::Debug for Extensions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Extensions").field("roots", &self.roots).field("store", &self.store).finish_non_exhaustive()
+    }
 }
 
 impl Extensions {
     /// The service's: programs on its `PATH` and in the usual folders ([`Roots::system`]), run by the
-    /// service's supervisor ([`Supervisor::service`]), which the end of the service stops.
+    /// service's supervisor ([`Supervisor::service`]), which the end of the service stops; kept in
+    /// `<data>/extensions` with their secrets in the keychain ([`store::SystemSecrets`]).
     pub fn system() -> Extensions {
-        Extensions { roots: Roots::system(), supervisor: Supervisor::service() }
+        let store =
+            torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE).map(|paths| Store::in_data(&paths.data));
+        Extensions {
+            roots: Roots::system(),
+            supervisor: Supervisor::service(),
+            store,
+            secrets: Arc::new(store::SystemSecrets),
+            changing: Arc::default(),
+        }
     }
 
     /// Programs looked for in `roots` only, run by a supervisor of its own with an empty environment of the
-    /// service and the usual times.
+    /// service and the usual times. No store: nothing is installed and nothing can be until
+    /// [`Extensions::with_store`].
     pub fn with_roots(roots: Roots) -> Extensions {
         let supervisor = Arc::new(Supervisor::new(roots.clone(), Default::default(), Timing::default()));
-        Extensions { roots, supervisor }
+        Extensions { roots, supervisor, store: None, secrets: Arc::new(store::SystemSecrets), changing: Arc::default() }
+    }
+
+    /// These servers kept in `store`, with their secrets in `secrets`: for tests, a temporary folder and a map.
+    #[cfg(test)]
+    pub fn with_store(mut self, store: Store, secrets: Arc<dyn SecretStore>) -> Extensions {
+        self.store = Some(store);
+        self.secrets = secrets;
+        self
     }
 
     /// The supervisor that starts, calls and ends the servers.
-    #[allow(dead_code, reason = "the handlers of task MA.5 use it")]
+    #[allow(dead_code, reason = "the handlers use the field; no caller needs the supervisor itself yet")]
     pub fn supervisor(&self) -> &Arc<Supervisor> {
         &self.supervisor
     }
@@ -73,5 +119,1009 @@ impl Extensions {
                 ..entry.info.clone()
             })
             .collect())
+    }
+
+    /// The installed server `id` as stored; `None` for an unknown id and when the store cannot be read (then
+    /// nothing of it is offered or called either).
+    pub fn stored(&self, id: &str) -> Option<StoredExtension> {
+        self.load().ok()?.into_iter().find(|stored| stored.id == id)
+    }
+
+    /// The access a call of the tool `tool` of the server `id` needs, as a person allowed it
+    /// ([`store::AllowedTool::access`], from the catalog entry); `None` when the server is unknown or the
+    /// tool not allowed. Whether the server is on and the tool unchanged since is not looked at: for the
+    /// rights of a call (`Core::extension_operation`), which the handler checks again.
+    pub fn tool_access(&self, id: &str, tool: &str) -> Option<Access> {
+        self.stored(id)?.allowed.iter().find(|allowed| allowed.name == tool).map(|allowed| allowed.access)
+    }
+
+    /// `extensions.list_extensions`: every installed server in the file's order, with its status and tools;
+    /// for a key other than the app key only the servers it has a level for, set up as [`store::redacted`]
+    /// says. Never a secret's value.
+    pub async fn list(&self, reach: Reach<'_>) -> Response {
+        let stored: Vec<StoredExtension> = match self.load() {
+            Ok(all) => all.into_iter().filter(|stored| sees(reach, &stored.id)).collect(),
+            Err(err) => return store_error(&err),
+        };
+        match self.infos(stored, reach).await {
+            Ok(extensions) => Response::Extensions { extensions },
+            Err(err) => store_error(&err),
+        }
+    }
+
+    /// `extensions.get_extension`: the server `id` as [`Extensions::list`] shows it; `not-found` for an
+    /// unknown id and for one the key has no level for.
+    pub async fn get(&self, id: &str, reach: Reach<'_>) -> Response {
+        match self.find(id) {
+            Ok(stored) if sees(reach, id) => self.one(stored, reach).await,
+            Ok(_) => no_server(id),
+            Err(refused) => refused,
+        }
+    }
+
+    /// `extensions.list_tools`: the tools `reach` may call now. Of servers that are switched on and neither
+    /// crashed nor missing their program: the tools a person allowed, as the server reports them now when it
+    /// runs (a tool changed since is left out) or as allowed when it does not. For a key other than the app
+    /// key only with a level for the server that covers the tool's access, the tool not switched off for it
+    /// ([`torro_ipc::api::Rights::allows_extension`]) and `extensions.call_tool` not switched off either.
+    pub fn offered(&self, reach: Reach<'_>) -> Vec<ExtensionTool> {
+        if let Reach::Client(rights) = reach
+            && rights.denies(call_operation())
+        {
+            return Vec::new();
+        }
+        let Ok(all) = self.load() else { return Vec::new() };
+        let mut tools = Vec::new();
+        for stored in all.iter().filter(|stored| stored.enabled && sees(reach, &stored.id)) {
+            if matches!(self.status(stored, &[]), Status::Crashed { .. } | Status::Missing { .. }) {
+                continue;
+            }
+            let allowed = match self.supervisor.reported(&stored.id) {
+                Some(reported) => self.tools_of(stored, &reported),
+                None => stored
+                    .allowed
+                    .iter()
+                    .map(|tool| ExtensionTool {
+                        extension: stored.id.clone(),
+                        extension_name: stored.name.clone(),
+                        name: tool.name.clone(),
+                        tool_name: tool_name(&stored.id, &tool.name),
+                        description: tool.description.clone(),
+                        input_schema: tool.input_schema.clone(),
+                        access: tool.access,
+                        state: ToolState::Allowed,
+                    })
+                    .collect(),
+            };
+            tools.extend(allowed.into_iter().filter(|tool| {
+                tool.state == ToolState::Allowed
+                    && tool.tool_name.is_some()
+                    && match reach {
+                        Reach::Suite => true,
+                        Reach::Client(rights) => rights.allows_extension(&stored.id, &tool.name, tool.access),
+                    }
+            }));
+        }
+        tools
+    }
+
+    /// `extensions.call_tool`, once the caller's rights allowed it: calls `tool` of the server `id` with
+    /// `arguments`, starting the server first when it does not run. For every key: `not-found` for an
+    /// unknown server, one switched off, and a tool a person has not allowed or that changed since (looked at
+    /// as the server reports it after starting); `offline` when it cannot be started or reached, `busy` when
+    /// it does not answer within 60 seconds, `error` when its answer is no answer. The answer is the
+    /// server's, marked `untrusted`.
+    pub async fn call(&self, id: &str, tool: &str, arguments: serde_json::Map<String, serde_json::Value>) -> Response {
+        let stored = match self.find(id) {
+            Ok(stored) if stored.enabled => stored,
+            Ok(_) => return no_server(id),
+            Err(refused) => return refused,
+        };
+        if !stored.allowed.iter().any(|allowed| allowed.name == tool) {
+            return no_tool(tool);
+        }
+        let launch = match self.launch(&stored).await {
+            Ok(launch) => launch,
+            Err(err) => return store_error(&err),
+        };
+        // The server's list as it runs now: a tool it changed since a person allowed it is not called.
+        let reported = match self.supervisor.tools(&launch, Purpose::Use).await {
+            Ok(reported) => reported,
+            Err(err) => return supervisor_error(&err),
+        };
+        let unchanged = self.tools_of(&stored, &reported);
+        if !unchanged.iter().any(|known| known.name == tool && known.state == ToolState::Allowed) {
+            return no_tool(tool);
+        }
+        match self.supervisor.call(&launch, tool, arguments).await {
+            Ok(output) => Response::ToolResult { output },
+            Err(err) => supervisor_error(&err),
+        }
+    }
+
+    /// `extensions.set_enabled`: switches the server `id` on or off and answers it as `reach` sees it. On
+    /// (the app key only; the caller refuses a client) forgets its failures, so a crashed server starts again;
+    /// `conflict` for a server whose tools a person has never allowed. Off stops it. `not-found` for an
+    /// unknown id and for one the key has no level for.
+    pub async fn set_enabled(&self, id: &str, enabled: bool, reach: Reach<'_>) -> Response {
+        if !sees(reach, id) {
+            return no_server(id);
+        }
+        let changed = {
+            let _changing = self.changing.lock().await;
+            let (mut all, index) = match self.load_with(id) {
+                Ok(found) => found,
+                Err(refused) => return refused,
+            };
+            let stored = &mut all[index];
+            if enabled && stored.allowed.is_empty() && !stored.reported.is_empty() {
+                let message = tr("Allow the tools of this MCP server before you switch it on.");
+                return error("conflict", message.into());
+            }
+            stored.enabled = enabled;
+            let changed = stored.clone();
+            if let Err(err) = self.save(&all) {
+                return store_error(&err);
+            }
+            changed
+        };
+        match enabled {
+            true => self.supervisor.reset(id),
+            false => self.supervisor.stop(id).await,
+        }
+        self.one(changed, reach).await
+    }
+
+    /// `extensions.install_extension` (the app key only): checks the server, starts it once with the time
+    /// of an install (at most 180 seconds), reads its tools and stores it switched off, its secrets in the
+    /// keychain. Nothing is offered until a person allows its tools ([`Extensions::confirm`]). `not-found` for
+    /// an unknown catalog entry, `unsupported` with what is missing for one whose programs are not on this
+    /// computer, `conflict` for an id in use, `error` for an invalid id or name, a setting [`env::check_spec`]
+    /// refuses and a server that does not start or speak MCP; then nothing is kept.
+    pub async fn install(&self, from: InstallFrom) -> Response {
+        let store = match self.writable() {
+            Ok(store) => store,
+            Err(refused) => return refused,
+        };
+        let (id, name, source, spec) = match from {
+            InstallFrom::Catalog { entry, secrets } => {
+                let entry = match catalog_entry(&entry) {
+                    Ok(entry) => entry,
+                    Err(refused) => return refused,
+                };
+                if let Some(refused) = self.missing_refusal(entry) {
+                    return refused;
+                }
+                if let Some(name) = secrets.keys().find(|name| !entry.info.secrets.iter().any(|s| s.name == **name)) {
+                    return error("error", trf("“{name}” isn't a secret of this MCP server.", &[("name", name)]));
+                }
+                let source = Source::Catalog { entry: entry.info.id.clone(), version: entry.info.version.clone() };
+                (entry.info.id.clone(), entry.info.name.clone(), source, catalog_spec(entry, secrets))
+            }
+            InstallFrom::Custom { id, name, server } => {
+                if !valid_id(&id) {
+                    let message =
+                        tr("Use 1 to 24 lowercase letters, digits and dashes for the id, starting with a letter.");
+                    return error("error", message.into());
+                }
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return error("error", tr("Give the MCP server a name.").into());
+                }
+                (id, name, Source::Custom, server)
+            }
+        };
+        if let Err(err) = env::check_spec(&spec) {
+            return error("error", err.to_string());
+        }
+        let _changing = self.changing.lock().await;
+        let mut all = match self.load() {
+            Ok(all) => all,
+            Err(err) => return store_error(&err),
+        };
+        if all.iter().any(|stored| stored.id == id) {
+            return error("conflict", trf("An MCP server with the id “{id}” is installed already.", &[("id", &id)]));
+        }
+        let work_dir = match store.work_dir(&id) {
+            Ok(dir) => dir,
+            Err(err) => return store_error(&err),
+        };
+        // The secrets as given go to this start only; the keychain gets them once the server started.
+        let launch = Launch { id: id.clone(), server: store::stored_form(&spec), secrets: given(&spec), work_dir };
+        self.supervisor.reset(&id);
+        let reported = match self.supervisor.tools(&launch, Purpose::Install).await {
+            Ok(reported) => reported,
+            Err(err) => {
+                self.supervisor.forget(&id).await;
+                if let Err(err) = store.remove_files(&id) {
+                    eprintln!("torroworkplace: MCP server {id}: {err}");
+                }
+                return error("error", err.to_string());
+            }
+        };
+        // Stored switched off: it runs again once a person allowed its tools and something calls it.
+        self.supervisor.stop(&id).await;
+        let server = match self.save_secrets(&id, None, &spec).await {
+            Ok(server) => server,
+            Err(err) => {
+                self.supervisor.forget(&id).await;
+                return store_error(&err);
+            }
+        };
+        let installed = StoredExtension { id, name, source, server, enabled: false, allowed: Vec::new(), reported };
+        all.push(installed.clone());
+        if let Err(err) = self.save(&all) {
+            return store_error(&err);
+        }
+        self.one(installed, Reach::Suite).await
+    }
+
+    /// `extensions.confirm_tools` (the app key only): allows the tools of the server `id` as the server last
+    /// reported them, each with the access of the catalog entry (`delete` without one), and switches it on.
+    /// `fingerprint` must be the list's ([`client::list_fingerprint`], as [`ExtensionInfo::fingerprint`]
+    /// showed it), else `conflict` and nothing changes. A tool whose name makes no tool name is never allowed.
+    pub async fn confirm(&self, id: &str, fingerprint: &str) -> Response {
+        let confirmed = {
+            let _changing = self.changing.lock().await;
+            let (mut all, index) = match self.load_with(id) {
+                Ok(found) => found,
+                Err(refused) => return refused,
+            };
+            let stored = &mut all[index];
+            let reported = self.reported(stored);
+            if client::list_fingerprint(&reported) != fingerprint {
+                let message = tr("The tools of this MCP server changed since you saw them. Look at them again.");
+                return error("conflict", message.into());
+            }
+            let entry = entry_of(&stored.source);
+            stored.allowed = reported
+                .iter()
+                .filter(|tool| tool_name(&stored.id, &tool.name).is_some())
+                .map(|tool| client::allow(tool, access_in(entry, &tool.name)))
+                .collect();
+            stored.reported = reported;
+            stored.enabled = true;
+            let confirmed = stored.clone();
+            if let Err(err) = self.save(&all) {
+                return store_error(&err);
+            }
+            confirmed
+        };
+        self.supervisor.reset(id);
+        self.one(confirmed, Reach::Suite).await
+    }
+
+    /// `extensions.update_extension` (the app key only): a catalog server to the program and version of the
+    /// built-in catalog (`server` must be left out), a person's own to `server`. It is started once with the
+    /// time of an install and its tools are read again; tools new or changed since wait for a person
+    /// (`review`), the others stay allowed. Secrets go through [`store::save_secrets`] with the old spec: a
+    /// [`Value::Stored`] keeps its secret only for the same command or origin. `not-found` for an unknown id,
+    /// `unsupported` when the catalog's programs are missing, `error` as for installing; then nothing changes.
+    pub async fn update(&self, id: &str, server: Option<ServerSpec>) -> Response {
+        let store = match self.writable() {
+            Ok(store) => store,
+            Err(refused) => return refused,
+        };
+        let _changing = self.changing.lock().await;
+        let (mut all, index) = match self.load_with(id) {
+            Ok(found) => found,
+            Err(refused) => return refused,
+        };
+        let old = all[index].clone();
+        let (source, spec) = match (&old.source, server) {
+            (Source::Catalog { entry, .. }, None) => {
+                let entry = match catalog_entry(entry) {
+                    Ok(entry) => entry,
+                    Err(refused) => return refused,
+                };
+                if let Some(refused) = self.missing_refusal(entry) {
+                    return refused;
+                }
+                let source = Source::Catalog { entry: entry.info.id.clone(), version: entry.info.version.clone() };
+                (source, catalog_spec(entry, BTreeMap::new()))
+            }
+            (Source::Catalog { .. }, Some(_)) => {
+                let message = tr("A server from the catalog is updated from the catalog. Leave out its settings.");
+                return error("error", message.into());
+            }
+            (Source::Custom, Some(spec)) => (Source::Custom, spec),
+            (Source::Custom, None) => {
+                return error("error", tr("Give the new program or address of the MCP server.").into());
+            }
+        };
+        if let Err(err) = env::check_spec(&spec) {
+            return error("error", err.to_string());
+        }
+        let work_dir = match store.work_dir(id) {
+            Ok(dir) => dir,
+            Err(err) => return store_error(&err),
+        };
+        // The start sees the secrets as they will be stored: the old ones only where they stay.
+        let mut secrets = match store::keeps_secrets(&old.server, &spec) {
+            true => match self.read_secrets(id, &store::stored_form(&spec)).await {
+                Ok(secrets) => secrets,
+                Err(err) => return store_error(&err),
+            },
+            false => BTreeMap::new(),
+        };
+        secrets.extend(given(&spec));
+        let launch = Launch { id: id.to_string(), server: store::stored_form(&spec), secrets, work_dir };
+        self.supervisor.reset(id);
+        let reported = match self.supervisor.tools(&launch, Purpose::Install).await {
+            Ok(reported) => reported,
+            Err(err) => return error("error", err.to_string()),
+        };
+        if !old.enabled {
+            self.supervisor.stop(id).await;
+        }
+        let server = match self.save_secrets(id, Some(&old.server), &spec).await {
+            Ok(server) => server,
+            Err(err) => return store_error(&err),
+        };
+        let updated = StoredExtension { source, server, reported, ..old };
+        all[index] = updated.clone();
+        if let Err(err) = self.save(&all) {
+            return store_error(&err);
+        }
+        self.one(updated, Reach::Suite).await
+    }
+
+    /// `extensions.set_secret` (the app key only): stores `value` as the secret `name` of the server `id` in
+    /// the keychain; the server gets it on its next start (a running one is started again with it on the
+    /// next call). `not-found` for an unknown id and a name that is no secret of the server.
+    pub async fn set_secret(&self, id: &str, name: &str, value: Secret) -> Response {
+        let stored = match self.find(id) {
+            Ok(stored) => stored,
+            Err(refused) => return refused,
+        };
+        if !store::secret_names(&stored.server).iter().any(|secret| secret == name) {
+            return error("not-found", trf("“{name}” isn't a secret of this MCP server.", &[("name", &name)]));
+        }
+        let key = store::secret_key(id, name);
+        match self.with_secrets(move |secrets| secrets.set(&key, &value).map_err(StoreError::Keychain)).await {
+            Ok(()) => Response::Ok,
+            Err(err) => store_error(&err),
+        }
+    }
+
+    /// `extensions.read_logs` (the app key only): what the server `id` wrote on stderr since the service
+    /// started, oldest first. Foreign text, only for people. `not-found` for an unknown id.
+    pub fn logs(&self, id: &str) -> Response {
+        match self.find(id) {
+            Ok(_) => Response::Logs { lines: self.supervisor.output(id) },
+            Err(refused) => refused,
+        }
+    }
+
+    /// `extensions.remove_extension`, the server's part: stops it and forgets its output, takes it out of the
+    /// file, deletes its folder and its secrets. The clients' rights and the open approvals are the caller's
+    /// (`Core::remove_extension`), before this. `not-found` for an unknown id. Once it is out of the file the
+    /// rest is tried even when one step fails; the answer then names the failure.
+    pub async fn remove(&self, id: &str) -> Response {
+        let store = match self.writable() {
+            Ok(store) => store,
+            Err(refused) => return refused,
+        };
+        let _changing = self.changing.lock().await;
+        let (mut all, index) = match self.load_with(id) {
+            Ok(found) => found,
+            Err(refused) => return refused,
+        };
+        let removed = all.remove(index);
+        self.supervisor.forget(id).await;
+        if let Err(err) = self.save(&all) {
+            return store_error(&err);
+        }
+        let files = store.remove_files(id);
+        let (owner, spec) = (id.to_string(), removed.server);
+        let secrets = self.with_secrets(move |secrets| store::forget_secrets(secrets, &owner, &spec)).await;
+        match files.and(secrets) {
+            Ok(()) => Response::Ok,
+            Err(err) => store_error(&err),
+        }
+    }
+
+    /// The servers in the file; none without a store.
+    fn load(&self) -> Result<Vec<StoredExtension>, StoreError> {
+        match &self.store {
+            Some(store) => store.load(),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The servers in the file and the place of `id` among them; `not-found` without it.
+    fn load_with(&self, id: &str) -> Result<(Vec<StoredExtension>, usize), Response> {
+        let all = self.load().map_err(|err| store_error(&err))?;
+        let index = all.iter().position(|stored| stored.id == id).ok_or_else(|| no_server(id))?;
+        Ok((all, index))
+    }
+
+    /// The server `id`; `not-found` without it, `error` when the file cannot be read.
+    fn find(&self, id: &str) -> Result<StoredExtension, Response> {
+        self.load_with(id).map(|(mut all, index)| all.swap_remove(index))
+    }
+
+    fn save(&self, all: &[StoredExtension]) -> Result<(), StoreError> {
+        match &self.store {
+            Some(store) => store.save(all),
+            None => Err(no_store()),
+        }
+    }
+
+    /// The store, for a change; `error` without one.
+    fn writable(&self) -> Result<&Store, Response> {
+        self.store.as_ref().ok_or_else(|| store_error(&no_store()))
+    }
+
+    /// `work` with the secret store, on a thread of its own: the keychain may block (macOS asks the person).
+    async fn with_secrets<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&dyn SecretStore) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        let secrets = Arc::clone(&self.secrets);
+        crate::account::keychain(move || Ok(work(secrets.as_ref()))).await.map_err(StoreError::Keychain)?
+    }
+
+    async fn save_secrets(
+        &self,
+        id: &str,
+        old: Option<&ServerSpec>,
+        new: &ServerSpec,
+    ) -> Result<ServerSpec, StoreError> {
+        let (id, old, new) = (id.to_string(), old.cloned(), new.clone());
+        self.with_secrets(move |secrets| store::save_secrets(secrets, &id, old.as_ref(), &new)).await
+    }
+
+    async fn read_secrets(&self, id: &str, spec: &ServerSpec) -> Result<BTreeMap<String, Secret>, StoreError> {
+        let (id, spec) = (id.to_string(), spec.clone());
+        self.with_secrets(move |secrets| store::read_secrets(secrets, &id, &spec)).await
+    }
+
+    /// What starts `stored`: its spec, its stored secrets and its working folder.
+    async fn launch(&self, stored: &StoredExtension) -> Result<Launch, StoreError> {
+        let store = self.store.as_ref().ok_or_else(no_store)?;
+        let work_dir = store.work_dir(&stored.id)?;
+        let secrets = self.read_secrets(&stored.id, &stored.server).await?;
+        Ok(Launch { id: stored.id.clone(), server: stored.server.clone(), secrets, work_dir })
+    }
+
+    /// The tools the server reports: as it runs now, else as it reported them when it last ran.
+    fn reported(&self, stored: &StoredExtension) -> Vec<store::ReportedTool> {
+        self.supervisor.reported(&stored.id).unwrap_or_else(|| stored.reported.clone())
+    }
+
+    /// `reported` of `stored` compared with what a person allowed ([`client::tool_states`]).
+    fn tools_of(&self, stored: &StoredExtension, reported: &[store::ReportedTool]) -> Vec<ExtensionTool> {
+        let entry = entry_of(&stored.source);
+        client::tool_states(&stored.id, &stored.name, reported, &stored.allowed, |tool| access_in(entry, tool))
+    }
+
+    /// How `stored` stands with its `tools`: crashed (the supervisor says), missing its program, in `review`
+    /// while a tool waits for a person, else as it runs.
+    fn status(&self, stored: &StoredExtension, tools: &[ExtensionTool]) -> Status {
+        let running = self.supervisor.status(&stored.id);
+        if matches!(running, Status::Crashed { .. }) {
+            return running;
+        }
+        if let Some(what) = self.missing_program(stored) {
+            return Status::Missing { what };
+        }
+        if tools.iter().any(|tool| tool.state == ToolState::Review) {
+            return Status::Review;
+        }
+        running
+    }
+
+    /// What of its programs `stored` misses on this computer: the first missing prerequisite of its catalog
+    /// entry, else its command when it is not found. `None` for an address.
+    fn missing_program(&self, stored: &StoredExtension) -> Option<Prerequisite> {
+        let ServerSpec::Stdio { command, .. } = &stored.server else { return None };
+        if let Some(entry) = entry_of(&stored.source)
+            && let Some(first) = prereq::missing(&entry.info.requires, &self.roots).into_iter().next()
+        {
+            return Some(first);
+        }
+        prereq::find(command, &self.roots).is_none().then(|| prerequisite_of(command))
+    }
+
+    /// `unsupported` with what is missing for a catalog entry whose programs are not on this computer.
+    fn missing_refusal(&self, entry: &catalog::Entry) -> Option<Response> {
+        let missing = prereq::missing(&entry.info.requires, &self.roots);
+        if missing.is_empty() {
+            return None;
+        }
+        let needs: Vec<String> = missing.iter().map(Prerequisite::needs).collect();
+        Some(error("unsupported", needs.join(" · ")))
+    }
+
+    /// One server as `reach` sees it.
+    async fn one(&self, stored: StoredExtension, reach: Reach<'_>) -> Response {
+        match self.infos(vec![stored], reach).await {
+            Ok(mut infos) => match infos.pop() {
+                Some(extension) => Response::Extension { extension },
+                None => error("error", tr("The MCP server can't be shown.").into()),
+            },
+            Err(err) => store_error(&err),
+        }
+    }
+
+    /// `stored` as `reach` sees them ([`ExtensionInfo`]), with whether each secret is in the keychain (one
+    /// trip to the keychain for all of them).
+    async fn infos(&self, stored: Vec<StoredExtension>, reach: Reach<'_>) -> Result<Vec<ExtensionInfo>, StoreError> {
+        let specs: Vec<(String, ServerSpec)> = stored.iter().map(|s| (s.id.clone(), s.server.clone())).collect();
+        let states = self
+            .with_secrets(move |secrets| {
+                specs.iter().map(|(id, spec)| store::secret_state(secrets, id, spec)).collect::<Result<Vec<_>, _>>()
+            })
+            .await?;
+        Ok(stored
+            .into_iter()
+            .zip(states)
+            .map(|(stored, (shown, secrets))| self.info(stored, shown, secrets, reach))
+            .collect())
+    }
+
+    /// One [`ExtensionInfo`]: `shown` is the spec with whether each secret is stored ([`store::secret_state`]);
+    /// a key other than the app key gets it [`store::redacted`].
+    fn info(
+        &self,
+        stored: StoredExtension,
+        shown: ServerSpec,
+        secrets: Vec<SecretInfo>,
+        reach: Reach<'_>,
+    ) -> ExtensionInfo {
+        let reported = self.reported(&stored);
+        let tools = self.tools_of(&stored, &reported);
+        let notes = tools
+            .iter()
+            .filter(|tool| tool.state == ToolState::Unsupported)
+            .map(|tool| {
+                format!(
+                    "The tool {:?} is not offered: its name does not fit the rules for tool names (at most {} \
+                     characters with the server's id, letters, digits, _ and -).",
+                    tool.name,
+                    torro_ipc::extensions::MAX_TOOL_NAME_CHARS
+                )
+            })
+            .collect();
+        let status = self.status(&stored, &tools);
+        let server = match reach {
+            Reach::Suite => shown,
+            Reach::Client(_) => store::redacted(&shown),
+        };
+        ExtensionInfo {
+            id: stored.id,
+            name: stored.name,
+            source: stored.source,
+            server,
+            enabled: stored.enabled,
+            status,
+            tools,
+            secrets,
+            notes,
+            fingerprint: Some(client::list_fingerprint(&reported)),
+        }
+    }
+}
+
+/// Whether `reach` sees the server `id` at all: the app key every one, a client only one it has a level for.
+fn sees(reach: Reach<'_>, id: &str) -> bool {
+    match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => rights.extension(id) != Level::NoAccess,
+    }
+}
+
+/// The operation of `extensions.call_tool` as the catalogue has it, to ask whether a client has it switched off.
+fn call_operation() -> torro_ipc::api::Operation {
+    torro_ipc::Request::CallExtensionTool {
+        extension: String::new(),
+        tool: String::new(),
+        arguments: Default::default(),
+    }
+    .operation()
+}
+
+/// The built-in catalog's entry `id`; `not-found` without one.
+fn catalog_entry(id: &str) -> Result<&'static catalog::Entry, Response> {
+    let entries = catalog::builtin().map_err(|err| error("error", err.to_string()))?;
+    entries
+        .iter()
+        .find(|entry| entry.info.id == id)
+        .ok_or_else(|| error("not-found", trf("There is no MCP server “{id}” in the catalog.", &[("id", &id)])))
+}
+
+/// The catalog entry a server came from; `None` for a person's own and an entry the catalog no longer has.
+fn entry_of(source: &Source) -> Option<&'static catalog::Entry> {
+    match source {
+        Source::Catalog { entry, .. } => catalog_entry(entry).ok(),
+        Source::Custom => None,
+    }
+}
+
+/// The access a call of `tool` needs: the catalog entry's, `delete` when it names none or for a person's own
+/// server.
+fn access_in(entry: Option<&catalog::Entry>, tool: &str) -> Access {
+    entry
+        .and_then(|entry| entry.info.tools.iter().find(|known| known.name == tool))
+        .map_or(Access::Delete, |known| known.access)
+}
+
+/// The program of a catalog entry with its plain variables and its secrets: the ones given as
+/// [`Value::Secret`], the others as [`Value::Stored`] (a stored one is kept, a missing one fails the start).
+fn catalog_spec(entry: &catalog::Entry, mut secrets: BTreeMap<String, Secret>) -> ServerSpec {
+    let mut env: BTreeMap<String, Value> =
+        entry.env.iter().map(|(name, value)| (name.clone(), Value::Plain(value.clone()))).collect();
+    for secret in &entry.info.secrets {
+        let value = match secrets.remove(&secret.name) {
+            Some(given) => Value::Secret(given),
+            None => Value::Stored { secret: true },
+        };
+        env.insert(secret.name.clone(), value);
+    }
+    ServerSpec::Stdio { command: entry.command.clone(), args: entry.args.clone(), env }
+}
+
+/// The secrets `spec` carries as given ([`Value::Secret`]), by name.
+fn given(spec: &ServerSpec) -> BTreeMap<String, Secret> {
+    spec.values()
+        .iter()
+        .filter_map(|(name, value)| match value {
+            Value::Secret(secret) => Some((name.clone(), secret.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The prerequisite a command stands for: `npx`, `uvx` and `docker` by their kind, any other by its name.
+fn prerequisite_of(command: &str) -> Prerequisite {
+    match command {
+        "npx" => Prerequisite::Npx,
+        "uvx" => Prerequisite::Uvx,
+        "docker" => Prerequisite::Docker,
+        name => Prerequisite::Program { name: name.to_string() },
+    }
+}
+
+fn no_store() -> StoreError {
+    StoreError::Io { path: store::DIR.into(), err: std::io::Error::other("no home directory") }
+}
+
+fn error(code: &str, message: String) -> Response {
+    Response::Error { code: code.into(), message }
+}
+
+fn no_server(id: &str) -> Response {
+    error("not-found", trf("There is no MCP server “{id}”.", &[("id", &id)]))
+}
+
+fn no_tool(tool: &str) -> Response {
+    error("not-found", trf("This MCP server has no tool “{tool}” you may use.", &[("tool", &tool)]))
+}
+
+/// A store failure as an answer: the whole of it goes to the log, the answer names no path (it would tell an
+/// agent where the person's home is).
+fn store_error(err: &StoreError) -> Response {
+    eprintln!("torroworkplace: MCP servers: {err}");
+    error("error", tr("The MCP servers can't be read or stored on this computer. The service's log says why.").into())
+}
+
+/// A failure to start or call a server as an answer: `busy` after its time, `error` for an answer that is
+/// none, `offline` for the rest (it could not be started or reached).
+fn supervisor_error(err: &SupervisorError) -> Response {
+    let code = match err {
+        SupervisorError::CallTimeout => "busy",
+        SupervisorError::Protocol => "error",
+        _ => "offline",
+    };
+    error(code, err.to_string())
+}
+
+/// Servers, stores and secrets for the tests of the core: the stand-in server
+/// `tests/fixtures/extensions/server.sh` and what it reports.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::path::Path;
+
+    use super::*;
+    use crate::extensions::store::ReportedTool;
+    use crate::extensions::store::testing::MemorySecrets;
+
+    /// The stand-in server's script.
+    pub(crate) fn script() -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions/server.sh").to_string_lossy().into_owned()
+    }
+
+    /// The stand-in server as a person's own: `/bin/sh` with the script, and a secret `FIXTURE_VALUE`.
+    pub(crate) fn fixture_spec(secret: Value) -> ServerSpec {
+        ServerSpec::Stdio {
+            command: "/bin/sh".into(),
+            args: vec![script()],
+            env: BTreeMap::from([("FIXTURE_VALUE".to_string(), secret)]),
+        }
+    }
+
+    /// The tools the stand-in server reports, as it describes them.
+    pub(crate) fn fixture_tools() -> Vec<ReportedTool> {
+        [("echo", "Answers pong"), ("pwd", "Where it runs"), ("slow", "Takes long"), ("crash", "Ends")]
+            .into_iter()
+            .map(|(name, description)| ReportedTool {
+                name: name.into(),
+                description: description.into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            })
+            .collect()
+    }
+
+    /// Programs only in `/usr/bin` and `/bin`, which the script needs (`sed`, `sleep`).
+    pub(crate) fn roots() -> Roots {
+        Roots { path: vec!["/usr/bin".into(), "/bin".into()], home: None, fixed: Vec::new() }
+    }
+
+    /// Servers kept in `dir/extensions`, secrets in a map, programs looked for in `roots`.
+    pub(crate) fn extensions_in(dir: &Path, roots: Roots) -> (Extensions, MemorySecrets) {
+        let secrets = MemorySecrets::default();
+        let extensions = Extensions::with_roots(roots).with_store(Store::in_data(dir), Arc::new(secrets.clone()));
+        (extensions, secrets)
+    }
+
+    /// The servers in the store.
+    pub(crate) fn stored_all(extensions: &Extensions) -> Vec<StoredExtension> {
+        extensions.load().expect("the store")
+    }
+
+    /// Replaces the servers in the store with `all`.
+    pub(crate) fn store_all(extensions: &Extensions, all: &[StoredExtension]) {
+        extensions.save(all).expect("saved");
+    }
+
+    /// The stand-in server `id`, switched on, its tools allowed with the access in `access` (the others not),
+    /// with its secret stored in `secrets`: as if a person installed it and allowed them.
+    pub(crate) fn installed(
+        extensions: &Extensions,
+        secrets: &MemorySecrets,
+        id: &str,
+        access: &[(&str, Access)],
+    ) -> StoredExtension {
+        let tools = fixture_tools();
+        let allowed = tools
+            .iter()
+            .filter_map(|tool| {
+                access.iter().find(|(name, _)| *name == tool.name).map(|(_, access)| client::allow(tool, *access))
+            })
+            .collect();
+        let stored = StoredExtension {
+            id: id.into(),
+            name: format!("Fixture {id}"),
+            source: Source::Custom,
+            server: fixture_spec(Value::Stored { secret: true }),
+            enabled: true,
+            allowed,
+            reported: tools,
+        };
+        secrets
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(store::secret_key(id, "FIXTURE_VALUE"), "from-keychain".into());
+        let mut all = extensions.load().expect("the store");
+        all.retain(|known| known.id != id);
+        all.push(stored.clone());
+        extensions.save(&all).expect("saved");
+        stored
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+    use torro_ipc::api::Rights;
+
+    fn info(response: Response) -> ExtensionInfo {
+        match response {
+            Response::Extension { extension } => extension,
+            other => panic!("expected a server, got {other:?}"),
+        }
+    }
+
+    fn code(response: &Response) -> &str {
+        match response {
+            Response::Error { code, .. } => code,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    fn reader_of(id: &str) -> Rights {
+        let mut rights = Rights::none();
+        rights.extensions.insert(id.into(), Level::Read);
+        rights
+    }
+
+    /// Point 4 of the review of MA.1: a key other than the app key gets how a server is set up redacted
+    /// (arguments and plain values), the app key all of it for the form; nobody a secret's value. A server the
+    /// key has no level for is not there for it.
+    #[test]
+    fn clients_see_a_server_redacted_and_only_with_a_level() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (extensions, secrets) = extensions_in(dir.path(), roots());
+        installed(&extensions, &secrets, "fixture", &[("echo", Access::Read)]);
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let app = info(runtime.block_on(extensions.get("fixture", Reach::Suite)));
+        assert_eq!(app.server, fixture_spec(Value::Stored { secret: true }), "the whole spec for the form");
+        assert_eq!(app.secrets, vec![SecretInfo { name: "FIXTURE_VALUE".into(), stored: true }]);
+
+        let rights = reader_of("fixture");
+        let client = info(runtime.block_on(extensions.get("fixture", Reach::Client(&rights))));
+        assert_eq!(client.server, store::redacted(&app.server));
+        let ServerSpec::Stdio { args, .. } = &client.server else { panic!("a program") };
+        assert!(args.iter().all(|arg| arg == store::REDACTED), "{args:?}");
+
+        let Response::Extensions { extensions: listed } = runtime.block_on(extensions.list(Reach::Client(&rights)))
+        else {
+            panic!("a list");
+        };
+        assert_eq!(listed, vec![client]);
+        let none = Rights::none();
+        assert_eq!(
+            runtime.block_on(extensions.list(Reach::Client(&none))),
+            Response::Extensions { extensions: vec![] }
+        );
+        assert_eq!(code(&runtime.block_on(extensions.get("fixture", Reach::Client(&none)))), "not-found");
+    }
+
+    /// Only allowed tools of servers that are on are offered, for a client only those its level covers and
+    /// that are not switched off for it; nothing while `extensions.call_tool` is switched off. On Unix only:
+    /// elsewhere the stand-in's `/bin/sh` is not found, and a server missing its program offers nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_offer_follows_the_switch_the_allowed_tools_and_the_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (extensions, secrets) = extensions_in(dir.path(), roots());
+        installed(&extensions, &secrets, "fixture", &[("echo", Access::Read), ("pwd", Access::Write)]);
+        let names = |reach: Reach<'_>| -> Vec<String> {
+            extensions.offered(reach).into_iter().filter_map(|tool| tool.tool_name).collect()
+        };
+        assert_eq!(names(Reach::Suite), ["ext_fixture_echo", "ext_fixture_pwd"]);
+        let reader = reader_of("fixture");
+        assert_eq!(names(Reach::Client(&reader)), ["ext_fixture_echo"]);
+        let mut writer = reader.clone();
+        writer.extensions.insert("fixture".into(), Level::Write);
+        assert_eq!(names(Reach::Client(&writer)), ["ext_fixture_echo", "ext_fixture_pwd"]);
+        writer.denied.insert(torro_ipc::extensions::denied_name("fixture", "echo"));
+        assert_eq!(names(Reach::Client(&writer)), ["ext_fixture_pwd"]);
+        writer.denied.insert("extensions.call_tool".into());
+        assert!(names(Reach::Client(&writer)).is_empty());
+        assert!(names(Reach::Client(&Rights::hook())).is_empty(), "a hook key gets none");
+
+        let mut all = extensions.load().expect("store");
+        all[0].enabled = false;
+        extensions.save(&all).expect("saved");
+        assert!(names(Reach::Suite).is_empty(), "switched off, none");
+    }
+
+    /// The process tests run the stand-in server with `/bin/sh`.
+    #[cfg(unix)]
+    mod process {
+        use super::*;
+
+        fn custom(id: &str, secret: &str) -> InstallFrom {
+            InstallFrom::Custom {
+                id: id.into(),
+                name: "Fixture".into(),
+                server: fixture_spec(Value::Secret(Secret::new(secret))),
+            }
+        }
+
+        /// Installing starts the server, reads its tools and stores it off in `review`, its secret in the
+        /// keychain only; the answer never holds the secret (point 3). Nothing is called before a person
+        /// allows the tools; a wrong fingerprint is `conflict`; then a call answers.
+        #[tokio::test]
+        async fn install_review_confirm_and_call() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            let response = extensions.install(custom("fixture", "s3cret-value")).await;
+            assert!(!serde_json::to_string(&response).expect("json").contains("s3cret-value"), "{response:?}");
+            let installed = info(response);
+            assert_eq!((installed.enabled, &installed.status), (false, &Status::Review));
+            assert!(
+                installed.tools.iter().all(|tool| tool.state == ToolState::Review && tool.access == Access::Delete)
+            );
+            assert_eq!(secrets.keys(), ["ext:fixture:FIXTURE_VALUE"]);
+            let file = std::fs::read_to_string(dir.path().join("extensions/extensions.json")).expect("file");
+            assert!(!file.contains("s3cret-value"));
+            assert_eq!(code(&extensions.install(custom("fixture", "other")).await), "conflict");
+
+            let call = || extensions.call("fixture", "echo", Default::default());
+            assert_eq!(code(&call().await), "not-found", "nothing allowed yet");
+            assert_eq!(code(&extensions.set_enabled("fixture", true, Reach::Suite).await), "conflict");
+            assert_eq!(code(&extensions.confirm("fixture", "0000").await), "conflict");
+            let fingerprint = installed.fingerprint.expect("a fingerprint");
+            let confirmed = info(extensions.confirm("fixture", &fingerprint).await);
+            assert!(confirmed.enabled && confirmed.tools.iter().all(|tool| tool.state == ToolState::Allowed));
+            let Response::ToolResult { output } = call().await else { panic!("an answer") };
+            assert!(output.untrusted);
+            assert_eq!(output.content, vec![torro_ipc::extensions::Content::Text { text: "pong s3cret-value".into() }]);
+
+            let response = extensions.list(Reach::Suite).await;
+            assert!(!serde_json::to_string(&response).expect("json").contains("s3cret-value"));
+            assert!(matches!(extensions.logs("fixture"), Response::Logs { .. }));
+            assert_eq!(code(&extensions.call("fixture", "missing", Default::default()).await), "not-found");
+
+            assert_eq!(extensions.remove("fixture").await, Response::Ok);
+            assert!(secrets.keys().is_empty(), "its secrets go with it");
+            assert!(!dir.path().join("extensions/fixture").exists());
+            assert_eq!(code(&call().await), "not-found");
+        }
+
+        /// Point 5 of the review of MA.1: an update keeps a stored secret for the same command and drops it for
+        /// another (`save_secrets` with the old spec); its answer holds no secret (point 3); a server that does
+        /// not start changes nothing.
+        #[tokio::test]
+        async fn an_update_keeps_secrets_only_for_the_same_command() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            info(extensions.install(custom("fixture", "first")).await);
+            let same = fixture_spec(Value::Stored { secret: true });
+            let updated = extensions.update("fixture", Some(same)).await;
+            assert!(!serde_json::to_string(&updated).expect("json").contains("first"));
+            assert_eq!(info(updated).secrets, vec![SecretInfo { name: "FIXTURE_VALUE".into(), stored: true }]);
+
+            let broken =
+                ServerSpec::Stdio { command: "/nonexistent/server".into(), args: vec![], env: BTreeMap::new() };
+            assert_eq!(code(&extensions.update("fixture", Some(broken)).await), "error");
+            assert_eq!(secrets.keys(), ["ext:fixture:FIXTURE_VALUE"], "unchanged");
+
+            // Another command (`sh` by name instead of `/bin/sh`): the stored secret is not handed on.
+            let other = ServerSpec::Stdio {
+                command: "sh".into(),
+                args: vec![script()],
+                env: BTreeMap::from([("FIXTURE_VALUE".to_string(), Value::Stored { secret: true })]),
+            };
+            assert_eq!(code(&extensions.update("fixture", Some(other.clone())).await), "error", "missing secret");
+            assert_eq!(secrets.keys(), ["ext:fixture:FIXTURE_VALUE"], "a failed update keeps it");
+            let ServerSpec::Stdio { command, args, .. } = other else { return };
+            let given = ServerSpec::Stdio {
+                command,
+                args,
+                env: BTreeMap::from([("FIXTURE_VALUE".to_string(), Value::Secret(Secret::new("second")))]),
+            };
+            let updated = info(extensions.update("fixture", Some(given)).await);
+            assert_eq!(updated.secrets, vec![SecretInfo { name: "FIXTURE_VALUE".into(), stored: true }]);
+            let stored = secrets.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            assert_eq!(stored.get("ext:fixture:FIXTURE_VALUE").map(String::as_str), Some("second"));
+        }
+
+        /// A catalog entry installs only with its programs: `unsupported` with what is missing, then with a
+        /// stand-in `uvx` it starts, its tools that the catalog does not name need `delete`.
+        #[tokio::test]
+        async fn a_catalog_entry_installs_once_its_program_is_there() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, _) = extensions_in(dir.path(), roots());
+            let time = || InstallFrom::Catalog { entry: "time".into(), secrets: BTreeMap::new() };
+            let missing = extensions.install(time()).await;
+            assert_eq!(code(&missing), "unsupported");
+            let Response::Error { message, .. } = missing else { return };
+            assert_eq!(message, Prerequisite::Uvx.needs());
+            assert_eq!(
+                code(
+                    &extensions.install(InstallFrom::Catalog { entry: "nope".into(), secrets: BTreeMap::new() }).await
+                ),
+                "not-found"
+            );
+
+            let bin = dir.path().join("bin");
+            std::fs::create_dir_all(&bin).expect("dir");
+            let uvx = bin.join("uvx");
+            std::fs::write(&uvx, format!("#!/bin/sh\nexec /bin/sh '{}' \"$@\"\n", script())).expect("write");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&uvx, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            let mut with_uvx = roots();
+            with_uvx.fixed.push(bin);
+            let (extensions, _) = extensions_in(dir.path(), with_uvx);
+            let installed = info(extensions.install(time()).await);
+            assert_eq!(installed.source, Source::Catalog { entry: "time".into(), version: "2026.10.19".into() });
+            assert!(installed.tools.iter().all(|tool| tool.access == Access::Delete), "none of them in the catalog");
+        }
     }
 }

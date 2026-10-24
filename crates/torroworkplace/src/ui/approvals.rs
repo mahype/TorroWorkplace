@@ -11,7 +11,9 @@
 //!   the time left. At the right "Deny" and "Allow", which send `approvals.decide_approval` through
 //!   [`Action::Send`]. The control centre talks with the app key, the only key that may decide.
 //!   An approval with details (sending mail, task M3.5: every recipient, the attachments, the
-//!   start of the text) has "Show details" under it, which lists them one per line, wrapped.
+//!   start of the text; a tool of an MCP server, issue #302: every argument whole as the agent gave
+//!   it, which the summary cuts at 500 characters) has "Show details" under it, which lists them one
+//!   per line, wrapped.
 //! - **Recently decided**: done, failed, denied and expired ones of the last day, quieter, one line
 //!   each, with their state as dot and word.
 //!

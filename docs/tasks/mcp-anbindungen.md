@@ -174,7 +174,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   als offen nennen.
 
 ### MA.5 Kern: Befehle, Rechte, Freigaben, Protokoll
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.2, MA.4 · **Dateien:** `crates/torroworkplace/src/extensions/mod.rs`,
   `crates/torroworkplace/src/{core,approvals,audit,clients}.rs`, `crates/torroworkplace/src/ui/approvals.rs`,
   `docs/api-reference.md`
