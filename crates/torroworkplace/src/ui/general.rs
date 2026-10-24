@@ -10,8 +10,9 @@
 //!   again.
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance; variant B of issue #291 since task L.37): three groups – "Design" (a compact list of
-//!   the designs), "Font and colors" (the font and the colour scheme each as a dropdown) and "Display" ("Color mode" as a segment of System, Light, Dark with symbol and word,
-//!   and the zoom of the suite with −, the value, + and "Reset", task Z.1).
+//!   the designs), "Font and colors" (the font and the colour scheme each as a dropdown) and
+//!   "Display" ("Color mode" as a segment of System, Light, Dark with symbol and word, and the zoom
+//!   of the suite with −, the value, + and "Reset", task Z.1).
 //!
 //! What a single app or window shows and how it behaves is set in that window, behind its gear
 //! (task S.21): the calendar's night and reminders, how mail is read, the sources of the

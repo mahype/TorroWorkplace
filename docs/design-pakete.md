@@ -659,8 +659,8 @@ prüfen, und gespeichert wird nur die Id in `Settings::font`. Das Format der Ein
   `Segoe UI`, auf Linux die Familie von `fc-match -f '%{family[0]}' sans-serif`. `system:<Familie>` ist eine
   installierte Familie (`system:Avenir Next`). Ordner-Ids sind `a-z0-9-`, keine kann mit `system:` beginnen;
   `system` selbst ist wie `torro` als Ordnername gesperrt.
-- **Welche erscheinen:** Familien, deren Name nicht mit `.` beginnt, höchstens 64 Zeichen hat und keine Steuer- oder
-  Formatzeichen enthält (der Name stammt aus einer fremden Datei und wird Teil der Id), mit einem aufrechten Schnitt,
+- **Welche erscheinen:** Familien, deren Name nicht mit `.` beginnt, höchstens 64 Zeichen hat und keine Steuer-, Format-
+  oder Zeilentrennzeichen enthält (der Name stammt aus einer fremden Datei und wird Teil der Id), mit einem aufrechten Schnitt,
   dessen regulärer Schnitt `A–Z a–z ä ö ü ß é` hat. Symbol-, Emoji- und nicht lateinische Schriften erscheinen gar
   nicht.
 - **Regeln** (am aufrechten Schnitt mit Gewicht 400): Ohne ihn ist die Familie mit Grund ungültig. Schnitte gelten

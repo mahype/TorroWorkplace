@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 
 use fontdb::{Database, FaceInfo};
 
+use crate::text::is_format;
+
 use super::files::font_info_at;
 use super::font::{BUILTIN_WIDEST_FIGURE, size_adjust_for};
 use super::{
@@ -203,12 +205,13 @@ pub fn list_system_fonts() -> Vec<Listed<FontSet>> {
 
 /// Whether `name`, a family name read from a font file, may become part of an id (`system:<name>`):
 /// not empty, at most 64 characters, not hidden (`.SF NS`, the system's private faces) and without
-/// control or format characters, which could change what a person reads in a list or an approval.
+/// control or format characters or line and paragraph separators, which could change what a person
+/// reads in a list or an approval.
 pub fn is_family_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().count() <= NAME_MAX
         && !name.starts_with('.')
-        && !name.chars().any(|c| c.is_control() || is_format(c))
+        && !name.chars().any(|c| c.is_control() || is_format(c) || matches!(c, '\u{2028}' | '\u{2029}'))
 }
 
 /// Which of regular, medium, semibold and bold a family has, from the weights of its upright faces:
@@ -288,36 +291,6 @@ fn system_about() -> About {
 
 fn not_found(id: &str) -> Vec<DesignError> {
     vec![DesignError::NotFound { part: Part::Font, id: id.to_string() }]
-}
-
-/// A Unicode format character (general category Cf, Unicode 16): invisible, yet able to change what a
-/// person reads (bidi controls, zero-width characters, tags). The same ranges as the approvals'
-/// check in the core service; Rust's standard library has no category lookup.
-fn is_format(c: char) -> bool {
-    matches!(
-        u32::from(c),
-        0x00AD
-            | 0x0600..=0x0605
-            | 0x061C
-            | 0x06DD
-            | 0x070F
-            | 0x0890..=0x0891
-            | 0x08E2
-            | 0x180E
-            | 0x200B..=0x200F
-            | 0x202A..=0x202E
-            | 0x2060..=0x2064
-            | 0x2066..=0x206F
-            | 0xFEFF
-            | 0xFFF9..=0xFFFB
-            | 0x110BD
-            | 0x110CD
-            | 0x13430..=0x1343F
-            | 0x1BCA0..=0x1BCA3
-            | 0x1D173..=0x1D17A
-            | 0xE0001
-            | 0xE0020..=0xE007F
-    )
 }
 
 #[cfg(test)]
@@ -484,7 +457,16 @@ mod tests {
     #[test]
     fn hidden_long_and_invisible_names_are_left_out() {
         let long = "L".repeat(NAME_MAX + 1);
-        let names = [".SF NS", long.as_str(), "Evil\u{202E}Name", "Tab\tName", "Zero\u{200B}Width", ""];
+        let names = [
+            ".SF NS",
+            long.as_str(),
+            "Evil\u{202E}Name",
+            "Tab\tName",
+            "Zero\u{200B}Width",
+            "Two\u{2028}Lines",
+            "Para\u{2029}Graph",
+            "",
+        ];
         let mut faces: Vec<FaceInfo> = names.iter().map(|name| face("Lato-Regular.ttf", name, 400)).collect();
         faces.push(face("Lato-Regular.ttf", &"K".repeat(NAME_MAX), 400));
         let fonts = fonts(faces);

@@ -723,8 +723,8 @@ fn part_id(key: SettingKey, value: &serde_json::Value) -> Result<String, String>
 }
 
 /// Why a `system:<family>` id is refused before anything is loaded ([`bad_family`]).
-const BAD_FAMILY: &str =
-    "after \"system:\" comes a family name of at most 64 characters without control or format characters";
+const BAD_FAMILY: &str = "after \"system:\" comes a family name of at most 64 characters without control, format or line-separator \
+     characters";
 
 /// Whether `id` is `system:` with a family name no listing would show (issue #299): too long, empty,
 /// hidden or with control or format characters.

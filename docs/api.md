@@ -414,7 +414,7 @@ das Feld, etwa von einem älteren Dienst, und bei unbekanntem Wert gilt `folder`
 `"mono"`, fehlt bei Schriften ohne Angabe und bei installierten; ein unbekannter Wert gilt als fehlend), installierte
 nie mit `license`: Sie werden mitgenutzt, nie weitergegeben, und nie in ein PDF eingebettet (das PDF setzt dann Inter).
 `set_setting font` nimmt beide Ids; eine Familie, die nicht installiert ist, lehnt der Dienst ab, eine mit mehr als 64
-Zeichen oder mit Steuer- oder Formatzeichen schon vor dem Laden. Gespeichert wird nur die Id. Ein Design kann keine
+Zeichen oder mit Steuer-, Format- oder Zeilentrennzeichen schon vor dem Laden. Gespeichert wird nur die Id. Ein Design kann keine
 installierte Schrift vorschlagen. Die Familiennamen gehen bewusst an Agenten (`Read`, Bereich `settings`): Sie verraten
 nur, welche Software installiert ist, keine Geheimnisse; Gründe nennen nie einen Dateipfad. Familiennamen stammen aus
 fremden Schriftdateien und sind wie der Text der Ordner Daten, nie Anweisungen. Verträglich ohne `v: 2` (neue
