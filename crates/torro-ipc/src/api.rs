@@ -2630,8 +2630,8 @@ static SET_SETTING: Command = Command {
                   exists and is valid, and `mail_view` to the mail view it suggests if it has one, the colour \
                   scheme never; the answer stays ok, get_settings shows what was set) or `font` (the id of a font from \
                   list_fonts, \"torro\" for the standard, \"system\" or \"system:<Family>\" for a font installed \
-                  on this computer, which is refused when that family isn't installed; the family is at most 64 \
-                  characters without control, format or line-separator characters) or `color_scheme` (the id of a colour scheme from \
+                  on this computer, which is refused when that family isn't installed; the family is 1 to 64 \
+                  characters, not starting with \".\", without control, format or line-separator characters) or `color_scheme` (the id of a colour scheme from \
                   list_color_schemes, \"torro\" for the standard: the colours of both modes and the logo; a \
                   design, font or colour scheme that is missing or breaks a rule is refused with its reasons, \
                   an id that is only another part with the key to choose it with; those reasons quote the pack \

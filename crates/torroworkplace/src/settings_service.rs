@@ -723,11 +723,11 @@ fn part_id(key: SettingKey, value: &serde_json::Value) -> Result<String, String>
 }
 
 /// Why a `system:<family>` id is refused before anything is loaded ([`bad_family`]).
-const BAD_FAMILY: &str = "after \"system:\" comes a family name of at most 64 characters without control, format or line-separator \
-     characters";
+const BAD_FAMILY: &str = "after \"system:\" comes a family name of 1 to 64 characters, not starting with \".\", \
+     without control, format or line-separator characters";
 
 /// Whether `id` is `system:` with a family name no listing would show (issue #299): too long, empty,
-/// hidden or with control or format characters.
+/// hidden or with control, format or line-separator characters.
 fn bad_family(id: &str) -> bool {
     id.strip_prefix(design::SYSTEM_PREFIX).is_some_and(|family| !design::is_family_name(family))
 }
@@ -1407,17 +1407,17 @@ mod tests {
         let reason = DesignError::NotFound { part: Part::Font, id: gone.into() }.to_string();
         assert!(missing.contains(&reason) && !missing.contains("the key"), "{missing}");
         let long = format!("system:{}", "x".repeat(65));
-        for bad in ["system:", "system:Evil\u{202E}Name", "system:Tab\tName", long.as_str()] {
+        for bad in ["system:", "system:.SF NS", "system:Evil\u{202E}Name", "system:Tab\tName", long.as_str()] {
             let refused = store.set(SettingKey::Font, &json!(bad)).expect_err("no such family name");
             let family = &bad[design::SYSTEM_PREFIX.len()..];
-            assert!(refused.contains("at most 64 characters"), "{refused}");
+            assert!(refused.contains("1 to 64 characters"), "{refused}");
             assert!(family.is_empty() || !refused.contains(family), "the name never runs into the message: {refused}");
         }
         assert_eq!(store.current().font, "torro", "nothing changed");
 
         // Whole settings take the same limit (they skip `part_id`).
         let whole = store.check_part(Part::Font, &long).expect_err("too long");
-        assert!(whole.contains("at most 64 characters") && !whole.contains("xxxxxxxx"), "{whole}");
+        assert!(whole.contains("1 to 64 characters") && !whole.contains("xxxxxxxx"), "{whole}");
 
         let homeless = SettingsStore::without_file();
         let refused = homeless.check_part(Part::Font, gone).expect_err("not installed");
