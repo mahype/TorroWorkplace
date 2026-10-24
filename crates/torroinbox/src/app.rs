@@ -8498,9 +8498,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// change nothing to see, only what the expanded sidebar shows later.
     fn show_category_group(&mut self, group: CategoryGroup) -> Task<Message> {
         self.open_groups.insert(group);
+        // Shown already: as a click on any shown view, without loading it again for a catalogue
+        // that came anew since (decision 7).
         if self.category_group_active(group) {
-            self.close_menus();
-            return Task::none();
+            return self.show_view(self.view.clone());
         }
         self.update(Message::Show(self.category_group_view(group)))
     }
@@ -13613,6 +13614,23 @@ mod tests {
         assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
         assert_eq!(app.view, View::Overview);
         assert!(app.settings.is_some(), "the settings stay open");
+    }
+
+    /// Issue #300: a click on the shown group in the menu or the rail does what a click on any shown
+    /// view does – the open mail and the cursor go, the list stays and is not loaded again.
+    #[test]
+    fn showing_the_shown_group_again_clears_the_open_mail() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        load(&mut app);
+        let first = app.messages.first().map(|mail| mail.id.clone()).expect("the group holds mail");
+        let _ = app.update(Message::SelectMail(first));
+        assert!(app.panel_open() && app.cursor.is_some());
+        let shown = app.view.clone();
+        assert_eq!(app.update(Message::ShowCategoryGroup(group)).units(), 0, "nothing is loaded again");
+        assert!(!app.panel_open() && app.cursor.is_none(), "the open mail goes");
+        assert_eq!(app.view, shown);
     }
 
     /// Issue #300: with the settings open, a click on the group shown brings its list back instead
