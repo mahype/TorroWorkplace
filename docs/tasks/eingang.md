@@ -3897,7 +3897,8 @@ In der Planung entschieden:
    Seitenleiste. Bei offenen Einstellungen bringt ein Klick auf die Gruppe ihre Liste zurück, statt zuzuklappen.
 5. **Ausgeblendete Kategorien** (Settings › Categorization) gehören nicht zur Gruppenansicht: Die Gruppe listet
    genau die Kategorien, die unter ihr stehen könnten. Wird eine Kategorie der gezeigten Gruppe ausgeblendet, lädt
-   die Gruppe neu; bleibt keine übrig, geht das Fenster zu „For me“ (eine leere Liste hieße beim Dienst „kein
+   die Gruppe neu; bleibt keine mit Mail übrig, verschwindet sie aus der Seitenleiste und das Fenster geht zu
+   „For me“, auch bei offenen Einstellungen, die dabei offen bleiben (eine leere Liste hieße beim Dienst „kein
    Filter“).
 6. Die Bausteine kommen nach `torro-gui` (`torro-design`: fehlende Bausteine nie lokal), nicht ins Mail-Fenster.
 

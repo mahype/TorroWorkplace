@@ -3488,14 +3488,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             && let View::Category(shown) = &self.view
             && shown.only.is_none()
         {
-            let view = self.category_group_view(shown.group);
-            // No category left: the group is gone from the sidebar, and an empty list would ask
-            // the core for no filter at all – every mail under the group's name.
-            // Not through `Message::Show`: that one takes the content area back from open settings,
-            // and the category was just switched off there.
-            if matches!(&view, View::Category(group) if group.categories().is_empty()) {
+            let group = shown.group;
+            // No category with mail left: the group is gone from the sidebar (`category_entries`),
+            // and its view would list nothing – or, with no category at all, ask the core for no
+            // filter, every mail under the group's name. Not through `Message::Show`: that one
+            // takes the content area back from open settings, and the category was just switched
+            // off there.
+            let hidden = &self.look.hidden_categories;
+            let listed = self
+                .categories
+                .iter()
+                .any(|held| held.group == group && held.messages > 0 && !hidden.contains(&held.category));
+            if !listed {
                 return self.show_view(View::Overview);
             }
+            let view = self.category_group_view(group);
             if view != self.view {
                 self.view = view;
                 return self.load();
@@ -13597,6 +13604,23 @@ mod tests {
         assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
         assert_eq!(app.view, View::Overview);
         assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
+    }
+
+    /// Issue #300: switching off the categories of the shown group that hold mail takes the group
+    /// from the sidebar, though its empty ones are left – the window goes back to "For me" too.
+    #[test]
+    fn hiding_the_shown_groups_categories_with_mail_goes_back_to_for_me() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let of_group = app.categories.iter().filter(|held| held.group == group);
+        let with_mail: Vec<_> = of_group.clone().filter(|held| held.messages > 0).map(|held| held.category).collect();
+        assert!(!with_mail.is_empty() && of_group.count() > with_mail.len(), "empty ones are left");
+        let stored = MailLook { format: app.look.format, colors: app.look.colors, hidden_categories: with_mail };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
+        assert_eq!(app.view, View::Overview);
     }
 
     /// Issue #300: the last category of the shown group is switched off in the settings, so the
