@@ -116,7 +116,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   `TORRO_BLESS=1 cargo test -p torro-ipc` und `docs/api-reference.md`.
 
 ### MA.2 Kern: Katalog als Daten und Prüfung der Voraussetzungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torroworkplace/assets/extensions/catalog.toml` (neu),
   `crates/torroworkplace/src/extensions/{mod,catalog,prereq}.rs` (neu), `crates/torroworkplace/src/{main,core}.rs`
 - `catalog.toml` (mit `include_str!` eingebaut): je Eintrag Kennung, Name, Herausgeber, Lizenz, Link, Beschreibung

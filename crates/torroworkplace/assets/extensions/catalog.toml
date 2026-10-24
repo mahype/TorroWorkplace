@@ -1,0 +1,109 @@
+# The built-in catalog of MCP servers (issue #302, task MA.2). Built into the core with `include_str!` and checked
+# by `src/extensions/catalog.rs` (and its test that this file is valid). People install an entry in the control
+# centre (MCP connections › Catalog); the core starts it as written here, without a shell.
+#
+# Rules for every entry:
+# - `id`: `[a-z0-9-]`, 1–24 characters, starts with a letter, unique; the installed server keeps it.
+# - `version`: fixed, and the arguments name it, so an update of the catalog is the only way to a newer one.
+# - Nothing may ask on stdin (stdin is the MCP connection): `npx` always with `-y`, Docker with `run -i --rm`.
+#   Docker gets each variable as `-e NAME` (the value comes from the environment the core gives `docker`).
+# - `access` per tool: `read` changes nothing, `write` creates or changes, `delete` removes or overwrites for
+#   good. A tool the server reports but this file does not name needs `delete`. The server's own hints
+#   (`readOnlyHint`, `destructiveHint`) do not count.
+# - `description`, `hint`: English, the control centre shows them as they are.
+#
+# Looked up on 2026-10-24:
+# - Time: https://github.com/modelcontextprotocol/servers/tree/main/src/time, PyPI `mcp-server-time` 2026.10.19
+#   (https://pypi.org/project/mcp-server-time/), licence MIT (`pyproject.toml`). Tools from its README:
+#   `get_current_time`, `convert_time`.
+# - Sequential Thinking: https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking, npm
+#   `@modelcontextprotocol/server-sequential-thinking` 2.0.0
+#   (https://www.npmjs.com/package/@modelcontextprotocol/server-sequential-thinking), needs Node.js 24 or later
+#   (`engines` in its `package.json`). Licence "SEE LICENSE IN LICENSE": the repository's LICENSE is in transition
+#   from MIT to Apache-2.0 (new code Apache-2.0, older contributions MIT), hence `Apache-2.0 AND MIT`. Its one
+#   tool is registered as `sequentialthinking` in `index.ts` (the README writes `sequential_thinking`). It only
+#   keeps a history of thoughts for the connection, so `read`.
+# - GitHub MCP Server: https://github.com/github/github-mcp-server, release v2.0.3 of 2026-10-21, image
+#   `ghcr.io/github/github-mcp-server:2.0.3` (the release workflow tags `{{version}}`), licence MIT. Default
+#   toolsets: context, repos, issues, pull_requests, users; tool names from the README at v2.0.3. Listed is a
+#   selection; every other tool of it needs `delete`.
+
+[[server]]
+id = "time"
+name = "Time"
+publisher = "Model Context Protocol"
+license = "MIT"
+url = "https://github.com/modelcontextprotocol/servers/tree/main/src/time"
+description = "Tells the current time in any time zone and converts times between time zones."
+version = "2026.10.19"
+requires = ["uvx"]
+command = "uvx"
+args = ["mcp-server-time@2026.10.19"]
+tools = [
+    { name = "get_current_time", access = "read" },
+    { name = "convert_time", access = "read" },
+]
+
+[[server]]
+id = "sequential-thinking"
+name = "Sequential Thinking"
+publisher = "Model Context Protocol"
+license = "Apache-2.0 AND MIT"
+url = "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking"
+description = "Lets the model think through a problem step by step, revise steps and branch. Needs Node.js 24 or later."
+version = "2.0.0"
+requires = ["npx"]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-sequential-thinking@2.0.0"]
+tools = [
+    { name = "sequentialthinking", access = "read" },
+]
+
+[[server]]
+id = "github"
+name = "GitHub"
+publisher = "GitHub"
+license = "MIT"
+url = "https://github.com/github/github-mcp-server"
+description = "Reads and changes repositories, issues and pull requests on GitHub with your token. Runs in Docker."
+version = "2.0.3"
+requires = ["docker"]
+command = "docker"
+args = ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server:2.0.3"]
+tools = [
+    # context, users
+    { name = "get_me", access = "read" },
+    { name = "search_users", access = "read" },
+    # repos
+    { name = "get_file_contents", access = "read" },
+    { name = "list_branches", access = "read" },
+    { name = "list_commits", access = "read" },
+    { name = "get_commit", access = "read" },
+    { name = "list_tags", access = "read" },
+    { name = "list_releases", access = "read" },
+    { name = "get_latest_release", access = "read" },
+    { name = "search_repositories", access = "read" },
+    { name = "search_code", access = "read" },
+    { name = "create_branch", access = "write" },
+    { name = "create_or_update_file", access = "write" },
+    { name = "push_files", access = "write" },
+    { name = "delete_file", access = "delete" },
+    # issues
+    { name = "list_issues", access = "read" },
+    { name = "issue_read", access = "read" },
+    { name = "search_issues", access = "read" },
+    { name = "issue_write", access = "write" },
+    { name = "add_issue_comment", access = "write" },
+    # pull_requests
+    { name = "list_pull_requests", access = "read" },
+    { name = "pull_request_read", access = "read" },
+    { name = "search_pull_requests", access = "read" },
+    { name = "create_pull_request", access = "write" },
+    { name = "update_pull_request", access = "write" },
+    { name = "merge_pull_request", access = "delete" },
+]
+
+[[server.secrets]]
+name = "GITHUB_PERSONAL_ACCESS_TOKEN"
+hint = "A GitHub personal access token for the repositories it may use; fine-grained tokens limit it best."
+url = "https://github.com/settings/personal-access-tokens/new"

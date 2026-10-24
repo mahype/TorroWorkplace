@@ -55,6 +55,8 @@ reqwest.workspace = true
 rmcp.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
+# The built-in catalog of MCP servers (task MA.2): `assets/extensions/catalog.toml`.
+toml.workspace = true
 webbrowser.workspace = true
 # The PDF tool (task WZ.3): Markdown read and set as pages.
 printpdf.workspace = true

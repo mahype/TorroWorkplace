@@ -42,6 +42,7 @@ mod clients;
 mod core;
 mod daemon;
 mod designs;
+mod extensions;
 mod hook;
 mod inbox;
 mod inbox_notify;

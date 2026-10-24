@@ -7102,6 +7102,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "toml",
  "torro-core",
  "torro-gui",
  "torro-inbox",

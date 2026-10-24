@@ -1907,6 +1907,10 @@ pub struct Core {
     /// The place search and the map of the event editor (task TE.5): throttles, answers and the
     /// tile cache for the whole service ([`crate::places::Places::system`]; tests keep no tiles).
     places: crate::places::Places,
+    /// The MCP servers (issue #302): for now the built-in catalog and where the programs it needs are
+    /// looked for ([`crate::extensions::Extensions::system`]); tests look in temporary folders only
+    /// ([`Core::with_extensions`]).
+    extensions: crate::extensions::Extensions,
 }
 
 impl Core {
@@ -1963,6 +1967,12 @@ impl Core {
                 crate::workspace_keys::BoundKeys::system()
             },
             places: crate::places::Places::system(),
+            // Tests never look for programs in the person's home or on the service's PATH.
+            extensions: if cfg!(test) {
+                crate::extensions::Extensions::with_roots(Default::default())
+            } else {
+                crate::extensions::Extensions::system()
+            },
         }
     }
 
@@ -2216,6 +2226,13 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_tools(mut self, tools: crate::tools::Tools) -> Core {
         self.tools = Arc::new(tools);
+        self
+    }
+
+    /// The core with `extensions` instead of the service's, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_extensions(mut self, extensions: crate::extensions::Extensions) -> Core {
+        self.extensions = extensions;
         self
     }
 
@@ -4616,11 +4633,15 @@ impl Core {
                     Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 }
             }
-            // MCP servers (issue #302): the commands and their rights are there, the servers follow
-            // (tasks MA.2 to MA.5).
+            // MCP servers (issue #302): the built-in catalog with what it needs on this computer (task
+            // MA.2). Only a broken built-in catalog fails, which its tests rule out.
+            Request::ListCatalog => match self.extensions.catalog() {
+                Ok(entries) => Response::Catalog { entries },
+                Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
+            },
+            // The other commands and their rights are there, the servers follow (tasks MA.3 to MA.5).
             request @ (Request::ListExtensions
             | Request::GetExtension { .. }
-            | Request::ListCatalog
             | Request::ListExtensionTools
             | Request::CallExtensionTool { .. }
             | Request::SetExtensionEnabled { .. }
@@ -10928,8 +10949,8 @@ mod tests {
         assert!(!settings(&core).await.voice.enabled, "off once the person allowed it");
     }
 
-    /// Issue #302 (task MA.1): until the servers are built (tasks MA.2 to MA.5) their commands answer
-    /// `unsupported`; what only a person does (point 10) is `forbidden` for a client before anything
+    /// Issue #302 (task MA.1): until the servers are built (tasks MA.3 to MA.5) their commands answer
+    /// `unsupported` (the catalog is there, task MA.2); what only a person does (point 10) is `forbidden` for a client before anything
     /// else, also with every right, and nobody is asked to approve it.
     #[tokio::test]
     async fn mcp_servers_answer_unsupported_and_people_keep_theirs() {
@@ -10953,7 +10974,6 @@ mod tests {
         let for_clients = [
             Request::ListExtensions,
             Request::GetExtension { id: id() },
-            Request::ListCatalog,
             Request::ListExtensionTools,
             call,
             Request::SetExtensionEnabled { id: id(), enabled: false },
@@ -10974,6 +10994,44 @@ mod tests {
         for request in for_clients {
             assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "unsupported", "{request:?}");
         }
+    }
+
+    /// Task MA.2: `extensions.list_catalog` lists the built-in servers with what of their prerequisites is
+    /// missing on this computer, looked for in temporary folders only (here `uvx` stands in a folder in
+    /// place of Homebrew's); for the app key and for a client with Read in `extensions`, not for one without.
+    #[tokio::test]
+    async fn the_catalog_says_what_is_missing_on_this_computer() {
+        use torro_ipc::extensions::Prerequisite;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let brew = dir.path().join("homebrew/bin");
+        std::fs::create_dir_all(&brew).expect("dir");
+        let uvx = brew.join(if cfg!(windows) { "uvx.exe" } else { "uvx" });
+        std::fs::write(&uvx, "#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&uvx, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let roots = crate::extensions::prereq::Roots { path: Vec::new(), home: None, fixed: vec![brew] };
+        let core = core(dir.path()).with_extensions(crate::extensions::Extensions::with_roots(roots));
+        let missing = |response: Response| match response {
+            Response::Catalog { entries } => {
+                entries.into_iter().map(|entry| (entry.id, entry.missing)).collect::<Vec<_>>()
+            }
+            other => panic!("expected the catalog, got {other:?}"),
+        };
+        let expected = vec![
+            ("time".to_string(), Vec::new()),
+            ("sequential-thinking".to_string(), vec![Prerequisite::Npx]),
+            ("github".to_string(), vec![Prerequisite::Docker]),
+        ];
+        assert_eq!(missing(core.handle(Request::ListCatalog).await), expected);
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        assert_eq!(missing(ask(&core, Some(&reader), Request::ListCatalog).await), expected);
+        let mut none = RightsTemplate::ReadOnly.rights();
+        none.areas.remove(&Area::Extensions);
+        let (_, outsider) = core.clients.add("Script", "script", none).await.expect("added");
+        assert_eq!(code(&ask(&core, Some(&outsider), Request::ListCatalog).await), "forbidden");
     }
 
     /// Issue #225, point 9 of "Was nie nach außen geht": no client switches a tool of the assistant
