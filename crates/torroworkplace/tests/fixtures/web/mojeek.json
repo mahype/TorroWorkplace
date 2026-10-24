@@ -1,0 +1,22 @@
+{
+  "response": {
+    "status": "OK",
+    "query": "Lisbon",
+    "head": { "query": "Lisbon", "start": 1, "return": 2, "results": 2, "timer": 0.06 },
+    "results": [
+      {
+        "url": "https://en.wikipedia.org/wiki/Lisbon",
+        "title": "Lisbon - Wikipedia",
+        "desc": "Lisbon is the capital and largest city of Portugal.",
+        "cdatetimeint": 1700000000,
+        "mdatetimeint": 1710000000,
+        "date": 1710000000
+      },
+      {
+        "url": "https://www.lonelyplanet.com/portugal/lisbon",
+        "title": "Lisbon travel - Lonely Planet",
+        "desc": "Lisbon's appeal is as much about its past as its present."
+      }
+    ]
+  }
+}

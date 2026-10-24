@@ -1078,7 +1078,7 @@ WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) �
   bei `All` nennt `web` nicht; mit Leserecht in `tools` und `Only([web])` ist `web` erlaubt und angeboten, `pdf` nicht; `TORRO_BLESS=1 cargo test -p torro-ipc` und `docs/api-reference.md`.
 
 ### WEB.2 Kern: `SearchProvider`, Router und die sieben Anbieter
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WEB.1 · **Dateien:** `crates/torroworkplace/src/tools/mod.rs` (`pub mod web`),
   `crates/torroworkplace/src/tools/web/{mod,router,catalogue}.rs` (neu),
   `crates/torroworkplace/src/tools/web/providers/{mod,searxng,brave,tavily,exa,mojeek,duckduckgo,wikipedia}.rs` (neu),

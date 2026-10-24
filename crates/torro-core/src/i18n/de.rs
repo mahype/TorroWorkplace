@@ -5293,6 +5293,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Searched the web", "Im Web gesucht"),
     ("Read web page", "Webseite gelesen"),
     ("Listed search providers", "Suchanbieter aufgelistet"),
+    // Search providers of the tool web (WEB.2, #305)
+    (
+        "Asked in addition to the others. Its text is under CC BY-SA 4.0, named at every result.",
+        "Wird zusätzlich zu den anderen gefragt. Der Text steht unter CC BY-SA 4.0, genannt an jedem Treffer.",
+    ),
+    (
+        "Brave allows its results to be used for the answer only, not stored. Torro does not keep them.",
+        "Brave erlaubt, die Ergebnisse nur für die Antwort zu nutzen, nicht zu speichern. Torro behält sie nicht.",
+    ),
+    (
+        "DuckDuckGo offers no official interface for this. Torro reads the results page like a browser. \
+         DuckDuckGo may block this at any time.",
+        "DuckDuckGo bietet dafür keine offizielle Schnittstelle. Torro liest die Ergebnisseite wie ein Browser. \
+         DuckDuckGo kann das jederzeit sperren.",
+    ),
+    ("USA", "USA"),
+    ("United Kingdom", "Vereinigtes Königreich"),
+    (
+        "Your own SearXNG instance. Torro checks that it answers in JSON when you enter its address.",
+        "Deine eigene SearXNG-Instanz. Torro prüft beim Eintragen der Adresse, ob sie JSON liefert.",
+    ),
     ("Moved, changed, deleted or out of reach.", "Verschoben, geändert, gelöscht oder nicht mehr erreichbar."),
     ("Put them in a PDF for the team.", "Mach daraus eine PDF fürs Team."),
     (

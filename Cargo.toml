@@ -85,6 +85,12 @@ mail-builder = { version = "1.0.0", default-features = false }
 mail-parser = { version = "0.11.9", features = ["full_encoding"] }
 # The HTML part of a mail, cleaned through an allow list before the core keeps or hands it out (task M8.1).
 ammonia = "4.2.3"
+# DuckDuckGo's results page read for the tool web (torroworkplace, WEB.2, issue #305), with CSS selectors; the
+# Wikipedia and Brave extracts lose their HTML through it. 0.28, not the newer 0.29: dom_smoothie 0.18.2 (WEB.3)
+# depends on dom_query 0.28, so there is one dom_query in the build. It brings a second html5ever (0.39, beside 0.40
+# of ammonia and blitz-html) and second selectors/cssparser (0.38/0.37, beside Stylo's 0.41/0.38),
+# with older phf, string_cache, servo_arc and web_atoms. MIT.
+dom_query = { version = "0.28.0", default-features = false }
 rustls = "0.23.45"
 rustls-platform-verifier = "0.7.1"
 tokio-rustls = "0.26.6"

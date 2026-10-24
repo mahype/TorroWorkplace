@@ -4,6 +4,7 @@
 //! - `pdf`: sets a PDF from Markdown and one of the three page templates (task WZ.3).
 //! - `place`: where a new file goes and what it is called (task WZ.4).
 //! - `files`: the register of every file a tool made (task WZ.4).
+//! - `web`: web search with the providers a person switched on (task WEB.2), the page reader with WEB.3.
 //!
 //! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: the tool's switch for every key
 //! (`Lack::ToolOff`), for a client its rights and selection (`Lack::Tool`) and that a file is its own; the handlers
@@ -13,6 +14,9 @@
 pub mod files;
 pub mod pdf;
 pub mod place;
+// The commands that use it come with task WEB.4; until then the core calls none of it.
+#[allow(dead_code)]
+pub mod web;
 
 use std::fs;
 use std::path::{Path, PathBuf};

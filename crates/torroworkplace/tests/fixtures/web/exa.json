@@ -1,0 +1,27 @@
+{
+  "requestId": "b5947044c4b78efa9552a7c89b306d95",
+  "results": [
+    {
+      "title": "Lisbon travel guide",
+      "url": "https://www.example.com/lisbon-travel-guide",
+      "id": "https://www.example.com/lisbon-travel-guide",
+      "publishedDate": "2026-04-01T00:00:00.000Z",
+      "author": null,
+      "highlights": ["Trams climb the hills of Alfama.", "Tram 28 is the best known line."],
+      "highlightScores": [0.46, 0.41]
+    },
+    {
+      "title": "",
+      "url": "https://example.org/lisbon-notes",
+      "id": "https://example.org/lisbon-notes",
+      "summary": "Notes on Lisbon without a title."
+    },
+    {
+      "title": "No web address",
+      "url": "mailto:someone@example.org",
+      "id": "x"
+    }
+  ],
+  "searchTime": 412.5,
+  "costDollars": { "total": 0.005 }
+}
