@@ -14,6 +14,8 @@
 //!   E4.1).
 //! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
 //! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3).
+//! - [`save`]: saving attachments to Downloads, a chosen place or a save target, and the save
+//!   targets themselves in `<data>/mail/save-targets.json` (task M12.3, issue #290).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -45,6 +47,7 @@ pub mod fold;
 pub mod inbox_feed;
 pub mod query;
 pub mod read;
+pub mod save;
 pub mod send;
 pub mod service;
 pub mod store;

@@ -1266,7 +1266,7 @@ nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
   Kategorie → `sure: false`.
 
 ### M12.3 Kern: Ziele speichern, Anhänge ablegen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M12.2 · **Dateien:** `crates/torroworkplace/src/mail/{mod,save}.rs` (`save.rs` neu),
   `crates/torroworkplace/src/mail/{read,service}.rs`, `crates/torroworkplace/src/{core,approvals}.rs`,
   `crates/torro-core/src/i18n/de.rs`, `docs/mail.md`

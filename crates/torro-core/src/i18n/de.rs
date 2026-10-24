@@ -5434,8 +5434,67 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "„{key}“ ist {value}; erlaubt sind 0 (aus) oder {min} bis {max}.",
     ),
     ("Widen the window to expand actions", "Fenster verbreitern, um die Aktionen auszuklappen"),
-    // Saving attachments (issue #290): approvals until the core names mail and target (M12.3).
+    // Saving attachments (issue #290): approvals (M12.1, M12.3).
     ("Change an unknown save target", "Ein unbekanntes Ablageziel ändern"),
     ("Remove an unknown save target", "Ein unbekanntes Ablageziel entfernen"),
     ("Save attachments of an unknown mail", "Anhänge einer unbekannten E-Mail speichern"),
+    ("Change save target \"{name}\"", "Ablageziel „{name}“ ändern"),
+    ("Change save target \"{name}\" (renamed to \"{new}\")", "Ablageziel „{name}“ ändern (umbenannt in „{new}“)"),
+    ("Remove save target \"{name}\"", "Ablageziel „{name}“ entfernen"),
+    ("Save the attachments of the mail {subject} to {target}", "Die Anhänge der Mail {subject} in {target} speichern"),
+    ("Save an attachment of the mail {subject} to {target}", "Einen Anhang der Mail {subject} in {target} speichern"),
+    ("Save {n} attachments of the mail {subject} to {target}", "{n} Anhänge der Mail {subject} in {target} speichern"),
+    ("Downloads", "Downloads"),
+    ("a folder chosen in the app", "einen in der App gewählten Ordner"),
+    ("an unknown save target", "ein unbekanntes Ablageziel"),
+    // Saving attachments (M12.3): the core's answers.
+    (
+        "A category of the save target is not in the catalogue.",
+        "Eine Kategorie des Ablageziels steht nicht im Katalog.",
+    ),
+    ("A folder of the save target leads outside of it.", "Ein Ordner des Ablageziels führt aus ihm hinaus."),
+    ("A folder or a link cannot be replaced.", "Ein Ordner oder ein Verweis kann nicht ersetzt werden."),
+    (
+        "A save target may name at most 20 senders of at most 200 characters each.",
+        "Ein Ablageziel darf höchstens 20 Absender mit je höchstens 200 Zeichen nennen.",
+    ),
+    (
+        "A save target needs a name of 1 to 60 characters on one line.",
+        "Ein Ablageziel braucht einen Namen mit 1 bis 60 Zeichen in einer Zeile.",
+    ),
+    (
+        "A scheme may have at most 200 characters on one line.",
+        "Ein Schema darf höchstens 200 Zeichen in einer Zeile haben.",
+    ),
+    (
+        "Allow it in System Settings › Privacy & Security › Files and Folders.",
+        "Erlaube es in den Systemeinstellungen › Datenschutz & Sicherheit › Dateien und Ordner.",
+    ),
+    ("Another save target has this name.", "Ein anderes Ablageziel hat schon diesen Namen."),
+    ("No such save target.", "Dieses Ablageziel gibt es nicht."),
+    ("Save as takes exactly one attachment.", "„Speichern unter“ nimmt genau einen Anhang."),
+    ("The Downloads folder is missing.", "Der Download-Ordner fehlt."),
+    ("The file could not be saved.", "Die Datei konnte nicht gespeichert werden."),
+    (
+        "The folder of a save target must be a full path of at most 4096 bytes.",
+        "Der Ordner eines Ablageziels muss ein vollständiger Pfad mit höchstens 4096 Bytes sein.",
+    ),
+    ("The folder of {target} is missing.", "Der Ordner von {target} fehlt."),
+    ("The folder is missing.", "Der Ordner fehlt."),
+    (
+        "The path must be a full path of at most 4096 bytes on one line.",
+        "Der Pfad muss ein vollständiger Pfad mit höchstens 4096 Bytes in einer Zeile sein.",
+    ),
+    ("The save targets cannot be read or written.", "Die Ablageziele können nicht gelesen oder geschrieben werden."),
+    (
+        "The scheme has an unknown placeholder: {placeholder}",
+        "Das Schema enthält einen unbekannten Platzhalter: {placeholder}",
+    ),
+    (
+        "The scheme of the save target has an unknown placeholder.",
+        "Das Schema des Ablageziels enthält einen unbekannten Platzhalter.",
+    ),
+    ("There can be at most 50 save targets.", "Es kann höchstens 50 Ablageziele geben."),
+    ("Too many files of this name are in the folder.", "Im Ordner liegen zu viele Dateien mit diesem Namen."),
+    ("Torro Workplace may not write to this folder.", "Torro Workplace darf nicht in diesen Ordner schreiben."),
 ];

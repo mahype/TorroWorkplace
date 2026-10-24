@@ -392,7 +392,9 @@ pub struct MailFacts {
     /// The account's address as the core knows it (`anna@mailbox.org`); `None` when unknown: the
     /// summary then shows the account id the command runs with.
     pub account: Option<String>,
-    /// How many messages the command names (`ids`), known or not.
+    /// How many messages the command names (`ids`), known or not. For `mail.save_attachments`
+    /// (task M12.3) how many files it saves: the parts it names, else the stored attachments that
+    /// are not inline; 0 when the store does not know them yet.
     pub count: usize,
     /// The subjects of the named messages the store holds, in the order of `ids`.
     pub subjects: Vec<String>,
@@ -1477,11 +1479,22 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             "Make the PDF \"{title}\" with the template {template}",
             &[("title", &quote(title)), ("template", &template_word(template.unwrap_or_default()))],
         ),
-        // Saving attachments (issue #290). The names (subject, target) come from the core's store
-        // with task M12.3; until then nothing of the client's text is shown.
-        Request::SaveMailAttachments { .. } => tr("Save attachments of an unknown mail").to_string(),
-        Request::UpdateSaveTarget { .. } => tr("Change an unknown save target").to_string(),
-        Request::RemoveSaveTarget { .. } => tr("Remove an unknown save target").to_string(),
+        // Saving attachments (issue #290, task M12.3): the subject, the number of files and the
+        // target's name from the core's stores ([`MailFacts`], [`Facts::name`]), never the client's
+        // text; only a new name of a target is the client's, and shown as such.
+        Request::SaveMailAttachments { to, .. } => attachments_saved(to, facts),
+        Request::UpdateSaveTarget { target, .. } => match &facts.name {
+            Some(name) if name.trim() != target.name.trim() => trf(
+                "Change save target \"{name}\" (renamed to \"{new}\")",
+                &[("name", &quote(name)), ("new", &quote(&target.name))],
+            ),
+            Some(name) => trf("Change save target \"{name}\"", &[("name", &quote(name))]),
+            None => tr("Change an unknown save target").to_string(),
+        },
+        Request::RemoveSaveTarget { .. } => match &facts.name {
+            Some(name) => trf("Remove save target \"{name}\"", &[("name", &quote(name))]),
+            None => tr("Remove an unknown save target").to_string(),
+        },
         Request::OpenFile { .. } => match &facts.name {
             Some(title) => trf("Open the PDF \"{title}\"", &[("title", &quote(title))]),
             None => tr("Open an unknown file").to_string(),
@@ -2791,6 +2804,29 @@ fn mail_messages(facts: Option<&MailFacts>, count: usize) -> String {
         (_, Some(first)) => trf("{n} messages, among them {subject}", &[("n", &count), ("subject", &subject(first))]),
         (1, None) => tr("an unknown message").to_string(),
         (_, None) => trf("{n} unknown messages", &[("n", &count)]),
+    }
+}
+
+/// The summary of `mail.save_attachments` to `to` (task M12.3): the subject and the number of files
+/// the core's store holds ([`MailFacts`]), the target by its stored name ([`Facts::name`]).
+fn attachments_saved(to: &torro_ipc::mail::SaveTo, facts: &Facts) -> String {
+    use torro_ipc::mail::SaveTo;
+    let (Some(mail), Some(text)) = (facts.mail.as_ref(), facts.mail.as_ref().and_then(|mail| mail.subjects.first()))
+    else {
+        return tr("Save attachments of an unknown mail").to_string();
+    };
+    let subject = subject(text);
+    let target = match (to, &facts.name) {
+        (SaveTo::Downloads, _) => tr("Downloads").to_string(),
+        (SaveTo::Target(_), Some(name)) => format!("\"{}\"", quote(name)),
+        (SaveTo::Target(_), None) => tr("an unknown save target").to_string(),
+        (SaveTo::File(_) | SaveTo::Folder(_), _) => tr("a folder chosen in the app").to_string(),
+    };
+    let args: [(&str, &dyn std::fmt::Display); 3] = [("n", &mail.count), ("subject", &subject), ("target", &target)];
+    match mail.count {
+        0 => trf("Save the attachments of the mail {subject} to {target}", &args),
+        1 => trf("Save an attachment of the mail {subject} to {target}", &args),
+        _ => trf("Save {n} attachments of the mail {subject} to {target}", &args),
     }
 }
 

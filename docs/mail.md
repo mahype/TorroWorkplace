@@ -275,6 +275,11 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Nachricht lesen | Lesebereich | `mail.get_message` · Read | `mail_get_message` |
 | Unterhaltung | Lesebereich | `mail.get_thread` · Read | `mail_get_thread` |
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |
+| Ablageziele und Pfad-Vorschau (#290) | Dreieck-Menü am Anhang, Einstellungen › Mail › Attachments | `mail.list_save_targets` · Read | `mail_list_save_targets` |
+| Ablageziel anlegen (#290) | Einstellungen › Mail › Attachments | `mail.create_save_target` · Admin | **Never** (Liste Punkt 9: setzt immer einen Ordner) |
+| Ablageziel ändern (#290) | Einstellungen › Mail › Attachments | `mail.update_save_target` · Admin; anderer Ordner nur mit dem App-Schlüssel | `mail_update_save_target` (Ordner wie gespeichert) |
+| Ablageziel entfernen (#290) | Einstellungen › Mail › Attachments | `mail.remove_save_target` · Admin | `mail_remove_save_target` |
+| Anhänge speichern (#290) | Dreieck-Menü, „Save all ▾“, Kontextmenü der Liste, Klick auf den Namen | `mail.save_attachments` · Write; `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_attachments` (nur Downloads oder ein Ziel) |
 | Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
@@ -287,6 +292,29 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 
 Statt TorroMails Paar `prepare_*` / `confirm_action` gibt es einen Request; ob er sofort läuft
 oder auf eine Freigabe wartet, entscheidet der Dienst nach den Rechten des Agenten.
+
+## Anhänge ablegen
+
+Konzept und Entscheidungen: Issue #290, Aufgaben M12 in [`tasks/mail.md`](tasks/mail.md). Ein Anhang lässt sich
+öffnen, nach Downloads sichern, über „Save as…“ sichern oder in ein **Ablageziel** legen: einen Ordner mit einem
+Schema für Unterordner und Dateinamen (`{year}/{month}`, `{name}.{ext}` …), einer Datumsquelle (Mail oder Datum im
+Dateinamen) und Bedingungen, wann es vorgeschlagen wird (Kategorie, Dateityp, Absender).
+
+- Die Ziele gelten für alle Konten gleich und stehen in einer eigenen Datei `<data>/mail/save-targets.json` (0600),
+  nicht in `settings.json`; Klick-Aktion (`mail_attachment_click`) und Downloads-Ordner (`mail_downloads_folder`)
+  sind Einstellungen.
+- Einen Ordner setzt nur ein Mensch (Punkt 9 in `api.md`): Ziele anlegen, einen anderen Ordner eintragen, den
+  Downloads-Ordner setzen und `to: file`/`folder` gehen nur mit dem App-Schlüssel.
+- Werte aus der Mail werden bereinigt, Ordner entstehen nur durch `/` im Schema, und jeder Unterordner wird nach dem
+  Anlegen aufgelöst und muss unter dem Grundordner liegen (auch bei einem Symlink darin). Fehlt der Grundordner,
+  meldet der Dienst das (`not-found`).
+- Es wird nie überschrieben (außer bei „Save as…“, dort hat der Dialog gefragt): „Keep both“ zählt hoch
+  (`Name (2).pdf`), „Skip if identical“ speichert bei gleichem Inhalt nichts. Höchstens 50 MiB je Datei; scheitert
+  eine Datei, bleiben die übrigen gespeichert.
+- Darf der Dienst nicht in den Ordner schreiben (macOS fragt vor Downloads, Dokumente und Schreibtisch), antwortet
+  er `forbidden` mit einem Hinweis auf die Systemeinstellungen.
+- Agenten speichern nach der gewöhnlichen Schreibregel; die Freigabe nennt Betreff, Zahl der Dateien und Ziel aus dem
+  Speicher des Dienstes und ist an die Mail gebunden.
 
 ## Verhältnis zu TorroMail
 
