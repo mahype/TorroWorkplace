@@ -9,9 +9,10 @@
 //!   so an agent cannot feel out what there is beyond the allowed folders; writing where only reading is allowed is
 //!   `forbidden`.
 //! - Locked are the paths of `excluded` (the suite's own folders, the files with client keys and hooks, the system's
-//!   key stores, other known stores of credentials, the browsers' profiles and the system's trash, [`key_stores`])
-//!   and every name ending in [`BACKUP_SUFFIX`], also inside an allowed folder. Listing and finding leave them out. A
-//!   locked path is `not-found` also when the system refuses the core there.
+//!   key stores, other known stores of credentials, the browsers' profiles and the system's trash, [`key_stores`]),
+//!   every name ending in [`BACKUP_SUFFIX`] and the trash folders of every drive ([`TRASH_FOLDERS`], `.Trash-1000`),
+//!   also inside an allowed folder. Listing and finding leave them out. A locked path is `not-found` also when the
+//!   system refuses the core there.
 //! - Names count as the drive stores them. The system also finds an entry under another spelling (`.SSH`, `.ſsh`,
 //!   `Verträge` composed for one stored decomposed, a short name like `CLAUDE~1.JSO`, a dot at the end).
 //!   `canonicalize` gives the stored names on macOS and Windows; the last part of an entry, which is not resolved, is
@@ -150,6 +151,14 @@ const DENIED: &str = "The system does not let Torro Workplace in there.";
 const BAD_PATH: &str = "Give a full path of one line, without . or .. parts.";
 const NO_NAME: &str = "Give the new path with a name at its end.";
 const LONG_NAME: &str = "A name may be at most 255 bytes long.";
+/// A name with a colon on Windows, where it names a stream of an entry (`file.txt:hidden`), also of a locked one.
+#[cfg(windows)]
+const COLON: &str = "A name may not contain a colon.";
+
+/// The trash folders of the systems, locked by name wherever they are and in any case ([`Allowed::is_locked`]): at
+/// the top of a drive on Linux (`.Trash`, beside `.Trash-<user number>`), on macOS and on Windows. The `trash` crate
+/// puts there what is deleted on that drive.
+pub const TRASH_FOLDERS: [&str; 3] = [".Trash", ".Trashes", "$Recycle.Bin"];
 /// Writing in a folder with `read` access.
 pub const READ_ONLY: &str =
     "The tools may only read in this folder; a person can allow more in the assistant's settings.";
@@ -220,10 +229,15 @@ impl Allowed {
     /// the innermost folder and everything after go by it: `.ſsh` is `.ssh`, locked. The bounds are checked with the
     /// name as given before the folder is read, so the core never reads a folder outside them or a locked one (on
     /// macOS that could make the system ask the person), and again with the stored name. `not-found` when the folder
-    /// holds no such entry. The other rules are those of [`Allowed::existing`].
+    /// holds no such entry; on Windows `error` for a name with a colon. The other rules are those of
+    /// [`Allowed::existing`].
     pub fn entry(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
         let given = checked(path)?;
         let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else { return Err(FolderError::NotFound) };
+        #[cfg(windows)]
+        if name.to_string_lossy().contains(':') {
+            return Err(FolderError::Invalid(COLON));
+        }
         let parent = fs::canonicalize(parent).map_err(|err| self.missing(parent, &err))?;
         let entry = parent.join(name);
         self.within(&entry, need)?;
@@ -242,8 +256,9 @@ impl Allowed {
     }
 
     /// `path` from a request as a new entry: its folder must exist and is resolved, its last part is a plain name of
-    /// at most [`MAX_NAME_BYTES`] bytes (`error` otherwise). Whether something of that name is there already is the
-    /// command's to see (it then picks a free name), and so is whether the system finds what it made under a locked path
+    /// at most [`MAX_NAME_BYTES`] bytes (`error` otherwise; on Windows also for a name with a colon, which would make
+    /// a stream of an existing entry). Whether something of that name is there already is the command's to see (it
+    /// then picks a free name), and so is whether the system finds what it made under a locked path
     /// ([`Allowed::hits_a_lock`]). The other rules are those of [`Allowed::existing`].
     pub fn new_target(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
         let given = checked(path)?;
@@ -252,6 +267,10 @@ impl Allowed {
         };
         if name.len() > MAX_NAME_BYTES {
             return Err(FolderError::Invalid(LONG_NAME));
+        }
+        #[cfg(windows)]
+        if name.to_string_lossy().contains(':') {
+            return Err(FolderError::Invalid(COLON));
         }
         let parent = fs::canonicalize(parent).map_err(|err| self.missing(parent, &err))?;
         let target = parent.join(name);
@@ -273,18 +292,21 @@ impl Allowed {
         }
     }
 
-    /// Whether `path` is locked: in or one of the `excluded` paths, or with a part that ends in [`BACKUP_SUFFIX`],
-    /// compared without regard to case. Listing and finding leave such entries out.
+    /// Whether `path` is locked: in or one of the `excluded` paths, or with a part that ends in [`BACKUP_SUFFIX`] or is
+    /// a trash folder ([`is_trash_folder`]), compared without regard to case. Listing and finding leave such entries
+    /// out.
     pub fn is_locked(&self, path: &Path) -> bool {
         let parts = folded(path);
-        parts.iter().any(|part| part.ends_with(BACKUP_SUFFIX)) || self.locked.iter().any(|lock| parts.starts_with(lock))
+        parts.iter().any(|part| part.ends_with(BACKUP_SUFFIX) || is_trash_folder(part))
+            || self.locked.iter().any(|lock| parts.starts_with(lock))
     }
 
     /// Whether the system now finds a locked path in `made`, an entry a command has just made or moved there under
     /// a name of the request: on macOS and Windows `~/.cursor/mcp.jſon` is found as the locked `~/.cursor/mcp.json`
     /// that was missing, and `~/.ſsh` as `~/.ssh`. True when a locked path (as [`Allowed::of`] resolved it, in every
     /// form) not named below `made` is `made` itself – the same entry ([`identity`]) – or the longest part of it that
-    /// exists resolves to `made` or into it. Then the command takes the entry back and answers `not-found`. No table of spellings: the system decides. An entry that
+    /// exists resolves to `made` or into it; and when its folder finds `made` under a trash folder's name. Then the
+    /// command takes the entry back and answers `not-found`. No table of spellings: the system decides. An entry that
     /// becomes an allowed folder that was missing is harmless, so only the locks are looked at. On a system other than
     /// Unix a link has no identity here, and a link made there is never found to hit a lock.
     pub fn hits_a_lock(&self, made: &Path) -> bool {
@@ -292,10 +314,12 @@ impl Allowed {
         let folded_made = folded(made);
         // A lock named below `made` is locked by its name already, also in another case (`~/.cursor` made when
         // `~/.cursor/mcp.json` is locked): such an entry is fine.
-        self.lock_paths
+        let by_path = self
+            .lock_paths
             .iter()
             .filter(|lock| !folded(lock).starts_with(&folded_made))
-            .any(|lock| identity(lock, false).as_ref() == Some(&id) || resolves_into(lock, &id))
+            .any(|lock| identity(lock, false).as_ref() == Some(&id) || resolves_into(lock, &id));
+        by_path || found_as_trash(made, &id)
     }
 
     /// Whether moving (or trashing) the entry `entry` would take along an allowed folder or something locked: it is
@@ -343,7 +367,8 @@ impl Allowed {
 /// container and package registry tools that hold tokens, the password store `pass`, the browsers' profiles
 /// (cookies and saved passwords) and the system's trash in the home (`~/.Trash` on macOS, `~/.local/share/Trash` on
 /// Linux): the `trash` crate copies across drives following links, so a key could lie there whole, and an agent has
-/// no business looking through what a person threw away. Each is locked with all it holds.
+/// no business looking through what a person threw away. Each is locked with all it holds. The trash folders on other
+/// drives are locked by their names ([`TRASH_FOLDERS`]).
 pub fn key_stores(home: &Path) -> Vec<PathBuf> {
     let mut stores = vec![home.join(".ssh"), home.join(".gnupg")];
     stores.extend(
@@ -469,6 +494,30 @@ pub(super) fn identity(path: &Path, follow: bool) -> Option<Identity> {
 fn resolves_into(lock: &Path, id: &Identity) -> bool {
     let Some(resolved) = lock.ancestors().find_map(|part| fs::canonicalize(part).ok()) else { return false };
     resolved.ancestors().any(|part| identity(part, true).as_ref() == Some(id))
+}
+
+/// Whether the folder of `made`, whose identity is `id`, finds it under the name of a trash folder it is not stored
+/// under (`.Traſhes` as `.Trashes`, `.Traſh-1000` as `.Trash-1000`): it would take what is deleted on that drive.
+fn found_as_trash(made: &Path, id: &Identity) -> bool {
+    let (Some(folder), Some(name)) = (made.parent(), made.file_name().and_then(OsStr::to_str)) else { return false };
+    let number = &name[name.trim_end_matches(|c: char| c.is_ascii_digit()).len()..];
+    let mut names: Vec<String> = TRASH_FOLDERS.iter().map(|trash| trash.to_string()).collect();
+    if !number.is_empty() {
+        names.push(format!(".Trash-{number}"));
+    }
+    names
+        .iter()
+        .filter(|trash| trash.as_str() != name)
+        .any(|trash| identity(&folder.join(trash), false).as_ref() == Some(id))
+}
+
+/// Whether `part`, in lower case, is the name of a trash folder: one of [`TRASH_FOLDERS`] or `.Trash-` with the
+/// number of a user (freedesktop, at the top of a drive).
+fn is_trash_folder(part: &str) -> bool {
+    TRASH_FOLDERS.iter().any(|trash| trash.eq_ignore_ascii_case(part))
+        || part
+            .strip_prefix(".trash-")
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// `relative` (parts separated by `/`) below `base`, joined part by part so it has the system's separators.
@@ -942,6 +991,64 @@ pub(crate) mod tests {
         assert_eq!(plan(&Request::TrashFile { path: decomposed }), Err(FolderError::Forbidden(READ_ONLY)));
         let docs = allowed.entry(&place.path("home/documents"), FolderAccess::ReadWrite);
         assert_eq!(docs, Ok(resolved.join("Documents")), "found as stored");
+    }
+
+    /// Review of issue #304: the trash folders of other drives are locked by their names, anywhere and in any case;
+    /// listing and finding leave them out. A name only like one is not.
+    #[test]
+    fn the_trash_folders_of_every_drive_are_locked() {
+        let place = Place::new();
+        let docs = place.dir.path().join("home/Documents");
+        for trash in [".Trash-1000", ".Trashes", "$RECYCLE.BIN", ".trash"] {
+            fs::create_dir(docs.join(trash)).expect("made");
+            fs::write(docs.join(trash).join("id_ed25519"), b"key").expect("written");
+        }
+        for open in [".Trash-", ".Trash-10a", "Trash"] {
+            fs::create_dir(docs.join(open)).expect("made");
+        }
+        let allowed = place.allowed();
+        for trash in [".Trash-1000", ".Trashes", "$RECYCLE.BIN", ".trash"] {
+            for path in [format!("home/Documents/{trash}"), format!("home/Documents/{trash}/id_ed25519")] {
+                let path = place.path(&path);
+                assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+                assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+            }
+            let new = place.path(&format!("home/Documents/{trash}/new"));
+            assert_eq!(allowed.new_target(&new, FolderAccess::ReadWrite), Err(FolderError::NotFound));
+        }
+        let list = Request::ListFolder { path: Some(place.path("home/Documents")) };
+        let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
+            panic!("listed")
+        };
+        let mut names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, [".Trash-", ".Trash-10a", "Private", "Trash"], "the trash folders left out");
+        let find = Request::FindFiles { folder: place.path("home/Documents"), name: "id_ed25519".into() };
+        let Ok(Some(Response::FolderEntries { entries, truncated })) = super::super::organize::run(&allowed, &find)
+        else {
+            panic!("found")
+        };
+        assert!(entries.is_empty() && !truncated, "{entries:?}");
+        // A folder the drive also finds as a trash folder is taken back (APFS finds `.Traſh-501` as `.Trash-501`).
+        #[cfg(target_os = "macos")]
+        if docs.join(".TRASH-1000").exists() {
+            let create = Request::CreateFolder { path: place.path("home/Documents/.Tra\u{17f}h-501") };
+            assert_eq!(super::super::organize::run(&allowed, &create).err(), Some(FolderError::NotFound));
+            assert!(fs::symlink_metadata(docs.join(".Trash-501")).is_err(), "no folder");
+        }
+    }
+
+    /// Review of issue #304: on Windows a colon in a name makes a stream of an existing entry, also of a locked one.
+    #[cfg(windows)]
+    #[test]
+    fn a_colon_in_a_name_is_an_error_on_windows() {
+        let place = Place::new();
+        let allowed = place.allowed();
+        fs::write(place.dir.path().join("home/Documents/a.txt"), b"a").expect("written");
+        let stream = place.path("home/Documents/a.txt:hidden");
+        assert_eq!(allowed.new_target(&stream, FolderAccess::ReadWrite), Err(FolderError::Invalid(COLON)));
+        assert_eq!(allowed.entry(&stream, FolderAccess::Read), Err(FolderError::Invalid(COLON)));
+        assert_eq!(code(&FolderError::Invalid(COLON)), "error");
     }
 
     /// Review of issue #304: with the whole home allowed, the system's trash is not found, what it holds neither, and

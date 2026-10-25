@@ -22,8 +22,8 @@
 //! - **Trash, never delete** (decision 23, task WD.3): an entry goes to the system's trash through the tools'
 //!   [`super::Trasher`] ([`move_to_trash`]), the entry itself, also a link; the core always asks a person first.
 //! - **Limits** ([`torro_ipc::tools`]): listing one level of at most `MAX_LIST_ENTRIES`, finding at most
-//!   `MAX_FIND_DEPTH` levels, `MAX_FOUND` hits and `MAX_VISITED` entries, without following links; reaching one says
-//!   `truncated`.
+//!   `MAX_FIND_DEPTH` levels, `MAX_FOUND` hits and `MAX_VISITED` entries, without following links; reaching one, or a
+//!   folder that does not open while finding, says `truncated`.
 //! - **No locked path by another spelling** ([`Allowed::hits_a_lock`]): after a folder is made, a file copied or an
 //!   entry moved, the core looks whether the system now finds a locked path there (`mcp.jſon` on APFS is also
 //!   `mcp.json`) and takes it back – the folder removed, the copy removed, the moved entry back where it was – and
@@ -322,7 +322,9 @@ fn list_folder(allowed: &Allowed, folder: &Path) -> Result<(Vec<FolderEntry>, bo
 
 /// Files and folders in `folder` and below whose name matches `name` ([`Pattern`]), by path; without following
 /// links, leaving locked entries and what is below them out. Stops at [`MAX_FOUND`] hits, [`MAX_VISITED`] entries
-/// looked at and [`MAX_FIND_DEPTH`] levels; `truncated` when one of them left something out.
+/// looked at and [`MAX_FIND_DEPTH`] levels; `truncated` when one of them left something out, and when a folder below
+/// did not open or an entry could not be read (a folder the system does not let the core into): the answer is not
+/// all there is. Locked folders are never opened and do not count.
 fn find_files(allowed: &Allowed, folder: &Path, name: &str) -> Result<(Vec<FolderEntry>, bool), FolderError> {
     let pattern = Pattern::of(name);
     let first = fs::read_dir(folder).map_err(|err| FolderError::of_io(&err))?;
@@ -332,9 +334,12 @@ fn find_files(allowed: &Allowed, folder: &Path, name: &str) -> Result<(Vec<Folde
     // open (256 on macOS), and every other part of the core would fail with it.
     let mut stack: Vec<(PathBuf, usize)> = Vec::new();
     let mut next = Some((first, 1usize));
-    'search: while let Some((items, depth)) = next.take().or_else(|| open_next(&mut stack)) {
+    'search: while let Some((items, depth)) = next.take().or_else(|| open_next(&mut stack, &mut truncated)) {
         for item in items {
-            let Ok(item) = item else { continue };
+            let Ok(item) = item else {
+                truncated = true;
+                continue;
+            };
             visited += 1;
             if visited > MAX_VISITED {
                 truncated = true;
@@ -351,11 +356,12 @@ fn find_files(allowed: &Allowed, folder: &Path, name: &str) -> Result<(Vec<Folde
                 }
                 found.extend(entry_of(&path));
             }
-            if item.file_type().is_ok_and(|kind| kind.is_dir()) {
-                match depth < MAX_FIND_DEPTH {
-                    true => stack.push((path, depth + 1)),
-                    false => truncated = true,
-                }
+            match item.file_type() {
+                Ok(kind) if kind.is_dir() && depth < MAX_FIND_DEPTH => stack.push((path, depth + 1)),
+                Ok(kind) if kind.is_dir() => truncated = true,
+                Ok(_) => {}
+                // Whether it is a folder to look into is not known.
+                Err(_) => truncated = true,
             }
         }
     }
@@ -364,11 +370,12 @@ fn find_files(allowed: &Allowed, folder: &Path, name: &str) -> Result<(Vec<Folde
 }
 
 /// The next folder of `stack` opened, with how deep its entries are; a folder the system does not let in (or that is
-/// gone) is passed over. `None` when none is left.
-fn open_next(stack: &mut Vec<(PathBuf, usize)>) -> Option<(fs::ReadDir, usize)> {
+/// gone) is passed over and sets `truncated`. `None` when none is left.
+fn open_next(stack: &mut Vec<(PathBuf, usize)>, truncated: &mut bool) -> Option<(fs::ReadDir, usize)> {
     while let Some((folder, depth)) = stack.pop() {
-        if let Ok(items) = fs::read_dir(&folder) {
-            return Some((items, depth));
+        match fs::read_dir(&folder) {
+            Ok(items) => return Some((items, depth)),
+            Err(_) => *truncated = true,
         }
     }
     None
@@ -1500,6 +1507,29 @@ mod tests {
         assert_eq!(path, docs.join("Archive").join(stored_name));
         assert_eq!(fs::read(&path).expect("read"), b"invoice");
         assert!(fs::symlink_metadata(docs.join(stored_name)).is_err(), "moved, not copied");
+    }
+
+    /// Review of issue #304: a folder below that does not open makes the answer `truncated`: what was found is not
+    /// all there is. Run as root, the system lets the core in anyway.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_does_not_open_makes_finding_truncated() {
+        use std::os::unix::fs::PermissionsExt;
+        let place = Place::new();
+        let closed = place.dir.path().join("home/Documents/Closed");
+        fs::create_dir(&closed).expect("made");
+        write(&place, "home/Documents/Closed/hit.txt", b"");
+        write(&place, "home/Documents/hit.txt", b"");
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).expect("closed");
+        let refused = fs::read_dir(&closed).is_err();
+        let find = Request::FindFiles { folder: place.path("home/Documents"), name: "hit".into() };
+        let found = run(&place.allowed(), &find);
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o755)).expect("opened");
+        if !refused {
+            return;
+        }
+        let (found, truncated) = entries(found.expect("found"));
+        assert_eq!((names(&found), truncated), (vec!["hit.txt"], true));
     }
 
     #[test]

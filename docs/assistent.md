@@ -411,14 +411,16 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
   in die Torro Client-Schlüssel und Hooks schreibt (`~/.claude.json`, `~/.claude/settings.json` … mit ihren
   Sicherungen), das Programm, das die Hooks starten, die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`,
   Schlüsselbund), weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub, Paketregister, Passwortspeicher), die
-  Browser-Profile und der Papierkorb des Systems (`~/.Trash`, `~/.local/share/Trash`). Auch wenn das
+  Browser-Profile und der Papierkorb des Systems (`~/.Trash`, `~/.local/share/Trash`), auch die Papierkörbe auf
+  anderen Laufwerken (`.Trash-1000`, `.Trash`, `.Trashes`, `$Recycle.Bin`, nach dem Namen, überall). Auch wenn das
   System den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Name zählt so, wie das
   Laufwerk ihn speichert: Findet das System einen Eintrag auch unter einer anderen Schreibweise (`.ſsh` für `.ssh`,
   `Rechnung März.pdf` zusammengesetzt für die zerlegt gespeicherte Datei, ein Kurzname unter Windows), nimmt der Kern
   den gespeicherten Namen, mit dessen Sperren und Rechten, und nennt ihn in der Antwort. Findet das System einen
   eben angelegten, kopierten oder verschobenen Eintrag unter einem gesperrten Pfad (`~/.cursor/mcp.jſon` als das
   fehlende `mcp.json`), nimmt der Kern das zurück und antwortet `not-found`. Offen: Linux-Laufwerke ohne Groß- und
-  Kleinschreibung (ext4 mit casefold, exFAT) bei den Ordnern über dem letzten Teil. Ein Eintrag, der einen
+  Kleinschreibung (ext4 mit casefold, exFAT) bei den Ordnern über dem letzten Teil. Unter Windows darf ein Name
+  keinen Doppelpunkt enthalten (er legte einen Datenstrom an einen vorhandenen Eintrag). Ein Eintrag, der einen
   freigegebenen Ordner oder etwas Gesperrtes ist oder enthält, lässt sich nicht verschieben, umbenennen oder in den
   Papierkorb legen. Nach einer Freigabe läuft nur, was die Karte zeigte: Der Kern hält die aufgelösten Pfade und die
   Einträge dort fest (Art, Erstellzeit, bei Dateien und Links Größe und Änderungszeit, unter Unix Laufwerk und
@@ -432,8 +434,8 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
   Erlaubnis, den Finder zu steuern; entschieden). Endgültiges Löschen gibt es nicht. Der Papierkorb fragt **immer**
   einen Menschen, auch bei einem Client, der bei „Ask first“ „Never“ gewählt hat.
 - **Grenzen:** Auflisten eine Ebene, höchstens 500 Einträge; Suchen höchstens 10 Ebenen tief, 200 Treffer und
-  50.000 angesehene Einträge, ohne symbolischen Links zu folgen. Wird eine Grenze erreicht, sagt die Antwort
-  `truncated`.
+  50.000 angesehene Einträge, ohne symbolischen Links zu folgen. Wird eine Grenze erreicht oder geht beim Suchen
+  ein Ordner nicht auf, sagt die Antwort `truncated`.
 - **Rechte:** Bereich `tools` mit `files` in der Auswahl. Auflisten und Suchen sind `Read`, anlegen, kopieren und
   verschieben `Write`, der Papierkorb `Delete`. `allowed` in `tools.list_tools` heißt für `files` Leserecht, für
   `pdf` weiter Schreibrecht.

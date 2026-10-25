@@ -5317,6 +5317,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Give the new path with a name at its end.", "Gib den neuen Pfad mit einem Namen am Ende an."),
     ("A name may be at most 255 bytes long.", "Ein Name darf höchstens 255 Bytes lang sein."),
+    ("A name may not contain a colon.", "Ein Name darf keinen Doppelpunkt enthalten."),
     (
         "The tools may only read in this folder; a person can allow more in the assistant's settings.",
         "Die Werkzeuge dürfen in diesem Ordner nur lesen; mehr kann ein Mensch in den Einstellungen des Assistenten erlauben.",
