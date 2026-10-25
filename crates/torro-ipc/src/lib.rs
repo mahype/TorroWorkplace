@@ -3307,7 +3307,12 @@ pub enum SettingKey {
     /// The address of the person's own SearXNG for the web search (issue #305): `http` or `https`
     /// without query and sign-in (`"https://search.example.org"`), it may lie in the local network; or
     /// `null` (or `""`) for none. Only the app key may set an address other than the stored one (point
-    /// 6); any client allowed to change settings may send `null`.
+    /// 6); any client allowed to change settings may send `null`. An address of the wrong form is
+    /// `error` with the reason. Before a new address is stored, the core asks it once whether it
+    /// answers in JSON (`GET <address>/search?q=torro&format=json`, no redirect); nothing is stored
+    /// when it does not: `unsupported` when no SearXNG answer with `results` comes (its `json` format
+    /// is off), `offline` when it cannot be reached, `busy` when its limiter asks to wait. `null` and
+    /// the stored address are not asked. `settings.update_settings` checks only the form.
     SearxngAddress,
 }
 
