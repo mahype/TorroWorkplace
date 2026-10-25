@@ -11879,8 +11879,8 @@ mod tests {
         let Response::SearchResults { results } = ask(core, Some(key), search()).await else { panic!("results") };
         assert_eq!((results.asked, results.untrusted), (vec![SearchProviderId::Duckduckgo], true));
         assert_eq!(duckduckgo.calls(), 1);
-        // The offline reader resolves no name, so the site's robots.txt cannot be read: refused.
-        assert_eq!(code(&ask(core, Some(key), fetch()).await), "unsupported");
+        // The offline reader resolves no name: the site cannot be reached (not robots.txt's fault).
+        assert_eq!(code(&ask(core, Some(key), fetch()).await), "offline");
         assert!(matches!(ask(core, Some(key), Request::ListSearchProviders).await, Response::SearchProviders { .. }));
         let Response::Tools { tools } = ask(core, Some(key), Request::ListTools).await else { panic!("the tools") };
         assert!(allowed(&tools, ToolId::Web) && !allowed(&tools, ToolId::Pdf), "reading is enough for web only");

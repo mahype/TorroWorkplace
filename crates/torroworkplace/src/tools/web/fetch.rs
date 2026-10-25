@@ -265,12 +265,18 @@ impl Fetcher {
     }
 
     /// Asks the page at `url` and follows its redirects, at most [`MAX_REDIRECTS`]: every address checked
-    /// ([`checked_url`], public addresses) and, unless `by_person`, asked about `robots.txt` first; the first request
+    /// ([`checked_url`], public addresses) and, unless `by_person`, its host resolved and checked
+    /// ([`FetchError::Offline`], [`FetchError::NotPublic`]) and then asked about `robots.txt`; the first request
     /// after the host's turn. The last address and its answer (not a redirect).
     async fn follow(&self, mut url: Url, by_person: bool) -> Result<(Url, reqwest::Response), FetchError> {
         for redirects in 0..=MAX_REDIRECTS {
-            if !by_person && !self.robots_allow(&url).await {
-                return Err(FetchError::Robots);
+            if !by_person {
+                // The host first: a name that leads nowhere or into the local network is said so, not blamed on
+                // robots.txt.
+                self.check_host(&url).await?;
+                if !self.robots_allow(&url).await? {
+                    return Err(FetchError::Robots);
+                }
             }
             if redirects == 0 {
                 let wait = self.turn(url.host_str().unwrap_or_default(), Instant::now());
@@ -331,14 +337,14 @@ impl Fetcher {
     }
 
     /// Whether the site's `robots.txt` lets [`robots::AGENT`] read `url`; kept per origin for
-    /// [`robots::KEEP_FOR`].
-    async fn robots_allow(&self, url: &Url) -> bool {
+    /// [`robots::KEEP_FOR`]. [`FetchError::Offline`] when the site's host takes no connection at all.
+    async fn robots_allow(&self, url: &Url) -> Result<bool, FetchError> {
         let origin = url.origin().ascii_serialization();
         let known = self.robots.lock().unwrap_or_else(PoisonError::into_inner).get(&origin, Instant::now());
         let robots = match known {
             Some(robots) => robots,
             None => {
-                let (robots, keep) = self.robots_of(url).await;
+                let (robots, keep) = self.robots_of(url).await?;
                 if keep {
                     self.robots.lock().unwrap_or_else(PoisonError::into_inner).put(
                         &origin,
@@ -353,24 +359,27 @@ impl Fetcher {
             Some(query) => format!("{}?{query}", url.path()),
             None => url.path().to_string(),
         };
-        robots.allows(&path)
+        Ok(robots.allows(&path))
     }
 
     /// The `robots.txt` of the origin of `url` (RFC 9309 §2.3), and whether to keep it: an answer is kept, a server
     /// error or no answer is not (the next read asks again). More than [`MAX_REDIRECTS`] redirects count as no
-    /// file (§2.3.1.2), an address the guards refuse or a server that cannot be reached as one that allows nothing.
-    async fn robots_of(&self, url: &Url) -> (Robots, bool) {
+    /// file (§2.3.1.2); an address the guards refuse, a broken answer or a redirect target that cannot be reached
+    /// as one that allows nothing (§2.3.1.4). `Err(`[`FetchError::Offline`]`)` when the origin itself takes no
+    /// connection: then the page would not come either, and that is the honest reason.
+    async fn robots_of(&self, url: &Url) -> Result<(Robots, bool), FetchError> {
         let mut address = url.clone();
         address.set_path("/robots.txt");
         address.set_query(None);
-        for _ in 0..=MAX_REDIRECTS {
+        for hop in 0..=MAX_REDIRECTS {
             match self.step(&address, "text/plain").await {
-                Ok(Step::Answer(response)) => return robots_answer(response).await,
+                Ok(Step::Answer(response)) => return Ok(robots_answer(response).await),
                 Ok(Step::Redirect(next)) => address = next,
-                Err(_) => return (Robots::DisallowAll, false),
+                Err(FetchError::Offline) if hop == 0 => return Err(FetchError::Offline),
+                Err(_) => return Ok((Robots::DisallowAll, false)),
             }
         }
-        (Robots::AllowAll, true)
+        Ok((Robots::AllowAll, true))
     }
 }
 
@@ -742,6 +751,35 @@ mod tests {
         let unknown = fetcher.fetch(&at(&server, "nowhere.example.org", "/admin"), true).await;
         assert_eq!(unknown, Err(FetchError::Offline), "no such name");
         assert_eq!(admin.calls_async().await, 0);
+    }
+
+    /// Found in the review of #305: for an address of the model the host is checked before `robots.txt` is asked,
+    /// so a name that leads nowhere or into the local network says so instead of blaming `robots.txt`.
+    #[tokio::test]
+    async fn for_the_model_the_host_is_checked_before_robots_txt() {
+        let server = MockServer::start_async().await;
+        let robots = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/robots.txt");
+                then.status(200).header("content-type", "text/plain").body("User-agent: *\nAllow: /\n");
+            })
+            .await;
+        let hosts = [("router.example.org", "192.168.178.1")];
+        let fetcher = on_mock(&server, &hosts);
+        let unknown = fetcher.fetch(&at(&server, "typo-domain.example.org", "/"), false).await;
+        assert_eq!(unknown, Err(FetchError::Offline), "no such name");
+        let local = fetcher.fetch(&at(&server, "router.example.org", "/admin"), false).await;
+        assert_eq!(local, Err(FetchError::NotPublic), "a name in the local network");
+        assert_eq!(robots.calls_async().await, 0, "nothing asked of either");
+
+        // A name whose server takes no connection: the page would not come either.
+        let port =
+            std::net::TcpListener::bind("127.0.0.1:0").and_then(|free| free.local_addr()).expect("a port").port();
+        let guard = Guard { allowed: public_or_loopback, port: Some(port) };
+        let table = HashMap::from([("down.example.org".to_string(), vec![IpAddr::from([127, 0, 0, 1])])]);
+        let fetcher = Fetcher::new(Arc::new(FakeDns(table)), guard).expect("a fetcher");
+        let down = fetcher.fetch(&format!("http://down.example.org:{port}/page"), false).await;
+        assert_eq!(down, Err(FetchError::Offline), "no connection");
     }
 
     #[tokio::test]
