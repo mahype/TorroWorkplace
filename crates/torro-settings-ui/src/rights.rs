@@ -1201,11 +1201,12 @@ fn indent_step() -> f32 {
     space::l() + space::m()
 }
 
-/// The rows of the MCP servers under their area (task MA.10): per server in `known` its row with
-/// the four levels ([`server_row`]) and, while its level covers a tool a person allowed, "Show
-/// commands" with its tools for the servers in `open`. Without any server one quiet sentence says
-/// where they are added – the area's own level opens none, so a person looking for a server's tools
-/// learns where they come from instead of finding nothing.
+/// The rows of the MCP servers under their area (task MA.10): a caption "Installed servers" that
+/// sets them apart from the area's own commands above, then per server in `known` its row with the
+/// four levels ([`server_row`]) and, while its level covers a tool a person allowed, "Show commands"
+/// with its tools for the servers in `open`. Without any server one quiet sentence says where they
+/// are added – the area's own level opens none, so a person looking for a server's tools learns
+/// where they come from instead of finding nothing.
 fn server_rows<'a>(
     open: &BTreeSet<String>,
     rights: &Rights,
@@ -1222,7 +1223,11 @@ fn server_rows<'a>(
         let content = row![indent(), words.width(Fill)].spacing(space::m());
         return vec![container(content).width(Fill).padding([space::m(), space::l()]).into()];
     }
-    let mut rows = Vec::new();
+    // A caption, not a row: the servers follow the area's commands, which "Show commands" may have
+    // opened just above, and must not read as more of them.
+    let caption = typo::text(typo::caption(), tr("Installed servers")).style(theme::text_3);
+    let caption = row![indent(), caption.width(Fill)].spacing(space::m());
+    let mut rows = vec![container(caption).width(Fill).padding([space::m(), space::l()]).into()];
     for server in known.extensions {
         rows.push(server_row(server, rights, column));
         let listed = server_tools(server, rights);
@@ -1238,10 +1243,10 @@ fn server_rows<'a>(
     rows
 }
 
-/// A server's row: one step in, its name with how many of its tools are off ("Time · 1 off"), "MCP
-/// server" below it – or, while it is switched off, "Off under MCP servers" and a mark in the
-/// attention colour in the room before the name (the other servers keep that room empty, so the
-/// names line up) –, and its four levels ([`server_levels`]).
+/// A server's row: one step in, its name with how many of its tools are off ("Time · 1 off"), below
+/// it how many tools it offers or that it is off ([`server_detail`]), a mark in the room before the
+/// name while it is off ([`server_mark`]; the other servers keep that room empty, so the names line
+/// up), and its four levels ([`server_levels`]).
 fn server_row<'a>(server: &ExtensionInfo, rights: &Rights, column: Option<f32>) -> Element<'a, Message> {
     let offered = server_levels();
     let active = active_level(&offered, rights.extension(&server.id));
@@ -1250,19 +1255,52 @@ fn server_row<'a>(server: &ExtensionInfo, rights: &Rights, column: Option<f32>) 
         offered.map(|level| (widgets::level_label(level), Message::ServerLevel(id.clone(), level))),
         active,
     );
-    let (detail, mark): (&str, Element<'a, Message>) = match server.enabled {
-        true => (tr("MCP server"), Space::new().width(icon::SIZE).into()),
-        false => (
-            tr("Off under MCP servers"),
-            icon::icon(Icon::CircleAlert, icon::SIZE)
-                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) })
-                .into(),
-        ),
+    let mark: Element<'a, Message> = match server_mark(server, rights.extension(&server.id)) {
+        None => Space::new().width(icon::SIZE).into(),
+        Some(ServerMark::Off) => container(widgets::status_dot(widgets::Status::Inactive)).center_x(icon::SIZE).into(),
+        Some(ServerMark::OffWithAccess) => icon::icon(Icon::CircleAlert, icon::SIZE)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) })
+            .into(),
     };
     let note = off_note(server_off_count(server, rights));
     let lead = container(mark).width(indent_step()).align_x(Alignment::End);
-    let row = widgets::segment_row_noted(server.name.clone(), note, Some(detail.to_string()), control, column);
+    let row = widgets::segment_row_noted(server.name.clone(), note, Some(server_detail(server)), control, column);
     row![lead, row].align_y(Alignment::Center).into()
+}
+
+/// The mark before a server's name in the editor ([`server_mark`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerMark {
+    /// Switched off, and this client has no level for it: the grey dot of the control centre's
+    /// "Off", nothing to do.
+    Off,
+    /// Switched off although this client has a level for it: the level does nothing until the person
+    /// switches the server on, so the mark is in the attention colour.
+    OffWithAccess,
+}
+
+/// What stands before a server's name: nothing while it is on; while it is off the grey dot, as the
+/// control centre shows "Off", or the attention mark when `level` grants anything – the warning only
+/// where the rights promise more than the server gives.
+pub fn server_mark(server: &ExtensionInfo, level: Level) -> Option<ServerMark> {
+    match (server.enabled, level) {
+        (true, _) => None,
+        (false, Level::NoAccess) => Some(ServerMark::Off),
+        (false, _) => Some(ServerMark::OffWithAccess),
+    }
+}
+
+/// The line under a server's name: "Off under MCP servers" while it is switched off, else how many
+/// tools a person allowed ("3 tools"), which are what its level can open.
+pub fn server_detail(server: &ExtensionInfo) -> String {
+    if !server.enabled {
+        return tr("Off under MCP servers").to_string();
+    }
+    match server.tools.iter().filter(|tool| tool.state == ToolState::Allowed).count() {
+        0 => tr("No tools").to_string(),
+        1 => tr("1 tool").to_string(),
+        n => trf("{n} tools", &[("n", &n)]),
+    }
 }
 
 /// One tool of a server under it: its name after `naming` ([`Naming::server_tool`]), the level it
@@ -2436,6 +2474,21 @@ mod tests {
         assert_eq!(rights_summary(&only, "codex"), servers);
         only.areas.insert(Area::Extensions, AreaRights { level: Level::Read, admin: false });
         assert_eq!(rights_summary(&only, "codex"), servers, "the area and a server: once");
+    }
+
+    /// Design review of #302: a server switched off reads as the control centre has it – a grey dot
+    /// and "Off under MCP servers" –, the attention mark only while a level would open it; switched on,
+    /// the line says how many tools a person allowed.
+    #[test]
+    fn a_server_row_says_off_or_how_many_tools() {
+        let [notes, time] = <[ExtensionInfo; 2]>::try_from(servers()).expect("two servers");
+        assert_eq!(server_mark(&notes, Level::Full), None);
+        assert_eq!(server_detail(&notes), trf("{n} tools", &[("n", &3)]), "the one waiting is not counted");
+        assert_eq!(server_mark(&time, Level::NoAccess), Some(ServerMark::Off));
+        assert_eq!(server_mark(&time, Level::Read), Some(ServerMark::OffWithAccess));
+        assert_eq!(server_detail(&time), tr("Off under MCP servers"));
+        let on = ExtensionInfo { enabled: true, ..time };
+        assert_eq!(server_detail(&on), tr("1 tool"));
     }
 
     /// Task MA.10: opening a server's tools only changes what the editor shows; another client starts

@@ -5895,7 +5895,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Copied a configuration from another app? Paste it to fill in the form.",
         "Eine Konfiguration aus einer anderen App kopiert? Füge sie ein, um das Formular auszufüllen.",
     ),
-    ("Correct the marked fields.", "Korrigiere die markierten Felder."),
+    ("Check {field}.", "Prüfe {field}."),
+    ("Check {fields} and {last}.", "Prüfe {fields} und {last}."),
+    ("It could not be saved.", "Es konnte nicht gespeichert werden."),
     ("Enter its value.", "Gib den Wert ein."),
     ("Enter the address.", "Gib die Adresse ein."),
     ("Enter the program to start.", "Gib das Programm ein, das gestartet wird."),
@@ -5945,7 +5947,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Value", "Wert"),
     ("Variables", "Variablen"),
-    ("Weather", "Wetter"),
     ("{server} can't be added: {reason}.", "{server} lässt sich nicht hinzufügen: {reason}."),
     (
         "{server} speaks {transport}, which Torro Workplace doesn't support. Only addresses with Streamable HTTP work.",
@@ -5957,6 +5958,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // The rights editor › a level per MCP server (MA.10, #302)
     ("MCP servers", "MCP-Server"),
+    ("Installed servers", "Installierte Server"),
+    ("1 tool", "1 Werkzeug"),
+    ("{n} tools", "{n} Werkzeuge"),
     (
         "No MCP servers yet. Each one you add in the control centre under MCP servers gets its own level here.",
         "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, bekommt hier eine eigene Stufe.",

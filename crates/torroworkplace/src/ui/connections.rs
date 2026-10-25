@@ -1302,13 +1302,14 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
 
 /// The dialog the section has open, laid over the whole window by the shell: installing (also the
 /// tools of a server of one's own just added), the form of a server of one's own, a secret to
-/// replace, or the question before a server is removed.
-pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+/// replace, or the question before a server is removed. `class` is the window's: narrower than
+/// [`SizeClass::Medium`] the rows of the form's variables stack ([`entry_row`]).
+pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option<Element<'a, Message>> {
     if let Some(install) = &state.install {
         return install_dialog(install, data);
     }
     if let Some(custom) = &state.custom {
-        return Some(custom_dialog(custom, data));
+        return Some(custom_dialog(custom, data, class));
     }
     let Page::Server(id) = &state.page else { return None };
     let server = server_of(data, id)?;
@@ -1451,19 +1452,31 @@ fn switch_row(info: &ToolInfo) -> Element<'_, Message> {
 
 /// A row whose line below the label wraps instead of being cut: what a tool does is a sentence a
 /// narrow window must not cut off. With room for it on one line it is as high as a [`setting_row`]
-/// with a detail (56); it grows with each further line.
+/// with a detail; it grows with each further line.
 fn wrapping_row<'a>(label: &'a str, detail: &'a str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     let lines = column![
         widgets::ellipsized(typo::body(), label, theme::text),
         typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
     ]
     .width(Fill);
-    // A strut as high as a tall row inside its padding (56 − 2 × 8), so one line of detail gives
-    // exactly the height of the rows around it.
-    let strut = Space::new().height(size::header() + space::m() - space::l());
-    let text = row![strut, lines].width(Fill).align_y(Alignment::Center);
+    let text = row![tall_strut(), lines].width(Fill).align_y(Alignment::Center);
     let content = row![text, control.into()].spacing(space::l()).align_y(Alignment::Center);
-    container(content).width(Fill).padding([space::s(), space::l()]).into()
+    container(content).width(Fill).padding(tall_padding()).into()
+}
+
+/// The padding of every row of this section whose text may take several lines (a tool, a status, a
+/// catalog entry, a variable, a field of the form): [`space::m()`] above and below, the sides of a
+/// [`setting_row`], so they all keep the same room around their text.
+fn tall_padding() -> [f32; 2] {
+    [space::m(), space::l()]
+}
+
+/// A strut as high as a [`setting_row`] with a detail inside [`tall_padding`]: that row is
+/// `header + m` high, the padding takes `m` above and below, which leaves `header − m` (64 + 12 −
+/// 2 × 12 = 52 in the standard), so a row of several lines with one line of detail is exactly as
+/// high as the rows around it.
+fn tall_strut() -> Space {
+    Space::new().height(size::header() - space::m())
 }
 
 /// What the switch of a tool is called.
@@ -1660,8 +1673,9 @@ fn status_words<'a>(server: &ExtensionInfo) -> Element<'a, Message> {
 
 /// A catalog entry: its name (with "Experimental" where the publisher says so), what it does, who
 /// makes it under which licence in which version, and what of it is missing on this computer, in the
-/// attention colour with what to install. At the end its website, then the installed server's status
-/// and the chevron to its page (the whole row opens it), or "Install…" when nothing is missing.
+/// attention colour with what to install. At the end the installed server's status and the chevron
+/// to its page (the whole row opens it; the website is there), else its website and "Install…" when
+/// nothing is missing – never the arrow of the website next to the chevron.
 fn catalog_row<'a>(data: &'a Data, entry: &'a CatalogEntry, words: bool) -> Element<'a, Message> {
     let server = installed(data, &entry.id);
     let mut name = row![widgets::ellipsized(typo::body(), entry.name.as_str(), theme::text)]
@@ -1682,11 +1696,13 @@ fn catalog_row<'a>(data: &'a Data, entry: &'a CatalogEntry, words: bool) -> Elem
         let line = row![widgets::status_dot(Dot::Attention), needs].spacing(space::s()).align_y(Alignment::Center);
         lines = lines.push(container(line).padding([space::xs(), 0.0]));
     }
-    let website = widgets::icon_button(Icon::ArrowUpRight, tr("Website"), Some(Message::Link(entry.url.clone())));
-    let mut controls = row![website].spacing(space::s()).align_y(Alignment::Center);
+    let mut controls = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(server) = server {
         controls = controls.push(status_words(server)).push(chevron());
-    } else if installable(data, &entry.id).is_some() {
+    } else {
+        controls = controls.push(website_button(&entry.url));
+    }
+    if server.is_none() && installable(data, &entry.id).is_some() {
         let install = Message::Install(entry.id.clone());
         controls = controls.push(match words {
             true => widgets::text_button(None, tr("Install…"), style::button::secondary, Some(install)),
@@ -1694,7 +1710,7 @@ fn catalog_row<'a>(data: &'a Data, entry: &'a CatalogEntry, words: bool) -> Elem
         });
     }
     let content = row![lines, controls].spacing(space::l()).align_y(Alignment::Center);
-    let row = container(content).width(Fill).padding([space::m(), space::l()]);
+    let row = container(content).width(Fill).padding(tall_padding());
     match server {
         Some(server) => pressable(row.into(), Some(Message::Open(server.id.clone()))),
         None => row.into(),
@@ -1779,10 +1795,9 @@ fn status_row<'a>(
     if let Some(detail) = detail {
         lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
     }
-    let strut = Space::new().height(size::header() + space::m() - space::l());
-    let text = row![strut, mark, lines].spacing(space::m()).width(Fill).align_y(Alignment::Center);
+    let text = row![tall_strut(), mark, lines].spacing(space::m()).width(Fill).align_y(Alignment::Center);
     let content = row![text, control.into()].spacing(space::l()).align_y(Alignment::Center);
-    container(content).width(Fill).padding([space::s(), space::l()]).into()
+    container(content).width(Fill).padding(tall_padding()).into()
 }
 
 /// What the status of a server means and what a person can do, below its word; `None` where the
@@ -1811,9 +1826,9 @@ fn crash_reason(reason: CrashReason) -> &'static str {
     }
 }
 
-/// Where the server comes from: a catalog entry in its version, with "Update" when the catalog has
-/// another one; one's own with its program or address and "Update…", the form filled in from it
-/// (task MA.9).
+/// Where the server comes from: a catalog entry in its version with its website, and "Update" when
+/// the catalog has another one; one's own with its program or address and "Update…", the form filled
+/// in from it (task MA.9).
 fn source_row<'a>(page: &ServerState, data: &'a Data, server: &'a ExtensionInfo, words: bool) -> Element<'a, Message> {
     let Source::Catalog { entry, version } = &server.source else {
         let label = match server.server {
@@ -1828,13 +1843,15 @@ fn source_row<'a>(page: &ServerState, data: &'a Data, server: &'a ExtensionInfo,
         return setting_row(None, label, Some(address(&server.server)), button);
     };
     let label = trf("Version {version}", &[("version", version)]);
+    let from = data.catalog.entries().iter().find(|listed| &listed.id == entry);
+    let website = from.map(|entry| website_button(&entry.url));
     let Some(newer) = update_available(data, server) else {
-        let from = data.catalog.entries().iter().find(|listed| &listed.id == entry);
         let detail = from.map_or_else(
             || tr("No longer in the catalog").to_string(),
             |entry| format!("{} · {}", entry.publisher, entry.license),
         );
-        return setting_row(None, label, Some(detail), Space::new());
+        let control = row![].push(website).align_y(Alignment::Center);
+        return setting_row(None, label, Some(detail), control);
     };
     let detail = trf("Version {version} is in the catalog", &[("version", &newer)]);
     let button: Element<'a, Message> = match (page.waiting, words) {
@@ -1846,7 +1863,13 @@ fn source_row<'a>(page: &ServerState, data: &'a Data, server: &'a ExtensionInfo,
         }
         (None, false) => widgets::icon_button(Icon::RefreshCw, tr("Update"), Some(Message::Update(server.id.clone()))),
     };
-    setting_row(None, label, Some(detail), button)
+    let control = row![].push(website).push(button).spacing(space::s()).align_y(Alignment::Center);
+    setting_row(None, label, Some(detail), control)
+}
+
+/// The website of a catalog entry, as the arrow of another window: the browser.
+fn website_button<'a>(url: &str) -> Element<'a, Message> {
+    widgets::icon_button(Icon::ArrowUpRight, tr("Website"), Some(Message::Link(url.to_string())))
 }
 
 /// "Tools": each with its state, the access a call needs and what the server says it does; then,
@@ -1937,8 +1960,8 @@ fn secrets_group<'a>(server: &'a ExtensionInfo, words: bool) -> Element<'a, Mess
     widgets::group(tr("Secrets"), rows, Some(footer.to_string()))
 }
 
-/// "Output": what the server last wrote, in a field to select and copy from, with "Refresh" and
-/// "Copy" at the heading.
+/// "Output": what the server last wrote, in a field to select and copy from; below it the sentence
+/// about it with "Refresh" and "Copy", so the heading is as high as every other group's title.
 fn output_group(page: &ServerState) -> Element<'_, Message> {
     let copy = matches!(&page.output, Output::Lines(content) if !content.text().trim().is_empty());
     let actions = vec![
@@ -1960,10 +1983,12 @@ fn output_group(page: &ServerState) -> Element<'_, Message> {
             .style(style::text_editor)
             .into(),
     };
-    let footer = tr("The last lines it wrote, kept in memory only. Agents never see them.");
-    column![widgets::group_heading(tr("Output"), actions), body, typo::text(typo::meta(), footer).style(theme::text_2),]
-        .spacing(layout::item_gap())
-        .into()
+    let footer = typo::text(typo::meta(), tr("The last lines it wrote, kept in memory only. Agents never see them."))
+        .style(theme::text_2)
+        .wrapping(Wrapping::WordOrGlyph)
+        .width(Fill);
+    let foot = row![footer, row(actions).spacing(space::xs())].spacing(space::s()).align_y(Alignment::Center);
+    column![widgets::section_title(tr("Output")), body, foot].spacing(layout::item_gap()).into()
 }
 
 /// A sentence in a group's frame, where a field would be.
@@ -1987,9 +2012,13 @@ fn remove_group<'a>(page: &ServerState, words: bool) -> Element<'a, Message> {
             style::button::danger,
             waiting.is_none().then_some(Message::AskRemove),
         ),
-        (waiting, false) => {
-            widgets::icon_button(Icon::Trash2, tr("Remove…"), waiting.is_none().then_some(Message::AskRemove))
-        }
+        // Narrow, the icon keeps the colour of the word: destructive at a glance.
+        (waiting, false) => widgets::compact_button(
+            Icon::Trash2,
+            tr("Remove…"),
+            style::button::danger,
+            waiting.is_none().then_some(Message::AskRemove),
+        ),
     };
     let row = setting_row(
         None,
@@ -2017,12 +2046,20 @@ fn install_dialog<'a>(install: &'a Install, data: &'a Data) -> Option<Element<'a
     Some(dialog(content, widgets::DIALOG_WIDTH, Message::CloseInstall))
 }
 
-/// The head of a dialog of this section: `title`, then the `facts` line when there is one, and the
-/// close button.
-fn dialog_head<'a>(title: String, facts: Option<Element<'a, Message>>) -> Element<'a, Message> {
+/// The head of a dialog of this section: `title`, then the `facts` line when there is one, the
+/// website of a catalog entry when there is one, and the close button. The close button sends
+/// `close`, which is what Escape does in that dialog ([`escape`]): back to the form from the pasted
+/// block and the choice, closed elsewhere.
+fn dialog_head<'a>(
+    title: String,
+    facts: Option<Element<'a, Message>>,
+    website: Option<&str>,
+    close: Message,
+) -> Element<'a, Message> {
     let words = column![typo::text(typo::title(), title)].push(facts).spacing(space::xs()).width(Fill);
-    let close = widgets::icon_button(Icon::X, tr("Close"), Some(Message::CloseInstall));
-    row![words, close].spacing(space::m()).align_y(Alignment::Start).into()
+    let close = widgets::icon_button(Icon::X, tr("Close"), Some(close));
+    let buttons = row![].push(website.map(website_button)).push(close).spacing(space::xs());
+    row![words, buttons].spacing(space::m()).align_y(Alignment::Start).into()
 }
 
 /// Who makes a catalog entry in which version, and "Experimental": the facts line of its dialogs.
@@ -2039,7 +2076,12 @@ fn entry_facts(entry: &CatalogEntry) -> Element<'_, Message> {
 /// The form: what the entry does, that it runs as the person, a hidden field per secret with where
 /// to get one, and its tools with the access each needs; "Install" sends it.
 fn form_dialog<'a>(install: &'a Install, entry: &'a CatalogEntry) -> Element<'a, Message> {
-    let head = dialog_head(trf("Install {name}", &[("name", &entry.name)]), Some(entry_facts(entry)));
+    let head = dialog_head(
+        trf("Install {name}", &[("name", &entry.name)]),
+        Some(entry_facts(entry)),
+        Some(&entry.url),
+        Message::CloseInstall,
+    );
     let mut body = column![
         typo::text(typo::body(), entry.description.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
         runs_as_you(),
@@ -2050,20 +2092,35 @@ fn form_dialog<'a>(install: &'a Install, entry: &'a CatalogEntry) -> Element<'a,
         let footer = tr("Kept in the system keychain; only this server gets it, when it starts.");
         body = body.push(widgets::group(tr("Secrets"), rows, Some(footer.to_string())));
     }
-    let tools = entry.tools.iter().map(|tool| {
-        let level = widgets::level_label(tool_level(tool.access));
-        setting_row(None, tool.name.as_str(), Some(level.to_string()), Space::new())
-    });
     let footer = tr("What a call of each tool needs. None is offered until you allow the tools it reports.");
-    body = body.push(widgets::group(tr("Tools"), tools.collect(), Some(footer.to_string())));
+    body = body.push(widgets::group(tr("Tools"), vec![tool_lines(&entry.tools)], Some(footer.to_string())));
     let install_button = match install.busy {
         true => widgets::busy_button(tr("Installing…"), style::button::primary),
         false => widgets::text_button(None, tr("Install"), style::button::primary, Some(Message::SubmitInstall)),
     };
     let wait = install.busy.then(|| tr("The first start can take a few minutes while the program is downloaded."));
     let cancel = (tr("Cancel"), Message::CloseInstall);
-    let foot = dialog_foot(install.problem.clone(), wait, cancel, Some(install_button));
+    let foot = dialog_foot(install.problem.clone().map(said), wait, cancel, Some(install_button));
     torro_gui::dialog::frame(head, body, foot, space::xl())
+}
+
+/// The tools of a catalog entry in one row of a group, a line each: the name and, at the right, the
+/// access a call needs in `META` and `text_3`. Lines of [`size::row_sidebar()`] without rules
+/// between them, so a server with twenty tools stays a list to read through, not a page to scroll.
+fn tool_lines<'a>(tools: &'a [torro_ipc::extensions::CatalogTool]) -> Element<'a, Message> {
+    if tools.is_empty() {
+        return setting_row(None, tr("No tools"), None, Space::new());
+    }
+    let lines = tools.iter().map(|tool| {
+        let level = typo::text(typo::meta(), widgets::level_label(tool_level(tool.access)))
+            .style(theme::text_3)
+            .wrapping(Wrapping::None);
+        let line = row![widgets::ellipsized(typo::body(), tool.name.as_str(), theme::text), level]
+            .spacing(space::l())
+            .align_y(Alignment::Center);
+        container(line).width(Fill).center_y(size::row_sidebar()).into()
+    });
+    container(column(lines)).width(Fill).padding([space::s(), space::l()]).into()
 }
 
 /// "It runs as you on this computer": the sentence every install shows, with the info icon.
@@ -2103,7 +2160,7 @@ fn secret_field<'a>(install: &'a Install, secret: &'a torro_ipc::extensions::Cat
     if install.tried && typed.is_none_or(Secret::is_blank) {
         lines = lines.push(error_text(tr("Enter it to install the server.")));
     }
-    container(lines).width(Fill).padding([space::m(), space::l()]).into()
+    container(lines).width(Fill).padding(tall_padding()).into()
 }
 
 /// The tools the installed server reported, each with its state, access and what it says it does,
@@ -2119,7 +2176,13 @@ pub fn tools_dialog<'a>(
         Some(entry) => entry_facts(entry),
         None => widgets::ellipsized(typo::meta(), address(&server.server), theme::text_3),
     };
-    let head = dialog_head(trf("Allow the tools of {name}?", &[("name", &server.name)]), Some(facts));
+    let website = entry.map(|entry| entry.url.as_str());
+    let head = dialog_head(
+        trf("Allow the tools of {name}?", &[("name", &server.name)]),
+        Some(facts),
+        website,
+        Message::CloseInstall,
+    );
     let mut rows: Vec<Element<'a, Message>> = server.tools.iter().map(|tool| tool_row(server, tool)).collect();
     if rows.is_empty() {
         rows.push(setting_row(None, tr("It reported no tools"), None, Space::new()));
@@ -2135,31 +2198,21 @@ pub fn tools_dialog<'a>(
     ]
     .spacing(space::l());
     let allow = allow_button(server, install.busy, false, true);
-    let foot = dialog_foot(install.problem.clone(), None, (tr("Not now"), Message::CloseInstall), Some(allow));
+    let foot =
+        dialog_foot(install.problem.clone().map(said), None, (tr("Not now"), Message::CloseInstall), Some(allow));
     torro_gui::dialog::frame(head, body, foot, space::xl())
 }
 
-/// The foot of a dialog of this section: why the last request failed (what it means, then the
-/// core's sentence when there is one), a quiet note while it waits, then the `cancel` button with
-/// its message and the primary button at the right.
+/// The foot of a dialog of this section: what went wrong when anything did ([`said`], or the fields
+/// to check), a quiet note while it waits, then the `cancel` button with its message and the primary
+/// button at the right.
 fn dialog_foot<'a>(
-    problem: Option<Problem>,
+    wrong: Option<Element<'a, Message>>,
     wait: Option<&'a str>,
     (cancel, on_cancel): (&'a str, Message),
     primary: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let mut foot = column![].spacing(space::s());
-    if let Some(problem) = problem {
-        let mut said = column![].spacing(space::xs());
-        if let Some(what) = problem.what {
-            said = said.push(error_text(what));
-        }
-        if !problem.why.is_empty() {
-            said =
-                said.push(typo::text(typo::meta(), problem.why).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
-        }
-        foot = foot.push(said);
-    }
+    let mut foot = column![].push(wrong).spacing(space::s());
     if let Some(wait) = wait {
         foot = foot.push(typo::text(typo::meta(), wait).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
     }
@@ -2171,13 +2224,26 @@ fn dialog_foot<'a>(
     foot.push(buttons).into()
 }
 
+/// Why the last request of a dialog failed: what it means in the error colour, then the core's
+/// sentence when there is one.
+fn said<'a>(problem: Problem) -> Element<'a, Message> {
+    let mut said = column![].spacing(space::xs());
+    if let Some(what) = problem.what {
+        said = said.push(error_text(what));
+    }
+    if !problem.why.is_empty() {
+        said = said.push(typo::text(typo::meta(), problem.why).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+    }
+    said.into()
+}
+
 // ----- The form of a server of one's own (task MA.9) ----------------------------------------------
 
 /// The dialog of a server of one's own at its step: the form, the field for a pasted block, or the
 /// choice among the servers of one.
-fn custom_dialog<'a>(custom: &'a Custom, data: &'a Data) -> Element<'a, Message> {
+fn custom_dialog<'a>(custom: &'a Custom, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let content = match &custom.step {
-        CustomStep::Form => custom_form(custom, data),
+        CustomStep::Form => custom_form(custom, data, class),
         CustomStep::Paste { text, problem } => paste_dialog(text, problem.as_deref()),
         CustomStep::Choose => choose_dialog(custom),
     };
@@ -2185,9 +2251,11 @@ fn custom_dialog<'a>(custom: &'a Custom, data: &'a Data) -> Element<'a, Message>
 }
 
 /// The form: "Paste configuration" (only when adding), that it runs as the person, what it is and
-/// how it is reached, and its variables or headers. After the first try each field says what is
-/// wrong with it, and the foot says to look; what the core refused shows in the foot.
-fn custom_form<'a>(custom: &'a Custom, data: &'a Data) -> Element<'a, Message> {
+/// how it is reached, and its variables or headers, stacked narrower than [`SizeClass::Medium`].
+/// After the first try each field says what is wrong with it, and the foot names those fields
+/// ([`check_sentence`]) – the dialog cannot scroll to them itself; what the core refused shows in
+/// the foot instead.
+fn custom_form<'a>(custom: &'a Custom, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let checked = if custom.tried { check(custom, data) } else { Checked::default() };
     let title = match &custom.updating {
         Some(_) => trf("Update {name}", &[("name", &custom.name)]),
@@ -2197,7 +2265,8 @@ fn custom_form<'a>(custom: &'a Custom, data: &'a Data) -> Element<'a, Message> {
     if custom.updating.is_none() {
         body = body.push(paste_offer(custom));
     }
-    body = body.push(runs_as_you()).push(server_group(custom, &checked)).push(values_group(custom, &checked));
+    let stacked = !matches!(class, SizeClass::Wide | SizeClass::Medium);
+    body = body.push(runs_as_you()).push(server_group(custom, &checked)).push(values_group(custom, &checked, stacked));
     body = body.push(
         typo::text(typo::meta(), tr("Its tools are listed once it has started. None is offered until you allow them."))
             .style(theme::text_2)
@@ -2211,12 +2280,42 @@ fn custom_form<'a>(custom: &'a Custom, data: &'a Data) -> Element<'a, Message> {
         true => widgets::busy_button(busy, style::button::primary),
         false => widgets::text_button(None, label, style::button::primary, Some(Message::SubmitCustom)),
     };
-    let problem = custom.problem.clone().or_else(|| {
-        checked.any().then(|| Problem { what: Some(tr("Correct the marked fields.")), why: String::new() })
-    });
+    let wrong = match custom.problem.clone() {
+        Some(problem) => Some(said(problem)),
+        None => check_sentence(&marked_fields(custom.kind, &checked)).map(error_text),
+    };
     let wait = custom.busy.then(|| tr("The first start can take a few minutes while the program is downloaded."));
-    let foot = dialog_foot(problem, wait, (tr("Cancel"), Message::CloseInstall), Some(primary));
-    torro_gui::dialog::frame(dialog_head(title, None), body, foot, space::xl())
+    let foot = dialog_foot(wrong, wait, (tr("Cancel"), Message::CloseInstall), Some(primary));
+    torro_gui::dialog::frame(dialog_head(title, None, None, Message::CloseInstall), body, foot, space::xl())
+}
+
+/// The labels of the fields the form marks wrong ([`check`]), in the form's order: "Name", "Id",
+/// "Command" or "Address", "Variables" or "Headers".
+fn marked_fields(kind: Kind, checked: &Checked) -> Vec<&'static str> {
+    let (target, values) = match kind {
+        Kind::Command => (tr("Command"), tr("Variables")),
+        Kind::Address => (tr("Address"), tr("Headers")),
+    };
+    [
+        (checked.name.is_some(), tr("Name")),
+        (checked.id.is_some(), tr("Id")),
+        (checked.target.is_some(), target),
+        (checked.values.iter().any(Option::is_some), values),
+    ]
+    .into_iter()
+    .filter_map(|(wrong, label)| wrong.then_some(label))
+    .collect()
+}
+
+/// The foot's sentence after a try with fields marked wrong, naming them – "Check Name and
+/// Command." –, so the person knows where to look in a form taller than the window. `None` while
+/// nothing is marked.
+fn check_sentence(fields: &[&str]) -> Option<String> {
+    match fields {
+        [] => None,
+        [field] => Some(trf("Check {field}.", &[("field", field)])),
+        [first @ .., last] => Some(trf("Check {fields} and {last}.", &[("fields", &first.join(", ")), ("last", last)])),
+    }
 }
 
 /// "Paste configuration" at the top of a new form, and, while a pasted block named several
@@ -2253,14 +2352,15 @@ fn server_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Messag
             rows.push(setting_row(None, custom.name.as_str(), Some(detail), Space::new()));
         }
         None => {
+            // A product's name, the same in every language, so the id below matches it.
             let name =
-                field(tr("Weather"), &custom.name).on_input(Message::CustomName).on_submit(Message::SubmitCustom);
+                field("Home Assistant", &custom.name).on_input(Message::CustomName).on_submit(Message::SubmitCustom);
             rows.push(form_field(tr("Name"), None, name.into(), checked.name));
             let hint = match custom.id.is_empty() {
                 true => tr("Lowercase letters, digits and hyphens. Its tools are offered under it.").to_string(),
                 false => trf("Its tools are offered as ext_{id}_…", &[("id", &custom.id)]),
             };
-            let id = field("weather", &custom.id).on_input(Message::CustomId).on_submit(Message::SubmitCustom);
+            let id = field("home-assistant", &custom.id).on_input(Message::CustomId).on_submit(Message::SubmitCustom);
             rows.push(form_field(tr("Id"), Some(hint), id.into(), checked.id));
         }
     }
@@ -2292,8 +2392,8 @@ fn server_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Messag
 }
 
 /// "Variables" of a command or "Headers" of an address: a row per entry with name, value, "Secret"
-/// and "Remove", then "Add variable" or "Add header".
-fn values_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Message> {
+/// and "Remove" (`stacked`: the name above the rest), then "Add variable" or "Add header".
+fn values_group<'a>(custom: &'a Custom, checked: &Checked, stacked: bool) -> Element<'a, Message> {
     let (title, add) = match custom.kind {
         Kind::Command => (tr("Variables"), tr("Add variable")),
         Kind::Address => (tr("Headers"), tr("Add header")),
@@ -2302,7 +2402,7 @@ fn values_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Messag
         .values
         .iter()
         .enumerate()
-        .map(|(at, entry)| entry_row(custom.kind, at, entry, checked.value(at)))
+        .map(|(at, entry)| entry_row(custom.kind, at, entry, checked.value(at), stacked))
         .collect();
     let add = widgets::text_button(Some(Icon::Plus), add, style::button::ghost, Some(Message::AddValue));
     rows.push(row_frame(add, false));
@@ -2312,27 +2412,41 @@ fn values_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Messag
 
 /// One variable or header: its name, its value (hidden while it is a secret; a stored one says so
 /// and stays while nothing is typed), "Secret" and "Remove"; below, after the first try, what is
-/// wrong with it.
-fn entry_row<'a>(kind: Kind, at: usize, entry: &'a Entry, problem: Option<&'static str>) -> Element<'a, Message> {
+/// wrong with it. `stacked` (a window narrower than [`SizeClass::Medium`]): the name on a line of its
+/// own above value, "Secret" and "Remove", so neither field is squeezed to a few letters.
+fn entry_row<'a>(
+    kind: Kind,
+    at: usize,
+    entry: &'a Entry,
+    problem: Option<&'static str>,
+    stacked: bool,
+) -> Element<'a, Message> {
     let placeholder = match kind {
         Kind::Command => tr("NAME"),
         Kind::Address => tr("Header name"),
     };
     let name = field(placeholder, &entry.name)
         .on_input(move |name| Message::ValueName(at, name))
-        .on_submit(Message::SubmitCustom)
-        .width(Length::FillPortion(2));
+        .on_submit(Message::SubmitCustom);
     let hint = if entry.secret && entry.stored { tr("Stored – type to replace") } else { tr("Value") };
     let value = field(hint, entry.value.expose())
         .secure(entry.secret)
         .on_input(move |value| Message::ValueText(at, Secret::new(value)))
-        .on_submit(Message::SubmitCustom)
-        .width(Length::FillPortion(3));
+        .on_submit(Message::SubmitCustom);
     let secret = widgets::choice_chip(tr("Secret"), None, entry.secret, Some(Message::ValueSecret(at, !entry.secret)));
     let remove = widgets::icon_button(Icon::X, tr("Remove"), Some(Message::RemoveValue(at)));
-    let line = row![name, value, secret, remove].spacing(space::s()).align_y(Alignment::Center);
-    let lines = column![line].push(problem.map(error_text)).spacing(space::xs());
-    container(lines).width(Fill).padding([space::s(), space::l()]).into()
+    let lines: Element<'a, Message> = match stacked {
+        true => {
+            let rest = row![value, secret, remove].spacing(space::s()).align_y(Alignment::Center);
+            column![name, rest].spacing(space::s()).into()
+        }
+        false => row![name.width(Length::FillPortion(2)), value.width(Length::FillPortion(3)), secret, remove]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into(),
+    };
+    let lines = column![lines].push(problem.map(error_text)).spacing(space::xs());
+    container(lines).width(Fill).padding(tall_padding()).into()
 }
 
 /// A field of the form with its label above it, a quiet line about it, and after the first try
@@ -2348,7 +2462,7 @@ fn form_field<'a>(
         lines = lines.push(typo::text(typo::meta(), hint).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
     }
     let lines = lines.push(control).push(problem.map(error_text));
-    container(lines).width(Fill).padding([space::m(), space::l()]).into()
+    container(lines).width(Fill).padding(tall_padding()).into()
 }
 
 /// "Paste configuration": what to paste, the field, why the last block could not be read; "Back"
@@ -2372,7 +2486,8 @@ fn paste_dialog<'a>(text: &'a Hidden, problem: Option<&'a str>) -> Element<'a, M
         .spacing(space::l());
     let fill = widgets::text_button(None, tr("Fill in"), style::button::primary, Some(Message::FillFromPaste));
     let foot = dialog_foot(None, None, (tr("Back"), Message::BackToForm), Some(fill));
-    torro_gui::dialog::frame(dialog_head(tr("Paste configuration").to_string(), None), body, foot, space::xl())
+    let head = dialog_head(tr("Paste configuration").to_string(), None, None, Message::BackToForm);
+    torro_gui::dialog::frame(head, body, foot, space::xl())
 }
 
 /// The servers of a pasted block: each a row with what runs, which fills it into the form.
@@ -2393,7 +2508,8 @@ fn choose_dialog(custom: &Custom) -> Element<'_, Message> {
     ]
     .spacing(space::l());
     let foot = dialog_foot(None, None, (tr("Cancel"), Message::CloseInstall), None);
-    torro_gui::dialog::frame(dialog_head(tr("Choose a server").to_string(), None), body, foot, space::xl())
+    let head = dialog_head(tr("Choose a server").to_string(), None, None, Message::BackToForm);
+    torro_gui::dialog::frame(head, body, foot, space::xl())
 }
 
 /// The room of a field of several lines: `lines` of `level` and the padding of a field.
@@ -2401,8 +2517,9 @@ fn lines_height(lines: f32, level: typo::Level) -> f32 {
     lines * typo::line_height(level) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
 }
 
-/// The dialog of one secret of the server: the hidden field, a sentence when it is empty after the
-/// first "Save" or the core refused, "Cancel" and "Save".
+/// The dialog of one secret of the server, built like the section's other dialogs (head with ✕,
+/// body, foot) at the width of a popover: the hidden field with a sentence when it is empty after
+/// the first "Save", in the foot what the core refused, "Cancel" and "Save".
 fn replace_dialog<'a>(replacing: &'a Replacing, server: &'a ExtensionInfo) -> Element<'a, Message> {
     let stored = server.secrets.iter().any(|secret| secret.name == replacing.name && secret.stored);
     let title = match stored {
@@ -2414,7 +2531,6 @@ fn replace_dialog<'a>(replacing: &'a Replacing, server: &'a ExtensionInfo) -> El
         .on_input(|value| Message::TypeReplacement(Secret::new(value)))
         .on_submit(Message::SubmitReplacement);
     let mut body = column![
-        typo::text(typo::title(), title),
         typo::text(typo::body(), trf("{name} gets it when it starts next.", &[("name", &server.name)]))
             .style(theme::text_2)
             .wrapping(Wrapping::WordOrGlyph),
@@ -2424,21 +2540,14 @@ fn replace_dialog<'a>(replacing: &'a Replacing, server: &'a ExtensionInfo) -> El
     if replacing.tried && replacing.value.is_blank() {
         body = body.push(error_text(tr("Enter the new value.")));
     }
-    if let Some(problem) = &replacing.problem {
-        body = body.push(error_text(problem.as_str()));
-    }
     let save = match replacing.busy {
         true => widgets::busy_button(tr("Saving…"), style::button::primary),
         false => widgets::text_button(None, tr("Save"), style::button::primary, Some(Message::SubmitReplacement)),
     };
-    let buttons = row![
-        Space::new().width(Fill),
-        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CloseReplacement)),
-        save,
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
-    dialog(body.push(buttons), widgets::POPOVER_WIDTH, Message::CloseReplacement)
+    let refused = replacing.problem.clone().map(|why| said(Problem { what: Some(tr("It could not be saved.")), why }));
+    let foot = dialog_foot(refused, None, (tr("Cancel"), Message::CloseReplacement), Some(save));
+    let head = dialog_head(title, None, None, Message::CloseReplacement);
+    dialog(torro_gui::dialog::frame(head, body, foot, space::xl()), widgets::POPOVER_WIDTH, Message::CloseReplacement)
 }
 
 /// A sentence in the error colour (a refusal, an empty field after the first try).
@@ -3088,7 +3197,7 @@ mod tests {
         let mut state = State::default();
         for entry in ["sequential-thinking", "time"] {
             assert!(matches!(update(&mut state, Message::Install(entry.into()), &data), Action::None));
-            assert!(state.install.is_none() && overlay(&state, &data).is_none(), "{entry}: no dialog");
+            assert!(state.install.is_none() && overlay(&state, &data, SizeClass::Wide).is_none(), "{entry}: no dialog");
         }
         let entry = data.catalog.entries().iter().find(|entry| entry.id == "sequential-thinking").expect("listed");
         assert_eq!(
@@ -3096,7 +3205,7 @@ mod tests {
             trf("{needs}. Install it to use this server.", &[("needs", &tr("Needs Node.js (npx)"))])
         );
         let _ = update(&mut state, Message::Install("github".into()), &data);
-        assert!(overlay(&state, &data).is_some());
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some());
     }
 
     /// "Install" sends exactly one `install_extension` with the typed secrets as `Secret`s – only
@@ -3166,7 +3275,7 @@ mod tests {
             assert_eq!(install.problem, Some(Problem { what: Some(what), why: format!("core says {code}") }));
             assert!(!install.busy && install.installed().is_none(), "{code}: the form again");
             let _ = view(&state, &data, SizeClass::Wide);
-            assert!(overlay(&state, &data).is_some());
+            assert!(overlay(&state, &data, SizeClass::Wide).is_some());
         }
         let no_answer = Err("The core did not answer".to_string());
         let mut state = State::default();
@@ -3231,7 +3340,7 @@ mod tests {
         }
 
         let _ = update(&mut state, Message::Replace(TOKEN_NAME.into()), &data);
-        assert!(overlay(&state, &data).is_some());
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some());
         assert!(matches!(update(&mut state, Message::SubmitReplacement, &data), Action::None), "empty: only says so");
         let _ = update(&mut state, Message::TypeReplacement(Secret::new("github_pat_new")), &data);
         let (what, request) = asked(update(&mut state, Message::SubmitReplacement, &data));
@@ -3352,11 +3461,11 @@ mod tests {
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
             for state in [&form, &busy, &tools] {
                 let _ = view(state, &data, class);
-                assert!(overlay(state, &data).is_some());
+                assert!(overlay(state, &data, class).is_some());
             }
             for state in &pages {
                 let _ = view(state, &full, class);
-                let _ = overlay(state, &full);
+                let _ = overlay(state, &full, class);
             }
             let _ = view(&State::default(), &full, class);
         }
@@ -3422,7 +3531,7 @@ mod tests {
         let checked = check(custom, &data);
         assert_eq!(checked.value(at), Some(tr("Torro Workplace never passes this variable on to a server.")));
         assert_eq!((checked.name, checked.id, checked.target, checked.value(0)), (None, None, None, None), "only it");
-        assert!(overlay(&state, &data).is_some());
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some());
         // Removed, the form goes out.
         let _ = update(&mut state, Message::RemoveValue(at), &data);
         assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::AskConnections(..)));
@@ -3470,7 +3579,7 @@ mod tests {
         let _ = answered(&mut state, what, &Ok(answer));
         assert!(state.custom.is_none(), "one server: the form has done its job");
         assert_eq!(state.install.as_ref().and_then(Install::installed), Some("weather-api"));
-        assert!(overlay(&state, &data).is_some(), "the tools it reported, with no catalog entry");
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some(), "the tools it reported, with no catalog entry");
         let (what, request) =
             asked(update(&mut state, Message::AllowTools("weather-api".into(), "demo-weather-api".into()), &data));
         let confirm =
@@ -3502,7 +3611,7 @@ mod tests {
         assert_eq!(custom.problem, Some(Problem { what: Some(tr("It could not be added.")), why: message }));
         assert!(!custom.busy && matches!(custom.step, CustomStep::Form));
         let _ = view(&state, &data, SizeClass::Wide);
-        assert!(overlay(&state, &data).is_some());
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some());
 
         let (what, _) = asked(update(&mut state, Message::SubmitCustom, &data));
         let refused = Ok(Response::Error { code: "conflict".into(), message: "in use".into() });
@@ -3562,6 +3671,28 @@ mod tests {
         let _ = update(&mut state, Message::ValueSecret(1, false), &data);
         let _ = update(&mut state, Message::ValueName(1, "X-Api-Token".into()), &data);
         assert!(!form(&state).values[1].secret);
+    }
+
+    /// Design review of #302: after a try the foot names the fields to check, in the form's order,
+    /// since the dialog cannot scroll to the first one itself; nothing while none is marked.
+    #[test]
+    fn the_foot_names_the_fields_to_check() {
+        let data = launch::demo_data();
+        let mut state = State::default();
+        let _ = update(&mut state, Message::AddServer, &data);
+        let _ = update(&mut state, Message::SubmitCustom, &data);
+        let fields = marked_fields(Kind::Command, &check(form(&state), &data));
+        assert_eq!(fields, vec![tr("Name"), tr("Id"), tr("Command")]);
+        let sentence = trf(
+            "Check {fields} and {last}.",
+            &[("fields", &format!("{}, {}", tr("Name"), tr("Id"))), ("last", &tr("Command"))],
+        );
+        assert_eq!(check_sentence(&fields), Some(sentence));
+        let _ = update(&mut state, Message::CustomName("Clock".into()), &data);
+        let _ = update(&mut state, Message::CustomKind(Kind::Address), &data);
+        let fields = marked_fields(Kind::Address, &check(form(&state), &data));
+        assert_eq!(check_sentence(&fields), Some(trf("Check {field}.", &[("field", &tr("Address"))])));
+        assert_eq!(check_sentence(&[]), None);
     }
 
     /// The id proposed from the name, and which names start as secrets.
@@ -3656,7 +3787,7 @@ mod tests {
         assert!(custom.values.iter().any(|entry| entry.name == "NOTES_TOKEN" && entry.secret && entry.stored));
         assert!(custom.values.iter().any(|entry| entry.name == "NOTES_DIR" && !entry.secret), "plain stays plain");
         let _ = view(&state, &data, SizeClass::Wide);
-        assert!(overlay(&state, &data).is_some());
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some());
 
         let (what, request) = asked(update(&mut state, Message::SubmitCustom, &data));
         let env = BTreeMap::from([
@@ -3746,7 +3877,7 @@ mod tests {
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
             for state in [&tried, &filled, &busy, &paste, &choose, &editing, &tools] {
                 let _ = view(state, &data, class);
-                assert!(overlay(state, &data).is_some());
+                assert!(overlay(state, &data, class).is_some());
             }
             assert_eq!(header(&State::default(), &data, class).actions.len(), 1, "Add server…");
         }

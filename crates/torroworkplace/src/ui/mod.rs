@@ -1709,9 +1709,8 @@ impl Ui {
                 .map(|e| e.map(Message::Workspaces)),
             Section::Api => api::overlay(&self.api, &self.data).map(|e| e.map(Message::Api)),
             Section::Mcp => mcp::overlay(&self.mcp, &self.data).map(|e| e.map(Message::Mcp)),
-            Section::Connections => {
-                connections::overlay(&self.connections, &self.data).map(|e| e.map(Message::Connections))
-            }
+            Section::Connections => connections::overlay(&self.connections, &self.data, layout::of(self.size))
+                .map(|e| e.map(Message::Connections)),
             Section::Appearance => general::overlay(&self.general, &self.data).map(|e| e.map(Message::General)),
             _ => None,
         }
