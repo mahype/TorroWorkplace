@@ -713,11 +713,18 @@ fn show_switched(state: &mut State, data: &Data) {
     state.providers = Some(shown);
 }
 
+/// Whether a search can ask the provider `info`: switched on, SearXNG only with an address – the rule of
+/// `WebSearch::askable` in the core. Its `enabled` alone is the switch as shown.
+pub(super) fn askable(info: &SearchProviderInfo) -> bool {
+    info.enabled && (info.id != SearchProviderId::Searxng || info.address.is_some())
+}
+
 /// A provider's switch: `settings.set_setting search_provider` at once. The first provider switched on also
-/// switches the tool `web` on (`tool_enabled`), unless the settings have it on already: whoever picks a provider
-/// wants the web search (`docs/einrichtung.md`, step 9). Never anything of `clients.*`.
+/// switches the tool `web` on (`tool_enabled`) – the first a search can ask ([`askable`]) –, unless the settings
+/// have it on already: whoever picks a provider wants the web search (`docs/einrichtung.md`, step 9). Never
+/// anything of `clients.*`.
 fn switch_provider(state: &mut State, data: &Data, id: SearchProviderId, on: bool) -> Action {
-    let first = on && !providers(state, data).iter().any(|info| info.enabled);
+    let first = on && !providers(state, data).iter().any(askable);
     state.switched.insert(id, on);
     show_switched(state, data);
     let switch = web::switch_request(id, on);
@@ -732,12 +739,12 @@ pub(super) fn assistant_client(data: &Data) -> Option<&ClientInfo> {
     data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT)
 }
 
-/// What "Continue" on the web step sends: with "Let the assistant use it" ticked, a provider on as the core lists
-/// it (not a switch on its way, which the core may refuse) and the assistant's client there, one
-/// `clients.update_client` with its rights and read access to `web` ([`with_web`]) – once in a setup, and only when
-/// that changes its rights. Otherwise nothing.
+/// What "Continue" on the web step sends: with "Let the assistant use it" ticked, a provider a search can ask as
+/// the core lists it ([`askable`]; not a switch on its way, which the core may refuse) and the assistant's client
+/// there, one `clients.update_client` with its rights and read access to `web` ([`with_web`]) – once in a setup,
+/// and only when that changes its rights. Otherwise nothing.
 fn grant_web(state: &mut State, data: &Data) -> Action {
-    let any_on = data.search_providers.iter().any(|info| info.enabled);
+    let any_on = data.search_providers.iter().any(askable);
     if !state.web_allowed || state.web_granted || !any_on {
         return Action::None;
     }
@@ -1741,6 +1748,37 @@ mod tests {
         assert_eq!(pages::primary(&unticked, &data), (tr("Continue"), true), "nothing to wait for");
         update(&mut unticked, Message::Next, &data);
         assert_eq!(unticked.step, Step::Done);
+    }
+
+    /// Found in the second review of #305: SearXNG without an address is switched on but cannot be asked
+    /// (`WebSearch::askable`), so it counts for neither "Continue" nor the first provider: alone it gives the
+    /// assistant nothing, and the next provider switched on still switches the tool on.
+    #[test]
+    fn searxng_without_an_address_counts_for_nothing() {
+        let mut data = data();
+        for info in &mut data.search_providers {
+            if info.id == SearchProviderId::Searxng {
+                (info.enabled, info.address) = (true, None);
+            }
+        }
+        let mut setup = state(Step::Web);
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "nothing can be asked");
+
+        let mut setup = state(Step::Web);
+        let sent = requests(update(&mut setup, duckduckgo_on(), &data));
+        assert!(sent.contains(&tool_settings::switch_request(ToolId::Web, true)), "the first askable: {sent:?}");
+
+        // With its address it counts.
+        for info in &mut data.search_providers {
+            if info.id == SearchProviderId::Searxng {
+                info.address = Some("https://search.example.org".into());
+            }
+        }
+        let mut setup = state(Step::Web);
+        let sent = requests(update(&mut setup, Message::Next, &data));
+        assert!(matches!(sent.as_slice(), [Request::UpdateClient { .. }]), "{sent:?}");
+        let mut setup = state(Step::Web);
+        assert_eq!(requests(update(&mut setup, duckduckgo_on(), &data)).len(), 1, "not the first");
     }
 
     /// Found in the review of #305: while SearXNG's address is checked, the refusal of another request is not

@@ -690,13 +690,13 @@ pub(super) fn providers_on<'a>(state: &'a State, data: &'a Data) -> Vec<&'a str>
 
 /// "Let the assistant use it" with the order the providers are asked in and the approval once per conversation
 /// under it – the page's decision and its state, so before the details – then the providers as Assistant ›
-/// Settings › Tools shows them. While no provider is on the box is drawn disabled, keeping its tick for when one
-/// is: "Continue" would give nothing then. Without the assistant's client (the assistant never started) there is
-/// nobody to give the right to: the sentence stands alone.
+/// Settings › Tools shows them. While no provider can be asked (SearXNG only with an address) the box is drawn
+/// disabled, keeping its tick for when one is: "Continue" would give nothing then. Without the assistant's client
+/// (the assistant never started) there is nobody to give the right to: the sentence stands alone.
 fn web<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let providers = super::providers(state, data);
     let summary = web_view::summary(providers);
-    let usable = providers.iter().any(|info| info.enabled);
+    let usable = providers.iter().any(super::askable);
     let allow = match super::assistant_client(data) {
         Some(_) => {
             let on = state.web_allowed;
