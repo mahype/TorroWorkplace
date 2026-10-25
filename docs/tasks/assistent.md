@@ -1198,7 +1198,7 @@ WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) �
   gesperrten Anbieter; `scripts/design-check.sh`, `torro-design-review` (schmal bis breit, hell und dunkel).
 
 ### WEB.7 Einrichtung: Schritt „Web search“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WEB.6 · **Dateien:** `crates/torroworkplace/src/ui/setup/{mod,pages}.rs`,
   `crates/torroworkplace/src/ui/{mod,launch}.rs`, `crates/torro-core/src/settings.rs` (`Setup::VERSION` 2),
   `crates/torro-core/src/i18n/de.rs`

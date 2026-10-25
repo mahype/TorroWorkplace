@@ -1,16 +1,16 @@
 //! The pages of the setup's steps (task W.4: Welcome, Components and Done; the steps of tasks
-//! W.5–W.8 follow here): each with a headline, one sentence in `text_2` and settings groups, plus
+//! W.5–W.8 and WEB.7 follow here): each with a headline, one sentence in `text_2` and settings groups, plus
 //! what the footer says and what its primary button is called.
 
-use iced::widget::{Space, column, pick_list, toggler};
-use iced::{Element, Fill};
+use iced::widget::{Space, checkbox, column, pick_list, toggler};
+use iced::{Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, Language};
 use torro_gui::icon::Icon;
-use torro_gui::layout;
-use torro_gui::theme::{self, Appearance, space};
+use torro_gui::layout::{self, SizeClass};
+use torro_gui::theme::{self, Appearance, palette, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
 use torro_gui::{style, typo};
 
@@ -18,12 +18,13 @@ use torro_core::account::Secret;
 use torro_inbox::{SourceKind, SourceRef};
 use torro_ipc::{AccountInfo, ServerService};
 use torro_pim::{AccountState, Collection};
+use torro_settings_ui::assistant::web as web_view;
 
 use super::{Data, Message, State, Step, app_of};
 use crate::ui::{chevron, connect, pressable, setting_row};
 
-/// The page of the current step.
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// The page of the current step, laid out for `class`.
+pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     match state.step {
         Step::Welcome => welcome(state),
         Step::Nextcloud => nextcloud(state, data),
@@ -35,6 +36,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::Mail => mail(data),
         Step::Inbox => inbox(state, data),
         Step::Ai => ai(state, data),
+        Step::Web => web(state, data, class),
     }
 }
 
@@ -75,6 +77,11 @@ pub fn status(state: &State, data: &Data) -> Option<String> {
             let n = data.accounts.iter().filter(|account| account.kind == "ai").count() + state.ai_connected.len();
             Some(if n == 1 { tr("1 account").to_string() } else { trf("{n} accounts", &[("n", &n)]) })
         }
+        Step::Web => Some(match providers_on(state, data).len() {
+            0 => tr("Web search is off").to_string(),
+            1 => tr("1 provider on").to_string(),
+            n => trf("{n} providers on", &[("n", &n)]),
+        }),
         Step::Components => {
             let on = Component::ALL.len() - state.off.len();
             Some(trf("{on} of {all} on", &[("on", &on), ("all", &Component::ALL.len())]))
@@ -671,6 +678,53 @@ impl std::fmt::Display for Choice {
     }
 }
 
+// ----- Web search (task WEB.7) ------------------------------------------------------------------------
+
+/// The names of the providers switched on, in the order they are asked.
+pub(super) fn providers_on<'a>(state: &'a State, data: &'a Data) -> Vec<&'a str> {
+    super::providers(state, data).iter().filter(|info| info.enabled).map(|info| info.name.as_str()).collect()
+}
+
+/// "Let the assistant use it" with the order the providers are asked in and the approval once per conversation
+/// under it – the page's decision and its state, so before the details – then the providers as Assistant ›
+/// Settings › Tools shows them. While no provider is on the box is drawn disabled, keeping its tick for when one
+/// is: "Continue" would give nothing then. Without the assistant's client (the assistant never started) there is
+/// nobody to give the right to: the sentence stands alone.
+fn web<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
+    let providers = super::providers(state, data);
+    let summary = web_view::summary(providers);
+    let usable = providers.iter().any(|info| info.enabled);
+    let allow = match super::assistant_client(data) {
+        Some(_) => {
+            let on = state.web_allowed;
+            let check = checkbox(on)
+                .size(style::CHECK_SIZE)
+                // `text_2`, not `text`: a black box would be the heaviest mark of the page.
+                .style(|t: &Theme, status| style::checkbox(palette(t).text_2)(t, status))
+                .on_toggle_maybe(usable.then_some(Message::AllowWeb));
+            let row = setting_row(
+                Some(check.into()),
+                tr("Let the assistant use it"),
+                Some(tr("Read access to web search, given when you continue").to_string()),
+                Space::new(),
+            );
+            let press = usable.then_some(Message::AllowWeb(!on));
+            widgets::group(tr("Assistant"), vec![pressable(row, press)], Some(summary))
+        }
+        None => typo::text(typo::body(), summary).style(theme::text_2).into(),
+    };
+    page(vec![
+        title(
+            tr("Web search"),
+            tr(
+                "The assistant can search the web and read pages. Choose where your search words go; nothing is on until you switch it on.",
+            ),
+        ),
+        allow,
+        web_view::view(&state.web, providers, class).map(Message::Web),
+    ])
+}
+
 /// What a component is for, one line on its card.
 fn purpose(component: Component, data: &Data) -> String {
     match component {
@@ -757,25 +811,38 @@ fn done<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let installed = |app: AppId| {
         data.apps.as_ref().is_some_and(|apps| apps.iter().any(|a| a.window_class == app.window_class && a.installed))
     };
-    let rows = Component::ALL
-        .into_iter()
-        .map(|component| {
-            let on = !state.off.contains(&component);
-            let detail = if on { tr("On") } else { tr("Off") };
-            let mark: Element<'a, Message> =
-                widgets::source_tile(TileFace::Icon(symbol(component)), TileSize::Medium, None);
-            let control: Element<'a, Message> = match app_of(component).filter(|_| on) {
-                Some(app) => widgets::text_button(
-                    Some(Icon::ArrowUpRight),
-                    tr("Open"),
-                    style::button::ghost,
-                    installed(app).then_some(Message::OpenApp(app.window_class)),
-                ),
-                None => Space::new().into(),
-            };
-            setting_row(Some(mark), name(component), Some(detail.to_string()), control)
-        })
-        .collect();
+    let mut rows = Vec::new();
+    for component in Component::ALL {
+        let on = !state.off.contains(&component);
+        let detail = match (on, component) {
+            // The web search is the assistant's tool, so it is said in the assistant's line.
+            (true, Component::Assistant) => format!("{} · {}", tr("On"), web_detail(state, data)),
+            (true, _) => tr("On").to_string(),
+            (false, _) => tr("Off").to_string(),
+        };
+        let mark: Element<'a, Message> =
+            widgets::source_tile(TileFace::Icon(symbol(component)), TileSize::Medium, None);
+        let control: Element<'a, Message> = match app_of(component).filter(|_| on) {
+            Some(app) => widgets::text_button(
+                Some(Icon::ArrowUpRight),
+                tr("Open"),
+                style::button::ghost,
+                installed(app).then_some(Message::OpenApp(app.window_class)),
+            ),
+            None => Space::new().into(),
+        };
+        rows.push(setting_row(Some(mark), name(component), Some(detail), control));
+    }
     let summary = widgets::group(tr("Components"), rows, Some(tr("Change any of this later in Settings.").to_string()));
     page(vec![title(tr("You're set up"), tr("Torro Workplace is ready. Here is what you turned on.")), summary])
+}
+
+/// The web search in the assistant's line on the last step: "Web search · DuckDuckGo" with the providers switched
+/// on, or "Web search off".
+pub(super) fn web_detail(state: &State, data: &Data) -> String {
+    let names = providers_on(state, data);
+    match names.is_empty() {
+        true => tr("Web search off").to_string(),
+        false => trf("Web search · {providers}", &[("providers", &names.join(", "))]),
+    }
 }

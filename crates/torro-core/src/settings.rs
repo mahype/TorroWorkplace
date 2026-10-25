@@ -818,8 +818,8 @@ pub struct Setup {
 
 impl Setup {
     /// The version of the setup this build brings. Raised when a release adds a step the person
-    /// should be told about ("New in setup: AI").
-    pub const VERSION: u32 = 1;
+    /// should be told about ("New in setup: AI"). 2: the step "Web search" (task WEB.7).
+    pub const VERSION: u32 = 2;
 
     /// The setup after a person moved it to `state`: finishing or putting it off records this
     /// build's version; starting it again keeps the version of the last run.
@@ -2563,6 +2563,10 @@ mod tests {
         let old = Setup { state: SetupState::Skipped, version: 0 };
         assert!(old.has_new_steps());
         assert_eq!(old.moved_to(SetupState::Skipped).version, Setup::VERSION);
+        // Task WEB.7: whoever finished the setup before the step "Web search" has a step to see.
+        let before_web = Setup { state: SetupState::Done, version: 1 };
+        assert!(before_web.has_new_steps(), "version 1 had no web search");
+        assert!(!before_web.moved_to(SetupState::Done).has_new_steps());
     }
 
     #[test]

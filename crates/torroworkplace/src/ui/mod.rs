@@ -231,6 +231,10 @@ pub struct Data {
     /// The screens the window manager has (`workspaces.list_screens`, task WS.6), for Workspaces and
     /// where a template loads at login; empty without a window manager.
     pub screens: Vec<torro_ipc::ScreenInfo>,
+    /// The web search providers (`tools.list_search_providers`, task WEB.7) for the setup's step "Web search", in
+    /// the order the core asks them; only loaded while the setup is open, since listing them asks the system
+    /// keychain whether their keys are stored.
+    pub search_providers: Vec<torro_ipc::web::SearchProviderInfo>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -911,7 +915,7 @@ impl Ui {
 
     /// Loads everything from the service; the demo has none and keeps its sample data.
     fn reload(&self) -> Task<Message> {
-        if self.launch.demo { Task::none() } else { load() }
+        if self.launch.demo { Task::none() } else { load(self.setup.is_some()) }
     }
 
     /// The first [`Ui::reload`], after the core answers: one started just now does not listen yet
@@ -1016,10 +1020,13 @@ impl Ui {
                 // as long as it is not done; decided once, with the first settings that came.
                 let first = !self.loaded;
                 self.data = *data;
+                let mut providers = Task::none();
                 if first && self.launch.setup_if_open && !self.launch.demo && self.data.error.is_none() {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
                     if self.data.settings.setup.state != SetupState::Done {
                         self.setup = Some(setup::State::new(step, &self.data.settings));
+                        // Loaded without the setup's search providers (task WEB.7): once more with them.
+                        providers = self.reload();
                     }
                 }
                 self.loaded = true;
@@ -1076,7 +1083,7 @@ impl Ui {
                 // loads its fonts.
                 let design = design.map_or_else(Task::none, |task| task.map(Message::Design));
                 let unhook = unhook.map_or_else(Task::none, |action| self.perform(action));
-                return Task::batch([import, hooks, design, unhook]);
+                return Task::batch([import, hooks, design, unhook, providers]);
             }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
@@ -1294,7 +1301,8 @@ impl Ui {
             Action::OpenSetup => {
                 self.close_menus();
                 self.setup = Some(setup::State::new(setup::Step::Welcome, &self.data.settings));
-                Task::none()
+                // The setup's data includes the search providers, loaded only while it is open.
+                self.reload()
             }
             Action::Copy(text) => iced::clipboard::write(text),
             Action::Focus(id) => iced::widget::operation::focus(id),
@@ -1697,12 +1705,12 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
     }
 }
 
-/// Loads everything the pages show.
-fn load() -> Task<Message> {
+/// Loads everything the pages show; the search providers only `with_providers` (the setup is open).
+fn load(with_providers: bool) -> Task<Message> {
     // How long the core took to answer, with `TORRO_TIMING` (issue #206).
     let started = Instant::now();
     Task::perform(
-        async {
+        async move {
             let Some(socket) = torro_ipc::socket_path() else {
                 return Data { error: Some(tr("No home directory").into()), ..Data::default() };
             };
@@ -1754,6 +1762,13 @@ fn load() -> Task<Message> {
             // The setup's AI step offers them as what a new chat starts with (issue #131).
             if let Ok(Response::Engines { engines }) = client::call(&socket, &Request::ListEngines).await {
                 data.engines = engines;
+            }
+            // The setup's step "Web search" (task WEB.7).
+            if with_providers
+                && let Ok(Response::SearchProviders { providers }) =
+                    client::call(&socket, &Request::ListSearchProviders).await
+            {
+                data.search_providers = providers;
             }
             data
         },

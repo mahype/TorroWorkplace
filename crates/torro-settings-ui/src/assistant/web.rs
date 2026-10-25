@@ -172,6 +172,12 @@ pub fn sent(state: &mut State, result: Result<Option<&str>, &str>) {
     }
 }
 
+/// Whether "Check and save" went out and waits for its answer: a page that shows the core's refusals itself hands
+/// an error to [`sent`] while this is `true`, and the shell's notice stays quiet then (the setup, task WEB.7).
+pub fn checking(state: &State) -> bool {
+    state.checking
+}
+
 /// SearXNG's stored address among `providers`, for [`sent`]; `None` while it has none.
 pub fn stored_address(providers: &[SearchProviderInfo]) -> Option<&str> {
     providers.iter().find(|info| info.id == SearchProviderId::Searxng).and_then(|info| info.address.as_deref())

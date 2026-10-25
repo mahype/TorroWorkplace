@@ -5458,6 +5458,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Dieser Agent kann dann Gelesenes in Suchwörter und Webadressen schreiben. Nur der Assistent fragt vorher, einmal je Unterhaltung.",
     ),
     ("api key|No key", "Kein Schlüssel"),
+    // Setup › Web search (WEB.7, #305)
+    ("Web search", "Websuche"),
+    ("Web search is off", "Websuche ist aus"),
+    ("Web search off", "Websuche aus"),
+    ("Web search · {providers}", "Websuche · {providers}"),
+    ("1 provider on", "1 Anbieter an"),
+    ("{n} providers on", "{n} Anbieter an"),
+    ("Let the assistant use it", "Der Assistent darf sie nutzen"),
+    ("Read access to web search, given when you continue", "Leserecht für die Websuche, erteilt mit „Weiter“"),
+    (
+        "The assistant can search the web and read pages. Choose where your search words go; nothing is on until you switch it on.",
+        "Der Assistent kann im Web suchen und Seiten lesen. Wähle, wohin deine Suchwörter gehen; nichts ist an, bis du es einschaltest.",
+    ),
     // Design review #231
     ("Command", "Befehl"),
     ("Refused while API keys are off", "Abgelehnt, solange API-Schlüssel aus sind"),
