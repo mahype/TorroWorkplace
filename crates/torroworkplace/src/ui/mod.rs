@@ -88,7 +88,9 @@ use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, 
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_inbox::SourceInfo;
-use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, Status, client};
+use torro_ipc::{
+    AccountInfo, AppInfo, ApprovalInfo, ClientInfo, FontInfo, FontOrigin, Request, Response, Status, client,
+};
 use torro_pim::Collection;
 use torro_setups::TemplateSummary;
 
@@ -256,6 +258,9 @@ pub enum Action {
     /// Zoom every window of the suite one step (Appearance › Zoom). Goes through the window's own
     /// zoom, so it applies at once and, with `--demo`, stays in the process.
     Zoom(zoom::Step),
+    /// Give the keyboard focus to the text field with this id (the search field of the font's dropdown
+    /// as it opens, issue #299).
+    Focus(&'static str),
     /// Put this text on the clipboard (a new key, task A.6).
     Copy(String),
     /// Find, connect or disconnect a coding agent's MCP entry or hooks (task A.7), or read the
@@ -880,12 +885,17 @@ impl Ui {
             }
             // The demo's designs, fonts and colour schemes, one of each broken; the check mark at the
             // design `--design` draws with, else at the standard.
-            Open::Design | Open::DesignSchemes | Open::DesignSwitched => {
+            Open::Design | Open::DesignSchemes | Open::DesignSwitched | Open::DesignFonts | Open::DesignFontsSearch => {
                 self.data.settings.design =
                     self.launch.design.clone().unwrap_or_else(|| torro_core::design::STANDARD_ID.into());
                 let mut messages = vec![Message::Select(Section::Appearance)];
                 match open {
                     Open::DesignSchemes => messages.push(Message::General(general::Message::ToggleSchemes)),
+                    Open::DesignFonts => messages.push(Message::General(general::Message::ToggleFonts)),
+                    Open::DesignFontsSearch => {
+                        messages.push(Message::General(general::Message::ToggleFonts));
+                        messages.push(Message::General(general::Message::FontQuery("mo".into())));
+                    }
                     Open::DesignSwitched => {
                         messages.push(Message::General(general::Message::Choose(Part::Design, "console".into())));
                     }
@@ -1287,6 +1297,7 @@ impl Ui {
                 Task::none()
             }
             Action::Copy(text) => iced::clipboard::write(text),
+            Action::Focus(id) => iced::widget::operation::focus(id),
             Action::Setup(job) => {
                 Task::perform(crate::client_setup::perform(job), |outcome| Message::Mcp(mcp::Message::Setup(outcome)))
             }
@@ -1788,9 +1799,18 @@ async fn list_looks() -> general::Lists {
                     .collect()
             }),
             fonts: fonts.map(|list| {
+                // The computer's fonts from one scan, not one per entry (issue #299), and only to draw
+                // their samples: which there are and whether they can be used is the core's to say. A
+                // family this window can't find draws its sample in the standard.
+                let usable = |info: &FontInfo| info.origin == FontOrigin::System && info.valid;
+                let system = list.iter().any(usable).then(torro_core::design::SystemFonts::scan);
                 list.into_iter()
                     .map(|info| {
-                        let font = read_part(fonts_dir.as_deref(), &info.id, info.valid, torro_core::design::load_font);
+                        let font = match (&system, info.origin) {
+                            (Some(scan), FontOrigin::System) if info.valid => scan.load(&info.id).ok(),
+                            (_, FontOrigin::System) => None,
+                            _ => read_part(fonts_dir.as_deref(), &info.id, info.valid, torro_core::design::load_font),
+                        };
                         general::Entry::new(info, font)
                     })
                     .collect()
@@ -2149,6 +2169,12 @@ mod tests {
         let schemes = started(&["--demo", "--open", "design-schemes"]);
         assert!(schemes.page_overlay().is_some(), "the colour scheme's dropdown is open");
         let _ = schemes.view();
+        // Issue #299: the font's dropdown, open and with a search typed.
+        for open in ["design-fonts", "design-fonts-search"] {
+            let fonts = started(&["--demo", "--open", open]);
+            assert!(fonts.page_overlay().is_some(), "{open}: the font's dropdown is open");
+            let _ = fonts.view();
+        }
 
         let parts = started(&["--demo", "--open", "design", "--design", "torro", "--font", "torro"]);
         assert_eq!((parts.data.settings.design.as_str(), parts.data.settings.font.as_str()), ("torro", "torro"));

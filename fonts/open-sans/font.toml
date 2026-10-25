@@ -1,0 +1,25 @@
+# The font Open Sans (task SR.5, issue #299): Open Sans. Its size adjustment comes from its x-height.
+# Source: github.com/googlefonts/opensans (fonts/ttf at commit bd7e376, the source google/fonts builds from),
+# Version 3.003; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Open Sans files are the maker's, unchanged.
+# x-height 0.535 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.020; widest figure
+# of numbers 0.572 em, 0.583 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 1171, SemiBold
+# 1171, Bold 1171 of 2048 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Open Sans"
+version = "1.0.0"
+author = "Torro"
+description = "Open Sans: a neutral humanist sans, open and friendly on screen"
+
+[fonts.text]
+family = "Open Sans"
+regular = "OpenSans-Regular.ttf"
+semibold = "OpenSans-SemiBold.ttf"
+bold = "OpenSans-Bold.ttf"

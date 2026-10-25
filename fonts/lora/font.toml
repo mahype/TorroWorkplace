@@ -1,0 +1,37 @@
+# The font Lora (task SR.7, issue #299): Lora, figures Torro Quill Figures. Its size adjustment comes from its
+# x-height.
+# Source: github.com/cyrealtype/Lora-Cyrillic release v3.021 (Lora.zip, ttf; OFL.txt from the release),
+# Version 3.021; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: "Lora". Unchanged files keep their names.
+# The Lora files are the maker's, unchanged.
+# Torro Quill Figures (Regular, Medium) is made from the Lora cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, without "Lora" in its name because that is a Reserved Font
+# Name; Regular: tnum frozen, digits already one width (650); Medium: tnum frozen, digits already one width
+# (650). Copyright and licence records in the files are unchanged.
+# x-height 0.500 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.092; widest figure
+# of numbers 0.650 em, 0.710 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 364-621, Medium 378-626,
+# SemiBold 392-631, Bold 406-636 units), so numbers takes Torro Quill Figures, whose ten digits are one width
+# in each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Serif" in the control centre (#299).
+kind = "serif"
+
+[about]
+name = "Lora"
+version = "1.0.0"
+author = "Torro"
+description = "Lora: a contemporary serif with roots in calligraphy, with tabular figures"
+
+[fonts.text]
+family = "Lora"
+regular = "Lora-Regular.ttf"
+medium = "Lora-Medium.ttf"
+semibold = "Lora-SemiBold.ttf"
+bold = "Lora-Bold.ttf"
+
+[fonts.numbers]
+family = "Torro Quill Figures"
+regular = "TorroQuillFigures-Regular.ttf"
+medium = "TorroQuillFigures-Medium.ttf"

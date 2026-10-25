@@ -419,8 +419,14 @@ impl SettingsStore {
     /// folder lacks but another holds also names the key that chooses it there (`"nord" is a colour
     /// scheme: choose it with the key color_scheme.`, task L.22).
     fn check_part(&self, part: Part, id: &str) -> Result<(), String> {
+        // Whole settings (`update_settings`) come here without `part_id`: the same limit, and the id is
+        // not repeated, so a long or invisible text never runs back into the message.
+        if bad_family(id) {
+            return Err(format!("the {} can't be used: {BAD_FAMILY}", part_name(part)));
+        }
         let refused = |reasons: String| format!("the {} {id:?} can't be used: {reasons}", part_name(part));
-        let Some(dir) = self.folder(part) else {
+        // The fonts of the computer (issue #299) need no folder either: they are checked where they are.
+        let Some(dir) = self.folder(part).or_else(|| system_font(part, id).then_some(Path::new(""))) else {
             // The built-in designs need no folder, as `settings.list_designs` shows them valid without one.
             let built_in = match part {
                 Part::Design => design::BUILT_IN_IDS.contains(&id),
@@ -433,7 +439,9 @@ impl SettingsStore {
         };
         let Err(problems) = load_part(part, dir, id) else { return Ok(()) };
         let mut reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        // An installed font is in no folder, so no other part can have its id.
         if matches!(problems[..], [DesignError::NotFound { .. }])
+            && !design::is_system_id(id)
             && let Some(hint) = self.found_elsewhere(part, id)
         {
             reasons.push(hint);
@@ -706,9 +714,27 @@ impl Change {
 /// [`SettingsStore::check_part`]'s check.
 fn part_id(key: SettingKey, value: &serde_json::Value) -> Result<String, String> {
     match value.as_str() {
+        // The family of an installed font is held to the rules its listing follows (issue #299)
+        // before anything is loaded, so no long or invisible text runs into a message or an approval.
+        Some(id) if bad_family(id) => Err(format!("not a font of this computer for {key:?}: {BAD_FAMILY}")),
         Some(id) if !id.is_empty() => Ok(id.to_string()),
         _ => Err(format!("{value} is not a value for {key:?}: send the id as a string, \"torro\" for the standard")),
     }
+}
+
+/// Why a `system:<family>` id is refused before anything is loaded ([`bad_family`]).
+const BAD_FAMILY: &str = "after \"system:\" comes a family name of 1 to 64 characters, not starting with \".\", \
+     without control, format or line-separator characters";
+
+/// Whether `id` is `system:` with a family name no listing would show (issue #299): too long, empty,
+/// hidden or with control, format or line-separator characters.
+fn bad_family(id: &str) -> bool {
+    id.strip_prefix(design::SYSTEM_PREFIX).is_some_and(|family| !design::is_family_name(family))
+}
+
+/// Whether `id` names a font of the computer for `part` (issue #299): only fonts have them.
+fn system_font(part: Part, id: &str) -> bool {
+    part == Part::Font && design::is_system_id(id)
 }
 
 /// Reads the design, font or colour scheme `id` from `dir`, only for its reasons.
@@ -1367,6 +1393,36 @@ mod tests {
         assert_eq!(store.current(), current, "nothing changed");
         store.set(SettingKey::Font, &json!("torro")).expect("the standard is always there");
         assert_eq!(store.current().font, "torro");
+    }
+
+    /// Issue #299: a font of the computer is chosen by `system:<family>`; one that isn't installed is
+    /// refused with its reason and no hint at other folders, and a family name the listing would never
+    /// show (too long, control or format characters) is refused before anything is loaded. Without a
+    /// home directory such a font is still checked where it is, not refused for want of a folder.
+    #[test]
+    fn fonts_of_the_computer_are_checked_by_their_family() {
+        let (_dir, store) = store();
+        let gone = "system:Torro Test Font That Is Never Installed";
+        let missing = store.set(SettingKey::Font, &json!(gone)).expect_err("not installed");
+        let reason = DesignError::NotFound { part: Part::Font, id: gone.into() }.to_string();
+        assert!(missing.contains(&reason) && !missing.contains("the key"), "{missing}");
+        let long = format!("system:{}", "x".repeat(65));
+        for bad in ["system:", "system:.SF NS", "system:Evil\u{202E}Name", "system:Tab\tName", long.as_str()] {
+            let refused = store.set(SettingKey::Font, &json!(bad)).expect_err("no such family name");
+            let family = &bad[design::SYSTEM_PREFIX.len()..];
+            assert!(refused.contains("1 to 64 characters"), "{refused}");
+            assert!(family.is_empty() || !refused.contains(family), "the name never runs into the message: {refused}");
+        }
+        assert_eq!(store.current().font, "torro", "nothing changed");
+
+        // Whole settings take the same limit (they skip `part_id`).
+        let whole = store.check_part(Part::Font, &long).expect_err("too long");
+        assert!(whole.contains("1 to 64 characters") && !whole.contains("xxxxxxxx"), "{whole}");
+
+        let homeless = SettingsStore::without_file();
+        let refused = homeless.check_part(Part::Font, gone).expect_err("not installed");
+        assert!(refused.contains(&reason) && !refused.contains("folder"), "checked, not refused: {refused}");
+        assert!(homeless.check_part(Part::ColorScheme, gone).is_err(), "only fonts are installed");
     }
 
     /// Task L.22: whole settings without the font and colour scheme (a client that does not know

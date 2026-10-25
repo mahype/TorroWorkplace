@@ -527,6 +527,10 @@ pub enum Message {
     /// A file of the new font is loaded. Nothing to do: the message alone makes Iced build the
     /// view again, so text laid out before the font was there is laid out anew.
     FontLoaded,
+    /// The font of the computer the settings name (its id, issue #299), read off the window's thread
+    /// because finding it scans every installed font: [`Follow::update`] draws with it, unless the
+    /// settings named another font meanwhile.
+    FontRead(String, Box<FontSet>),
 }
 
 /// How one window follows the design, font and colour scheme the suite settings name, like
@@ -598,6 +602,10 @@ impl Follow {
     pub fn update(&mut self, message: Message) -> Option<Task<Message>> {
         match message {
             Message::Stored(Ok(chosen)) => self.follow(chosen),
+            // A read that the settings overtook is dropped.
+            Message::FontRead(id, font) => {
+                (id == self.chosen.font).then(|| show_parts(None, Some(*font), None)).flatten()
+            }
             // The core is not answering: keep what we have.
             Message::Stored(Err(_)) | Message::FontLoaded => None,
         }
@@ -607,16 +615,43 @@ impl Follow {
     /// from [`Follow::fetch`] or with other settings), reading only the parts whose id differs from
     /// the one asked for last: a new font alone touches neither design nor colour scheme, and only
     /// it loads font files. The same ids again do nothing. Returns what [`Follow::update`] returns.
+    ///
+    /// A font of the computer (`system`, `system:<family>`, issue #299) is read on a blocking thread:
+    /// finding it scans every installed font, 100–200 ms the window would stand still. The task then
+    /// ends in [`Message::FontRead`], and the window draws with it from that message on.
     pub fn follow(&mut self, chosen: Chosen) -> Option<Task<Message>> {
         if chosen == self.chosen {
             return None;
         }
         let design = (chosen.design != self.chosen.design).then(|| self.folders.design(&chosen.design));
-        let font = (chosen.font != self.chosen.font).then(|| self.folders.font(&chosen.font));
+        let new_font = (chosen.font != self.chosen.font).then(|| chosen.font.clone());
+        let (font, read) = match new_font {
+            Some(id) if torro_core::design::is_system_id(&id) => (None, Some(self.read_font(id))),
+            Some(id) => (Some(self.folders.font(&id)), None),
+            None => (None, None),
+        };
         let scheme =
             (chosen.color_scheme != self.chosen.color_scheme).then(|| self.folders.scheme(&chosen.color_scheme));
         self.chosen = chosen;
-        show_parts(design, font, scheme)
+        match (show_parts(design, font, scheme), read) {
+            (shown, None) => shown,
+            (Some(shown), Some(read)) => Some(Task::batch([shown, read])),
+            (None, Some(read)) => Some(read),
+        }
+    }
+
+    /// The task that reads the font `id` on a blocking thread and ends in [`Message::FontRead`]; the
+    /// standard's when the thread fails.
+    fn read_font(&self, id: String) -> Task<Message> {
+        let folders = self.folders.clone();
+        Task::perform(
+            async move {
+                let wanted = id.clone();
+                let font = tokio::task::spawn_blocking(move || folders.font(&wanted)).await;
+                (id, font.unwrap_or_else(|_| FontSet::standard()))
+            },
+            |(id, font)| Message::FontRead(id, Box::new(font)),
+        )
     }
 
     /// Switches only the design to `id` ([`Follow::follow`] with the font and colour scheme asked
@@ -689,7 +724,8 @@ pub(crate) fn mark_fonts_loaded(id: &str) -> bool {
 /// once, every weight it has. Built-in faces are the Inter files embedded in `torro_gui`
 /// ([`crate::fonts`]); a font folder's files are read from it (a file that cannot be read is left
 /// out, Iced then falls back to another font – the font was checked when it was loaded, so this only
-/// happens when the folder changed since).
+/// happens when the folder changed since). A font of the computer ([`Face::System`], issue #299) gives
+/// nothing: Iced loads the installed fonts itself, and none is copied.
 pub fn font_files(font: &FontSet) -> Vec<Cow<'static, [u8]>> {
     let mut seen: Vec<&str> = Vec::new();
     let mut files = Vec::new();
@@ -703,7 +739,7 @@ pub fn font_files(font: &FontSet) -> Vec<Cow<'static, [u8]>> {
             match family.face(weight) {
                 Some(Face::Builtin) => files.extend(builtin(&family.family, weight).map(Cow::Borrowed)),
                 Some(Face::File(path)) => files.extend(std::fs::read(path).ok().map(Cow::Owned)),
-                None => {}
+                Some(Face::System) | None => {}
             }
         }
     }
@@ -712,13 +748,15 @@ pub fn font_files(font: &FontSet) -> Vec<Cow<'static, [u8]>> {
 
 /// The file of one face of `font`: the family of `role` at exactly `weight`, resolved like
 /// [`font_files`] (built-in faces from `torro_gui`, a folder's from it). `None` when the family has no
-/// file for that weight, or a folder's file cannot be read any more. Picking another weight instead is
-/// the caller's choice (the PDF tool takes the next heavier one for bold).
+/// file for that weight, or a folder's file cannot be read any more, and always for a font of the
+/// computer ([`Face::System`]): its bytes are never handed on, so a PDF sets it in Inter. Picking
+/// another weight instead is the caller's choice (the PDF tool takes the next heavier one for bold).
 pub fn font_file(font: &FontSet, role: FontRole, weight: Weight) -> Option<Cow<'static, [u8]>> {
     let family = font.fonts.get(role);
     match family.face(weight)? {
         Face::Builtin => builtin(&family.family, weight).map(Cow::Borrowed),
         Face::File(path) => std::fs::read(path).ok().map(Cow::Owned),
+        Face::System => None,
     }
 }
 
@@ -1082,6 +1120,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Issue #299: a font of the computer is not read in the window's `update` (that scans every
+    /// installed font) but by a task; its answer is drawn with only while the settings still name it.
+    #[test]
+    fn a_font_of_the_computer_is_read_off_the_window() {
+        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let (root, folders) = folders();
+        let mut follow = Follow::new(None).in_folders(folders);
+        let before = crate::font::active();
+        let system = "system:Torro Test Font That Is Never Installed";
+        let chosen = Chosen::of_ids(STANDARD_ID, system, STANDARD_ID);
+        let read = follow.update(Message::Stored(Ok(chosen))).expect("a task reads it");
+        assert!(read.units() > 0, "the read is a task");
+        assert!(Arc::ptr_eq(&before, &crate::font::active()), "nothing changed in update");
+
+        let mut sample = FontSet::standard();
+        sample.id = system.to_string();
+        let stale = follow.update(Message::FontRead("system:Other".into(), Box::new(sample.clone())));
+        assert!(stale.is_none() && Arc::ptr_eq(&before, &crate::font::active()), "an overtaken read is dropped");
+        assert!(follow.update(Message::FontRead(system.into(), Box::new(sample))).is_some());
+        assert_eq!(crate::font::active().id, system, "drawn with once read");
+        let _ = follow.update(Message::Stored(Ok(Chosen::standard())));
+        assert!(crate::font::active().is_standard());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Task L.22: a window follows the three settings apart – a message that changes one id reads and
     /// replaces only that part, the others stay the very same; only a new font loads files; choosing a
     /// design (`apply`) keeps font and colour scheme.
@@ -1233,6 +1296,28 @@ mod tests {
         assert_eq!(font_file(&pack, FontRole::Heading, Weight::Bold).as_deref(), Some(&b"bold bytes"[..]));
         std::fs::remove_file(&file).expect("remove");
         assert_eq!(font_file(&pack, FontRole::Heading, Weight::Bold), None, "a file gone since is none");
+    }
+
+    /// Issue #299: a font of the computer brings no bytes – Iced draws it from the installed fonts, and
+    /// nothing hands it on. Only its figures, the embedded Inter Tabular, are loaded.
+    #[test]
+    fn a_font_of_the_computer_gives_no_files() {
+        let mut system = FontSet::standard();
+        system.fonts.text = torro_core::design::Font {
+            family: "Avenir Next".into(),
+            regular: Some(Face::System),
+            medium: Some(Face::System),
+            semibold: None,
+            bold: Some(Face::System),
+        };
+        system.fonts.heading = system.fonts.text.clone();
+        for weight in WEIGHTS {
+            assert_eq!(font_file(&system, FontRole::Text, weight), None, "{weight}");
+        }
+        let [_, _, _, tabular, tabular_medium] = crate::fonts();
+        assert_eq!(font_files(&system), [Cow::Borrowed(tabular), Cow::Borrowed(tabular_medium)]);
+        system.fonts.numbers = system.fonts.text.clone();
+        assert!(font_files(&system).is_empty());
     }
 
     #[test]

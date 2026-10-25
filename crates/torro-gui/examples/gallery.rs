@@ -169,6 +169,8 @@ struct Gallery {
     page: Page,
     section: usize,
     query: String,
+    /// The words in the search field of the menu with search (issue #299).
+    search: String,
     notes: text_editor::Content,
     view: Option<&'static str>,
     checked: bool,
@@ -206,6 +208,7 @@ enum Msg {
     Page(Page),
     Section(usize),
     Query(String),
+    Search(String),
     Notes(text_editor::Action),
     View(&'static str),
     Check(bool),
@@ -249,6 +252,7 @@ impl Gallery {
             page: start.page,
             section: 0,
             query: String::new(),
+            search: String::new(),
             notes: text_editor::Content::with_text("Bring the printed agenda.\nAsk about the budget."),
             view: Some("Week"),
             checked: true,
@@ -314,6 +318,7 @@ impl Gallery {
             Msg::Page(page) => self.page = page,
             Msg::Section(i) => self.section = i,
             Msg::Query(q) => self.query = q,
+            Msg::Search(words) => self.search = words,
             Msg::Notes(action) => self.notes.perform(action),
             Msg::View(v) => self.view = Some(v),
             Msg::Check(c) => self.checked = c,
@@ -1707,6 +1712,34 @@ impl Gallery {
     }
 
     /// The building blocks, each in place (menus and cards are drawn where they would float).
+    /// A menu with search (issue #299): 40 fonts in two sections with a line between, filtered by the
+    /// words in its field; titles without a match go, nothing at all says "No matches".
+    fn search_menu(&self) -> Element<'_, Msg> {
+        let words = self.search.to_lowercase();
+        let mut items: Vec<Element<'_, Msg>> = Vec::new();
+        for (title, names) in [("Torro fonts", &SEARCH_FONTS[..20]), ("System fonts", &SEARCH_FONTS[20..])] {
+            let found: Vec<&str> = names.iter().copied().filter(|name| name.to_lowercase().contains(&words)).collect();
+            if found.is_empty() {
+                continue;
+            }
+            if !items.is_empty() {
+                items.push(container(rule::horizontal(1).style(style::rule)).padding([space::xs(), 0.0]).into());
+            }
+            let title = typo::text(typo::caption(), title).style(theme::text_2);
+            items.push(container(title).padding(iced::Padding::new(space::s()).bottom(space::xs())).into());
+            items.extend(found.into_iter().map(|name| -> Element<'_, Msg> {
+                button(container(typo::text(typo::body(), name)).center_y(Fill))
+                    .width(Fill)
+                    .height(style::MENU_ITEM_HEIGHT)
+                    .padding(style::ITEM_PADDING)
+                    .style(style::button::menu_item(false))
+                    .on_press(Msg::Noop)
+                    .into()
+            }));
+        }
+        widgets::search_menu("gallery-search", &self.search, Msg::Search, Msg::Noop, items, size::props())
+    }
+
     fn blocks(&self) -> Element<'_, Msg> {
         let p = self.palette();
         let sidebar = container(self.tasks_sidebar(&Anchor::new()))
@@ -1873,6 +1906,7 @@ impl Gallery {
         .spacing(space::xl());
         let third = column![
             section("Menu", row![self.nav_menu(), view_menu].spacing(space::l()).into()),
+            section("Menu with search", self.search_menu()),
             section("Floating card", card),
             section("Properties", props.into()),
         ]
@@ -2716,3 +2750,48 @@ fn bmp(picture: &iced::window::Screenshot) -> Vec<u8> {
     }
     out
 }
+
+/// The entries of the gallery's menu with search: twenty of the suite's fonts, then twenty of a
+/// computer's.
+const SEARCH_FONTS: [&str; 40] = [
+    "Inter",
+    "Atkinson Hyperlegible Next",
+    "Cantarell",
+    "DM Sans",
+    "Fira Code",
+    "Fira Sans",
+    "Geist",
+    "Geist Mono",
+    "IBM Plex Mono",
+    "IBM Plex Sans",
+    "Inconsolata",
+    "JetBrains Mono",
+    "Lato",
+    "Lexend",
+    "Literata",
+    "Lora",
+    "Manrope",
+    "Merriweather",
+    "Mona Sans",
+    "Newsreader 16pt",
+    "System",
+    "Arial",
+    "Avenir",
+    "Avenir Next",
+    "Baskerville",
+    "Charter",
+    "Courier New",
+    "Futura",
+    "Georgia",
+    "Gill Sans",
+    "Helvetica",
+    "Helvetica Neue",
+    "Iowan Old Style",
+    "Menlo",
+    "Monaco",
+    "Optima",
+    "Palatino",
+    "SF Mono",
+    "Trebuchet MS",
+    "Verdana",
+];

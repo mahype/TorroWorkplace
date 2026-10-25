@@ -5,7 +5,9 @@
 //!   [`load`], [`list`]), with an optional `preview.png`.
 //! - A [`FontSet`] is the font: the families of the three roles text, heading and numbers, and the size
 //!   adjustment that makes its lowercase look as large as Inter's. Folder `fonts/<id>/font.toml`
-//!   ([`font_dir`], [`load_font`], [`list_fonts`]) with the font files and `LICENSE.txt`.
+//!   ([`font_dir`], [`load_font`], [`list_fonts`]) with the font files and `LICENSE.txt`. The fonts
+//!   installed on the computer can be used too, by name and never copied ([`SystemFonts`], issue #299):
+//!   [`SYSTEM_ID`] follows the system's interface font, `system:<family>` names one family.
 //! - A [`ColorScheme`] is the colour of both modes and the logo. Folder
 //!   `color-schemes/<id>/color-scheme.toml` ([`color_scheme_dir`], [`load_color_scheme`],
 //!   [`list_color_schemes`]) with an optional `logo.svg`.
@@ -32,6 +34,7 @@ mod font;
 mod pack;
 mod rules;
 mod scheme;
+mod system;
 #[cfg(test)]
 mod testdata;
 
@@ -48,10 +51,24 @@ pub use error::DesignError;
 pub use font::{list_fonts, load_font};
 pub use pack::{Listed, list, load};
 pub use scheme::{list_color_schemes, load_color_scheme};
+pub use system::{SystemFonts, is_family_name, list_system_fonts};
 
 /// The id of the standard design. It has no folder; [`load`] answers it without touching the disk,
 /// and a folder of that name under [`dir`] is refused ([`DesignError::BadId`]).
 pub const STANDARD_ID: &str = "torro";
+
+/// The font that follows the interface font of the operating system (issue #299), resolved anew each
+/// time it is loaded ([`SystemFonts`]). Reserved like [`STANDARD_ID`]: no folder may carry it.
+pub const SYSTEM_ID: &str = "system";
+
+/// The start of the id of an installed font: `system:<family>` (`system:Avenir Next`). Folder ids are
+/// `a-z0-9-` only ([`is_valid_id`]), so none can begin like this.
+pub const SYSTEM_PREFIX: &str = "system:";
+
+/// Whether `id` names a font of the computer: [`SYSTEM_ID`] or `system:<family>`.
+pub fn is_system_id(id: &str) -> bool {
+    id == SYSTEM_ID || id.starts_with(SYSTEM_PREFIX)
+}
 
 /// The designs built into the suite, in the order [`list`] gives them: the standard ("Standard"),
 /// "Compact" and "Console" (issue #291). Each is `designs/<id>/design.toml` in the repository,
@@ -243,6 +260,23 @@ pub enum Face {
     Builtin,
     /// A TTF/OTF file inside the font's folder, absolute, checked to carry [`Font::family`].
     File(PathBuf),
+    /// Drawn by [`Font::family`] from the fonts installed on the computer, without bytes of its own
+    /// (issue #299): Iced loads the system's fonts itself, so nothing is copied or handed on – a PDF,
+    /// which embeds its fonts, sets such a font in the standard's Inter.
+    System,
+}
+
+/// What kind of letters a font has (`kind` in `font.toml`, issue #299): the control centre groups the
+/// fonts by it. On the wire in lowercase (`"sans"`, `"serif"`, `"mono"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FontKind {
+    /// Without serifs; the standard's Inter.
+    Sans,
+    /// With serifs.
+    Serif,
+    /// Every letter as wide as the next.
+    Mono,
 }
 
 /// Which of the [`Fonts`] a level uses (`font = "heading"`).
@@ -1078,6 +1112,9 @@ pub struct FontSet {
     /// ([`INTER_X_HEIGHT`], OS/2 `sxHeight`, else the height of its "x"), held to 0.90–1.15. Exactly 1
     /// for Inter. [`FontSet::apply`] uses it.
     pub size_adjust: f32,
+    /// `kind` from `font.toml`; `None` when it leaves it out and for a font of the computer, whose kind
+    /// can't be told reliably. [`FontKind::Sans`] for the standard.
+    pub kind: Option<FontKind>,
 }
 
 impl FontSet {
@@ -1095,6 +1132,7 @@ impl FontSet {
             license: "OFL-1.1".to_string(),
             fonts: inter(),
             size_adjust: 1.0,
+            kind: Some(FontKind::Sans),
         }
     }
 
@@ -1307,11 +1345,13 @@ const STANDARD_LIGHT: Palette = Palette {
     sidebar_line: Rgba::black(0.07),
 };
 
-/// Whether `id` may name a pack folder: `a-z`, `0-9`, `-`, 1–32 characters, not [`STANDARD_ID`].
+/// Whether `id` may name a pack folder: `a-z`, `0-9`, `-`, 1–32 characters, not [`STANDARD_ID`] and
+/// not [`SYSTEM_ID`] (the fonts of the computer, issue #299).
 pub fn is_valid_id(id: &str) -> bool {
     (1..=32).contains(&id.len())
         && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && id != STANDARD_ID
+        && id != SYSTEM_ID
 }
 
 /// `path` relative to `root` for messages ("fonts/Inter.ttf"); the file name when it is outside.
@@ -1483,7 +1523,7 @@ mod tests {
         for good in ["plex", "my-design-2", "a"] {
             assert!(is_valid_id(good), "{good}");
         }
-        for bad in ["", "Plex", "my_design", "../x", "torro", "x".repeat(33).as_str(), "plex.d"] {
+        for bad in ["", "Plex", "my_design", "../x", "torro", "system", "x".repeat(33).as_str(), "plex.d"] {
             assert!(!is_valid_id(bad), "{bad}");
         }
     }

@@ -1,0 +1,38 @@
+# The font Merriweather (task SR.7, issue #299): Merriweather, figures Torro Serif Figures. Its size
+# adjustment comes from its x-height.
+# Source: github.com/EbenSorkin/Merriweather4 release 4.009 (Meriweather.Static.fonts.TTF.flavor.zip, TTF;
+# OFL.txt from Merriweather4-4.009.zip), name table Version 2.100; downloaded 2026-10-24. Licence: SIL OFL
+# 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: "Merriweather". Unchanged files keep their names.
+# The Merriweather files are the maker's, unchanged.
+# Torro Serif Figures (Regular, Medium) is made from the Merriweather cuts with opentype-feature-freezer
+# 1.32.2 (pyftfeatfreeze -f tnum) and fontTools 4.67.0, without "Merriweather" in its name because that is a
+# Reserved Font Name; Regular: tnum frozen, digits already one width (1180); Medium: tnum frozen, digits
+# already one width (1180). Copyright and licence records in the files are unchanged.
+# x-height 0.555 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 0.983; widest figure
+# of numbers 0.590 em, 0.590 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 906-1291, Medium 909-1296,
+# SemiBold 914-1304, Bold 927-1324 units), so numbers takes Torro Serif Figures, whose ten digits are one
+# width in each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Serif" in the control centre (#299).
+kind = "serif"
+
+[about]
+name = "Merriweather"
+version = "1.0.0"
+author = "Torro"
+description = "Merriweather: a sturdy serif made for reading on screens, with tabular figures"
+
+[fonts.text]
+family = "Merriweather"
+regular = "Merriweather-Regular.ttf"
+medium = "Merriweather-Medium.ttf"
+semibold = "Merriweather-SemiBold.ttf"
+bold = "Merriweather-Bold.ttf"
+
+[fonts.numbers]
+family = "Torro Serif Figures"
+regular = "TorroSerifFigures-Regular.ttf"
+medium = "TorroSerifFigures-Medium.ttf"

@@ -1282,9 +1282,12 @@ pub enum Request {
     /// listed apart ([`Request::ListFonts`], [`Request::ListColorSchemes`]). Reads only; never fails.
     #[serde(rename = "settings.list_designs")]
     ListDesigns,
-    /// Every font (task L.22): the standard first, then each folder under `<data>/fonts/`, valid or
-    /// with the reasons it can't be used, and which one the settings name ([`Response::Fonts`]). One
-    /// is chosen with [`Request::SetSetting`] and [`SettingKey::Font`]. Reads only; never fails.
+    /// Every font (task L.22): the standard first, then each folder under `<data>/fonts/`, then the
+    /// fonts installed on the computer (issue #299: `system`, the system's interface font, and one
+    /// `system:<family>` per family), valid or with the reasons it can't be used, where each comes
+    /// from ([`FontInfo::origin`]) and which one the settings name ([`Response::Fonts`]). One is
+    /// chosen with [`Request::SetSetting`] and [`SettingKey::Font`]. Reads only; never fails: when the
+    /// installed fonts can't be listed, only the folders are.
     #[serde(rename = "settings.list_fonts")]
     ListFonts,
     /// Every colour scheme (task L.22): the standard first, then each folder under
@@ -3036,7 +3039,10 @@ pub enum SettingKey {
     /// the design that is already chosen changes nothing. Open windows follow.
     Design,
     /// The font every window draws with (task L.22): its id from `settings.list_fonts`, `"torro"`
-    /// for the standard. Refused like [`SettingKey::Design`]. Open windows follow and load its files.
+    /// for the standard; a font of the computer as `"system"` or `"system:<family>"` (issue #299),
+    /// stored by that name only – a family that isn't installed is refused, and so is one that is
+    /// empty, longer than 64 characters, starts with "." or holds control, format or line-separator
+    /// characters. Refused like [`SettingKey::Design`]. Open windows follow and load its files.
     Font,
     /// The colour scheme every window draws with, both modes and the logo (task L.22): its id from
     /// `settings.list_color_schemes`, `"torro"` for the standard. Refused like
@@ -4430,11 +4436,13 @@ pub struct DesignInfo {
 
 /// One font as [`Request::ListFonts`] reports it (task L.22). Family, name, version, author,
 /// description, licence and the file names in the problems are the folder's own words, shown as
-/// written.
+/// written; the family names of the computer's fonts come from their files, someone else's words
+/// too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FontInfo {
-    /// The font's folder name, what [`SettingKey::Font`] takes; `torro` for the standard.
+    /// What [`SettingKey::Font`] takes: the font's folder name, `torro` for the standard, `system`
+    /// or `system:<family>` for a font of the computer (issue #299).
     pub id: String,
     /// The family of its text font (`IBM Plex Sans`), what the control centre names it by; `None`
     /// when the font can't be used.
@@ -4448,9 +4456,20 @@ pub struct FontInfo {
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// SPDX id of the licence of its files (`OFL-1.1`); `None` when the font can't be used.
+    /// SPDX id of the licence of its files (`OFL-1.1`); `None` when the font can't be used, and for
+    /// a font of the computer: it is used there, never handed on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    /// Where the font comes from (issue #299): the control centre lists the suite's own (`bundled`,
+    /// `folder`) under "Torro fonts" and the computer's (`system`) under a line, "System fonts". A
+    /// reply without it (an older core) reads as `folder`.
+    #[serde(default)]
+    pub origin: FontOrigin,
+    /// What kind of letters it has (`font.toml` `kind`, issue #299), by which the control centre
+    /// groups the suite's fonts into Sans, Serif and Mono; `None` for one without it ("Other") and for
+    /// the computer's fonts. A word this version doesn't know reads as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_kind")]
+    pub kind: Option<torro_core::design::FontKind>,
     /// The standard font the suite ships, Inter (always first, always valid).
     pub standard: bool,
     /// Whether the font can be used; one that breaks a rule is refused as a whole.
@@ -4461,6 +4480,38 @@ pub struct FontInfo {
     /// The settings name this font (`Settings::font`). When the active one is not valid, the
     /// windows draw with the standard.
     pub active: bool,
+}
+
+/// Where a font of [`Request::ListFonts`] comes from (issue #299), in lowercase on the wire. A word
+/// this version doesn't know reads as [`FontOrigin::Folder`], so a later core's answer still reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FontOrigin {
+    /// Shipped with the suite: the standard and the fonts it lays into the fonts folder.
+    Bundled,
+    /// Installed on the computer: used by its name, never copied, never in a PDF.
+    System,
+    /// Another folder under `<data>/fonts/`, laid there by the user. Last, because every unknown word
+    /// reads as it.
+    #[default]
+    #[serde(other)]
+    Folder,
+}
+
+/// [`FontInfo::kind`] read leniently: a word this version doesn't know is no kind, not an error.
+fn lenient_kind<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<torro_core::design::FontKind>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Known(torro_core::design::FontKind),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Option::<Lenient>::deserialize(deserializer)? {
+        Some(Lenient::Known(kind)) => Some(kind),
+        Some(Lenient::Other(_)) | None => None,
+    })
 }
 
 /// One colour scheme as [`Request::ListColorSchemes`] reports it (task L.22). Name, version,
@@ -5057,6 +5108,50 @@ mod tests {
         assert_eq!(serde_json::to_string(&pong).unwrap(), r#"{"result":"pong","version":"0.1.0","api":1}"#);
         let old: Response = serde_json::from_str(r#"{"result":"pong","version":"0.0.9"}"#).unwrap();
         assert_eq!(old, Response::Pong { version: "0.0.9".into(), api: 0 });
+    }
+
+    /// Issue #299: a font says where it comes from and its kind; a reply of an older core without them
+    /// reads as a folder without a kind, and words of a later core this version doesn't know read the
+    /// same way. A font of the computer carries no licence.
+    #[test]
+    fn fonts_carry_origin_and_kind_and_read_leniently() {
+        use serde_json::json;
+        use torro_core::design::FontKind;
+        let avenir = FontInfo {
+            id: "system:Avenir Next".into(),
+            family: Some("Avenir Next".into()),
+            name: "Avenir Next".into(),
+            version: String::new(),
+            author: None,
+            description: None,
+            license: None,
+            origin: FontOrigin::System,
+            kind: None,
+            standard: false,
+            valid: true,
+            problems: Vec::new(),
+            active: true,
+        };
+        let json = serde_json::to_value(&avenir).expect("json");
+        assert_eq!(json["origin"], json!("system"));
+        assert!(json.get("kind").is_none() && json.get("license").is_none(), "{json}");
+        assert_eq!(serde_json::from_value::<FontInfo>(json.clone()).expect("parses"), avenir);
+        let mono = FontInfo { kind: Some(FontKind::Mono), origin: FontOrigin::Bundled, ..avenir.clone() };
+        let json = serde_json::to_value(&mono).expect("json");
+        assert_eq!((&json["kind"], &json["origin"]), (&json!("mono"), &json!("bundled")));
+
+        let mut older = json.clone();
+        let fields = older.as_object_mut().expect("an object");
+        fields.remove("origin");
+        fields.remove("kind");
+        let read = serde_json::from_value::<FontInfo>(older).expect("an answer of an older core");
+        assert_eq!((read.origin, read.kind), (FontOrigin::Folder, None));
+        let mut later = json;
+        let fields = later.as_object_mut().expect("an object");
+        fields.insert("origin".into(), json!("cloud"));
+        fields.insert("kind".into(), json!("script"));
+        let read = serde_json::from_value::<FontInfo>(later).expect("an answer of a later core");
+        assert_eq!((read.origin, read.kind), (FontOrigin::Folder, None));
     }
 
     /// Task L.33: a design names its density and mail view, a colour scheme whether it is dark

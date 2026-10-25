@@ -72,6 +72,10 @@ impl PdfFonts {
     /// (`Settings::font`, task L.22). The standard's when the font cannot be
     /// loaded or printpdf cannot read its files ([`PdfFonts::of`]), so a PDF is always set.
     pub fn of_font(dir: Option<&Path>, id: &str) -> PdfFonts {
+        // A font of the computer is never embedded (issue #299): no scan of the installed fonts for it.
+        if design::is_system_id(id) {
+            return PdfFonts::standard();
+        }
         let font = dir.and_then(|dir| design::load_font(dir, id).ok());
         PdfFonts::of_pack(font.as_ref())
     }
@@ -1181,6 +1185,24 @@ mod tests {
         assert_eq!(fonts, PdfFonts::standard());
         let pdf = read(&render(TITLE, "Trotzdem gesetzt.", &report(), &fonts, None, day()).expect("a PDF"));
         assert!(pdf.all().contains("Trotzdem gesetzt."));
+    }
+
+    /// Issue #299: a font of the computer is never embedded in a PDF – that would hand it on. The PDF is
+    /// set in the standard's Inter.
+    #[test]
+    fn a_font_of_the_computer_is_set_in_inter() {
+        let mut font = FontSet::standard();
+        let system = design::Font {
+            family: "Avenir Next".into(),
+            regular: Some(design::Face::System),
+            medium: Some(design::Face::System),
+            semibold: Some(design::Face::System),
+            bold: Some(design::Face::System),
+        };
+        (font.fonts.text, font.fonts.heading) = (system.clone(), system);
+        assert_eq!(PdfFonts::of(&font), None);
+        assert_eq!(PdfFonts::of_pack(Some(&font)), PdfFonts::standard());
+        assert_eq!(PdfFonts::of_font(None, "system:Torro Test Font That Is Never Installed"), PdfFonts::standard());
     }
 
     fn face_bytes(font: &FontSet) -> Cow<'static, [u8]> {
