@@ -358,7 +358,7 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   Katalog-Servern bleiben sie beim Versionswechsel aus dem Katalog.
 - **Sichtbarkeit fremder Schlüssel:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in
   `list_extensions` und `get_extension` nur Server, für die er eine Stufe hat. Deren Einrichtung ist geschwärzt:
-  Argumente und Klartextwerte stehen als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil („…/server“), eine
+  Argumente und Klartextwerte stehen als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil („…/server“, auch im Status `missing`), eine
   Adresse nur mit ihrem Ursprung. Geheimnisse bleiben „gespeichert“ bzw. „fehlt“. Vollständig sieht sie nur der
   App-Schlüssel.
 - **Geheimnisse gehören in Variablen oder Header**, nie in die Argumente. Argumente sind kein Geheimnis: Sie stehen

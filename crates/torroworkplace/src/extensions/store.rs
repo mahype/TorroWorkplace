@@ -329,7 +329,7 @@ pub fn redacted(spec: &ServerSpec) -> ServerSpec {
 
 /// A command as [`redacted`] shows it: a name (`npx`) as it is, a path only by its last part after
 /// [`REDACTED`] (`…/server`), since the folders before it may name the person's home and user name.
-fn redacted_command(command: &str) -> String {
+pub fn redacted_command(command: &str) -> String {
     match command.rsplit_once(['/', '\\']) {
         Some((_, "")) => REDACTED.to_string(),
         Some((_, name)) => format!("{REDACTED}/{name}"),

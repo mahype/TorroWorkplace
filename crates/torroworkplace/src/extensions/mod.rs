@@ -42,7 +42,7 @@ use torro_ipc::extensions::{
 use self::catalog::CatalogError;
 use self::prereq::Roots;
 use self::store::{SecretStore, Store, StoreError, StoredExtension};
-use self::supervisor::{Health, Launch, Purpose, Supervisor, SupervisorError, Timing};
+use self::supervisor::{Launch, Purpose, Reset, Supervisor, SupervisorError, Timing};
 use crate::pim::Reach;
 
 /// The core's MCP servers. [`Extensions::system`] looks for programs where the service does and keeps the
@@ -343,7 +343,8 @@ impl Extensions {
         };
         // The secrets as given go to this start only; the keychain gets them once the server started.
         let launch = Launch { id: id.clone(), server: store::stored_form(&spec), secrets: given(&spec), work_dir };
-        self.supervisor.reset(&id);
+        // Put back when this is dropped during the start: an id removed before stays stopped.
+        let reset = self.supervisor.reset_until_kept(&id);
         let reported = match self.supervisor.tools(&launch, Purpose::Install).await {
             Ok(reported) => reported,
             Err(err) => {
@@ -354,6 +355,7 @@ impl Extensions {
                 return error("error", err.to_string());
             }
         };
+        reset.keep();
         // Stored switched off: it runs again once a person allowed its tools and something calls it.
         self.supervisor.stop(&id).await;
         let _changing = self.changing.lock().await;
@@ -443,21 +445,23 @@ impl Extensions {
     /// command and arguments or origin; a catalog server's program counts as the same, since the catalog
     /// moved it to its new version ([`as_catalog_moved`]). `not-found` for an unknown id,
     /// `unsupported` when the catalog's programs are missing, `error` as for installing; then nothing changes,
-    /// and a crashed server stays crashed ([`Supervisor::health`]). The file is not locked during the start:
-    /// `conflict` when the server changed meanwhile (switched off, allowed, removed: a switch-off or removal
-    /// breaks the start off) and while another update of it is under way; then nothing changes either.
+    /// and a crashed or switched-off server stays so ([`Supervisor::reset_until_kept`]), also when the update
+    /// is dropped. Everything up to the start (the folder, the secrets, the reset) happens under the file's
+    /// lock, the start itself not: `conflict` when the server changed meanwhile (switched off, allowed,
+    /// removed: a switch-off or removal breaks the start off, and a removal is never undone) and while another
+    /// update of it is under way; then nothing changes either.
     pub async fn update(&self, id: &str, server: Option<ServerSpec>) -> Response {
         let store = match self.writable() {
             Ok(store) => store,
             Err(refused) => return refused,
         };
         let Some(_claim) = self.claim(id) else { return under_way() };
-        let old = {
-            let _changing = self.changing.lock().await;
-            match self.find(id) {
-                Ok(old) => old,
-                Err(refused) => return refused,
-            }
+        // Held until the start: a removal meanwhile comes either before (`not-found`) or after the reset, so
+        // its stop stays and breaks the start off; it never finds its folder made again or its secrets read.
+        let changing = self.changing.lock().await;
+        let old = match self.find(id) {
+            Ok(old) => old,
+            Err(refused) => return refused,
         };
         let (source, spec, moved) = match (&old.source, server) {
             (Source::Catalog { entry, .. }, None) => {
@@ -499,12 +503,12 @@ impl Extensions {
         secrets.extend(given(&spec));
         let launch = Launch { id: id.to_string(), server: store::stored_form(&spec), secrets, work_dir };
         // Forgotten for the trial start (a crashed server is updated to mend it), put back when it fails.
-        let health = self.supervisor.health(id);
-        self.supervisor.reset(id);
+        let reset = self.supervisor.reset_until_kept(id);
+        drop(changing);
         let reported = match self.supervisor.tools(&launch, Purpose::Install).await {
             Ok(reported) => reported,
             Err(err) => {
-                self.undo_update(&launch, health).await;
+                self.undo_update(&launch, reset).await;
                 return match err {
                     SupervisorError::Stopped => changed_meanwhile(),
                     err => error("error", err.to_string()),
@@ -519,42 +523,42 @@ impl Extensions {
                 if !all[index].enabled {
                     self.supervisor.stop(id).await;
                 }
-                self.undo_update(&launch, health).await;
+                self.undo_update(&launch, reset).await;
                 return changed_meanwhile();
             }
             Err(refused) => {
-                self.undo_update(&launch, health).await;
+                self.undo_update(&launch, reset).await;
                 return match refused {
                     Response::Error { code, .. } if code == "not-found" => changed_meanwhile(),
                     other => other,
                 };
             }
         };
-        if !old.enabled {
-            self.supervisor.stop(id).await;
-        }
         let server = match self.save_secrets(id, Some(&moved), &spec).await {
             Ok(server) => server,
             Err(err) => {
-                self.undo_update(&launch, health).await;
+                self.undo_update(&launch, reset).await;
                 return store_error(&err);
             }
         };
         let updated = StoredExtension { source, server, reported, ..old };
         all[index] = updated.clone();
         if let Err(err) = self.save(&all) {
-            self.undo_update(&launch, health).await;
+            self.undo_update(&launch, reset).await;
             return store_error(&err);
+        }
+        reset.keep();
+        if !updated.enabled {
+            self.supervisor.stop(id).await;
         }
         self.one(updated, Reach::Suite).await
     }
 
-    /// What a failed update leaves behind, taken away again: the run of its trial start (`launch`) ends, and
-    /// the server's failures and whether it is crashed or stopped go back to `health`, taken before the
-    /// update's reset; a stop meanwhile stays ([`Supervisor::restore`]).
-    async fn undo_update(&self, launch: &Launch, health: Health) {
+    /// What a failed update leaves behind, taken away again: the run of its trial start (`launch`) ends, then
+    /// `reset` goes and puts back what it forgot, unless a person reset or stopped the server meanwhile.
+    async fn undo_update(&self, launch: &Launch, reset: Reset<'_>) {
         self.supervisor.end(launch).await;
-        self.supervisor.restore(&launch.id, health);
+        drop(reset);
     }
 
     /// Claims `id` for an install or update; `None` while another one is under way for it. The id is free
@@ -800,9 +804,9 @@ impl Extensions {
             })
             .collect();
         let status = self.status(&stored, &tools);
-        let server = match reach {
-            Reach::Suite => shown,
-            Reach::Client(_) => store::redacted(&shown),
+        let (server, status) = match reach {
+            Reach::Suite => (shown, status),
+            Reach::Client(_) => (store::redacted(&shown), redacted_status(status)),
         };
         ExtensionInfo {
             id: stored.id,
@@ -847,6 +851,17 @@ fn as_catalog_moved(old: &ServerSpec, new: &ServerSpec) -> ServerSpec {
             ServerSpec::Stdio { command: command.clone(), args: args.clone(), env: env.clone() }
         }
         _ => old.clone(),
+    }
+}
+
+/// `status` for a key that is not the app key: a missing program named by a path only by its last part, as
+/// in [`store::redacted`], since the folders before it may name the person's home and user name.
+fn redacted_status(status: Status) -> Status {
+    match status {
+        Status::Missing { what: Prerequisite::Program { name } } => {
+            Status::Missing { what: Prerequisite::Program { name: store::redacted_command(&name) } }
+        }
+        other => other,
     }
 }
 
@@ -1143,6 +1158,26 @@ mod tests {
             Response::Extensions { extensions: vec![] }
         );
         assert_eq!(code(&runtime.block_on(extensions.get("fixture", Reach::Client(&none)))), "not-found");
+    }
+
+    /// Second review of #302: a server missing its program shows a client the program by its last part only,
+    /// as its spec ([`store::redacted`]); the app key sees the whole path.
+    #[test]
+    fn a_missing_program_shows_a_client_no_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (extensions, secrets) = extensions_in(dir.path(), roots());
+        installed(&extensions, &secrets, "fixture", &[("echo", Access::Read)]);
+        let mut all = stored_all(&extensions);
+        let path = "/nonexistent/anna/.local/bin/server";
+        all[0].server = ServerSpec::Stdio { command: path.into(), args: vec![], env: BTreeMap::new() };
+        store_all(&extensions, &all);
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let missing = |name: &str| Status::Missing { what: Prerequisite::Program { name: name.into() } };
+        assert_eq!(info(runtime.block_on(extensions.get("fixture", Reach::Suite))).status, missing(path));
+        let rights = reader_of("fixture");
+        let client = info(runtime.block_on(extensions.get("fixture", Reach::Client(&rights))));
+        assert_eq!(client.status, missing(&format!("{}/server", store::REDACTED)));
+        assert!(!serde_json::to_string(&client).expect("json").contains("anna"), "{client:?}");
     }
 
     /// Only allowed tools of servers that are on are offered, for a client only those its level covers and
@@ -1512,6 +1547,109 @@ mod tests {
             let updated = tokio::time::timeout(wait, update).await.expect("broken off").expect("joined");
             assert_eq!(code(&updated), "conflict");
             assert_eq!(stored_all(&extensions), vec![StoredExtension { enabled: false, ..before }], "unchanged");
+            assert_eq!(extensions.supervisor.status("fixture"), Status::Stopped);
+        }
+
+        /// The same servers with a supervisor whose starts while installing or updating give up after
+        /// 800 ms, so a failing update probe ends soon.
+        fn short_installs(extensions: Extensions) -> Extensions {
+            let timing = Timing { install_start: std::time::Duration::from_millis(800), ..Timing::default() };
+            Extensions { supervisor: Arc::new(Supervisor::new(roots(), Default::default(), timing)), ..extensions }
+        }
+
+        /// Second review of #302: a person switching the server on during an update whose probe then fails
+        /// keeps it on; the update does not put back the switch-off it found.
+        #[tokio::test]
+        async fn switching_on_during_a_failing_update_keeps_the_server_on() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            let extensions = short_installs(extensions);
+            installed(&extensions, &secrets, "fixture", &[("echo", Access::Read)]);
+            assert!(!info(extensions.set_enabled("fixture", false, Reach::Suite).await).enabled);
+            let update = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.update("fixture", Some(silent())).await }
+            });
+            assert!(starting(&extensions, "fixture").await, "the update starts it");
+            assert!(info(extensions.set_enabled("fixture", true, Reach::Suite).await).enabled);
+            assert_eq!(code(&update.await.expect("joined")), "error", "the probe failed");
+            let Response::ToolResult { .. } = extensions.call("fixture", "echo", Default::default()).await else {
+                panic!("switched on, it answers");
+            };
+        }
+
+        /// Second review of #302: an update dropped during its probe puts back what its reset forgot.
+        #[tokio::test]
+        async fn a_dropped_update_leaves_a_crashed_server_crashed() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            installed(&extensions, &secrets, "fixture", &[("echo", Access::Read), ("crash", Access::Read)]);
+            for _ in 0..3 {
+                assert_eq!(code(&extensions.call("fixture", "crash", Default::default()).await), "offline");
+            }
+            let crashed = Status::Crashed { reason: torro_ipc::extensions::CrashReason::Exited };
+            assert_eq!(extensions.supervisor.status("fixture"), crashed);
+            let update = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.update("fixture", Some(silent())).await }
+            });
+            assert!(starting(&extensions, "fixture").await, "the update starts it");
+            update.abort();
+            assert!(update.await.is_err(), "dropped");
+            assert_eq!(extensions.supervisor.status("fixture"), crashed, "still crashed");
+        }
+
+        /// A keychain whose first `get` waits until the test lets it go, so something can happen while an
+        /// update reads its secrets.
+        struct Gated {
+            secrets: MemorySecrets,
+            gate: std::sync::Mutex<Option<(tokio::sync::oneshot::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+        }
+
+        impl SecretStore for Gated {
+            fn get(&self, key: &str) -> Result<Option<Secret>, String> {
+                let gate = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                if let Some((entered, release)) = gate {
+                    let _ = entered.send(());
+                    let _ = release.recv();
+                }
+                self.secrets.get(key)
+            }
+            fn set(&self, key: &str, secret: &Secret) -> Result<(), String> {
+                self.secrets.set(key, secret)
+            }
+            fn delete(&self, key: &str) -> Result<(), String> {
+                self.secrets.delete(key)
+            }
+        }
+
+        /// Second review of #302: a removal while an update reads its secrets is not undone: no folder is
+        /// made again, the server is not started with the old secrets, and the update is `conflict`.
+        #[tokio::test]
+        async fn a_removal_during_an_update_is_not_undone() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (entered, entered_rx) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let memory = MemorySecrets::default();
+            let gated = Gated { secrets: memory.clone(), gate: std::sync::Mutex::new(Some((entered, release_rx))) };
+            let extensions = Extensions::with_roots(roots()).with_store(Store::in_data(dir.path()), Arc::new(gated));
+            installed(&extensions, &memory, "fixture", &[("echo", Access::Read)]);
+            let update = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.update("fixture", Some(fixture_spec(Value::Stored { secret: true }))).await }
+            });
+            entered_rx.await.expect("the update reads its secrets");
+            let remove = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.remove("fixture").await }
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            release.send(()).expect("let go");
+            assert_eq!(remove.await.expect("joined"), Response::Ok);
+            assert_eq!(code(&update.await.expect("joined")), "conflict");
+            assert!(stored_all(&extensions).is_empty(), "removed");
+            assert!(!dir.path().join("extensions/fixture").exists(), "no folder made again");
+            assert!(memory.keys().is_empty(), "no secret left");
             assert_eq!(extensions.supervisor.status("fixture"), Status::Stopped);
         }
 

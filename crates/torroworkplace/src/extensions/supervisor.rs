@@ -201,6 +201,10 @@ pub struct Supervisor {
     /// The ids stopped on purpose ([`Supervisor::stop`], [`Supervisor::forget`]) and not reset since: not
     /// started. Kept apart from `servers`, so a server forgotten stays stopped for a call that still holds it.
     stopped: Mutex<HashSet<String>>,
+    /// Counts per id each [`Supervisor::reset`] and [`Supervisor::stop`] (so [`Supervisor::forget`] too): a
+    /// [`Reset`] puts back what it forgot only while nobody did either since. Kept apart from `servers` for
+    /// the same reason as `stopped`.
+    epochs: Mutex<HashMap<String, u64>>,
     changes: Arc<watch::Sender<u64>>,
 }
 
@@ -220,6 +224,7 @@ impl Supervisor {
             timing,
             servers: Mutex::new(HashMap::new()),
             stopped: Mutex::new(HashSet::new()),
+            epochs: Mutex::new(HashMap::new()),
             changes: Arc::new(watch::channel(0).0),
         }
     }
@@ -324,6 +329,9 @@ impl Supervisor {
     /// A start under way is broken off ([`SupervisorError::Stopped`] for whoever waits for it), so switching
     /// off or removing a server that is starting answers at once instead of after the start's time limit.
     pub async fn stop(&self, id: &str) {
+        // Counted before it is marked: a `Reset` that still sees the old count puts back its mark before this
+        // one, never after it.
+        self.next_epoch(id);
         // Marked before the turn is taken: a start that waits for the turn sees it, one under way is ended.
         lock(&self.stopped).insert(id.to_string());
         let Some(server) = self.get(id) else { return };
@@ -339,10 +347,30 @@ impl Supervisor {
     /// Forgets the failures of the server, so a crashed one starts again on the next call, and lifts a
     /// [`Supervisor::stop`] or [`Supervisor::forget`]: when a person switches it on (`extensions.set_enabled`),
     /// allows its tools, or installs or updates it.
-    ///
-    /// What it forgets can be taken first ([`Supervisor::health`]) and put back ([`Supervisor::restore`]):
-    /// an update whose trial start fails leaves a crashed server crashed.
     pub fn reset(&self, id: &str) {
+        self.next_epoch(id);
+        self.forget_health(id);
+    }
+
+    /// A [`Supervisor::reset`] for a trial start (installing, updating) that may fail: what it forgot
+    /// (failures, crashed, stopped on purpose) comes back when the returned [`Reset`] is dropped, unless it is
+    /// kept ([`Reset::keep`], the trial worked) or the server was reset or stopped since (a person switched it
+    /// on, allowed its tools, switched it off or removed it meanwhile: their word stands). So an update whose
+    /// trial fails, or that is dropped, leaves a crashed server crashed and one switched off stopped.
+    pub fn reset_until_kept(&self, id: &str) -> Reset<'_> {
+        // Under the count's lock: no reset or stop comes between taking the health and the count.
+        let mut epochs = lock(&self.epochs);
+        let health = self.health(id);
+        self.forget_health(id);
+        let epoch = epochs.entry(id.to_string()).or_default();
+        *epoch += 1;
+        let epoch = *epoch;
+        drop(epochs);
+        Reset { supervisor: self, id: id.to_string(), epoch, health: Some(health) }
+    }
+
+    /// What [`Supervisor::reset`] forgets: the stop mark, the failures and the crash.
+    fn forget_health(&self, id: &str) {
         lock(&self.stopped).remove(id);
         let Some(server) = self.get(id) else { return };
         let mut state = lock(&server.state);
@@ -352,27 +380,35 @@ impl Supervisor {
         self.bump();
     }
 
-    /// What [`Supervisor::reset`] would forget of the server `id` now: its failures, whether it is crashed and
-    /// whether it is stopped on purpose. A server it never saw has none of them.
-    pub fn health(&self, id: &str) -> Health {
+    /// Counts a reset or a stop of `id`.
+    fn next_epoch(&self, id: &str) {
+        *lock(&self.epochs).entry(id.to_string()).or_default() += 1;
+    }
+
+    /// What [`Supervisor::reset`] would forget of the server `id` now. A server it never saw has no failures.
+    fn health(&self, id: &str) -> Health {
         let stopped = lock(&self.stopped).contains(id);
         let Some(server) = self.get(id) else { return Health { stopped, ..Health::default() } };
         let state = lock(&server.state);
         Health { failures: state.failures.clone(), crashed: state.crashed, stopped }
     }
 
-    /// Puts back what [`Supervisor::health`] took before a [`Supervisor::reset`]: the failures and whether it
-    /// is crashed as they were. Stopped on purpose it becomes again when it was; a stop meanwhile is never
-    /// lifted (a person switched it off or removed it during the update).
-    pub fn restore(&self, id: &str, health: Health) {
+    /// Puts `health` back for `id` when its count is still `epoch` ([`Reset`]).
+    fn restore(&self, id: &str, epoch: u64, health: Health) {
+        // Held while it is put back, so a reset or stop that comes now comes after it.
+        let epochs = lock(&self.epochs);
+        if epochs.get(id).copied().unwrap_or_default() != epoch {
+            return;
+        }
         if health.stopped {
             lock(&self.stopped).insert(id.to_string());
         }
-        let Some(server) = self.get(id) else { return };
-        let mut state = lock(&server.state);
-        state.failures = health.failures;
-        state.crashed = health.crashed;
-        drop(state);
+        if let Some(server) = self.get(id) {
+            let mut state = lock(&server.state);
+            state.failures = health.failures;
+            state.crashed = health.crashed;
+        }
+        drop(epochs);
         self.bump();
     }
 
@@ -561,13 +597,38 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// What [`Supervisor::reset`] forgets of a server ([`Supervisor::health`]), to put back with
-/// [`Supervisor::restore`].
+/// What [`Supervisor::reset`] forgets of a server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Health {
+struct Health {
     failures: VecDeque<Instant>,
     crashed: Option<CrashReason>,
     stopped: bool,
+}
+
+/// A reset for a trial start ([`Supervisor::reset_until_kept`]): dropped, it puts back what the reset forgot,
+/// unless it was kept or the server was reset or stopped since.
+pub struct Reset<'a> {
+    supervisor: &'a Supervisor,
+    id: String,
+    /// The server's count right after this reset.
+    epoch: u64,
+    /// What it forgot; `None` once kept.
+    health: Option<Health>,
+}
+
+impl Reset<'_> {
+    /// The trial worked: what the reset forgot stays forgotten.
+    pub fn keep(mut self) {
+        self.health = None;
+    }
+}
+
+impl Drop for Reset<'_> {
+    fn drop(&mut self) {
+        if let Some(health) = self.health.take() {
+            self.supervisor.restore(&self.id, self.epoch, health);
+        }
+    }
 }
 
 /// One server the supervisor knows.
@@ -1310,9 +1371,10 @@ mod tests {
             assert_eq!(supervisor.health("fixture").failures.len(), 0, "not counted");
         }
 
-        /// Review of #302: `health` and `restore` put back what `reset` forgot; a stop meanwhile stays.
+        /// Review of #302: a dropped `Reset` puts back what it forgot, a kept one does not, and one after
+        /// which the server was reset or stopped leaves that word standing.
         #[tokio::test]
-        async fn restore_puts_back_what_reset_forgot() {
+        async fn a_reset_until_kept_puts_back_what_it_forgot() {
             let dir = tempfile::tempdir().expect("temp dir");
             let supervisor = supervisor(quick());
             let launch = launch(dir.path(), &[]);
@@ -1321,17 +1383,31 @@ mod tests {
             }
             let crashed = Status::Crashed { reason: CrashReason::Exited };
             assert_eq!(supervisor.status("fixture"), crashed);
-            let health = supervisor.health("fixture");
-            supervisor.reset("fixture");
+            let reset = supervisor.reset_until_kept("fixture");
             assert_eq!(supervisor.status("fixture"), Status::Stopped);
-            supervisor.restore("fixture", health);
-            assert_eq!(supervisor.status("fixture"), crashed);
+            drop(reset);
+            assert_eq!(supervisor.status("fixture"), crashed, "put back");
 
+            let reset = supervisor.reset_until_kept("fixture");
             supervisor.reset("fixture");
-            let health = supervisor.health("fixture");
+            drop(reset);
+            assert_eq!(supervisor.status("fixture"), Status::Stopped, "a person's reset stands");
+
             supervisor.stop("fixture").await;
-            supervisor.restore("fixture", health);
+            let reset = supervisor.reset_until_kept("fixture");
+            supervisor.reset("fixture");
+            drop(reset);
+            supervisor.call(&launch, "echo", JsonObject::new()).await.expect("switched on meanwhile: not stopped");
+
+            let reset = supervisor.reset_until_kept("fixture");
+            supervisor.stop("fixture").await;
+            drop(reset);
             assert_eq!(supervisor.tools(&launch, Purpose::Use).await, Err(SupervisorError::Stopped), "still off");
+
+            supervisor.stop("fixture").await;
+            supervisor.reset_until_kept("fixture").keep();
+            supervisor.call(&launch, "echo", JsonObject::new()).await.expect("kept: no longer stopped");
+            supervisor.stop_all().await;
         }
 
         /// Review of #302: `end` ends only the run of its launch, and the next call starts the server again.

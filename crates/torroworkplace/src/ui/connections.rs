@@ -702,8 +702,9 @@ pub enum Message {
     CustomCommand(String),
     /// An edit of the arguments, one per line.
     CustomArgs(Typed),
-    /// What is typed into the address.
-    CustomUrl(String),
+    /// What is typed into the address: a [`Secret`] only so `Debug` never shows it, since an address
+    /// may carry a token (`?api_key=`); it goes out as plain text.
+    CustomUrl(Secret),
     /// "Add variable" or "Add header": an empty row.
     AddValue,
     /// What is typed into the name of the row at this place.
@@ -864,7 +865,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::CustomId(id) => edit(state, |custom| (custom.id_typed, custom.id) = (!id.is_empty(), id)),
         Message::CustomCommand(command) => edit(state, |custom| custom.command = command),
         Message::CustomArgs(Typed(action)) => edit(state, |custom| custom.args.perform(action)),
-        Message::CustomUrl(url) => edit(state, |custom| custom.url = url),
+        Message::CustomUrl(url) => edit(state, |custom| custom.url = url.expose().to_string()),
         Message::AddValue => edit(state, |custom| custom.values.push(Entry::default())),
         Message::ValueName(at, name) => edit(state, |custom| {
             if let Some(entry) = custom.values.get_mut(at) {
@@ -2419,7 +2420,9 @@ fn server_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Messag
             rows.push(form_field(tr("Arguments"), Some(tr("One per line.").to_string()), args.into(), None));
         }
         Kind::Address => {
-            let url = field("https://", &custom.url).on_input(Message::CustomUrl).on_submit(Message::SubmitCustom);
+            let url = field("https://", &custom.url)
+                .on_input(|url| Message::CustomUrl(Secret::new(url)))
+                .on_submit(Message::SubmitCustom);
             let hint = tr("An address that speaks Streamable HTTP: https://, or http:// on this computer only.");
             rows.push(form_field(tr("Address"), Some(hint.to_string()), url.into(), checked.target));
         }
@@ -3566,6 +3569,12 @@ mod tests {
             assert!(!shown.contains("ghp_in_args") && !shown.contains("key_in_url"), "{shown}");
         }
         assert_eq!(form(&state).url, "https://mcp.example.com/mcp?api_key=key_in_url", "kept for the form");
+        // Second review of #302: typed into the field, the address stays out of `Debug` too.
+        let typed = Message::CustomUrl(Secret::new("https://mcp.example.com/mcp?api_key=typed_key"));
+        assert!(!format!("{typed:?}").contains("typed_key"), "{typed:?}");
+        let _ = update(&mut state, typed, &data);
+        assert!(!format!("{state:?}").contains("typed_key"));
+        assert_eq!(form(&state).url, "https://mcp.example.com/mcp?api_key=typed_key");
     }
 
     /// Review of #302: why a pasted server can't be added is in the suite's language, for every fixed
@@ -3685,7 +3694,7 @@ mod tests {
             Message::AddServer,
             Message::CustomKind(Kind::Address),
             Message::CustomName("Team wiki".into()),
-            Message::CustomUrl("http://example.com/mcp".into()),
+            Message::CustomUrl(Secret::new("http://example.com/mcp")),
         ] {
             let _ = update(&mut state, message, &data);
         }
