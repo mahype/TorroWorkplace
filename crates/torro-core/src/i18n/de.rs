@@ -1143,9 +1143,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("open", "offen"),
     ("Follow up", "Nachfassen"),
     ("to follow up", "zum Nachfassen"),
-    ("Mark mail done", "Mail erledigen"),
+    ("Archive mail", "Mail archivieren"),
     ("Not now", "Nicht jetzt"),
-    ("Mail marked as done", "Mail als erledigt markiert"),
+    ("This account has no archive folder.", "Dieses Konto hat keinen Archivordner."),
+    ("Couldn't find the mail of this task.", "Die Mail zu dieser Aufgabe wurde nicht gefunden."),
     ("Handed off", "Weitergegeben"),
     (
         "Tasks you make of entries show up here until they are done.",
@@ -1209,7 +1210,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Mail window (E8.3)
     ("With attachments", "Mit Anhang"),
     ("Smart views", "Intelligente Ansichten"),
-    ("Pinned folders", "Angepinnte Ordner"),
     ("Open folders", "Ordner öffnen"),
     ("Pin folder", "Ordner anpinnen"),
     ("Unpin folder", "Ordner lösen"),
@@ -1485,6 +1485,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Open {entry} again", "{entry} wieder öffnen"),
     ("Snooze {entry} until {when}", "{entry} bis {when} vertagen"),
     ("Stop snoozing {entry}", "{entry} nicht mehr vertagen"),
+    ("Show {messages} in the inbox again", "{messages} wieder im Eingang anzeigen"),
+    ("Hide {messages} from the inbox again", "{messages} wieder aus dem Eingang ausblenden"),
     ("Move {entry} to {lane}", "{entry} nach „{lane}“ verschieben"),
     (
         "Move {entry} to {lane} and send later notices of {source} there too",
@@ -5731,4 +5733,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{placeholder}” is not a placeholder. Insert lists them all.",
         "„{placeholder}“ ist kein Platzhalter. „Einfügen“ zeigt alle.",
     ),
+    // The mail window: All, Later, Hidden and Folders, "Show again" (E18.4, issue #301)
+    ("Show again", "Wieder anzeigen"),
+    ("Back in All.", "Wieder in „Alle“."),
+    ("Couldn't show the mail again.", "Die Mail konnte nicht wieder angezeigt werden."),
+    ("No mail in your inboxes.", "Keine Mail in deinen Posteingängen."),
+    ("New mail shows up here.", "Neue Mails erscheinen hier."),
+    ("No hidden mail.", "Keine ausgeblendeten Mails."),
+    ("Mail you hide from the inbox shows up here.", "Mails, die du aus dem Eingang ausblendest, erscheinen hier."),
+    ("No archived mail.", "Keine archivierten Mails."),
+    ("Mail you archive shows up here.", "Mails, die du archivierst, erscheinen hier."),
 ];
