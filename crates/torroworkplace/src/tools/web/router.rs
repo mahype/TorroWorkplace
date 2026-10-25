@@ -110,7 +110,8 @@ impl Router {
     ///
     /// [`SearchResults::asked`] names, in order, every provider that searched or answered from memory, not one that
     /// lacked its key. `Err` when no hits could be had: [`NoAnswer::NoneOn`] with nothing on, else the failure that
-    /// ended the search, else [`NoAnswer::Resting`] when a provider rested, else [`NoAnswer::NeedsKey`].
+    /// ended the search, else [`NoAnswer::Resting`] when a provider rested, else [`NoAnswer::NeedsKey`]. Wikipedia's
+    /// own reason counts only when it is the only one on: beside the others it merely adds hits.
     pub async fn search(
         &self,
         providers: &[Arc<dyn SearchProvider>],
@@ -144,12 +145,16 @@ impl Router {
                 Err(skip) => skips.push(skip),
             }
         }
+        let mut wikipedia_skip = None;
         let extra = match wikipedia {
             Some(wikipedia) => {
                 // Alone it is the search; besides the others it adds a few.
                 let count = if alone { query.count } else { WIKIPEDIA_HITS.min(query.count) };
                 let besides = Query { count, ..query.clone() };
-                self.ask(wikipedia.as_ref(), &besides, &mut asked).await.map_err(|skip| skips.push(skip)).ok()
+                self.ask(wikipedia.as_ref(), &besides, &mut asked)
+                    .await
+                    .map_err(|skip| wikipedia_skip = Some(skip))
+                    .ok()
             }
             None => None,
         };
@@ -159,6 +164,9 @@ impl Router {
                 extra.truncate(query.count);
                 extra
             }
+            // Found in the review of PR #311: a Wikipedia that failed beside resting others must not turn their
+            // `busy` or `auth` into its `offline` or `error`.
+            (None, _) if alone => return Err(why(wikipedia_skip.as_slice())),
             (None, _) => return Err(why(&skips)),
         };
         Ok(SearchResults::new(hits, asked))
@@ -678,6 +686,14 @@ mod tests {
         let providers = all(&[&brave, &mojeek]);
         let answer = router.search(&providers, &on(&[Brave, Mojeek]), &Query::new("x", None, None)).await;
         assert_eq!(answer, Err(NoAnswer::Resting), "a rest outweighs a missing key");
+        // Wikipedia beside them failing says nothing about why they gave nothing (review of PR #311).
+        time.pass(Duration::from_secs(2));
+        let wikipedia = Fake::new(Wikipedia, Err(SearchError::Failed(OFFLINE)));
+        let providers = all(&[&brave, &wikipedia]);
+        let answer = router.search(&providers, &on(&[Brave, Wikipedia]), &Query::new("x", None, None)).await;
+        assert_eq!(answer, Err(NoAnswer::NeedsKey), "Brave lacks its key, whatever Wikipedia says");
+        let alone = router.search(&providers, &on(&[Wikipedia]), &Query::new("y", None, None)).await;
+        assert_eq!(alone, Err(NoAnswer::Failed(OFFLINE)), "alone its reason is the answer");
         let tavily = Fake::new(Tavily, Err(SearchError::Failed(BROKEN)));
         let providers = all(&[&tavily]);
         assert_eq!(
