@@ -495,9 +495,12 @@ auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr
 Merkmal mit Wirkung `hide` ferngehalten, solange die Regel besteht –, `true` liefert nur sie. Mail eines offenen oder
 zurückgestellten Eintrags und Mail in einem anderen Ordner ist nie ausgeblendet; ein stummes Konto, „Only Info“ und
 „No popup“ blenden nichts aus. Beide Felder gelten zusammen und nur für Konten, deren Einträge der Schlüssel sieht
-(Leserecht in `inbox`, Konto in `inbox_sources`); sonst gilt nichts als zurückgestellt oder ausgeblendet. Archivieren
-wie in der App ist `mail.move_messages` mit Rolle `archive`; der Eintrag wird erledigt, sobald keine ungelesene Mail
-der Unterhaltung mehr im Posteingang liegt.
+(Leserecht in `inbox`, Konto in `inbox_sources`); sonst gilt nichts als zurückgestellt oder ausgeblendet. Absender- und
+Domain-Regeln gelten bewusst für jedes Konto (E3.11), auch wenn die Regel an einem Eintrag eines Kontos entstand, das
+der Schlüssel nicht sieht; `hidden: true` zeigt dann ihre Wirkung in den sichtbaren Konten, `inbox.list_rules` die Regel
+selbst nicht. Archivieren wie in der App ist `mail.move_messages` mit Rolle `archive` und danach
+`inbox.set_item_done` für den Eintrag: `mail.move_messages` allein erledigt ihn erst, wenn keine ungelesene Mail der
+Unterhaltung mehr im Posteingang liegt.
 „Show again“ (E18.2) ist `inbox.set_mail_shown` (Zugriff Write, MCP `inbox_set_mail_shown`): `shown: true` nimmt 1 bis
 100 Mails (`ids`, `m:…`, auch mehrerer Konten) aus „Hidden“, `hidden` zählt sie dann als nicht ausgeblendet. Nur diese
 Mails: Die Regel bzw. die ausgeblendete Unterhaltung bleibt, weitere und neue Mail bleibt ausgeblendet, der Eintrag

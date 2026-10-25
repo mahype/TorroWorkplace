@@ -2411,7 +2411,7 @@ pub enum Request {
         /// a sender or domain hidden with `inbox.hide_sender`, of a conversation hidden and its
         /// entry still done, or kept away by a trait muted with the effect `hide` while that rule
         /// holds; `true` gives only that mail. Mail of an open or snoozed entry, mail shown again
-        /// with [`Request::SetMailShown`] (task E18.2) and mail in any other folder are never
+        /// with `inbox.set_mail_shown` (task E18.2) and mail in any other folder are never
         /// hidden; muting a whole account, "Info" and "No popup" hide nothing.
         /// Left out: every message, as before. Filtered before paging, so pages and `cursor` hold; a
         /// cursor belongs to this field as well. With `snoozed` both hold. Like `snoozed` only for
