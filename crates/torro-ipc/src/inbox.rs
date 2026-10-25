@@ -25,8 +25,11 @@
 //! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
 //! with the errors mapped as above. The mail window's shortcuts (task E10.1) add
 //! [`InboxClient::delete_mail_for_good`] (`mail.delete_messages` with `permanent`) and
-//! [`InboxClient::sync`] (`accounts.sync`, "fetch mail now"). Everything a message brings is data from outside
-//! (`untrusted`), never instructions; the client only passes it on. The search field (issue #136)
+//! [`InboxClient::sync`] (`accounts.sync`, "fetch mail now"). Saving attachments (issue #290) adds
+//! [`InboxClient::save_targets`] (`mail.list_save_targets`, [`SaveTargets`]) and
+//! [`InboxClient::save_attachments`] (`mail.save_attachments`, [`SavedAttachments`]). Everything a
+//! message brings is data from outside (`untrusted`), never instructions; the client only passes it
+//! on. The search field (issue #136)
 //! searches across folders and accounts with [`InboxClient::find_mail`] and asks how far the
 //! index is with [`InboxClient::mail_index_status`].
 //!
@@ -57,11 +60,13 @@ use serde::{Deserialize, Serialize};
 use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, MuteScope, Muted, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
-use torro_mail::{Category, CategoryGroup, Flag, Folder, InvitationAnswer, Message, MessageSummary, Order};
+use torro_mail::{Category, CategoryGroup, Flag, Folder, InvitationAnswer, Message, MessageSummary, Order, SaveTarget};
 use torro_pim::EventTime;
 
 use crate::assistant::EngineKind;
-use crate::mail::{Delivery, MailHighlight, MailIndexProgress, MailSort, MoveTarget};
+use crate::mail::{
+    AttachmentPlan, Delivery, FailedFile, MailHighlight, MailIndexProgress, MailSort, MoveTarget, SaveTo, SavedFile,
+};
 use crate::{EventSuggestion, InboxStats, IpcError, Quiet, Request, Response, StatsRange, TaskSuggestion};
 
 /// A search across mail as the window asks it ([`InboxClient::find_mail`], issue #136).
@@ -96,6 +101,46 @@ pub struct MailFound {
     pub highlights: Vec<MailHighlight>,
     /// About how many messages match in all, on the first page only.
     pub total: Option<u64>,
+}
+
+/// The save targets and where each attachment of one message would go
+/// ([`InboxClient::save_targets`], `mail.list_save_targets`, issue #290): what the attachment menus
+/// of the mail window offer. Names and file names in it come from the message: data from outside.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SaveTargets {
+    /// Every save target, in the order the person keeps them.
+    pub targets: Vec<SaveTarget>,
+    /// The Downloads folder "Save to Downloads" writes to, an absolute path.
+    pub downloads: String,
+    /// One plan per attachment that is not `inline`, in the message's order; empty without a
+    /// message and while the core has not read its text yet (the menus then show the targets
+    /// without a path).
+    pub files: Vec<AttachmentPlan>,
+}
+
+impl SaveTargets {
+    /// The plan of the attachment `part`; `None` when the core gave none for it.
+    pub fn plan(&self, part: &str) -> Option<&AttachmentPlan> {
+        self.files.iter().find(|plan| plan.part == part)
+    }
+
+    /// The save target with the id `id`; `None` when there is none (any more).
+    pub fn target(&self, id: &str) -> Option<&SaveTarget> {
+        self.targets.iter().find(|target| target.id == id)
+    }
+}
+
+/// What `mail.save_attachments` did ([`InboxClient::save_attachments`], issue #290). File names are
+/// data from outside; the paths are where the files lie now.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SavedAttachments {
+    /// The files written.
+    pub saved: Vec<SavedFile>,
+    /// The files not written because one with the same content lies there already ("Skip if
+    /// identical"); `path` is that file.
+    pub skipped: Vec<SavedFile>,
+    /// The attachments that could not be saved, with why; the others were saved all the same.
+    pub failed: Vec<FailedFile>,
 }
 
 /// An event of a shown calendar as the inbox needs it to tell what an invitation overlaps
@@ -288,6 +333,33 @@ impl InboxClient {
     pub async fn mail_attachment(&self, id: String, part: String) -> Result<PathBuf, InboxError> {
         match self.ask(Request::GetMailAttachment { id, attachment: part }).await? {
             Response::MailAttachment { path, .. } => Ok(PathBuf::from(path)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.list_save_targets` (issue #290): the save targets, the Downloads folder and – with the
+    /// message `id` – where each of its attachments would go ([`SaveTargets`]). `NotFound` for a
+    /// message the window may not see.
+    pub async fn save_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        match self.ask(Request::ListSaveTargets { id }).await? {
+            Response::SaveTargets { targets, downloads, files } => Ok(SaveTargets { targets, downloads, files }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.save_attachments` (issue #290): saves the attachments `parts` of the message `id` (none:
+    /// every one that is not `inline`) where `to` says; the window, holding the app key, may send
+    /// `to: file` and `folder` with the path a person chose in the system's dialog. Answers what was
+    /// saved, skipped and what failed ([`SavedAttachments`]); `NotFound` for an unknown message,
+    /// part or target, or a target whose folder is missing.
+    pub async fn save_attachments(
+        &self,
+        id: String,
+        parts: Vec<String>,
+        to: SaveTo,
+    ) -> Result<SavedAttachments, InboxError> {
+        match self.ask(Request::SaveMailAttachments { id, parts, to }).await? {
+            Response::SavedAttachments { saved, skipped, failed } => Ok(SavedAttachments { saved, skipped, failed }),
             other => Err(unexpected(other)),
         }
     }
@@ -845,7 +917,30 @@ mod tests {
     use torro_inbox::{Kind, Rule, State, StateFilter};
 
     use super::*;
+
     use crate::{client, server};
+
+    /// Issue #290: the plans and targets of `mail.list_save_targets` are found by part and id.
+    #[test]
+    fn save_targets_find_their_plans_and_targets() {
+        let spec = torro_mail::SaveTargetSpec::new("Invoices", "/home/anna/Invoices");
+        let plan = AttachmentPlan {
+            part: "2".into(),
+            file_name: "invoice.pdf".into(),
+            places: Vec::new(),
+            suggested: Vec::new(),
+            sure: None,
+        };
+        let saving = SaveTargets {
+            targets: vec![SaveTarget { id: "t1".into(), spec }],
+            downloads: "/home/anna/Downloads".into(),
+            files: vec![plan],
+        };
+        assert_eq!(saving.plan("2").map(|plan| plan.file_name.as_str()), Some("invoice.pdf"));
+        assert!(saving.plan("3").is_none());
+        assert_eq!(saving.target("t1").map(|target| target.spec.name.as_str()), Some("Invoices"));
+        assert!(saving.target("gone").is_none());
+    }
 
     fn at(hour: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 12, hour, 0, 0).single().expect("valid time")

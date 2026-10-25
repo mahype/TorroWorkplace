@@ -537,14 +537,14 @@ async fn index_status(mail: &MailService, reach: Reach<'_>, account: Option<&str
 // ----- mail.get_message, mail.get_thread -----
 
 /// A message found in a reachable store: its account, the store and where it is on the server.
-struct Located {
-    account: String,
-    store: SharedStore,
-    place: MessageRef,
+pub(crate) struct Located {
+    pub(crate) account: String,
+    pub(crate) store: SharedStore,
+    pub(crate) place: MessageRef,
 }
 
 /// The store among `stores` that knows the message `id`; `not-found` when none does.
-async fn locate(stores: &[(String, SharedStore)], id: &str) -> Answer<Located> {
+pub(crate) async fn locate(stores: &[(String, SharedStore)], id: &str) -> Answer<Located> {
     for (account, store) in stores {
         let lookup = id.to_string();
         if let Some(place) = store.run(move |store| store.resolve_message(&lookup)).await.map_err(store_failed)? {
@@ -679,7 +679,7 @@ async fn fill_texts(
 }
 
 /// The message as the store has it; `not-found` when the sync dropped it meanwhile.
-async fn stored_message(located: &Located) -> Answer<Message> {
+pub(crate) async fn stored_message(located: &Located) -> Answer<Message> {
     let id = located.place.id.clone();
     located.store.run(move |store| store.message(&id)).await.map_err(store_failed)?.ok_or_else(no_message)
 }
@@ -715,7 +715,7 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
 /// server or the folder was renumbered since the store took it. In `AllOffline` its original is
 /// kept as well ([`super::sync::fetch_for_reading`]): once, and failing to keep it does not fail
 /// the reading.
-async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
+pub(crate) async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
     let mut command = mail.command(&located.account).await.map_err(|err| Box::new(err.response()))?;
     let retain = located.store.run(|store| store.cache_policy()).await.map_err(store_failed)?.mode
         == torro_ipc::mail::MailCacheMode::AllOffline;
@@ -1020,7 +1020,7 @@ fn no_folder() -> Box<Response> {
     not_found(tr("No such folder."))
 }
 
-fn no_attachment() -> Box<Response> {
+pub(crate) fn no_attachment() -> Box<Response> {
     not_found(tr("The message has no such attachment."))
 }
 
@@ -1028,7 +1028,7 @@ fn too_big() -> Box<Response> {
     failed(tr("The attachment is larger than 50 MiB."))
 }
 
-fn unreadable() -> Box<Response> {
+pub(crate) fn unreadable() -> Box<Response> {
     failed(tr("The message could not be read."))
 }
 

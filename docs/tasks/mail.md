@@ -1140,3 +1140,282 @@ läuft nach M11.3, damit die Übersetzungen in `de.rs` nacheinander entstehen.
 - **Abnahme:** UI-Tests: Antwort → Schritt mit Host und Fingerabdruck, Warnung nur bei `public`; „Trust certificate“ schickt `ConnectMail`
   mit Passwort und Fingerabdruck; „Back“ löscht das Passwort; Kontoseite ebenso. Sichtprüfung (`torro-design`)
   von `wizard-mail-certificate`, `wizard-mail-certificate-public` und `account-detail` in Schmal, Mittel, Breit, hell und dunkel.
+
+## M12: Anhänge öffnen, speichern und ablegen (Issue #290)
+
+Ein Klick auf den Namen eines Anhangs tut, was die Einstellung sagt (Standard „Open“); das Dreieck daneben bietet
+Open, Save to Downloads, Save as… und die **Ablageziele** an: Ordner mit einem Schema für Unterordner und
+Dateinamen, Datum aus der Mail oder dem Dateinamen, vorgeschlagen nach Kategorie, Dateityp und Absender. Das
+Konzept steht in Issue #290 (Abschnitte „Platzhalter und Regeln“, „Drei Wege“, „Entscheidungen“), Entwurf
+[`docs/prototypes/inbox/mail-anhaenge.html`](../prototypes/inbox/mail-anhaenge.html) (Stand 2, Variante V1 für
+„Suggest when“).
+
+Entschieden in der Planung (2026-10-24):
+
+- **Ordner setzt nur ein Mensch** (Punkt 9 in „Was nie nach außen geht“, wie `pdf_folder`): `mail.create_save_target`
+  nur mit dem App-Schlüssel (`Mcp::Never`, ein neues Ziel setzt immer einen Ordner); `mail.update_save_target` und
+  `mail.remove_save_target` sind Admin mit MCP-Tool, ein anderer Ordner als der gespeicherte aber nur vom App-Schlüssel;
+  ebenso der Downloads-Ordner (`mail_downloads_folder`). „Save as…“ und „Save all to folder…“ (`to: file` /
+  `folder`) nur mit dem App-Schlüssel.
+- **Speichern über MCP** folgt der gewöhnlichen Schreibregel (`Write`, „Freigabe vorher“ des Clients), keine eigene
+  Freigabepflicht.
+- **Ablageziele gelten für alle Konten gleich**; `{account}` steht als Platzhalter bereit.
+- Klick-Aktion und Downloads-Ordner sind Einstellungen (`settings.set_setting`); die Ziele haben eigene Befehle und
+  eine eigene Datei `<data>/mail/save-targets.json` (nicht in `settings.json`, damit `settings.update_settings` sie
+  nie mitschreibt).
+- Die Schema-Auflösung und die Vorschlagsregel sind reine Funktionen in `torro-mail` (`save_target.rs`): Der Kern
+  rechnet damit jeden echten Pfad, die Einstellungsseite nur die Live-Vorschau an einem festen Beispiel.
+
+```
+M12.1 ─┬─ M12.2 ── M12.3 ── M12.4
+       └─ M12.5 ─────────── M12.6 ── M12.7
+```
+
+Reihenfolge der Umsetzung: M12.1 bis M12.7 nacheinander (Übersetzungen in `de.rs` je Aufgabe). M12.6 braucht M12.3
+nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
+
+### M12.1 API-Gerüst: Ablageziele, Speichern, Einstellungen
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/{lib,save_target}.rs` (neu),
+  `crates/torro-ipc/src/{lib,api,mail}.rs`, `crates/torro-core/src/settings.rs`,
+  `crates/torroworkplace/src/{settings_service,core,pim,audit,daemon,approvals}.rs`, `docs/api-reference.md`,
+  `docs/api.md`
+- **Oberfläche:** M12.6, M12.7. **API/MCP:** die Tabelle unten. MCP-Tools entstehen aus dem Katalog, die bequeme
+  Eingabe von `mail_save_attachments` in M12.4.
+- `torro-mail` neu `save_target.rs` (nur Typen, Serde camelCase wie die Nachbarn, `JsonSchema`):
+  `SaveTargetSpec { name, folder, subfolders, fileName, dateFrom: DateSource, suggest: SuggestWhen, onConflict:
+  OnConflict }`, `SaveTarget { id, #[serde(flatten)] spec }`, `DateSource { Mail, FileName }` („File name, else
+  mail“), `OnConflict { KeepBoth, SkipIdentical }`, `SuggestWhen { categories: Vec<Category>, kinds:
+  Vec<FileKind>, senders: Vec<String> }` (alle `#[serde(default)]`), `FileKind { Pdf, Image, Office }`. Standardwerte
+  für ein neues Ziel: `subfolders` `{year}/{month}`, `fileName` `{name}.{ext}`, `Mail`, `KeepBoth`.
+- `torro-ipc` (`mail.rs`): `SaveTo` extern getaggt: `"downloads"` | `{"target": id}` | `{"file": path}` (genau ein
+  Anhang, ersetzt eine Datei dort, der Dialog hat gefragt) | `{"folder": path}` (bestehender Ordner, Konflikt wie
+  `KeepBoth`); `AttachmentPlan { part, fileName, places: Vec<PlannedPlace { target, folders: Vec<String>, file }>,
+  suggested: Vec<String>, sure: Option<String> }`; `SavedFile { part, path }`, `FailedFile { part, name, code,
+  message }`.
+- Requests (`lib.rs`, Doc-Kommentare mit Antwort und Fehlercodes) und Katalog (`api.rs`):
+
+  | Request | Name · Zugriff | MCP | Antwort |
+  |---|---|---|---|
+  | `ListSaveTargets { id: Option<String> }` | `mail.list_save_targets` · Read | Tool | `SaveTargets { targets, downloads, files }` (`files` nur mit `id`: je Anhang ohne `inline` ein `AttachmentPlan`) |
+  | `CreateSaveTarget { target: SaveTargetSpec }` | `mail.create_save_target` · Admin | Never (Punkt 9) | `SaveTarget { target }` |
+  | `UpdateSaveTarget { id, target: SaveTargetSpec }` | `mail.update_save_target` · Admin | Tool | `SaveTarget { target }` |
+  | `RemoveSaveTarget { id }` | `mail.remove_save_target` · Admin | Tool | `SaveTargets` ohne `files` |
+  | `SaveMailAttachments { id, parts: Vec<String>, to: SaveTo }` | `mail.save_attachments` · Write | Tool | `SavedAttachments { saved, skipped, failed }` |
+
+  `result`-Werte kebab-case (`save-targets`, `save-target`, `saved-attachments`). Leere `parts` = alle Anhänge ohne
+  `inline`. Beschreibungen: Ziele gelten für alle Konten, es wird nie überschrieben, `skipped` heißt „gleicher Inhalt
+  liegt schon dort“, Pfade setzt nur ein Mensch, Dateinamen sind `untrusted`; bei `mail.update_save_target`: `folder`
+  muss der Wert aus `mail_list_save_targets` sein, ein anderer gibt `forbidden`; bei `mail.remove_save_target`: die
+  Klick-Aktion springt auf `open` zurück, wenn sie das Ziel nannte.
+- `Request::kept_for_people`: `SaveMailAttachments` mit `to` `file` oder `folder` → `true`, Doc-Kommentar der Funktion
+  ergänzen. `names_follow_the_rules`: `mail.create_save_target` in `kept_back` mit Kommentar „Point 9“. Im selben
+  Schritt `docs/api.md`, „Was nie nach außen geht“, Punkt 9 um Ablageziele (Ordner), Downloads-Ordner und `to:
+  file|folder` ergänzen, damit Katalog und Liste nie auseinanderlaufen.
+- `torro-core` `settings.rs`: `Settings::mail_attachments: MailAttachments { click: AttachmentClick, downloads:
+  Option<String> }` (`#[serde(default)]`); `AttachmentClick` `"open"` (Standard) | `"downloads"` | `"save_as"` |
+  `"suggested"` | `{"target": id}`. `SettingKey::MailAttachmentClick` (`mail_attachment_click`) und
+  `SettingKey::MailDownloadsFolder` (`mail_downloads_folder`, absoluter Pfad oder `null` für den Downloads-Ordner des
+  Systems; entfernt ein Client ihn, gilt wieder der des Systems) mit Doc-Kommentaren wie `PdfFolder`.
+- `settings_service.rs`: `Change::MailAttachmentClick`, `Change::MailDownloadsFolder` (Lesen wie `PdfFolder`,
+  `limited_for_clients` mit `kept_or_removed`). `settings.rs`: `MailAttachments::needs_a_person(&new)` und
+  `MailAttachments::from_client(&sent)` nach dem Vorbild von `Tools`; `from_client` neben `settings.tools.from_client`
+  im Client-Zweig von `update_settings` (`settings_service.rs`). `core.rs` `switches_on_for_people`: Arm
+  `SetSetting MailDownloadsFolder` mit anderem Ordner als gespeichert, im Arm `UpdateSettings`
+  `now.mail_attachments.needs_a_person(…)`.
+- Kern vorläufig: die fünf Requests in `core.rs` an einen Arm, der `unsupported` antwortet (M12.3 ersetzt ihn);
+  `pim.rs` wie `GetMailAttachment`; `audit.rs` nur Nachrichten-Kennung und Ziel-Kennung, keine Datei- und
+  Zielnamen, keine Pfade (`to.file`/`to.folder`, aufgelöste Orte), keine Schemas, keine Absender; `daemon.rs`
+  Kurztexte („save {n} mail attachments“, „list save targets“ …); `approvals.rs`: Zusammenfassung mit Platzhalter,
+  M12.3 setzt die Namen ein.
+- **Abnahme:** Serde-Rundtrip aller neuen Typen und Requests (auch `SaveTo` als Zeichenkette/Objekt);
+  `settings.json` ohne `mail_attachments` lädt; Test, dass ein Client mit Admin in `mail` für `to: file|folder`
+  `forbidden` bekommt und für `downloads`/`target` nicht; `only_people`-Test für `mail_downloads_folder` (wie
+  `pdf_folder`, `torro-ipc` und Kern); Tabellen-Test der Rechte und `names_follow_the_rules` grün;
+  `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md` committet.
+
+### M12.2 Schema auflösen und Vorschlag
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M12.1 · **Dateien:** `crates/torro-mail/src/save_target.rs`
+- **Oberfläche/API/MCP:** keine; Bibliothek für M12.3 und M12.7.
+- Reine Funktionen ohne Dateizugriff:
+  - `FileFacts { mail_date: NaiveDate, file_name: Option<String>, content_type, sender_name, sender_address,
+    account, subject, month_name: String }` – den Monatsnamen gibt der Aufrufer (in der Sprache der App), weil
+    `torro-mail` kein `tr` kennt.
+  - `date_in_name(name) -> Option<NaiveDate>`: `2026-03-28`, `28.03.2026`, `20260328`, nur gültige Daten, das erste
+    Vorkommen; Ziffern direkt davor oder danach verhindern den Treffer (`120260328` nicht).
+  - `clean_segment(text) -> String`: kein `/` und `\` (zu `_`), keine Steuer- und unsichtbaren Zeichen, Zeichen, die
+    Windows ablehnt, zu `_`, keine führenden Punkte und Leerzeichen (nie `.`/`..`), keine Namen, die Windows
+    reserviert (`CON`, `NUL`, `COM1` … → `_CON`), höchstens 120 Bytes; leer bleibt leer.
+  - `resolve(spec, facts) -> Result<Resolved { folders: Vec<String>, file: String }, SchemaError>`: Platzhalter
+    `{year} {month} {day} {month_name} {quarter} {date} {sender} {sender_domain} {account} {subject} {name} {ext}`
+    (Werte wie in der Tabelle des Issues; `{subject}` höchstens 60 Zeichen; `{name}` ohne, `{ext}` die Endung ohne
+    Punkt, kleingeschrieben); unbekannter Platzhalter oder `{` ohne `}` → `SchemaError::Unknown(name)`. Ordner nur
+    durch `/` im Schema, jedes Stück für sich bereinigt, leere Stücke entfallen; der Dateiname behält beim Kürzen die
+    Endung, fehlt `{ext}` im Wert, entfällt der Punkt am Ende; leerer Dateiname → bereinigter Originalname, sonst
+    `attachment`.
+  - `FileKind::of(content_type, name)`: PDF; Bilder (`image/*`, png jpg jpeg gif heic webp); Office (doc(x) xls(x)
+    ppt(x) odt ods odp und ihre MIME-Typen).
+  - `suggestion(when, category: Option<MailCategory>, kind, sender_address) -> Option<Suggestion { sure: bool }>`:
+    ohne Bedingung nie; jede gesetzte Art muss passen, innerhalb einer Art reicht ein Treffer; Absender passt auf
+    die ganze Adresse oder auf die Domain bzw. eine darunter, ohne Rücksicht auf Groß- und Kleinschreibung; `sure` nur,
+    wenn keine Kategorie-Bedingung gesetzt ist oder die Kategorie nicht `is_suggestion()` ist.
+- **Abnahme:** Tests für jeden Platzhalter, beide Datumsquellen (Datum im Namen in allen drei Formen, kein Datum →
+  Mail), feindliche Werte (`../`, `/etc`, Steuerzeichen, `CON`, sehr lange Werte) bleiben ein Stück unter dem Ordner,
+  unbekannter Platzhalter, Vorschlag nach Kategorie, Typ, Absender (Adresse und Domain), ohne Bedingung nie, vermutete
+  Kategorie → `sure: false`.
+
+### M12.3 Kern: Ziele speichern, Anhänge ablegen
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M12.2 · **Dateien:** `crates/torroworkplace/src/mail/{mod,save}.rs` (`save.rs` neu),
+  `crates/torroworkplace/src/mail/{read,service}.rs`, `crates/torroworkplace/src/{core,approvals}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/mail.md`
+- **Oberfläche:** M12.6, M12.7. **API/MCP:** M12.1.
+- `save.rs`: Datei `<data>/mail/save-targets.json` (0600, schreiben über Temp-Datei und Umbenennen wie die Nachbarn),
+  Kennungen zufällig (`random_hex`). Prüfen beim Anlegen und Ändern (sonst `error`): höchstens 50 Ziele, Name 1–60
+  Zeichen, eine Zeile, eindeutig ohne Rücksicht auf Groß- und Kleinschreibung; `folder` absolut, höchstens wie
+  `MAX_PATH_BYTES`; Schemas höchstens 200 Zeichen, eine Zeile, `resolve` mit einem Beispiel ohne `SchemaError`;
+  höchstens 20 Absender à 200 Zeichen; Kategorien aus dem Katalog. `not-found` für eine unbekannte Kennung.
+  `update_by_client(id, spec)` setzt `folder` unter derselben Sperre wie das Schreiben auf den gespeicherten Wert
+  (Gedanke von `kept_or_removed`): Ändert ein Mensch den Ordner zwischen der Prüfung im Kern (oder der Freigabe) und dem
+  Schreiben, bleibt seiner. Der Kern ruft es im Client-Zweig, `update` nur für den App-Schlüssel.
+- `mail.list_save_targets`: Ziele, `downloads` (Einstellung, sonst `dirs::download_dir()`, sonst `<home>/Downloads`)
+  und mit `id` je Anhang der Plan: `FileFacts` aus der gespeicherten Nachricht (Datum, Absender, Betreff, Konto
+  `display_name` sonst Adresse, Monatsname über `tr`), Orte je Ziel, `suggested` (passende Ziele in Listenordnung),
+  `sure` (erstes mit `sure`). Nachrichten nur über `mail.stores(reach)` wie `get_attachment`. Das Datum der Mail
+  ist ihr Tag in der lokalen Zeitzone des Rechners (`Local`), nicht in UTC. Kennt der Speicher die Anhänge noch nicht
+  (Text nicht geladen), bleibt `files` leer; die Oberfläche zeigt dann die Ziele ohne Pfad.
+- `mail.save_attachments`: Nachricht über `mail.stores(reach)` und `locate` finden wie `get_attachment` (ein Konto
+  außerhalb der Reichweite ist `not-found`, bevor etwas gelesen wird; nach einer Freigabe über `mail_to_approve`), dann
+  einmal holen (`fetch_raw`), jeden Teil mit `mime::attachment`; je Datei höchstens
+  `ATTACHMENT_MAX_BYTES`, sonst `failed`. Ziel:
+  - `downloads`: bereinigter Name in den Downloads-Ordner, Konflikt wie `KeepBoth`;
+  - `target`: Grundordner muss bestehen (sonst Fehler `not-found` „The folder of {target} is missing.“ für den
+    ganzen Aufruf). Vor dem Anlegen den tiefsten vorhandenen Vorfahren des Zielordners `canonicalize`n und prüfen,
+    dass er unter dem kanonischen Grundordner liegt, dann die Unterordner einzeln anlegen, danach den fertigen Ordner
+    noch einmal prüfen (sonst `failed`; so entstehen über einen Symlink keine Ordner außerhalb); jede Datei nach ihrem
+    eigenen Datum;
+  - `file`: wie `tools.save_file_as` (absolut, Elternordner besteht, kein Ordner und kein Symlink als Ziel, ersetzt);
+  - `folder`: bestehender Ordner, `KeepBoth`.
+  Nie überschreiben außer bei `file`: Schreiben mit `create_new`; `KeepBoth` versucht `Name (2).ext` bis `(99)`;
+  `SkipIdentical` vergleicht den Inhalt einer vorhandenen Datei gleichen Namens (gleich → `skipped`, sonst wie
+  `KeepBoth`). Scheitert eine Datei, laufen die übrigen weiter (`failed` mit Code und Meldung ohne Pfad).
+  `io::ErrorKind::PermissionDenied` (macOS fragt den Dienst vor dem ersten Schreiben in Downloads, Dokumente und
+  Schreibtisch) ergibt Code `forbidden` und die Meldung „Torro Workplace may not write to this folder.“, unter macOS
+  ergänzt um „Allow it in System Settings › Privacy & Security › Files and Folders.“ (`#[cfg(target_os = "macos")]`).
+- `core.rs`: Arm aus M12.1 durch die Weiterleitung an `save.rs` ersetzen (geboxt wie die Lese-Requests);
+  `switches_on_for_people`: `UpdateSaveTarget` mit anderem `folder` als gespeichert. `RemoveSaveTarget` setzt
+  `mail_attachment_click` auf `open` zurück, wenn es dieses Ziel nannte.
+- `approvals.rs`/`core.rs`: Namen aus dem Speicher des Kerns (`Facts` mit Nachschlage-Regel über die Kennung), nie
+  aus dem Request. Für `SaveMailAttachments` füllt der Kern `MailFacts` (Betreff aus dem Speicher, Konto) und zählt
+  `{n}` selbst (bei leeren `parts` die gespeicherten Anhänge ohne `inline`); die Freigabe wird an die Nachricht gebunden
+  wie bei `CreateTodoFromMail` (`mail_fingerprint`). Texte: „Save {n} attachments of “{subject}” to {target}“ bzw.
+  „… to Downloads“; „Change save target {name}“ mit dem gespeicherten Namen, ein neuer Name nur als „(renamed to
+  {new})“; „Remove save target {name}“.
+- Doku: `docs/mail.md` Tabelle der Funktionen um die fünf Befehle und kurzer Abschnitt „Anhänge ablegen“ (Verweis auf Issue #290).
+- **Abnahme:** Handler-Tests mit Temp-Verzeichnissen (`TORRO_DATA_HOME`, Downloads-Ordner gesetzt): Bereinigung,
+  Pfad bleibt im Grundordner (auch mit Symlink im Grundordner), nie überschreiben (`KeepBoth` zählt hoch),
+  „Skip if identical“, Größenlimit, Teilerfolg bei „Save all“, fehlender Grundordner, `to: file|folder` von einem
+  Client `forbidden`, `update_save_target` mit neuem Ordner von einem Client `forbidden` und mit dem gespeicherten
+  erlaubt, Ordner vom Menschen geändert zwischen Prüfung und Schreiben bleibt, Client ohne Zugriff auf das Konto
+  bekommt bei `list_save_targets` mit `id` und bei `save_attachments` `not-found`, Freigabe-Text mit Betreff, Zahl und
+  Zielname aus dem Speicher, Plan mit `suggested`/`sure`, Entfernen setzt die Klick-Aktion zurück; `TORRO_LANG=de cargo test
+  --workspace` grün.
+
+### M12.4 MCP: `mail_save_attachments` ohne Pfad
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** M12.3 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
+- **Oberfläche/API:** M12.1. **MCP:** `mail_save_attachments`, `mail_list_save_targets`, `mail_update_save_target`,
+  `mail_remove_save_target`.
+- Bequeme Eingabe für `mail.save_attachments` (`easy_input_schema`, `request_for`): `id`, `parts` (optional), `to`
+  = `"downloads"` oder die Kennung eines Ziels aus `mail_list_save_targets`; daraus `SaveTo::Downloads` bzw.
+  `SaveTo::Target`. Kein Feld für einen Pfad. Die übrigen drei Tools kommen unverändert aus dem Katalog.
+- **Abnahme:** Test, dass das Tool `downloads` und eine Kennung in den richtigen Request übersetzt und unbekannte
+  Felder (`file`, `folder`, `path`) ablehnt; `mail_create_save_target` steht nicht in `tools()`;
+  Vertragstest „Tool ↔ Katalog“ grün.
+
+### M12.5 `torro-gui`: geteilter Chip, Anhangblock, Menüeinträge mit Pfad
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** M12.1 · **Dateien:** `crates/torro-gui/src/{widgets,icon}.rs`,
+  `crates/torro-gui/assets/icons/{download,save}.svg` (neu), `crates/torro-gui/examples/gallery.rs`
+- **Oberfläche:** Bausteine für M12.6. **API/MCP:** keine.
+- `widgets::split_file_chip(name, size_text, on_open, on_menu, anchor: Option<&Anchor>)`: wie `file_chip`, rechts
+  nach einer Haarlinie (`LINE_STRONG`) ein Knopf mit `ChevronDown` (14), Tooltip „More ways to open or save“;
+  beide Teile mit eigenem Hover, gemeinsamer Rahmen; das Dreieck registriert `anchor` (`anchored_if`).
+  `widgets::split_action(icon, label, on_press, on_menu, anchor)`: dieselbe Teilung ohne Fläche und Rand (ghost) für
+  „Save all ▾“.
+- `widgets::file_block(head, content)`: Rahmen `LINE_STRONG`, Radius `radius::sm()`, Kopf als Band mit `LINE`
+  darunter (Büroklammer, Titel `typo::body_strong()`, Meta `typo::meta()` in `TEXT_3`, rechts frei für eine
+  Aktion), darunter der Inhalt mit `space::s()` Abstand.
+- `MenuItem::detail(text)` (zweite Zeile `typo::meta()` in `TEXT_3`, einzeilig mit „…“; der Eintrag wird zwei Zeilen
+  hoch) und `MenuItem::tag(label, sparkles)` (Wort `typo::caption()` in `TEXT_3` vor dem Trail, mit `Icon::Sparkles`
+  in `accent` davor bei `sparkles`; höchstens zwei).
+- Neue Icons `Icon::Download` und `Icon::Save` (Lucide 0.469.0, `stroke-width="1.75"`, Eintrag in `Icon::ALL`).
+- Galerie `--mailbar`: Anhangblock mit drei geteilten Chips und „Save all ▾“, ein Menü mit Detail und beiden Tags.
+- **Abnahme:** Doc-Kommentare mit Beispiel; `scripts/design-check.sh` grün; Galerie in Standard, Compact, Console,
+  hell und dunkel angesehen.
+
+### M12.6 Leser, Panel und Kontextmenü: Dreieck-Menü, Klick-Aktion, Speichern
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M12.3, M12.5 · **Dateien:** `crates/torroinbox/src/{mail,app,detail}.rs`,
+  `crates/torro-ipc/src/inbox.rs`, `crates/torro-inbox/src/demo.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Leser, Panel, Kontextmenü der Liste. **API:** `mail.list_save_targets`, `mail.save_attachments`.
+  **MCP:** M12.4.
+- `MailSource`: `save_targets(id)` und `save_attachments(id, parts, to)`; umsetzen in `InboxClient`, Demo (zwei Ziele
+  „Invoices“ `{year}/{month}` mit Kategorie Invoice und „Contracts“; Speichern antwortet ohne Datei) und den Fakes der
+  Tests.
+- Beim Öffnen einer Mail mit Anhängen `save_targets(Some(id))` laden und am Lesezustand halten; die Klick-Aktion aus
+  `Settings::mail_attachments` mit `mail_view` laden (`fetch_look`).
+- Leser: `attachment_line` wird `widgets::file_block` mit Kopf „Attachments“ und „{n} files · {size}“, rechts ab zwei
+  Anhängen „Save all ▾“; Chips `split_file_chip`. Panel (`panel_foot`, `attachment_row`): Dreieck an jeder Zeile,
+  „Save all ▾“ ab zwei.
+- Klick auf den Namen (`Message::OpenAttachment` wird zur Aktion nach Einstellung): `open` wie bisher; `downloads`,
+  `target` → `save_attachments`; `save_as` → `rfd` Speichern-Dialog mit dem Namen aus `AttachmentPlan::file_name`,
+  dann `to: file`; `suggested` → `sure`, sonst Öffnen. Ein Ziel, das nicht mehr in der Liste steht, gilt als Öffnen.
+  Tooltip des Chips „{action}: {name}“. „Save all“: Hauptklick nach Einstellung, bei `open`/`suggested` Downloads.
+- Menü am Dreieck (`Menu::Attachment(part)`, Anker in `detail::Anchors`): Open (`ArrowUpRight`), Save to Downloads
+  (`Download`), Save as… (`Save`); Abschnitt „Save to“ mit den Zielen (`Folder`), vorgeschlagene zuerst, Detail „Invoices › 2026 › 03“, Tag „Suggested“ (Sparkles nur wenn
+  nicht `sure`); Tag „Click“ an der Klick-Aktion; „Manage save targets…“ öffnet die Einstellungen bei `attachments`.
+  Für „Save all“ dieselbe Liste mit „Save all to Downloads“, „Save all to folder…“ (`rfd` Ordner-Dialog, `to:
+  folder`) und Detail „by each file's date“, ohne Open.
+- Rail: Gruppe File bekommt „Save attachments ({n})“ (Icon `Download`), nur bei Anhängen; ein Klick öffnet das Menü
+  von „Save all“ am Item; im Kontextmenü der Liste (`ContextAction`) öffnet es dasselbe Menü an der Zeile.
+- Nach dem Speichern Hinweis „Saved to {where}“ bzw. „{n} attachments saved to {target}“, bei `failed` „{n} saved,
+  {name} failed“; `Hint` bekommt neben `undo` die Aktion „Show in folder“ (öffnet den Ordner der ersten Datei wie
+  `open_attachment` für Programme). Abbrechen im Dialog: nichts, keine Meldung.
+- Demo: `--open attachment-menu`, `save-all-menu`, `attachment-saved`.
+- **Abnahme:** UI-Tests: Klick nach jeder Einstellung (auch vermutete Kategorie → Öffnen), Menü mit Click/Suggested,
+  Save all ab zwei Anhängen, Kontextmenü führt zum Menü, Abbrechen sendet nichts, Hinweis mit „Show in folder“;
+  Sichtprüfung (`torro-design`) der drei Zustände in Schmal, Mittel, Breit, hell und dunkel, Standard und Console.
+
+### M12.7 Einstellungen › Mail › Attachments
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M12.2, M12.6 · **Dateien:** `crates/torro-settings-ui/src/{lib,mail,demo}.rs`,
+  `crates/torro-settings-ui/src/mail/attachments.rs` (neu), `crates/torroinbox/src/app.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`
+- **Oberfläche:** Einstellungen › Mail › Attachments. **API:** `settings.set_setting` (`mail_attachment_click`,
+  `mail_downloads_folder`), `mail.list_save_targets`, `mail.create_save_target`, `mail.update_save_target`,
+  `mail.remove_save_target`. **MCP:** M12.4 (Anlegen Never).
+- Abschnitt `Section { id: "attachments", icon: Icon::Paperclip, label: "Attachments" }` nach „Reading“; `wanted()`
+  um `ListSaveTargets { id: None }`; `Data::save_targets` und `Data::downloads`.
+- Seite (C): Gruppe „Clicking an attachment“ mit „Click on an attachment“ (Auswahl: Open, Save to Downloads, Save as…,
+  je Ziel „Save to {name}“, „Suggested target, else open“; Satz „The triangle beside it always offers every way.“) und
+  „Downloads folder“ mit „Change…“; Gruppe „Save targets“ mit erklärendem Satz, je Ziel eine Zeile (Name, Pfad und
+  Schema in `TEXT_3`), „Add save target“.
+- Editor (D) als Dialog (`parts::dialog`), Bezeichnung links, Feld rechts, drei Abschnitte: Name, Folder
+  („Choose…“); Subfolders und File name je mit „Insert ▾“ (Vorlagen und Platzhalter mit Beispielwert, eingefügt an
+  der Cursorstelle) und Satz „A “/” starts a new folder.“, „Date from“ (Segmente „Mail date“ / „File name, else
+  mail“); „Suggest when“ als Bedingungen mit ✕ und „+ Add condition“ (Menü: Kategorien der Gruppe PaperTrail und
+  weitere aus dem Katalog, Dateitypen, Absender als Eingabe), „If file exists“ (Segmente „Keep both“ / „Skip if
+  identical“); unten die Live-Vorschau mit `resolve` am festen Beispiel des Entwurfs
+  (`Rechnung_2026-03-28_4711.pdf` von Stadtwerke Bonn, 2 Apr 2026); Fuß „Delete target“ (danger, mit Rückfrage),
+  „Cancel“, „Save“. Fehler (Name leer, Schema mit unbekanntem Platzhalter) erst nach dem ersten Speicherversuch.
+- Ordner wählen: `AppAction::PickFolder(FolderFor)` (Downloads oder Editor) wie in `assistant/tools.rs`; das
+  Mail-Fenster öffnet `rfd` und gibt den Pfad zurück (`settings_outcome` statt `Outcome::App(())`).
+- Demo-Antworten für die vier Befehle; `--settings attachments`.
+- `docs/settings.md`: Zeile „Mail“ um „Attachments“ ergänzen.
+- **Abnahme:** Seiten-Tests: Auswahl schickt `SetSetting MailAttachmentClick`, „Change…“ schickt
+  `MailDownloadsFolder` mit dem gewählten Pfad, Editor schickt `CreateSaveTarget` bzw. `UpdateSaveTarget` mit allen
+  Feldern, „Insert“ fügt an der Cursorstelle ein, Vorschau folgt den Feldern, Fehler erst nach Speichern; Sichtprüfung
+  (`torro-design`) von Seite und Editor in Schmal, Mittel, Breit, hell und dunkel; `torro-design-review` und
+  `torro-api-review` ohne Befund.

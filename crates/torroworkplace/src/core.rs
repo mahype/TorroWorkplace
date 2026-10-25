@@ -2916,6 +2916,16 @@ impl Core {
             let lack = torro_ipc::api::Lack::of_in(&kind, &rights, delete, &[], &[], via.origin.mode);
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
         }
+        // An unknown save target, or a change that could not be stored, is nothing to approve
+        // (task M12.3).
+        if matches!(
+            request,
+            Request::UpdateSaveTarget { .. } | Request::RemoveSaveTarget { .. } | Request::SaveMailAttachments { .. }
+        ) && let Some(refused) =
+            crate::mail::save::client_refusal(&self.mail, &request, &self.save_context().categories)
+        {
+            return Ok(refused);
+        }
         // A task made of a mail reads the mail, and opening one shows a mail or a task (task
         // E8.7a): what the client may not read is `not-found` before anyone is asked.
         if let Request::CreateTodoFromMail { account, .. } = &request
@@ -3330,6 +3340,33 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // Saving attachments (task M12.3): the subject, the number of files and the target by
+            // what the core's stores hold, the approval pinned to the mail as a task made of it is.
+            (Request::SaveMailAttachments { id, parts, to }, _) => {
+                if info.is_none() {
+                    return Err(Refused::Forbidden { command });
+                }
+                let (found, pinned) = match self.attachments_to_approve(id, parts, rights).await {
+                    Ok(found) => found,
+                    Err(refused) => return Ok(*refused),
+                };
+                let target = match to {
+                    torro_ipc::mail::SaveTo::Target(target) => {
+                        self.mail.save_targets().get(target).ok().flatten().map(|target| target.spec.name)
+                    }
+                    _ => None,
+                };
+                let mail = crate::approvals::MailFacts {
+                    account: found.account.strip_prefix(torro_mail::ACCOUNT_PREFIX).map(str::to_string),
+                    count: found.count,
+                    subjects: vec![found.subject],
+                    ..crate::approvals::MailFacts::default()
+                };
+                let facts = Facts { name: target, mail: Some(mail), ..Facts::default() };
+                fingerprint = Some((pinned, Vec::new()));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             // A task made of a mail (task E8.7a): the mail as the store holds it, the title fixed
             // now (the subject when the client left it out), the approval pinned to the mail.
             (Request::CreateTodoFromMail { account, id, collection, title, due }, _) => {
@@ -3562,6 +3599,11 @@ impl Core {
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
             }
+            // A save target by the name the core stores (task M12.3), never the client's text.
+            Request::UpdateSaveTarget { id, .. } | Request::RemoveSaveTarget { id } => Facts {
+                name: self.mail.save_targets().get(id).ok().flatten().map(|target| target.spec.name),
+                ..Facts::default()
+            },
             // A file of a tool by the title the register keeps (issue #225), never the client's text;
             // whose it is was checked before.
             Request::OpenFile { file } | Request::SaveFileAs { file, .. } => {
@@ -3769,6 +3811,18 @@ impl Core {
         // worker's stack. The handler sees what `answer_within` would pass it.
         if let Request::MailRestoreApply { .. } = request {
             return Box::pin(self.answer_mail_backup(request, reach, Some(client))).await;
+        }
+        // Attachments are saved only from the mail the person was shown (task M12.3); an approval
+        // without a fingerprint matches no mail.
+        if let Request::SaveMailAttachments { id, parts, .. } = &request {
+            match self.attachments_to_approve(id, parts, rights).await {
+                Ok((_, now)) if Some(now.as_str()) == fingerprint => {}
+                Ok(_) => {
+                    let message = "the mail changed after the approval was asked for; nothing was saved, ask again";
+                    return Response::Error { code: "conflict".into(), message: message.into() };
+                }
+                Err(refused) => return *refused,
+            }
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -4476,6 +4530,14 @@ impl Core {
                 // in the stack already when the inbox's quiet asks the core again.
                 Box::pin(crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request)).await
             }
+            // Saving attachments (issue #290, task M12.3): rights and the paths kept for people were
+            // checked before; the handler resolves `id` in the stores `reach` sees only. Boxed as
+            // reading mail is.
+            request @ (Request::ListSaveTargets { .. }
+            | Request::CreateSaveTarget { .. }
+            | Request::UpdateSaveTarget { .. }
+            | Request::RemoveSaveTarget { .. }
+            | Request::SaveMailAttachments { .. }) => Box::pin(self.save_request(request, reach)).await,
             // Sending (task M3.3): the person sends any draft; a client's send carries its id and
             // never reaches here unnamed (`Core::handle_client`, `Core::run_approved`).
             request @ Request::SendDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
@@ -6144,6 +6206,54 @@ impl Core {
                 Err(Box::new(refusal("error", "the inbox cannot be written".into())))
             }
         }
+    }
+
+    /// What the handlers of saving attachments need from the core (task M12.3): the Downloads folder
+    /// after the settings ([`crate::mail::save::downloads_folder`]) and the categories of the
+    /// catalogue a target may name (the built-in ones when the catalogue cannot be read).
+    fn save_context(&self) -> crate::mail::save::Context {
+        let downloads = crate::mail::save::downloads_folder(&self.settings.current().mail_attachments);
+        let categories = match self.inbox.catalogue() {
+            Ok(catalogue) => catalogue.into_iter().map(|def| def.category).collect(),
+            Err(err) => {
+                eprintln!("torroworkplace: mail: cannot read the catalogue of categories: {err}");
+                torro_mail::Category::BUILT_IN.to_vec()
+            }
+        };
+        crate::mail::save::Context { downloads, categories }
+    }
+
+    /// The requests of saving attachments for `reach` (issue #290, [`crate::mail::save::answer`]).
+    /// Removing a target that the click on an attachment named sets the click back to `open`
+    /// (setting `mail_attachment_click`), so it opens files again instead of naming a target gone.
+    async fn save_request(&self, request: Request, reach: Reach<'_>) -> Response {
+        let removed = match &request {
+            Request::RemoveSaveTarget { id } => Some(id.clone()),
+            _ => None,
+        };
+        let context = self.save_context();
+        let response = crate::mail::save::answer(&self.mail, reach, &context, request).await;
+        if let (Some(id), Response::SaveTargets { .. }) = (removed, &response)
+            && let Err(err) = self.settings.release_attachment_click(&id)
+        {
+            eprintln!("torroworkplace: mail: cannot set the click on attachments back to open: {err}");
+        }
+        response
+    }
+
+    /// For `mail.save_attachments` of a client (task M12.3): what its approval shows, from the
+    /// message `id` as the stores `rights` reach hold it ([`crate::mail::save::to_approve`]), and the
+    /// fingerprint of the mail it is pinned to ([`mail_fingerprint`], as for a task made of a mail).
+    /// The answer when the mail is out of reach or gone (`not-found`).
+    async fn attachments_to_approve(
+        &self,
+        id: &str,
+        parts: &[String],
+        rights: &torro_ipc::api::Rights,
+    ) -> Result<(crate::mail::save::ToApprove, String), Box<Response>> {
+        let found = crate::mail::save::to_approve(&self.mail, Reach::Client(rights), id, parts).await?;
+        let mail = self.mail_to_approve(&found.account, id, rights).await?;
+        Ok((found, mail_fingerprint(&mail)))
     }
 
     /// For the approval of `tasks.create_todo_from_mail` (task E8.7a): the mail as the store holds
@@ -7927,9 +8037,14 @@ impl Core {
     ///   the assistant (point 9, issue #225); or that sets the PDF folder or a template's logo to a path
     ///   other than the stored one (`torro_core::settings::Tools::needs_a_person`); or that turns maps on
     ///   or names another search or tile service than the stored one (task TE.1,
-    ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay),
-    /// - `settings.set_setting pdf_folder` with a folder other than the stored one,
-    /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template.
+    ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay); or that
+    ///   sets the Downloads folder of attachments to a path other than the stored one (issue #290,
+    ///   `torro_core::settings::MailAttachments::needs_a_person`),
+    /// - `settings.set_setting pdf_folder` or `mail_downloads_folder` with a folder other than the
+    ///   stored one,
+    /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template,
+    /// - `mail.update_save_target` with a folder other than the stored one of that target (task
+    ///   M12.3).
     ///
     /// Removing a folder or a logo, keeping the stored one and every other field of a template are
     /// ordinary admin changes. A value that does not read is no such change: it fails anyway.
@@ -7945,7 +8060,24 @@ impl Core {
                     || now.tools.needs_a_person(&settings.tools)
                     // Maps on, or another search or tile service (task TE.1).
                     || now.maps.needs_a_person(&settings.maps)
+                    // The folder of "Save to Downloads" (issue #290, point 9).
+                    || now.mail_attachments.needs_a_person(&settings.mail_attachments)
             }
+            Request::SetSetting { key: SettingKey::MailDownloadsFolder, value } => {
+                let Ok(Some(folder)) = torro_core::settings::MailAttachments::downloads_from(value) else {
+                    return false;
+                };
+                self.settings.current().mail_attachments.downloads.as_ref() != Some(&folder)
+            }
+            // Another folder for a save target (task M12.3, point 9); an unknown one is `not-found`
+            // later.
+            Request::UpdateSaveTarget { id, target } => self
+                .mail
+                .save_targets()
+                .get(id)
+                .ok()
+                .flatten()
+                .is_some_and(|stored| stored.spec.folder != target.folder),
             Request::SetSetting { key: SettingKey::PdfFolder, value } => {
                 let Ok(Some(folder)) = torro_core::settings::PdfSettings::folder_from(value) else { return false };
                 self.settings.current().tools.pdf.folder.as_ref() != Some(&folder)
@@ -10852,6 +10984,218 @@ mod tests {
         let tools = settings(&core).await.tools;
         assert!(!tools.is_on(ToolId::Pdf), "off once the person allowed it");
         assert_eq!((tools.pdf.folder, tools.pdf.note.logo, tools.pdf.note.font_size_pt), (None, None, 9));
+    }
+
+    /// Issue #290, point 9: no client sets the folder of "Save to Downloads", not with every right,
+    /// neither one setting at a time nor with the whole settings, and nobody is asked to approve it;
+    /// removing it and keeping the stored one are admin changes after approval. Nor does a client
+    /// save attachments to a path (`to: file | folder`); to Downloads or a target it gets past the
+    /// rights (and finds no such mail or target here).
+    #[tokio::test]
+    async fn only_people_set_the_downloads_folder_and_choose_paths_for_attachments() {
+        use serde_json::json;
+        use torro_ipc::SettingKey;
+        use torro_ipc::mail::SaveTo;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let folder = dir.path().join("Ablage").to_string_lossy().into_owned();
+        let downloads_to =
+            |path: Option<&str>| Request::SetSetting { key: SettingKey::MailDownloadsFolder, value: json!(path) };
+
+        assert_eq!(code(&ask(&core, Some(&key), downloads_to(Some(&folder))).await), "forbidden");
+        let mut whole = settings(&core).await;
+        whole.mail_attachments.downloads = Some(folder.clone());
+        let update = Request::UpdateSettings { settings: whole };
+        assert_eq!(code(&ask(&core, Some(&key), update).await), "forbidden");
+        assert_eq!(settings(&core).await.mail_attachments.downloads, None, "nothing changed");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        assert_eq!(ask(&core, Some(&app_key), downloads_to(Some(&folder))).await, Response::Ok);
+        assert_eq!(settings(&core).await.mail_attachments.downloads.as_deref(), Some(&*folder));
+        for request in [downloads_to(Some(&folder)), downloads_to(None)] {
+            let asked = waits(ask(&core, Some(&key), request).await);
+            let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+            assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        }
+        assert_eq!(settings(&core).await.mail_attachments.downloads, None, "removed once the person allowed it");
+
+        let save = |to| Request::SaveMailAttachments { id: "m:1".into(), parts: Vec::new(), to };
+        for to in [SaveTo::File(dir.path().join("a.pdf").to_string_lossy().into_owned()), SaveTo::Folder(folder)] {
+            assert_eq!(code(&ask(&core, Some(&key), save(to.clone())).await), "forbidden", "{to:?}");
+        }
+        for to in [SaveTo::Downloads, SaveTo::Target("0a1b2c3d".into())] {
+            let answer = ask(&core, Some(&key), save(to.clone())).await;
+            assert!(!matches!(&answer, Response::Error { code, .. } if code == "forbidden"), "{to:?}: {answer:?}");
+        }
+    }
+
+    /// A core whose mail data (and so its save targets) live in `dir`, without mail accounts.
+    fn core_with_mail_data(dir: &std::path::Path) -> Core {
+        let secrets = crate::account::github::tests::MemoryTokens::default();
+        core(dir).with_mail(crate::mail::service::tests::service_in(dir, &secrets))
+    }
+
+    /// The save target an answer names.
+    fn save_target(response: Response) -> torro_mail::SaveTarget {
+        match response {
+            Response::SaveTarget { target } => target,
+            other => panic!("expected a save target, got {other:?}"),
+        }
+    }
+
+    /// Task M12.3, point 9: only the app key adds a target; a client changes one only with the
+    /// folder as stored and after a person allowed it, the approval naming the target as the core
+    /// stores it; a folder a person set meanwhile stays. Removing a target the click on an
+    /// attachment named sets the click back to `open`.
+    #[tokio::test]
+    async fn clients_change_save_targets_only_with_their_stored_folder() {
+        use torro_core::settings::AttachmentClick;
+        use torro_mail::SaveTargetSpec;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_mail_data(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let folder = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+        let spec = |name: &str, path: &str| SaveTargetSpec::new(name, path);
+
+        let create = Request::CreateSaveTarget { target: spec("Invoices", &folder("Rechnungen")) };
+        assert_eq!(code(&ask(&core, Some(&key), create.clone()).await), "forbidden", "the app key's");
+        let made = save_target(ask(&core, Some(&app_key), create).await);
+
+        let elsewhere = Request::UpdateSaveTarget { id: made.id.clone(), target: spec("Invoices", &folder("Dropbox")) };
+        assert_eq!(code(&ask(&core, Some(&key), elsewhere).await), "forbidden");
+        let unknown = Request::UpdateSaveTarget { id: "0a1b2c3d".into(), target: spec("X", &folder("Rechnungen")) };
+        assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
+        let broken = Request::UpdateSaveTarget { id: made.id.clone(), target: spec("", &folder("Rechnungen")) };
+        assert_eq!(code(&ask(&core, Some(&key), broken).await), "error");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let renamed = Request::UpdateSaveTarget { id: made.id.clone(), target: spec("Bills", &folder("Rechnungen")) };
+        let asked = waits(ask(&core, Some(&key), renamed.clone()).await);
+        assert_eq!(
+            asked.summary,
+            trf("Change save target \"{name}\" (renamed to \"{new}\")", &[("name", &"Invoices"), ("new", &"Bills")])
+        );
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let changed = SaveTargetSpec { name: "Bills".into(), ..made.spec.clone() };
+        let done = Response::SaveTarget { target: torro_mail::SaveTarget { id: made.id.clone(), spec: changed } };
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(done) });
+
+        // The person moves the folder while the client's change waits: run, the approval finds the
+        // client's folder no longer the stored one and ends `forbidden` (`run_approved` checks
+        // `switches_on_for_people` again); the person's stays. `update_by_client` only covers a move
+        // between that check and the write.
+        let asked = waits(ask(&core, Some(&key), renamed).await);
+        assert_eq!(asked.summary, trf("Change save target \"{name}\"", &[("name", &"Bills")]));
+        let moved = Request::UpdateSaveTarget { id: made.id.clone(), target: spec("Bills", &folder("Belege")) };
+        save_target(ask(&core, Some(&app_key), moved).await);
+        let refused = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(
+            matches!(&refused.state, torro_ipc::ApprovalState::Done { response } if code(response) == "forbidden"),
+            "{:?}",
+            refused.state
+        );
+        let stored = core.mail.save_targets().get(&made.id).expect("read").expect("there");
+        assert_eq!(stored.spec.folder, folder("Belege"));
+
+        let click = Request::SetSetting {
+            key: SettingKey::MailAttachmentClick,
+            value: serde_json::json!({"target": made.id.clone()}),
+        };
+        assert_eq!(ask(&core, Some(&app_key), click).await, Response::Ok);
+        let asked = waits(ask(&core, Some(&key), Request::RemoveSaveTarget { id: made.id.clone() }).await);
+        assert_eq!(asked.summary, trf("Remove save target \"{name}\"", &[("name", &"Bills")]));
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(matches!(&allowed.state, torro_ipc::ApprovalState::Done { response }
+            if matches!(**response, Response::SaveTargets { ref targets, .. } if targets.is_empty())));
+        assert_eq!(settings(&core).await.mail_attachments.click, AttachmentClick::Open, "opens again");
+    }
+
+    /// Task M12.3: a client's saving waits for a person as its rights say, and the approval names
+    /// the subject, the number of files and the target as the core stores them; allowed, the files
+    /// land where the target says. A client without the account finds no such mail, for planning
+    /// and for saving, and nobody is asked.
+    #[tokio::test]
+    async fn saving_attachments_is_approved_by_what_the_core_stores() {
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+        use torro_ipc::mail::SaveTo;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let files: [(&str, &[u8]); 2] = [("Rechnung.pdf", b"pdf"), ("Liste.pdf", b"list")];
+        server.add("INBOX", &crate::mail::save::tests::raw_on(Utc::now(), "Recent", &files), &[]);
+        let secrets = crate::account::github::tests::MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let id = crate::mail::save::tests::message_id(&core.mail, "Recent").await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (base, downloads) = (dir.path().join("Rechnungen"), dir.path().join("Downloads"));
+        std::fs::create_dir(&base).expect("the folder");
+        std::fs::create_dir(&downloads).expect("downloads");
+        let to_downloads = Request::SetSetting {
+            key: SettingKey::MailDownloadsFolder,
+            value: serde_json::json!(downloads.to_string_lossy()),
+        };
+        assert_eq!(ask(&core, Some(&app_key), to_downloads).await, Response::Ok);
+        let target = torro_mail::SaveTargetSpec::new("Invoices", base.to_string_lossy());
+        let made = save_target(ask(&core, Some(&app_key), Request::CreateSaveTarget { target }).await);
+
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, rights.clone()).await;
+        let all = Request::SaveMailAttachments { id: id.clone(), parts: Vec::new(), to: SaveTo::Target(made.id) };
+        let asked = waits(ask(&core, Some(&key), all).await);
+        let args: [(&str, &dyn std::fmt::Display); 3] =
+            [("n", &2), ("subject", &"\"Recent\""), ("target", &"\"Invoices\"")];
+        assert_eq!(asked.summary, trf("Save {n} attachments of the mail {subject} to {target}", &args));
+        assert_eq!(std::fs::read_dir(&base).expect("readable").count(), 0, "not before a person allows it");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        let Response::SavedAttachments { saved, .. } = *response else { panic!("saved: {response:?}") };
+        assert_eq!(saved.len(), 2);
+        assert!(
+            saved.iter().all(|file| std::path::Path::new(&file.path).starts_with(base.canonicalize().expect("base")))
+        );
+
+        let part = match ask(&core, Some(&key), Request::ListSaveTargets { id: Some(id.clone()) }).await {
+            Response::SaveTargets { files, .. } => files[1].part.clone(),
+            other => panic!("targets: {other:?}"),
+        };
+        // A part named twice is one file, as the core saves it.
+        let one =
+            Request::SaveMailAttachments { id: id.clone(), parts: vec![part.clone(), part], to: SaveTo::Downloads };
+        let asked = waits(ask(&core, Some(&key), one).await);
+        let args: [(&str, &dyn std::fmt::Display); 3] =
+            [("n", &1), ("subject", &"\"Recent\""), ("target", &tr("Downloads"))];
+        assert_eq!(asked.summary, trf("Save an attachment of the mail {subject} to {target}", &args));
+
+        // A part the stored message does not have is refused before anybody is asked.
+        let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
+        let unknown = Request::SaveMailAttachments { id: id.clone(), parts: vec!["99".into()], to: SaveTo::Downloads };
+        assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
+        assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
+
+        let mut outside = rights;
+        outside.mail_accounts = Selection::Only(Vec::new());
+        let (_, stranger) = client(&core, outside).await;
+        let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
+        let plan = Request::ListSaveTargets { id: Some(id.clone()) };
+        assert_eq!(code(&ask(&core, Some(&stranger), plan).await), "not-found");
+        let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
+        assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
+        assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
     }
 
     /// The answer's file of a `tools.create_pdf`, also as an approval kept it.

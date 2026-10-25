@@ -31,13 +31,21 @@
 //!   adds in its fixed footer. The mail window has none of them (task E14.3): every action on the
 //!   mail stands in its action rail at the right edge ([`action_groups`]: Reply · File · Torro ·
 //!   Mark, at the foot Mute · More, drawn by `widgets::action_rail`), its head has no buttons and
-//!   the attachments stand as chips at the reader's bottom ([`attachment_line`]). Which bars a mail
-//!   in the panel has, [`Bars`] says (task E11.4): the hub and the App Feed keep the split of E9.4,
-//!   the mail window's panel in medium and narrow takes the reader's head without the subject (the
-//!   panel's title says it), the chips in its fixed footer ([`panel_foot`]) and the collapsed rail
-//!   beside it; [`entry_panel`] is that panel for a mail entry.
+//!   the attachments stand in their block at the reader's bottom ([`attachment_line`]). Which bars a
+//!   mail in the panel has, [`Bars`] says (task E11.4): the hub and the App Feed keep the split of
+//!   E9.4, the mail window's panel in medium and narrow takes the reader's head without the subject
+//!   (the panel's title says it), the attachments as rows in its fixed footer ([`panel_foot`]) and the
+//!   collapsed rail beside it; [`entry_panel`] is that panel for a mail entry.
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
+//! - Saving attachments (task M12.6, issue #290): each attachment is a split chip – rows in the panel
+//!   – whose name does what the setting `mail_attachments.click` says ([`click_act`], [`FileAct`]) and
+//!   whose triangle opens its menu ([`file_menu`]: Open, Save to Downloads, Save as…, the save targets
+//!   with where the file would go, "Suggested", "Click", "Manage save targets…"); "Save all ▾" from two
+//!   on, and "Save attachments (n)" in the rail's File ([`all_act`]). Where a file would go comes from
+//!   the core (`mail.list_save_targets`, [`MailSource::save_targets`]), saving is
+//!   `mail.save_attachments` ([`MailSource::save_attachments`]); the window adds only the system's
+//!   dialogs and "Show in folder" ([`saved_text`], [`saved_folder`]).
 //!
 //! **Mail is foreign text** (`untrusted`). Its HTML comes cleaned by the core (no scripts, no
 //! forms, legacy attributes as CSS) and is drawn without JavaScript; a click on one of its links
@@ -56,14 +64,14 @@ use iced::widget::text::Wrapping;
 use iced::widget::{column, container, mouse_area, responsive, row, rule, scrollable, svg};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
-use torro_core::settings::{MailAppearance, MailFormat};
+use torro_core::settings::{AttachmentClick, MailAppearance, MailFormat};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::panel;
 use torro_gui::selectable::{self, Selectable};
 use torro_gui::source;
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Mark, RailGroup, RailItem, RowAction};
+use torro_gui::widgets::{self, Mark, MenuItem, MenuSection, RailGroup, RailItem, RowAction};
 use torro_gui::{datetime, style, typo};
 use torro_htmlview::{CidSource, Content, HtmlView, MAX_PICTURE_BYTES, Scheme};
 use torro_inbox::InboxError;
@@ -72,10 +80,12 @@ use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
 use torro_ipc::inbox::CategoryInfo;
-use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound};
+use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound, SaveTargets, SavedAttachments};
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
-use torro_ipc::mail::{Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget};
+use torro_ipc::mail::{
+    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget, PlannedPlace, SaveTo, SavedFile,
+};
 use torro_ipc::{Request, Response};
 use torro_mail::{
     AttachmentInfo, CategoryGroup, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, Message as Mail,
@@ -152,6 +162,26 @@ pub trait MailSource: Send + Sync {
     /// `mail.get_attachment`: the attachment `part` of the message `id` as a file in the core's
     /// attachment folder; answers its path.
     fn mail_attachment(&self, id: String, part: String) -> impl Future<Output = Result<PathBuf, InboxError>> + Send;
+
+    /// `mail.list_save_targets` (task M12.6, issue #290): the save targets, the Downloads folder and –
+    /// with the message `id` – where each of its attachments would go ([`SaveTargets::files`], one
+    /// [`torro_ipc::mail::AttachmentPlan`] per attachment that is not `inline`). The attachment menus
+    /// show the targets from it, the paths and "Suggested" from the plans; a click on a name reads its
+    /// plan's `sure`. [`InboxError::NotFound`] for a message the window may not see.
+    fn save_targets(&self, id: Option<String>) -> impl Future<Output = Result<SaveTargets, InboxError>> + Send;
+
+    /// `mail.save_attachments` (task M12.6): saves the attachments `parts` of the message `id` – none:
+    /// every one that is not `inline` ("Save all") – where `to` says. `to: file` and `folder` carry the
+    /// path a person chose in the system's dialog (the window holds the app key). Answers what was
+    /// saved, skipped as the same file and failed ([`SavedAttachments`]); a file is never overwritten
+    /// but with `to: file`. [`InboxError::NotFound`] for an unknown message, part or target, or a
+    /// target whose folder is missing.
+    fn save_attachments(
+        &self,
+        id: String,
+        parts: Vec<String>,
+        to: SaveTo,
+    ) -> impl Future<Output = Result<SavedAttachments, InboxError>> + Send;
 
     /// `mail.set_flags`: sets `add` and clears `remove` on the messages `ids`.
     fn set_mail_flags(
@@ -326,6 +356,19 @@ impl MailSource for InboxClient {
         InboxClient::mail_attachment(self, id, part).await
     }
 
+    async fn save_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        InboxClient::save_targets(self, id).await
+    }
+
+    async fn save_attachments(
+        &self,
+        id: String,
+        parts: Vec<String>,
+        to: SaveTo,
+    ) -> Result<SavedAttachments, InboxError> {
+        InboxClient::save_attachments(self, id, parts, to).await
+    }
+
     async fn set_mail_flags(&self, ids: Vec<String>, add: Vec<Flag>, remove: Vec<Flag>) -> Result<(), InboxError> {
         InboxClient::set_mail_flags(self, ids, add, remove).await
     }
@@ -452,6 +495,29 @@ impl MailSource for DemoSource {
 
     async fn mail_attachment(&self, id: String, part: String) -> Result<PathBuf, InboxError> {
         DemoSource::mail_attachment(self, &id, &part)
+    }
+
+    /// The demo's two save targets ([`torro_inbox::demo::save_targets`]) and, for a message, where
+    /// each of its attachments would go – planned as the core plans it ([`demo_plan`]).
+    async fn save_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        let targets = torro_inbox::demo::save_targets();
+        let files = match id {
+            Some(id) => demo_plans(&DemoSource::get_mail(self, &id)?, &targets),
+            None => Vec::new(),
+        };
+        Ok(SaveTargets { targets, downloads: torro_inbox::demo::DEMO_DOWNLOADS.to_owned(), files })
+    }
+
+    /// The demo writes no file (issue #290): it answers where the core would have put each one
+    /// ([`demo_saved`]), so the window's hint and "Show in folder" have a path.
+    async fn save_attachments(
+        &self,
+        id: String,
+        parts: Vec<String>,
+        to: SaveTo,
+    ) -> Result<SavedAttachments, InboxError> {
+        let mail = DemoSource::get_mail(self, &id)?;
+        demo_saved(&mail, &parts, &to)
     }
 
     async fn set_mail_flags(&self, ids: Vec<String>, add: Vec<Flag>, remove: Vec<Flag>) -> Result<(), InboxError> {
@@ -586,6 +652,22 @@ impl MailSource for crate::empty::EmptySource {
     }
 
     async fn mail_attachment(&self, _id: String, _part: String) -> Result<PathBuf, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn save_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        match id {
+            Some(_) => Err(InboxError::NotFound),
+            None => Ok(SaveTargets::default()),
+        }
+    }
+
+    async fn save_attachments(
+        &self,
+        _id: String,
+        _parts: Vec<String>,
+        _to: SaveTo,
+    ) -> Result<SavedAttachments, InboxError> {
         Err(InboxError::NotFound)
     }
 
@@ -891,8 +973,9 @@ pub fn opens_in_browser(url: &str) -> bool {
     matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
 }
 
-/// How the window shows mail, as the settings `mail_view` and `mail_appearance` say (task M9.5).
-/// The switches over a mail start from it and go back to it whenever the setting changes.
+/// How the window shows mail, as the settings `mail_view` and `mail_appearance` say (task M9.5),
+/// and what a click on an attachment does (`mail_attachments`, task M12.6). The switches over a mail
+/// start from it and go back to it whenever the setting changes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MailLook {
     /// HTML or text first (`mail_view`); a mail without HTML always shows its text.
@@ -902,6 +985,9 @@ pub struct MailLook {
     /// The categories the sidebar leaves out (task E12.10, `hidden_categories`): what the person
     /// switched off under Settings › Categorization.
     pub hidden_categories: Vec<torro_mail::Category>,
+    /// What a click on an attachment's name does (task M12.6, `mail_attachments.click`); "Open"
+    /// until the core said otherwise, and in the demo.
+    pub click: AttachmentClick,
 }
 
 /// Reads [`MailLook`] from the settings of the core (`settings.get_settings`), on every tick like
@@ -916,6 +1002,7 @@ pub async fn stored_look(suite: &source::Source) -> Result<MailLook, String> {
             format: settings.mail_view,
             colors: settings.mail_appearance,
             hidden_categories: settings.hidden_categories,
+            click: settings.mail_attachments.click,
         }),
         Ok(_) => Err("unexpected answer to settings.get_settings".to_owned()),
         Err(err) => Err(err.to_string()),
@@ -1964,6 +2051,15 @@ pub struct Reading<'a> {
     /// The mail's HTML and how it shows (task M9.7); `None` for a mail without HTML, which shows
     /// its text without switches.
     pub html: Option<HtmlReading<'a>>,
+    /// The save targets and where each of the mail's attachments would go (task M12.6,
+    /// `mail.list_save_targets`); `None` while they load or when they could not be read – a click
+    /// then opens, the menus offer Open, Downloads and Save as….
+    pub saving: Option<&'a SaveTargets>,
+    /// What a click on an attachment's name does (`mail_attachments.click`, [`click_act`]).
+    pub click: &'a AttachmentClick,
+    /// The attachment whose menu is open (its place among the mail's attachments that are not
+    /// `inline`, [`files_of`]): its triangle carries the menu's anchor.
+    pub file_menu: Option<usize>,
 }
 
 /// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
@@ -2057,9 +2153,9 @@ pub fn panel<'a>(
     let parts: Vec<String> = folder.map(|f| vec![address(&f.account).to_owned(), f.name.clone()]).unwrap_or_default();
     let footer = match bars {
         Bars::Split => folder_footer(reading, anchors),
-        Bars::Command { width, .. } => panel_foot(reading, width),
+        Bars::Command { .. } => panel_foot(reading, anchors),
     };
-    let body = body(reading, bars);
+    let body = body(reading, bars, anchors);
     panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail).footer(footer)
 }
 
@@ -2074,21 +2170,21 @@ pub fn entry_panel<'a>(
     entry: ReaderEntry<'a>,
     view_name: String,
     width: f32,
+    anchors: &detail::Anchors,
 ) -> panel::Panel<'a, Message> {
-    let body = body(reading, Bars::Command { entry: Some(entry), width });
+    let body = body(reading, Bars::Command { entry: Some(entry), width }, anchors);
     let (path, title) = (detail::path(entry.item, view_name), detail::heading(entry.item));
-    panel::panel(path, title, body, Message::CloseDetail).footer(panel_foot(reading, width))
+    panel::panel(path, title, body, Message::CloseDetail).footer(panel_foot(reading, anchors))
 }
 
 /// The fixed footer of a mail's panel in the mail window (task E11.4, [`Bars::Command`]): the mail's
-/// attachments as chips (as [`attachment_line`] has them at the reader's bottom), in the panel's
-/// padding – the panel draws the line above it. The view's switches and "Copy text" stand in the
-/// rail's group "More" (task E14.3). Empty – no footer – while the mail loads, after an error and for
-/// a mail without attachments. `width` is the panel's.
-pub fn panel_foot<'a>(reading: &Reading<'_>, width: f32) -> Vec<Element<'a, Message>> {
-    // The panel's footer pads its content by `space::l()` at each side.
-    let room = (width - 2.0 * space::l()).max(0.0);
-    attachment_chips(reading, room).into_iter().collect()
+/// attachments as rows with their triangles and "Save all ▾" from two on (task M12.6, design B,
+/// [`attachment_rows`]), in the panel's padding – the panel draws the line above it. The view's
+/// switches and "Copy text" stand in the rail's group "More" (task E14.3). Empty – no footer – while
+/// the mail loads, after an error and for a mail without attachments. `anchors` are the window's, for
+/// the menus of the triangles.
+pub fn panel_foot<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Vec<Element<'a, Message>> {
+    attachment_rows(reading, anchors).into_iter().collect()
 }
 
 /// The footer of a folder's message in the panel (task E9.4), in the panel's style and in the
@@ -2168,9 +2264,9 @@ fn schemes() -> [(String, Message); 2] {
 /// - [`Bars::Command`] (task E11.4, [`command_body`]): the sender, invitation and task, an entry's
 ///   properties, a line, the mail; the attachments in the footer ([`panel_foot`]), every action in
 ///   the rail beside it (task E14.3).
-pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>) -> Element<'a, Message> {
+pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors) -> Element<'a, Message> {
     match bars {
-        Bars::Split => split_body(reading),
+        Bars::Split => split_body(reading, anchors),
         Bars::Command { entry, width } => command_body(reading, entry, width),
     }
 }
@@ -2195,7 +2291,7 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
 }
 
 /// The body of the panel with the split of task E9.4 ([`Bars::Split`], see [`body`]).
-fn split_body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
+fn split_body<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Element<'a, Message> {
     let mut body = column![].spacing(space::l());
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
@@ -2210,13 +2306,9 @@ fn split_body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     if let Some(task) = reading.task {
         body = body.push(panel::inset(task_card(task, reading.now)));
     }
-    // The attachments as rows over the mail; the reader's bars have them as chips in the footer.
-    if let Some(Ok(mail)) = reading.loaded {
-        let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
-        if !files.is_empty() {
-            let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
-            body = body.push(widgets::prop_section(tr("Attachments"), rows));
-        }
+    // The attachments as rows over the mail, each with its triangle (task M12.6).
+    if let Some(rows) = attachment_rows(reading, anchors) {
+        body = body.push(rows);
     }
     body.extend(panel_letter(reading)).into()
 }
@@ -2299,7 +2391,8 @@ pub struct ReaderEntry<'a> {
 /// 1. scrolling, the **head** ([`head`]: subject, sender, why a rule put the entry in its lane,
 ///    invitation and task), a line over the reader's whole width and the **mail**
 ///    ([`reader_mail`]): text or HTML in the reading column (issue #291, [`reader_widths`]);
-/// 2. fixed, the mail's **attachments** as chips ([`attachment_line`]).
+/// 2. fixed, the mail's **attachments** in their block ([`attachment_line`], task M12.6), whose
+///    menus hang at `anchors`.
 ///
 /// The head and the attachments line up with the mail's text, at the side of the reading padding.
 /// No bar over the mail and no buttons in its head: every action stands in the rail, with its key.
@@ -2308,7 +2401,9 @@ pub fn reader<'a>(
     reading: Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
     rail: Element<'a, Message>,
+    anchors: &detail::Anchors,
 ) -> Element<'a, Message> {
+    let anchors = anchors.clone();
     let page = responsive(move |bounds| {
         let widths = reader_widths(bounds.width);
         let side = layout::reading_padding().left;
@@ -2319,7 +2414,7 @@ pub fn reader<'a>(
             .style(style::scrollable)
             .width(Fill)
             .height(Fill);
-        column![page].push(attachment_line(&reading, widths.head, side)).into()
+        column![page].push(attachment_line(&reading, &anchors, widths.head, side)).into()
     });
     // The reader's scrollbar keeps clear of the rail's line (decision B).
     row![page, rail].spacing(space::xs()).height(Fill).into()
@@ -2500,7 +2595,8 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 /// 2. **File**: for an `entry` Done (`e`, [`Message::SetDone`]) or Reopen once done, Later… (`s`,
 ///    `AskSnooze`, not for a done entry) and "Move to Info" or "Move to For me" (`l`, `AskLane`);
 ///    then Archive (`a`) and Delete (`#`) where the account has the folder and the mail does not lie
-///    in it already, as in rows ([`filing_actions`]).
+///    in it already, as in rows ([`filing_actions`]); last "Save attachments (n)" for a loaded mail
+///    with attachments (task M12.6, `AskSaveAttachments`: the menu of "Save all").
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
 ///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
@@ -2582,6 +2678,13 @@ fn file_items<'a>(
             // Never what a click on the group's icon does (finding 8).
             items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
         }
+    }
+    // Task M12.6: the menu of "Save all" at this item – from the list's context menu at the row –,
+    // once the mail shows attachments. Last, so a click on the group's icon still files the mail.
+    if let Some(files) = files_of(reading) {
+        let words = trf("Save attachments ({n})", &[("n", &files.len())]);
+        let save = Some(Message::AskSaveAttachments(reading.id.to_owned()));
+        items.push(RailItem::new(Icon::Download, words, "", save).at(&anchors.save_rail));
     }
     items
 }
@@ -2681,48 +2784,161 @@ fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
     items
 }
 
-/// The mail's attachments as one wrapping line of chips (task E11.3, `widgets::file_chip`), fixed
-/// at the reader's bottom: a `line` above, [`space::s()`] above and below the chips and `side` at
-/// the sides, the chips `room` wide in all ([`attachment_chips`]; the panel of task E11.4 has them
-/// in its footer, [`panel_foot`]). A click opens one as before ([`Message::OpenAttachment`]).
-/// `None` while the mail loads, after an error and for a mail without attachments (inline pictures
-/// are none).
-pub fn attachment_line<'a>(reading: &Reading<'_>, room: f32, side: f32) -> Option<Element<'a, Message>> {
-    let chips = attachment_chips(reading, room)?;
-    let line = container(chips).width(Fill).padding([space::s(), side]);
-    Some(column![rule::horizontal(size::HAIRLINE).style(style::rule), line].into())
+/// The mail's attachments at the reader's bottom (task M12.6, design A of
+/// `docs/prototypes/inbox/mail-anhaenge.html`): a framed block (`widgets::file_block`) whose head
+/// says "Attachments" and "{n} files · {size}" ([`files_meta`]), with "Save all ▾" at its right
+/// from two attachments on ([`save_all_control`]), and under it each attachment as a split chip
+/// ([`attachment_chips`]), which scroll inside the block beyond two lines. [`space::s()`] above it,
+/// [`space::l()`] below and `side` at the sides; the chips wrap on a line `room` wide. The
+/// triangles' menus hang at `anchors`. `None` while the mail loads, after an error and for a mail
+/// without attachments (inline pictures are none).
+pub fn attachment_line<'a>(
+    reading: &Reading<'_>,
+    anchors: &detail::Anchors,
+    room: f32,
+    side: f32,
+) -> Option<Element<'a, Message>> {
+    let files = files_of(reading)?;
+    let action = save_all_control(reading, &files, anchors, false);
+    let head = widgets::file_block_head(tr("Attachments"), files_meta(&files), action);
+    // The block's frame and its inner padding at the sides (`widgets::file_block`) take from the
+    // chips' line.
+    let inner = (room - 2.0 * (space::m() + size::HAIRLINE)).max(0.0);
+    let block = widgets::file_block(head, attachment_chips(reading, &files, anchors, inner));
+    Some(
+        container(block)
+            .width(Fill)
+            .padding(Padding { top: space::s(), bottom: space::l(), left: side, right: side })
+            .into(),
+    )
 }
 
-/// The chips of the mail's attachments, wrapping on a line `room` wide, [`space::s()`] apart
-/// ([`attachment_chip`]); `None` where [`attachment_line`] has none.
-fn attachment_chips<'a>(reading: &Reading<'_>, room: f32) -> Option<Element<'a, Message>> {
+/// The attachments of the loaded mail that are not `inline`, in its order – what the block, the rows
+/// and the menus list, and what [`Reading::file_menu`] counts in. `None` while the mail loads, after
+/// an error and when it has none.
+pub fn files_of<'r>(reading: &Reading<'r>) -> Option<Vec<&'r AttachmentInfo>> {
     let Some(Ok(mail)) = reading.loaded else { return None };
     let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|file| !file.inline).collect();
-    if files.is_empty() {
-        return None;
-    }
-    let chips = files.into_iter().map(|file| attachment_chip(reading.id, file, room));
-    Some(row(chips).spacing(space::s()).wrap().vertical_spacing(space::s()).into())
+    (!files.is_empty()).then_some(files)
 }
 
-/// One attachment as a chip of [`attachment_line`] on a line `room` wide: its name – cut with "…"
-/// where it would take more than half the line ([`chip_name_room`]), then the whole name as
-/// tooltip – and its size; a click fetches and opens it, as the panel's row does.
-fn attachment_chip<'a>(id: &str, file: &AttachmentInfo, room: f32) -> Element<'a, Message> {
-    let name = file.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
-    let name = name.unwrap_or_else(|| tr("Attachment").to_owned());
+/// "1 file · 3 KB", "3 files · 1 MB": how many attachments and how large they are together.
+fn files_meta(files: &[&AttachmentInfo]) -> String {
+    let count = match files.len() {
+        1 => tr("1 file").to_owned(),
+        n => trf("{n} files", &[("n", &n)]),
+    };
+    format!("{count} · {}", size_text(files.iter().map(|file| file.size).sum()))
+}
+
+/// "Save all ▾" from two attachments on, `None` for one: the click does what the setting says for all
+/// of them ([`Message::SaveAll`], [`all_act`]), the triangle ("More ways to save all") opens their menu
+/// ([`Message::AskSaveAll`]) at `anchors.save_all`. In the reader's block a ghost
+/// (`widgets::split_action`), whose head frames it; `framed` (`widgets::split_action_framed`) over the
+/// panel's rows, where nothing else does.
+fn save_all_control<'a>(
+    reading: &Reading<'_>,
+    files: &[&AttachmentInfo],
+    anchors: &detail::Anchors,
+    framed: bool,
+) -> Option<Element<'a, Message>> {
+    (files.len() >= 2).then(|| {
+        let id = reading.id.to_owned();
+        let control = if framed { widgets::split_action_framed } else { widgets::split_action };
+        // No tooltip on the action: its triangle has one, and two would stand over each other.
+        control(
+            Icon::Download,
+            tr("Save all"),
+            tr("More ways to save all"),
+            Some(Message::SaveAll(id.clone())),
+            Some(Message::AskSaveAll(id)),
+            Some(&anchors.save_all),
+        )
+    })
+}
+
+/// The chips of the attachments `files`, wrapping on a line `room` wide, [`space::s()`] apart
+/// ([`attachment_chip`]). At most [`FILE_LINES`] lines show; more scroll inside the block (scroll bar
+/// beside the chips only then), so a mail with many attachments keeps its text in a low window.
+fn attachment_chips<'a>(
+    reading: &Reading<'_>,
+    files: &[&AttachmentInfo],
+    anchors: &detail::Anchors,
+    room: f32,
+) -> Element<'a, Message> {
+    let chips = files.iter().enumerate().map(|(at, file)| attachment_chip(reading, at, file, anchors, room));
+    let chips = row(chips).spacing(space::s()).wrap().vertical_spacing(space::s());
+    container(bounded_scroll(chips)).max_height(chips_max_height()).into()
+}
+
+/// How many lines of chips the reader's attachment block shows before it scrolls.
+const FILE_LINES: f32 = 2.0;
+
+/// How many attachment rows the panel shows before they scroll.
+const FILE_ROWS: f32 = 4.0;
+
+/// The most the chips of the reader's block take: [`FILE_LINES`] chips and the gaps between them.
+fn chips_max_height() -> f32 {
+    FILE_LINES * size::control() + (FILE_LINES - 1.0) * space::s()
+}
+
+/// The most the panel's attachment rows take: [`FILE_ROWS`] rows of `size::control()`.
+fn rows_max_height() -> f32 {
+    FILE_ROWS * size::control()
+}
+
+/// `content` in a vertical scrollable as high as it is, up to what its parent allows: the suite's
+/// scroll bar, which takes its room beside the content only while there is something to scroll, so
+/// it never covers a chip's triangle or a row's.
+fn bounded_scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    scrollable(content)
+        .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
+        .style(style::scrollable)
+        .width(Fill)
+        .into()
+}
+
+/// The attachment `file`, the `at`-th of the mail's, as a split chip (`widgets::split_file_chip`) on
+/// a line `room` wide: its name – cut with "…" where it would take more than half the line
+/// ([`chip_name_room`]) – and its size. A click on it does what the setting says
+/// ([`Message::OpenAttachment`], [`click_act`]), the tooltip says what and the whole name ("Open:
+/// invoice.pdf", [`click_tooltip`]); the triangle opens its menu ([`Message::AskAttachment`]) and,
+/// while that menu is open, carries its anchor (`anchors.attachment`).
+fn attachment_chip<'a>(
+    reading: &Reading<'_>,
+    at: usize,
+    file: &AttachmentInfo,
+    anchors: &detail::Anchors,
+    room: f32,
+) -> Element<'a, Message> {
+    let name = attachment_name(file);
     let weight = size_text(file.size);
     let shown = typo::ellipsize(&name, typo::body(), chip_name_room(&weight, room));
-    let cut = shown != name;
-    let chip = widgets::file_chip(shown, weight, Some(Message::OpenAttachment(id.to_owned(), file.part.clone())));
-    if cut { widgets::with_tooltip(chip, name) } else { chip }
+    let open = Some(Message::OpenAttachment(reading.id.to_owned(), file.part.clone()));
+    let menu = Some(Message::AskAttachment(reading.id.to_owned(), at));
+    let anchor = (reading.file_menu == Some(at)).then_some(&anchors.attachment);
+    widgets::split_file_chip(shown, weight, click_tooltip(reading, file), open, menu, anchor)
+}
+
+/// The name of an attachment on one line, else "Attachment".
+fn attachment_name(file: &AttachmentInfo) -> String {
+    let name = file.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
+    name.unwrap_or_else(|| tr("Attachment").to_owned())
+}
+
+/// "Open: invoice.pdf", "Save to Invoices: invoice.pdf": what a click on the attachment's name does
+/// ([`click_act`]) and its whole name, the tooltip of its chip and its row.
+fn click_tooltip(reading: &Reading<'_>, file: &AttachmentInfo) -> String {
+    let act = click_act(reading.click, reading.saving, &file.part);
+    trf("{action}: {name}", &[("action", &act_words(&act, reading.saving, false)), ("name", &attachment_name(file))])
 }
 
 /// How wide the name on an attachment's chip may be ([`attachment_chip`]): half the line's `room`,
-/// less what the chip needs beside the name – its padding, the paperclip, the gaps and its size
-/// `weight` – so one long name never takes a line of its own.
+/// less what the chip needs beside the name – its padding, the paperclip, the gaps, its size `weight`
+/// and the triangle after its line – so one long name never takes a line of its own.
 fn chip_name_room(weight: &str, room: f32) -> f32 {
-    let frame = 2.0 * space::m() + icon::SIZE_SM + 2.0 * space::s() + typo::text_width(weight, typo::meta());
+    let triangle = icon::SIZE_SM + 2.0 * space::s() + size::HAIRLINE;
+    let frame = 2.0 * space::m() + icon::SIZE_SM + 2.0 * space::s() + typo::text_width(weight, typo::meta()) + triangle;
     (room / 2.0 - frame).max(0.0)
 }
 
@@ -2865,18 +3081,51 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     )
 }
 
-/// An attachment as a row: the paperclip, its name and size; a click fetches and opens it.
-fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
-    let name = file.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
-    let name = name.unwrap_or_else(|| tr("Attachment").to_owned());
+/// The mail's attachments as rows (task M12.6, design B of `docs/prototypes/inbox/mail-anhaenge.html`):
+/// "Attachments" and "{n} files · {size}" ([`files_meta`]) over them with "Save all ▾" at its right
+/// from two on ([`save_all_control`], framed), then one row each ([`attachment_row`]); beyond
+/// [`FILE_ROWS`] rows they scroll, so the footer never pushes the mail out of a low panel. For the
+/// panel – its footer in the mail window ([`panel_foot`]), over the mail in the hub and the App Feed
+/// ([`Bars::Split`]). `None` where [`files_of`] has none.
+fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Option<Element<'a, Message>> {
+    let files = files_of(reading)?;
+    let title = typo::text(typo::caption(), tr("Attachments")).style(theme::text_3).wrapping(Wrapping::None);
+    let meta = typo::text(typo::meta().tabular(), files_meta(&files)).style(theme::text_3).wrapping(Wrapping::None);
+    let mut head = row![container(title).width(Fill).clip(true), meta].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(all) = save_all_control(reading, &files, anchors, true) {
+        head = head.push(all);
+    }
+    let head = container(head).padding(Padding { bottom: space::xs(), ..style::ITEM_PADDING });
+    let rows = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
+    let rows = container(bounded_scroll(column(rows))).max_height(rows_max_height());
+    Some(column![head, rows].into())
+}
+
+/// The attachment `file`, the `at`-th of the mail's, as a row: the paperclip, its name and size – a
+/// click does what the setting says ([`Message::OpenAttachment`], tooltip [`click_tooltip`]) – and at
+/// the right its triangle, which opens its menu ([`Message::AskAttachment`]) and carries the menu's
+/// anchor while it is open (`anchors.attachment`).
+fn attachment_row<'a>(
+    reading: &Reading<'_>,
+    at: usize,
+    file: &AttachmentInfo,
+    anchors: &detail::Anchors,
+) -> Element<'a, Message> {
     let line = row![
-        container(widgets::prop_value(name)).width(Fill),
+        container(widgets::prop_value(attachment_name(file))).width(Fill),
         typo::text(typo::meta().tabular(), size_text(file.size)).style(theme::text_3).wrapping(Wrapping::None),
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
-    let open = Message::OpenAttachment(id.to_owned(), file.part.clone());
-    widgets::prop_row(Some(Mark::Icon(Icon::Paperclip)), line, Some(open))
+    let open = Message::OpenAttachment(reading.id.to_owned(), file.part.clone());
+    let name = widgets::with_tooltip(
+        widgets::prop_row(Some(Mark::Icon(Icon::Paperclip)), line, Some(open)),
+        click_tooltip(reading, file),
+    );
+    let menu = Some(Message::AskAttachment(reading.id.to_owned(), at));
+    let triangle = widgets::icon_button(Icon::ChevronDown, tr("More ways to open or save"), menu);
+    let triangle = widgets::anchored_if((reading.file_menu == Some(at)).then_some(&anchors.attachment), triangle);
+    row![container(name).width(Fill), triangle].spacing(space::xs()).align_y(Alignment::Center).into()
 }
 
 /// The text of `mail` as the window shows, selects and copies it (issue #119): plain, without
@@ -3010,6 +3259,370 @@ fn task_ring<'a>() -> Element<'a, Message> {
         .into()
 }
 
+// ----- Saving attachments (task M12.6, issue #290) --------------------------------------------
+
+/// One way to open or save attachments (task M12.6): what a click on an attachment's name or on
+/// "Save all" does by the setting `mail_attachments.click` ([`click_act`], [`all_act`]), and every
+/// entry of their menus ([`file_menu`]). The window carries it out (`Message::FileAct`); every save is
+/// one `mail.save_attachments`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileAct {
+    /// Fetch the attachment and open it with the system ([`open_attachment`]); one attachment only.
+    Open,
+    /// Save to the Downloads folder (`to: downloads`).
+    Downloads,
+    /// Ask where first: the system's save dialog for one attachment (`to: file`), its folder dialog
+    /// for all of them (`to: folder`). Cancelled, nothing is sent.
+    Choose,
+    /// Save to the save target with this id (`to: {"target": id}`).
+    Target(String),
+}
+
+/// What a click on the name of the attachment `part` does (task M12.6) with the setting `click` and
+/// the mail's plans `saving` (`None` while they load or when they could not be loaded): Open, Save to
+/// Downloads and Save as… as set; a target while `saving` lists it – one that is gone opens –, and
+/// without plans the target all the same: the core knows its targets and answers for one that is
+/// gone, where opening instead would do something else unasked. "Suggested target, else open" the
+/// plan's `sure` target – one whose conditions hold without a category the model only guessed
+/// (decision 4 of issue #290) –, else it opens.
+pub fn click_act(click: &AttachmentClick, saving: Option<&SaveTargets>, part: &str) -> FileAct {
+    match click {
+        AttachmentClick::Open => FileAct::Open,
+        AttachmentClick::Downloads => FileAct::Downloads,
+        AttachmentClick::SaveAs => FileAct::Choose,
+        AttachmentClick::Target(id) => set_target(saving, id, FileAct::Open),
+        AttachmentClick::Suggested => saving
+            .and_then(|saving| saving.plan(part)?.sure.as_deref())
+            .and_then(|id| listed(saving, id))
+            .unwrap_or(FileAct::Open),
+    }
+}
+
+/// What a click on "Save all" does (task M12.6): Open and "Suggested target, else open" save to
+/// Downloads – there is nothing to open for several files, and each file has its own suggestion –,
+/// Save as… asks for a folder, a target saves there while `saving` lists it or without plans (as in
+/// [`click_act`]), one that is gone to Downloads.
+pub fn all_act(click: &AttachmentClick, saving: Option<&SaveTargets>) -> FileAct {
+    match click {
+        AttachmentClick::Open | AttachmentClick::Suggested | AttachmentClick::Downloads => FileAct::Downloads,
+        AttachmentClick::SaveAs => FileAct::Choose,
+        AttachmentClick::Target(id) => set_target(saving, id, FileAct::Downloads),
+    }
+}
+
+/// The target `id` of the setting: while `saving` lists it, `gone` when it lists it no longer, and
+/// the target unchecked without plans – the core says when it is gone.
+fn set_target(saving: Option<&SaveTargets>, id: &str, gone: FileAct) -> FileAct {
+    match saving {
+        Some(_) => listed(saving, id).unwrap_or(gone),
+        None => FileAct::Target(id.to_owned()),
+    }
+}
+
+/// [`FileAct::Target`] for the target `id` while `saving` lists it.
+fn listed(saving: Option<&SaveTargets>, id: &str) -> Option<FileAct> {
+    saving?.target(id).map(|target| FileAct::Target(target.id.clone()))
+}
+
+/// The words of `act` – for "Save all" (`all`) or one attachment: "Open", "Save to Downloads" / "Save
+/// all to Downloads", "Save as…" / "Save all to folder…", "Save to Invoices" with the target's name
+/// from `saving` ("Save to Unknown target" for one it does not list: the setting's target while the
+/// plans are not in, [`click_act`]).
+pub fn act_words(act: &FileAct, saving: Option<&SaveTargets>, all: bool) -> String {
+    match (act, all) {
+        (FileAct::Open, _) => tr("Open").to_owned(),
+        (FileAct::Downloads, false) => tr("Save to Downloads").to_owned(),
+        (FileAct::Downloads, true) => tr("Save all to Downloads").to_owned(),
+        (FileAct::Choose, false) => tr("Save as…").to_owned(),
+        (FileAct::Choose, true) => tr("Save all to folder…").to_owned(),
+        (FileAct::Target(id), _) => {
+            let name = saving.and_then(|saving| saving.target(id)).map(|target| list::one_line(&target.spec.name));
+            trf("Save to {target}", &[("target", &name.unwrap_or_else(|| tr("Unknown target").to_owned()))])
+        }
+    }
+}
+
+/// "Invoices › 2026 › 03": the target and the subfolders the attachment `part` would go to in it, as
+/// its plan in `saving` says – the menu's detail and the hint after saving. The target's name alone
+/// without a plan (`part` `None`: "Save all", each file by its own date).
+pub fn place_words(saving: &SaveTargets, target: &str, part: Option<&str>) -> String {
+    let name =
+        saving.target(target).map_or_else(|| tr("Unknown target").to_owned(), |found| list::one_line(&found.spec.name));
+    let place =
+        part.and_then(|part| saving.plan(part)).and_then(|plan| plan.places.iter().find(|p| p.target == target));
+    match place {
+        Some(place) => std::iter::once(name)
+            .chain(place.folders.iter().map(|folder| list::one_line(folder)))
+            .collect::<Vec<_>>()
+            .join(" › "),
+        None => name,
+    }
+}
+
+/// Whether "Suggested" at the target carries the AI's sparkles (decision 7 of issue #290's plan): its
+/// suggestion rests on a category the model guessed – the target asks for categories and the mail's
+/// `category` is a guess. A suggestion by sender or file type is no AI and has none.
+fn suggested_by_model(target: &torro_mail::SaveTarget, category: Option<MailCategory>) -> bool {
+    !target.spec.suggest.categories.is_empty() && category.is_some_and(MailCategory::is_suggestion)
+}
+
+/// What the menu of an attachment's triangle or of "Save all ▾" shows (task M12.6, [`file_menu`]).
+#[derive(Debug, Clone, Copy)]
+pub struct FileMenu<'a> {
+    /// The message's id.
+    pub id: &'a str,
+    /// The attachment's part; `None` for "Save all".
+    pub part: Option<&'a str>,
+    /// The save targets and plans of the mail; `None` while they load or when they failed.
+    pub saving: Option<&'a SaveTargets>,
+    /// What a click on the attachment's name does: its entry carries "Click".
+    pub click: &'a AttachmentClick,
+    /// The mail's category, for the sparkles of "Suggested".
+    pub category: Option<MailCategory>,
+}
+
+/// The sections of the menu of an attachment or of "Save all" (task M12.6, design A):
+///
+/// 1. Open (`ArrowUpRight`, one attachment only), Save to Downloads (`Download`) and Save as…
+///    (`Save`) – for all of them "Save all to Downloads" and "Save all to folder…";
+/// 2. "Save to": the save targets (`Folder`), those suggested for the attachment first in the plan's
+///    order, the others in the person's; for one attachment with where it would go as detail
+///    ([`place_words`]) and "Suggested" – with the sparkles where it rests on a guessed category –,
+///    for all of them "by each file's date";
+/// 3. "Manage save targets…" ([`Message::ManageSaveTargets`]).
+///
+/// The entry a click on the attachment's name does ([`click_act`]) carries "Click"; "Save all" has
+/// none. Every entry sends [`Message::FileAct`] for the attachment, or for all with `part` `None`.
+/// Without targets – none set up, or still loading – section 2 is left out.
+pub fn file_menu<'a>(menu: FileMenu<'_>) -> Vec<MenuSection<'a, Message>> {
+    let all = menu.part.is_none();
+    let click = menu.part.map(|part| click_act(menu.click, menu.saving, part));
+    let entry = |icon: Icon, act: FileAct| {
+        let words = act_words(&act, menu.saving, all);
+        let clicked = click.as_ref() == Some(&act);
+        let item = MenuItem::new(icon, words, Message::FileAct(menu.id.to_owned(), menu.part.map(str::to_owned), act));
+        if clicked { item.tag(tr("Click"), false) } else { item }
+    };
+    let mut ways = Vec::new();
+    if !all {
+        ways.push(entry(Icon::ArrowUpRight, FileAct::Open));
+    }
+    ways.push(entry(Icon::Download, FileAct::Downloads));
+    ways.push(entry(Icon::Save, FileAct::Choose));
+    let mut sections = vec![MenuSection::new(ways)];
+    if let Some(saving) = menu.saving.filter(|saving| !saving.targets.is_empty()) {
+        let plan = menu.part.and_then(|part| saving.plan(part));
+        let suggested: Vec<&str> =
+            plan.map(|plan| plan.suggested.iter().map(String::as_str).collect()).unwrap_or_default();
+        let mut targets: Vec<&torro_mail::SaveTarget> = suggested.iter().filter_map(|id| saving.target(id)).collect();
+        targets.extend(saving.targets.iter().filter(|target| !suggested.contains(&target.id.as_str())));
+        let items = targets
+            .into_iter()
+            .map(|target| {
+                let act = FileAct::Target(target.id.clone());
+                let detail = match menu.part {
+                    Some(part) => place_words(saving, &target.id, Some(part)),
+                    None => tr("by each file's date").to_owned(),
+                };
+                let clicked = click.as_ref() == Some(&act);
+                let message = Message::FileAct(menu.id.to_owned(), menu.part.map(str::to_owned), act);
+                let mut item = MenuItem::new(Icon::Folder, list::one_line(&target.spec.name), message).detail(detail);
+                if suggested.contains(&target.id.as_str()) {
+                    item = item.tag(tr("Suggested"), suggested_by_model(target, menu.category));
+                }
+                if clicked { item.tag(tr("Click"), false) } else { item }
+            })
+            .collect();
+        sections.push(MenuSection::titled(tr("Save to"), items));
+    }
+    let manage = MenuItem::new(Icon::Settings, tr("Manage save targets…"), Message::ManageSaveTargets);
+    sections.push(MenuSection::new(vec![manage]));
+    sections
+}
+
+/// The menu card of [`file_menu`]'s `sections`, `width` wide and at most `tallest` high – it scrolls
+/// beyond: the card of `widgets::menu`, wider, so the path and the two words of an entry stay
+/// readable (`widgets::menu_width` cut "Invoices › 2026 › 03" beside "Suggested" and "Click").
+pub fn file_menu_card<'a>(sections: Vec<MenuSection<'a, Message>>, width: f32, tallest: f32) -> Element<'a, Message> {
+    let mut list = column![];
+    for (at, section) in sections.into_iter().enumerate() {
+        if at > 0 {
+            list = list.push(crate::app::menu_line());
+        }
+        if let Some(title) = section.title {
+            list = list.push(crate::app::menu_caption(&title));
+        }
+        list = list.extend(section.items.into_iter().map(widgets::menu_item));
+    }
+    let body = scrollable(list).height(iced::Length::Shrink).width(Fill);
+    container(container(body).max_height(tallest))
+        .width(width)
+        .padding(style::MENU_INSET)
+        .style(style::container::menu)
+        .into()
+}
+
+/// What the hint says after `mail.save_attachments` answered `saved` (task M12.6) for a save to
+/// `place` – the words of where ("Downloads", "Invoices › 2026 › 03", a folder's name): one file
+/// "Saved to {where}", several "{n} attachments saved to {where}"; when some failed "{n} saved,
+/// {name} failed" with the names of those. A file found there already with the same content counts as
+/// saved: it is there.
+pub fn saved_text(saved: &SavedAttachments, place: &str) -> String {
+    let there = saved.saved.len() + saved.skipped.len();
+    if !saved.failed.is_empty() {
+        let names: Vec<String> = saved.failed.iter().map(|failed| list::one_line(&failed.name)).collect();
+        return trf("{n} saved, {name} failed", &[("n", &there), ("name", &names.join(", "))]);
+    }
+    match there {
+        1 => trf("Saved to {where}", &[("where", &place)]),
+        n => trf("{n} attachments saved to {where}", &[("n", &n), ("where", &place)]),
+    }
+}
+
+/// The folder "Show in folder" opens after a save (task M12.6): the one of the first file saved –
+/// or found there with the same content –, as `open_attachment` opens the folder of a file that could
+/// run programs. `None` when nothing lies anywhere.
+pub fn saved_folder(saved: &SavedAttachments) -> Option<PathBuf> {
+    let first = saved.saved.first().or_else(|| saved.skipped.first())?;
+    Path::new(&first.path).parent().map(Path::to_path_buf)
+}
+
+/// Opens `folder` in the system's file manager ("Show in folder", task M12.6).
+pub async fn show_folder(folder: PathBuf) -> Result<(), String> {
+    start(opener(&folder))
+}
+
+/// The words of where a save to `to` goes, for its hint ([`saved_text`]), taken when it is sent – the
+/// person may open another mail before the answer: "Downloads", the target with the subfolders of the
+/// attachment `part` ([`place_words`]; for all of them the target alone), the name of the folder
+/// chosen, or of the file's folder for "Save as…". `None` for a target `saving` does not list (no
+/// plans yet): the hint then names the folder the file went to ([`saved_place`]).
+pub fn save_place(to: &SaveTo, saving: Option<&SaveTargets>, part: Option<&str>) -> Option<String> {
+    let named = |path: &Path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    match to {
+        SaveTo::Downloads => Some(tr("Downloads").to_owned()),
+        SaveTo::Target(id) => {
+            saving.filter(|saving| saving.target(id).is_some()).map(|saving| place_words(saving, id, part))
+        }
+        SaveTo::File(file) => Some(Path::new(file).parent().map(named).unwrap_or_default()),
+        SaveTo::Folder(folder) => Some(named(Path::new(folder))),
+    }
+}
+
+/// The words of where a save went for its hint: `place` as [`save_place`] took it, else the name of
+/// the folder the first file went to ([`saved_folder`]).
+pub fn saved_place(place: Option<String>, saved: &SavedAttachments) -> String {
+    place
+        .or_else(|| saved_folder(saved)?.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+/// The name the save dialog of "Save as…" starts with (task M12.6): the plan's cleaned name, else the
+/// attachment's own, else "attachment".
+pub fn dialog_name(saving: Option<&SaveTargets>, file: &AttachmentInfo) -> String {
+    match saving.and_then(|saving| saving.plan(&file.part)) {
+        Some(plan) => plan.file_name.clone(),
+        None => file
+            .filename
+            .as_deref()
+            .map(torro_mail::save_target::clean_segment)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "attachment".to_owned()),
+    }
+}
+
+/// The demo's plans of `mail`'s attachments in `targets` (issue #290), made as the core makes them
+/// (`plan` in the core's `mail/save.rs`): the facts of the mail – its local day, sender, subject, the
+/// account's address –, a place in each target whose schemes resolve, the targets suggested in their
+/// order and the first sure one.
+fn demo_plans(mail: &Mail, targets: &[torro_mail::SaveTarget]) -> Vec<AttachmentPlan> {
+    let summary = &mail.summary;
+    let months: [String; 12] = std::array::from_fn(|at| datetime::month_name(at as u32 + 1).to_owned());
+    let sender = summary.from.as_ref();
+    mail.attachments
+        .iter()
+        .filter(|file| !file.inline)
+        .map(|file| {
+            let facts = torro_mail::FileFacts {
+                mail_date: summary.date.with_timezone(&Local).date_naive(),
+                file_name: file.filename.clone(),
+                content_type: file.content_type.clone(),
+                sender_name: sender.and_then(|from| from.name.clone()),
+                sender_address: sender.map(|from| from.address.clone()).unwrap_or_default(),
+                account: address(&summary.account).to_owned(),
+                subject: summary.subject.clone(),
+                month_names: months.clone(),
+            };
+            let kind = torro_mail::FileKind::of(&file.content_type, file.filename.as_deref());
+            let mut plan = AttachmentPlan {
+                part: file.part.clone(),
+                file_name: dialog_name(None, file),
+                places: Vec::new(),
+                suggested: Vec::new(),
+                sure: None,
+            };
+            for target in targets {
+                if let Ok(resolved) = torro_mail::save_target::resolve(&target.spec, &facts) {
+                    let (folders, file) = (resolved.folders, resolved.file);
+                    plan.places.push(PlannedPlace { target: target.id.clone(), folders, file });
+                }
+                let found = torro_mail::save_target::suggestion(
+                    &target.spec.suggest,
+                    summary.category,
+                    kind,
+                    &facts.sender_address,
+                );
+                if let Some(found) = found {
+                    plan.suggested.push(target.id.clone());
+                    if found.sure && plan.sure.is_none() {
+                        plan.sure = Some(target.id.clone());
+                    }
+                }
+            }
+            plan
+        })
+        .collect()
+}
+
+/// What the demo answers to `mail.save_attachments` (issue #290): where the core would have put each
+/// of `parts` of `mail` (none: every attachment that is not `inline`) for `to`, without writing a
+/// file. [`InboxError::NotFound`] for an unknown part or target, [`InboxError::Other`] for "Save
+/// as…" with more than one file, as the core answers.
+fn demo_saved(mail: &Mail, parts: &[String], to: &SaveTo) -> Result<SavedAttachments, InboxError> {
+    let targets = torro_inbox::demo::save_targets();
+    let plans = demo_plans(mail, &targets);
+    let wanted: Vec<&AttachmentPlan> = if parts.is_empty() {
+        plans.iter().collect()
+    } else {
+        parts
+            .iter()
+            .map(|part| plans.iter().find(|plan| plan.part == *part).ok_or(InboxError::NotFound))
+            .collect::<Result<_, _>>()?
+    };
+    if matches!(to, SaveTo::File(_)) && wanted.len() != 1 {
+        return Err(InboxError::Other("one file at a time".to_owned()));
+    }
+    let mut saved = Vec::new();
+    for plan in wanted {
+        let path = match to {
+            SaveTo::Downloads => Path::new(torro_inbox::demo::DEMO_DOWNLOADS).join(&plan.file_name),
+            SaveTo::File(file) => PathBuf::from(file),
+            SaveTo::Folder(folder) => Path::new(folder).join(&plan.file_name),
+            SaveTo::Target(id) => {
+                let target = targets.iter().find(|target| target.id == *id).ok_or(InboxError::NotFound)?;
+                let place = plan.places.iter().find(|place| place.target == *id).ok_or(InboxError::NotFound)?;
+                place
+                    .folders
+                    .iter()
+                    .fold(PathBuf::from(&target.spec.folder), |path, folder| path.join(folder))
+                    .join(&place.file)
+            }
+        };
+        saved.push(SavedFile { part: plan.part.clone(), path: path.to_string_lossy().into_owned() });
+    }
+    Ok(SavedAttachments { saved, ..SavedAttachments::default() })
+}
+
 /// The hint after opening an attachment.
 pub fn opened_text(opened: &Opened) -> String {
     match opened {
@@ -3034,6 +3647,9 @@ mod tests {
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
     }
+
+    /// The click of a reading in the tests: open, the default.
+    static OPEN: AttachmentClick = AttachmentClick::Open;
 
     fn folders() -> Vec<Folder> {
         DemoSource::new(now()).mail_folders().expect("folders")
@@ -3164,6 +3780,9 @@ mod tests {
                 scheme: Scheme::Light,
                 scale: 1.0,
             }),
+            saving: None,
+            click: &OPEN,
+            file_menu: None,
         };
         check(&reading)
     }
@@ -3233,7 +3852,9 @@ mod tests {
                             tr("Later…").to_owned(),
                             move_to.clone(),
                             trc("action", "Archive").to_owned(),
-                            tr("Delete").to_owned()
+                            tr("Delete").to_owned(),
+                            // The budget's sheet (task M12.6).
+                            trf("Save attachments ({n})", &[("n", &1)]),
                         ]
                     ),
                     (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
@@ -3285,7 +3906,7 @@ mod tests {
                 keys,
                 [
                     vec!["R", "", "F"],
-                    vec!["E", "S", "L", "A", "#"],
+                    vec!["E", "S", "L", "A", "#", ""],
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
@@ -3315,6 +3936,7 @@ mod tests {
                 [
                     tr("Later…").to_owned(),
                     move_to,
+                    trf("Save attachments ({n})", &[("n", &1)]),
                     tr("Task").to_owned(),
                     tr("Event").to_owned(),
                     tr("Category…").to_owned(),
@@ -3372,11 +3994,13 @@ mod tests {
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
             assert_eq!(titles, strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("More")]));
             let file = &group(&groups, tr("File")).items;
+            let save = trf("Save attachments ({n})", &[("n", &1)]);
             assert_eq!(
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
-                strings(&[trc("action", "Archive"), tr("Delete")])
+                strings(&[trc("action", "Archive"), tr("Delete"), &save])
             );
             assert_eq!((file[0].key, file[1].key), ("A", "#"), "`a` archives in a folder");
+            assert!(matches!(file[2].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
@@ -3388,8 +4012,8 @@ mod tests {
             let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
             let groups = action_groups(reading, None, &no_archive, true, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            assert_eq!(file, strings(&[tr("Delete")]));
-            assert!(group(&groups, tr("File")).first_press().is_none(), "Delete alone: a click opens the card");
+            assert_eq!(file, strings(&[tr("Delete"), &save]));
+            assert!(group(&groups, tr("File")).first_press().is_none(), "Delete first: a click opens the card");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
@@ -3459,14 +4083,15 @@ mod tests {
     /// the line.
     #[test]
     fn attachments_are_chips_at_the_bottom() {
+        let anchors = detail::Anchors::default();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert!(attachment_line(reading, 800.0, 24.0).is_some(), "the budget's sheet");
+            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_some(), "the budget's sheet");
         });
         reading_of("m:w1", MailFormat::Html, false, |reading| {
-            assert!(attachment_line(reading, 800.0, 24.0).is_none(), "nothing while it loads");
+            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_none(), "nothing while it loads");
         });
         reading_of("m:p2", MailFormat::Html, true, |reading| {
-            assert!(attachment_line(reading, 800.0, 24.0).is_none(), "the newsletter's pictures are inline");
+            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_none(), "the newsletter's pictures are inline");
         });
         let room = chip_name_room("3 KB", 800.0);
         assert!(room > 0.0 && room < 400.0, "{room}");
@@ -3475,6 +4100,182 @@ mod tests {
         assert!(shown != long && shown.ends_with('…'), "{shown}");
         assert_eq!(typo::ellipsize("budget-q4.csv", typo::body(), room), "budget-q4.csv", "a short name whole");
         assert_eq!(chip_name_room("3 KB", 0.0), 0.0, "never below nothing");
+    }
+
+    /// Design review of #290 (state "full"): a mail with many attachments (the demo's minutes,
+    /// `m:w6`) keeps its block to two lines of chips and the panel's footer to four rows; the rest
+    /// scrolls inside them, so the mail keeps its room in a low window.
+    #[test]
+    fn many_attachments_scroll_inside_their_block_and_rows() {
+        let anchors = detail::Anchors::default();
+        assert_eq!(chips_max_height(), 2.0 * size::control() + space::s());
+        assert_eq!(rows_max_height(), 4.0 * size::control());
+        reading_of("m:w6", MailFormat::Text, true, |reading| {
+            let files = files_of(reading).expect("the minutes and the slides");
+            assert!(files.len() > 2 * FILE_ROWS as usize, "more than fit: {}", files.len());
+            assert!(files.len() as f32 * size::control() > rows_max_height(), "the rows would not fit");
+            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_some());
+            assert!(attachment_rows(reading, &anchors).is_some());
+        });
+    }
+
+    /// The demo's plans for the mail `id` (task M12.6), as `mail.list_save_targets` answers them.
+    fn saving_of(id: &str) -> SaveTargets {
+        let demo = DemoSource::new(now());
+        iced::futures::executor::block_on(MailSource::save_targets(&demo, Some(id.to_owned()))).expect("planned")
+    }
+
+    /// Task M12.6: "Save all ▾" stands over two attachments and more, not over one; the rail's File
+    /// has "Save attachments (n)" only once the mail shows attachments; the panel lists them as rows.
+    #[test]
+    fn save_all_shows_from_two_attachments_on() {
+        let anchors = detail::Anchors::default();
+        let file_words = |reading: &Reading<'_>| -> Vec<String> {
+            let groups = action_groups(reading, None, &folders(), true, &anchors);
+            let file = groups.into_iter().find(|group| group.label == tr("File")).expect("File");
+            file.items.iter().map(|item| item.label.to_string()).collect()
+        };
+        let two = trf("Save attachments ({n})", &[("n", &2)]);
+        reading_of("m:p3", MailFormat::Text, true, |reading| {
+            let files = files_of(reading).expect("two files");
+            assert_eq!(files.len(), 2);
+            assert!(save_all_control(reading, &files, &anchors, true).is_some(), "two: Save all");
+            assert!(file_words(reading).contains(&two));
+            assert_eq!(files_meta(&files), format!("{} · {}", trf("{n} files", &[("n", &2)]), size_text(144_690)));
+            assert!(attachment_rows(reading, &anchors).is_some() && !panel_foot(reading, &anchors).is_empty());
+        });
+        reading_of("m:w1", MailFormat::Text, true, |reading| {
+            let files = files_of(reading).expect("one file");
+            assert!(save_all_control(reading, &files, &anchors, false).is_none(), "one: no Save all");
+            let one = trf("Save attachments ({n})", &[("n", &1)]);
+            assert!(file_words(reading).contains(&one));
+        });
+        reading_of("m:p3", MailFormat::Text, false, |reading| {
+            assert!(files_of(reading).is_none(), "nothing while it loads");
+            assert!(!file_words(reading).iter().any(|words| words.contains("(")), "no item while it loads");
+        });
+    }
+
+    /// Task M12.6: the click by every setting – a target that is gone and a suggestion on a guessed
+    /// category open (decision 4 of issue #290) –, and "Save all" never opens.
+    #[test]
+    fn the_click_follows_the_setting() {
+        let mut saving = saving_of("m:p3");
+        let invoices = || FileAct::Target("demo-invoices".into());
+        assert_eq!(click_act(&AttachmentClick::Open, Some(&saving), "2"), FileAct::Open);
+        assert_eq!(click_act(&AttachmentClick::Downloads, None, "2"), FileAct::Downloads);
+        assert_eq!(click_act(&AttachmentClick::SaveAs, None, "2"), FileAct::Choose);
+        let target = AttachmentClick::Target("demo-invoices".into());
+        assert_eq!(click_act(&target, Some(&saving), "2"), invoices());
+        assert_eq!(click_act(&target, None, "2"), invoices(), "no plans: the core decides");
+        assert_eq!(click_act(&AttachmentClick::Target("gone".into()), Some(&saving), "2"), FileAct::Open);
+        assert_eq!(click_act(&AttachmentClick::Suggested, Some(&saving), "2"), FileAct::Open, "a guessed category");
+        saving.files[0].sure = Some("demo-invoices".into());
+        assert_eq!(click_act(&AttachmentClick::Suggested, Some(&saving), "2"), invoices(), "a sure one saves");
+        assert_eq!(click_act(&AttachmentClick::Suggested, Some(&saving), "3"), FileAct::Open, "the other file's plan");
+        for (click, act) in [
+            (AttachmentClick::Open, FileAct::Downloads),
+            (AttachmentClick::Suggested, FileAct::Downloads),
+            (AttachmentClick::Downloads, FileAct::Downloads),
+            (AttachmentClick::SaveAs, FileAct::Choose),
+            (target, invoices()),
+            (AttachmentClick::Target("gone".into()), FileAct::Downloads),
+        ] {
+            assert_eq!(all_act(&click, Some(&saving)), act, "{click:?}");
+        }
+        let target = AttachmentClick::Target("demo-invoices".into());
+        assert_eq!(all_act(&target, None), invoices(), "no plans: not silently to Downloads");
+        assert_eq!(act_words(&invoices(), Some(&saving), false), trf("Save to {target}", &[("target", &"Invoices")]));
+        assert_eq!(act_words(&FileAct::Choose, None, true), tr("Save all to folder…"));
+    }
+
+    /// The words of the tags of `item`, with whether each has the sparkles.
+    fn tags_of(item: &MenuItem<'_, Message>) -> Vec<(String, bool)> {
+        item.tags.iter().map(|tag| (tag.label.to_string(), tag.sparkles)).collect()
+    }
+
+    /// Task M12.6: the menu of an attachment – Open, Downloads, Save as…, the targets suggested first
+    /// with where the file would go, "Suggested" with the sparkles only for a guessed category
+    /// (decision 7), "Click" at what a click does – and the menu of "Save all" without Open and "Click".
+    #[test]
+    fn the_menu_marks_the_click_and_the_suggestion() {
+        let saving = saving_of("m:p3");
+        let guessed = Some(MailCategory::by_model(torro_mail::Category::Invoice, 0.9));
+        let click = AttachmentClick::Target("demo-invoices".into());
+        let menu = FileMenu { id: "m:p3", part: Some("2"), saving: Some(&saving), click: &click, category: guessed };
+        let sections = file_menu(menu);
+        assert_eq!(sections.len(), 3, "ways, targets, manage");
+        let ways: Vec<String> = sections[0].items.iter().map(|item| item.label.to_string()).collect();
+        assert_eq!(ways, [tr("Open"), tr("Save to Downloads"), tr("Save as…")]);
+        assert!(sections[0].items.iter().all(|item| item.tags.is_empty()), "the click is the target");
+        assert_eq!(sections[1].title.as_deref(), Some(tr("Save to")));
+        let invoices = &sections[1].items[0];
+        assert_eq!(invoices.label, "Invoices");
+        assert_eq!(invoices.detail.as_deref(), Some("Invoices › 2026 › 09"), "by the date in its name");
+        assert_eq!(tags_of(invoices), [(tr("Suggested").to_owned(), true), (tr("Click").to_owned(), false)]);
+        let contracts = &sections[1].items[1];
+        assert!(tags_of(contracts).is_empty(), "not suggested for an invoice");
+        assert!(
+            matches!(&invoices.on_press, Message::FileAct(id, Some(part), FileAct::Target(t)) if id == "m:p3" && part == "2" && t == "demo-invoices")
+        );
+        assert_eq!(sections[2].items[0].label, tr("Manage save targets…"));
+
+        // Filed by a person: still suggested, without the sparkles; the click on Open marks Open.
+        let by_hand = Some(MailCategory::by_person(torro_mail::Category::Invoice));
+        let menu = FileMenu { click: &OPEN, category: by_hand, ..menu };
+        let sections = file_menu(menu);
+        assert_eq!(tags_of(&sections[0].items[0]), [(tr("Click").to_owned(), false)]);
+        assert_eq!(tags_of(&sections[1].items[0]), [(tr("Suggested").to_owned(), false)]);
+
+        // "Save all": no Open, no "Click", each file by its own date.
+        let sections = file_menu(FileMenu { part: None, ..menu });
+        let ways: Vec<String> = sections[0].items.iter().map(|item| item.label.to_string()).collect();
+        assert_eq!(ways, [tr("Save all to Downloads"), tr("Save all to folder…")]);
+        assert!(sections.iter().flat_map(|section| &section.items).all(|item| item.tags.is_empty()));
+        assert_eq!(sections[1].items[0].detail.as_deref(), Some(tr("by each file's date")));
+        // Without targets – still loading – only the ways and "Manage save targets…".
+        assert_eq!(file_menu(FileMenu { saving: None, ..menu }).len(), 2);
+        let _ = file_menu_card(file_menu(menu), size::panel(), 600.0);
+    }
+
+    /// Task M12.6: what the hint says after saving and which folder "Show in folder" opens; the demo
+    /// answers where the core would put the files, without writing one.
+    #[test]
+    fn the_hint_says_where_the_files_went() {
+        let saving = saving_of("m:p3");
+        let mail = DemoSource::new(now()).get_mail("m:p3").expect("the invoice");
+        let one = demo_saved(&mail, &["2".into()], &SaveTo::Target("demo-invoices".into())).expect("planned");
+        let path = "/home/anna/Documents/Invoices/2026/09/invoice-2026-09-30.pdf";
+        assert_eq!(one.saved.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), [path]);
+        assert!(!Path::new(path).exists(), "nothing written");
+        let place = saved_place(save_place(&SaveTo::Target("demo-invoices".into()), Some(&saving), Some("2")), &one);
+        assert_eq!(place, "Invoices › 2026 › 09");
+        assert_eq!(saved_text(&one, &place), trf("Saved to {where}", &[("where", &place)]));
+        assert_eq!(saved_folder(&one), Some(PathBuf::from("/home/anna/Documents/Invoices/2026/09")));
+
+        let all = demo_saved(&mail, &[], &SaveTo::Downloads).expect("planned");
+        assert_eq!(all.saved.len(), 2);
+        let place = saved_place(save_place(&SaveTo::Downloads, Some(&saving), None), &all);
+        assert_eq!(
+            saved_text(&all, &place),
+            trf("{n} attachments saved to {where}", &[("n", &2), ("where", &tr("Downloads"))])
+        );
+        assert_eq!(
+            save_place(&SaveTo::Target("demo-invoices".into()), Some(&saving), None).as_deref(),
+            Some("Invoices"),
+            "all: the target"
+        );
+        assert_eq!(save_place(&SaveTo::Folder("/home/anna/Bills".into()), None, None).as_deref(), Some("Bills"));
+        assert_eq!(
+            save_place(&SaveTo::File("/home/anna/Bills/a.pdf".into()), None, Some("2")).as_deref(),
+            Some("Bills")
+        );
+        // No plans when it was sent (the mail's targets could not be loaded): the folder it went to.
+        let unplanned = save_place(&SaveTo::Target("demo-invoices".into()), None, Some("2"));
+        assert_eq!((unplanned.as_deref(), saved_place(unplanned.clone(), &one).as_str()), (None, "09"));
+        assert_eq!(demo_saved(&mail, &["9".into()], &SaveTo::Downloads), Err(InboxError::NotFound));
+        assert!(demo_saved(&mail, &[], &SaveTo::File("/tmp/a.pdf".into())).is_err(), "one file at a time");
+        assert_eq!(saved_folder(&SavedAttachments::default()), None);
     }
 
     /// The source of the function `name` in this file, up to its closing brace.
@@ -3539,21 +4340,22 @@ mod tests {
         let split = function_source(source, "split_body");
         assert!(split.contains("panel_standards(") && split.contains("header("), "the hub's panel as in E9.4");
         let width = size::panel();
+        let anchors = detail::Anchors::default();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert_eq!(panel_foot(reading, width).len(), 1, "the sheet's chip");
+            assert_eq!(panel_foot(reading, &anchors).len(), 1, "the sheet's row");
         });
         reading_of("m:p2", MailFormat::Html, true, |reading| {
-            assert!(panel_foot(reading, width).is_empty(), "no attachments, no footer: the switches are in More");
+            assert!(panel_foot(reading, &anchors).is_empty(), "no attachments, no footer: the switches are in More");
         });
         reading_of("m:w1", MailFormat::Html, false, |reading| {
-            assert!(panel_foot(reading, width).is_empty(), "no footer while the mail loads");
+            assert!(panel_foot(reading, &anchors).is_empty(), "no footer while the mail loads");
         });
         let item = mail_entry();
         let entry = ReaderEntry { item: &item, hide: true };
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default();
             for width in [width, 480.0, 0.0] {
-                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width);
+                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width, &anchors);
                 let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width });
             }
         });
@@ -3665,6 +4467,11 @@ mod tests {
                         scheme: Scheme::Dark,
                         scale: 1.0,
                     });
+                    let saving = iced::futures::executor::block_on(MailSource::save_targets(
+                        &DemoSource::new(now()),
+                        Some(message.summary.id.clone()),
+                    ))
+                    .expect("the demo plans");
                     let reading = Reading {
                         categories: &[],
                         task,
@@ -3682,6 +4489,9 @@ mod tests {
                         answering: false,
                         invite: InviteSide::default(),
                         html,
+                        saving: Some(&saving),
+                        click: &OPEN,
+                        file_menu: Some(0),
                     };
                     let anchors = detail::Anchors::default();
                     let _ = panel(&reading, Some(&folder), &anchors, Bars::Split);
@@ -3690,21 +4500,21 @@ mod tests {
                         // narrow one.
                         for width in [size::panel(), 480.0] {
                             let _ = panel(&reading, Some(&folder), &anchors, Bars::Command { entry, width });
-                            let _ = body(&reading, Bars::Command { entry, width });
+                            let _ = body(&reading, Bars::Command { entry, width }, &anchors);
                             if let Some(entry) = entry {
-                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), width);
+                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), width, &anchors);
                             }
                         }
-                        let _ = body(&reading, Bars::Split);
+                        let _ = body(&reading, Bars::Split, &anchors);
                         let groups = action_groups(&reading, entry, &folders, true, &anchors);
                         let rail =
                             widgets::action_rail(groups, widgets::RailMode::Collapsed, None, Message::Rail, None);
-                        let _ = reader(reading, entry, rail);
+                        let _ = reader(reading, entry, rail, &anchors);
                         // The reader's head, which it lays out only once it knows its width.
                         let _ = head(&reading, entry, 900.0);
                     }
                     let _ = reader_mail(&reading, reader_widths(900.0));
-                    let _ = attachment_line(&reading, 900.0, layout::page_padding().left);
+                    let _ = attachment_line(&reading, &anchors, 900.0, layout::page_padding().left);
                 }
             }
         }
@@ -4097,7 +4907,7 @@ mod tests {
         assert_eq!(scheme_for(MailAppearance::Dark, false), Scheme::Dark);
         assert_eq!(
             MailLook::default(),
-            MailLook { format: MailFormat::Html, colors: MailAppearance::App, hidden_categories: Vec::new() }
+            MailLook { format: MailFormat::Html, colors: MailAppearance::App, ..MailLook::default() }
         );
     }
 }

@@ -96,6 +96,16 @@ pub struct Anchors {
     pub hide: Anchor,
     /// "Category…" of a mail entry (task E12.8): the list of categories and its question open here.
     pub category: Anchor,
+    /// The triangle of the attachment whose menu is open (task M12.6): only that chip or row
+    /// registers it (`mail::Reading::file_menu`), its menu opens here.
+    pub attachment: Anchor,
+    /// The triangle of "Save all ▾" over the attachments (task M12.6): the menu of all of them opens
+    /// here.
+    pub save_all: Anchor,
+    /// "Save attachments (n)" in the rail's group File (task M12.6): the menu of "Save all" opened
+    /// from the rail – or, through [`Anchors::with_rail`], at the group's icon – and from the list's
+    /// context menu at the row.
+    pub save_rail: Anchor,
     /// The icons of the groups of the mail's action rail (task E14.3, `mail::action_groups`): an
     /// open group hangs at its icon, and – through [`Anchors::with_rail`] – so do the menus and
     /// dialogs of its items while their row is not on screen.
@@ -136,17 +146,19 @@ impl Anchors {
             Message::Act(_, Command::MakeEvent) | Message::AskEvent(_) => Some(&self.event),
             Message::Act(_, Command::Hide) | Message::AskHide(_) | Message::AskMuteMail(_) => Some(&self.hide),
             Message::AskCategory(_) => Some(&self.category),
+            Message::AskSaveAttachments(_) => Some(&self.save_rail),
             _ => None,
         }
     }
 
-    /// The same anchors with the items' anchors falling back to the icon of their group in the mail's
-    /// action rail (task E14.3, [`RailAnchors`]): Later and "Move to …" to File, Task, Event and
-    /// "Category…" to Torro, the bell to Mute. Expanded, an item's row registers its own anchor and
-    /// its menu hangs there; collapsed – or once the open group closed on the click – the row is not
-    /// on screen and the menu hangs at the group's icon. The rail is fixed beside the mail, so that
-    /// icon is always in view. Where no rail is drawn (the hub, the App Feed) the fallbacks stay
-    /// empty and change nothing. Make the window's set with it once per `view`.
+    /// The same anchors with the items' anchors falling back to the icon of their group in the
+    /// mail's action rail (task E14.3, [`RailAnchors`]): Later and "Move to …" to File, Task, Event
+    /// and "Category…" to Torro, the bell to Mute. Expanded, an item's row registers its own anchor
+    /// and its menu hangs there; collapsed – or once the open group closed on the click – the row
+    /// is not on screen and the menu hangs at the group's icon. The rail is fixed beside the mail,
+    /// so that icon is always in view. Where no rail is drawn (the hub, the App Feed) the fallbacks
+    /// stay empty and change nothing. "Save attachments (n)" falls back to File too (task M12.6).
+    /// Make the window's set with it once per `view`.
     pub fn with_rail(self) -> Anchors {
         let rail = self.rail.clone();
         Anchors {
@@ -156,6 +168,7 @@ impl Anchors {
             event: self.event.or(&rail.torro),
             category: self.category.or(&rail.torro),
             hide: self.hide.or(&rail.mute),
+            save_rail: self.save_rail.or(&rail.file),
             ..self
         }
     }

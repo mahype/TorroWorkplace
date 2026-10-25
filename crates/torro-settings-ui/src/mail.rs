@@ -6,6 +6,8 @@
 //! Accounts  one row per mail account; its page holds the sender name, the signature,
 //!           "Write new mail as" and the folder questions the server left open
 //! Reading   "Show mail as" and "Mail colors" for the reader
+//! Attachments  what a click on an attachment does, the Downloads folder, the save targets
+//!              (task M12.7, [`attachments`])
 //! ```
 //!
 //! Task E10.3 adds a third section, "Keyboard shortcuts"; it is not built here.
@@ -26,18 +28,51 @@ use torro_gui::icon::Icon;
 
 use crate::{Action, Data, Page, Section};
 
+pub mod attachments;
 mod backup;
 mod editor;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 4] = [
+pub const SECTIONS: [Section; 5] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: "accounts", icon: Icon::Mail, label: "Accounts" },
     Section { id: "reading", icon: Icon::MailOpen, label: "Reading" },
+    // What a click on an attachment does and where it is saved (task M12.7, issue #290); "Manage
+    // save targets…" in the menu of an attachment opens it ([`ATTACHMENTS_SECTION`]).
+    Section { id: ATTACHMENTS_SECTION, icon: Icon::Paperclip, label: "Attachments" },
     // What incoming mail is sorted into (task E12.10, `docs/kategorien.md`).
     Section { id: "categorization", icon: Icon::Tag, label: "Categorization" },
     Section { id: "storage", icon: Icon::Archive, label: "Storage & index" },
 ];
+
+/// The id of the section "Attachments": what `--settings attachments` takes and where "Manage save
+/// targets…" leads.
+pub const ATTACHMENTS_SECTION: &str = "attachments";
+
+/// What only the mail window can do with these sections ([`crate::Action::App`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppAction {
+    /// "Change…" at the Downloads folder or "Choose…" at a save target's folder (Attachments): the
+    /// window opens the system's folder chooser and, once a folder is chosen, hands it back with
+    /// [`folder_chosen`] as a message of the page; cancelled, nothing. Only a person sets a path
+    /// (point 9 of "Was nie nach außen geht"), which is why only the window's chooser does.
+    PickFolder(FolderFor),
+}
+
+/// What a folder from the chooser is for ([`AppAction::PickFolder`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderFor {
+    /// The Downloads folder of "Save to Downloads": the page sends it as `mail_downloads_folder`.
+    Downloads,
+    /// The folder of the save target in the open editor: it goes into the editor's field.
+    Target,
+}
+
+/// The message that hands the folder `path` picked for `purpose` back to the section "Attachments"
+/// (after [`AppAction::PickFolder`]).
+pub fn folder_chosen(purpose: FolderFor, path: std::path::PathBuf) -> Message {
+    Message::Attachments(attachments::Message::FolderChosen(purpose, path))
+}
 
 /// What one load of these sections needs: the suite-wide settings (Reading) and every account with
 /// its mail settings (Accounts).
@@ -45,6 +80,8 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
     vec![
         torro_ipc::Request::Settings,
         torro_ipc::Request::Accounts,
+        // "Attachments" (task M12.7): the save targets and the Downloads folder.
+        torro_ipc::Request::ListSaveTargets { id: None },
         torro_ipc::Request::MailAccountStats { account: None },
         // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
         torro_ipc::Request::AiAssignments,
@@ -67,6 +104,8 @@ pub struct State {
     /// Categorization: the page of a category or a sorting rule that is open (task E15.5).
     pub categorization: categorization::State,
     pub storage: storage::State,
+    /// Attachments: the editor of a save target while it is open (task M12.7).
+    pub attachments: attachments::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -76,11 +115,13 @@ pub enum Message {
     Reading(reading::Message),
     Categorization(categorization::Message),
     Storage(storage::Message),
+    Attachments(attachments::Message),
 }
 
 /// What a section's widget reported, and what the host is to do about it.
-pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
+pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
     match message {
+        Message::Attachments(message) => attachments::update(&mut state.attachments, message, data),
         Message::Accounts(message) => accounts::update(&mut state.accounts, message, data),
         Message::Reading(message) => reading::update(message),
         Message::Categorization(message) => categorization::update(&mut state.categorization, message, data),
@@ -95,8 +136,32 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
         "reading" => wrap(Page::new(reading::view(data)), Message::Reading),
         "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         "storage" => wrap(storage::page(&state.storage, data), Message::Storage),
+        ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
         _ => wrap(accounts::page(&state.accounts, data), Message::Accounts),
     }
+}
+
+/// The dialog of the section with this id over the window – the editor of a save target with its
+/// open menu, or the question before it is deleted (task M12.7) – while one is open; `class` is the
+/// window's size class. The window shows it as its top layer.
+pub fn overlay<'a>(
+    state: &'a State,
+    data: &'a Data,
+    section: &str,
+    class: torro_gui::layout::SizeClass,
+) -> Option<Element<'a, Message>> {
+    match section {
+        ATTACHMENTS_SECTION => {
+            attachments::overlay(&state.attachments, data, class).map(|dialog| dialog.map(Message::Attachments))
+        }
+        _ => None,
+    }
+}
+
+/// What Escape means while "Attachments" shows: close its menu, its question, then its dialog
+/// (task M12.7). `None` without a dialog, which lets the window close the settings.
+pub fn attachments_escape(state: &State) -> Option<Message> {
+    attachments::escape(&state.attachments).map(Message::Attachments)
 }
 
 /// What Escape means in these sections: a page of the categories' editor goes back to its list
@@ -1256,7 +1321,7 @@ mod tests {
             let _ = page(&state, data, "shortcuts").body;
         }
         // The page below Accounts, with the account in the path.
-        let _: Action<()> =
+        let _: Action<AppAction> =
             update(&mut state, Message::Accounts(accounts::Message::Open("mail:anna@example.org".into())), &data);
         assert!(page(&state, &data, "accounts").sub_page.is_some());
     }
@@ -1275,11 +1340,11 @@ mod tests {
             ..Data::default()
         };
         let mut state = State::default();
-        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
-        let action: Action<()> =
+        let _: Action<AppAction> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        let action: Action<AppAction> =
             update(&mut state, Message::Accounts(accounts::Message::Backup(backup::Message::Create)), &data);
         assert!(matches!(action, Action::Ask(torro_ipc::Request::MailBackupCreate { .. })));
-        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(bernd.into())), &data);
+        let _: Action<AppAction> = update(&mut state, Message::Accounts(accounts::Message::Open(bernd.into())), &data);
         let job = BackupJob {
             id: "job-anna".into(),
             account: anna.into(),
@@ -1293,12 +1358,12 @@ mod tests {
         };
         backup_answered(&mut state, anna, &Ok(torro_ipc::Response::MailBackupJob { job }));
         assert!(accounts::poll_request(&mut state.accounts).is_none(), "Bernd's page has no Anna job");
-        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        let _: Action<AppAction> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
         assert!(
             matches!(accounts::poll_request(&mut state.accounts), Some(torro_ipc::Request::MailBackupStatus { job, .. }) if job == "job-anna")
         );
         assert_eq!(
-            update::<()>(&mut state, Message::Accounts(accounts::Message::Backup(backup::Message::Create)), &data),
+            update(&mut state, Message::Accounts(accounts::Message::Backup(backup::Message::Create)), &data),
             Action::None
         );
     }
@@ -1313,7 +1378,7 @@ mod tests {
         let mut state = State::default();
         stage_backup(&mut state, anna, BackupScene::Running);
         let mut state = kept(state);
-        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        let _: Action<AppAction> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
         assert!(
             matches!(poll_request(&mut state), Some(torro_ipc::Request::MailBackupStatus { job, .. }) if job == "demo-job")
         );
@@ -1321,7 +1386,7 @@ mod tests {
         assert_eq!(backup_chooser(&choose), Some(BackupChooser::Folder));
         assert_eq!(backup_chooser(&Message::Accounts(accounts::Message::Back)), None);
         let folder = std::env::temp_dir();
-        let _: Action<()> = update(&mut state, backup_chosen(BackupChooser::Folder, folder.clone()), &data);
+        let _: Action<AppAction> = update(&mut state, backup_chosen(BackupChooser::Folder, folder.clone()), &data);
         assert_eq!(accounts::backup_destination(&state.accounts), Some(folder.to_string_lossy().as_ref()));
     }
 
@@ -1330,9 +1395,10 @@ mod tests {
     #[test]
     fn the_sections_are_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["accounts", "reading", "categorization", "storage"]);
+        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization", "storage"]);
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
-        assert_eq!(SECTIONS[2].name(), tr("Categorization"), "task E12.10");
+        assert_eq!(SECTIONS[2].name(), tr("Attachments"), "task M12.7");
+        assert_eq!(SECTIONS[3].name(), tr("Categorization"), "task E12.10");
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {
             assert!(host.open(id), "{id}");
@@ -1348,6 +1414,7 @@ mod tests {
             vec![
                 torro_ipc::Request::Settings,
                 torro_ipc::Request::Accounts,
+                torro_ipc::Request::ListSaveTargets { id: None },
                 torro_ipc::Request::MailAccountStats { account: None },
                 torro_ipc::Request::AiAssignments,
                 torro_ipc::Request::GetCategorization,
@@ -1532,10 +1599,10 @@ mod tests {
         let first = data.categories.first().map(|info| info.category).expect("a category");
         let open =
             Message::Categorization(categorization::Message::Editor(super::editor::Message::EditCategory(first)));
-        let _ = update::<()>(&mut state, open, &data);
+        let _ = update(&mut state, open, &data);
         assert!(page(&state, &data, "categorization").sub_page.is_some());
         let back = Message::Categorization(categorization::Message::Editor(super::editor::Message::Back));
-        let _ = update::<()>(&mut state, back, &data);
+        let _ = update(&mut state, back, &data);
         assert!(page(&state, &data, "categorization").sub_page.is_none());
     }
 }
