@@ -317,6 +317,11 @@ pub enum Door {
 /// [`api::request_schema`]); the doc comments of those types are the descriptions for agents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "method")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one short-lived value per request; `update_settings` carries the whole settings, which grew with \
+              attachments (#290) and web search (#305), and boxing it would change the request every caller builds"
+)]
 pub enum Request {
     /// Version and health; also how a client finds out the core is up.
     #[serde(rename = "system.ping")]
