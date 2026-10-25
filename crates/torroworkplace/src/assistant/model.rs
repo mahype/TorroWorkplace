@@ -550,12 +550,13 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
             _ => false,
         });
     // For the web's yes (issue #305, task WEB.5): a bot that runs for the assistant counts what the
-    // assistant's conversation read as well, as its yes is that conversation's.
+    // assistant's conversation read as well, as its yes is that conversation's, and a client's message
+    // there (what the assistant's model read when it asked the bot).
     let mut outside = from_client || reads_outside(&job.history);
     if let Actor::Delegated(delegation) = &job.actor
         && let Response::Conversation { entries, .. } = assistant.get(&delegation.conversation, None).await
     {
-        outside |= reads_outside(&entries);
+        outside |= reads_outside(&entries) || sent_by_a_client(&entries, &Actor::Assistant);
     }
     // Only the person's own message is their word (no `from`, and [`super::State::said`]: sent with
     // the app key). One of a client (an agent through `assistant.send_message` or `bots.ask_bot`) is
@@ -2528,6 +2529,76 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot),
             // As the assistant sends it (`Assistant::delegate`).
+            from: Some(delegation.assistant.clone()),
+            on_behalf: Some(delegation),
+        };
+        let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
+        else {
+            panic!("a conversation with the bot")
+        };
+        finished(&assistant, &conversation.id).await;
+        assert_eq!(webs(&host), [("tools.fetch_page", main, true, false)]);
+    }
+
+    /// Issue #305 (review): a client's message in the assistant's conversation counts for a bot that runs
+    /// for the assistant too: the assistant's model read it before it asked the bot, so the bot's web asks
+    /// anew. The assistant's own messages to the bot do not count.
+    #[tokio::test]
+    async fn a_clients_message_in_the_assistants_conversation_counts_for_its_bot() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let page = "https://lisbon.example.org/trams";
+        let script = Script::new(vec![
+            says("Hello."),
+            says("Noted."),
+            calls("tools_fetch_page", json!({"url": page})),
+            says("Tram 28 runs to Prazeres."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let main = ask(&assistant, None, "Hi", Vec::new()).await;
+        finished(&assistant, &main).await;
+        let from_client = Message {
+            conversation: Some(main.clone()),
+            engine: ENGINE.into(),
+            model: None,
+            effort: None,
+            text: "Ask the travel planner about trams.".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: Some(crate::assistant::TEST_CLIENT.into()),
+        };
+        assert!(matches!(assistant.send(from_client, EngineKind::Ai, Utc::now()).await, Response::Conversation { .. }));
+        finished(&assistant, &main).await;
+        let bot = Bot {
+            id: "1a2b3c4d".into(),
+            name: "Travel planner".into(),
+            description: String::new(),
+            avatar: "letter".into(),
+            engine: ENGINE.into(),
+            model: None,
+            personality: String::new(),
+            instructions: String::new(),
+            skills: Vec::new(),
+            client: "9f8e7d6c".into(),
+        };
+        let delegation = Delegation {
+            bot: bot.id.clone(),
+            client: bot.client.clone(),
+            assistant: "a55e5517".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            conversation: main.clone(),
+        };
+        let message = Message {
+            conversation: None,
+            engine: ENGINE.into(),
+            model: None,
+            effort: None,
+            text: format!("Read {page}"),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: Some(bot),
             from: Some(delegation.assistant.clone()),
             on_behalf: Some(delegation),
         };

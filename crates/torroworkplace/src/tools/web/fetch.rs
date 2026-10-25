@@ -190,6 +190,11 @@ pub struct Fetcher {
 }
 
 impl Fetcher {
+    /// The guard of this fetcher: where it connects, and which port beside 80 and 443 it reads (tests).
+    pub fn guard(&self) -> Guard {
+        self.guard
+    }
+
     /// The fetcher of the service: the system's DNS ([`SystemResolver`]) and [`Guard::PUBLIC`]. `None` when no HTTP
     /// client can be built.
     pub fn system() -> Option<Fetcher> {

@@ -333,6 +333,20 @@ impl Web {
         }
     }
 
+    /// What `tools.fetch_page` refuses `url` with before anything goes out (the core asks it before the person's yes
+    /// to the web, task WEB.5): an address over [`MAX_URL_BYTES`] bytes (`error`), else the address checks of
+    /// [`fetch::checked_url`] with the page reader's guard (`unsupported`: no `http`/`https`, a user name, an IP
+    /// address, no public domain, another port). No network: what DNS, `robots.txt` and the page say comes later.
+    /// `None` when the address passes.
+    pub fn address_refusal(&self, url: &str) -> Option<Response> {
+        if url.trim().len() > MAX_URL_BYTES {
+            return Some(error(tr(FetchError::TooLong.reason())));
+        }
+        let guard = self.fetcher().map_or(fetch::Guard::PUBLIC, Fetcher::guard);
+        let refused = fetch::checked_url(url, guard).err()?;
+        Some(Response::Error { code: refused.code().into(), message: tr(refused.reason()).into() })
+    }
+
     /// `tools.list_search_providers`: every provider in [`SearchProviderId::ORDER`] as [`catalogue::info`] has it,
     /// with the switches and address of `settings`, whether its key is stored (never the key) and its rest.
     pub async fn list(&self, settings: &WebSearch) -> Response {
