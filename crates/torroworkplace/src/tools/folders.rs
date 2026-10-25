@@ -292,6 +292,9 @@ pub fn key_stores(home: &Path) -> Vec<PathBuf> {
         stores.push(roaming.join("Microsoft").join("Credentials"));
         stores.push(local.join("Microsoft").join("Credentials"));
         stores.push(roaming.join("Microsoft").join("Protect"));
+        // GitHub CLI and gcloud keep their tokens in `%APPDATA%` there, not in `~/.config`.
+        stores.push(roaming.join("GitHub CLI"));
+        stores.push(roaming.join("gcloud"));
         stores.push(local.join("Google").join("Chrome").join("User Data"));
         stores.push(local.join("Microsoft").join("Edge").join("User Data"));
         stores.push(local.join("BraveSoftware"));
@@ -621,6 +624,13 @@ pub(crate) mod tests {
         #[cfg(target_os = "linux")]
         for profile in [".mozilla", ".config/google-chrome", ".local/share/kwalletd"] {
             assert!(stores.contains(&home.join(profile)), "{profile}");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let roaming = dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming"));
+            for store in ["GitHub CLI", "gcloud"] {
+                assert!(stores.contains(&roaming.join(store)), "{store}");
+            }
         }
     }
 
