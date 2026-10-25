@@ -1852,9 +1852,14 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         View::Done => (tr("Nothing done yet."), tr("Done entries stay here for 30 days.")),
         View::Source(_) => (tr("Nothing open from this source."), tr("New entries from it show up here.")),
         // The views of mail have their own list and empty states (`mail::list`).
-        View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_) => {
-            (tr("No messages here."), tr("Mail in this folder shows up here."))
-        }
+        View::Folder(_)
+        | View::Mail
+        | View::Attachments
+        | View::Invitations
+        | View::Search(_)
+        | View::All
+        | View::Hidden
+        | View::Archive => (tr("No messages here."), tr("Mail in this folder shows up here.")),
         // Task E12.8: a category the person filtered by holds nothing at the moment.
         View::Category(_) => (tr("No mail of this kind."), tr("Mail sorted into it shows up here.")),
     }

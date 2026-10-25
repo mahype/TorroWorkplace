@@ -1209,7 +1209,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Mail window (E8.3)
     ("With attachments", "Mit Anhang"),
     ("Smart views", "Intelligente Ansichten"),
-    ("Pinned folders", "Angepinnte Ordner"),
     ("Open folders", "Ordner öffnen"),
     ("Pin folder", "Ordner anpinnen"),
     ("Unpin folder", "Ordner lösen"),
@@ -5636,4 +5635,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{placeholder}” is not a placeholder. Insert lists them all.",
         "„{placeholder}“ ist kein Platzhalter. „Einfügen“ zeigt alle.",
     ),
+    // The mail window: All, Later, Hidden and Folders, "Show again" (E18.4, issue #301)
+    ("Show again", "Wieder anzeigen"),
+    ("Back in All.", "Wieder in „Alle“."),
+    ("Couldn't show the mail again.", "Die Mail konnte nicht wieder angezeigt werden."),
+    ("No mail in your inboxes.", "Keine Mail in deinen Posteingängen."),
+    ("New mail shows up here.", "Neue Mails erscheinen hier."),
+    ("No hidden mail.", "Keine ausgeblendeten Mails."),
+    ("Mail you hide from the inbox shows up here.", "Mails, die du aus dem Eingang ausblendest, erscheinen hier."),
+    ("No archived mail.", "Keine archivierten Mails."),
+    ("Mail you archive shows up here.", "Mails, die du archivierst, erscheinen hier."),
 ];

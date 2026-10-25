@@ -277,14 +277,12 @@ pub trait MailSource: Send + Sync {
     /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields).
     /// "All" is [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)`, "Hidden" [`Role::Inbox`]
     /// with `hidden` `Some(true)`, "Archive" [`Role::Archive`]. The page has no highlights.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
     fn mail_by_role(&self, find: MailByRole) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// The number on "All" (task E18.3, decision 4 of E18): `mail.search_messages` as "All" asks it
     /// – [`Role::Inbox`], `snoozed` and `hidden` `Some(false)` – with `unread: Some(true)` and
     /// `limit: 1`, for `account` (`mail:<address>`) or every account the window reaches
     /// ([`InboxClient::count_unread_in_all`]). Answers the core's `total_estimate`, 0 without one.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
     fn unread_in_all(&self, account: Option<String>) -> impl Future<Output = Result<u64, InboxError>> + Send;
 
     /// `inbox.set_mail_shown` (task E18.2, "Show again"; [`InboxClient::set_mail_shown`]): `shown:
@@ -292,7 +290,6 @@ pub trait MailSource: Send + Sync {
     /// them stays, their entry stays as it is –, `shown: false` takes that back (the undo).
     /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing is
     /// remembered then. `Ok` also when there was nothing to remember.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
     fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
 }
 
@@ -805,7 +802,6 @@ impl MailSource for crate::empty::EmptySource {
 /// The page of the demo's `found` that starts at `cursor` (the place the demo gave out, `None`: the
 /// start), at most `limit` long, with the cursor of the page after it. [`InboxError::Other`] for a
 /// cursor the demo did not give out, as its folders answer it.
-#[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
 fn demo_page(found: Vec<MessageSummary>, limit: u32, cursor: Option<&str>) -> Result<MailPage, InboxError> {
     let start = match cursor {
         None => 0,
@@ -1493,6 +1489,10 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::Invitations => {
                 (Icon::Calendar, tr("No invitations."), tr("Invitations to events you can answer show up here."))
             }
+            // The views of every account's mail (task E18.4).
+            View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
+            View::Hidden => (Icon::EyeOff, tr("No hidden mail."), tr("Mail you hide from the inbox shows up here.")),
+            View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
             _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
@@ -1610,7 +1610,10 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     }
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let smart = matches!(data.view, View::Attachments | View::Invitations | View::Search(_));
+    let smart = matches!(
+        data.view,
+        View::Attachments | View::Invitations | View::Search(_) | View::All | View::Hidden | View::Archive
+    );
     let several = smart && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
@@ -2695,8 +2698,9 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
 ///    accent).
 /// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
-/// 5. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
-///    for a folder's message).
+/// 5. **Mute** (at the foot): with `hidden` (the mail is listed in "Hidden", task E18.4) first
+///    Show again (no key, [`Message::ShowMail`]: back into "All", the rule stays), then Mute… (`m`;
+///    `AskHide` for an entry that can be muted, `AskMuteMail` for a folder's message).
 /// 6. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
 ///    then Show as text or Show as HTML (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`,
 ///    while the HTML shows), and with `close` (the reader; the panel has its ✕) Close (Escape,
@@ -2710,12 +2714,14 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 /// menu or dialog its row in the matching anchor of `anchors` (Later `snooze`, "Move to …" `lane`,
 /// Task `task`, Event `event`, Category… `category`, Mute… `hide`); pass the window's anchors made
 /// with [`detail::Anchors::with_rail`], so those menus hang at the group's icon while the row is not
-/// on screen. `folders` are every account's folders, for Archive and Delete.
+/// on screen. `folders` are every account's folders, for Archive and Delete. The same groups are the
+/// context menu of the mail's row (`widgets::rail_context_menu`), so Show again stands there too.
 pub fn action_groups<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
     folders: &[Folder],
     close: bool,
+    hidden: bool,
     anchors: &detail::Anchors,
 ) -> Vec<RailGroup<'a, Message>> {
     let rail = &anchors.rail;
@@ -2733,7 +2739,7 @@ pub fn action_groups<'a>(
         RailGroup::new(Icon::Check, tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
-        RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
+        RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, hidden, anchors)).foot().at(&rail.mute),
         RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), close)).foot().at(&rail.more),
     ];
     groups.into_iter().filter(|group| !group.items.is_empty()).collect()
@@ -2825,19 +2831,28 @@ fn mark_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
     vec![RailItem::new(Icon::Flag, flag, "", mail(MailAction::Flag(!flagged))), seen]
 }
 
-/// The item of the rail's group "Mute" ([`action_groups`]): the bell of the entry where it can be
-/// muted, else nothing; the bell of a folder's message on its own traits (issue #123).
+/// The items of the rail's group "Mute" ([`action_groups`]): for a mail of "Hidden" (`hidden`, task
+/// E18.4) first "Show again" – it takes this one mail back into "All", never the rule that hid it
+/// (decision 10 of E18) –, then the bell of the entry where it can be muted, else nothing; the bell of
+/// a folder's message on its own traits (issue #123).
 fn mute_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
+    hidden: bool,
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
+    let mut items = Vec::new();
+    if hidden {
+        let show = Some(Message::ShowMail(reading.id.to_owned()));
+        items.push(RailItem::new(Icon::Eye, tr("Show again"), "", show));
+    }
     let bell = match entry {
         Some(ReaderEntry { item, hide: true }) => Message::AskHide(item.id.clone()),
-        Some(ReaderEntry { hide: false, .. }) => return Vec::new(),
+        Some(ReaderEntry { hide: false, .. }) => return items,
         None => Message::AskMuteMail(reading.id.to_owned()),
     };
-    vec![RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide)]
+    items.push(RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide));
+    items
 }
 
 /// The items of the rail's group "More" ([`action_groups`]) for `tools`: the other view of a mail
@@ -3932,7 +3947,7 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default().with_rail();
             let groups =
-                action_groups(reading, Some(ReaderEntry { item: &item, hide: true }), &folders, true, &anchors);
+                action_groups(reading, Some(ReaderEntry { item: &item, hide: true }), &folders, true, false, &anchors);
             let move_to = lane_word(Lane::Info);
             assert_eq!(
                 rail_words(&groups),
@@ -4055,7 +4070,7 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default();
             let entry = Some(ReaderEntry { item: &item, hide: false });
-            let groups = action_groups(reading, entry, &folders, false, &anchors);
+            let groups = action_groups(reading, entry, &folders, false, false, &anchors);
             let file = &group(&groups, tr("File")).items;
             assert_eq!(file[0].label, tr("Reopen"));
             assert!(
@@ -4068,7 +4083,7 @@ mod tests {
             assert!(more.iter().all(|i| i.label != tr("Close")), "the panel has its ✕");
             assert!(group(&groups, tr("Torro")).items.iter().all(|i| i.label != tr("Re-categorize")), "no model");
             let deciding = Reading { deciding: true, ..*reading };
-            let groups = action_groups(&deciding, entry, &folders, false, &anchors);
+            let groups = action_groups(&deciding, entry, &folders, false, false, &anchors);
             let torro = &group(&groups, tr("Torro")).items;
             let last = torro.last().expect("an item");
             assert_eq!(last.label, tr("Re-categorize"));
@@ -4083,7 +4098,7 @@ mod tests {
     fn a_folders_message_files_as_its_account_allows() {
         let folders = folders();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
             assert_eq!(titles, strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("More")]));
             let file = &group(&groups, tr("File")).items;
@@ -4103,14 +4118,14 @@ mod tests {
             assert!(matches!(mute, Some(Message::AskMuteMail(id)) if id == "m:w1"), "the message's own traits");
             // An account without an archive folder: no Archive.
             let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
-            let groups = action_groups(reading, None, &no_archive, true, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &no_archive, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
             assert_eq!(file, strings(&[tr("Delete"), &save]));
             assert!(group(&groups, tr("File")).first_press().is_none(), "Delete first: a click opens the card");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
-            let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
             assert_eq!(file, strings(&[trc("action", "Archive")]));
         });
@@ -4123,7 +4138,7 @@ mod tests {
     fn more_offers_the_view_of_the_mail_as_it_stands() {
         let folders = folders();
         let more = |reading: &Reading<'_>, close| {
-            let groups = action_groups(reading, None, &folders, close, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &folders, close, false, &detail::Anchors::default());
             groups.iter().find(|group| group.label == tr("More")).map(|group| {
                 group
                     .items
@@ -4165,7 +4180,7 @@ mod tests {
             assert_eq!(more(reading, false), None, "nothing to show while it loads");
             assert_eq!(more(reading, true).map(|items| items.len()), Some(1), "but Close");
             let loading = Reading { summary: None, ..*reading };
-            let groups = action_groups(&loading, None, &folders, false, &detail::Anchors::default());
+            let groups = action_groups(&loading, None, &folders, false, false, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
             assert_eq!(titles, strings(&[tr("Reply"), tr("Torro"), tr("Mute")]), "only what needs no headers");
         });
@@ -4224,7 +4239,7 @@ mod tests {
     fn save_all_shows_from_two_attachments_on() {
         let anchors = detail::Anchors::default();
         let file_words = |reading: &Reading<'_>| -> Vec<String> {
-            let groups = action_groups(reading, None, &folders(), true, &anchors);
+            let groups = action_groups(reading, None, &folders(), true, false, &anchors);
             let file = groups.into_iter().find(|group| group.label == tr("File")).expect("File");
             file.items.iter().map(|item| item.label.to_string()).collect()
         };
@@ -4599,7 +4614,7 @@ mod tests {
                             }
                         }
                         let _ = body(&reading, Bars::Split, &anchors);
-                        let groups = action_groups(&reading, entry, &folders, true, &anchors);
+                        let groups = action_groups(&reading, entry, &folders, true, false, &anchors);
                         let rail =
                             widgets::action_rail(groups, widgets::RailMode::Collapsed, None, Message::Rail, None);
                         let _ = reader(reading, entry, rail, &anchors);

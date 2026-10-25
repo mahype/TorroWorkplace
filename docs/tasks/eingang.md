@@ -4192,7 +4192,7 @@ Nicht parallel zu E17 (#300): E17.2 und E18.4 ändern `sidebar`, `nav_menu` und 
   `set_mail_shown(…, true)` umgekehrt.
 
 ### E18.4 Seitenleiste und Ansichten des Mail-Fensters
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E18.3 · **Dateien:** `crates/torroinbox/src/app.rs`,
   `crates/torroinbox/src/mail.rs` (Show again an Zeilen und in der Leiste), `crates/torroinbox/src/glance.rs` (nur der
   Klick, falls dort), `crates/torro-gui/src/icon.rs`, `crates/torro-gui/assets/icons/eye-off.svg`,
