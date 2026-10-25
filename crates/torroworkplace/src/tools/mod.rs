@@ -41,8 +41,9 @@ pub type Opener = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 
 /// Moves the entry at a path to the system's trash ([`system_trash`], task WD.3); tests record instead and never touch
 /// the person's trash. The path is the entry itself as [`folders::Allowed::entry`] resolves it: a symbolic link goes,
-/// not what it points to. `Err` is the kind of the system's error, never a path.
-pub type Trasher = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
+/// not what it points to. `Err` is what failed, from a fixed set ([`folders::Failure`]), never a path or the system's
+/// own text.
+pub type Trasher = Arc<dyn Fn(&Path) -> Result<(), folders::Failure> + Send + Sync>;
 
 /// The folders the tools work with. Each is a parameter, so tests never touch the person's.
 #[derive(Debug, Clone, Default)]
@@ -100,7 +101,7 @@ impl Tools {
     /// [`Tools::with_opener`] and a [`Trasher`] with [`Tools::with_trasher`]).
     pub fn new(roots: Roots) -> Tools {
         let open: Opener = Arc::new(|_: &Path| Err("nothing is opened here".to_string()));
-        let trash: Trasher = Arc::new(|_: &Path| Err("there is no trash here".to_string()));
+        let trash: Trasher = Arc::new(|_: &Path| Err(folders::Failure::TrashRefused));
         Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash, changes: Arc::default() }
     }
 
@@ -237,14 +238,15 @@ impl Tools {
 fn client_files(current: Option<crate::client_setup::Env>, home: Option<&Path>) -> Vec<PathBuf> {
     let env = current.or_else(|| {
         let home = home?.to_path_buf();
-        // Only `home` and `app_config` name protected files; the record and the hooks' keys are in the core's config
-        // folder, which is locked as a whole.
+        // Only `home`, `app_config` and `program` name protected files; the record and the hooks' keys are in the
+        // core's config folder, which is locked as a whole.
         let config_dir = torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE)
             .map_or_else(|| home.join(".config").join(torro_core::AppId::WORKPLACE.binary), |paths| paths.config);
         Some(crate::client_setup::Env {
             app_config: dirs::config_dir().unwrap_or_else(|| home.join(".config")),
             path: Vec::new(),
-            program: PathBuf::new(),
+            // The program the hooks start, as `Env::current` names it; none (an empty path) locks nothing.
+            program: std::env::current_exe().unwrap_or_default(),
             config_dir,
             home,
         })
@@ -386,8 +388,8 @@ fn system_open(path: &Path) -> Result<(), String> {
 /// Moves `path` to the system's trash ([`Trasher`]): the Recycle Bin on Windows, the freedesktop trash on Linux, the
 /// Finder's trash on macOS. The entry itself, also a symbolic link (the `trash` crate resolves only its folder). On
 /// macOS through `NSFileManager` rather than the Finder: no Apple Events, so no permission to control the Finder and
-/// no Finder started; only "Put Back" is missing. The error is its kind, never a path.
-fn system_trash(path: &Path) -> Result<(), String> {
+/// no Finder started; only "Put Back" is missing. The error is what failed ([`trash_error_kind`]), never a path.
+fn system_trash(path: &Path) -> Result<(), folders::Failure> {
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut context = trash::TrashContext::default();
     #[cfg(target_os = "macos")]
@@ -398,16 +400,20 @@ fn system_trash(path: &Path) -> Result<(), String> {
     context.delete(path).map_err(|err| trash_error_kind(&err))
 }
 
-/// The kind of a refusal of the system's trash, for the answer and the log: the errors of the `trash` crate carry
-/// paths and the system's own text, which may name the path too, so neither is passed on.
-fn trash_error_kind(err: &trash::Error) -> String {
+/// What failed when the system's trash refused, for the answer: the errors of the `trash` crate carry paths and the
+/// system's own text, which may name the path too, so neither is passed on – only one of the fixed
+/// [`folders::Failure`]s, which the answer says in the suite's language.
+fn trash_error_kind(err: &trash::Error) -> folders::Failure {
+    use folders::Failure;
     match err {
         #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
-        trash::Error::FileSystem { source, .. } => source.kind().to_string(),
-        trash::Error::Os { code, .. } => format!("system error {code}"),
-        trash::Error::TargetedRoot => "a root folder cannot go to the trash".to_string(),
-        trash::Error::CouldNotAccess { .. } | trash::Error::CanonicalizePath { .. } => "not reachable".to_string(),
-        _ => "the trash refused it".to_string(),
+        trash::Error::FileSystem { source, .. } => match Failure::of_kind(source.kind()) {
+            Failure::Other => Failure::TrashRefused,
+            failure => failure,
+        },
+        trash::Error::TargetedRoot => Failure::RootFolder,
+        trash::Error::CouldNotAccess { .. } | trash::Error::CanonicalizePath { .. } => Failure::NotReachable,
+        _ => Failure::TrashRefused,
     }
 }
 
@@ -668,9 +674,15 @@ pub(crate) mod tests {
             trash::Error::Os { code: 13, description: secret.into() },
             trash::Error::TargetedRoot,
         ] {
-            let kind = trash_error_kind(&err);
-            assert!(!kind.is_empty() && !kind.contains("Secret"), "{kind}");
+            let Response::Error { message, .. } = folders::FolderError::Failed(trash_error_kind(&err)).response()
+            else {
+                panic!("an error")
+            };
+            assert!(!message.contains("Secret") && !message.contains("13"), "{message}");
         }
+        assert_eq!(trash_error_kind(&trash::Error::TargetedRoot).text(), tr("a root folder cannot go to the trash"));
+        let refused = trash::Error::Unknown { description: "cannot".into() };
+        assert_eq!(trash_error_kind(&refused).text(), tr("the trash refused it"));
         let none = Tools::new(Roots::default());
         assert!((none.trash)(Path::new("/tmp/x")).is_err(), "no trash without one set");
     }

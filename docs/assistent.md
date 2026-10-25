@@ -409,8 +409,9 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
   freigegebener Ordner sie enthält), verglichen ohne Groß- und Kleinschreibung. Sonst könnte ein Agent mit dem
   Home-Verzeichnis als freigegebenem Ordner die Rechte-Datei der Clients verschieben. Ebenso gesperrt: die Dateien,
   in die Torro Client-Schlüssel und Hooks schreibt (`~/.claude.json`, `~/.claude/settings.json` … mit ihren
-  Sicherungen), die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`, Schlüsselbund), weitere bekannte Ablagen
-  von Zugangsdaten (Cloud, GitHub, Paketregister, Passwortspeicher) und die Browser-Profile. Auch wenn das System
+  Sicherungen), das Programm, das die Hooks starten, die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`,
+  Schlüsselbund), weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub, Paketregister, Passwortspeicher), die
+  Browser-Profile und der Papierkorb des Systems (`~/.Trash`, `~/.local/share/Trash`). Auch wenn das System
   den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Name zählt so, wie das Laufwerk
   ihn speichert: Findet das System einen Eintrag auch unter einer anderen Schreibweise (`.ſsh` für `.ssh`, `Verträge`
   zerlegt, ein Kurzname unter Windows), ist die Antwort `not-found`. Ein Eintrag, der einen
@@ -592,6 +593,7 @@ Getroffen am 2026-10-24 (Abschnitt „Werkzeug Dateien“, Issue #304).
 22. **Kopieren nur Dateien;** Ordner verschieben nur auf demselben Laufwerk.
 23. **Papierkorb** über das Crate `trash`, auf macOS mit `NSFileManager` (keine Erlaubnis für den Finder nötig, dafür
     fehlt „Zurücklegen“ manchmal); er fragt immer einen Menschen.
-24. **Gesperrt** sind immer die Ordner der Suite, die Dateien mit Client-Schlüsseln und Hooks, die
-    Schlüsselablagen des Systems, weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub, Paketregister,
-    Passwortspeicher) und die Browser-Profile, auch innerhalb eines freigegebenen Ordners.
+24. **Gesperrt** sind immer die Ordner der Suite, die Dateien mit Client-Schlüsseln und Hooks, das Programm, das die
+    Hooks starten, die Schlüsselablagen des Systems, weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub,
+    Paketregister, Passwortspeicher), die Browser-Profile und der Papierkorb des Systems, auch innerhalb eines
+    freigegebenen Ordners.

@@ -9,9 +9,9 @@
 //!   so an agent cannot feel out what there is beyond the allowed folders; writing where only reading is allowed is
 //!   `forbidden`.
 //! - Locked are the paths of `excluded` (the suite's own folders, the files with client keys and hooks, the system's
-//!   key stores, other known stores of credentials and the browsers' profiles, [`key_stores`]) and every name ending
-//!   in [`BACKUP_SUFFIX`], also inside an allowed folder. Listing and finding leave them out. A locked path is
-//!   `not-found` also when the system refuses the core there.
+//!   key stores, other known stores of credentials, the browsers' profiles and the system's trash, [`key_stores`])
+//!   and every name ending in [`BACKUP_SUFFIX`], also inside an allowed folder. Listing and finding leave them out. A
+//!   locked path is `not-found` also when the system refuses the core there.
 //! - Names count as the drive stores them. `canonicalize` gives the stored names on macOS and Windows, though the
 //!   system also finds an entry under another spelling (`.SSH`, `.ſsh`, `Verträge` decomposed, a short name like
 //!   `CLAUDE~1.JSO`, a dot at the end); the last part of an entry, which is not resolved, counts only when its folder
@@ -59,8 +59,9 @@ pub enum FolderError {
     /// `error`: the system does not let the core in (`ErrorKind::PermissionDenied`), on macOS mostly until a person
     /// allows it under Privacy & Security › Files and Folders.
     Denied,
-    /// `error`: the system failed otherwise; the kind of the error, never a path.
-    Failed(String),
+    /// `error`: the system failed otherwise; what failed, from a fixed set ([`Failure`]), never a path or the
+    /// system's own text.
+    Failed(Failure),
 }
 
 impl FolderError {
@@ -72,8 +73,8 @@ impl FolderError {
             FolderError::Forbidden(message) => ("forbidden", tr(message).to_string()),
             FolderError::Unsupported(message) => ("unsupported", tr(message).to_string()),
             FolderError::Denied => ("error", tr(DENIED).to_string()),
-            FolderError::Failed(reason) => {
-                ("error", trf("The files cannot be changed: {reason}", &[("reason", reason)]))
+            FolderError::Failed(failure) => {
+                ("error", trf("The files cannot be changed: {reason}", &[("reason", &failure.text())]))
             }
         };
         Response::Error { code: code.into(), message }
@@ -85,8 +86,53 @@ impl FolderError {
         match err.kind() {
             io::ErrorKind::NotFound => FolderError::NotFound,
             io::ErrorKind::PermissionDenied => FolderError::Denied,
-            kind => FolderError::Failed(kind.to_string()),
+            kind => FolderError::Failed(Failure::of_kind(kind)),
         }
+    }
+}
+
+/// What failed when the system refused a change ([`FolderError::Failed`]): a small fixed set, so the answer says it
+/// in the suite's language ([`Failure::text`]) and never passes on the system's own text, which may name a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    /// The entry was gone.
+    NotFound,
+    /// The system did not allow it.
+    NoPermission,
+    /// The drive (or the quota on it) is full.
+    DriveFull,
+    /// The system's trash did not take the entry.
+    TrashRefused,
+    /// A root folder (`/`, a drive) cannot go to the trash.
+    RootFolder,
+    /// The entry could not be reached (resolved or opened) by the system's trash.
+    NotReachable,
+    /// Anything else.
+    Other,
+}
+
+impl Failure {
+    /// The failure for an error of the system of `kind`.
+    pub fn of_kind(kind: io::ErrorKind) -> Failure {
+        match kind {
+            io::ErrorKind::NotFound => Failure::NotFound,
+            io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => Failure::NoPermission,
+            io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => Failure::DriveFull,
+            _ => Failure::Other,
+        }
+    }
+
+    /// What failed, for people, in the suite's language: the `{reason}` of "The files cannot be changed: {reason}".
+    pub fn text(self) -> &'static str {
+        tr(match self {
+            Failure::NotFound => "not found",
+            Failure::NoPermission => "no permission",
+            Failure::DriveFull => "the drive is full",
+            Failure::TrashRefused => "the trash refused it",
+            Failure::RootFolder => "a root folder cannot go to the trash",
+            Failure::NotReachable => "not reachable",
+            Failure::Other => "another error",
+        })
     }
 }
 
@@ -256,8 +302,10 @@ impl Allowed {
 /// The system's key stores and other known stores of credentials below `home`, locked for the tool `files` whatever
 /// folder holds them (decision 24): `~/.ssh`, `~/.gnupg`, the system's own (`~/Library/Keychains` on macOS, the
 /// keyrings and KWallet on Linux, the credentials and the protected keys of Windows), the files of cloud, GitHub,
-/// container and package registry tools that hold tokens, the password store `pass`, and the browsers' profiles
-/// (cookies and saved passwords). Each is locked with all it holds.
+/// container and package registry tools that hold tokens, the password store `pass`, the browsers' profiles
+/// (cookies and saved passwords) and the system's trash in the home (`~/.Trash` on macOS, `~/.local/share/Trash` on
+/// Linux): the `trash` crate copies across drives following links, so a key could lie there whole, and an agent has
+/// no business looking through what a person threw away. Each is locked with all it holds.
 pub fn key_stores(home: &Path) -> Vec<PathBuf> {
     let mut stores = vec![home.join(".ssh"), home.join(".gnupg")];
     stores.extend(
@@ -287,12 +335,15 @@ pub fn key_stores(home: &Path) -> Vec<PathBuf> {
         stores.extend(browsers.iter().map(|browser| in_home(&support, browser)));
         stores.push(home.join("Library").join("Safari"));
         stores.push(home.join("Library").join("Cookies"));
+        stores.push(home.join(".Trash"));
     }
     #[cfg(target_os = "linux")]
     {
         stores.push(home.join(".local").join("share").join("keyrings"));
         stores.extend(dirs::data_dir().map(|data| data.join("keyrings")));
         stores.push(home.join(".local").join("share").join("kwalletd"));
+        stores.push(home.join(".local").join("share").join("Trash"));
+        stores.extend(dirs::data_dir().map(|data| data.join("Trash")));
         stores.push(home.join(".mozilla"));
         let browsers = ["google-chrome", "chromium", "BraveSoftware", "microsoft-edge"];
         stores.extend(browsers.iter().map(|browser| home.join(".config").join(browser)));
@@ -576,7 +627,8 @@ pub(crate) mod tests {
     }
 
     /// Decision 24: with the whole home allowed, the files that carry client keys and hooks
-    /// ([`crate::client_setup::protected_files`]) and their backups are not found, and listing leaves them out.
+    /// ([`crate::client_setup::protected_files`]) and their backups are not found, and listing leaves them out; the
+    /// program the hooks start neither, and the folder that holds it is not moved (review of issue #304).
     #[test]
     fn the_client_files_are_locked_in_an_allowed_home() {
         let place = Place::new();
@@ -585,9 +637,11 @@ pub(crate) mod tests {
             home: home.clone(),
             app_config: home.join(".config"),
             path: Vec::new(),
-            program: PathBuf::from("/opt/torro/torroworkplace"),
+            program: home.join(".local/bin/torroworkplace"),
             config_dir: place.dir.path().join("config"),
         };
+        fs::create_dir_all(home.join(".local/bin")).expect("made");
+        fs::write(&env.program, b"#!").expect("written");
         fs::create_dir_all(home.join(".claude")).expect("made");
         for file in
             [".claude.json", ".claude/settings.json", ".claude/other.json", &format!(".claude.json{BACKUP_SUFFIX}")]
@@ -596,18 +650,29 @@ pub(crate) mod tests {
         }
         let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
         let allowed = Allowed::of(&folders, &crate::client_setup::protected_files(&env));
-        for locked in ["home/.claude.json", "home/.claude/settings.json", "home/.claude.json.torroworkplace-backup"] {
+        for locked in [
+            "home/.claude.json",
+            "home/.claude/settings.json",
+            "home/.claude.json.torroworkplace-backup",
+            "home/.local/bin/torroworkplace",
+        ] {
             assert_eq!(allowed.entry(&place.path(locked), FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
         }
         assert!(allowed.existing(&place.path("home/.claude/other.json"), FolderAccess::Read).is_ok());
-        let move_claude = Request::MoveFile { from: place.path("home/.claude"), to: place.path("home/Documents") };
-        assert_eq!(super::super::organize::plan(&allowed, &move_claude), Err(FolderError::Forbidden(PROTECTED)));
+        for holder in ["home/.claude", "home/.local/bin"] {
+            let moved = Request::MoveFile { from: place.path(holder), to: place.path("home/Documents") };
+            assert_eq!(
+                super::super::organize::plan(&allowed, &moved),
+                Err(FolderError::Forbidden(PROTECTED)),
+                "{holder}"
+            );
+        }
         let list = Request::ListFolder { path: Some(place.path("home")) };
         let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
             panic!("listed")
         };
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(names, [".claude", "Documents"], "the locked files left out");
+        assert_eq!(names, [".claude", ".local", "Documents"], "the locked files left out");
     }
 
     /// Issue #304 (plan): a locked file that is a symbolic link stays locked as a link too, not only where it
@@ -762,6 +827,55 @@ pub(crate) mod tests {
         assert!(allowed.entry(&place.path("home/Documents"), FolderAccess::ReadWrite).is_ok(), "as stored");
         let inner = allowed.entry(&place.path("home/Vertr\u{e4}ge"), FolderAccess::ReadWrite);
         assert_eq!(inner, Err(FolderError::Forbidden(READ_ONLY)), "the inner folder as stored");
+    }
+
+    /// Review of issue #304: with the whole home allowed, the system's trash is not found, what it holds neither, and
+    /// listing leaves it out: the `trash` crate copies across drives following links, so a key could lie there whole.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn the_trash_is_locked_in_an_allowed_home() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        #[cfg(target_os = "macos")]
+        let trash = ".Trash";
+        #[cfg(target_os = "linux")]
+        let trash = ".local/share/Trash";
+        fs::create_dir_all(home.join(trash).join("files")).expect("made");
+        fs::write(home.join(trash).join("files/id_ed25519"), b"key").expect("written");
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &key_stores(&home));
+        for locked in [trash.to_string(), format!("{trash}/files/id_ed25519")] {
+            let path = place.path(&format!("home/{locked}"));
+            assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+            assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+        }
+        let list = Request::ListFolder { path: Some(place.path("home")) };
+        let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
+            panic!("listed")
+        };
+        assert!(!entries.iter().any(|entry| entry.name == ".Trash"), "the trash left out");
+    }
+
+    /// Review of issue #304: what failed is one of a fixed set, said in the suite's language, never the system's text.
+    #[test]
+    fn a_failure_is_said_in_the_suites_language() {
+        let full = FolderError::of_io(&io::Error::from(io::ErrorKind::StorageFull));
+        assert_eq!(full, FolderError::Failed(Failure::DriveFull));
+        let Response::Error { message, .. } = full.response() else { panic!("an error") };
+        assert_eq!(message, trf("The files cannot be changed: {reason}", &[("reason", &tr("the drive is full"))]));
+        let other = FolderError::of_io(&io::Error::other("cannot write /Users/anna/Secret"));
+        assert_eq!(other, FolderError::Failed(Failure::Other));
+        let Response::Error { message, .. } = other.response() else { panic!("an error") };
+        assert!(message.contains(tr("another error")) && !message.contains("Secret"), "{message}");
+        assert_eq!(Failure::of_kind(io::ErrorKind::PermissionDenied).text(), tr("no permission"));
+        for (failure, english) in [
+            (Failure::NotFound, "not found"),
+            (Failure::TrashRefused, "the trash refused it"),
+            (Failure::RootFolder, "a root folder cannot go to the trash"),
+            (Failure::NotReachable, "not reachable"),
+        ] {
+            assert_eq!(failure.text(), tr(english));
+        }
     }
 
     #[test]

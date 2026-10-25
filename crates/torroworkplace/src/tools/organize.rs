@@ -44,7 +44,7 @@ use torro_ipc::tools::{
 };
 
 use super::Tools;
-use super::folders::{Allowed, FolderError, PROTECTED, holds_name};
+use super::folders::{Allowed, Failure, FolderError, PROTECTED, holds_name};
 use super::place::MAX_NUMBER;
 use crate::approvals::PathFacts;
 
@@ -192,7 +192,7 @@ pub fn run(allowed: &Allowed, request: &Request) -> Result<Option<Response>, Fol
     match planned(allowed, request)? {
         None | Some(Planned::Trash(_)) => Ok(None),
         // The trash is never reached here: `Planned::Trash` is left out above.
-        Some(planned) => execute(allowed, planned, &|_: &Path| Err(NOT_FILES.to_string())).map(Some),
+        Some(planned) => execute(allowed, planned, &|_: &Path| Err(Failure::Other)).map(Some),
     }
 }
 
@@ -202,7 +202,7 @@ pub fn run(allowed: &Allowed, request: &Request) -> Result<Option<Response>, Fol
 pub fn move_to_trash(
     allowed: &Allowed,
     request: &Request,
-    trash: &dyn Fn(&Path) -> Result<(), String>,
+    trash: &dyn Fn(&Path) -> Result<(), Failure>,
 ) -> Result<Option<Response>, FolderError> {
     match planned(allowed, request)? {
         Some(trashed @ Planned::Trash(_)) => execute(allowed, trashed, trash).map(Some),
@@ -612,7 +612,7 @@ impl Tools {
         let planned = tokio::task::spawn_blocking(move || plan(&Allowed::of(&folders, &excluded), &request));
         match planned.await {
             Ok(planned) => planned.map_err(|err| err.response()),
-            Err(err) => Err(FolderError::Failed(err.to_string()).response()),
+            Err(_) => Err(FolderError::Failed(Failure::Other).response()),
         }
     }
 
@@ -646,7 +646,7 @@ impl Tools {
             Ok(Ok(Some(response))) => response,
             Ok(Ok(None)) => FolderError::Unsupported(NOT_FILES).response(),
             Ok(Err(err)) => err.response(),
-            Err(err) => FolderError::Failed(err.to_string()).response(),
+            Err(_) => FolderError::Failed(Failure::Other).response(),
         }
     }
 }
@@ -658,7 +658,7 @@ fn run_approved(
     allowed: &Allowed,
     request: &Request,
     approved: &str,
-    trash: &dyn Fn(&Path) -> Result<(), String>,
+    trash: &dyn Fn(&Path) -> Result<(), Failure>,
 ) -> Result<Option<Response>, FolderError> {
     let Some(planned) = planned(allowed, request)? else { return Ok(None) };
     if planned.plan().fingerprint() != approved {
@@ -680,7 +680,7 @@ fn changed() -> Response {
 fn execute(
     allowed: &Allowed,
     planned: Planned,
-    trash: &dyn Fn(&Path) -> Result<(), String>,
+    trash: &dyn Fn(&Path) -> Result<(), Failure>,
 ) -> Result<Response, FolderError> {
     let listed = |(entries, truncated)| Response::FolderEntries { entries, truncated };
     let made = |path: PathBuf| Response::FilePath { path: path.to_string_lossy().into_owned() };
@@ -1133,12 +1133,13 @@ mod tests {
         let place = Place::new();
         write(&place, "home/Documents/a.txt", b"a");
         let request = Request::TrashFile { path: place.path("home/Documents/a.txt") };
-        let refused = move_to_trash(&place.allowed(), &request, &|_: &Path| Err("permission denied".to_string()));
-        assert_eq!(refused, Err(FolderError::Failed("permission denied".into())));
-        let Response::Error { code, message } = FolderError::Failed("permission denied".into()).response() else {
+        let refused = move_to_trash(&place.allowed(), &request, &|_: &Path| Err(Failure::NoPermission));
+        assert_eq!(refused, Err(FolderError::Failed(Failure::NoPermission)));
+        let Response::Error { code, message } = FolderError::Failed(Failure::NoPermission).response() else {
             panic!("an error")
         };
         assert!(code == "error" && !message.contains("a.txt"), "{message}");
+        assert!(message.contains(tr("no permission")), "{message}");
     }
 
     #[test]

@@ -5299,6 +5299,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Keine solche Datei und kein solcher Ordner in den freigegebenen Ordnern.",
     ),
     ("The files cannot be changed: {reason}", "Die Dateien können nicht geändert werden: {reason}"),
+    ("not found", "nicht gefunden"),
+    ("no permission", "keine Berechtigung"),
+    ("the drive is full", "das Laufwerk ist voll"),
+    ("the trash refused it", "der Papierkorb hat es abgelehnt"),
+    ("a root folder cannot go to the trash", "ein Stammordner kann nicht in den Papierkorb"),
+    ("not reachable", "nicht erreichbar"),
+    ("another error", "ein anderer Fehler"),
     (
         "The system does not let Torro Workplace in there. Allow it under System Settings › Privacy & Security › Files and Folders.",
         "Das System lässt Torro Workplace dort nicht hinein. Erlaube es unter Systemeinstellungen › Datenschutz & Sicherheit › Dateien und Ordner.",

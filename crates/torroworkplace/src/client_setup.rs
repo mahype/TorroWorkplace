@@ -263,12 +263,18 @@ impl Target {
 /// The files that carry a client's key or Torro's hooks, which the tool `files` never reaches (decision 24 in
 /// `docs/assistent.md`, issue #304): for every [`Target`] the file of its file way ([`Target::locate`]) – also where
 /// its own command wins, and whether the file exists or not –, the hook file of every agent ([`hook_file`]) and the
-/// skill ([`skill_file`]). Their backups ([`BACKUP_SUFFIX`]) are locked by their name. The record and the hooks' key
-/// files are in the core's config folder, which is locked as a whole.
+/// skill ([`skill_file`]), and the program the hooks and clients start ([`Env::program`]) when it is a full path:
+/// moved away or replaced, every hook would run something else. Their backups ([`BACKUP_SUFFIX`]) are locked by their
+/// name. The record and the hooks' key files are in the core's config folder, which is locked as a whole.
 pub fn protected_files(env: &Env) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Target::ALL.iter().map(|target| target.file(env)).collect();
     files.extend(AgentKind::ALL.iter().map(|agent| hook_file(env, *agent)));
     files.push(skill_file(env));
+    // A bare name (`Env::current` without its executable) or none names no file; a relative lock would match nothing
+    // or, empty, everything.
+    if env.program.is_absolute() {
+        files.push(env.program.clone());
+    }
     files
 }
 
@@ -1444,6 +1450,20 @@ mod tests {
         executable(&dir.path().join("bin/claude"));
         assert!(matches!(Target::ClaudeCode.locate(&env), Some(Method::Cli { .. })));
         assert_eq!(protected_files(&env), protected, "the file stays protected when the command wins");
+    }
+
+    /// Review of issue #304: the program the hooks start is protected, so a folder with "Read and write" that holds it
+    /// (`~/.local/bin`) does not let it be moved away; a bare name or none names nothing.
+    #[test]
+    fn the_program_the_hooks_start_is_protected() {
+        let dir = TempDir::new().expect("tmp");
+        let mut env = env(&dir);
+        env.program = dir.path().join(".local").join("bin").join("torroworkplace");
+        assert!(protected_files(&env).contains(&env.program));
+        for program in [PathBuf::new(), PathBuf::from("torroworkplace")] {
+            env.program = program;
+            assert!(!protected_files(&env).iter().any(|file| !file.is_absolute()), "{:?}", env.program);
+        }
     }
 
     #[cfg(unix)]
