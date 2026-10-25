@@ -240,8 +240,8 @@ struct Problem {
 /// The form of a server of one's own (task MA.9): "Add server…" on the list, or "Update…" on the
 /// page of one's own server, filled in from it. "Add server" sends it as one
 /// `extensions.install_extension` with `custom` ([`submit_custom`]), "Save" as
-/// `extensions.update_extension`.
-#[derive(Debug)]
+/// `extensions.update_extension`. `Debug` shows neither the arguments nor the address: a pasted block
+/// often carries a token in them (`args`, `?api_key=`).
 pub struct Custom {
     /// The id of the server being updated; its name and id stay. `None` while one is added.
     updating: Option<String>,
@@ -268,6 +268,28 @@ pub struct Custom {
     pasted: Vec<Pasted>,
     /// Which of [`Custom::pasted`] the form holds: added, it leaves the list.
     chosen: Option<usize>,
+}
+
+impl fmt::Debug for Custom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Custom")
+            .field("updating", &self.updating)
+            .field("kind", &self.kind)
+            .field("name", &self.name)
+            .field("id", &self.id)
+            .field("id_typed", &self.id_typed)
+            .field("command", &self.command)
+            .field("args", &format_args!("…"))
+            .field("url", &format_args!("…"))
+            .field("values", &self.values)
+            .field("tried", &self.tried)
+            .field("busy", &self.busy)
+            .field("problem", &self.problem)
+            .field("step", &self.step)
+            .field("pasted", &self.pasted)
+            .field("chosen", &self.chosen)
+            .finish()
+    }
 }
 
 impl Custom {
@@ -431,8 +453,9 @@ impl fmt::Debug for Typed {
 }
 
 /// One server of a pasted block as the form takes it ([`Custom::fill`]): its values as
-/// [`Secret`]s at once, so the block's tokens never show in `Debug`.
-#[derive(Debug, Clone, PartialEq)]
+/// [`Secret`]s at once, and `Debug` leaves out its arguments and address, so the block's tokens
+/// never show in `Debug`.
+#[derive(Clone, PartialEq)]
 struct Pasted {
     name: String,
     kind: Kind,
@@ -440,6 +463,19 @@ struct Pasted {
     args: Vec<String>,
     url: String,
     values: Vec<Entry>,
+}
+
+impl fmt::Debug for Pasted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pasted")
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("command", &self.command)
+            .field("args", &format_args!("…"))
+            .field("url", &format_args!("…"))
+            .field("values", &self.values)
+            .finish()
+    }
 }
 
 impl Pasted {
@@ -2694,8 +2730,9 @@ fn paste_problem(error: &ParseError) -> String {
     match error {
         ParseError::Json(at) => trf("This isn't a configuration Torro Workplace can read ({at}).", &[("at", at)]),
         ParseError::NoServers => tr("There is no server in it.").to_string(),
+        // The reason is one of the fixed English phrases of `torro_ipc::extensions`; de.rs has them.
         ParseError::Invalid { server, reason } => {
-            trf("{server} can't be added: {reason}.", &[("server", server), ("reason", reason)])
+            trf("{server} can't be added: {reason}.", &[("server", server), ("reason", &tr(reason))])
         }
         ParseError::Blocked { server, variable } => trf(
             "{server} would get the variable {variable}, which Torro Workplace never passes on to a server. Remove it and paste again.",
@@ -3512,6 +3549,57 @@ mod tests {
         assert_eq!(token.value, Secret::new("tok_pasted_123"));
         assert!(!row("WEATHER_REGION").secret);
         assert!(!custom.tried && check(custom, &data) == Checked { values: vec![None, None], ..Checked::default() });
+    }
+
+    /// Review of #302: the arguments and the address of a pasted server never show in `Debug`, in the
+    /// list of the block nor in the form; a block of Claude Desktop often carries its token there.
+    #[test]
+    fn the_arguments_and_the_address_never_show_in_debug() {
+        let data = launch::demo_data();
+        let block = r#"{"mcpServers": {"a": {"command": "uvx", "args": ["srv", "--token", "ghp_in_args"]},
+            "b": {"url": "https://mcp.example.com/mcp?api_key=key_in_url"}}}"#;
+        let mut state = pasted(block, &data);
+        assert!(matches!(form(&state).step, CustomStep::Choose), "two servers to choose from");
+        for at in [0, 1] {
+            let _ = update(&mut state, Message::ChoosePasted(at), &data);
+            let shown = format!("{state:?}");
+            assert!(!shown.contains("ghp_in_args") && !shown.contains("key_in_url"), "{shown}");
+        }
+        assert_eq!(form(&state).url, "https://mcp.example.com/mcp?api_key=key_in_url", "kept for the form");
+    }
+
+    /// Review of #302: why a pasted server can't be added is in the suite's language, for every fixed
+    /// reason `torro_ipc::extensions` gives.
+    #[test]
+    fn why_a_pasted_server_cant_be_added_is_translated() {
+        use torro_core::i18n::{Lang, tr_in};
+        let cases = [
+            r#"{" ": {"command": "x"}}"#,
+            r#"{"a": 1}"#,
+            r#"{"a": {"type": 1, "command": "x"}}"#,
+            r#"{"a": {"command": ""}}"#,
+            r#"{"a": {"command": "x", "url": "https://x.example"}}"#,
+            r#"{"a": {"command": "x", "args": [1]}}"#,
+            r#"{"a": {"command": "x", "args": "x"}}"#,
+            r#"{"a": {"type": "stdio", "url": "https://x.example"}}"#,
+            r#"{"a": {}}"#,
+            r#"{"a": {"command": "x", "env": 1}}"#,
+            r#"{"a": {"command": "x", "env": {"A=B": "x"}}}"#,
+            r#"{"a": {"url": "https://x.example", "headers": {"bad header": "x"}}}"#,
+            r#"{"a": {"command": "x", "env": {"A": 1}}}"#,
+        ];
+        let mut reasons = Vec::new();
+        for case in cases {
+            let Err(error @ ParseError::Invalid { reason, .. }) = torro_ipc::extensions::parse_mcp_servers(case) else {
+                panic!("{case} is invalid");
+            };
+            assert_ne!(tr_in(Lang::De, reason), reason, "“{reason}” has a German translation");
+            assert!(paste_problem(&error).contains(tr(reason)), "{reason}");
+            reasons.push(reason);
+        }
+        reasons.sort_unstable();
+        reasons.dedup();
+        assert_eq!(reasons.len(), cases.len(), "each case its own reason");
     }
 
     /// Acceptance: a blocked variable shows its sentence at its row, only after the first try, and

@@ -841,20 +841,39 @@ fn refuse_unknown_arguments(tool: &str, arguments: &JsonObject) -> Result<(), To
 /// `calendar_map_preview`, task TE.6) is an MCP image (`type: image`, `mimeType: image/png`), so the
 /// agent sees it; the Base64 goes out once, not also as text. A server tool's answer (issue #302) is
 /// [`server_result`]: its text and pictures behind a note that they are data. What the core shows of
-/// servers (`extensions.list_extensions`, `get_extension`, `set_enabled`) carries the server's text as
-/// well (tool descriptions, schemas, notes): [`SERVERS_NOTE`] comes first in its content.
+/// servers (`extensions.list_extensions`, `get_extension`, `set_enabled`, `list_tools`) carries the server's
+/// text as well (tool descriptions, schemas, notes): [`SERVERS_NOTE`] comes first in its content, and each
+/// tool's description and schema are cleaned and cut as in `tools/list` ([`shown_tool`]).
 pub fn result_of(response: Response) -> CallToolResult {
-    match response {
-        Response::ToolResult { output } => server_result(output),
-        response @ (Response::Extensions { .. } | Response::Extension { .. }) => {
-            let mut result = structured_result(response);
-            if result.is_error != Some(true) {
-                result.content.insert(0, ContentBlock::text(SERVERS_NOTE));
-            }
-            result
+    let shown = match response {
+        Response::ToolResult { output } => return server_result(output),
+        Response::Extensions { mut extensions } => {
+            extensions.iter_mut().for_each(|extension| extension.tools.iter_mut().for_each(shown_tool));
+            Response::Extensions { extensions }
         }
-        response => structured_result(response),
+        Response::Extension { mut extension } => {
+            extension.tools.iter_mut().for_each(shown_tool);
+            Response::Extension { extension }
+        }
+        Response::ExtensionTools { mut tools } => {
+            tools.iter_mut().for_each(shown_tool);
+            Response::ExtensionTools { tools }
+        }
+        response => return structured_result(response),
+    };
+    let mut result = structured_result(shown);
+    if result.is_error != Some(true) {
+        result.content.insert(0, ContentBlock::text(SERVERS_NOTE));
     }
+    result
+}
+
+/// `tool` as an agent reads it in an answer of the core: its description as [`extension_description`] puts
+/// it ("From <name> (external, untrusted): …", cleaned and cut) and its schema as [`extension_schema`], so a
+/// server's text is no longer here than in `tools/list`.
+fn shown_tool(tool: &mut ExtensionTool) {
+    tool.description = extension_description(tool);
+    tool.input_schema = Value::Object(extension_schema(tool));
 }
 
 /// The tool result of every other answer of the core ([`result_of`]).
@@ -1706,6 +1725,12 @@ mod tests {
         let shown = result_of(Response::Extensions { extensions: Vec::new() });
         assert!(shown.content[0].as_text().is_some_and(|text| text.text == SERVERS_NOTE), "{shown:?}");
         assert!(shown.structured_content.is_some(), "the answer as before");
+        // Review of #302: `extensions_list_tools` carries the servers' text too, behind the note and cut.
+        let listed = result_of(Response::ExtensionTools { tools: vec![long.clone(), wordy.clone()] });
+        assert!(listed.content[0].as_text().is_some_and(|text| text.text == SERVERS_NOTE), "{listed:?}");
+        let listed = listed.structured_content.expect("the tools");
+        assert_eq!(listed["tools"][0]["description"], json!(extension_description(&long)));
+        assert_eq!(listed["tools"][1]["inputSchema"], Value::Object(extension_schema(&wordy)));
         let refused = result_of(Response::Error { code: "not-found".into(), message: "no".into() });
         assert!(refused.content.iter().all(|part| part.as_text().is_none_or(|text| text.text != SERVERS_NOTE)));
 

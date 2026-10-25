@@ -756,10 +756,16 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
   nach außen wirkt (z. B. ein Kommentar auf GitHub), nur über die Stufe auf; „Nach außen“ hält es nicht. Umgekehrt
   wartet ein Write-Werkzeug bei „Nach außen: Mit Freigabe“ nicht auf eine Freigabe, sondern nur bei „Freigabe
   vorher: Bei jeder Änderung“; sonst bleibt, die Stufe auf Lesen zu setzen oder das Werkzeug zu sperren.
+- **Datenregel:** Antworten von Server-Werkzeugen haben keine eigene Regel. Sie gehen an das Modell, das antwortet,
+  auch an ein Modell, das woanders rechnet (Cloud). Anders als Mail: Die geht nur mit „Mail to cloud models“ an ein
+  solches Modell (Aufgabe C.17), und eine Notiz nach gelesener Mail bleibt lokal (`local_only`,
+  `Answering::kept_local`). Wirksam ist bei Servern allein die Stufe je Server: Wer nicht will, dass Antworten eines
+  Servers ein Modell anderswo erreichen, gibt dem Assistenten bzw. dem Client für diesen Server keine Stufe.
 - **Abschalten für eine Unterhaltung:** Wird der Bereich `extensions` abgeschaltet, sind auch alle Server aus.
 - **Sichtbarkeit:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in `extensions.list_extensions` und
   `extensions.get_extension` nur Server, für die er eine Stufe hat, und deren Einrichtung geschwärzt (Argumente und
-  Klartextwerte als „…“). Nur der App-Schlüssel sieht sie vollständig.
+  Klartextwerte als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil, etwa „…/server“, weil die Ordner davor
+  Home und Benutzernamen verraten). Nur der App-Schlüssel sieht sie vollständig.
 - **Länge:** `extensions.call_tool` mit mehr als 64 KB Argumenten (als JSON) wird mit `error` abgelehnt.
 - **Neu eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft, wartet wieder auf Zustimmung.
 - **Geheimnisse bei Update:** eigene Server behalten gespeicherte Geheimnisse nur bei gleichem Befehl und gleichen

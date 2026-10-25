@@ -5750,6 +5750,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "This MCP server is being installed or updated. Try again in a moment.",
         "Dieser MCP-Server wird gerade installiert oder aktualisiert. Versuch es gleich noch einmal.",
     ),
+    // MCP servers: why a pasted server can't be added, the fixed reasons of `torro_ipc::extensions` (review of #302).
+    ("`args` is not a list", "`args` ist keine Liste"),
+    ("`env` or `headers` is not an object", "`env` oder `headers` ist kein Objekt"),
+    ("`type` does not fit its command or url", "`type` passt nicht zu `command` oder `url`"),
+    ("`type` is not text", "`type` ist kein Text"),
+    ("a command or url is empty or not text", "`command` oder `url` ist leer oder kein Text"),
+    ("a header has no valid name", "ein Header hat keinen gültigen Namen"),
+    ("a server needs a name", "ein Server braucht einen Namen"),
+    ("a value of `env` or `headers` is not text", "ein Wert in `env` oder `headers` ist kein Text"),
+    ("a variable has no valid name", "eine Variable hat keinen gültigen Namen"),
+    ("an argument is not text", "ein Argument ist kein Text"),
+    ("has both a command and a url", "hat sowohl `command` als auch `url`"),
+    ("has neither a command nor a url", "hat weder `command` noch `url`"),
+    ("is not an object", "ist kein Objekt"),
     // Control centre › MCP servers, and the assistant's Tools that moved there (MA.7, #302)
     ("Built-in tools", "Eingebaute Werkzeuge"),
     (

@@ -358,8 +358,14 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   Katalog-Servern bleiben sie beim Versionswechsel aus dem Katalog.
 - **Sichtbarkeit fremder Schlüssel:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in
   `list_extensions` und `get_extension` nur Server, für die er eine Stufe hat. Deren Einrichtung ist geschwärzt:
-  Argumente und Klartextwerte stehen als „…“, eine Adresse nur mit ihrem Ursprung. Geheimnisse bleiben
-  „gespeichert“ bzw. „fehlt“. Vollständig sieht sie nur der App-Schlüssel.
+  Argumente und Klartextwerte stehen als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil („…/server“), eine
+  Adresse nur mit ihrem Ursprung. Geheimnisse bleiben „gespeichert“ bzw. „fehlt“. Vollständig sieht sie nur der
+  App-Schlüssel.
+- **Geheimnisse gehören in Variablen oder Header**, nie in die Argumente. Argumente sind kein Geheimnis: Sie stehen
+  in `extensions.json` und erscheinen für den App-Schlüssel (Steuerzentrale, Formular „Update…“) im Klartext. Nur
+  Variablen und Header lassen sich als „Secret“ markieren und liegen dann im Schlüsselbund. Ein Block aus Claude
+  Desktop mit einem Token in `args` gehört deshalb vor dem Hinzufügen umgestellt, etwa auf eine Variable, die der
+  Server liest.
 - **Länge der Argumente:** Ein Werkzeugaufruf (`call_tool`) hat höchstens 64 KB Argumente als JSON; darüber `error`.
 - **Höher eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft (etwa von Lesen auf Schreiben),
   wartet wieder auf Zustimmung.
