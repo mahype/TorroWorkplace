@@ -5195,7 +5195,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Whether the account of the message `id` has a folder of the role Archive (decision 6 of E18):
     /// the account as its row or the loaded mail says, else as the source of an entry showing it
     /// (`mail:<address>`, the key folders carry). A message of no account the window knows (a mail
-    /// beyond the first page, not loaded yet) is left to the core, which answers if it has none.
+    /// beyond the first page, not loaded yet) is left to the core, which answers if it has none; so
+    /// is one of an account none of whose folders the window knows (they could not be loaded).
     fn can_archive(&self, id: &str) -> bool {
         let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.account.clone());
         let loaded = || match &self.letter {
@@ -5211,7 +5212,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .map(|item| item.source.key())
         };
         let Some(account) = listed.or_else(loaded).or_else(entry) else { return true };
-        self.folders.iter().any(|folder| folder.account == account && folder.role == Some(Role::Archive))
+        // No folder of the account known (`mail_folders` failed or is still to come) says nothing
+        // about its archive: left to the core as well.
+        let mut theirs = self.folders.iter().filter(|folder| folder.account == account).peekable();
+        theirs.peek().is_none() || theirs.any(|folder| folder.role == Some(Role::Archive))
     }
 
     /// "Show again" on the mail `id` of "Hidden" (task E18.4, decisions 10 and 11 of E18):
@@ -16670,6 +16674,39 @@ mod tests {
         assert!(matches!(stored(&app, "demo-mail-3").state, State::Done { .. }), "the core closed it");
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Mail(back, None)), "the mail back, then the entry open");
+    }
+
+    /// Issue #301 (decision 6 of E18): the window says "no archive folder" only when it knows the
+    /// account's folders and none has the role Archive. Folders it could not load (`mail_folders`
+    /// failed, so none of the account) leave the archive to the core, which answers if it has none.
+    #[test]
+    fn archive_is_left_to_the_core_while_the_accounts_folders_are_unknown() {
+        let (archive, _) = archived("m:w1", &["demo-mail-1"]);
+        let moved = |app: &App<DemoSource>| {
+            app.sent.iter().any(|sent| matches!(sent, Sent::Mail(edit, Some(_)) if *edit == archive))
+        };
+        // A mail entry: its account is known by the entry's source, its folders are not.
+        let mut app = at("demo-mail-1");
+        app.folders.clear();
+        let _ = press(&mut app, Key::E);
+        assert!(moved(&app), "the archive goes to the core: {:?}", app.sent);
+        assert_ne!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This account has no archive folder.")));
+        // A mail of "All": its account as its row says.
+        let mut app = mail_window(Density::Compact, &[]);
+        app.folders.clear();
+        let first = app.messages.first().map(|message| message.id.clone()).expect("a mail in All");
+        let _ = app.update(Message::SelectMail(first.clone()));
+        let _ = press(&mut app, Key::E);
+        let to_archive = MailEdit::Move { ids: vec![first], to: MoveTarget::Role(MoveRole::Archive) };
+        assert!(app.sent.iter().any(|sent| matches!(sent, Sent::Mail(edit, Some(_)) if *edit == to_archive)));
+        // Folders of the account known, none of them Archive: only the hint.
+        let mut app = at("demo-mail-1");
+        app.folders.retain(|folder| folder.role != Some(Role::Archive));
+        assert!(!app.folders.is_empty(), "the account's other folders");
+        let before = app.sent.len();
+        let _ = press(&mut app, Key::E);
+        assert_eq!(app.sent.len(), before, "nothing moves");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This account has no archive folder.")));
     }
 
     #[test]
