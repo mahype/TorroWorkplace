@@ -3418,12 +3418,13 @@ impl Core {
                 _,
             ) => {
                 let folders = self.settings.current().tools.folders.clone();
-                let paths = match self.tools.plan(&request, &folders).await {
-                    Ok(plan) => plan.map(|plan| plan.facts()).unwrap_or_default(),
+                let plan = match self.tools.plan(&request, &folders).await {
+                    Ok(plan) => plan.unwrap_or_default(),
                     Err(refused) => return Ok(refused),
                 };
-                let facts = Facts { paths: Some(paths.clone()), ..Facts::default() };
-                fingerprint = Some((paths.fingerprint(), crate::approvals::details(&request, &facts)));
+                // Pinned to the paths and to what is at them, so another entry put under the same name is `conflict`.
+                let facts = Facts { paths: Some(plan.facts()), ..Facts::default() };
+                fingerprint = Some((plan.fingerprint(), crate::approvals::details(&request, &facts)));
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
@@ -3825,10 +3826,11 @@ impl Core {
             let name = self.client_name(client);
             return Box::pin(self.reminder_request(request, reach, Some((client, &name)))).await;
         }
-        // A command of the tool `files` runs only on the paths the person was shown (issue #304): resolved again
-        // and compared with them on the thread that then runs it, so nothing changes in between; `conflict` without
-        // doing anything when they changed (a link exchanged, a folder moved). An approval without a fingerprint
-        // matches nothing. Its switch was checked above ([`Core::tool_off`]).
+        // A command of the tool `files` runs only on the paths the person was shown and the entries at them (issue
+        // #304): resolved again and compared with them on the thread that then runs it, so nothing changes in
+        // between; `conflict` without doing anything when they changed (a link exchanged, a folder moved, another
+        // entry put under the name). An approval without a fingerprint matches nothing. Its switch was checked
+        // above ([`Core::tool_off`]).
         if matches!(
             request,
             Request::CreateFolder { .. }

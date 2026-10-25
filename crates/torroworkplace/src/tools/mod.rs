@@ -23,7 +23,7 @@ pub mod place;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::Local;
 use torro_core::i18n::{tr, trf};
@@ -67,6 +67,9 @@ pub struct Tools {
     register: Register,
     open: Opener,
     trash: Trasher,
+    /// Held by every command of `files` that changes something, from planning to its end (`Tools::organize`): one at
+    /// a time, so two never both see the same target free.
+    changes: Arc<Mutex<()>>,
 }
 
 impl Tools {
@@ -90,7 +93,7 @@ impl Tools {
         excluded.extend(home.as_deref().map(folders::key_stores).unwrap_or_default());
         let roots = Roots { data, desktop: dirs::desktop_dir(), home, fonts: torro_core::design::font_dir(), excluded };
         let (open, trash): (Opener, Trasher) = (Arc::new(system_open), Arc::new(system_trash));
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash }
+        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash, changes: Arc::default() }
     }
 
     /// The tools with `roots`; files are opened by nobody and nothing goes to a trash (tests set an [`Opener`] with
@@ -98,7 +101,7 @@ impl Tools {
     pub fn new(roots: Roots) -> Tools {
         let open: Opener = Arc::new(|_: &Path| Err("nothing is opened here".to_string()));
         let trash: Trasher = Arc::new(|_: &Path| Err("there is no trash here".to_string()));
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash }
+        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash, changes: Arc::default() }
     }
 
     /// `self` opening files with `open`, for tests.

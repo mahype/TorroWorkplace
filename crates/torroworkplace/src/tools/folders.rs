@@ -10,9 +10,14 @@
 //!   `forbidden`.
 //! - Locked are the paths of `excluded` (the suite's own folders, the files with client keys and hooks, the system's
 //!   key stores, other known stores of credentials and the browsers' profiles, [`key_stores`]) and every name ending
-//!   in [`BACKUP_SUFFIX`], also inside an allowed folder; their parts are compared without regard to case, since
-//!   `canonicalize` keeps the case a request gave on macOS and Windows. Listing and finding leave them out. A locked
-//!   path is `not-found` also when the system refuses the core there.
+//!   in [`BACKUP_SUFFIX`], also inside an allowed folder. Listing and finding leave them out. A locked path is
+//!   `not-found` also when the system refuses the core there.
+//! - Names count as the drive stores them. `canonicalize` gives the stored names on macOS and Windows, though the
+//!   system also finds an entry under another spelling (`.SSH`, `.ſsh`, `Verträge` decomposed, a short name like
+//!   `CLAUDE~1.JSO`, a dot at the end); the last part of an entry, which is not resolved, counts only when its folder
+//!   holds an entry of exactly that name ([`Allowed::entry`]), else it is `not-found`. Locks and allowed folders are
+//!   still compared without regard to case, since a locked path is named as written (`~/Library/Keychains`) and on
+//!   Linux a drive that does not tell cases apart keeps the spelling of a request.
 //! - An entry that is or holds an allowed folder or something locked is not moved (and in WD.3 not trashed): else an
 //!   agent would reach what is in an inner "Read" folder through an outer one ([`Allowed::holds_protected`]).
 //!
@@ -20,6 +25,7 @@
 //! from a request.
 
 use std::cmp::Reverse;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -153,13 +159,19 @@ impl Allowed {
 
     /// `path` from a request with only its folder resolved and its last part kept as it is: the entry itself, also
     /// when it is a symbolic link (moving one moves the link, not what it points to; the source of a copy must be a
-    /// file, not a link). It must exist; the rules are those of [`Allowed::existing`].
+    /// file, not a link). It must exist under exactly that name, byte for byte ([`holds_name`]): the system finds
+    /// `.ssh` also as `.ſsh` or `.SSH` on macOS and Windows, which would slip past the locks and the innermost folder,
+    /// so another spelling is `not-found`. The other rules are those of [`Allowed::existing`].
     pub fn entry(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
         let given = checked(path)?;
         let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else { return Err(FolderError::NotFound) };
         let parent = fs::canonicalize(parent).map_err(|err| self.missing(parent, &err))?;
         let entry = parent.join(name);
-        fs::symlink_metadata(&entry).map_err(|err| self.missing(&entry, &err))?;
+        match holds_name(&parent, name) {
+            Ok(true) => {}
+            Ok(false) => return Err(FolderError::NotFound),
+            Err(err) => return Err(self.missing(&entry, &err)),
+        }
         self.within(&entry, need)?;
         Ok(entry)
     }
@@ -301,6 +313,18 @@ pub fn key_stores(home: &Path) -> Vec<PathBuf> {
         stores.push(roaming.join("Mozilla").join("Firefox"));
     }
     stores
+}
+
+/// Whether `folder` holds an entry stored under exactly `name`, byte for byte (`OsStr` equality): not one the system
+/// would also find under `name` in another case, Unicode form or short name. For [`Allowed::entry`] and to tell a
+/// rename of only the spelling (`organize`).
+pub(super) fn holds_name(folder: &Path, name: &OsStr) -> io::Result<bool> {
+    for item in fs::read_dir(folder)? {
+        if item?.file_name() == name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// `relative` (parts separated by `/`) below `base`, joined part by part so it has the system's separators.
@@ -699,6 +723,45 @@ pub(crate) mod tests {
                 assert_eq!(result, Err(FolderError::Denied));
             }
         }
+    }
+
+    /// Review of issue #304: the last part of an entry counts only as its folder stores it. APFS (and NTFS) also find
+    /// `.ssh` as `.ſsh` or `.SSH`, `.claude.json` as `.claude.jſon` and the inner "Read" folder `Verträge` decomposed;
+    /// taken as given, such a name would slip past the locks and the innermost folder, and "Read and write" on the home
+    /// would move, copy or trash them. On a drive that finds none of them they are not there anyway; the mechanism is
+    /// checked with a name that differs only in case.
+    #[test]
+    fn a_name_counts_only_as_stored() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        fs::create_dir_all(home.join(".ssh")).expect("made");
+        fs::write(home.join(".ssh/id_ed25519"), b"key").expect("written");
+        fs::write(home.join(".claude.json"), b"{}").expect("written");
+        fs::create_dir(home.join("Vertr\u{e4}ge")).expect("made");
+        let folders = [
+            AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite },
+            AllowedFolder { path: place.path("home/Vertr\u{e4}ge"), access: FolderAccess::Read },
+        ];
+        let mut locked = key_stores(&home);
+        locked.push(home.join(".claude.json"));
+        let allowed = Allowed::of(&folders, &locked);
+        let docs = fs::canonicalize(home.join("Documents")).expect("resolved");
+        assert!(holds_name(&docs, OsStr::new("Private")).expect("listed"));
+        assert!(!holds_name(&docs, OsStr::new("private")).expect("listed"), "only byte for byte");
+        let plan = |request: &Request| super::super::organize::plan(&allowed, request);
+        for spelling in [".\u{17f}sh", ".SSH", ".claude.j\u{17f}on", "Vertra\u{308}ge", "documents"] {
+            let path = place.path(&format!("home/{spelling}"));
+            assert_eq!(allowed.entry(&path, FolderAccess::ReadWrite), Err(FolderError::NotFound), "{spelling:?}");
+            let to = place.path("home/Documents");
+            let moved = Request::MoveFile { from: path.clone(), to: to.clone() };
+            assert_eq!(plan(&moved), Err(FolderError::NotFound), "{spelling:?}");
+            let copied = Request::CopyFile { from: path.clone(), to };
+            assert_eq!(plan(&copied), Err(FolderError::NotFound), "{spelling:?}");
+            assert_eq!(plan(&Request::TrashFile { path }), Err(FolderError::NotFound), "{spelling:?}");
+        }
+        assert!(allowed.entry(&place.path("home/Documents"), FolderAccess::ReadWrite).is_ok(), "as stored");
+        let inner = allowed.entry(&place.path("home/Vertr\u{e4}ge"), FolderAccess::ReadWrite);
+        assert_eq!(inner, Err(FolderError::Forbidden(READ_ONLY)), "the inner folder as stored");
     }
 
     #[test]

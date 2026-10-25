@@ -5,13 +5,18 @@
 //!
 //! - **Plan, then run** ([`plan`], [`run`]): every command is first resolved as it will run – which entry, which
 //!   target – with every check of the bounds. The core plans before it asks a person to approve, shows the paths of
-//!   the plan and pins the approval to them (`Core::ask_approval`); the run plans again and runs that very plan only
-//!   when it is the approved one, compared on the same blocking thread just before ([`Tools::organize`]), else
-//!   `conflict` (a link exchanged, a folder moved).
+//!   the plan and pins the approval to them and to what is there ([`Plan::fingerprint`], `Core::ask_approval`); the
+//!   run plans again and runs that very plan only when it is the approved one, compared on the same blocking thread
+//!   just before ([`Tools::organize`]), else `conflict` (a link exchanged, a folder moved, another entry put under
+//!   the same name).
+//! - **One change at a time** ([`Tools::organize`]): planning, the comparison and the run of every command that
+//!   changes something hold one lock of the tools, so two at once never both see a target free.
 //! - **Never replace** (decision 21): a taken target gets a free name, `Report-2.pdf` up to `-999` as the PDF tool's
 //!   files ([`super::place::MAX_NUMBER`]), a folder `Invoices-2`; the answer names the path that came to be. Files
 //!   are made with `create_new` and moved with `fs::hard_link`, which never replaces either; a rename (folders,
-//!   links, drives without hard links) looks at its target just before, since `fs::rename` replaces one.
+//!   links, drives without hard links) looks at its target just before, since `fs::rename` replaces one. A rename of
+//!   only the spelling (`Report.pdf` to `report.pdf` on a drive that does not tell cases apart) renames the entry
+//!   itself ([`same_entry`]).
 //! - **Copy only files** (decision 22): a folder or a symbolic link is `unsupported`. Moving takes a link itself, not
 //!   what it points to; a folder or a link only on the same drive.
 //! - **Trash, never delete** (decision 23, task WD.3): an entry goes to the system's trash through the tools'
@@ -26,6 +31,8 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use torro_core::i18n::tr;
@@ -37,7 +44,7 @@ use torro_ipc::tools::{
 };
 
 use super::Tools;
-use super::folders::{Allowed, FolderError, PROTECTED};
+use super::folders::{Allowed, FolderError, PROTECTED, holds_name};
 use super::place::MAX_NUMBER;
 use crate::approvals::PathFacts;
 
@@ -51,7 +58,8 @@ const ALL_TAKEN: &str = "Every free name for it is taken.";
 const NOT_FILES: &str = "This command is not supported.";
 
 /// The paths a command of `files` touches, resolved as it will run ([`plan`]): the entry it reads or moves and the
-/// target it makes, before a free name is picked. For the approval's card ([`Plan::facts`]) and to pin the approval.
+/// target it makes, before a free name is picked, and what is there when it was planned. For the approval's card
+/// ([`Plan::facts`]) and to pin the approval ([`Plan::fingerprint`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
     /// The folder listed or searched, the file copied, the entry moved or put in the trash; `None` for making a folder
@@ -60,13 +68,74 @@ pub struct Plan {
     /// The folder made, where the copy or the moved entry goes (a free name may follow); `None` for listing, finding
     /// and the trash.
     pub to: Option<PathBuf>,
+    /// What is at `from` when planned ([`EntryId::of`]); `None` without `from` or when it cannot be read. Never shown,
+    /// only in the fingerprint: an entry put under the same path after the ask is another one.
+    pub from_id: Option<EntryId>,
+    /// The folder that holds `to` when planned (where the copy or the moved entry goes, where the folder is made),
+    /// likewise; `None` without `to`.
+    pub to_folder_id: Option<EntryId>,
 }
 
 impl Plan {
-    /// The paths as the approval's card shows them and its fingerprint takes them ([`PathFacts::fingerprint`]).
+    /// The paths as the approval's card shows them ([`crate::approvals::Facts::paths`]); the identities stay out.
     pub fn facts(&self) -> PathFacts {
         let shown = |path: &Option<PathBuf>| path.as_ref().map(|path| path.to_string_lossy().into_owned());
         PathFacts { from: shown(&self.from), to: shown(&self.to) }
+    }
+
+    /// The fingerprint an approval of a command that changes something is pinned to: the paths
+    /// ([`PathFacts::fingerprint`]) and what is at them ([`EntryId`]), hashed. The approved command runs only while
+    /// the plan made just before has the same (`Core::run_approved`, [`Tools::organize`]), else `conflict`: a link
+    /// exchanged, a folder moved, a file or folder put in the place of the one the card named.
+    pub fn fingerprint(&self) -> String {
+        let key = |id: &Option<EntryId>| id.as_ref().map(EntryId::key).unwrap_or_default();
+        let (from, to) = (key(&self.from_id), key(&self.to_folder_id));
+        crate::audit::hashed(&format!("{}\0{from}\0{to}", self.facts().fingerprint()))
+    }
+}
+
+/// What an entry is, read without following a link, to tell it from another put under the same path: its kind, for a
+/// file or a link its size and time of change, when it was made where the system says, and on Unix the drive and
+/// the number it is stored under. A folder's size and time of change are left out: they change with every file put
+/// in it or taken out, which says nothing about whether it is the same folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryId {
+    kind: EntryKind,
+    size: Option<u64>,
+    modified: Option<u128>,
+    created: Option<u128>,
+    device: u64,
+    inode: u64,
+}
+
+impl EntryId {
+    /// What is at `path` now; `None` when nothing is there or it cannot be read.
+    pub fn of(path: &Path) -> Option<EntryId> {
+        let meta = fs::symlink_metadata(path).ok()?;
+        let kind = kind_of(&meta);
+        let since = |time: io::Result<SystemTime>| time.ok()?.duration_since(UNIX_EPOCH).ok().map(|at| at.as_nanos());
+        let contents = kind != EntryKind::Folder;
+        #[cfg(unix)]
+        let (device, inode) = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino())
+        };
+        #[cfg(not(unix))]
+        let (device, inode) = (0, 0);
+        Some(EntryId {
+            kind,
+            size: contents.then_some(meta.len()),
+            modified: if contents { since(meta.modified()) } else { None },
+            created: since(meta.created()),
+            device,
+            inode,
+        })
+    }
+
+    /// `self` as text for the fingerprint.
+    fn key(&self) -> String {
+        let EntryId { kind, size, modified, created, device, inode } = self;
+        format!("{kind:?}|{size:?}|{modified:?}|{created:?}|{device}|{inode}")
     }
 }
 
@@ -96,7 +165,14 @@ impl Planned {
             Planned::Create(target) => (None, Some(target.clone())),
             Planned::Copy(from, to) | Planned::Move(from, to) => (Some(from.clone()), Some(to.clone())),
         };
-        Plan { from, to }
+        let from_id = from.as_deref().and_then(EntryId::of);
+        let to_folder_id = to.as_deref().and_then(Path::parent).and_then(EntryId::of);
+        Plan { from, to, from_id, to_folder_id }
+    }
+
+    /// Whether running it changes something (and so takes the tools' lock, [`Tools::organize`]).
+    fn changes(request: &Request) -> bool {
+        !matches!(request, Request::ListFolder { .. } | Request::FindFiles { .. })
     }
 }
 
@@ -193,10 +269,11 @@ fn folder(allowed: &Allowed, path: &str) -> Result<PathBuf, FolderError> {
 }
 
 /// Where `from` goes for the target `to` of a copy or a move: into `to` with its own name when `to` is an existing
-/// folder, else `to` itself as a new path (a taken one gets a free name when it runs). Needs `read_write`.
+/// folder other than `from`, else `to` itself as a new path (a taken one gets a free name when it runs; `from` in
+/// another spelling is a rename of only that, [`same_entry`]). Needs `read_write`.
 fn target(allowed: &Allowed, to: &str, from: &Path) -> Result<PathBuf, FolderError> {
     match allowed.existing(to, FolderAccess::ReadWrite) {
-        Ok(folder) if folder.is_dir() => {
+        Ok(folder) if folder.is_dir() && folder != from => {
             let name = from.file_name().ok_or(FolderError::NotFound)?;
             let inside = folder.join(name);
             allowed.within(&inside, FolderAccess::ReadWrite)?;
@@ -334,11 +411,7 @@ fn wildcard(pattern: &[char], name: &[char]) -> bool {
 /// no Unicode (it could not be named in a request anyway).
 fn entry_of(path: &Path) -> Option<FolderEntry> {
     let meta = fs::symlink_metadata(path).ok()?;
-    let kind = match meta.file_type() {
-        kind if kind.is_symlink() => EntryKind::Link,
-        kind if kind.is_dir() => EntryKind::Folder,
-        _ => EntryKind::File,
-    };
+    let kind = kind_of(&meta);
     Some(FolderEntry {
         name: path.file_name()?.to_str()?.to_string(),
         path: path.to_str()?.to_string(),
@@ -347,6 +420,15 @@ fn entry_of(path: &Path) -> Option<FolderEntry> {
         modified: meta.modified().ok().map(DateTime::<Utc>::from),
         access: None,
     })
+}
+
+/// The kind of the entry `meta` was read of without following a link.
+fn kind_of(meta: &fs::Metadata) -> EntryKind {
+    match meta.file_type() {
+        kind if kind.is_symlink() => EntryKind::Link,
+        kind if kind.is_dir() => EntryKind::Folder,
+        _ => EntryKind::File,
+    }
 }
 
 /// Makes the folder `target`, or one with a free name next to it ([`free_names`]); answers the folder made.
@@ -391,12 +473,18 @@ fn copy_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
 }
 
 /// Moves the entry `from` to `target` or a free name next to it; answers where it went. Moving it where it is
-/// changes nothing. A file goes by `fs::hard_link`, which never replaces, and then `from` is removed; where hard links
-/// do not work, by a rename to a target looked at just before; to another drive as a copy ([`copy_file`]), then
-/// `from` is removed. A folder or a link goes by a rename only, on the same drive.
+/// changes nothing; `target` naming `from` itself in another spelling renames it to that ([`same_entry`]). A file
+/// goes by `fs::hard_link`, which never replaces, and then `from` is removed; where hard links do not work, by a
+/// rename to a target looked at just before; to another drive as a copy ([`copy_file`]), then `from` is removed. A
+/// folder or a link goes by a rename only, on the same drive.
 fn move_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
     if from == target {
         return Ok(from.to_path_buf());
+    }
+    if same_entry(from, target) {
+        // The very entry `from`, so the rename replaces nothing; `hard_link` would find it taken and pick `-2`.
+        fs::rename(from, target).map_err(|err| FolderError::of_io(&err))?;
+        return Ok(target.to_path_buf());
     }
     let meta = fs::symlink_metadata(from).map_err(|err| FolderError::of_io(&err))?;
     if !meta.is_file() {
@@ -420,6 +508,29 @@ fn move_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
         }
     }
     Err(FolderError::Invalid(ALL_TAKEN))
+}
+
+/// Whether `target` names the entry `from` itself in another spelling, as a drive that does not tell cases (or Unicode
+/// forms) apart finds it: in the same folder, not stored under that name ([`holds_name`]), and what the system finds
+/// there is `from` – on Unix the same drive and number, elsewhere the same resolved path (not for a link, whose
+/// resolved path is where it points).
+fn same_entry(from: &Path, target: &Path) -> bool {
+    let (Some(folder), Some(name)) = (target.parent(), target.file_name()) else { return false };
+    if from.parent() != Some(folder) || holds_name(folder, name).unwrap_or(true) {
+        return false;
+    }
+    let (Ok(source), Ok(found)) = (fs::symlink_metadata(from), fs::symlink_metadata(target)) else { return false };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (source.dev(), source.ino()) == (found.dev(), found.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        !source.file_type().is_symlink()
+            && !found.file_type().is_symlink()
+            && fs::canonicalize(target).is_ok_and(|resolved| resolved == from)
+    }
 }
 
 /// Renames `from` to the first free name for `target` ([`free_names`], `whole`: a folder's name), looking at each
@@ -496,14 +607,21 @@ impl Tools {
     /// `folders` of now, on a blocking thread, planned and checked again. The switch, the rights and the approval are
     /// the core's to check before; `unsupported` for a request that is no command of `files`.
     ///
-    /// `approved` is the fingerprint of the plan a person was shown ([`PathFacts::fingerprint`], `Core::run_approved`):
+    /// `approved` is the fingerprint of the plan a person was shown ([`Plan::fingerprint`], `Core::run_approved`):
     /// with it the command runs only when the plan made here, in the same blocking task just before it runs, has that
     /// fingerprint – else `conflict` and nothing is done, so exactly what was approved runs. `None` for a command
     /// nobody approved (the app key, a client never asked).
+    ///
+    /// A command that changes something holds the tools' lock (`Tools::changes`) from planning to its end: a rename
+    /// looks at its target and then renames, so two at once to the same target would both see it free and the second
+    /// replace the first. Listing and finding change nothing and do not wait.
     pub async fn organize(&self, request: Request, folders: &[AllowedFolder], approved: Option<&str>) -> Response {
         let (folders, excluded, trash) = (folders.to_vec(), self.roots.excluded.clone(), self.trash.clone());
         let approved = approved.map(str::to_string);
+        let changes = Planned::changes(&request).then(|| std::sync::Arc::clone(&self.changes));
         let ran = tokio::task::spawn_blocking(move || {
+            // A command that failed while holding it left nothing half done that the next one must not see.
+            let _turn = changes.as_deref().map(|lock| lock.lock().unwrap_or_else(PoisonError::into_inner));
             let allowed = Allowed::of(&folders, &excluded);
             match approved {
                 Some(approved) => run_approved(&allowed, &request, &approved, &*trash),
@@ -521,7 +639,7 @@ impl Tools {
 }
 
 /// Runs `request` within `allowed` as [`plan`] resolves it now, only when that plan has the fingerprint `approved`
-/// ([`PathFacts::fingerprint`]) – else `conflict` ([`changed`]) and nothing is done: the plan compared is the plan
+/// ([`Plan::fingerprint`]) – else `conflict` ([`changed`]) and nothing is done: the plan compared is the plan
 /// that runs. The trash through `trash`. `Ok(None)` for a request that is no command of `files`.
 fn run_approved(
     allowed: &Allowed,
@@ -530,13 +648,14 @@ fn run_approved(
     trash: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<Option<Response>, FolderError> {
     let Some(planned) = planned(allowed, request)? else { return Ok(None) };
-    if planned.plan().facts().fingerprint() != approved {
+    if planned.plan().fingerprint() != approved {
         return Ok(Some(changed()));
     }
     execute(allowed, planned, trash).map(Some)
 }
 
-/// `conflict`: the paths of an approved command resolve otherwise now than when the person was shown them.
+/// `conflict`: the paths of an approved command resolve otherwise now than when the person was shown them, or another
+/// entry is there.
 fn changed() -> Response {
     let message = tr("The files changed after the approval was asked for; nothing was done.").into();
     Response::Error { code: "conflict".into(), message }
@@ -1020,11 +1139,15 @@ mod tests {
         assert_eq!(plan(&allowed, &copy).err(), Some(FolderError::Forbidden(READ_ONLY)));
         let copy = Request::CopyFile { from: place.path("home/Documents/a.txt"), to: place.path("home/Documents") };
         let planned = plan(&allowed, &copy).expect("planned").expect("a command of files");
-        assert_eq!(planned, Plan { from: Some(docs.join("a.txt")), to: Some(docs.join("a.txt")) });
+        assert_eq!((&planned.from, &planned.to), (&Some(docs.join("a.txt")), &Some(docs.join("a.txt"))));
+        assert_eq!(planned.from_id, EntryId::of(&docs.join("a.txt")));
+        assert_eq!(planned.to_folder_id, EntryId::of(&docs), "the folder it goes into");
+        assert!(planned.from_id.is_some() && planned.to_folder_id.is_some());
         let facts = planned.facts();
         assert_eq!(facts.from.as_deref(), Some(docs.join("a.txt").to_string_lossy().as_ref()));
         let trash = Request::TrashFile { path: place.path("home/Documents/a.txt") };
-        assert_eq!(plan(&allowed, &trash), Ok(Some(Plan { from: Some(docs.join("a.txt")), to: None })));
+        let trashed = plan(&allowed, &trash).expect("planned").expect("a command of files");
+        assert_eq!((trashed.from, trashed.to, trashed.to_folder_id), (Some(docs.join("a.txt")), None, None));
         assert_eq!(plan(&allowed, &Request::ListTools), Ok(None));
         assert_eq!(fs::read_dir(&docs).expect("listed").count(), 2, "planning changes nothing");
     }
@@ -1044,7 +1167,7 @@ mod tests {
             Ok(())
         }));
         let folders = place.folders();
-        let fingerprint = |plan: Option<Plan>| plan.expect("a command of files").facts().fingerprint();
+        let fingerprint = |plan: Option<Plan>| plan.expect("a command of files").fingerprint();
 
         let copy = Request::CopyFile { from: place.path("home/Documents/a.txt"), to: place.path("home/Documents/Box") };
         let approved = fingerprint(tools.plan(&copy, &folders).await.expect("planned"));
@@ -1063,6 +1186,141 @@ mod tests {
         assert_eq!(*taken.lock().expect("lock"), [docs.join("a.txt")]);
         let made = tools.organize(copy, &folders, None).await;
         assert_eq!(made, Response::FilePath { path: docs.join("Box").to_string_lossy().into_owned() }, "unpinned");
+    }
+
+    /// Review of issue #304: the approval holds what the card showed. The agent asks to trash `Docs/alt.txt`, and
+    /// while the card waits it moves the file away and renames the folder `Diplomarbeit` to `alt.txt`: the same path,
+    /// another entry – `conflict`, and nothing goes to the trash. A file put in the place of a file likewise.
+    #[tokio::test]
+    async fn an_entry_exchanged_under_the_same_path_is_a_conflict() {
+        let place = Place::new();
+        let docs = resolved(&place, "home/Documents");
+        write(&place, "home/Documents/alt.txt", b"old notes");
+        fs::create_dir(docs.join("Diplomarbeit")).expect("made");
+        write(&place, "home/Documents/Diplomarbeit/chapter 1.md", b"years of work");
+        let taken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&taken);
+        let tools = Tools::new(super::super::Roots::default()).with_trasher(std::sync::Arc::new(move |path: &Path| {
+            record.lock().expect("lock").push(path.to_path_buf());
+            Ok(())
+        }));
+        let folders = place.folders();
+        let trash = Request::TrashFile { path: place.path("home/Documents/alt.txt") };
+        let approved = tools.plan(&trash, &folders).await.expect("planned").expect("a command of files").fingerprint();
+
+        fs::rename(docs.join("alt.txt"), place.dir.path().join("outside/alt.txt")).expect("moved away");
+        fs::rename(docs.join("Diplomarbeit"), docs.join("alt.txt")).expect("renamed");
+        let refused = tools.organize(trash.clone(), &folders, Some(&approved)).await;
+        assert!(matches!(&refused, Response::Error { code, .. } if code == "conflict"), "{refused:?}");
+        assert!(taken.lock().expect("lock").is_empty(), "nothing handed to the trash");
+
+        // A file in the place of a file, with the same size.
+        fs::rename(docs.join("alt.txt"), docs.join("Diplomarbeit")).expect("renamed back");
+        write(&place, "home/Documents/alt.txt", b"years of work");
+        let approved = tools.plan(&trash, &folders).await.expect("planned").expect("a command of files").fingerprint();
+        fs::remove_file(docs.join("alt.txt")).expect("removed");
+        fs::rename(docs.join("Diplomarbeit/chapter 1.md"), docs.join("alt.txt")).expect("renamed");
+        let refused = tools.organize(trash, &folders, Some(&approved)).await;
+        assert!(matches!(&refused, Response::Error { code, .. } if code == "conflict"), "{refused:?}");
+        assert!(taken.lock().expect("lock").is_empty(), "nothing handed to the trash");
+    }
+
+    /// Review of issue #304: a folder put in the place of the one a copy goes into is `conflict`, though a file
+    /// put in it meanwhile is not (a folder's time of change says nothing about which folder it is).
+    #[tokio::test]
+    async fn the_target_folder_is_pinned_but_not_what_it_holds() {
+        let place = Place::new();
+        let docs = resolved(&place, "home/Documents");
+        write(&place, "home/Documents/a.txt", b"a");
+        fs::create_dir(docs.join("Box")).expect("made");
+        let tools = Tools::new(super::super::Roots::default());
+        let folders = place.folders();
+        let copy = Request::CopyFile { from: place.path("home/Documents/a.txt"), to: place.path("home/Documents/Box") };
+        let approved = tools.plan(&copy, &folders).await.expect("planned").expect("a command of files").fingerprint();
+        write(&place, "home/Documents/Box/other.txt", b"o");
+        let copied = tools.organize(copy.clone(), &folders, Some(&approved)).await;
+        assert_eq!(copied, Response::FilePath { path: docs.join("Box/a.txt").to_string_lossy().into_owned() });
+
+        let approved = tools.plan(&copy, &folders).await.expect("planned").expect("a command of files").fingerprint();
+        fs::rename(docs.join("Box"), docs.join("Old box")).expect("renamed");
+        fs::create_dir(docs.join("Box")).expect("made");
+        let refused = tools.organize(copy, &folders, Some(&approved)).await;
+        #[cfg(unix)]
+        assert!(matches!(&refused, Response::Error { code, .. } if code == "conflict"), "{refused:?}");
+        #[cfg(unix)]
+        assert_eq!(fs::read_dir(docs.join("Box")).expect("listed").count(), 0, "nothing copied");
+        // Elsewhere the folder is told apart only by when it was made, which the system may not keep finer than this.
+        #[cfg(not(unix))]
+        let _ = refused;
+    }
+
+    /// Review of issue #304: a command that changes something waits for the one before it (the tools' lock), so two
+    /// moves to the same target never both see it free; listing does not wait. While the lock is held the move does
+    /// not run; once it is free it does.
+    #[tokio::test]
+    async fn changes_run_one_at_a_time() {
+        let place = Place::new();
+        let docs = resolved(&place, "home/Documents");
+        write(&place, "home/Documents/a.txt", b"a");
+        let tools = std::sync::Arc::new(Tools::new(super::super::Roots::default()));
+        let folders = place.folders();
+        // Held on a thread of its own, as another change would hold it, until `release`.
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (taken, is_taken) = std::sync::mpsc::channel::<()>();
+        let lock = std::sync::Arc::clone(&tools.changes);
+        let holder = std::thread::spawn(move || {
+            let _held = lock.lock().expect("lock");
+            taken.send(()).expect("told");
+            released.recv().expect("released");
+        });
+        is_taken.recv().expect("taken");
+
+        let list = Request::ListFolder { path: Some(place.path("home/Documents")) };
+        let listed =
+            tokio::time::timeout(std::time::Duration::from_secs(5), tools.organize(list, &folders, None)).await;
+        assert!(matches!(listed, Ok(Response::FolderEntries { .. })), "listing does not wait: {listed:?}");
+
+        let moving =
+            Request::MoveFile { from: place.path("home/Documents/a.txt"), to: place.path("home/Documents/b.txt") };
+        let (mover, moved_folders) = (std::sync::Arc::clone(&tools), folders.clone());
+        let moved = tokio::spawn(async move { mover.organize(moving, &moved_folders, None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!moved.is_finished() && docs.join("a.txt").exists(), "waits while another change runs");
+        release.send(()).expect("released");
+        holder.join().expect("held");
+        let moved = moved.await.expect("ran");
+        assert_eq!(moved, Response::FilePath { path: docs.join("b.txt").to_string_lossy().into_owned() });
+    }
+
+    /// Review of issue #304: on a drive that does not tell cases apart (APFS and NTFS by default), renaming only the
+    /// case renames the entry itself instead of picking `report-2.pdf`; a file and a folder.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn renaming_only_the_case_renames_the_entry() {
+        let place = Place::new();
+        let docs = resolved(&place, "home/Documents");
+        write(&place, "home/Documents/Report.pdf", b"report");
+        fs::create_dir(docs.join("Box")).expect("made");
+        if !docs.join("report.pdf").exists() {
+            return; // A drive that tells cases apart: nothing to rename only in case.
+        }
+        let allowed = place.allowed();
+        let rename = |from: &str, to: &str| Request::MoveFile { from: place.path(from), to: place.path(to) };
+        let file = made(run(&allowed, &rename("home/Documents/Report.pdf", "home/Documents/report.pdf")).expect("ok"));
+        assert_eq!(file, docs.join("report.pdf"));
+        let folder = made(run(&allowed, &rename("home/Documents/Box", "home/Documents/box")).expect("renamed"));
+        assert_eq!(folder, docs.join("box"));
+        let mut names: Vec<OsString> =
+            fs::read_dir(&docs).expect("listed").map(|item| item.expect("read").file_name()).collect();
+        names.sort();
+        assert_eq!(names, [OsString::from("Private"), "box".into(), "report.pdf".into()]);
+        assert_eq!(fs::read(docs.join("report.pdf")).expect("read"), b"report");
+        // A copy in another case is still a new file next to it, never over it.
+        let copy = Request::CopyFile {
+            from: place.path("home/Documents/report.pdf"),
+            to: place.path("home/Documents/REPORT.pdf"),
+        };
+        assert_eq!(made(run(&allowed, &copy).expect("copied")), docs.join("REPORT-2.pdf"));
     }
 
     #[test]

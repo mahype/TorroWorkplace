@@ -411,11 +411,14 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
   in die Torro Client-Schlüssel und Hooks schreibt (`~/.claude.json`, `~/.claude/settings.json` … mit ihren
   Sicherungen), die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`, Schlüsselbund), weitere bekannte Ablagen
   von Zugangsdaten (Cloud, GitHub, Paketregister, Passwortspeicher) und die Browser-Profile. Auch wenn das System
-  den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Eintrag, der einen
+  den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Name zählt so, wie das Laufwerk
+  ihn speichert: Findet das System einen Eintrag auch unter einer anderen Schreibweise (`.ſsh` für `.ssh`, `Verträge`
+  zerlegt, ein Kurzname unter Windows), ist die Antwort `not-found`. Ein Eintrag, der einen
   freigegebenen Ordner oder etwas Gesperrtes ist oder enthält, lässt sich nicht verschieben, umbenennen oder in den
-  Papierkorb legen. Nach einer Freigabe läuft nur, was die Karte zeigte: Der Kern hält die aufgelösten Pfade fest,
-  vergleicht sie unmittelbar vor dem Ausführen im selben Schritt und antwortet `conflict`, wenn sie sich geändert
-  haben.
+  Papierkorb legen. Nach einer Freigabe läuft nur, was die Karte zeigte: Der Kern hält die aufgelösten Pfade und die
+  Einträge dort fest (Art, Erstellzeit, bei Dateien und Links Größe und Änderungszeit, unter Unix Laufwerk und
+  Inode), vergleicht sie unmittelbar vor dem Ausführen im selben Schritt und antwortet `conflict`, wenn sich etwas
+  geändert hat. Ändernde Befehle laufen nacheinander, damit zwei gleichzeitige nicht beide ein Ziel frei sehen.
 - **Nie überschreiben** (entschieden): Ist das Ziel belegt, wählt der Kern einen freien Namen wie das PDF-Werkzeug
   (`Bericht-2.pdf`, `Rechnungen-2`), und die Antwort nennt den Pfad, der entstanden ist.
 - **Kopieren nur Dateien** (entschieden); verschieben und umbenennen auch Ordner, solange es auf demselben Laufwerk

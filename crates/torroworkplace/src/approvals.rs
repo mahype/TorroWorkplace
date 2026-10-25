@@ -347,10 +347,11 @@ pub struct PathFacts {
 }
 
 impl PathFacts {
-    /// The fingerprint an approval of `tools.create_folder`, `tools.copy_file`, `tools.move_file` or `tools.trash_file`
-    /// (task WD.3) is pinned to: a
-    /// hash of both paths ([`crate::audit::hashed`]). The approved command runs only while the paths resolve to the
-    /// same again, else `conflict` (`Core::run_approved`): a link exchanged or a folder moved meanwhile.
+    /// The paths' part of the fingerprint an approval of `tools.create_folder`, `tools.copy_file`, `tools.move_file`
+    /// or `tools.trash_file` (task WD.3) is pinned to: a hash of both paths ([`crate::audit::hashed`]). The whole
+    /// fingerprint (`crate::tools::organize::Plan::fingerprint`) adds what is at them, which the card does not show:
+    /// the approved command runs only while the paths resolve to the same again and the same entries are there, else
+    /// `conflict` (`Core::run_approved`): a link exchanged, a folder moved or another entry put under the name.
     pub fn fingerprint(&self) -> String {
         let (from, to) = (self.from.as_deref().unwrap_or_default(), self.to.as_deref().unwrap_or_default());
         // A path holds no NUL, so the two cannot run into each other.
