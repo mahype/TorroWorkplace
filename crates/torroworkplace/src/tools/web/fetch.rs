@@ -272,17 +272,12 @@ impl Fetcher {
     async fn follow(&self, mut url: Url, by_person: bool) -> Result<(Url, reqwest::Response), FetchError> {
         let mut taken = HashSet::new();
         for _ in 0..=MAX_REDIRECTS {
-            let host = url.host_str().unwrap_or_default().to_string();
-            if !taken.contains(&host) {
-                let wait = self.turn(&host, Instant::now());
-                tokio::time::sleep(wait).await;
-                taken.insert(host);
-            }
+            self.take_turn(&url, &mut taken).await;
             if !by_person {
                 // The host first: a name that leads nowhere or into the local network is said so, not blamed on
                 // robots.txt.
                 self.check_host(&url).await?;
-                if !self.robots_allow(&url).await? {
+                if !self.robots_allow(&url, &mut taken).await? {
                     return Err(FetchError::Robots);
                 }
             }
@@ -330,6 +325,16 @@ impl Fetcher {
         Ok(())
     }
 
+    /// Waits for the turn of the host of `url` unless this read (`taken`) already had it.
+    async fn take_turn(&self, url: &Url, taken: &mut HashSet<String>) {
+        let host = url.host_str().unwrap_or_default();
+        if !taken.contains(host) {
+            let wait = self.turn(host, Instant::now());
+            taken.insert(host.to_string());
+            tokio::time::sleep(wait).await;
+        }
+    }
+
     /// How long a read of `host` at `now` waits for its turn (zero when it is free); the turn after it comes
     /// [`HOST_GAP`] later.
     fn turn(&self, host: &str, now: Instant) -> Duration {
@@ -342,13 +347,13 @@ impl Fetcher {
 
     /// Whether the site's `robots.txt` lets [`robots::AGENT`] read `url`; kept per origin for
     /// [`robots::KEEP_FOR`]. [`FetchError::Offline`] when the site's host takes no connection at all.
-    async fn robots_allow(&self, url: &Url) -> Result<bool, FetchError> {
+    async fn robots_allow(&self, url: &Url, taken: &mut HashSet<String>) -> Result<bool, FetchError> {
         let origin = url.origin().ascii_serialization();
         let known = self.robots.lock().unwrap_or_else(PoisonError::into_inner).get(&origin, Instant::now());
         let robots = match known {
             Some(robots) => robots,
             None => {
-                let (robots, keep) = self.robots_of(url).await?;
+                let (robots, keep) = self.robots_of(url, taken).await?;
                 if keep {
                     self.robots.lock().unwrap_or_else(PoisonError::into_inner).put(
                         &origin,
@@ -370,12 +375,14 @@ impl Fetcher {
     /// error or no answer is not (the next read asks again). More than [`MAX_REDIRECTS`] redirects count as no
     /// file (§2.3.1.2); an address the guards refuse, a broken answer or a redirect target that cannot be reached
     /// as one that allows nothing (§2.3.1.4). `Err(`[`FetchError::Offline`]`)` when the origin itself takes no
-    /// connection: then the page would not come either, and that is the honest reason.
-    async fn robots_of(&self, url: &Url) -> Result<(Robots, bool), FetchError> {
+    /// connection: then the page would not come either, and that is the honest reason. A redirect to another host
+    /// waits for that host's turn like the page's own (`taken`, PR #311 review).
+    async fn robots_of(&self, url: &Url, taken: &mut HashSet<String>) -> Result<(Robots, bool), FetchError> {
         let mut address = url.clone();
         address.set_path("/robots.txt");
         address.set_query(None);
         for hop in 0..=MAX_REDIRECTS {
+            self.take_turn(&address, taken).await;
             match self.step(&address, "text/plain").await {
                 Ok(Step::Answer(response)) => return Ok(robots_answer(response).await),
                 Ok(Step::Redirect(next)) => address = next,
@@ -811,7 +818,7 @@ mod tests {
     }
 
     /// Found in the review of PR #311: a redirect to another host waits for that host's turn too, so pages that
-    /// all lead to one site do not ask it faster than [`HOST_GAP`].
+    /// all lead to one site do not ask it faster than [`HOST_GAP`]; a redirect of `robots.txt` as well.
     #[tokio::test]
     async fn a_redirect_to_another_host_takes_its_turn() {
         let server = MockServer::start_async().await;
@@ -824,15 +831,34 @@ mod tests {
             .await;
         server
             .mock_async(|when, then| {
+                when.method(GET).path("/robots.txt");
+                then.status(301).header("Location", format!("http://r.example.org:{port}/rules.txt"));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/rules.txt");
+                then.status(200).header("content-type", "text/plain").body("User-agent: *\nAllow: /\n");
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
                 when.method(GET).path("/page");
                 then.status(200).header("content-type", "text/plain").body("arrived");
             })
             .await;
-        let fetcher = on_mock(&server, &[("a.example.org", "127.0.0.1"), ("b.example.org", "127.0.0.1")]);
+        let hosts = [("a.example.org", "127.0.0.1"), ("b.example.org", "127.0.0.1"), ("r.example.org", "127.0.0.1")];
+        let fetcher = on_mock(&server, &hosts);
         let read = fetcher.fetch(&at(&server, "a.example.org", "/away"), true).await.expect("the page");
         assert_eq!(read.markdown, "arrived");
         let now = Instant::now();
         assert!(fetcher.turn("b.example.org", now) > Duration::ZERO, "the read took b's turn");
+        assert!(fetcher.turn("r.example.org", now).is_zero(), "the person's address asks no robots.txt");
+        let fetcher = on_mock(&server, &hosts);
+        let read = fetcher.fetch(&at(&server, "a.example.org", "/page"), false).await.expect("robots.txt allows");
+        assert_eq!(read.markdown, "arrived");
+        let now = Instant::now();
+        assert!(fetcher.turn("r.example.org", now) > Duration::ZERO, "robots.txt's redirect took r's turn");
         assert!(fetcher.turn("c.example.org", now).is_zero(), "no other host's");
     }
 
