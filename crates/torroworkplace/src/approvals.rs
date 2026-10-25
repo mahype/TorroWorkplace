@@ -4330,6 +4330,8 @@ pub(crate) mod tests {
     /// with the decision; approvals without one read as before.
     #[tokio::test]
     async fn an_approval_keeps_the_fingerprint_of_what_it_shows() {
+        // Not hex: the approval's random hex id can never hold it by chance.
+        const PRINT: &str = "zq-print-xw";
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
         let send = Request::SendDraft { id: "m:1".into() };
@@ -4338,7 +4340,7 @@ pub(crate) mod tests {
                 "c1",
                 "One",
                 send.clone(),
-                "f00d".into(),
+                PRINT.into(),
                 ("Send".into(), vec!["To: b".into()]),
                 at(0),
             )
@@ -4352,9 +4354,9 @@ pub(crate) mod tests {
         let Ok(Decision::Run { fingerprint, request, .. }) = restarted.decide(&asked.id, true, at(1)).await else {
             panic!("allowed runs");
         };
-        assert_eq!((fingerprint.as_deref(), *request), (Some("f00d"), send));
+        assert_eq!((fingerprint.as_deref(), *request), (Some(PRINT), send));
         let listed = serde_json::to_string(&restarted.list(Some("c1"), at(1)).await.expect("listed")).expect("json");
-        assert!(!listed.contains("f00d"), "the client never sees it: {listed}");
+        assert!(!listed.contains(PRINT), "the client never sees it: {listed}");
     }
 
     /// Task C.11: where a request came from (engine, areas a lent key was lent without) survives a
