@@ -240,12 +240,11 @@ pub const NO_KEY: &str = "needs a valid key";
 /// "Allow API keys" is off (#231).
 pub const API_OFF: &str = "The API is turned off in Torro Workplace, Settings › API.";
 /// "Allow MCP" is off (#231).
-pub const MCP_OFF: &str = "MCP is turned off in Torro Workplace, Settings › MCP.";
+pub const MCP_OFF: &str = "MCP is turned off in Torro Workplace, Settings › MCP clients.";
 /// The key of an MCP client came through the API (#231).
 pub const MCP_KEY: &str = "This key belongs to an MCP client.";
 /// A script's key came through MCP (#231).
-pub const SCRIPT_KEY: &str =
-    "This key belongs to a script and works only through the API; an agent needs its own key from Settings › MCP.";
+pub const SCRIPT_KEY: &str = "This key belongs to a script and works only through the API; an agent needs its own key from Settings › MCP clients.";
 
 /// Why a client of `kind` may not come in `door` (`None`: whichever way, for an approved command
 /// that runs now) with the switches `allow_api_keys` and `allow_mcp` as they are (#231,

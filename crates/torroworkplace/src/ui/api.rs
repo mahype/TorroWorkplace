@@ -416,7 +416,7 @@ impl Page {
 
 /// What the editor's selections offer: what the shell loaded into [`Data`]. The MCP servers too
 /// (task MA.10), each with a level of its own under "Extensions"; none while their list failed,
-/// which MCP connections shows with "Retry".
+/// which MCP servers shows with "Retry".
 fn known(data: &Data) -> rights::Known<'_> {
     rights::Known {
         calendars: &data.calendars,

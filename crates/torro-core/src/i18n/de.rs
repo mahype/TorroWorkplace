@@ -5072,7 +5072,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Manage models…", "Modelle verwalten…"),
     ("MCP client", "MCP-Client"),
     ("MCP clients", "MCP-Clients"),
-    ("MCP server", "MCP-Server"),
+    ("Torro's MCP server", "Torros MCP-Server"),
     ("Models", "Modelle"),
     (
         "Models for the assistant and its bots, on this computer or in the cloud.",

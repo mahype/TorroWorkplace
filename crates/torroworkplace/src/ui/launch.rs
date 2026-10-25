@@ -144,11 +144,11 @@ pub enum Open {
     ConnectClientDone,
     /// "Connect client" with the key of a new "Other MCP client" and its command, shown once.
     ConnectClientOther,
-    /// MCP connections (task MA.7) with the PDF tool on, a folder and a logo of its own, and the
+    /// MCP servers (task MA.7) with the PDF tool on, a folder and a logo of its own, and the
     /// demo's servers: two of the catalog (one running, one stopped after errors) and one of one's
     /// own with tools to review ([`demo_connections`]).
     Connections,
-    /// MCP connections without any server, the PDF tool as it starts and the assistant without it
+    /// MCP servers without any server, the PDF tool as it starts and the assistant without it
     /// ([`demo_connections_empty`]).
     ConnectionsEmpty,
     /// The install dialog of GitHub's entry (task MA.8), the demo's GitHub server taken out first
@@ -1736,7 +1736,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                 })?;
             Some(Response::Connected { account, calendars: true, tasks: true })
         }
-        // MCP connections (task MA.8): installing, allowing, switching and updating answer with the
+        // MCP servers (task MA.8): installing, allowing, switching and updating answer with the
         // server as the demo has it (or the catalog entry as just installed); nothing changes.
         Request::InstallExtension { from: torro_ipc::extensions::InstallFrom::Catalog { entry, .. } } => {
             Some(Response::Extension { extension: demo_server(entry, data)? })

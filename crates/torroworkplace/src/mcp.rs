@@ -104,7 +104,7 @@ pub const TOKEN_VAR: &str = "TORRO_TOKEN";
 /// Added to every `unauthorized` error: how a person gets a key for this agent.
 const KEY_HINT: &str = "Torro Workplace needs a client key for this agent: create one with \
                         `torroworkplace ctl clients add \"<name>\" --kind claude-code` (or in the control centre, \
-                        Settings › MCP) and pass it to this MCP server as the environment variable TORRO_TOKEN. \
+                        Settings › MCP clients) and pass it to this MCP server as the environment variable TORRO_TOKEN. \
                         A key the assistant lent to this agent has its rights in the assistant window, under Access.";
 
 /// How long a tool call waits for a core that was just started, and how long after starting one
@@ -135,7 +135,7 @@ const INBOX_LIMIT: u32 = 50;
 const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, tasks, the inbox (the person's Notification Hub), accounts, the models of \
                             its AI accounts, settings and apps of this desktop. Every tool is checked against the rights a person granted this agent's \
                             key: `forbidden` means the rights do not cover it, and its message says what is missing (ask the person to change them in \
-                            Torro Workplace, Settings › MCP; for a key the assistant lent to this agent, in the \
+                            Torro Workplace, Settings › MCP clients; for a key the assistant lent to this agent, in the \
                             assistant window under Access), `not-found` also stands for calendars and task lists \
                             this agent may not see. GitHub filter lists show only issues and pull requests of the \
                             repositories granted to this agent. Commands the person wants to approve first (always \
@@ -3181,13 +3181,16 @@ mod tests {
             result_of(crate::clients::Refused::Unauthorized { command: "calendar.list_events" }.response());
         let message = unauthorized.structured_content.expect("structured")["message"].clone();
         assert!(message.as_str().is_some_and(|m| m.contains("ctl clients add") && m.contains(TOKEN_VAR)));
-        // #231: a key lent by the assistant has its rights in the assistant window, not under Settings › MCP.
+        // #231: a key lent by the assistant has its rights in the assistant window, not under Settings › MCP clients.
         assert!(message.as_str().is_some_and(|m| m.contains("assistant window, under Access")), "{message}");
         // #231: a known key refused because MCP is off needs no new key, so no hint about one.
         let off = crate::clients::Refused::Closed { command: "calendar.list_events", why: crate::clients::MCP_OFF };
         let off = off.response();
         let closed = result_of(off).structured_content.expect("structured")["message"].clone();
-        assert!(closed.as_str().is_some_and(|m| m.contains("Settings › MCP") && !m.contains(TOKEN_VAR)), "{closed}");
+        assert!(
+            closed.as_str().is_some_and(|m| m.contains("Settings › MCP clients") && !m.contains(TOKEN_VAR)),
+            "{closed}"
+        );
     }
 
     #[test]
