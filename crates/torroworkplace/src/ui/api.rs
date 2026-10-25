@@ -1092,7 +1092,10 @@ pub(super) mod tests {
         assert_eq!(outcome("pending").0, Status::Attention);
         assert_eq!(outcome("denied").0, Status::Inactive);
         assert_eq!(outcome("conflict"), (Status::Error, trf("Failed: {code}", &[("code", &"conflict")])));
-        let now = Utc::now();
+        // Noon of today, so a day back is yesterday also on the day the clocks go back (24 hours before
+        // 23:40 is then 00:40 of the same day).
+        let noon = Local::now().date_naive().and_hms_opt(12, 0, 0).expect("noon");
+        let now = noon.and_local_timezone(Local).earliest().expect("noon exists").with_timezone(&Utc);
         assert_eq!(when(now, now), now.with_timezone(&Local).format("%H:%M").to_string());
         let old = now - Age::days(9);
         assert_eq!(when(old, now), old.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
