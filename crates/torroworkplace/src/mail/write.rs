@@ -1017,10 +1017,14 @@ fn content_type_of(path: &Path) -> &'static str {
 /// summary (`crate::approvals::MailFacts`): the account's address, how many messages, the
 /// subjects the store has (in the order of `ids`), the target folder's name, and for replacing a
 /// draft its subject as stored. Looked up by the ids the command runs with, never taken from the
-/// client's text; call it after the reach was checked. `None` for other requests.
+/// client's text; call it after the reach was checked. Also for `inbox.set_mail_shown` (task
+/// E18.2), which names mail as `mail.set_flags` does. `None` for other requests.
 pub(crate) async fn facts(mail: &MailService, request: &Request) -> Option<MailFacts> {
     match request {
-        Request::SetMailFlags { ids, .. } | Request::DeleteMail { ids, .. } => Some(message_facts(mail, ids).await.0),
+        // "Show again" (task E18.2) names mail as `mail.set_flags` does.
+        Request::SetMailFlags { ids, .. } | Request::DeleteMail { ids, .. } | Request::SetMailShown { ids, .. } => {
+            Some(message_facts(mail, ids).await.0)
+        }
         Request::MoveMail { ids, to } => {
             let (mut facts, account) = message_facts(mail, ids).await;
             facts.folder = match (to, account) {

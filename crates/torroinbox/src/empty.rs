@@ -1,7 +1,9 @@
 //! An inbox without entries, for the app's tests only.
 //!
 //! The app runs on the core's client (`torro_ipc::inbox::InboxClient`) or the demo source; the
-//! tests use this one to see the empty state and views that start without any data.
+//! tests use this one to see the empty state and views that start without any data. Its mail side
+//! (`crate::mail::MailSource`) stands in `mail.rs`: no folders, no mail, "All" holds nothing and
+//! nothing unread, and "Show again" has nothing to remember.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use torro_inbox::item::{HideScope, MuteEffect, MuteOption, MuteScope, Muted};
@@ -95,6 +97,29 @@ mod tests {
     use iced::futures::executor::block_on;
 
     use super::*;
+
+    /// Task E18.3: no mail of any role, nothing unread in "All", "Show again" answers `Ok`.
+    #[test]
+    fn has_no_mail_by_role_and_nothing_to_show_again() {
+        use torro_ipc::inbox::MailByRole;
+        use torro_mail::{Order, Role};
+
+        use crate::mail::{MailPage, MailSource};
+
+        let source = EmptySource;
+        let find = MailByRole {
+            role: Role::Inbox,
+            account: None,
+            snoozed: Some(false),
+            hidden: Some(false),
+            order: Order::NewestFirst,
+            limit: 50,
+            cursor: None,
+        };
+        assert_eq!(block_on(source.mail_by_role(find)), Ok(MailPage::of(Vec::new(), None)));
+        assert_eq!(block_on(source.unread_in_all(None)), Ok(0));
+        assert_eq!(block_on(source.set_mail_shown(vec!["m:1".into()], true)), Ok(()));
+    }
 
     #[test]
     fn lists_nothing_and_changes_nothing() {

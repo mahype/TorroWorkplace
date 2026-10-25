@@ -46,6 +46,9 @@
 //!   the core (`mail.list_save_targets`, [`MailSource::save_targets`]), saving is
 //!   `mail.save_attachments` ([`MailSource::save_attachments`]); the window adds only the system's
 //!   dialogs and "Show in folder" ([`saved_text`], [`saved_folder`]).
+//! - The mail window's views of every account (task E18.3): "All", "Hidden" and "Archive" list the
+//!   mail of one folder role ([`MailSource::mail_by_role`]), the number on "All" comes from
+//!   [`MailSource::unread_in_all`], and "Show again" is [`MailSource::set_mail_shown`].
 //!
 //! **Mail is foreign text** (`untrusted`). Its HTML comes cleaned by the core (no scripts, no
 //! forms, legacy attributes as CSS) and is drawn without JavaScript; a click on one of its links
@@ -80,7 +83,7 @@ use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
 use torro_ipc::inbox::CategoryInfo;
-use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound, SaveTargets, SavedAttachments};
+use torro_ipc::inbox::{CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, SaveTargets, SavedAttachments};
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
@@ -266,6 +269,28 @@ pub trait MailSource: Send + Sync {
     /// `mail.index_status`: how far the search index of each mail account is, for the honest line
     /// under the search field while matches may be missing.
     fn mail_index_status(&self) -> impl Future<Output = Result<Vec<MailIndexProgress>, InboxError>> + Send;
+
+    /// `mail.search_messages` without a folder and with the query `in:<role>` (task E18.3,
+    /// [`InboxClient::mail_by_role`]): the mail in the folders of `find.role` of every account the
+    /// window reaches (or of `find.account`), leaving out or giving only snoozed and hidden mail as
+    /// `find.snoozed` and `find.hidden` say, at most `find.limit` in `find.order` from
+    /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields).
+    /// "All" is [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)`, "Hidden" [`Role::Inbox`]
+    /// with `hidden` `Some(true)`, "Archive" [`Role::Archive`]. The page has no highlights.
+    fn mail_by_role(&self, find: MailByRole) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
+
+    /// The number on "All" (task E18.3, decision 4 of E18): `mail.search_messages` as "All" asks it
+    /// – [`Role::Inbox`], `snoozed` and `hidden` `Some(false)` – with `unread: Some(true)` and
+    /// `limit: 1`, for `account` (`mail:<address>`) or every account the window reaches
+    /// ([`InboxClient::count_unread_in_all`]). Answers the core's `total_estimate`, 0 without one.
+    fn unread_in_all(&self, account: Option<String>) -> impl Future<Output = Result<u64, InboxError>> + Send;
+
+    /// `inbox.set_mail_shown` (task E18.2, "Show again"; [`InboxClient::set_mail_shown`]): `shown:
+    /// true` takes the mail `ids` (`m:…`, 1 to 100) out of "Hidden" into "All" – the rule that hid
+    /// them stays, their entry stays as it is –, `shown: false` takes that back (the undo).
+    /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing is
+    /// remembered then. `Ok` also when there was nothing to remember.
+    fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
 }
 
 /// One page of a folder ([`MailSource::search_mail`]) or of a search ([`MailSource::find_mail`]).
@@ -341,6 +366,19 @@ impl MailSource for InboxClient {
 
     async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
         InboxClient::mail_index_status(self).await
+    }
+
+    async fn mail_by_role(&self, find: MailByRole) -> Result<MailPage, InboxError> {
+        let (messages, next) = InboxClient::mail_by_role(self, find).await?;
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
+        InboxClient::count_unread_in_all(self, account).await
+    }
+
+    async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
+        InboxClient::set_mail_shown(self, ids, shown).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -484,6 +522,29 @@ impl MailSource for DemoSource {
 
     async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
         crate::search::demo_index(self)
+    }
+
+    /// The demo's mail of the role ([`DemoSource::by_role`]) a page at a time; the cursor is the
+    /// place of the next page, as in the demo's folders.
+    async fn mail_by_role(&self, find: MailByRole) -> Result<MailPage, InboxError> {
+        let found =
+            DemoSource::by_role(self, find.role, find.account.as_deref(), find.snoozed, find.hidden, find.order);
+        let mut page = demo_page(found, find.limit, find.cursor.as_deref())?;
+        for message in &mut page.messages {
+            message.invite = demo_invite(&message.id, message.date);
+        }
+        Ok(page)
+    }
+
+    /// The unread mail of what "All" lists, counted exactly.
+    async fn unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
+        let all =
+            DemoSource::by_role(self, Role::Inbox, account.as_deref(), Some(false), Some(false), Order::NewestFirst);
+        Ok(all.iter().filter(|message| !message.flags.contains(&Flag::Seen)).count() as u64)
+    }
+
+    async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
+        DemoSource::set_mail_shown(self, &ids, shown)
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -723,6 +784,34 @@ impl MailSource for crate::empty::EmptySource {
     async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
         Ok(Vec::new())
     }
+
+    async fn mail_by_role(&self, _find: MailByRole) -> Result<MailPage, InboxError> {
+        Ok(MailPage::of(Vec::new(), None))
+    }
+
+    async fn unread_in_all(&self, _account: Option<String>) -> Result<u64, InboxError> {
+        Ok(0)
+    }
+
+    /// No mail is hidden, so there is nothing to remember – as the core answers then.
+    async fn set_mail_shown(&self, _ids: Vec<String>, _shown: bool) -> Result<(), InboxError> {
+        Ok(())
+    }
+}
+
+/// The page of the demo's `found` that starts at `cursor` (the place the demo gave out, `None`: the
+/// start), at most `limit` long, with the cursor of the page after it. [`InboxError::Other`] for a
+/// cursor the demo did not give out, as its folders answer it.
+fn demo_page(found: Vec<MessageSummary>, limit: u32, cursor: Option<&str>) -> Result<MailPage, InboxError> {
+    let start = match cursor {
+        None => 0,
+        Some(cursor) => cursor.parse::<usize>().map_err(|_| InboxError::Other("not a cursor".into()))?,
+    };
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let total = found.len();
+    let messages: Vec<MessageSummary> = found.into_iter().skip(start).take(limit).collect();
+    let next = (start + messages.len() < total).then(|| (start + messages.len()).to_string());
+    Ok(MailPage::of(messages, next))
 }
 
 /// What the sidebar's group "Categories" shows (task E12.8): a whole group of mail categories, or
@@ -1174,7 +1263,7 @@ pub fn edit_of(action: MailAction, id: &str) -> Option<MailEdit> {
 /// Aktionen, die für den Eintrag gehen"): Archive needs a folder of the role Archive in the account
 /// and a message outside it, Delete a Trash and a message outside the trash – otherwise the core
 /// answers `NO_ROLE_FOLDER` or there is nothing to do. `archive_key` is the key shown in Archive's
-/// tooltip: `"E"` in a folder, where `e` archives, `""` at an entry, where `e` is Done.
+/// tooltip: `"E"` wherever `e` archives – in a folder, and at a mail entry since task E18.5.
 pub fn filing_actions<'a>(
     folders: &[Folder],
     account: &str,
@@ -1400,6 +1489,10 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::Invitations => {
                 (Icon::Calendar, tr("No invitations."), tr("Invitations to events you can answer show up here."))
             }
+            // The views of every account's mail (task E18.4).
+            View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
+            View::Hidden => (Icon::EyeOff, tr("No hidden mail."), tr("Mail you hide from the inbox shows up here.")),
+            View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
             _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
@@ -1517,7 +1610,10 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     }
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let smart = matches!(data.view, View::Attachments | View::Invitations | View::Search(_));
+    let smart = matches!(
+        data.view,
+        View::Attachments | View::Invitations | View::Search(_) | View::All | View::Hidden | View::Archive
+    );
     let several = smart && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
@@ -2592,18 +2688,21 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///
 /// 1. **Reply** (the main group: a red icon collapsed, Reply strong expanded – decision A): Reply
 ///    (`r`), Reply all, Forward (`f`) – [`Message::Mail`].
-/// 2. **File**: for an `entry` Done (`e`, [`Message::SetDone`]) or Reopen once done, Later… (`s`,
-///    `AskSnooze`, not for a done entry) and "Move to Info" or "Move to For me" (`l`, `AskLane`);
-///    then Archive (`a`) and Delete (`#`) where the account has the folder and the mail does not lie
-///    in it already, as in rows ([`filing_actions`]); last "Save attachments (n)" for a loaded mail
-///    with attachments (task M12.6, `AskSaveAttachments`: the menu of "Save all").
+/// 2. **File**: Archive (`e`, task E18.5: in the place of the entry's former Done – mail is
+///    archived, never done) where the account has the folder and the mail does not lie in it
+///    already, as in rows ([`filing_actions`]; an entry's mail lies in its account's inbox while it
+///    loads); for an `entry` then Later… (`s`, `AskSnooze`, not for a done entry) and "Move to Info"
+///    or "Move to For me" (`l`, `AskLane`); Delete (`#`) on the same rule as Archive; last "Save
+///    attachments (n)" for a loaded mail with attachments (task M12.6, `AskSaveAttachments`: the menu
+///    of "Save all").
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
 ///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
 ///    accent).
 /// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
-/// 5. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
-///    for a folder's message).
+/// 5. **Mute** (at the foot): with `hidden` (the mail is listed in "Hidden", task E18.4) first
+///    Show again (no key, [`Message::ShowMail`]: back into "All", the rule stays), then Mute… (`m`;
+///    `AskHide` for an entry that can be muted, `AskMuteMail` for a folder's message).
 /// 6. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
 ///    then Show as text or Show as HTML (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`,
 ///    while the HTML shows), and with `close` (the reader; the panel has its ✕) Close (Escape,
@@ -2617,12 +2716,14 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 /// menu or dialog its row in the matching anchor of `anchors` (Later `snooze`, "Move to …" `lane`,
 /// Task `task`, Event `event`, Category… `category`, Mute… `hide`); pass the window's anchors made
 /// with [`detail::Anchors::with_rail`], so those menus hang at the group's icon while the row is not
-/// on screen. `folders` are every account's folders, for Archive and Delete.
+/// on screen. `folders` are every account's folders, for Archive and Delete. The same groups are the
+/// context menu of the mail's row (`widgets::rail_context_menu`), so Show again stands there too.
 pub fn action_groups<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
     folders: &[Folder],
     close: bool,
+    hidden: bool,
     anchors: &detail::Anchors,
 ) -> Vec<RailGroup<'a, Message>> {
     let rail = &anchors.rail;
@@ -2640,7 +2741,7 @@ pub fn action_groups<'a>(
         RailGroup::new(Icon::Check, tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
-        RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
+        RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, hidden, anchors)).foot().at(&rail.mute),
         RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), close)).foot().at(&rail.more),
     ];
     groups.into_iter().filter(|group| !group.items.is_empty()).collect()
@@ -2654,13 +2755,19 @@ fn file_items<'a>(
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
+    // An entry's mail lies in its account's inbox while it loads, as its row files it.
+    let filing = match (reading.summary(), entry) {
+        (Some(summary), _) => Some(Filing::of(folders, &summary.account, Some(&summary.folder))),
+        (None, Some(ReaderEntry { item, .. })) => Some(Filing::of(folders, &item.source.key(), None)),
+        (None, None) => None,
+    };
+    let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
+    // First, so a click on the group's icon archives, as it marked an entry done before.
+    if filing.is_some_and(|filing| filing.archive) {
+        items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "E", mail(MailAction::Archive)));
+    }
     if let Some(ReaderEntry { item, .. }) = entry {
-        let done = matches!(item.state, State::Done { .. });
-        items.push(match done {
-            true => RailItem::new(Icon::Inbox, tr("Reopen"), "E", Some(Message::SetDone(item.id.clone(), false))),
-            false => RailItem::new(Icon::Check, tr("Done"), "E", Some(Message::SetDone(item.id.clone(), true))),
-        });
-        if !done {
+        if !matches!(item.state, State::Done { .. }) {
             let later = RailItem::new(Icon::Clock, tr("Later…"), "S", Some(Message::AskSnooze(item.id.clone())));
             items.push(later.at(&anchors.snooze));
         }
@@ -2668,16 +2775,9 @@ fn file_items<'a>(
         let move_to = Some(Message::AskLane(item.id.clone()));
         items.push(RailItem::new(crate::app::lane_icon(lane), lane_word(lane), "L", move_to).at(&anchors.lane));
     }
-    if let Some(summary) = reading.summary() {
-        let filing = Filing::of(folders, &summary.account, Some(&summary.folder));
-        let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
-        if filing.archive {
-            items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "A", mail(MailAction::Archive)));
-        }
-        if filing.delete {
-            // Never what a click on the group's icon does (finding 8).
-            items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
-        }
+    if filing.is_some_and(|filing| filing.delete) {
+        // Never what a click on the group's icon does (finding 8).
+        items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
     }
     // Task M12.6: the menu of "Save all" at this item – from the list's context menu at the row –,
     // once the mail shows attachments. Last, so a click on the group's icon still files the mail.
@@ -2732,19 +2832,28 @@ fn mark_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
     vec![RailItem::new(Icon::Flag, flag, "", mail(MailAction::Flag(!flagged))), seen]
 }
 
-/// The item of the rail's group "Mute" ([`action_groups`]): the bell of the entry where it can be
-/// muted, else nothing; the bell of a folder's message on its own traits (issue #123).
+/// The items of the rail's group "Mute" ([`action_groups`]): for a mail of "Hidden" (`hidden`, task
+/// E18.4) first "Show again" – it takes this one mail back into "All", never the rule that hid it
+/// (decision 10 of E18) –, then the bell of the entry where it can be muted, else nothing; the bell of
+/// a folder's message on its own traits (issue #123).
 fn mute_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
+    hidden: bool,
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
+    let mut items = Vec::new();
+    if hidden {
+        let show = Some(Message::ShowMail(reading.id.to_owned()));
+        items.push(RailItem::new(Icon::Eye, tr("Show again"), "", show));
+    }
     let bell = match entry {
         Some(ReaderEntry { item, hide: true }) => Message::AskHide(item.id.clone()),
-        Some(ReaderEntry { hide: false, .. }) => return Vec::new(),
+        Some(ReaderEntry { hide: false, .. }) => return items,
         None => Message::AskMuteMail(reading.id.to_owned()),
     };
-    vec![RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide)]
+    items.push(RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide));
+    items
 }
 
 /// The items of the rail's group "More" ([`action_groups`]) for `tools`: the other view of a mail
@@ -3831,7 +3940,8 @@ mod tests {
 
     /// Task E14.3: for a mail entry the rail holds Reply, File, Torro, Mark, Mute and More in this
     /// order, Mute and More at the foot, Reply in the accent; every item sends what its button or key
-    /// sent before and shows its key; a click on a group's icon sends its first item.
+    /// sent before and shows its key; a click on a group's icon sends its first item. Task E18.5: File
+    /// has no Done – Archive (`e`) stands in its place.
     #[test]
     fn an_entrys_rail_holds_every_group_with_the_messages_of_before() {
         let item = mail_entry();
@@ -3839,7 +3949,7 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default().with_rail();
             let groups =
-                action_groups(reading, Some(ReaderEntry { item: &item, hide: true }), &folders, true, &anchors);
+                action_groups(reading, Some(ReaderEntry { item: &item, hide: true }), &folders, true, false, &anchors);
             let move_to = lane_word(Lane::Info);
             assert_eq!(
                 rail_words(&groups),
@@ -3848,10 +3958,9 @@ mod tests {
                     (
                         tr("File").to_owned(),
                         vec![
-                            tr("Done").to_owned(),
+                            trc("action", "Archive").to_owned(),
                             tr("Later…").to_owned(),
                             move_to.clone(),
-                            trc("action", "Archive").to_owned(),
                             tr("Delete").to_owned(),
                             // The budget's sheet (task M12.6).
                             trf("Save attachments ({n})", &[("n", &1)]),
@@ -3873,12 +3982,11 @@ mod tests {
             assert!(mail(sends(&groups, reply, tr("Reply all")), MailAction::ReplyAll));
             assert!(mail(sends(&groups, reply, tr("Forward")), MailAction::Forward));
             let entry = |sent: Option<Message>| match sent {
-                Some(Message::SetDone(id, true) | Message::AskSnooze(id) | Message::AskLane(id)) => id == item.id,
+                Some(Message::AskSnooze(id) | Message::AskLane(id)) => id == item.id,
                 Some(Message::AskTask(id) | Message::AskEvent(id) | Message::AskCategory(id)) => id == item.id,
                 Some(Message::AskHide(id)) => id == item.id,
                 _ => false,
             };
-            assert!(entry(sends(&groups, file, tr("Done"))));
             assert!(matches!(sends(&groups, file, tr("Later…")), Some(Message::AskSnooze(_))));
             assert!(entry(sends(&groups, file, tr("Later…"))));
             assert!(
@@ -3900,13 +4008,13 @@ mod tests {
             let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
             assert!(mail(marks[0].press(), MailAction::Flag(!flagged)));
             assert!(matches!(marks[1].press(), Some(Message::Mail(MailAction::Read(_), id)) if id == "m:w1"));
-            // A in the opened mail archives; Reply all has no single-key shortcut here.
+            // `e` archives (task E18.5); Reply all has no single-key shortcut here.
             let keys: Vec<Vec<&str>> = groups.iter().map(|g| g.items.iter().map(|i| i.key).collect()).collect();
             assert_eq!(
                 keys,
                 [
                     vec!["R", "", "F"],
-                    vec!["E", "S", "L", "A", "#", ""],
+                    vec!["E", "S", "L", "#", ""],
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
@@ -3953,8 +4061,9 @@ mod tests {
         });
     }
 
-    /// Task E14.3: a done entry is opened again and not put off; "Re-categorize" only with a decision
-    /// model; an entry that cannot be muted has no group "Mute".
+    /// Task E14.3: a done entry is not put off – and, mail being archived (task E18.5), neither done nor
+    /// opened again from the rail; "Re-categorize" only with a decision model; an entry that cannot be
+    /// muted has no group "Mute".
     #[test]
     fn a_done_entry_reopens_and_the_model_adds_recategorize() {
         let item = Item { state: State::Done { at: now() }, ..mail_entry() };
@@ -3962,20 +4071,19 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default();
             let entry = Some(ReaderEntry { item: &item, hide: false });
-            let groups = action_groups(reading, entry, &folders, false, &anchors);
+            let groups = action_groups(reading, entry, &folders, false, false, &anchors);
             let file = &group(&groups, tr("File")).items;
-            assert_eq!(file[0].label, tr("Reopen"));
-            assert!(
-                matches!(file[0].press(), Some(Message::SetDone(id, false)) if id == item.id),
-                "a done entry reopens"
-            );
+            let words: Vec<&str> = file.iter().map(|i| i.label.as_ref()).collect();
+            let save = trf("Save attachments ({n})", &[("n", &1)]);
+            assert_eq!(words, [trc("action", "Archive"), lane_word(Lane::Info).as_str(), tr("Delete"), save.as_str()]);
+            assert!(file.iter().all(|i| i.label != tr("Reopen") && i.label != tr("Done")), "no Done, no Reopen");
             assert!(file.iter().all(|i| i.label != tr("Later…")), "a done entry is not put off");
             assert!(groups.iter().all(|g| g.label != tr("Mute")), "nothing to mute: no group");
             let more = &group(&groups, tr("More")).items;
             assert!(more.iter().all(|i| i.label != tr("Close")), "the panel has its ✕");
             assert!(group(&groups, tr("Torro")).items.iter().all(|i| i.label != tr("Re-categorize")), "no model");
             let deciding = Reading { deciding: true, ..*reading };
-            let groups = action_groups(&deciding, entry, &folders, false, &anchors);
+            let groups = action_groups(&deciding, entry, &folders, false, false, &anchors);
             let torro = &group(&groups, tr("Torro")).items;
             let last = torro.last().expect("an item");
             assert_eq!(last.label, tr("Re-categorize"));
@@ -3990,7 +4098,7 @@ mod tests {
     fn a_folders_message_files_as_its_account_allows() {
         let folders = folders();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
             assert_eq!(titles, strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("More")]));
             let file = &group(&groups, tr("File")).items;
@@ -3999,7 +4107,7 @@ mod tests {
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
                 strings(&[trc("action", "Archive"), tr("Delete"), &save])
             );
-            assert_eq!((file[0].key, file[1].key), ("A", "#"), "`a` archives in a folder");
+            assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder (task E18.5)");
             assert!(matches!(file[2].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
@@ -4010,14 +4118,14 @@ mod tests {
             assert!(matches!(mute, Some(Message::AskMuteMail(id)) if id == "m:w1"), "the message's own traits");
             // An account without an archive folder: no Archive.
             let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
-            let groups = action_groups(reading, None, &no_archive, true, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &no_archive, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
             assert_eq!(file, strings(&[tr("Delete"), &save]));
             assert!(group(&groups, tr("File")).first_press().is_none(), "Delete first: a click opens the card");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
-            let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
             assert_eq!(file, strings(&[trc("action", "Archive")]));
         });
@@ -4030,7 +4138,7 @@ mod tests {
     fn more_offers_the_view_of_the_mail_as_it_stands() {
         let folders = folders();
         let more = |reading: &Reading<'_>, close| {
-            let groups = action_groups(reading, None, &folders, close, &detail::Anchors::default());
+            let groups = action_groups(reading, None, &folders, close, false, &detail::Anchors::default());
             groups.iter().find(|group| group.label == tr("More")).map(|group| {
                 group
                     .items
@@ -4072,7 +4180,7 @@ mod tests {
             assert_eq!(more(reading, false), None, "nothing to show while it loads");
             assert_eq!(more(reading, true).map(|items| items.len()), Some(1), "but Close");
             let loading = Reading { summary: None, ..*reading };
-            let groups = action_groups(&loading, None, &folders, false, &detail::Anchors::default());
+            let groups = action_groups(&loading, None, &folders, false, false, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
             assert_eq!(titles, strings(&[tr("Reply"), tr("Torro"), tr("Mute")]), "only what needs no headers");
         });
@@ -4131,7 +4239,7 @@ mod tests {
     fn save_all_shows_from_two_attachments_on() {
         let anchors = detail::Anchors::default();
         let file_words = |reading: &Reading<'_>| -> Vec<String> {
-            let groups = action_groups(reading, None, &folders(), true, &anchors);
+            let groups = action_groups(reading, None, &folders(), true, false, &anchors);
             let file = groups.into_iter().find(|group| group.label == tr("File")).expect("File");
             file.items.iter().map(|item| item.label.to_string()).collect()
         };
@@ -4506,7 +4614,7 @@ mod tests {
                             }
                         }
                         let _ = body(&reading, Bars::Split, &anchors);
-                        let groups = action_groups(&reading, entry, &folders, true, &anchors);
+                        let groups = action_groups(&reading, entry, &folders, true, false, &anchors);
                         let rail =
                             widgets::action_rail(groups, widgets::RailMode::Collapsed, None, Message::Rail, None);
                         let _ = reader(reading, entry, rail, &anchors);
@@ -4717,6 +4825,64 @@ mod tests {
             None,
         ));
         assert!(unknown.is_err());
+    }
+
+    /// Task E18.3: the demo lists the mail of a role a page at a time, counts the unread mail of
+    /// "All" without the hidden newsletter, and shows it again in "All" until the undo.
+    #[test]
+    fn the_demo_lists_mail_by_role_counts_all_and_shows_mail_again() {
+        let demo = DemoSource::new(now());
+        let by_role = |role, hidden, limit, cursor: Option<String>| {
+            let find = MailByRole {
+                role,
+                account: None,
+                snoozed: (role == Role::Inbox).then_some(false),
+                hidden,
+                order: Order::NewestFirst,
+                limit,
+                cursor,
+            };
+            iced::futures::executor::block_on(MailSource::mail_by_role(&demo, find)).expect("a page")
+        };
+        let first = by_role(Role::Archive, None, 1, None);
+        assert_eq!((first.messages[0].id.as_str(), first.next.as_deref()), ("m:w9", Some("1")));
+        let last = by_role(Role::Archive, None, 1, first.next);
+        assert_eq!((last.messages[0].id.as_str(), last.next), ("m:p6", None), "the archives of both accounts");
+        let all = by_role(Role::Inbox, Some(false), 50, None).messages;
+        assert!(!all.iter().any(|message| message.id == demo::HIDDEN_MAIL), "hidden from All");
+        let hidden = by_role(Role::Inbox, Some(true), 50, None).messages;
+        assert_eq!(hidden.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(), [demo::HIDDEN_MAIL]);
+        let bad = MailByRole {
+            role: Role::Inbox,
+            account: None,
+            snoozed: None,
+            hidden: None,
+            order: Order::NewestFirst,
+            limit: 1,
+            cursor: Some("x".into()),
+        };
+        assert!(matches!(
+            iced::futures::executor::block_on(MailSource::mail_by_role(&demo, bad)),
+            Err(InboxError::Other(_))
+        ));
+
+        let unread = |account: Option<&str>| {
+            iced::futures::executor::block_on(MailSource::unread_in_all(&demo, account.map(str::to_owned)))
+                .expect("a number")
+        };
+        let unread_shown = all.iter().filter(|message| !message.flags.contains(&Flag::Seen)).count() as u64;
+        assert_eq!(unread(None), unread_shown, "the unread mail of All, the newsletter left out");
+        assert_eq!(unread(Some(demo::MAIL_ACCOUNTS[0])) + unread(Some(demo::MAIL_ACCOUNTS[1])), unread(None));
+
+        let show = |shown| {
+            iced::futures::executor::block_on(MailSource::set_mail_shown(&demo, vec![demo::HIDDEN_MAIL.into()], shown))
+        };
+        show(true).expect("shown again");
+        assert!(by_role(Role::Inbox, Some(false), 50, None).messages.iter().any(|m| m.id == demo::HIDDEN_MAIL));
+        assert!(by_role(Role::Inbox, Some(true), 50, None).messages.is_empty());
+        assert_eq!(unread(None), unread_shown + 1, "the unread newsletter counts again");
+        show(false).expect("undone");
+        assert_eq!(by_role(Role::Inbox, Some(false), 50, None).messages, all);
     }
 
     /// Task E8.3b: the smart view keeps the invitations not over yet, the soonest first; the demo's

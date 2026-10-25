@@ -848,6 +848,9 @@ fn describe(request: &Request) -> String {
         // Never the trait or its value: they would name who writes to the person.
         Request::ListMuteOptions { id } => format!("mute options of inbox item {id}"),
         Request::MuteItem { id, .. } => format!("mute by inbox item {id}"),
+        // Never the ids: they would let lines be matched with a mailbox (task E18.2).
+        Request::SetMailShown { ids, shown: true } => format!("show {} mails again", ids.len()),
+        Request::SetMailShown { ids, shown: false } => format!("hide {} mails again", ids.len()),
         Request::ListRules => "inbox rules".into(),
         Request::GetStats { .. } => "inbox statistics".into(),
         Request::GetQuiet => "inbox quiet".into(),

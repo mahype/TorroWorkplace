@@ -37,7 +37,7 @@
 //!   attention colour and its meta line says "Urgent" – never Torro red, never colour alone.
 //! - **The question after a finished task** (task E8.1b): the suite's "You finished a task from a
 //!   mail" (`hub::is_follow_up`), shown when the window shows the suite, has the hub's buttons –
-//!   Reply · Mark mail done · Not now – on its card and in its row, and no ✕ beside "Not now".
+//!   Reply · Archive mail · Not now – on its card and in its row, and no ✕ beside "Not now".
 //!
 //! Everything a button does goes through the app (`Message::Act`, `Message::OpenRow`,
 //! `Message::Decide`), so it does what its key does at the entry: `x` dismisses, `m` opens the
@@ -449,7 +449,7 @@ pub fn dismissable(item: &Item) -> bool {
 }
 
 /// Whether `item` is the suite's open "You finished a task from a mail" (task E8.1b,
-/// [`hub::is_follow_up`]): its card and row offer what the hub offers, Reply · Mark mail done · Not
+/// [`hub::is_follow_up`]): its card and row offer what the hub offers, Reply · Archive mail · Not
 /// now ([`hub::acts`]).
 fn asks_to_follow_up(item: &Item) -> bool {
     hub::is_follow_up(item) && item.state.is_open()
@@ -558,7 +558,7 @@ fn is_agent(item: &Item) -> bool {
 ///
 /// - an approval: Allow · Deny (disabled while `deciding` and once it is closed), Go to window when
 ///   its agent's window can be opened – no Task, no Later;
-/// - the suite's "You finished a task from a mail": Reply · Mark mail done · Not now, as in the hub
+/// - the suite's "You finished a task from a mail": Reply · Archive mail · Not now, as in the hub
 ///   ([`asks_to_follow_up`], task E8.1b);
 /// - a done entry: Reopen;
 /// - a coding agent: Go to window (when it can be opened) · Later · Done;
@@ -613,7 +613,7 @@ pub fn card_buttons(item: &Item, deciding: bool) -> Vec<CardButton> {
 
 /// The action bar of the suite's question after a finished task ([`asks_to_follow_up`]): the hub's
 /// buttons ([`hub::acts`]) with the keys that do the same at the entry – `r` replies, `e` is "Not
-/// now"; "Mark mail done" has no key of its own.
+/// now"; "Archive mail" has no key of its own.
 fn follow_up_actions<'a>(item: &Item) -> Vec<RowAction<'a, Message>> {
     hub::acts(item)
         .into_iter()
@@ -641,7 +641,7 @@ pub fn bell(item: &Item) -> Option<CardButton> {
 /// The action bar of `item`'s row in the compact density (`widgets::row_actions`): Open or Go to
 /// window (`Enter`), Task (`t`), Later (`s`) or Reopen (`e`) for a done entry, the bell (`m`,
 /// [`bell`]) and the ✕ (`x`, [`dismissable`]) – only what works for the entry, as its card. The
-/// suite's question after a finished task has Reply (`r`), Mark mail done and Not now (`e`) instead.
+/// suite's question after a finished task has Reply (`r`), Archive mail and Not now (`e`) instead.
 pub fn row_actions<'a>(item: &Item) -> Vec<RowAction<'a, Message>> {
     if asks_to_follow_up(item) {
         return follow_up_actions(item);
@@ -1218,10 +1218,10 @@ mod tests {
         app::demo_task(&mut question, now());
         assert!(hub::is_follow_up(&question));
         let words: Vec<String> = card_buttons(&question, false).into_iter().map(|b| b.label).collect();
-        assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
+        assert_eq!(words, [tr("Reply"), tr("Archive mail"), tr("Not now")]);
         let sent: Vec<Option<Message>> = card_buttons(&question, false).into_iter().map(|b| b.on_press).collect();
         assert!(matches!(&sent[0], Some(Message::Act(id, Command::Reply)) if id == "demo-9"));
-        assert!(matches!(&sent[1], Some(Message::MarkMailDone(id)) if id == "demo-9"));
+        assert!(matches!(&sent[1], Some(Message::ArchiveMail(id)) if id == "demo-9"));
         assert!(matches!(&sent[2], Some(Message::Act(_, Command::Done))), "Not now closes the question");
         assert!(!dismissable(&question) && bell(&question).is_none(), "no ✕ beside Not now, no bell");
         let bar = row_actions(&question);

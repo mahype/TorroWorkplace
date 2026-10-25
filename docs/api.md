@@ -491,6 +491,28 @@ gespeichert; die Antwort ist der Eintrag, der es wäre. Rechte wie bei `mute_ite
 `mail.search_messages` mit dem optionalen Feld `snoozed`: `false` lässt zurückgestellte Mails weg und stellt
 zurückgekommene nach dem Zeitpunkt ihrer Rückkehr ein, `true` liefert nur die zurückgestellten; gefiltert wird vor dem
 Blättern. Jede Mail einer Suche trägt `back`, wenn sie aus „Später“ zurückkam (verträglich, kein `v: 2`).
+Ebenso `hidden` (E18.1, „Hidden“ im Mail-Fenster): `false` lässt Mails des Posteingangsordners weg, die der Mensch
+ausgeblendet hat – von einem Absender oder einer Domain (`hide_sender`, geprüft beim Lesen gegen den Absender, also
+auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr Eintrag erledigt ist, oder durch ein
+Merkmal mit Wirkung `hide` ferngehalten, solange die Regel besteht –, `true` liefert nur sie. Mail eines offenen oder
+zurückgestellten Eintrags und Mail in einem anderen Ordner ist nie ausgeblendet; ein stummes Konto, „Only Info“ und
+„No popup“ blenden nichts aus. Beide Felder gelten zusammen und nur für Konten, deren Einträge der Schlüssel sieht
+(Leserecht in `inbox`, Konto in `inbox_sources`); sonst gilt nichts als zurückgestellt oder ausgeblendet. Absender- und
+Domain-Regeln gelten bewusst für jedes Konto (E3.11), auch wenn die Regel an einem Eintrag eines Kontos entstand, das
+der Schlüssel nicht sieht; `hidden: true` zeigt dann ihre Wirkung in den sichtbaren Konten, `inbox.list_rules` die Regel
+selbst nicht. Archivieren ist `mail.move_messages` mit Rolle `archive`; das erledigt den Eintrag, sobald keine
+ungelesene Mail der Unterhaltung mehr im Posteingang liegt. Archiviert die App vom Eintrag aus (Zentrale, App Feed,
+„Later“), schließt sie ihn danach zusätzlich mit `inbox.set_item_done`; in „All“, „Hidden“ und den Ordnern überlässt
+sie ihn dem Kern.
+„Show again“ (E18.2) ist `inbox.set_mail_shown` (Zugriff Write, MCP `inbox_set_mail_shown`): `shown: true` nimmt 1 bis
+100 Mails (`ids`, `m:…`, auch mehrerer Konten) aus „Hidden“, `hidden` zählt sie dann als nicht ausgeblendet. Nur diese
+Mails: Die Regel bzw. die ausgeblendete Unterhaltung bleibt, weitere und neue Mail bleibt ausgeblendet, der Eintrag
+bleibt, wie er ist (ein erledigter bleibt erledigt). Gemerkt wird nur, was jetzt ausgeblendet ist; `shown: false` nimmt
+die Ausnahme zurück (Undo). Wer den Eintrag erneut ausblendet (`mute_item` mit `hide`, `hide_sender`), blendet seine Mail
+wieder aus. `not-found` für den ganzen Aufruf, sobald eine Mail in einem Konto liegt, das der Schlüssel nicht liest
+(`mail_accounts`) oder dessen Einträge er nicht sieht (`inbox_sources`) – geprüft, bevor jemand um Freigabe gebeten wird.
+Erledigte Einträge, deren Ausblendung noch gilt (diese Unterhaltung, oder eine Regel, die noch besteht), räumt der Kern
+nicht nach 30 Tagen auf, damit ihre Mail ausgeblendet bleibt.
 `set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
 Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
 
