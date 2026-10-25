@@ -310,6 +310,14 @@ impl Supervisor {
         state.run.as_ref().map(|run| run.tools.clone())
     }
 
+    /// How the running server was started (its spec as stored) and the tools it reported last; `None` while it
+    /// does not run. For keeping a changed list (`super::Extensions::keep_reported`) only for the spec it is of.
+    pub fn running(&self, id: &str) -> Option<(ServerSpec, Vec<ReportedTool>)> {
+        let server = self.get(id)?;
+        let state = lock(&server.state);
+        state.run.as_ref().map(|run| (run.launch.server.clone(), run.tools.clone()))
+    }
+
     /// What the server wrote on stderr, over all its runs since the service started: the last
     /// [`OUTPUT_LINES`] lines, at most [`OUTPUT_BYTES`] bytes. Foreign text, only for people.
     pub fn output(&self, id: &str) -> Vec<String> {
