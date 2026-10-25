@@ -56,7 +56,7 @@ use torro_ipc::{Request, SettingKey};
 
 use super::{Action, AppAction, access};
 use crate::Data;
-use crate::parts::{chevron, field, picker, pressable, row_frame, setting_row, switch};
+use crate::parts::{chevron, field, picker, pressable, setting_row, switch};
 
 /// The file endings the logo chooser offers, as `PdfTemplate::check` takes them.
 pub const LOGO_EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
@@ -306,7 +306,7 @@ fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a
         }
         ToolId::Files => {
             if let Some(add) = files_add_folder(data) {
-                rows.push(no_folder_row(add, words));
+                rows.push(no_folder_row(add, no_folder_flagged(data), words));
             }
             tr(
                 "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose its folders.",
@@ -323,14 +323,11 @@ fn folders_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     let folders = &data.settings.tools.folders;
     let mut rows: Vec<Element<'a, Message>> = folders.iter().map(|folder| allowed_folder_row(folder, words)).collect();
     let room = folders.len() < MAX_ALLOWED_FOLDERS;
-    let add = widgets::text_button(
-        Some(Icon::Plus),
-        tr("Add folder…"),
-        style::button::ghost,
-        room.then_some(Message::AddFolder),
-    );
-    // The button's word on the axis of the labels above it, as the groups of Accounts offer "+ Add …".
-    rows.push(row_frame(row![Space::new(), add].spacing(-style::button_padding().left), false));
+    // A row of its own, "+" on the axis of the folder icons and its word on that of the names, as the lists of
+    // Mail end with "+ New …".
+    let plus = icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
+    let add = setting_row(Some(plus.into()), tr("Add folder…"), None, Space::new());
+    rows.push(pressable(add, room.then_some(Message::AddFolder)));
     widgets::group(tr("Allowed folders"), rows, Some(folders_footer(folders.len())))
 }
 
@@ -346,25 +343,29 @@ fn allowed_folder_row<'a>(folder: &'a AllowedFolder, words: bool) -> Element<'a,
         true => widgets::text_button(None, tr("Remove"), style::button::ghost, Some(remove)),
         false => widgets::icon_button(Icon::X, tr("Remove"), Some(remove)),
     };
-    let mark = icon::icon(Icon::Folder, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
     let control = row![access, remove].spacing(space::s()).align_y(Alignment::Center);
-    setting_row(Some(mark.into()), file_name(path), Some(path.to_string()), control)
+    setting_row(Some(folder_mark()), file_name(path), Some(path.to_string()), control)
 }
 
-/// The files tool without an allowed folder: an orange dot – something to do – and "Add folder…" to do it right
-/// there, so the row is no dead end; narrow the button is a "+" with its word as tooltip, as "Remove" is.
-fn no_folder_row<'a>(add: Message, words: bool) -> Element<'a, Message> {
+/// The icon in front of a row that names a folder: an allowed one, the PDF folder, the empty list.
+fn folder_mark<'a>() -> Element<'a, Message> {
+    icon::icon(Icon::Folder, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) }).into()
+}
+
+/// The files tool without an allowed folder, with "Add folder…" to add one right there, so the row is no dead
+/// end; narrow the button is a "+" with its word as tooltip, as "Remove" is. `flagged` it has the orange dot –
+/// something to do –, else the folder icon: one orange dot per group is enough ([`no_folder_flagged`]).
+fn no_folder_row<'a>(add: Message, flagged: bool, words: bool) -> Element<'a, Message> {
     let button = match words {
         true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, Some(add)),
         false => widgets::icon_button(Icon::Plus, tr("Add folder…"), Some(add)),
     };
     let detail = tr("The tool works only in allowed folders.");
-    setting_row(
-        Some(widgets::status_dot(Status::Attention)),
-        tr("No allowed folders"),
-        Some(detail.to_string()),
-        button,
-    )
+    let mark = match flagged {
+        true => widgets::status_dot(Status::Attention),
+        false => folder_mark(),
+    };
+    setting_row(Some(mark), tr("No allowed folders"), Some(detail.to_string()), button)
 }
 
 /// A row whose line below the label wraps instead of being cut: what a tool does is a sentence a
@@ -421,7 +422,7 @@ fn folder_row<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
             false => widgets::icon_button(Icon::History, tr("Use desktop"), Some(Message::UseDesktop)),
         });
     }
-    setting_row(None, tr("Folder"), Some(detail), buttons.align_y(Alignment::Center))
+    setting_row(Some(folder_mark()), tr("Folder"), Some(detail), buttons.align_y(Alignment::Center))
 }
 
 /// One template: paper, margins, font size, header, footer, page numbers and logo. The `last` one
@@ -535,6 +536,13 @@ fn works_in_allowed_folders(tool: ToolId) -> bool {
 /// the list above has its button.
 fn files_add_folder(data: &Data) -> Option<Message> {
     data.settings.tools.folders.is_empty().then_some(Message::AddFolder)
+}
+
+/// Whether the files tool's row "No allowed folders" has the orange dot: only while the row above it has none,
+/// that is while the assistant may use the tool. Two orange dots on top of each other make the group restless,
+/// and the one above says what to do first.
+fn no_folder_flagged(data: &Data) -> bool {
+    assistant_may_use(data, ToolId::Files)
 }
 
 /// The sentence below the allowed folders; with `count` at [`MAX_ALLOWED_FOLDERS`] it also says why "Add
@@ -825,6 +833,21 @@ mod tests {
         empty.settings.tools.folders.clear();
         let add = files_add_folder(&empty).expect("a way out of the empty list");
         assert_eq!(update(&mut State::default(), add, &empty), Act::App(AppAction::PickAllowedFolder));
+    }
+
+    /// Sight check of WD.4: one orange dot in the files tool's group. While the assistant may not use the tool,
+    /// the row that leads to Access has it and "No allowed folders" shows the folder icon; once it may, the
+    /// missing folder is what is left to do.
+    #[tokio::test]
+    async fn the_files_tool_has_one_orange_dot_at_most() {
+        let mut empty = data().await;
+        empty.settings.tools.folders.clear();
+        assert!(!assistant_may_use(&empty, ToolId::Files), "the demo's assistant may not use it");
+        assert!(!no_folder_flagged(&empty), "the row to Access has the dot");
+        let rights = &mut empty.clients[0].rights;
+        rights.set_level(Area::Tools, Level::Read, Vec::new);
+        rights.tools = Selection::All;
+        assert!(no_folder_flagged(&empty), "allowed, the missing folder has it");
     }
 
     /// Sight check of WD.4: the tools that work in the allowed folders stand right below them, the files tool
