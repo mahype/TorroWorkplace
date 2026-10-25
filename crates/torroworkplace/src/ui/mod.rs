@@ -1252,6 +1252,22 @@ impl Ui {
         }
     }
 
+    /// The demo stores nothing, yet a web search provider switched in the setup shows as switched in the demo's
+    /// list (issue #305): the setup's "Continue" waits until the list carries a switch, and in the demo no reload
+    /// ever brings one. Every other request leaves the demo's data as it is.
+    fn demo_keep(&mut self, request: &Request) {
+        let Request::SetSetting { key: torro_ipc::SettingKey::SearchProvider, value } = request else { return };
+        let Ok(switch) = serde_json::from_value::<torro_core::settings::SearchProviderSwitch>(value.clone()) else {
+            return;
+        };
+        if let Some(info) = self.data.search_providers.iter_mut().find(|info| info.id == switch.provider) {
+            info.enabled = switch.enabled;
+        }
+        if let Some(setup) = self.setup.as_mut() {
+            setup::observe(setup, &self.data);
+        }
+    }
+
     fn perform(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::None => Task::none(),
@@ -1259,10 +1275,13 @@ impl Ui {
             // reaches the clipboard, so nothing is stored and nothing starts. A few requests get a
             // sample answer from the process itself (a client's activity, a new key), so their
             // states can be shown; so do the jobs, the hook notes from the demo's own.
-            Action::Send(request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
-                Some(response) => self.update(Message::Sent(Ok(response))),
-                None => Task::none(),
-            },
+            Action::Send(request) if self.launch.demo => {
+                self.demo_keep(&request);
+                match launch::demo_answer(&request, &self.data) {
+                    Some(response) => self.update(Message::Sent(Ok(response))),
+                    None => Task::none(),
+                }
+            }
             Action::OpenUrl(_) | Action::Copy(_) if self.launch.demo => Task::none(),
             Action::Setup(job) if self.launch.demo => {
                 let outcome = match job {
@@ -1285,6 +1304,7 @@ impl Ui {
             },
             Action::CheckAddress(request) => Task::perform(answer(request), Message::Checked),
             Action::SendAll(requests) if self.launch.demo => {
+                requests.iter().for_each(|request| self.demo_keep(request));
                 let answers: Vec<Response> =
                     requests.iter().filter_map(|request| launch::demo_answer(request, &self.data)).collect();
                 let tasks: Vec<Task<Message>> =
@@ -2049,6 +2069,21 @@ mod tests {
         ] {
             assert_eq!(of(exception), None, "{exception:?}");
         }
+    }
+
+    /// Issue #305: the demo keeps a web search provider switched in the setup in its own list, so "Continue" on the
+    /// web step does not wait for a reload that never comes.
+    #[test]
+    fn the_demo_keeps_a_web_switch_of_the_setup() {
+        use torro_core::settings::SearchProviderId;
+        let mut ui = started(&["--demo", "--open", "setup-web"]);
+        let switch =
+            setup::Message::Web(torro_settings_ui::assistant::web::Message::Switch(SearchProviderId::Duckduckgo, true));
+        let _ = ui.update(Message::Setup(switch));
+        let duckduckgo = ui.data.search_providers.iter().find(|info| info.id == SearchProviderId::Duckduckgo);
+        assert!(duckduckgo.is_some_and(|info| info.enabled), "the demo's list carries the switch");
+        let setup = ui.setup.as_ref().expect("the setup is open");
+        assert!(!setup::web_waits(setup, &ui.data), "Continue goes on");
     }
 
     #[test]
