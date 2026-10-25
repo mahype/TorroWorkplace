@@ -232,8 +232,8 @@ pub struct State {
     engine: Option<String>,
     /// The web search step (task WEB.7): a key or SearXNG's address being typed, and the address check.
     web: web::State,
-    /// Search providers switched in this setup: shown at once, while the core follows with the next reload (and
-    /// never in the demo).
+    /// Search providers switched in this setup and not yet in the core's list: shown at once, until the core's list
+    /// shows them (never in the demo) or a refusal comes back.
     switched: BTreeMap<SearchProviderId, bool>,
     /// The providers as the web step shows them: the core's list with [`State::switched`] laid over it, renewed with
     /// every reload ([`observe`]) and switch. `None` before the first switch: the core's list as it is.
@@ -661,6 +661,16 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             stay(set(SettingKey::AssistantDefault, torro_core::settings::AssistantDefault::to_value(Some(&default))))
         }
         Message::Web(web::Message::Switch(id, on)) => stay(switch_provider(state, data, id, on)),
+        // The check's answer comes back to the setup alone ([`checked`]).
+        Message::Web(web::Message::CheckAddress) => {
+            let shown = state.providers.as_deref().unwrap_or(&data.search_providers);
+            stay(match web::update(&mut state.web, web::Message::CheckAddress, shown) {
+                torro_settings_ui::Action::Send(mut requests) if requests.len() == 1 => {
+                    requests.pop().map_or(Action::None, Action::CheckAddress)
+                }
+                other => from_view(other),
+            })
+        }
         Message::Web(message) => {
             let shown = state.providers.as_deref().unwrap_or(&data.search_providers);
             stay(from_view(web::update(&mut state.web, message, shown)))
@@ -680,9 +690,14 @@ pub(super) fn providers<'a>(state: &'a State, data: &'a Data) -> &'a [SearchProv
 }
 
 /// Lays the switches of this setup over the core's list of providers, so a switch shows at once – also in the
-/// demo, which stores nothing.
+/// demo, which stores nothing. Only until the core's list shows it: a switch the core lists as switched is
+/// dropped from [`State::switched`], and without any left the core's list is shown as it is.
 fn show_switched(state: &mut State, data: &Data) {
+    state.switched.retain(|id, on| {
+        data.search_providers.iter().find(|info| info.id == *id).is_none_or(|info| info.enabled != *on)
+    });
     if state.switched.is_empty() {
+        state.providers = None;
         return;
     }
     let mut shown = data.search_providers.clone();
@@ -713,11 +728,12 @@ pub(super) fn assistant_client(data: &Data) -> Option<&ClientInfo> {
     data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT)
 }
 
-/// What "Continue" on the web step sends: with "Let the assistant use it" ticked, a provider on and the assistant's
-/// client there, one `clients.update_client` with its rights and read access to `web` ([`with_web`]) – once in a
-/// setup, and only when that changes its rights. Otherwise nothing.
+/// What "Continue" on the web step sends: with "Let the assistant use it" ticked, a provider on as the core lists
+/// it (not a switch on its way, which the core may refuse) and the assistant's client there, one
+/// `clients.update_client` with its rights and read access to `web` ([`with_web`]) – once in a setup, and only when
+/// that changes its rights. Otherwise nothing.
 fn grant_web(state: &mut State, data: &Data) -> Action {
-    let any_on = providers(state, data).iter().any(|info| info.enabled);
+    let any_on = data.search_providers.iter().any(|info| info.enabled);
     if !state.web_allowed || state.web_granted || !any_on {
         return Action::None;
     }
@@ -878,7 +894,8 @@ pub fn observe(state: &mut State, data: &Data) {
     if let Some(dialog) = state.dialog.as_mut() {
         wizard::observe(dialog, data);
     }
-    // The web step's switches stay shown over the reloaded list; SearXNG's check ends once its address is stored.
+    // The web step's switches stay shown over the reloaded list until it shows them; SearXNG's check ends once its
+    // address is stored.
     show_switched(state, data);
     web::sent(&mut state.web, Ok(web::stored_address(&data.search_providers)));
     if !state.nextcloud.running() {
@@ -926,12 +943,11 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     if let Some(taken) = ai_answered(state, result) {
         return taken;
     }
-    // A refused SearXNG address shows its reason under the field; a success ends the check with the next reload.
-    if web::checking(&state.web)
-        && let Err(problem) = result
-    {
-        web::sent(&mut state.web, Err(problem));
-        return true;
+    // A refusal may be a provider's switch (answers do not say which request they are for): the switches
+    // shown go back to what the core holds, and the next reload shows what it stored.
+    if result.is_err() {
+        state.switched.clear();
+        state.providers = None;
     }
     match state.nextcloud.answered(result) {
         Some(Err(message)) => {
@@ -941,6 +957,20 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         Some(Ok(())) => true,
         None => false,
     }
+}
+
+/// The answer to the check of a SearXNG address on the web step ([`Action::CheckAddress`]), which comes here
+/// alone: a refusal shows its reason under the field; a success ends the check with the next reload, once the
+/// address is stored. `true` when the setup shows it (the shell then shows no notice); `false` once no check waits
+/// (the step was left), so the shell says why.
+pub fn checked(state: &mut State, result: &Result<Response, String>) -> bool {
+    if !web::checking(&state.web) {
+        return false;
+    }
+    if let Err(problem) = result {
+        web::sent(&mut state.web, Err(problem));
+    }
+    true
 }
 
 /// The answers of the AI step: the servers found on this computer (without an answer every one
@@ -1570,11 +1600,20 @@ mod tests {
         assert_eq!(requests(update(&mut again, duckduckgo_on(), &on)).len(), 1, "the tool is on already");
     }
 
+    /// `data` as the core lists it once DuckDuckGo's switch is stored.
+    fn with_duckduckgo(data: &Data) -> Data {
+        let mut stored = data.clone();
+        for info in &mut stored.search_providers {
+            info.enabled |= info.id == SearchProviderId::Duckduckgo;
+        }
+        stored
+    }
+
     /// With "Let the assistant use it" ticked, "Continue" sends one `clients.update_client` that keeps the
     /// assistant's tools and rights and adds read access to `web`; once, however often the step is passed.
     #[test]
     fn continue_gives_the_assistant_web_and_keeps_its_tools() {
-        let data = data();
+        let data = with_duckduckgo(&data());
         let before = assistant(&data);
         assert_eq!(before.rights.tools, Selection::Only(vec!["pdf".into()]));
         let mut setup = state(Step::Web);
@@ -1594,14 +1633,14 @@ mod tests {
     /// Unticked, or without the assistant's client, "Continue" sends nothing; without a provider on neither.
     #[test]
     fn without_the_tick_or_the_client_continue_sends_nothing() {
-        let data = data();
+        let mut none_on = state(Step::Web);
+        assert!(requests(update(&mut none_on, Message::Next, &data())).is_empty(), "no provider: nothing to use");
+
+        let data = with_duckduckgo(&data());
         let mut setup = state(Step::Web);
         update(&mut setup, duckduckgo_on(), &data);
         update(&mut setup, Message::AllowWeb(false), &data);
         assert!(requests(update(&mut setup, Message::Next, &data)).is_empty());
-
-        let mut none_on = state(Step::Web);
-        assert!(requests(update(&mut none_on, Message::Next, &data)).is_empty(), "no provider: nothing to use");
 
         let mut without = data.clone();
         without.clients.retain(|client| client.kind != ASSISTANT_CLIENT);
@@ -1609,6 +1648,56 @@ mod tests {
         update(&mut setup, duckduckgo_on(), &without);
         assert!(requests(update(&mut setup, Message::Next, &without)).is_empty());
         let _ = pages::view(&setup, &without, SizeClass::Wide);
+    }
+
+    /// Found in the review of #305: a switch shows at once, but only until the core answers. Refused, it goes
+    /// back to what the core holds; stored, the core's list shows it. "Continue" goes by the core's list, so it
+    /// never gives the assistant `web` while no provider is on.
+    #[test]
+    fn a_refused_switch_goes_back_and_continue_goes_by_the_core() {
+        let data = data();
+        let duckduckgo = |setup: &State, data: &Data| {
+            providers(setup, data).iter().any(|info| info.id == SearchProviderId::Duckduckgo && info.enabled)
+        };
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        assert!(duckduckgo(&setup, &data), "shown at once");
+        assert!(!answered(&mut setup, &Err("refused".into())), "the shell says why");
+        assert!(!duckduckgo(&setup, &data), "back to what the core holds");
+        observe(&mut setup, &data);
+        assert!(!duckduckgo(&setup, &data), "and the next reload does not bring it back");
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "no provider on: nothing given");
+
+        // Shown but not yet stored: "Continue" waits for the core's word.
+        let mut early = state(Step::Web);
+        update(&mut early, duckduckgo_on(), &data);
+        assert!(requests(update(&mut early, Message::Next, &data)).is_empty());
+
+        // Stored: the core's list carries it, the overlay is done.
+        let stored = with_duckduckgo(&data);
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        observe(&mut setup, &stored);
+        assert!(setup.switched.is_empty() && setup.providers.is_none(), "confirmed");
+        assert!(duckduckgo(&setup, &stored));
+    }
+
+    /// Found in the review of #305: while SearXNG's address is checked, the refusal of another request is not
+    /// taken for the check's; only the check's own answer ends it ([`checked`]).
+    #[test]
+    fn only_the_checks_own_answer_ends_it() {
+        let data = data();
+        let mut setup = state(Step::Web);
+        update(&mut setup, Message::Web(web::Message::TypeAddress("https://search.example.org".into())), &data);
+        let check = update(&mut setup, Message::Web(web::Message::CheckAddress), &data);
+        let Outcome::Stay(Action::CheckAddress(request)) = check else { panic!("the check apart, got {check:?}") };
+        assert_eq!(request, web::address_request(Some("https://search.example.org")));
+        update(&mut setup, duckduckgo_on(), &data);
+        assert!(!answered(&mut setup, &Err("the switch was refused".into())), "the shell says it");
+        assert!(setup.busy(), "the check still waits");
+        assert!(checked(&mut setup, &Err("This SearXNG instance does not answer in JSON.".into())));
+        assert!(!setup.busy());
+        assert!(!checked(&mut setup, &Err("late".into())), "no check waits: the shell says it");
     }
 
     /// "Skip" leaves the web search off and sends nothing; Escape drops a key being typed first.
@@ -1655,10 +1744,10 @@ mod tests {
         let data = data();
         let mut setup = state(Step::Web);
         update(&mut setup, Message::Web(web::Message::TypeAddress("https://search.example.org".into())), &data);
-        let check = requests(update(&mut setup, Message::Web(web::Message::CheckAddress), &data));
-        assert_eq!(check, vec![web::address_request(Some("https://search.example.org"))]);
+        let check = update(&mut setup, Message::Web(web::Message::CheckAddress), &data);
+        assert!(matches!(check, Outcome::Stay(Action::CheckAddress(_))), "{check:?}");
         assert!(setup.busy());
-        assert!(answered(&mut setup, &Err("This SearXNG instance does not answer in JSON.".into())));
+        assert!(checked(&mut setup, &Err("This SearXNG instance does not answer in JSON.".into())));
         assert!(!setup.busy());
         assert!(!answered(&mut setup, &Err("another refusal".into())), "no check waits: the shell says it");
 
