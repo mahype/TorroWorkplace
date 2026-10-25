@@ -332,10 +332,11 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   Sampling und Roots kommen mit #304.
 - **Umgebung des Programms:** leer, dann nur `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL` und `TMPDIR` (unter Windows
   einige mehr), dann der `PATH` (der Ordner des gefundenen Programms vorn), dann die Variablen des Servers. Gesperrt und
-  beim Installieren mit Fehler abgelehnt: `PATH`, `PATHEXT`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS` u. a.
-  sowie `TORRO_*`. Geheimnisse gehen nur beim Start an genau diesen Server.
+  beim Installieren mit Fehler abgelehnt: `PATH`, `PATHEXT`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`,
+  `npm_config_*`, `JAVA_TOOL_OPTIONS`, `ComSpec`, `DOCKER_HOST` u. a. sowie `TORRO_*`. Geheimnisse gehen nur beim
+  Start an genau diesen Server.
 - **Adressen:** nur Streamable HTTP. `https://` ist Pflicht, `http://` nur für `localhost`, `127.0.0.1` und `::1`;
-  keine Weiterleitungen; Anmeldung nur über Header. OAuth kommt als eigenes Issue.
+  keine Weiterleitungen, für `http://` kein Proxy; Anmeldung nur über Header. OAuth kommt als eigenes Issue.
 - **Prozess:** Start bei Bedarf (erster Aufruf, Installieren, Zustimmen), Startzeit höchstens 30 s, beim Installieren
   und Aktualisieren 180 s. Ein Aufruf höchstens 60 s. Nach 10 Minuten ohne Aufruf beendet. Nach einem Absturz neu beim
   nächsten Bedarf, höchstens drei Starts in fünf Minuten, dann Status `crashed` bis zum Einschalten. Beenden nimmt den

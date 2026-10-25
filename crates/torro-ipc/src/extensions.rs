@@ -82,8 +82,10 @@ pub fn parse_denied_name(name: &str) -> Option<(&str, &str)> {
 /// Whether a server may not be given the variable `name` (`docs/tasks/mcp-anbindungen.md`,
 /// "Umgebung des Kindprozesses"), in any case: `PATH` and `PATHEXT` (the core sets them), what makes
 /// a program load other code (`LD_*`, `DYLD_*`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
-/// `NODE_OPTIONS`, `NODE_PATH`, `PERL5LIB`, `PERL5OPT`, `RUBYOPT`, `RUBYLIB`, `BASH_ENV`, `ENV`, `IFS`)
-/// and Torro's own (`TORRO_*`). Installing a server with one is refused with `error`.
+/// `PYTHONWARNINGS`, `NODE_OPTIONS`, `NODE_PATH`, `npm_config_*`, `PERL5LIB`, `PERL5OPT`, `RUBYOPT`,
+/// `RUBYLIB`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `BASH_ENV`, `ENV`, `IFS`, and on
+/// Windows `ComSpec` and `SystemRoot`), what sends a server's secrets to another Docker daemon (`DOCKER_HOST`,
+/// `DOCKER_CONTEXT`) and Torro's own (`TORRO_*`). Installing a server with one is refused with `error`.
 pub fn blocked_env(name: &str) -> bool {
     const NAMES: &[&str] = &[
         "PATH",
@@ -91,17 +93,25 @@ pub fn blocked_env(name: &str) -> bool {
         "PYTHONPATH",
         "PYTHONHOME",
         "PYTHONSTARTUP",
+        "PYTHONWARNINGS",
         "NODE_OPTIONS",
         "NODE_PATH",
         "PERL5LIB",
         "PERL5OPT",
         "RUBYOPT",
         "RUBYLIB",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "JDK_JAVA_OPTIONS",
         "BASH_ENV",
         "ENV",
         "IFS",
+        "COMSPEC",
+        "SYSTEMROOT",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
     ];
-    const PREFIXES: &[&str] = &["LD_", "DYLD_", "TORRO_"];
+    const PREFIXES: &[&str] = &["LD_", "DYLD_", "NPM_CONFIG_", "TORRO_"];
     let upper = name.to_ascii_uppercase();
     NAMES.contains(&upper.as_str()) || PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
@@ -611,6 +621,11 @@ mod tests {
             "NODE_OPTIONS",
             "IFS",
             "ENV",
+            "DOCKER_HOST",
+            "npm_config_registry",
+            "PYTHONWARNINGS",
+            "JAVA_TOOL_OPTIONS",
+            "ComSpec",
         ] {
             assert!(blocked_env(blocked), "{blocked}");
         }

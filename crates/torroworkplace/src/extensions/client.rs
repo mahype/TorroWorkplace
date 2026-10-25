@@ -156,7 +156,8 @@ where
 
 /// Connects to the address `url` over Streamable HTTP with `headers` on every request
 /// (`super::env::headers`) and runs `initialize`. The address must have passed `super::env::check_url`. The
-/// HTTP client follows no redirect, so a token in a header goes to this address only. Like [`connect`]
+/// HTTP client follows no redirect and takes no proxy for plain HTTP, so a token in a header goes to this
+/// address only. Like [`connect`]
 /// without a time limit.
 pub async fn connect_http(url: &str, headers: &[(String, String)]) -> Result<Connection, ClientError> {
     let mut custom = HashMap::new();
@@ -167,10 +168,13 @@ pub async fn connect_http(url: &str, headers: &[(String, String)]) -> Result<Con
         value.set_sensitive(true);
         custom.insert(name, value);
     }
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| ClientError::Closed)?;
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    // `HTTP_PROXY`/`ALL_PROXY` of the service would otherwise apply: a plain-text request to a local server
+    // would carry its secret headers to the proxy, maybe over the network.
+    if !url.starts_with("https://") {
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().map_err(|_| ClientError::Closed)?;
     let config = StreamableHttpClientTransportConfig::with_uri(url).custom_headers(custom);
     connect(StreamableHttpClientTransport::with_client(client, config)).await
 }
