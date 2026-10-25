@@ -159,8 +159,9 @@ impl Assistant {
             // The bot's client is narrowed through the delegation already (its mode included).
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.clone()),
+            // The assistant's model wrote it, not the person (issue #305).
+            from: Some(delegation.assistant.clone()),
             on_behalf: Some(delegation),
-            person: false,
         };
         let started = self.send(message, kind, Utc::now()).await;
         let Response::Conversation { conversation: summary, entries } = &started else { return started };

@@ -4706,9 +4706,14 @@ impl Core {
             | Request::OpenChatWindow { .. }
             | Request::ConfirmBot { .. }
             | Request::AskBot { .. }) => {
-                // Only the person's own message can name a bot for the assistant (task B.2).
-                let person = matches!(reach, Reach::Suite);
-                Box::pin(self.assistant_request(request, person)).await
+                // Only the person's own message can name a bot for the assistant (task B.2); a
+                // client's message keeps who sent it (issue #305). The dispatch names a client's
+                // caller; should a path forget it, the message still counts as no person's.
+                let from = match reach {
+                    Reach::Suite => None,
+                    Reach::Client(_) => Some(caller.unwrap_or("unknown").to_string()),
+                };
+                Box::pin(self.assistant_request(request, from)).await
             }
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
@@ -8120,12 +8125,13 @@ impl Core {
 
     /// The commands of the assistant and `bots.ask_bot` (task C.1), with the switches of the models
     /// (task S.24): `assistant.list_engines` lists only AI accounts with a model on, a message to one
-    /// without is `unsupported` ([`Core::models_off_refusal`]). `person`: the app key sent it.
-    async fn assistant_request(&self, request: Request, person: bool) -> Response {
+    /// without is `unsupported` ([`Core::models_off_refusal`]). `from`: the client that sent it,
+    /// `None` for the app key ([`crate::assistant::answer_from`]).
+    async fn assistant_request(&self, request: Request, from: Option<String>) -> Response {
         if let Some(refused) = self.models_off_refusal(&request).await {
             return refused;
         }
-        match crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await {
+        match crate::assistant::answer_from(&self.assistant, &self.ai, request, from).await {
             Response::Engines { engines } => {
                 let mut offered = Vec::with_capacity(engines.len());
                 for engine in engines {
@@ -19697,9 +19703,14 @@ mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
-        let Response::Conversation { conversation, .. } = ask(&core, Some(&app_key), send).await else {
+        let Response::Conversation { conversation, entries } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
         };
+        // Issue #305: the person's message names no sender.
+        assert!(
+            matches!(&entries[0].content, torro_ipc::assistant::EntryContent::Message { from: None, .. }),
+            "{entries:?}"
+        );
 
         let mut rights = Rights::assistant();
         rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: true });
@@ -19760,9 +19771,14 @@ mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
-        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), send).await else {
+        let Response::Conversation { conversation, entries } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
         };
+        // Issue #305: the message keeps who sent it, so no later answer takes it for the person's.
+        assert!(
+            matches!(&entries[0].content, torro_ipc::assistant::EntryContent::Message { from: Some(from), .. } if *from == id),
+            "{entries:?}"
+        );
         let unknown = Request::DeleteConversation { id: "fedcba9876543210".into() };
         assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
         // Asking before every change, still nobody is asked about what would fail anyway.

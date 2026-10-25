@@ -500,6 +500,7 @@ impl Assistant {
                 effort: message.effort,
                 without: message.without.clone(),
                 mode: message.mode,
+                from: message.from.clone(),
             },
             now,
         );
@@ -511,7 +512,7 @@ impl Assistant {
         let said = entry.seq;
         conversation.apply(Line::Entry { entry });
         let id = conversation.id.clone();
-        if message.person {
+        if message.from.is_none() {
             state.said.insert(id.clone(), said);
         }
         let history = conversation.entries.clone();
@@ -1012,9 +1013,10 @@ struct Message {
     /// The bot runs for the assistant (task B.2): as [`Actor::Delegated`], with what both clients
     /// may. `None`: as its own client (or the assistant as its own).
     on_behalf: Option<Delegation>,
-    /// The person wrote it (task B.2): sent with the app key, not by a client. Only the person's
-    /// message can name a bot for the assistant to ask ([`State::said`]).
-    person: bool,
+    /// The client that sent it ([`EntryContent::Message`]'s `from`, issue #305); `None`: the person
+    /// wrote it (task B.2), sent with the app key. Only the person's message can name a bot for the
+    /// assistant to ask ([`State::said`]), and only it is their word in any later answer.
+    from: Option<String>,
 }
 
 /// Why a message for `bot` (`None`: the assistant) cannot go into `conversation` (task B.1): a
@@ -1040,15 +1042,25 @@ fn with_bots(mut summary: ConversationSummary, bots: &[String]) -> ConversationS
 /// [`answer_from`] as for a client, for tests: a message counts as no person's.
 #[cfg(test)]
 pub async fn answer(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Request) -> Response {
-    answer_from(assistant, ai, request, false).await
+    answer_from(assistant, ai, request, Some(TEST_CLIENT.into())).await
 }
 
+/// The client [`answer`] sends as, in tests.
+#[cfg(test)]
+pub const TEST_CLIENT: &str = "7e57c11e";
+
 /// Answers an `assistant.*` request and `bots.ask_bot` (task B.1), for the app key and for a client
-/// the core admitted ([`crate::core::Core::handle_from`]). `person`: the app key sent it (task B.2),
-/// so a message is the person's own, and only such a message can name a bot for the assistant to
-/// ask. What would be refused anyway comes first ([`Assistant::refusal`]); the handlers check again
+/// the core admitted ([`crate::core::Core::handle_from`]). `from`: the client that sent it, `None`
+/// for the app key (task B.2): then a message is the person's own, and only such a message can name
+/// a bot for the assistant to ask; a client's message keeps its id (issue #305). What would be
+/// refused anyway comes first ([`Assistant::refusal`]); the handlers check again
 /// under their lock (a conversation may have been deleted or started answering meanwhile).
-pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Request, person: bool) -> Response {
+pub async fn answer_from(
+    assistant: &Arc<Assistant>,
+    ai: &AiAccounts,
+    request: Request,
+    from: Option<String>,
+) -> Response {
     if let Some(refused) = assistant.refusal(ai, &request).await {
         return refused;
     }
@@ -1072,7 +1084,7 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
                 Err(refused) => return refused,
             };
             let message =
-                Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf: None, person };
+                Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf: None, from };
             assistant.send(message, kind, Utc::now()).await
         }
         Request::AskBot { bot, text, conversation } => {
@@ -1092,7 +1104,7 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
                 mode: torro_ipc::assistant::Mode::Default,
                 bot: Some(bot),
                 on_behalf: None,
-                person: false,
+                from,
             };
             assistant.send(message, kind, Utc::now()).await
         }

@@ -29,6 +29,7 @@ fn run(contents: Vec<EntryContent>) -> Response {
         effort: None,
         without: Vec::new(),
         mode: torro_ipc::assistant::Mode::Default,
+        from: Some("a55e5517".into()),
     };
     let entries: Vec<Entry> = std::iter::once(message)
         .chain(contents)

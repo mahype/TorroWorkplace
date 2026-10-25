@@ -652,6 +652,7 @@ mod tests {
                 effort: None,
                 without: Vec::new(),
                 mode: torro_ipc::assistant::Mode::Default,
+                from: None,
             },
         }
     }
@@ -909,6 +910,7 @@ mod tests {
                 effort: None,
                 without: Vec::new(),
                 mode: Mode::ReadOnly,
+                from: None,
             },
         };
         transcript.merge(summary("c1", 2, false), vec![asked]);

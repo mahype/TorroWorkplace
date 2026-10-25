@@ -31,8 +31,8 @@
 //! The tool `web` (issue #305, task WEB.5) goes to the core with the conversation
 //! ([`Host::run_web`]): the person says yes once per conversation, and once more after it read data
 //! from outside the suite ([`Answering::outside`], which unlike [`Answering::untrusted`] never counts
-//! the web's own results). A page whose address the person wrote in a message is read without
-//! `robots.txt`.
+//! the web's own results; a message a client sent counts in every turn, as it does for the memory). A
+//! page whose address the person wrote in a message is read without `robots.txt`.
 //!
 //! A command that waits for a person (`pending`) puts an approval entry into the conversation; the
 //! loop asks for its state every [`Limits::approval_poll`] and goes on once the person decided (the
@@ -541,32 +541,37 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         EntryContent::Tool { name, .. } => data_rule::kept_from(name, rule),
         _ => false,
     });
-    let untrusted = job.history.iter().any(|entry| match &entry.content {
-        EntryContent::Tool { name, .. } => tools::may_have_read_untrusted(name),
-        _ => false,
-    });
+    // A client's message (issue #305) is data from outside like a mail, in this turn and every later
+    // one: it counts for the web's yes and for the memory (C.11) alike.
+    let from_client = sent_by_a_client(&job.history, &job.actor);
+    let untrusted = from_client
+        || job.history.iter().any(|entry| match &entry.content {
+            EntryContent::Tool { name, .. } => tools::may_have_read_untrusted(name),
+            _ => false,
+        });
     // For the web's yes (issue #305, task WEB.5): a bot that runs for the assistant counts what the
     // assistant's conversation read as well, as its yes is that conversation's.
-    let mut outside = reads_outside(&job.history);
+    let mut outside = from_client || reads_outside(&job.history);
     if let Actor::Delegated(delegation) = &job.actor
         && let Response::Conversation { entries, .. } = assistant.get(&delegation.conversation, None).await
     {
         outside |= reads_outside(&entries);
     }
-    // Only the person's own message is their word ([`super::State::said`]: sent with the app key). One
-    // of a client (an agent through `assistant.send_message` or `bots.ask_bot`) is data from outside
-    // like a mail, and its addresses are not the person's. A bot's run for the assistant reads the
+    // Only the person's own message is their word (no `from`, and [`super::State::said`]: sent with
+    // the app key). One of a client (an agent through `assistant.send_message` or `bots.ask_bot`) is
+    // data from outside like a mail, and its addresses are not the person's. A bot's run for the assistant reads the
     // assistant's model's words, which knew only what that conversation read (counted above).
     let said = match &job.actor {
         Actor::Delegated(_) => None,
         Actor::Assistant | Actor::Bot(_) => {
             let said = assistant.state().await.said.get(&job.conversation).copied();
-            let last = job.history.iter().rev().find_map(|entry| match entry.content {
-                EntryContent::Message { .. } => Some(entry.seq),
+            let last = job.history.iter().rev().find_map(|entry| match &entry.content {
+                EntryContent::Message { from, .. } => Some((entry.seq, from.is_none())),
                 _ => None,
             });
-            outside |= last.is_some() && last != said;
-            last.filter(|_| last == said)
+            let last = last.and_then(|(seq, person)| person.then_some(seq)).filter(|seq| Some(*seq) == said);
+            outside |= last.is_none();
+            last
         }
     };
     let mut run = Answering {
@@ -614,16 +619,17 @@ struct Answering {
     /// [`Answering::read_mail`].
     read_kept: bool,
     /// The conversation read data from outside the suite: a tool of an earlier turn that may have
-    /// ([`tools::may_have_read_untrusted`]; its answer is not kept, so counted when it might), or an
-    /// answer of this one the tools marked `untrusted`. From then on every note waits for a person
-    /// (task C.11, [`Host::run`]).
+    /// ([`tools::may_have_read_untrusted`]; its answer is not kept, so counted when it might), an
+    /// answer of this one the tools marked `untrusted`, or a message a client sent ([`sent_by_a_client`],
+    /// issue #305). From then on every note waits for a person (task C.11, [`Host::run`]).
     untrusted: bool,
     /// The conversation read data from outside the suite in the sense of the web's yes (issue #305,
     /// task WEB.5): a tool line of a command [`tools::may_have_read_outside`] counts, of an earlier
     /// turn or of this answer, and for a bot that runs for the assistant one of the assistant's
     /// conversation too. Unlike [`Answering::untrusted`] the web's own results never count, or every
-    /// second search would ask the person again. Handed to [`Host::run_web`]. Also set when the
-    /// message this answer is for came from a client, not the person ([`Answering::said`]).
+    /// second search would ask the person again. Handed to [`Host::run_web`]. Also set when a message
+    /// of the conversation, in this turn or an earlier one, came from a client, not the person
+    /// ([`sent_by_a_client`], [`Answering::said`]).
     outside: bool,
     /// The number of the person's own message this answer is for (issue #305, task WEB.5): only an
     /// address in it counts as the person's ([`by_person`]). `None` when a client sent the message, and
@@ -1107,6 +1113,21 @@ fn reads_outside(entries: &[Entry]) -> bool {
     })
 }
 
+/// Whether `history` holds a message a client sent, not the person ([`EntryContent::Message`]'s
+/// `from`, issue #305): data from outside in every turn. For a bot's run for the assistant
+/// ([`Actor::Delegated`]) the assistant's own messages do not count: its model knew only what its
+/// conversation read, which counts there ([`Delegation::conversation`]).
+fn sent_by_a_client(history: &[Entry], actor: &Actor) -> bool {
+    let asking = match actor {
+        Actor::Delegated(delegation) => Some(delegation.assistant.as_str()),
+        Actor::Assistant | Actor::Bot(_) => None,
+    };
+    history.iter().any(|entry| match &entry.content {
+        EntryContent::Message { from: Some(from), .. } => Some(from.as_str()) != asking,
+        _ => false,
+    })
+}
+
 /// Whether the address `url` stands word for word (trimmed, not empty) in the person's message number
 /// `said` of `history` (issue #305, task WEB.5): the person wrote it, so the page is read as a browser
 /// would, without `robots.txt` (decision 23). A word counts whole, without the marks around it
@@ -1119,7 +1140,7 @@ fn by_person(history: &[Entry], said: u64, url: &str) -> bool {
         |c: char| matches!(c, '<' | '>' | '(' | ')' | '[' | ']' | '"' | '\'' | ',' | '.' | ';' | ':' | '!' | '?');
     !url.is_empty()
         && history.iter().any(|entry| match &entry.content {
-            EntryContent::Message { text, .. } if entry.seq == said => {
+            EntryContent::Message { text, from: None, .. } if entry.seq == said => {
                 text.split_whitespace().any(|word| word.trim_matches(around) == url)
             }
             _ => false,
@@ -1528,7 +1549,7 @@ pub(crate) mod tests {
             bot: None,
             on_behalf: None,
             // The person writes (task WEB.5: only their message is their word).
-            person: true,
+            from: None,
         };
         match assistant.send(message, EngineKind::Ai, Utc::now()).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -1752,7 +1773,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             on_behalf: None,
-            person: false,
+            from: Some(crate::assistant::TEST_CLIENT.into()),
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -1936,7 +1957,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot),
             on_behalf: None,
-            person: false,
+            from: Some(crate::assistant::TEST_CLIENT.into()),
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -2251,7 +2272,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             on_behalf: None,
-            person: false,
+            from: Some(crate::assistant::TEST_CLIENT.into()),
         };
         assert!(matches!(other.send(message, EngineKind::Ai, Utc::now()).await, Response::Conversation { .. }));
         finished(&other, &id).await;
@@ -2506,8 +2527,9 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot),
+            // As the assistant sends it (`Assistant::delegate`).
+            from: Some(delegation.assistant.clone()),
             on_behalf: Some(delegation),
-            person: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -2536,7 +2558,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             on_behalf: None,
-            person: false,
+            from: Some(crate::assistant::TEST_CLIENT.into()),
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -2544,5 +2566,95 @@ pub(crate) mod tests {
         };
         finished(&assistant, &conversation.id).await;
         assert_eq!(webs(&host), [("tools.fetch_page", conversation.id, true, false)]);
+    }
+
+    /// Issue #305: a client's message stays data from outside once the person writes after it. In
+    /// the person's turn the web still asks anew (`outside`), a note waits for a person (C.11), and an
+    /// address from the client's message obeys `robots.txt`, as the message keeps who sent it.
+    #[tokio::test]
+    async fn a_clients_message_stays_foreign_in_later_turns() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let page = "https://lisbon.example.org/trams";
+        let script = Script::new(vec![
+            says("Noted."),
+            calls_all(&[
+                ("tools_web_search", json!({"query": "Lisbon trams"})),
+                ("tools_fetch_page", json!({"url": page})),
+                ("assistant_remember", json!({"text": "Anna likes trams."})),
+            ]),
+            says("Done."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let message = Message {
+            conversation: None,
+            engine: ENGINE.into(),
+            model: None,
+            effort: None,
+            text: format!("Remember {page}"),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: Some(crate::assistant::TEST_CLIENT.into()),
+        };
+        let Response::Conversation { conversation, entries } =
+            assistant.send(message, EngineKind::Ai, Utc::now()).await
+        else {
+            panic!("a conversation")
+        };
+        let id = conversation.id;
+        let sent = entries.iter().find_map(|entry| match &entry.content {
+            EntryContent::Message { from, .. } => Some(from.clone()),
+            _ => None,
+        });
+        assert_eq!(sent, Some(Some(crate::assistant::TEST_CLIENT.to_string())), "the entry keeps who sent it");
+        finished(&assistant, &id).await;
+
+        ask(&assistant, Some(&id), "Search for trams and read that page.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let turn = |name| (name, id.clone(), true, false);
+        assert_eq!(webs(&host), [turn("tools.web_search"), turn("tools.fetch_page")]);
+        assert_eq!(remembered(&host).len(), 1);
+        assert_eq!(host.untrusted.lock().expect("lock").last(), Some(&true), "the note waits for a person");
+    }
+
+    /// Issue #305: [`by_person`] never takes an address from a client's message, even under the
+    /// number of the message the answer is for; [`sent_by_a_client`] counts every client's message
+    /// but, for a bot's run for the assistant, the assistant's own.
+    #[test]
+    fn only_the_persons_message_is_their_word() {
+        let page = "https://lisbon.example.org/trams";
+        let message = |seq, from: Option<&str>| Entry {
+            seq,
+            time: Utc::now(),
+            content: EntryContent::Message {
+                text: format!("Read {page}"),
+                engine: ENGINE.into(),
+                model: None,
+                effort: None,
+                without: Vec::new(),
+                mode: torro_ipc::assistant::Mode::Default,
+                from: from.map(str::to_string),
+            },
+        };
+        let persons = [message(1, None)];
+        let clients = [message(1, Some("1f2e3d4c"))];
+        assert!(by_person(&persons, 1, page));
+        assert!(!by_person(&clients, 1, page), "a client's address is no word of the person's");
+
+        let delegation = Delegation {
+            bot: "1a2b3c4d".into(),
+            client: "9f8e7d6c".into(),
+            assistant: "a55e5517".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            conversation: "main".into(),
+        };
+        let assistants = [message(1, Some("a55e5517"))];
+        assert!(!sent_by_a_client(&persons, &Actor::Assistant));
+        assert!(sent_by_a_client(&clients, &Actor::Assistant));
+        assert!(sent_by_a_client(&assistants, &Actor::Bot("9f8e7d6c".into())), "in the bot's own run");
+        assert!(!sent_by_a_client(&assistants, &Actor::Delegated(delegation.clone())));
+        assert!(sent_by_a_client(&clients, &Actor::Delegated(delegation)), "another client's still counts");
     }
 }
