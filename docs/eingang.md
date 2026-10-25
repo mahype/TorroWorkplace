@@ -346,6 +346,9 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 
 - **Tastatur zuerst** wie Linear oder Superhuman: `j/k` bewegen, `e` erledigt, `s` später,
   `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` ausblenden (Menü „Hide from Notification Hub“, siehe unten).
+  Seit E18.5 archiviert `e` eine Mail, in jedem Fenster: im Mail-Fenster die Mail in Liste und Leser, an einem offenen
+  Mail-Eintrag (Zentrale, „Later“) dessen Mail, und das Fenster schließt den Eintrag danach. Ein erledigter
+  Mail-Eintrag („Done today“) öffnet sich mit `e` wieder.
 - **Schreiben** (Mail, längere Antworten) in einem eigenen Fenster, siehe [mail.md](mail.md).
 - **Fenster je Ausschnitt** mit `--source mail` oder `--lane info`, gemerkt in der
   Workspace-Vorlage. So bekommt, wer will, eine reine Mail-Kachel neben einer Agenten-Kachel.
@@ -373,6 +376,10 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
+- **Seitenleiste des Mail-Fensters** (E18.4): oben **All** (der Posteingang aller gezeigten Konten, mit der Zahl
+  ungelesener Mails), **Later** und **Hidden**, darunter Categories, Smart views und **Folders** mit Archive (nur wenn
+  ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**. Das Mail-Fenster startet in
+  „All“.
 
 ### Dichte
 
@@ -399,10 +406,19 @@ Design „Torro“ zeigt **kompakt**.
 | Erinnerung aus Kalender oder Aufgaben | ✕ · Open · In 5 min | – |
 | Freigabe | Allow · Deny · Go to window | – |
 | Agent wartet oder ist fertig | Go to window · Later · Done | Mute agent |
+| Mail-Eintrag (Zentrale) | Task · Event · Later · Archive | – |
 
 - **Verwerfen (✕)** gibt es auf jeder Benachrichtigung: weg, ohne etwas zu tun. Es wirkt wie Erledigt
   (`inbox.set_item_done`, auch das Zurückwirken auf die Quelle), heißt nur anders. **Nicht im Mail-Fenster**: Mails
-  bleiben dort vollständig, sie werden erledigt oder ausgeblendet.
+  bleiben dort vollständig, sie werden archiviert oder ausgeblendet.
+- **Archive statt Done an jeder Mail** (E18.5, Issue #301): Wer mit einer Mail fertig ist, archiviert sie; „Done“ gibt
+  es für Mail nirgends mehr, weder in Zeilen noch auf Karten, im Paneel oder in der Aktionsleiste. „Archive“ steht an
+  der Stelle von „Done“ und tut, was `e` tut: `mail.move_messages` in den Archivordner; an einem Mail-Eintrag schließt
+  das Fenster danach den Eintrag (`inbox.set_item_done`), denn hält die Unterhaltung noch ungelesene Mail im
+  Posteingang, schlösse der Kern ihn nicht. „Undo“ verschiebt zurück und öffnet den Eintrag wieder. Hat das Konto
+  keinen Archivordner, sagt das Fenster „This account has no archive folder.“ und ändert nichts; Zeilen und
+  Aktionsleiste bieten „Archive“ dann gar nicht erst an. Einträge, die keine Mail sind, behalten „Done“, „Done today“
+  der Zentrale behält „Reopen“.
 - **Later** (vertagen) gibt es überall, **Task** auf jeder Nachricht und jeder Mail, auch in Ordnern.
 - **Freigaben** haben weder ✕ noch Later: Sie warten auf Ja oder Nein, das darf nicht versehentlich verschwinden.
 - **Go to window / Open** holt das Fenster nach vorn und aktiviert es: bei Agenten das Terminal der Sitzung (E2.4,
@@ -417,11 +433,13 @@ Tasten. Unten im Leser stehen nur die Anhänge als Chips. Zentrale und App Feed 
 aus E9.4.
 
 - **Gruppen** in dieser Reihenfolge, jede nur mit dem, was für die Mail geht; leere Gruppen fallen weg:
-  **Reply** (Reply, Reply all, Forward; Icon in der Akzentfarbe), **File** (Done bzw. Reopen, Later…, Move to Info
-  bzw. For me, Archive, Delete), **Torro** (Task, Event, Category…, Re-categorize nur mit Entscheidungsmodell),
+  **Reply** (Reply, Reply all, Forward; Icon in der Akzentfarbe), **File** (Archive mit `e`, Later…, Move to Info
+  bzw. For me, Delete – kein Done und kein Reopen mehr, E18.5), **Torro** (Task, Event, Category…, Re-categorize nur
+  mit Entscheidungsmodell),
   **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…) und **More** (Show as text bzw. HTML,
   Light bzw. Dark colours, Copy text, im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
-  Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Done, Later, Move to, Event, Category.
+  Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Later, Move to, Event, Category. Ein Klick auf
+  das Icon von File archiviert. In „Hidden“ steht in Mute zuerst „Show again“ (E18.4).
 - **Eingeklappt** (Breite der eingeklappten Seitenleiste): ein Icon je Gruppe, ein Klick tut die erste Aktion der
   Gruppe, Hover öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile, für alle Gruppen
   gleich breit. **Ausgeklappt** (Breite der Seitenleiste): alle Gruppen offen mit Namen, als Spalte im Layout; die Mail
@@ -503,7 +521,9 @@ Weil der Kern beide Seiten kennt, kann er Bezug nehmen:
 - Die **Mail** zeigt ihre Aufgabe (Titel, Liste, fällig, offen/erledigt) mit „Open task“.
 - Die **Aufgabe** zeigt ihre Mail mit „Open mail“ und neue Antworten darauf, seit sie angelegt wurde.
 - Wird die Aufgabe **erledigt**, fragt die Zentrale: „You finished … Anna is waiting for an answer“ mit „Reply“
-  und „Mark mail done“.
+  und „Archive mail“ (bis E18.5 „Mark mail done“): Die Mail wird archiviert wie mit `e`, danach schließt das Fenster
+  ihren Eintrag und die Frage; „Undo“ nimmt beides zurück. Ohne Archivordner sagt es das nur; ein Fenster, das den
+  Mail-Eintrag nicht hält (der App Feed führt keine Mail), meldet „Couldn't find the mail of this task.“.
 
 **Kern (E8.7a, umgesetzt):** Die Kennung ist `mail:<adresse>:<Message-ID>`, also die feste Konto-Id
 `mail:<adresse>` aus `accounts.list_accounts` (dieselbe wie in den Rechten und in der Quelle des Eintrags)
@@ -514,7 +534,7 @@ und der Eintrag nur noch die Antwort hält. Die Aufgabe zeigt ihre Mail mit Betr
 Antworten, die danach kamen (die eigenen nicht mitgezählt). „You finished a task from a mail“ prüft die
 Routine der Suite jede Minute gegen den Aufgaben-Cache; wer erledigt hat (Suite, Nextcloud, ein Agent), ist
 gleich. Gemeldet wird einmal je Aufgabe (`task_notes` in `inbox.sqlite`), nur wenn die Unterhaltung noch
-offen im Eingang liegt, sonst nur vermerkt. Die Knöpfe „Reply“ und „Mark mail done“ baut E8.7b aus
+offen im Eingang liegt, sonst nur vermerkt. Die Knöpfe „Reply“ und „Archive mail“ baut E8.7b (E18.5) aus
 `task.link` und `task.mail_entry` des Eintrags. `apps.open_app` mit Ziel startet immer ein neues Fenster,
 weil ein laufendes Fenster noch keinen Weg hat, sich etwas anderes zeigen zu lassen. Befehle:
 [api.md](api.md), Fußnoten 12 und 13.
@@ -572,6 +592,14 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
   Mail, die erst später abgelegt wird, lässt die Unterhaltung zurückgestellt. Andere Quellen bleiben bei `rules::merge`:
   meldet etwa ein Agent dieselbe Sache noch einmal, bleibt sie zurückgestellt.
 - **Regel verbirgt die Mail:** Dann gibt es keinen Eintrag zum Zurückstellen, die Antwort ist `unsupported`.
+- **All, Later, Hidden** (E18, Issue #301): „All“ zeigt die Mails des Posteingangs aller gezeigten Konten mit
+  `snoozed: false` und `hidden: false`, „Later“ die zurückgestellten Einträge, „Hidden“ die Mails, die der Kern aus
+  „All“ heraushält. Was ausgeblendet ist, entscheidet nur der Kern, über das Feld `hidden` von `mail.search_messages`,
+  genau wie `snoozed`: Er nimmt die Mails schon in die Abfrage auf, damit Seiten und Cursor stimmen.
+- **Show again** (Entscheidungen 10 und 11 in E18): In „Hidden“ holt „Show again“ (`inbox.set_mail_shown`) genau diese
+  eine Mail nach „All“ zurück. Die Regel, die sie ausblendet, bleibt; weitere und neue Mail des Absenders bleibt
+  ausgeblendet, und der Eintrag der Mail bleibt erledigt. „Undo“ nimmt die Ausnahme zurück. Wer die Regel loswerden
+  will, entfernt sie in der Steuerzentrale.
 
 ### Später, vorgemerkt
 

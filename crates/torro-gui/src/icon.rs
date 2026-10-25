@@ -107,8 +107,10 @@ pub enum Icon {
     ListTree,
     /// Drag handle of a row in manual order.
     GripVertical,
-    /// A review is requested from you.
+    /// A review is requested from you; "Show again" on a hidden mail.
     Eye,
+    /// The mail window's "Hidden" view: mail the inbox keeps out of "All".
+    EyeOff,
     /// Labels / tags in the properties.
     Tag,
     /// Milestone in the properties.
@@ -260,6 +262,7 @@ impl Icon {
         Icon::ListTree,
         Icon::GripVertical,
         Icon::Eye,
+        Icon::EyeOff,
         Icon::Tag,
         Icon::Milestone,
         Icon::Github,
@@ -381,6 +384,7 @@ impl Icon {
             Icon::ListTree => include_bytes!("../assets/icons/list-tree.svg"),
             Icon::GripVertical => include_bytes!("../assets/icons/grip-vertical.svg"),
             Icon::Eye => include_bytes!("../assets/icons/eye.svg"),
+            Icon::EyeOff => include_bytes!("../assets/icons/eye-off.svg"),
             Icon::Tag => include_bytes!("../assets/icons/tag.svg"),
             Icon::Milestone => include_bytes!("../assets/icons/milestone.svg"),
             Icon::Github => include_bytes!("../assets/icons/github.svg"),

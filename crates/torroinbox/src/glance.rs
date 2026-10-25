@@ -29,8 +29,9 @@
 //!
 //! Both are displays, not small apps: no header, sidebar, menu, form or dialog, no keys. The one
 //! thing a click does is open the entry: `Message::OpenForMe` puts it under the cursor and into the
-//! panel of "For me", which the window shows once the tile is larger again (making the tile larger
-//! is the tiling manager's job, as in torrocalendar's glance). The clicked row stays highlighted.
+//! panel of "For me" – in the mail window, which has no "For me", its mail into the reader of "All"
+//! (task E18.4) –, which the window shows once the tile is larger again (making the tile larger is
+//! the tiling manager's job, as in torrocalendar's glance). The clicked row stays highlighted.
 //!
 //! **Sessions with a name** (task E2.6, shown here since E3.9): a coding agent's entry whose session
 //! has a name shows the name instead of "Claude Code is waiting for you", as the list and the panel

@@ -14,7 +14,9 @@
 //! (`inbox.open_item`), the window of a coding agent included.
 //! Footer: "Done" / "Reopen"; approvals show "Allow" and "Deny" instead, which send
 //! `approvals.decide_approval` (task E3.8; disabled while a decision is on its way) – an approval
-//! resolves itself once decided, so it has no "Done".
+//! resolves itself once decided, so it has no "Done". An open mail entry shows "Archive" in the place
+//! of "Done" (task E18.5, [`close_button`]): mail is archived, never done – it does what `e` does there,
+//! archives the mail and closes the entry; a done one keeps "Reopen".
 //!
 //! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Later" (`s`)
 //! opens the snooze menu – the words of the cards in all three windows (task E8.5: "Later" and
@@ -46,8 +48,8 @@
 //!
 //! Task with a way back (task E8.7b): an entry made into a task shows it in a section "Task" (the
 //! card of `mail::task_card` with "Open task"; a whole mail carries it over its text instead). The
-//! suite's "You finished a task from a mail" (`hub::is_follow_up`) has Reply and "Mark mail done" in
-//! its footer before "Done", and neither "Later" nor "Make task".
+//! suite's "You finished a task from a mail" (`hub::is_follow_up`) has Reply and "Archive mail" (task
+//! E18.5) in its footer before "Done", and neither "Later" nor "Make task".
 //!
 //! The message can be selected with the mouse and copied (issue #119, `torro_gui::selectable`), and
 //! "Copy text" beside its title puts all of it on the clipboard; the web addresses in it follow as
@@ -59,7 +61,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill};
 use torro_core::AppId;
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::panel::{self, Panel};
 use torro_gui::selectable::{self, Selectable};
@@ -120,8 +122,8 @@ pub struct Anchors {
 pub struct RailAnchors {
     /// Reply · Reply all · Forward.
     pub reply: Anchor,
-    /// Done or Reopen · Later… · Move to … · Archive · Delete: the snooze menu and the lane
-    /// question fall back to it.
+    /// Archive · Later… · Move to … · Delete · Save attachments (task E18.5: mail has no Done): the
+    /// snooze menu and the lane question fall back to it.
     pub file: Anchor,
     /// Task · Event · Category… · Re-categorize: the dialogs of Task and Event and the list of
     /// categories fall back to it.
@@ -420,14 +422,15 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
 fn button_groups<'a>(item: &'a Item, footer: &Footer) -> (Vec<Element<'a, Message>>, Vec<Element<'a, Message>>) {
     let follow_up = hub::is_follow_up(item) && item.state.is_open();
     let mut buttons = Vec::new();
-    // "You finished a task from a mail" (task E8.7b): answer the mail or mark it done, before
-    // closing the question; it is a task already and waits for nothing, so no "Make task", no "Later".
+    // "You finished a task from a mail" (task E8.7b): answer the mail or archive it (task E18.5),
+    // before closing the question; it is a task already and waits for nothing, so no "Make task", no
+    // "Later".
     if follow_up {
         let id = || item.id.clone();
         let reply = Some(Message::Act(id(), Command::Reply));
         buttons.push(widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, reply));
-        let done = Some(Message::MarkMailDone(id()));
-        buttons.push(widgets::text_button(Some(Icon::Check), tr("Mark mail done"), style::button::secondary, done));
+        let archive = Some(Message::ArchiveMail(id()));
+        buttons.push(widgets::text_button(Some(Icon::Archive), tr("Archive mail"), style::button::secondary, archive));
     }
     buttons.extend(decide(item, footer.deciding));
     if !matches!(item.state, State::Done { .. }) && !is_approval(item) && !follow_up {
@@ -453,7 +456,7 @@ fn button_groups<'a>(item: &'a Item, footer: &Footer) -> (Vec<Element<'a, Messag
         trf("Move to {lane}", &[("lane", &lane_label(lane))]),
         Message::AskLane(item.id.clone()),
     );
-    // Beside "…" – or beside Reply and "Mark mail done", or "Make task" and "Make event" – the words
+    // Beside "…" – or beside Reply and "Archive mail", or "Make task" and "Make event" – the words
     // would push the last button out of the panel's 400.
     let move_to = if footer.compact || footer.hide || follow_up || !is_approval(item) {
         widgets::icon_button(icon, label, Some(ask))
@@ -517,19 +520,23 @@ pub(crate) fn decide(item: &Item, deciding: bool) -> Vec<Element<'_, Message>> {
             })
             .collect();
     }
-    let button = match item.state {
-        State::Done { .. } => {
-            widgets::text_button(None, tr("Reopen"), style::button::secondary, Some(done(item, false)))
-        }
-        State::New | State::Seen | State::Snoozed { .. } => {
-            widgets::text_button(Some(Icon::Check), tr("Done"), style::button::secondary, Some(done(item, true)))
-        }
-    };
-    vec![button]
+    let (mark, word, on_press) = close_button(item);
+    vec![widgets::text_button(mark, word, style::button::secondary, Some(on_press))]
 }
 
-fn done(item: &Item, done: bool) -> Message {
-    Message::SetDone(item.id.clone(), done)
+/// The footer's button that closes or opens `item` again (no approval): "Reopen" for a done entry,
+/// "Archive" for an open mail entry (task E18.5, `list::entry_mail`) – what `e` does there, which
+/// archives the mail and closes the entry; an account without an archive folder says so –, else
+/// "Done". Its icon, word and message.
+fn close_button(item: &Item) -> (Option<Icon>, &'static str, Message) {
+    let id = item.id.clone();
+    match item.state {
+        State::Done { .. } => (None, tr("Reopen"), Message::SetDone(id, false)),
+        _ if list::entry_mail(item).is_some() => {
+            (Some(Icon::Archive), trc("action", "Archive"), Message::Act(id, Command::Done))
+        }
+        State::New | State::Seen | State::Snoozed { .. } => (Some(Icon::Check), tr("Done"), Message::SetDone(id, true)),
+    }
 }
 
 /// A property row with an icon and a one-line value.
@@ -695,7 +702,7 @@ mod tests {
         let mut question = sample("demo-9");
         app::demo_task(&mut question, now());
         assert!(hub::is_follow_up(&question));
-        // Reply, Mark mail done, Done, the gap, Move to.
+        // Reply, Archive mail, Done, the gap, Move to.
         assert_eq!(buttons(&question, &footer(false)).len(), 5);
         let text = Selectable::new(&message_text(&question));
         let _ = panel(&question, tr("Act now").to_owned(), now(), footer(false), None, &text);
@@ -725,6 +732,25 @@ mod tests {
         assert_eq!(buttons(&item, &with).len(), 1, "two rows in one column");
         let loading = Footer { view: Some(mail::ViewTools::default()), ..footer(true) };
         assert_eq!(button_groups(&item, &loading).1.len(), 2, "nothing to switch or copy while it loads");
+    }
+
+    /// Task E18.5: an open mail entry's footer archives its mail – `e`'s message – in the place of
+    /// "Done"; a done one opens again, every other entry keeps "Done".
+    #[test]
+    fn a_mail_entry_archives_from_the_footer_instead_of_done() {
+        let notice = sample("demo-6");
+        let link = Some(Link::Mail { message: "m:w1".into() });
+        let mail = Item { source: torro_inbox::SourceRef::mail("anna@work.example.org"), link, ..notice };
+        assert!(list::entry_mail(&mail).is_some(), "a mail entry");
+        let (mark, word, sent) = close_button(&mail);
+        assert_eq!((mark, word), (Some(Icon::Archive), trc("action", "Archive")));
+        assert!(matches!(sent, Message::Act(id, Command::Done) if id == mail.id), "what `e` does there");
+        let done = Item { state: State::Done { at: now() }, ..mail.clone() };
+        assert_eq!(close_button(&done).1, tr("Reopen"));
+        let (_, word, sent) = close_button(&sample("demo-1"));
+        assert_eq!(word, tr("Done"), "an agent's entry keeps Done");
+        assert!(matches!(sent, Message::SetDone(id, true) if id == "demo-1"));
+        assert_eq!(buttons(&mail, &footer(true)).len(), buttons(&sample("demo-6"), &footer(true)).len());
     }
 
     #[test]

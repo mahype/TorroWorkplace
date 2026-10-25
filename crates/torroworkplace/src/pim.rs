@@ -1256,6 +1256,8 @@ impl PimService {
             | Request::RemoveRule { .. }
             | Request::GetStats { .. }
             | Request::GetQuiet => return None,
+            // Mail by its ids, checked in the core by account and inbox source (task E18.2).
+            Request::SetMailShown { .. } => return None,
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
             // task M2.1).
             Request::ConnectMail { .. }

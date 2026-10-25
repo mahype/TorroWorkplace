@@ -35,6 +35,13 @@
 //! Saving attachments (issue #290): two save targets ([`save_targets`]) and a Downloads folder
 //! ([`DEMO_DOWNLOADS`]); the invoice of the private inbox (`m:p3`) has two PDFs and a category the
 //! model guessed. The app plans and answers saving from them without writing a file.
+//!
+//! The mail window's views of every account (task E18.3): [`DemoSource::by_role`] lists the mail of
+//! one folder role, leaving out or giving only what is snoozed (the mail of a snoozed entry) and
+//! what is hidden. One newsletter is hidden from the start ([`HIDDEN_MAIL`]), so "Hidden" is not
+//! empty in a screenshot; [`DemoSource::set_mail_shown`] ("Show again") keeps the exception in
+//! memory, as the core keeps it in `shown_mail`. The demo's hidden mail is a fixed fact: hiding a
+//! sender or a conversation in the demo closes entries but hides no further mail.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -54,6 +61,10 @@ use crate::item::{
 };
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
+
+/// The demo's mail hidden from the inbox (task E18.3): the work account's newsletter "Winter
+/// jackets are here", which stands in "Hidden" and not in "All" until it is shown again.
+pub const HIDDEN_MAIL: &str = "m:w14";
 
 /// The approval behind the sample approval entry; its actions name it.
 pub const APPROVAL_ID: &str = "demo-approval-1";
@@ -82,6 +93,10 @@ struct Data {
     sent: Vec<Draft>,
     /// How many drafts were given an id.
     draft_count: u32,
+    /// The mail hidden from the inbox while it lies in an inbox folder ([`HIDDEN_MAIL`]).
+    hidden_mail: BTreeSet<String>,
+    /// The hidden mail shown again (`inbox.set_mail_shown`, task E18.3): the exceptions.
+    shown_mail: BTreeSet<String>,
 }
 
 impl Data {
@@ -208,6 +223,8 @@ impl DemoSource {
             drafts: Vec::new(),
             sent: Vec::new(),
             draft_count: 0,
+            hidden_mail: BTreeSet::from([HIDDEN_MAIL.to_owned()]),
+            shown_mail: BTreeSet::new(),
         };
         DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
     }
@@ -1093,6 +1110,73 @@ impl DemoSource {
                 rules::set_done(item, true, now);
             }
         }
+    }
+
+    /// `message` is hidden from the inbox now (task E18.3): one of the demo's hidden mail, in an
+    /// inbox folder, not shown again – as the core counts only mail of the inbox folder.
+    fn is_hidden(data: &Data, message: &MessageSummary) -> bool {
+        let in_inbox =
+            data.folders.iter().any(|folder| folder.id == message.folder && folder.role == Some(Role::Inbox));
+        in_inbox && data.hidden_mail.contains(&message.id) && !data.shown_mail.contains(&message.id)
+    }
+
+    /// `message` belongs to an entry snoozed now ("Later").
+    fn is_snoozed(data: &Data, message: &MessageSummary, now: DateTime<Utc>) -> bool {
+        data.items.iter().any(|item| {
+            matches!(item.state, State::Snoozed { until } if until > now)
+                && matches!(&item.link, Some(Link::Mail { message: linked }) if *linked == message.id)
+        })
+    }
+
+    /// `mail.search_messages` with `in:<role>` (task E18.3): every message in a folder of `role`
+    /// of both accounts (or of `account` only), in `order` by date, all of them – the window's
+    /// source pages them. `snoozed` and `hidden` as the request has them: `Some(false)` leaves out
+    /// the mail of a snoozed entry ([`DemoSource::is_snoozed`]) resp. the hidden mail
+    /// ([`HIDDEN_MAIL`], only in an inbox), `Some(true)` gives only that, `None` both.
+    pub fn by_role(
+        &self,
+        role: Role,
+        account: Option<&str>,
+        snoozed: Option<bool>,
+        hidden: Option<bool>,
+        order: Order,
+    ) -> Vec<MessageSummary> {
+        let now = self.now();
+        let data = self.lock();
+        let of_role: BTreeSet<&str> =
+            data.folders.iter().filter(|folder| folder.role == Some(role)).map(|folder| folder.id.as_str()).collect();
+        let mut found: Vec<MessageSummary> = data
+            .mail
+            .iter()
+            .map(|m| &m.summary)
+            .filter(|m| of_role.contains(m.folder.as_str()) && account.is_none_or(|account| m.account == account))
+            .filter(|m| snoozed.is_none_or(|wanted| Self::is_snoozed(&data, m, now) == wanted))
+            .filter(|m| hidden.is_none_or(|wanted| Self::is_hidden(&data, m) == wanted))
+            .cloned()
+            .collect();
+        // Mail of the same minute by id, so oldest first is newest first turned round.
+        found.sort_by(|a, b| order.apply(b.date.cmp(&a.date).then_with(|| b.id.cmp(&a.id))));
+        found
+    }
+
+    /// `inbox.set_mail_shown` (task E18.3, "Show again"): `shown` takes the messages `ids` out of
+    /// "Hidden" – remembered only for mail hidden now, as the core does –, `!shown` takes that
+    /// back. [`InboxError::NotFound`] when one of them is unknown; nothing changes then.
+    pub fn set_mail_shown(&self, ids: &[String], shown: bool) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let mut known = Vec::new();
+        for id in ids {
+            let message = data.mail.iter().find(|m| m.summary.id == *id).ok_or(InboxError::NotFound)?;
+            known.push(message.summary.clone());
+        }
+        for message in known {
+            if !shown {
+                data.shown_mail.remove(&message.id);
+            } else if Self::is_hidden(&data, &message) {
+                data.shown_mail.insert(message.id);
+            }
+        }
+        Ok(())
     }
 
     /// `mail.list_folders`: the folders of both accounts with their unread and total numbers.
@@ -2212,6 +2296,71 @@ mod tests {
 
         demo.set_item_done("demo-mail-4".into(), true).await.expect("done");
         assert!(demo.get_mail("m:p1").expect("there").summary.flags.contains(&Flag::Seen), "done marks it read");
+    }
+
+    fn role_ids(demo: &DemoSource, role: Role, snoozed: Option<bool>, hidden: Option<bool>) -> Vec<String> {
+        demo.by_role(role, None, snoozed, hidden, Order::NewestFirst).into_iter().map(|m| m.id).collect()
+    }
+
+    /// Task E18.3: "Archive" lists the archived mail of both accounts, "All" leaves the hidden
+    /// newsletter out and "Hidden" gives only it; "Show again" turns that round and its undo back.
+    #[test]
+    fn mail_is_listed_by_role_without_or_with_the_hidden_newsletter() {
+        let demo = DemoSource::new(now());
+        assert_eq!(role_ids(&demo, Role::Archive, None, None), ["m:w9", "m:p6"], "both accounts, newest first");
+        assert_eq!(role_ids(&demo, Role::Archive, None, Some(true)), Vec::<String>::new(), "only inbox mail hides");
+        let all = role_ids(&demo, Role::Inbox, Some(false), Some(false));
+        assert!(!all.iter().any(|id| id == HIDDEN_MAIL), "the newsletter is hidden");
+        assert!(all.iter().any(|id| id == "m:w1") && all.iter().any(|id| id == "m:p1"), "both inboxes");
+        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL]);
+        assert_eq!(role_ids(&demo, Role::Inbox, None, None).len(), all.len() + 1, "without the field: every one");
+        let hidden = demo.get_mail(HIDDEN_MAIL).expect("the newsletter");
+        assert!(hidden.traits.list_id.is_some(), "a newsletter: {}", hidden.summary.subject);
+        let private = demo.by_role(Role::Inbox, Some(MAIL_ACCOUNTS[1]), Some(false), Some(false), Order::NewestFirst);
+        assert!(private.iter().all(|m| m.account == MAIL_ACCOUNTS[1]) && !private.is_empty(), "one account");
+        let oldest = demo.by_role(Role::Inbox, None, Some(false), Some(false), Order::OldestFirst);
+        assert_eq!(oldest.into_iter().rev().map(|m| m.id).collect::<Vec<_>>(), all, "oldest first");
+
+        demo.set_mail_shown(&[HIDDEN_MAIL.into()], true).expect("shown again");
+        assert!(role_ids(&demo, Role::Inbox, Some(false), Some(false)).iter().any(|id| id == HIDDEN_MAIL));
+        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), Vec::<String>::new(), "nothing hidden");
+        demo.set_mail_shown(&[HIDDEN_MAIL.into()], false).expect("undone");
+        assert_eq!(role_ids(&demo, Role::Inbox, Some(false), Some(false)), all);
+        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL]);
+    }
+
+    /// As the core: showing mail that is not hidden remembers nothing, and an unknown id changes
+    /// nothing at all.
+    #[test]
+    fn only_hidden_mail_is_shown_again_and_unknown_mail_is_not_found() {
+        let demo = DemoSource::new(now());
+        demo.set_mail_shown(&["m:w1".into()], true).expect("nothing to remember");
+        assert!(demo.lock().shown_mail.is_empty());
+        let both = [HIDDEN_MAIL.to_owned(), "m:nope".to_owned()];
+        assert_eq!(demo.set_mail_shown(&both, true), Err(InboxError::NotFound));
+        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL], "still hidden");
+        // Moved out of the inbox, the newsletter is hidden no more; back in, it is again.
+        demo.move_mail_to(&[HIDDEN_MAIL.into()], Role::Archive).expect("archived");
+        assert!(role_ids(&demo, Role::Archive, None, Some(false)).iter().any(|id| id == HIDDEN_MAIL));
+        demo.move_mail_to(&[HIDDEN_MAIL.into()], Role::Inbox).expect("back");
+        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL]);
+    }
+
+    /// The mail of a snoozed entry is "Later", not "All".
+    #[tokio::test]
+    async fn the_mail_of_a_snoozed_entry_is_snoozed() {
+        let demo = DemoSource::new(now());
+        let entry = demo
+            .lock()
+            .items
+            .iter()
+            .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == "m:w1"))
+            .map(|item| item.id.clone())
+            .expect("the entry of m:w1");
+        assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), Vec::<String>::new(), "nothing snoozed");
+        demo.snooze_item(entry, Some(now() + TimeDelta::days(1))).await.expect("snoozed");
+        assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), ["m:w1"]);
+        assert!(!role_ids(&demo, Role::Inbox, Some(false), Some(false)).iter().any(|id| id == "m:w1"), "not in All");
     }
 
     #[test]
