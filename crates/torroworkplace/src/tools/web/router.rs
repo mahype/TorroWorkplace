@@ -5,7 +5,7 @@
 //!   missing key the next one, on any other failure none (the failure is the answer). Search words go only to
 //!   switched-on providers.
 //! - **Wikipedia besides:** never a fallback; asked after the others for at most [`WIKIPEDIA_HITS`] hits, which
-//!   come after theirs.
+//!   come after theirs, all within the count asked for (the others keep at least half of it).
 //! - **Throttle** ([`gap`]): DuckDuckGo once in ten seconds, every other provider once a second. A search waits
 //!   for the next free turn when only one is ahead of it; with more it passes the provider by as resting.
 //! - **Rest:** a provider that blocked the core or hit a limit is not asked for an hour ([`PAUSE`]), or as long as
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use torro_ipc::web::{MAX_HITS, SearchHit, SearchProviderId, SearchResults};
+use torro_ipc::web::{SearchHit, SearchProviderId, SearchResults};
 
 use super::{Query, SearchError, SearchProvider};
 
@@ -103,8 +103,9 @@ impl Router {
     /// `WebSearch::providers`), in [`SearchProviderId::ORDER`] whatever order `providers` has: the first one that
     /// answers gives up to `query.count` hits; a limit, a block or a missing key goes on to the next, any other
     /// failure ends the search. Wikipedia, when on, is asked besides for [`WIKIPEDIA_HITS`] hits that come after the
-    /// others' (without addresses they already have), all together at most [`MAX_HITS`]; without other hits its own
-    /// are the answer.
+    /// others' (without addresses they already have); without other hits its own are the answer, and when it is
+    /// the only provider on it is asked for `query.count`. All together at most `query.count` (so at most
+    /// [`torro_ipc::web::MAX_HITS`]): the others keep at least half of it, Wikipedia fills what they leave free, up to its three.
     ///
     /// [`SearchResults::asked`] names, in order, every provider that searched or answered from memory, not one that
     /// lacked its key. `Err` when no hits could be had: [`NoAnswer::NoneOn`] with nothing on, else the failure that
@@ -125,6 +126,7 @@ impl Router {
         if main.is_empty() && wikipedia.is_none() {
             return Err(NoAnswer::NoneOn);
         }
+        let alone = main.is_empty();
         let mut asked = Vec::new();
         let mut skips = Vec::new();
         let mut hits = None;
@@ -143,24 +145,21 @@ impl Router {
         }
         let extra = match wikipedia {
             Some(wikipedia) => {
-                let besides = Query { count: WIKIPEDIA_HITS, ..query.clone() };
+                // Alone it is the search; besides the others it adds a few.
+                let count = if alone { query.count } else { WIKIPEDIA_HITS.min(query.count) };
+                let besides = Query { count, ..query.clone() };
                 self.ask(wikipedia.as_ref(), &besides, &mut asked).await.map_err(|skip| skips.push(skip)).ok()
             }
             None => None,
         };
-        let (mut hits, extra) = match (hits, extra) {
-            (Some(hits), extra) => (hits, extra.unwrap_or_default()),
-            (None, Some(extra)) if !extra.is_empty() || skips.is_empty() => (Vec::new(), extra),
+        let hits = match (hits, extra) {
+            (Some(hits), extra) => together(hits, extra.unwrap_or_default(), query.count),
+            (None, Some(mut extra)) if !extra.is_empty() || skips.is_empty() => {
+                extra.truncate(query.count);
+                extra
+            }
             (None, _) => return Err(why(&skips)),
         };
-        hits.truncate(query.count);
-        let extra: Vec<SearchHit> = extra
-            .into_iter()
-            .filter(|hit| hits.iter().all(|other| other.url != hit.url))
-            .take(WIKIPEDIA_HITS)
-            .collect();
-        hits.truncate(MAX_HITS - extra.len());
-        hits.extend(extra);
         Ok(SearchResults::new(hits, asked))
     }
 
@@ -251,6 +250,19 @@ impl Router {
         }
         answers.insert(key, (now, hits));
     }
+}
+
+/// The hits of a provider and Wikipedia's besides them, at most `count` together: Wikipedia's come after, without
+/// addresses the others have, and at most [`WIKIPEDIA_HITS`] of them. The others keep at least half of `count`
+/// (rounded up); what they leave free Wikipedia may fill, up to its three.
+fn together(mut hits: Vec<SearchHit>, extra: Vec<SearchHit>, count: usize) -> Vec<SearchHit> {
+    hits.truncate(count);
+    let extra: Vec<SearchHit> =
+        extra.into_iter().filter(|hit| hits.iter().all(|other| other.url != hit.url)).take(WIKIPEDIA_HITS).collect();
+    let room = (count / 2).max(count - hits.len()).min(extra.len());
+    hits.truncate(count - room);
+    hits.extend(extra.into_iter().take(room));
+    hits
 }
 
 /// Why no hits came, from what each provider said ([`Router::search`]).
@@ -557,10 +569,39 @@ mod tests {
         let switched = on(&[Duckduckgo, Wikipedia]);
         let five = router.search(&providers, &switched, &Query::new("x", Some(5), None)).await.expect("hits");
         assert_eq!(five.asked, [Duckduckgo, Wikipedia]);
-        assert_eq!(sources(&five), [[Duckduckgo; 5].as_slice(), &[Wikipedia; 3]].concat(), "three of Wikipedia's");
+        assert_eq!(sources(&five), [[Duckduckgo; 3].as_slice(), &[Wikipedia; 2]].concat(), "five together");
         time.pass(Duration::from_secs(20));
         let ten = router.search(&providers, &switched, &Query::new("y", Some(10), None)).await.expect("hits");
-        assert_eq!(sources(&ten), [[Duckduckgo; 7].as_slice(), &[Wikipedia; 3]].concat(), "at most ten together");
+        assert_eq!(sources(&ten), [[Duckduckgo; 7].as_slice(), &[Wikipedia; 3]].concat(), "three of Wikipedia's");
+    }
+
+    /// Found in the review of #305: `count` holds for all hits together. The others keep at least half of it,
+    /// Wikipedia gets at most three of the rest; with few hits of the others it fills up, never past `count`.
+    #[tokio::test]
+    async fn wikipedia_stays_within_the_count() {
+        let time = Time::new();
+        let router = time.router();
+        let duckduckgo = Fake::finding(Duckduckgo, 10);
+        let wikipedia = Fake::finding(Wikipedia, 5);
+        let providers = all(&[&duckduckgo, &wikipedia]);
+        let switched = on(&[Duckduckgo, Wikipedia]);
+        for (n, count, expected) in
+            [(0, 1, (1, 0)), (1, 2, (1, 1)), (2, 3, (2, 1)), (3, 4, (2, 2)), (4, 6, (3, 3)), (5, 9, (6, 3))]
+        {
+            time.pass(Duration::from_secs(20));
+            let query = Query::new(&format!("q{n}"), Some(count), None);
+            let results = router.search(&providers, &switched, &query).await.expect("hits");
+            let wanted = [vec![Duckduckgo; expected.0], vec![Wikipedia; expected.1]].concat();
+            assert_eq!(sources(&results), wanted, "count {count}");
+        }
+        // Few of the others: Wikipedia fills up to three, within the count.
+        duckduckgo.answers(Ok(hits(Duckduckgo, 1)));
+        time.pass(Duration::from_secs(20));
+        let few = router.search(&providers, &switched, &Query::new("few", Some(5), None)).await.expect("hits");
+        assert_eq!(sources(&few), [Duckduckgo, Wikipedia, Wikipedia, Wikipedia]);
+        time.pass(Duration::from_secs(20));
+        let one = router.search(&providers, &switched, &Query::new("few", Some(2), None)).await.expect("hits");
+        assert_eq!(sources(&one), [Duckduckgo, Wikipedia]);
     }
 
     #[tokio::test]
@@ -574,7 +615,13 @@ mod tests {
         assert_eq!(sources(&besides.expect("hits")), [Wikipedia; 3], "its own hits when the others have none");
         time.pass(Duration::from_secs(2));
         let alone = router.search(&providers, &on(&[Wikipedia]), &Query::new("y", None, None)).await.expect("hits");
-        assert_eq!((alone.asked.as_slice(), alone.hits.len()), ([Wikipedia].as_slice(), 3));
+        assert_eq!((alone.asked.as_slice(), alone.hits.len()), ([Wikipedia].as_slice(), 5), "alone: up to the count");
+        time.pass(Duration::from_secs(2));
+        let one = router.search(&providers, &on(&[Wikipedia]), &Query::new("y1", Some(1), None)).await.expect("hits");
+        assert_eq!(one.hits.len(), 1);
+        time.pass(Duration::from_secs(2));
+        let besides = router.search(&providers, &on(&[Duckduckgo, Wikipedia]), &Query::new("w", Some(2), None)).await;
+        assert_eq!(besides.expect("hits").hits.len(), 2, "its own hits stay within the count too");
         wikipedia.answers(Ok(Vec::new()));
         time.pass(Duration::from_secs(2));
         let nothing = router.search(&providers, &on(&[Duckduckgo, Wikipedia]), &Query::new("z", None, None)).await;
