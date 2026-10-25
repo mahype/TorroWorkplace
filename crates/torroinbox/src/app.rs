@@ -5148,7 +5148,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return Task::none();
         }
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
-        let reopen = if close.is_empty() { self.entry_of(&id).into_iter().collect() } else { close.clone() };
+        let reopen = if close.is_empty() { self.reopened_by_undo(&id).into_iter().collect() } else { close.clone() };
         let text = if action == MailAction::Junk { tr("Moved to junk") } else { mail::moved_text(delete) };
         let hint = Hint {
             text: text.to_owned(),
@@ -5372,18 +5372,26 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         listed.or_else(loaded)
     }
 
-    /// The open entry of the message `id` in the list, "For me" or "Info", which the core closes
-    /// when its mail leaves the inbox; undo opens it again.
+    /// The open entry of the message `id` in the list or "For me", which the core closes when its
+    /// mail leaves the inbox; undo opens it again. Only entries [`App::find`] knows, as its callers
+    /// act on the entry they get ([`App::reopened_by_undo`] also looks in "Info").
     fn entry_of(&self, id: &str) -> Option<String> {
-        // A folder lists no entries; "For me" and "Info" hold them there (issue #205: the core now
-        // closes the entry for sure once its mail left the inbox, so undo must open it again; issue
-        // #301: a newsletter's entry is in "Info").
+        // A folder lists no entries; "For me" holds them there (issue #205: the core now closes the
+        // entry for sure once its mail left the inbox, so undo must open it again).
         self.items
             .iter()
             .chain(&self.for_me)
-            .chain(&self.info)
             .find(|item| shows_mail(item, id) && item.state.is_open())
             .map(|item| item.id.clone())
+    }
+
+    /// The open entry undo opens again after the message `id` left the inbox: [`App::entry_of`] or,
+    /// as "All" lists no entries, one of "Info" (issue #301: a newsletter's entry) – undo only
+    /// sends its id, so [`App::find`] need not know it.
+    fn reopened_by_undo(&self, id: &str) -> Option<String> {
+        self.entry_of(id).or_else(|| {
+            self.info.iter().find(|item| shows_mail(item, id) && item.state.is_open()).map(|item| item.id.clone())
+        })
     }
 
     /// Whether the message `id` lies in a trash folder.
@@ -5680,7 +5688,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
         let hint = Hint {
             text: trf("Moved to {folder}", &[("folder", &name)]),
-            undo: Some(Undo::Mail { edit: back, reopen: self.entry_of(&id).into_iter().collect() }),
+            undo: Some(Undo::Mail { edit: back, reopen: self.reopened_by_undo(&id).into_iter().collect() }),
             shown: Instant::now(),
             folder: None,
         };
@@ -16674,6 +16682,21 @@ mod tests {
         assert!(matches!(stored(&app, "demo-mail-3").state, State::Done { .. }), "the core closed it");
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Mail(back, None)), "the mail back, then the entry open");
+    }
+
+    /// Issue #301 (second review): the Info entry undo knows does not stand in for the mail
+    /// elsewhere – in "All" `t` and the bell on a newsletter still act on its message, as the window
+    /// holds no Info entry to act on.
+    #[test]
+    fn task_and_bell_on_a_newsletter_in_all_act_on_its_message() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let Some(Link::Mail { message }) = stored(&app, "demo-mail-3").link.clone() else { panic!("a mail entry") };
+        let _ = app.update(Message::SelectMail(message.clone()));
+        let _ = press(&mut app, Key::T);
+        assert_eq!((app.menu, app.task_mail.as_ref().map(|m| m.id.clone())), (Some(Menu::Task), Some(message.clone())));
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::AskMuteMail(message.clone()));
+        assert_eq!(app.menu, Some(Menu::Mute), "the bell's menu of the message");
     }
 
     /// Issue #301 (decision 6 of E18): the window says "no archive folder" only when it knows the
