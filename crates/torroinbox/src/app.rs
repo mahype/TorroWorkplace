@@ -1983,7 +1983,7 @@ fn lane_view(args: &[String]) -> Result<Option<View>, LaunchError> {
 /// The text of the forced error state.
 const DEMO_ERROR: &str = "The server did not answer (demo)";
 
-/// One answer of the source: the entries of a view, the open entries of "For me", the count for
+/// One answer of the source: the entries of a view, the open entries of "For me" and of
 /// "Info", the sources.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loaded {
@@ -1994,9 +1994,11 @@ pub struct Loaded {
     /// Open entries in "For me", whatever the view: their number is the one in the sidebar, the
     /// first of them are what the glance shows (mini, strip).
     pub for_me: Vec<Item>,
-    /// Open entries in "Info", the number in the sidebar. Together with `for_me` it is what the
-    /// sources count (open entries, both lanes), so the sidebar's numbers add up.
-    pub info: usize,
+    /// Open entries in "Info", whatever the view: their number is the one in the sidebar. Together
+    /// with `for_me` it is what the sources count (open entries, both lanes), so the sidebar's numbers
+    /// add up; and where the undo of archiving a mail finds its entry outside "For me" (a newsletter
+    /// archived in "All", issue #301).
+    pub info: Vec<Item>,
     /// The unread mail of "All" in the mail window (task E18.4, decision 4 of E18): what
     /// `MailSource::unread_in_all` counts, summed over the accounts shown. `None` in the other
     /// windows, without a mail account, and when one count failed – the list still shows then.
@@ -2292,7 +2294,8 @@ pub struct App<S> {
     items: Vec<Item>,
     /// The open entries of "For me", waiting ones first ([`Loaded::for_me`]).
     for_me: Vec<Item>,
-    info: usize,
+    /// The open entries of "Info" ([`Loaded::info`]).
+    info: Vec<Item>,
     /// The unread mail of "All" (task E18.4, [`Loaded::unread_all`]): the number on its row; `None`
     /// outside the mail window and when the core could not count.
     unread_all: Option<u64>,
@@ -3028,7 +3031,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
             order,
             items: Vec::new(),
             for_me: Vec::new(),
-            info: 0,
+            info: Vec::new(),
             unread_all: None,
             sources: Vec::new(),
             folders: Vec::new(),
@@ -3085,9 +3088,9 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         rules::sort(&mut for_me);
     }
     let info = match view {
-        View::Info => items.len(),
-        View::Overview => items.iter().filter(|item| item.lane == Lane::Info).count(),
-        _ => keep(inbox.list_items(narrow(View::Info.filter().unwrap_or_default())).await.map_err(failed)?).len(),
+        View::Info => items.clone(),
+        View::Overview => items.iter().filter(|item| item.lane == Lane::Info).cloned().collect(),
+        _ => keep(inbox.list_items(narrow(View::Info.filter().unwrap_or_default())).await.map_err(failed)?),
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
     let folders = inbox.mail_folders().await.unwrap_or_default();
@@ -3417,7 +3420,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             },
             items: Vec::new(),
             for_me: Vec::new(),
-            info: 0,
+            info: Vec::new(),
             unread_all: None,
             sources: Vec::new(),
             loaded: false,
@@ -5202,6 +5205,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let entry = || {
             let held = self.items.iter().chain(self.detail.as_ref()).chain(self.subject.as_ref());
             held.chain(&self.for_me)
+                .chain(&self.info)
                 .chain(&self.snoozed)
                 .find(|item| shows_mail(item, id))
                 .map(|item| item.source.key())
@@ -5321,6 +5325,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let followed = self.detail.as_ref().is_some_and(|detail| self.cursor.as_deref() == Some(detail.id.as_str()));
         self.items.retain(|item| !shows_mail(item, id));
         self.for_me.retain(|item| !shows_mail(item, id));
+        self.info.retain(|item| !shows_mail(item, id));
         self.snoozed.retain(|item| !shows_mail(item, id));
         if let Some(place) = place {
             let rows = self.rows();
@@ -5342,6 +5347,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             self.messages.retain(|message| !leaving.hides(message));
             self.items.retain(|item| !shows_mail(item, id));
             self.for_me.retain(|item| !shows_mail(item, id));
+            self.info.retain(|item| !shows_mail(item, id));
             self.snoozed.retain(|item| !shows_mail(item, id));
         }
     }
@@ -5362,14 +5368,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         listed.or_else(loaded)
     }
 
-    /// The open entry of the message `id` in the list, which the core closes when its mail leaves
-    /// the inbox; undo opens it again.
+    /// The open entry of the message `id` in the list, "For me" or "Info", which the core closes
+    /// when its mail leaves the inbox; undo opens it again.
     fn entry_of(&self, id: &str) -> Option<String> {
-        // A folder lists no entries; "For me" holds them there (issue #205: the core now closes
-        // the entry for sure once its mail left the inbox, so undo must open it again).
+        // A folder lists no entries; "For me" and "Info" hold them there (issue #205: the core now
+        // closes the entry for sure once its mail left the inbox, so undo must open it again; issue
+        // #301: a newsletter's entry is in "Info").
         self.items
             .iter()
             .chain(&self.for_me)
+            .chain(&self.info)
             .find(|item| shows_mail(item, id) && item.state.is_open())
             .map(|item| item.id.clone())
     }
@@ -8999,7 +9007,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // New, Later, Done (task E8.4); "New" counts all it shows, both lanes. The sources are
             // the window's choice, not views ([`App::sidebar`]).
             Kind::Notifications => {
-                let new = Some(self.for_me.len() + self.info).filter(|&n| n > 0);
+                let new = Some(self.for_me.len() + self.info.len()).filter(|&n| n > 0);
                 return (
                     vec![entry(View::Overview, new), entry(View::Snoozed, None), entry(View::Done, None)],
                     Vec::new(),
@@ -14047,7 +14055,7 @@ mod tests {
         assert_eq!(app.view, View::Overview);
         assert!(app.is_hub(), "the hub's overview is Act now (task E8.5)");
         assert_eq!(app.items.len(), FOR_ME.len() + 6, "both lanes in one answer");
-        assert_eq!((app.for_me.len(), app.info), (18, 6), "the sidebar's numbers from the same answer");
+        assert_eq!((app.for_me.len(), app.info.len()), (18, 6), "the sidebar's numbers from the same answer");
         assert_eq!(app.count_note(), hub::summary(&hub::Sections::of(&app.items, None)));
         assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
         assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Act now"))]));
@@ -15817,7 +15825,7 @@ mod tests {
         let mut both = ids(&theirs);
         both.sort_unstable();
         assert_eq!(both, ["demo-1", "demo-4", "demo-6"]);
-        assert_eq!((ci.for_me.len(), ci.info), (0, 1));
+        assert_eq!((ci.for_me.len(), ci.info.len()), (0, 1));
         assert!(theirs.for_me.iter().all(|item| theirs.shown.shows(&item.source)), "the glance too");
         // Without `--source`: what the apps report – no agents, no approvals, no mail.
         let apps = notifications_window(&[]);
@@ -16630,6 +16638,38 @@ mod tests {
         let _ = press(&mut app, Key::E);
         assert_eq!(app.sent.len(), before, "at an entry neither");
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This account has no archive folder.")));
+    }
+
+    /// Issue #301 ("Undo takes back both"): `e` in "All" at a newsletter whose entry is in "Info" –
+    /// the core closes that entry as the mail leaves the inbox (`Feed::settle`), so the toast's undo
+    /// opens it again, as it does for an entry of "For me".
+    #[test]
+    fn undo_after_archiving_in_all_opens_an_info_entry_again() {
+        let mut app = mail_window(Density::Compact, &[]);
+        assert_eq!(app.view, View::All);
+        let entry = stored(&app, "demo-mail-3");
+        assert_eq!((entry.lane, entry.state.is_open()), (Lane::Info, true), "a newsletter's open entry");
+        let Some(Link::Mail { message }) = entry.link.clone() else { panic!("a mail entry: {entry:?}") };
+        assert!(message_ids(&app).contains(&message.as_str()), "its mail in All");
+        let _ = app.update(Message::SelectMail(message.clone()));
+        let _ = press(&mut app, Key::E);
+        let archive = MailEdit::Move { ids: vec![message.clone()], to: MoveTarget::Role(MoveRole::Archive) };
+        let hint = app.sent.iter().find_map(|sent| match sent {
+            Sent::Mail(edit, Some(hint)) if *edit == archive => Some(hint.clone()),
+            _ => None,
+        });
+        let Some(Undo::Mail { edit: back, reopen }) = hint.as_ref().and_then(|hint| hint.undo.clone()) else {
+            panic!("{:?}", app.sent)
+        };
+        assert_eq!(reopen, ["demo-mail-3"], "undo opens the Info entry again");
+        // As the core does it: the mail leaves the inbox, its entry is closed.
+        let ids = archive.ids().to_vec();
+        let moved = block_on(archive.apply(app.inbox.clone()));
+        let _ = app.update(Message::MailEdited(moved, ids, hint));
+        load(&mut app);
+        assert!(matches!(stored(&app, "demo-mail-3").state, State::Done { .. }), "the core closed it");
+        let _ = press(&mut app, Key::U);
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(back, None)), "the mail back, then the entry open");
     }
 
     #[test]
