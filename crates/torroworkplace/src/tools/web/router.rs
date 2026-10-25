@@ -11,7 +11,8 @@
 //! - **Rest:** a provider that blocked the core or hit a limit is not asked for an hour ([`PAUSE`]), or as long as
 //!   its `Retry-After` said (at most [`MAX_PAUSE`]), by anyone.
 //! - **Memory:** answers stay an hour ([`ANSWER_FOR`]), at most [`MAX_ANSWERS`], in memory only and never Brave's
-//!   (its terms allow results only for the answer). An answer from memory asks no provider and costs no turn.
+//!   (its terms allow results only for the answer). An answer from memory asks no provider and costs no turn;
+//!   [`Router::forget`] drops a provider's (the tool `web` does when SearXNG's address changes).
 //!
 //! Nothing here logs: errors are [`NoAnswer`] without the words.
 
@@ -170,6 +171,13 @@ impl Router {
         let gates = self.gates.lock().unwrap_or_else(PoisonError::into_inner);
         let left = gates.get(&provider)?.paused_until?.checked_duration_since(now).filter(|left| !left.is_zero())?;
         Some(Utc::now() + chrono::TimeDelta::from_std(left).ok()?)
+    }
+
+    /// Drops every kept answer of `provider`: what it answered no longer holds (the person's SearXNG moved to
+    /// another address, another instance). Rests and turns stay.
+    pub fn forget(&self, provider: SearchProviderId) {
+        let prefix = format!("{}|", provider.name());
+        self.answers.lock().unwrap_or_else(PoisonError::into_inner).retain(|key, _| !key.starts_with(&prefix));
     }
 
     /// One provider's hits for `query`: from memory when kept, else once from the provider when its turn comes. It
@@ -693,6 +701,24 @@ mod tests {
             Some((router.clock)() + Duration::from_secs(20));
         assert_eq!(router.search(&providers, &switched, &Query::new("b", None, None)).await, Err(NoAnswer::Resting));
         assert_eq!(duckduckgo.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_provider_drops_only_its_answers() {
+        let time = Time::new();
+        let router = time.router();
+        let (searxng, mojeek) = (Fake::finding(Searxng, 1), Fake::finding(Mojeek, 1));
+        let providers = all(&[&searxng, &mojeek]);
+        let query = Query::new("x", None, None);
+        for id in [Searxng, Mojeek] {
+            router.search(&providers, &on(&[id]), &query).await.expect("hits");
+        }
+        router.forget(Searxng);
+        time.pass(Duration::from_secs(2));
+        for id in [Searxng, Mojeek] {
+            router.search(&providers, &on(&[id]), &query).await.expect("hits");
+        }
+        assert_eq!((searxng.calls(), mojeek.calls()), (2, 1), "Mojeek's answer is still kept");
     }
 
     #[test]

@@ -22,7 +22,7 @@ pub mod robots;
 pub mod router;
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use torro_core::account::Secret;
@@ -172,6 +172,8 @@ pub struct Web {
     fetcher: OnceLock<Option<Fetcher>>,
     /// These providers instead of those the settings name, whatever is on (tests); `None` in the service.
     fixed: Option<Vec<Arc<dyn SearchProvider>>>,
+    /// SearXNG's address at the last search: the router's kept answers of SearXNG are this instance's.
+    searxng: Mutex<Option<String>>,
 }
 
 impl Web {
@@ -190,7 +192,14 @@ impl Web {
 
     /// The tool with the keys in `keys`; its HTTP clients are built on first use.
     pub fn new(keys: Arc<dyn SearchKeys>) -> Web {
-        Web { router: Router::new(), keys, http: OnceLock::new(), fetcher: OnceLock::new(), fixed: None }
+        Web {
+            router: Router::new(),
+            keys,
+            http: OnceLock::new(),
+            fetcher: OnceLock::new(),
+            fixed: None,
+            searxng: Mutex::new(None),
+        }
     }
 
     /// `self` asking `providers` instead of those the settings build (tests); the switches still decide.
@@ -241,9 +250,20 @@ impl Web {
             Ok(providers) => providers,
             Err(refused) => return refused,
         };
+        self.follow_searxng(settings);
         match self.router.search(&providers, &settings.providers, &query).await {
             Ok(results) => Response::SearchResults { results },
             Err(why) => self.no_answer(why, settings),
+        }
+    }
+
+    /// Forgets SearXNG's kept answers when its address in `settings` is not the one of the last search: another
+    /// address is another instance, whose answers may differ.
+    fn follow_searxng(&self, settings: &WebSearch) {
+        let mut last = self.searxng.lock().unwrap_or_else(PoisonError::into_inner);
+        if *last != settings.searxng {
+            self.router.forget(SearchProviderId::Searxng);
+            last.clone_from(&settings.searxng);
         }
     }
 
@@ -730,6 +750,37 @@ mod tests {
             );
         }
         assert_eq!((moved.calls_async().await, json.calls_async().await), (1, 1), "no redirect followed");
+    }
+
+    /// Found in the review of #305: answers of SearXNG are kept for its address. Another address is another
+    /// instance, asked anew; the same one again answers from memory.
+    #[tokio::test]
+    async fn another_searxng_address_is_asked_anew() {
+        let server = MockServer::start_async().await;
+        let mut instances = Vec::new();
+        for name in ["old", "new"] {
+            let answer = format!(r#"{{"results":[{{"title":"{name}","url":"https://{name}.example.org/"}}]}}"#);
+            let mock = server
+                .mock_async(|when, then| {
+                    when.method(GET).path(format!("/{name}/search"));
+                    then.status(200).header("content-type", "application/json").body(answer);
+                })
+                .await;
+            instances.push(mock);
+        }
+        let web = offline().with_http(providers::http_client().expect("a client"));
+        let at = |name: &str| WebSearch {
+            providers: BTreeSet::from([SearchProviderId::Searxng]),
+            searxng: Some(server.url(format!("/{name}"))),
+        };
+        let titles = |answer: Response| match answer {
+            Response::SearchResults { results } => results.hits.into_iter().map(|hit| hit.title).collect::<Vec<_>>(),
+            other => panic!("results, got {other:?}"),
+        };
+        assert_eq!(titles(web.search(&at("old"), "Lisbon", None, None).await), ["old"]);
+        assert_eq!(titles(web.search(&at("new"), "Lisbon", None, None).await), ["new"], "not the old one's");
+        assert_eq!(titles(web.search(&at("new"), "Lisbon", None, None).await), ["new"]);
+        assert_eq!((instances[0].calls_async().await, instances[1].calls_async().await), (1, 1), "then from memory");
     }
 
     #[tokio::test]
