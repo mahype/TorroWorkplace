@@ -5,7 +5,8 @@
 //!   Follow up, below), top to bottom:
 //!   **Decide** (approvals: Allow · Deny · Go to window), **Agents** (coding agents waiting or done:
 //!   Go to window · Later · Done) and **To sort** (everything else, each with its targets: Task ·
-//!   Later · Done for mail, Open · Task · Later · ✕ for the rest). "Info" is not here: it is for
+//!   Event · Later · Archive for mail – task E18.5: mail is archived, never done –, Open · Task ·
+//!   Event · Later · ✕ for the rest). "Info" is not here: it is for
 //!   reading, which the mail and the notifications window do.
 //! - **Buttons** ([`acts`]): the concept's table "Knöpfe je Eintrag". An approval has **neither ✕
 //!   nor Later** – it waits for yes or no and must not vanish by accident. Every button sends what
@@ -16,7 +17,7 @@
 //!   ([`tile_columns`]), the busiest first.
 //! - **Follow up** (task E8.7b, [`Section::FollowUp`]): between Decide and Agents the suite's
 //!   question after a task made of a mail was finished ("You finished a task from a mail", which the
-//!   core files in "Info"): Reply · Mark mail done · Not now, built from the task it carries.
+//!   core files in "Info"): Reply · Archive mail · Not now, built from the task it carries.
 //! - **Handed off** and **Coming back** ([`side`]): in the wide layout a column at the right with the
 //!   open tasks made of entries (task E8.7b, [`handed_off`]; a click opens the task in the tasks app),
 //!   then the snoozed entries and when they wake, the soonest first.
@@ -30,7 +31,7 @@
 //!   Allow and Deny are always there. Mini and strip show the glance, as every window.
 //! - **Words on buttons** (task E8.12): a card's buttons carry all their words or none; only the
 //!   lead (Open, Go to window, Reply) may keep its word alone (`widgets::BarWords`). What lets the
-//!   entry go (Done, Dismiss, Not now) is `ghost`, every other visible button `secondary`.
+//!   entry go (Done, Archive, Dismiss, Not now) is `ghost`, every other visible button `secondary`.
 //!
 //! - **Quiet** and **Event** (task E8.5b): while a busy event keeps the inbox quiet
 //!   (`inbox.get_quiet`), the column at the right starts with "Quiet" – until when and the event
@@ -51,7 +52,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, responsive, row, rule, scrollable};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::design::Density;
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
@@ -261,8 +262,8 @@ impl Section {
 
 /// Whether `item` is the suite's entry "You finished a task from a mail" (task E8.7a): the suite's
 /// own, carrying the finished task with the open mail entry its mail waits in
-/// ([`torro_inbox::item::ItemTask::mail_entry`]). Its buttons are Reply and "Mark mail done" (task
-/// E8.7b), built from that task – the entry has no actions of its own.
+/// ([`torro_inbox::item::ItemTask::mail_entry`]). Its buttons are Reply and "Archive mail" (tasks
+/// E8.7b, E18.5), built from that task – the entry has no actions of its own.
 pub fn is_follow_up(item: &Item) -> bool {
     item.source.kind == SourceKind::Suite && item.task.as_ref().is_some_and(|task| task.mail_entry.is_some())
 }
@@ -501,6 +502,9 @@ pub enum Act {
     Later,
     /// Mark it done (`e`, `inbox.set_item_done`).
     Done,
+    /// Archive the mail of a mail entry (`e`, task E18.5, decision 5 of E18): `mail.move_messages` to
+    /// the archive, then the entry closed – what `e` does at the entry (`Command::Done`).
+    Archive,
     /// Let it go without doing anything (`x`, `inbox.set_item_done` with `dismissed`).
     Dismiss,
     /// Open a done entry again (`e`).
@@ -508,9 +512,9 @@ pub enum Act {
     /// Answer the mail a finished task was made of (`r`, task E8.7b): the compose window for the mail
     /// of [`torro_inbox::item::ItemTask::mail_entry`], else the mail window with it.
     Reply,
-    /// Mark the mail of a finished task done, and the question with it (`inbox.set_item_done` for
-    /// both, task E8.7b).
-    MarkMailDone,
+    /// Archive the mail of a finished task and close its entry and the question (task E18.5,
+    /// `Message::ArchiveMail`).
+    ArchiveMail,
     /// Close the question without touching the mail (`e` on it).
     NotNow,
 }
@@ -526,14 +530,15 @@ fn is_agent(item: &Item) -> bool {
 ///   Later, no Done**: it waits for yes or no;
 /// - a done entry: Reopen;
 /// - a coding agent: Go to window (when it can be opened) · Later · Done;
-/// - mail: Task · Event · Later · Done – mail is done or hidden, never dismissed;
-/// - the suite's "You finished a task from a mail" ([`is_follow_up`], task E8.7b): Reply · Mark mail
-///   done · Not now;
+/// - mail: Task · Event · Later · Archive – mail is archived or hidden, never done nor dismissed
+///   (task E18.5);
+/// - the suite's "You finished a task from a mail" ([`is_follow_up`], task E8.7b): Reply · Archive
+///   mail · Not now;
 /// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Event ·
 ///   Later · ✕ ([`notifications::dismissable`], else Done).
 pub fn acts(item: &Item) -> Vec<Act> {
     if is_follow_up(item) && item.state.is_open() {
-        return vec![Act::Reply, Act::MarkMailDone, Act::NotNow];
+        return vec![Act::Reply, Act::ArchiveMail, Act::NotNow];
     }
     let window = detail::openable(item) == Some(Link::Window);
     if detail::is_approval(item) {
@@ -558,7 +563,7 @@ pub fn acts(item: &Item) -> Vec<Act> {
         return lead.into_iter().chain([Act::Later, Act::Done]).collect();
     }
     if item.source.kind == SourceKind::Mail {
-        return vec![Act::Task, Act::Event, Act::Later, Act::Done];
+        return vec![Act::Task, Act::Event, Act::Later, Act::Archive];
     }
     let mut acts = Vec::new();
     match detail::openable(item) {
@@ -575,7 +580,8 @@ impl Act {
     /// The button's icon.
     pub fn icon(&self) -> Icon {
         match self {
-            Act::Allow(_) | Act::Done | Act::MarkMailDone => Icon::Check,
+            Act::Allow(_) | Act::Done => Icon::Check,
+            Act::Archive | Act::ArchiveMail => Icon::Archive,
             Act::Deny(_) | Act::Dismiss | Act::NotNow => Icon::X,
             Act::GoToWindow => Icon::AppWindow,
             Act::Open => Icon::ArrowUpRight,
@@ -598,10 +604,11 @@ impl Act {
             Act::Event => tr("Event"),
             Act::Later => tr("Later"),
             Act::Done => tr("Done"),
+            Act::Archive => trc("action", "Archive"),
             Act::Dismiss => tr("Dismiss"),
             Act::Reopen => tr("Reopen"),
             Act::Reply => tr("Reply"),
-            Act::MarkMailDone => tr("Mark mail done"),
+            Act::ArchiveMail => tr("Archive mail"),
             Act::NotNow => tr("Not now"),
         }
     }
@@ -610,12 +617,12 @@ impl Act {
     /// none (they stand on cards, never in an action bar).
     fn key(&self) -> &'static str {
         match self {
-            Act::Allow(_) | Act::Deny(_) | Act::MarkMailDone => "",
+            Act::Allow(_) | Act::Deny(_) | Act::ArchiveMail => "",
             Act::GoToWindow | Act::Open => "Enter",
             Act::Task => "T",
             Act::Event => "C",
             Act::Later => "S",
-            Act::Done | Act::Reopen | Act::NotNow => "E",
+            Act::Done | Act::Archive | Act::Reopen | Act::NotNow => "E",
             Act::Dismiss => "X",
             Act::Reply => "R",
         }
@@ -635,26 +642,27 @@ impl Act {
             Act::Task => act(Command::MakeTask),
             Act::Event => act(Command::MakeEvent),
             Act::Later => act(Command::Snooze),
-            Act::Done | Act::Reopen | Act::NotNow => act(Command::Done),
+            Act::Done | Act::Archive | Act::Reopen | Act::NotNow => act(Command::Done),
             Act::Dismiss => act(Command::Dismiss),
             Act::Reply => act(Command::Reply),
-            Act::MarkMailDone => Some(Message::MarkMailDone(item.id.clone())),
+            Act::ArchiveMail => Some(Message::ArchiveMail(item.id.clone())),
         }
     }
 
     /// The button's look, one rule for every card of the hub and the notifications window (task
     /// E8.12, finding 12, `notifications::button_look`): quiet (`ghost`) for what only lets the
-    /// entry go – Done, Dismiss, Not now –, framed (`secondary`) for every other visible button.
+    /// entry go – Done, Archive, Dismiss, Not now –, framed (`secondary`) for every other visible
+    /// button.
     /// The narrow layout's big Allow and Deny ([`big_decide`]) are for decisions only.
     fn style(&self) -> ButtonStyle {
         notifications::button_look(self.lets_go())
     }
 
-    /// Whether the button only lets the entry go – Done, Dismiss, Not now –, which is drawn quietly
-    /// ([`Act::style`]).
+    /// Whether the button only lets the entry go – Done, Archive (task E18.5: as quiet as Done, whose
+    /// place it takes), Dismiss, Not now –, which is drawn quietly ([`Act::style`]).
     fn lets_go(&self) -> bool {
         match self {
-            Act::Done | Act::Dismiss | Act::NotNow => true,
+            Act::Done | Act::Archive | Act::Dismiss | Act::NotNow => true,
             Act::Allow(_)
             | Act::Deny(_)
             | Act::GoToWindow
@@ -664,7 +672,7 @@ impl Act {
             | Act::Later
             | Act::Reopen
             | Act::Reply
-            | Act::MarkMailDone => false,
+            | Act::ArchiveMail => false,
         }
     }
 
@@ -1277,7 +1285,8 @@ fn lead<'a>(item: &Item, rows: &Rows<'_>, attention: Color) -> Element<'a, Messa
 }
 
 /// Where an act of To sort stands in the fixed columns of its buttons ([`SortSlots`]): what the
-/// entry is about (Open, Go to window), Task, Event, Later, and what lets it go (Done, Dismiss).
+/// entry is about (Open, Go to window), Task, Event, Later, and what lets it go (Done, Archive,
+/// Dismiss).
 fn sort_slot(act: &Act) -> usize {
     match act {
         Act::Open | Act::GoToWindow => 0,
@@ -1287,10 +1296,11 @@ fn sort_slot(act: &Act) -> usize {
         Act::Allow(_)
         | Act::Deny(_)
         | Act::Done
+        | Act::Archive
         | Act::Dismiss
         | Act::Reopen
         | Act::Reply
-        | Act::MarkMailDone
+        | Act::ArchiveMail
         | Act::NotNow => 4,
     }
 }
@@ -1602,7 +1612,14 @@ mod tests {
         }
         assert_eq!(acts(&find(&items, "demo-1")), [Act::GoToWindow, Act::Later, Act::Done], "an agent");
         let mail = items.iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
-        assert_eq!(acts(mail), [Act::Task, Act::Event, Act::Later, Act::Done], "mail is never dismissed");
+        assert_eq!(acts(mail), [Act::Task, Act::Event, Act::Later, Act::Archive], "mail is archived (task E18.5)");
+        // Archive does what `e` does at the entry, quietly as Done did; a done mail entry reopens.
+        let archive = card_button(&Act::Archive, mail, false);
+        assert_eq!((archive.icon, archive.label.as_str()), (Icon::Archive, trc("action", "Archive")));
+        assert!(matches!(&archive.on_press, Some(Message::Act(id, Command::Done)) if *id == mail.id));
+        assert!(Act::Archive.key() == "E" && Act::Archive.lets_go(), "its key, and quiet");
+        let done = Item { state: State::Done { at: now() }, ..mail.clone() };
+        assert_eq!(acts(&done), [Act::Reopen], "\"Done today\" keeps Reopen (decision 9 of E18)");
         assert_eq!(
             acts(&find(&items, "demo-6")),
             [Act::Open, Act::Task, Act::Event, Act::Later, Act::Dismiss],
@@ -1840,10 +1857,12 @@ mod tests {
     /// other visible button framed; the lead keeps its word longest.
     #[test]
     fn what_lets_an_entry_go_is_quiet_and_the_rest_is_framed() {
-        for quiet in [Act::Done, Act::Dismiss, Act::NotNow] {
+        for quiet in [Act::Done, Act::Archive, Act::Dismiss, Act::NotNow] {
             assert!(quiet.lets_go(), "{quiet:?}");
         }
-        for framed in [Act::Later, Act::GoToWindow, Act::Task, Act::Event, Act::Open, Act::Reply, Act::Reopen] {
+        for framed in
+            [Act::Later, Act::GoToWindow, Act::Task, Act::Event, Act::Open, Act::Reply, Act::Reopen, Act::ArchiveMail]
+        {
             assert!(!framed.lets_go(), "{framed:?}");
         }
         assert!(Act::Open.leads() && Act::GoToWindow.leads() && Act::Reply.leads());
@@ -1872,10 +1891,11 @@ mod tests {
         assert!(slots.widths.iter().all(Option::is_some), "mail and notices: every column");
         let task = slots.widths[sort_slot(&Act::Task)].expect("Task");
         assert_eq!(task, widgets::text_button_width(true, tr("Task")));
-        let end = slots.widths[sort_slot(&Act::Done)].expect("Done or Dismiss");
+        let end = slots.widths[sort_slot(&Act::Archive)].expect("Archive or Dismiss");
         assert_eq!(
             end,
-            widgets::text_button_width(true, tr("Done")).max(widgets::text_button_width(true, tr("Dismiss")))
+            widgets::text_button_width(true, trc("action", "Archive"))
+                .max(widgets::text_button_width(true, tr("Dismiss")))
         );
         let tight = SortSlots::of(&sections.to_sort, false, 500.0);
         assert!(!tight.words && tight.widths.iter().flatten().all(|width| *width == size::control_sm()), "icons");

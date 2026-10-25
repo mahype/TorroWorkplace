@@ -4238,7 +4238,7 @@ Nicht parallel zu E17 (#300): E17.2 und E18.4 ändern `sidebar`, `nav_menu` und 
   Undo schickt `false` und bringt sie zurück. Vergleiche mit `tr(…)`.
 
 ### E18.5 „Archive“ statt „Done“ an jeder Mail, Doku, Sichtprüfung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E18.4 · **Dateien:** `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/list.rs`,
   `crates/torroinbox/src/mail.rs`, `crates/torroinbox/src/hub.rs`, `crates/torroinbox/src/detail.rs`,
   `crates/torroinbox/src/keys.rs` (nur falls `e` im Leser noch nicht archiviert), `crates/torro-core/src/i18n/de.rs`,

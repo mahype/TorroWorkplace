@@ -1143,9 +1143,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("open", "offen"),
     ("Follow up", "Nachfassen"),
     ("to follow up", "zum Nachfassen"),
-    ("Mark mail done", "Mail erledigen"),
+    ("Archive mail", "Mail archivieren"),
     ("Not now", "Nicht jetzt"),
-    ("Mail marked as done", "Mail als erledigt markiert"),
+    ("This account has no archive folder.", "Dieses Konto hat keinen Archivordner."),
+    ("Couldn't find the mail of this task.", "Die Mail zu dieser Aufgabe wurde nicht gefunden."),
     ("Handed off", "Weitergegeben"),
     (
         "Tasks you make of entries show up here until they are done.",

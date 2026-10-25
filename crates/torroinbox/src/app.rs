@@ -72,8 +72,8 @@
 //! task made of it as a card over its text ([`App::task_of`]: its entry's [`Item::task`], or the one
 //! "Task" made of a folder's message, `tasks.create_todo_from_mail`, [`App::ask_mail_task`]); "Open
 //! task" opens it in the tasks app through the core ([`open_target`]). The hub asks after a finished
-//! task (`hub::Section::FollowUp`: Reply, "Mark mail done" – [`App::mark_mail_done`] – and "Not
-//! now") and lists the open tasks made of entries under "Handed off" ([`Loaded::done`]).
+//! task (`hub::Section::FollowUp`: Reply, "Archive mail" – [`App::archive_task_mail`], task E18.5 –
+//! and "Not now") and lists the open tasks made of entries under "Handed off" ([`Loaded::done`]).
 //! `--message=m:…` starts the mail window on that mail ([`App::open_start_mail`]). With `--demo`
 //! the entries get the demo's tasks ([`demo_task`]).
 //!
@@ -85,9 +85,10 @@
 //! cursor ([`App::column`]) and which "Info" is unfolded (in `ui.json`, task E3.11); the keys walk the
 //! column
 //! ([`App::rows`]). Every row has an action bar (Task, Done, Later, Hide; for mail first Archive and
-//! Delete, issue #118, a folder's message too), whose buttons do what the keys do on the row
-//! ([`Message::Act`], [`Message::Mail`]). Reply is no button of rows and cards: it stands in the
-//! reader, where the mail has been read.
+//! Delete, issue #118, a folder's message too, and no Done – task E18.5: `e` archives the mail of an
+//! open mail entry in every window and closes the entry with it, [`App::mail_action`]), whose buttons
+//! do what the keys do on the row ([`Message::Act`], [`Message::Mail`]). Reply is no button of rows
+//! and cards: it stands in the reader, where the mail has been read.
 //!
 //! HTML mail (task M9.7, decision 9 in `docs/mail.md`): a mail that came with HTML
 //! (`mail::shows_html`) shows as HTML right in the panel and the reader ([`App::html`], drawn by
@@ -635,11 +636,12 @@ pub enum Undo {
     Edit(Edit),
     /// Sets the source's "muted" back to the value given (`inbox.mute_source`).
     Mute(SourceRef, bool),
-    /// Moves archived or deleted mail back where it was (`mail.move_messages`), and opens the
-    /// entry `reopen` again – the core closed it when its mail left the inbox.
-    Mail { edit: MailEdit, reopen: Option<String> },
-    /// Takes "Dismiss all" back (task E8.4), and "Mark mail done" (task E8.7b): opens the entries it
-    /// closed again (`inbox.set_item_done` with `false`, one by one).
+    /// Moves archived or deleted mail back where it was (`mail.move_messages`), then opens the
+    /// entries `reopen` again, one by one – the core closed them when their mail left the inbox, or
+    /// the window did after archiving from an entry and with "Archive mail" (task E18.5).
+    Mail { edit: MailEdit, reopen: Vec<String> },
+    /// Takes "Dismiss all" back (task E8.4): opens the entries it closed again
+    /// (`inbox.set_item_done` with `false`, one by one).
     Dismissed(Vec<String>),
     /// Takes "Show again" back (task E18.4): `inbox.set_mail_shown` with `shown: false` for these
     /// mails, which go back into "Hidden" – the rule that hid them still holds.
@@ -1005,8 +1007,8 @@ pub enum Sent {
     },
     /// `apps.open_app` with a target (task E8.7b): the app and `task:<uid>` or `mail:<…>`.
     Target(String, String),
-    /// "Mark mail done" (task E8.7b): `inbox.set_item_done` for these entries – the mail's, then the
-    /// question's.
+    /// Archiving from a mail entry and "Archive mail" (task E18.5): after the move ([`Sent::Mail`] just
+    /// before), `inbox.set_item_done` for these entries – the mail entry's, then the question's.
     MailDone(Vec<String>),
     /// `inbox.set_mail_shown` (task E18.4, "Show again" and its undo): the mails, `shown` and the
     /// hint that follows the answer (`None` after an undo).
@@ -2944,11 +2946,13 @@ pub enum Message {
     /// "Open task" (the card of a mail, "Handed off", task E8.7b): the task with this uid in the
     /// tasks app, through the core (`apps.open_app` with `task:<uid>`).
     OpenTask(String),
-    /// "Mark mail done" on the suite's "You finished a task from a mail" with this id (task E8.7b):
-    /// its mail entry done, then the question.
-    MarkMailDone(String),
-    /// The answer to "Mark mail done": the entries closed, and why the rest was not, if it stopped.
-    MailDone(Vec<String>, Option<String>),
+    /// "Archive mail" on the suite's "You finished a task from a mail" with this id (task E18.5,
+    /// [`App::archive_task_mail`]): its mail archived, then its mail entry and the question closed.
+    ArchiveMail(String),
+    /// The answer to archiving a mail and closing entries with it (task E18.5, [`App::file_mail`]):
+    /// `Err` when the move failed, else why closing an entry failed, if it did; then the messages
+    /// moved and the hint, as for [`Message::MailEdited`].
+    MailDone(Result<Option<String>, String>, Vec<String>, Option<Hint>),
     /// The mail of `--message` that has no entry, loaded to find its folder (task E8.7b).
     StartMail(String, Result<Box<Mail>, String>),
     /// "Insights" in the hub's sidebar (task E8.8b): the page of what the inbox counted.
@@ -4705,17 +4709,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.error = Some(Failure::new(tr("Couldn't create the task."), err));
             }
             Message::OpenTask(uid) => return self.open_task(&uid),
-            Message::MarkMailDone(id) => return self.mark_mail_done(&id),
-            Message::MailDone(done, failed) => {
+            Message::ArchiveMail(id) => return self.archive_task_mail(&id),
+            // The move answers as every move does; an entry left open says so on top.
+            Message::MailDone(result, ids, hint) => {
+                let (moved, failed) = match result {
+                    Ok(failed) => (Ok(()), failed),
+                    Err(err) => (Err(err), None),
+                };
+                let load = self.handle(Message::MailEdited(moved, ids, hint));
                 if let Some(err) = failed {
                     self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
                 }
-                if !done.is_empty() {
-                    let text = tr("Mail marked as done").to_owned();
-                    self.hint =
-                        Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now(), folder: None });
-                }
-                return self.load();
+                return load;
             }
             Message::StartMail(id, result) => return self.show_start_mail(id, result),
             Message::ShowInsights => return self.show_insights(),
@@ -5099,24 +5104,48 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// Carries out a mail button or key for the message `id`: Reply, Reply all and Forward open the
-    /// compose window; Archive, Delete and Junk move it and offer to move it back; Flag and read
-    /// change its flags.
+    /// compose window; Archive, Delete and Junk move it and offer to move it back ([`App::file_mail`]);
+    /// Flag and read change its flags.
+    ///
+    /// Archiving in a view of entries comes from a mail entry – its key `e`, its Archive in row, card,
+    /// panel or rail (task E18.5, decision 5 of E18) –, so the entries showing the mail are closed
+    /// after the move as well ([`App::open_entries_of`]); in the views of mail it is the message's own
+    /// and leaves its entry to the core.
     fn mail_action(&mut self, action: MailAction, id: String) -> Task<Message> {
         self.close_menus();
         if let Some(kind) = Compose::of(action) {
             return self.compose(kind, &id);
         }
         let Some(edit) = mail::edit_of(action, &id) else { return Task::none() };
-        let delete = action == MailAction::Delete;
         if !matches!(action, MailAction::Archive | MailAction::Delete | MailAction::Junk) {
             return self.mail_edit(Some(edit), None);
+        }
+        let from_entry = action == MailAction::Archive && !self.view.is_mail();
+        let close = if from_entry { self.open_entries_of(&id) } else { Vec::new() };
+        self.file_mail(action, id, edit, close)
+    }
+
+    /// Moves the message `id` by `edit` – archived, deleted or to junk (`action`) – off the lists at
+    /// once, with a toast whose undo moves it back; once moved, the entries `close` are closed
+    /// (`inbox.set_item_done`, task E18.5: the core keeps a mail entry open while its conversation
+    /// holds unread mail in the inbox, `Feed::settle`). Undo opens `close` again, or – without – the
+    /// open entry of the message ([`App::entry_of`]), which the core closed.
+    ///
+    /// Archiving needs a folder of the role Archive in the mail's account ([`App::can_archive`]):
+    /// without one the toast says "This account has no archive folder." and nothing moves (decision 6
+    /// of E18). Deleting a message in the trash says that it is there already.
+    fn file_mail(&mut self, action: MailAction, id: String, edit: MailEdit, close: Vec<String>) -> Task<Message> {
+        let delete = action == MailAction::Delete;
+        if action == MailAction::Archive && !self.can_archive(&id) {
+            self.note(tr("This account has no archive folder.").to_owned());
+            return Task::none();
         }
         if delete && self.in_trash(&id) {
             self.note(tr("This message is in the trash already.").to_owned());
             return Task::none();
         }
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
-        let reopen = self.entry_of(&id);
+        let reopen = if close.is_empty() { self.entry_of(&id).into_iter().collect() } else { close.clone() };
         let text = if action == MailAction::Junk { tr("Moved to junk") } else { mail::moved_text(delete) };
         let hint = Hint {
             text: text.to_owned(),
@@ -5126,7 +5155,59 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         };
         self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
-        self.mail_edit(Some(edit), Some(hint))
+        if close.is_empty() {
+            return self.mail_edit(Some(edit), Some(hint));
+        }
+        #[cfg(test)]
+        self.sent.extend([Sent::Mail(edit.clone(), Some(hint.clone())), Sent::MailDone(close.clone())]);
+        let ids = edit.ids().to_vec();
+        let inbox = self.inbox.clone();
+        // The entries only once the mail moved: closed while it still lay in the inbox, an entry
+        // would say "done" of a mail that did not go.
+        let filed = async move {
+            edit.apply(inbox.clone()).await?;
+            for entry in close {
+                if let Err(err) = inbox.set_item_done(entry, true).await {
+                    return Ok(Some(err.to_string()));
+                }
+            }
+            Ok(None)
+        };
+        Task::perform(filed, move |result| Message::MailDone(result, ids.clone(), Some(hint.clone())))
+    }
+
+    /// The entries the window holds that show the message `id` and are not done (list, panel, menu,
+    /// "For me", "Coming back"), each once: what archiving from a mail entry closes (task E18.5).
+    fn open_entries_of(&self, id: &str) -> Vec<String> {
+        let held = self.items.iter().chain(self.detail.as_ref()).chain(self.subject.as_ref());
+        let mut entries: Vec<String> = Vec::new();
+        for item in held.chain(&self.for_me).chain(&self.snoozed) {
+            if shows_mail(item, id) && !matches!(item.state, State::Done { .. }) && !entries.contains(&item.id) {
+                entries.push(item.id.clone());
+            }
+        }
+        entries
+    }
+
+    /// Whether the account of the message `id` has a folder of the role Archive (decision 6 of E18):
+    /// the account as its row or the loaded mail says, else as the source of an entry showing it
+    /// (`mail:<address>`, the key folders carry). A message of no account the window knows (a mail
+    /// beyond the first page, not loaded yet) is left to the core, which answers if it has none.
+    fn can_archive(&self, id: &str) -> bool {
+        let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.account.clone());
+        let loaded = || match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => Some(mail.summary.account.clone()),
+            _ => None,
+        };
+        let entry = || {
+            let held = self.items.iter().chain(self.detail.as_ref()).chain(self.subject.as_ref());
+            held.chain(&self.for_me)
+                .chain(&self.snoozed)
+                .find(|item| shows_mail(item, id))
+                .map(|item| item.source.key())
+        };
+        let Some(account) = listed.or_else(loaded).or_else(entry) else { return true };
+        self.folders.iter().any(|folder| folder.account == account && folder.role == Some(Role::Archive))
     }
 
     /// "Show again" on the mail `id` of "Hidden" (task E18.4, decisions 10 and 11 of E18):
@@ -5429,7 +5510,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // when every source folder is known and identical, rather than guessing the inbox.
         let homes: Vec<_> = ids.iter().map(|id| self.folder_of(id)).collect();
         let undo = homes[0].as_ref().filter(|home| homes.iter().all(|held| held.as_ref() == Some(*home))).map(|home| {
-            Undo::Mail { edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) }, reopen: None }
+            Undo::Mail {
+                edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) },
+                reopen: Vec::new(),
+            }
         });
         let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now(), folder: None });
         for id in &ids {
@@ -5584,7 +5668,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
         let hint = Hint {
             text: trf("Moved to {folder}", &[("folder", &name)]),
-            undo: Some(Undo::Mail { edit: back, reopen: self.entry_of(&id) }),
+            undo: Some(Undo::Mail { edit: back, reopen: self.entry_of(&id).into_iter().collect() }),
             shown: Instant::now(),
             folder: None,
         };
@@ -6357,7 +6441,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             None if self.drawer => Focus::Elsewhere,
             // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
             None if self.is_insights() => Focus::Elsewhere,
-            // In an opened mail, the rail's A archives; in the list it still answers all.
+            // In an opened mail `a` archives as well (the rail shows `e`); in the list it answers all.
             None if self.view.is_mail() && self.detail.is_some() => Focus::MailDetail,
             // The hub's "Act now" is one list of sections: `h`/`l` change no column there.
             None if self.view == View::Overview && !self.is_hub() => Focus::Overview,
@@ -6376,8 +6460,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::ColumnLeft => self.switch_column(Column::Mail),
             Command::ColumnRight => self.switch_column(Column::Notices),
             Command::Open => self.open_cursor(),
-            // In a folder `e` archives: a message has no "done" of its own.
+            // In a folder `e` archives: a message has no "done" of its own. Nor has an open mail
+            // entry in any window (task E18.5): `e` archives its mail, which closes the entry too; a
+            // done one ("Done today") opens again below.
             Command::Done if self.view.is_mail() => self.key_mail(MailAction::Archive),
+            Command::Done if self.cursor_item().and_then(list::entry_mail).is_some() => {
+                self.key_mail(MailAction::Archive)
+            }
             // The question after a finished task answers the mail it waits for (task E8.7b).
             Command::Reply if self.cursor_item().is_some_and(hub::is_follow_up) => self.reply_follow_up(),
             Command::Reply => self.key_mail(MailAction::Reply),
@@ -6858,7 +6947,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let back = MailEdit::Move { ids, to: MoveTarget::Role(MoveRole::Inbox) };
         let hint = Hint {
             text: tr("Moved to junk").to_owned(),
-            undo: Some(Undo::Mail { edit: back, reopen: Some(id.to_owned()) }),
+            undo: Some(Undo::Mail { edit: back, reopen: vec![id.to_owned()] }),
             shown: Instant::now(),
             folder: None,
         };
@@ -7400,28 +7489,26 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Task::perform(open_target(suite, AppId::INBOX_MAIL.window_class, task.link), Message::AppOpened)
     }
 
-    /// "Mark mail done" on the suite's "You finished a task from a mail" `id` (task E8.7b): its mail
-    /// entry done, then the question itself, one `inbox.set_item_done` each; the toast takes both
-    /// back ([`Undo::Dismissed`]). Nothing for another entry.
-    fn mark_mail_done(&mut self, id: &str) -> Task<Message> {
-        let Some(item) = self.find(id).filter(|item| hub::is_follow_up(item)).cloned() else { return Task::none() };
-        let mail = item.task.and_then(|task| task.mail_entry);
-        let ids: Vec<String> = mail.into_iter().chain([item.id]).collect();
-        self.close_menus();
-        #[cfg(test)]
-        self.sent.push(Sent::MailDone(ids.clone()));
-        let inbox = self.inbox.clone();
-        let closed = async move {
-            let mut done = Vec::new();
-            for id in ids {
-                if let Err(err) = inbox.set_item_done(id.clone(), true).await {
-                    return (done, Some(err.to_string()));
-                }
-                done.push(id);
-            }
-            (done, None)
+    /// "Archive mail" on the suite's "You finished a task from a mail" `id` (task E18.5): the mail of
+    /// its mail entry ([`ItemTask::mail_entry`], found with [`App::find`]) archived as `e` archives it
+    /// ([`App::file_mail`]: without an archive folder only the toast says so), then the mail entry and
+    /// the question closed (`inbox.set_item_done`); the toast's undo moves the mail back and opens
+    /// both again. A window that does not hold the mail entry (the App Feed keeps no mail) says
+    /// "Couldn't find the mail of this task." and changes nothing. Nothing for another entry.
+    ///
+    /// [`ItemTask::mail_entry`]: torro_inbox::item::ItemTask::mail_entry
+    fn archive_task_mail(&mut self, id: &str) -> Task<Message> {
+        let Some(question) = self.find(id).filter(|item| hub::is_follow_up(item)).cloned() else {
+            return Task::none();
         };
-        Task::perform(closed, |(done, failed)| Message::MailDone(done, failed))
+        self.close_menus();
+        let entry = question.task.as_ref().and_then(|task| task.mail_entry.as_deref()).and_then(|id| self.find(id));
+        let Some((entry, Some(Link::Mail { message }))) = entry.map(|item| (item.id.clone(), item.link.clone())) else {
+            self.note(tr("Couldn't find the mail of this task.").to_owned());
+            return Task::none();
+        };
+        let Some(edit) = mail::edit_of(MailAction::Archive, &message) else { return Task::none() };
+        self.file_mail(MailAction::Archive, message, edit, vec![entry, question.id])
     }
 
     /// The mail of `--message` (task E8.7b), once the first entries are in: its entry in the panel
@@ -7541,7 +7628,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let inbox = self.inbox.clone();
                 let back = async move {
                     edit.apply(inbox.clone()).await?;
-                    if let Some(id) = reopen {
+                    for id in reopen {
                         inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
                     }
                     Ok(())
@@ -10538,6 +10625,7 @@ mod tests {
 
     use chrono::TimeZone;
     use iced::futures::executor::block_on;
+    use torro_core::i18n::trc;
     use torro_inbox::demo::DemoSource;
 
     use torro_core::settings::AttachmentClick;
@@ -11926,7 +12014,7 @@ mod tests {
             panic!("a move with a hint: {:?}", app.sent.last())
         };
         assert_eq!(*to, MoveTarget::Role(MoveRole::Junk));
-        assert!(matches!(&hint.undo, Some(Undo::Mail { reopen: Some(id), .. }) if *id == item.id));
+        assert!(matches!(&hint.undo, Some(Undo::Mail { reopen, .. }) if *reopen == [item.id.clone()]));
     }
 
     #[test]
@@ -12798,7 +12886,7 @@ mod tests {
         let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
             "its entry opens again"
         );
         deliver_mail(&mut app);
@@ -12817,7 +12905,7 @@ mod tests {
     }
 
     /// Archive, junk, read, flag, reply, new mail and fetch run what their keys and buttons run, on
-    /// the message under the cursor; archiving works at an entry too, where `e` is Done.
+    /// the message under the cursor; archiving works at an entry too, as `e` does there (task E18.5).
     #[test]
     fn shortcuts_act_on_the_mail_under_the_cursor() {
         use shortcuts::Command as S;
@@ -12849,7 +12937,7 @@ mod tests {
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
             "its entry opens again"
         );
         assert_eq!(cursor(&app), Some("m:w2"), "the next row takes its place");
@@ -12858,13 +12946,14 @@ mod tests {
         assert_eq!(edit, MailEdit::Move { ids: vec!["m:w2".into()], to: MoveTarget::Role(MoveRole::Archive) });
         assert_eq!(hint.text, tr("Archived"));
 
-        // At a mail entry, where `e` marks done, the shortcut archives its mail.
+        // At a mail entry the shortcut archives its mail and closes the entry, as `e` does there
+        // (task E18.5).
         let mut app = at("demo-mail-1");
         let _ = shortcut(&mut app, S::Archive, false);
-        let Some(Sent::Mail(edit, Some(_))) = app.sent.last().cloned() else { panic!("archive at an entry") };
+        let n = app.sent.len();
+        let Some(Sent::Mail(edit, Some(_))) = app.sent.get(n - 2).cloned() else { panic!("archive at an entry") };
         assert_eq!(edit, MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Archive) });
-        let _ = press(&mut app, Key::E);
-        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { .. }, _))), "e stays Done there");
+        assert_eq!(app.sent.last(), Some(&Sent::MailDone(vec!["demo-mail-1".into()])));
     }
 
     /// A mail opened with `--message` that is not on the folder's first page takes the shortcuts
@@ -12973,7 +13062,7 @@ mod tests {
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
             "its entry opens again"
         );
         assert_eq!(app.menu, None);
@@ -13211,7 +13300,7 @@ mod tests {
         let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
             "its entry opens again"
         );
         deliver_mail(&mut app);
@@ -13237,7 +13326,7 @@ mod tests {
         assert_eq!(edit, MailEdit::Delete { ids: vec!["m:w1".into()] });
         assert_eq!(hint.text, tr("Moved to Trash"));
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Inbox) };
-        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }));
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }));
         deliver_mail(&mut app);
         assert!(!ids(&app).contains(&"demo-mail-1"), "its mail left the inbox: the entry is done");
 
@@ -15084,7 +15173,8 @@ mod tests {
         assert_eq!((overview.menu, overview.cursor.as_deref()), (Some(Menu::MailContext), Some(entry.as_str())));
         let groups = overview.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the entry's actions");
         let file = groups.iter().find(|group| group.label == tr("File")).expect("File group");
-        assert!(file.items.iter().any(|item| item.label == tr("Done")));
+        assert!(file.items.iter().any(|item| item.label == trc("action", "Archive")), "task E18.5: Archive");
+        assert!(file.items.iter().all(|item| item.label != tr("Done")), "no Done for mail");
         let _ = overview.view();
     }
 
@@ -15383,7 +15473,8 @@ mod tests {
             assert!(app.wide_reader(class, &detail::Anchors::default()).is_none(), "{class:?}: the panel");
             let words = words(&app, class);
             assert!(!words.contains(&tr("Close").to_owned()), "{class:?}: the ✕ is in the panel's head");
-            assert!(words.contains(&tr("Done").to_owned()), "{class:?}: the entry's own");
+            assert!(words.contains(&tr("Later…").to_owned()), "{class:?}: the entry's own");
+            assert!(!words.contains(&tr("Done").to_owned()), "{class:?}: mail is archived (task E18.5)");
             let _ = app.view();
         }
         let _ = app.update(Message::Resized(WIDE));
@@ -15511,11 +15602,13 @@ mod tests {
         let _ = press(&mut app, Key::T);
         assert_eq!(app.menu, Some(Menu::Task), "t");
         let _ = app.update(Message::CloseMenu);
-        let _ = press(&mut app, Key::E);
-        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { id, done: true }, _)) if *id == first), "e");
         // The card's buttons send what the keys do.
         let _ = app.update(Message::Act(first.clone(), Command::Snooze));
         assert_eq!((app.menu, cursor(&app)), (Some(Menu::Snooze), Some(first.as_str())));
+        let _ = app.update(Message::CloseMenu);
+        // Task E18.5: `e` archives the entry's mail and closes the entry.
+        let _ = press(&mut app, Key::E);
+        assert!(matches!(app.sent.last(), Some(Sent::MailDone(ids)) if *ids == [first.clone()]), "e");
     }
 
     /// Task E8.3: the smart view lists the messages with attachments of every account.
@@ -16360,36 +16453,48 @@ mod tests {
     }
 
     #[test]
-    fn the_hub_asks_after_a_finished_task_and_marks_its_mail_done() {
+    fn the_hub_asks_after_a_finished_task_and_archives_its_mail() {
         let mut app = overview_at(&[]);
         let question = app.find("demo-9").cloned().expect("the demo's question");
         assert!(hub::is_follow_up(&question));
         assert_eq!(hub::Section::of(&question), Some(hub::Section::FollowUp), "from Info into Act now");
-        assert_eq!(hub::acts(&question), [hub::Act::Reply, hub::Act::MarkMailDone, hub::Act::NotNow]);
+        assert_eq!(hub::acts(&question), [hub::Act::Reply, hub::Act::ArchiveMail, hub::Act::NotNow]);
         // Reply answers the mail it waits in: Lena's, of the entry `demo-mail-2`.
         let _ = app.update(Message::Act("demo-9".into(), Command::Reply));
         assert_eq!(app.sent.last(), Some(&Sent::Compose(mail::compose_args(Compose::Reply, "m:w2", true))));
-        // "Mark mail done": the mail's entry, then the question; the toast opens both again.
-        let _ = app.update(Message::MarkMailDone("demo-9".into()));
+        // Task E18.5: "Archive mail" archives the mail, then closes its entry and the question; the
+        // toast's undo moves the mail back and opens both again.
+        let _ = app.update(Message::ArchiveMail("demo-9".into()));
         let ids = vec!["demo-mail-2".to_owned(), "demo-9".to_owned()];
-        assert_eq!(app.sent.last(), Some(&Sent::MailDone(ids.clone())));
-        for id in &ids {
-            block_on(app.inbox.set_item_done(id.clone(), true)).expect("the demo closes it");
-        }
-        let _ = app.update(Message::MailDone(ids.clone(), None));
-        load(&mut app);
-        assert_eq!(app.hint.as_ref().and_then(|hint| hint.undo.clone()), Some(Undo::Dismissed(ids.clone())));
+        let archive = MailEdit::Move { ids: vec!["m:w2".into()], to: MoveTarget::Role(MoveRole::Archive) };
+        let back = MailEdit::Move { ids: vec!["m:w2".into()], to: MoveTarget::Role(MoveRole::Inbox) };
+        let n = app.sent.len();
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.get(n - 2).cloned() else { panic!("{:?}", app.sent) };
+        assert_eq!(edit, archive);
+        assert_eq!(hint.text, tr("Archived"));
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back.clone(), reopen: ids.clone() }));
+        assert_eq!(app.sent.last(), Some(&Sent::MailDone(ids.clone())), "both entries, after the move");
+        deliver_filed(&mut app);
         assert!(app.find("demo-mail-2").is_none() && app.find("demo-9").is_none(), "both done");
+        assert!(matches!(stored(&app, "demo-9").state, State::Done { .. }));
         let _ = press(&mut app, Key::U);
-        assert_eq!(app.sent.last(), Some(&Sent::Reopen(ids)));
-        // Another entry has no "Mark mail done".
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(back, None)), "the mail back, then both open");
+        // Another entry has no "Archive mail".
         let before = app.sent.len();
-        let _ = app.update(Message::MarkMailDone("demo-1".into()));
+        let _ = app.update(Message::ArchiveMail("demo-1".into()));
         assert_eq!(app.sent.len(), before);
+        // Without an archive folder only the toast says so (decision 6 of E18).
+        let mut app = overview_at(&[]);
+        app.folders.retain(|folder| folder.role != Some(Role::Archive));
+        let before = app.sent.len();
+        let _ = app.update(Message::ArchiveMail("demo-9".into()));
+        assert_eq!(app.sent.len(), before, "nothing moves");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This account has no archive folder.")));
     }
 
     /// Task E8.1b: the notifications window showing the suite asks after a finished task too, with
-    /// the hub's Reply · Mark mail done · Not now, and closes the mail's entry it does not show.
+    /// the hub's Reply · Archive mail · Not now; it keeps no mail, so "Archive mail" finds none to
+    /// archive there and says so (task E18.5).
     #[test]
     fn the_notifications_window_asks_after_a_finished_task_too() {
         // Two sources, so the window asks for every entry: the demo's question is `uptime`'s notice
@@ -16398,12 +16503,133 @@ mod tests {
         let question = app.find("demo-9").cloned().expect("the suite's question");
         assert!(hub::is_follow_up(&question));
         let words: Vec<String> = notifications::card_buttons(&question, false).into_iter().map(|b| b.label).collect();
-        assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
+        assert_eq!(words, [tr("Reply"), tr("Archive mail"), tr("Not now")]);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
-        let _ = app.update(Message::MarkMailDone("demo-9".into()));
-        let ids = vec!["demo-mail-2".to_owned(), "demo-9".to_owned()];
-        assert_eq!(app.sent.last(), Some(&Sent::MailDone(ids)), "the mail's entry, though this window shows no mail");
+        let before = app.sent.len();
+        let _ = app.update(Message::ArchiveMail("demo-9".into()));
+        assert_eq!(app.sent.len(), before, "nothing sent");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Couldn't find the mail of this task.")));
+    }
+
+    /// Runs the archive and the closing of entries the window started last ([`App::file_mail`]: a
+    /// [`Sent::Mail`] followed by [`Sent::MailDone`]) against the demo, hands the answer to `update`
+    /// as the task would, and loads the view again.
+    fn deliver_filed(app: &mut App<DemoSource>) {
+        let Some(Sent::MailDone(close)) = app.sent.pop() else { panic!("no entries to close after a move") };
+        let Some(Sent::Mail(edit, hint)) = app.sent.pop() else { panic!("no move before closing") };
+        let ids = edit.ids().to_vec();
+        let result = block_on(edit.apply(app.inbox.clone())).map(|()| {
+            close.into_iter().find_map(|id| block_on(app.inbox.set_item_done(id, true)).err().map(|e| e.to_string()))
+        });
+        let _ = app.update(Message::MailDone(result, ids, hint));
+        load(app);
+    }
+
+    /// The move archiving `message` sends, and the undo of its toast for the entries `reopen`.
+    fn archived(message: &str, reopen: &[&str]) -> (MailEdit, Option<Undo>) {
+        let ids = vec![message.to_owned()];
+        let back = MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Inbox) };
+        let reopen = reopen.iter().map(|id| (*id).to_owned()).collect();
+        (MailEdit::Move { ids, to: MoveTarget::Role(MoveRole::Archive) }, Some(Undo::Mail { edit: back, reopen }))
+    }
+
+    /// Task E18.5 (decision 5 of E18): `e` – and the Archive in the place of Done – at an open mail
+    /// entry archives its mail in every window, then closes the entry; undo moves the mail back and
+    /// opens it again. A done mail entry opens again ("Done today", decision 9); other entries keep
+    /// their Done.
+    #[test]
+    fn e_at_a_mail_entry_archives_its_mail_and_closes_the_entry() {
+        let (archive, undo) = archived("m:w1", &["demo-mail-1"]);
+        let filed = |app: &App<DemoSource>| {
+            let n = app.sent.len();
+            let Some(Sent::Mail(edit, Some(hint))) = app.sent.get(n.wrapping_sub(2)).cloned() else {
+                panic!("an archive with a hint: {:?}", app.sent)
+            };
+            assert_eq!((edit, hint.text.as_str(), hint.undo), (archive.clone(), tr("Archived"), undo.clone()));
+            assert_eq!(app.sent.last(), Some(&Sent::MailDone(vec!["demo-mail-1".into()])), "then its entry");
+        };
+        // The hub's "For me": the key, and the button in the place of Done.
+        let mut app = at("demo-mail-1");
+        let _ = press(&mut app, Key::E);
+        filed(&app);
+        deliver_filed(&mut app);
+        assert!(matches!(stored(&app, "demo-mail-1").state, State::Done { .. }), "closed");
+        assert!(app.find("demo-mail-1").is_none());
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Archived")));
+        let _ = press(&mut app, Key::U);
+        let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Inbox) };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(back, None)), "the mail back, then the entry open");
+        let mut app = overview_at(&[]);
+        let entry = app.find("demo-mail-1").cloned().expect("in To sort");
+        let card = hub::acts(&entry);
+        assert_eq!(card.last(), Some(&hub::Act::Archive));
+        let pressed = card.last().and_then(|act| act.message(&entry, false)).expect("a working button");
+        let _ = app.update(pressed);
+        filed(&app);
+
+        // The mail window's "Later": a snoozed mail entry.
+        let mut app = mail_window(Density::Compact, &[]);
+        block_on(app.inbox.snooze_item("demo-mail-1".into(), Some(app.now + TimeDelta::days(1)))).expect("snoozed");
+        let _ = app.update(Message::Show(View::Snoozed));
+        load(&mut app);
+        let _ = app.update(Message::Select("demo-mail-1".into()));
+        let _ = press(&mut app, Key::E);
+        filed(&app);
+
+        // A done mail entry opens again; an agent's entry is done as before.
+        let mut app = at("demo-1");
+        let _ = press(&mut app, Key::E);
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: true, .. }, _))), "an agent: Done");
+        let mut app = overview_at(&[]);
+        block_on(app.inbox.set_item_done("demo-mail-1".into(), true)).expect("done");
+        let _ = app.update(Message::Show(View::Done));
+        load(&mut app);
+        let _ = app.update(Message::Act("demo-mail-1".into(), Command::Done));
+        assert!(
+            matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: false, .. }, _))),
+            "Reopen: {:?}",
+            app.sent.last()
+        );
+    }
+
+    /// Task E18.5: `e` at a mail of "All" – in the list and with the mail open in the reader – archives
+    /// it and leaves its entry to the core; without an archive folder in its account `e` only says so
+    /// (decision 6 of E18).
+    #[test]
+    fn e_archives_a_mail_of_all_also_from_the_reader() {
+        let mut app = mail_window(Density::Compact, &[]);
+        assert_eq!(app.view, View::All);
+        let first = app.messages.first().map(|message| message.id.clone()).expect("a mail in All");
+        let _ = app.update(Message::SelectMail(first));
+        let open = app.cursor.clone().expect("the mail under the cursor");
+        assert!(app.panel_open(), "in the reader");
+        assert_eq!(keys::command(Focus::MailDetail, Key::E), Some(Command::Done), "`e` also with the reader's keys");
+        let _ = press(&mut app, Key::E);
+        let archive = MailEdit::Move { ids: vec![open.clone()], to: MoveTarget::Role(MoveRole::Archive) };
+        let hint = app.sent.iter().find_map(|sent| match sent {
+            Sent::Mail(edit, Some(hint)) if *edit == archive => Some(hint.clone()),
+            _ => None,
+        });
+        assert_eq!(hint.map(|hint| hint.text), Some(tr("Archived").to_owned()));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::MailDone(_))), "the entry is left to the core");
+        assert!(!message_ids(&app).contains(&open.as_str()), "off the list at once");
+
+        let mut app = mail_window(Density::Compact, &[]);
+        app.folders.retain(|folder| folder.role != Some(Role::Archive));
+        let first = app.messages.first().map(|message| message.id.clone()).expect("a mail in All");
+        let _ = app.update(Message::SelectMail(first.clone()));
+        let before = app.sent.len();
+        let _ = press(&mut app, Key::E);
+        assert_eq!(app.sent.len(), before, "nothing moves");
+        assert!(message_ids(&app).contains(&first.as_str()), "the mail stays");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This account has no archive folder.")));
+        let mut app = at("demo-mail-1");
+        app.folders.retain(|folder| folder.role != Some(Role::Archive));
+        let before = app.sent.len();
+        let _ = press(&mut app, Key::E);
+        assert_eq!(app.sent.len(), before, "at an entry neither");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This account has no archive folder.")));
     }
 
     #[test]

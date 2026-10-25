@@ -35,7 +35,8 @@
 //!
 //! The row under the cursor carries its **action bar** in a strip below its lines
 //! (`widgets::row_actions_strip`, [`with_strip`]): Task (`t`), Done (`e`), Later (`s`) and Hide
-//! (`m`) – only what works for the entry, as in the panel ([`actions`]). Nothing floats over a row;
+//! (`m`) – only what works for the entry, as in the panel ([`actions`]); a mail entry has Archive (`e`)
+//! and Delete first and no Done (task E18.5, [`entry_actions`]). Nothing floats over a row;
 //! the selected row grows by the strip ([`strip_height`]). A button sends
 //! [`Message::Act`]: the app puts its cursor on the row and does what the key does, so the menus
 //! open at the row.
@@ -707,10 +708,25 @@ fn strip_indent_in(look: ListLook, mail: bool) -> f32 {
     }
 }
 
+/// The mail the open mail entry `item` links to (task E18.5): what `e`, its Archive and Delete act
+/// on, in every window. `None` for other entries and done ones – their mail may have left the inbox
+/// already, and a done entry opens again with `e` ("Reopen", decision 9 of E18).
+pub fn entry_mail(item: &Item) -> Option<&str> {
+    match &item.link {
+        Some(Link::Mail { message })
+            if item.source.kind == SourceKind::Mail && !matches!(item.state, State::Done { .. }) =>
+        {
+            Some(message)
+        }
+        _ => None,
+    }
+}
+
 /// What the action bar of `item` offers, in its order (task E3.9), as the panel does:
 ///
 /// - "Task" (`t`) and "Done" (`e`, "Reopen" for a done entry) – not for an approval, which closes
-///   once it is decided and becomes no task;
+///   once it is decided and becomes no task, and no "Done" for an open mail entry ([`entry_mail`],
+///   task E18.5): mail is archived, its Archive (`e`) stands first in [`entry_actions`];
 /// - "Later" (`s`) for every entry that is not done – not for an approval either (task E8.1b, as
 ///   the hub's cards): it waits for yes or no and must not vanish by accident;
 /// - "Hide" (`m`) when `m` opens a menu for it (`hidable`, from `App::hidable`: never for an
@@ -726,7 +742,9 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
     if !approval {
         actions.push(RowAction::new(Icon::ListTodo, tr("Task"), "T", act(Command::MakeTask)));
         let (mark, word) = if done { (Icon::Inbox, tr("Reopen")) } else { (Icon::Check, tr("Done")) };
-        actions.push(RowAction::new(mark, word, "E", act(Command::Done)));
+        if entry_mail(item).is_none() {
+            actions.push(RowAction::new(mark, word, "E", act(Command::Done)));
+        }
     }
     if !done && !approval {
         actions.push(RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
@@ -743,7 +761,7 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
 /// The action bar of `item`'s row at `now`: a mail entry's Archive · Delete first ([`filing`] in
 /// `folders`, issue #118), then [`actions`]; for a mail entry with an invitation to answer (task
 /// E8.3c, [`invite_actions`]) Accept · Maybe · Decline · Task · Later (· Hide) – the answer is what
-/// makes the entry done, so "Done" gives way; `e` still marks it done.
+/// closes the entry, so Archive and Delete give way; `e` still archives its mail (task E18.5).
 pub fn entry_actions<'a>(
     item: &Item,
     hidable: bool,
@@ -752,27 +770,19 @@ pub fn entry_actions<'a>(
 ) -> Vec<RowAction<'a, Message>> {
     let mut actions = actions(item, hidable);
     let answers = invite_actions(item, now);
-    if answers.is_empty() {
-        actions.splice(0..0, filing(item, folders));
-    } else {
-        actions.retain(|action| !matches!(action.on_press, Message::Act(_, Command::Done)));
-        actions.splice(0..0, answers);
-    }
+    let lead = if answers.is_empty() { filing(item, folders) } else { answers };
+    actions.splice(0..0, lead);
     actions
 }
 
 /// Archive and Delete for the mail of the open mail entry `item` (issue #118,
-/// [`mail::filing_actions`]): its mail lies in its account's inbox; Archive has no key of its own
-/// there (`e` is Done), Delete is `#`. None for other entries and done ones (their mail may have
-/// left the inbox already).
+/// [`mail::filing_actions`]): its mail lies in its account's inbox; Archive in the place of Done,
+/// with its key `e` (task E18.5, decision 5 of E18), Delete is `#`. None for other entries and done
+/// ones ([`entry_mail`]).
 pub fn filing<'a>(item: &Item, folders: &[Folder]) -> Vec<RowAction<'a, Message>> {
-    match &item.link {
-        Some(Link::Mail { message })
-            if item.source.kind == SourceKind::Mail && !matches!(item.state, State::Done { .. }) =>
-        {
-            mail::filing_actions(folders, &item.source.key(), None, message, "")
-        }
-        _ => Vec::new(),
+    match entry_mail(item) {
+        Some(message) => mail::filing_actions(folders, &item.source.key(), None, message, "E"),
+        None => Vec::new(),
     }
 }
 
@@ -2142,8 +2152,15 @@ mod tests {
         let mail = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
         let sent: Vec<Message> = actions(&mail, true).into_iter().map(|action| action.on_press).collect();
         assert!(matches!(&sent[0], Message::Act(id, Command::MakeTask) if *id == mail.id));
-        assert!(matches!(&sent[3], Message::Act(_, Command::Hide)));
-        assert_eq!(sent.len(), 4, "mail is done or hidden, never dismissed");
+        assert!(matches!(&sent[2], Message::Act(_, Command::Hide)));
+        // Task E18.5: mail is archived or hidden, never done nor dismissed – Archive stands first in
+        // `entry_actions`; a done mail entry still opens again ("Done today", decision 9 of E18).
+        assert_eq!(labels(&actions(&mail, true)), [tr("Task"), tr("Later"), tr("Mute…")]);
+        let done = Item { state: State::Done { at: now() }, ..mail.clone() };
+        assert_eq!(labels(&actions(&done, true)), [tr("Task"), tr("Reopen"), tr("Mute…")]);
+        assert_eq!(entry_mail(&mail), Some("m:w1"));
+        assert_eq!(entry_mail(&done), None, "done: its mail may be gone");
+        assert_eq!(entry_mail(&by_id("demo-1")), None, "no mail entry");
     }
 
     #[test]
@@ -2336,7 +2353,9 @@ mod tests {
         let Some(Link::Mail { message }) = item.link.clone() else { panic!("a mail entry links its mail") };
         let folders = demo_folders();
         let row = entry_actions(&item, true, &folders, now());
-        assert_eq!(labels(&row[..2]), [trc("action", "Archive"), tr("Delete")]);
+        assert_eq!(labels(&row), [trc("action", "Archive"), tr("Delete"), tr("Task"), tr("Later"), tr("Mute…")]);
+        assert!(row.iter().all(|action| action.label != tr("Done")), "task E18.5: mail is archived");
+        assert_eq!((row[0].key, row[1].key), ("E", "#"), "Archive in the place of Done, with its key");
         assert!(matches!(&row[0].on_press, Message::Mail(MailAction::Archive, id) if *id == message));
         assert!(matches!(&row[1].on_press, Message::Mail(MailAction::Delete, id) if *id == message));
         let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();

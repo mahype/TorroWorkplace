@@ -1263,7 +1263,7 @@ pub fn edit_of(action: MailAction, id: &str) -> Option<MailEdit> {
 /// Aktionen, die für den Eintrag gehen"): Archive needs a folder of the role Archive in the account
 /// and a message outside it, Delete a Trash and a message outside the trash – otherwise the core
 /// answers `NO_ROLE_FOLDER` or there is nothing to do. `archive_key` is the key shown in Archive's
-/// tooltip: `"E"` in a folder, where `e` archives, `""` at an entry, where `e` is Done.
+/// tooltip: `"E"` wherever `e` archives – in a folder, and at a mail entry since task E18.5.
 pub fn filing_actions<'a>(
     folders: &[Folder],
     account: &str,
@@ -2688,11 +2688,13 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///
 /// 1. **Reply** (the main group: a red icon collapsed, Reply strong expanded – decision A): Reply
 ///    (`r`), Reply all, Forward (`f`) – [`Message::Mail`].
-/// 2. **File**: for an `entry` Done (`e`, [`Message::SetDone`]) or Reopen once done, Later… (`s`,
-///    `AskSnooze`, not for a done entry) and "Move to Info" or "Move to For me" (`l`, `AskLane`);
-///    then Archive (`a`) and Delete (`#`) where the account has the folder and the mail does not lie
-///    in it already, as in rows ([`filing_actions`]); last "Save attachments (n)" for a loaded mail
-///    with attachments (task M12.6, `AskSaveAttachments`: the menu of "Save all").
+/// 2. **File**: Archive (`e`, task E18.5: in the place of the entry's former Done – mail is
+///    archived, never done) where the account has the folder and the mail does not lie in it
+///    already, as in rows ([`filing_actions`]; an entry's mail lies in its account's inbox while it
+///    loads); for an `entry` then Later… (`s`, `AskSnooze`, not for a done entry) and "Move to Info"
+///    or "Move to For me" (`l`, `AskLane`); Delete (`#`) on the same rule as Archive; last "Save
+///    attachments (n)" for a loaded mail with attachments (task M12.6, `AskSaveAttachments`: the menu
+///    of "Save all").
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
 ///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
@@ -2753,13 +2755,19 @@ fn file_items<'a>(
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
+    // An entry's mail lies in its account's inbox while it loads, as its row files it.
+    let filing = match (reading.summary(), entry) {
+        (Some(summary), _) => Some(Filing::of(folders, &summary.account, Some(&summary.folder))),
+        (None, Some(ReaderEntry { item, .. })) => Some(Filing::of(folders, &item.source.key(), None)),
+        (None, None) => None,
+    };
+    let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
+    // First, so a click on the group's icon archives, as it marked an entry done before.
+    if filing.is_some_and(|filing| filing.archive) {
+        items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "E", mail(MailAction::Archive)));
+    }
     if let Some(ReaderEntry { item, .. }) = entry {
-        let done = matches!(item.state, State::Done { .. });
-        items.push(match done {
-            true => RailItem::new(Icon::Inbox, tr("Reopen"), "E", Some(Message::SetDone(item.id.clone(), false))),
-            false => RailItem::new(Icon::Check, tr("Done"), "E", Some(Message::SetDone(item.id.clone(), true))),
-        });
-        if !done {
+        if !matches!(item.state, State::Done { .. }) {
             let later = RailItem::new(Icon::Clock, tr("Later…"), "S", Some(Message::AskSnooze(item.id.clone())));
             items.push(later.at(&anchors.snooze));
         }
@@ -2767,16 +2775,9 @@ fn file_items<'a>(
         let move_to = Some(Message::AskLane(item.id.clone()));
         items.push(RailItem::new(crate::app::lane_icon(lane), lane_word(lane), "L", move_to).at(&anchors.lane));
     }
-    if let Some(summary) = reading.summary() {
-        let filing = Filing::of(folders, &summary.account, Some(&summary.folder));
-        let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
-        if filing.archive {
-            items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "A", mail(MailAction::Archive)));
-        }
-        if filing.delete {
-            // Never what a click on the group's icon does (finding 8).
-            items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
-        }
+    if filing.is_some_and(|filing| filing.delete) {
+        // Never what a click on the group's icon does (finding 8).
+        items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
     }
     // Task M12.6: the menu of "Save all" at this item – from the list's context menu at the row –,
     // once the mail shows attachments. Last, so a click on the group's icon still files the mail.
@@ -3939,7 +3940,8 @@ mod tests {
 
     /// Task E14.3: for a mail entry the rail holds Reply, File, Torro, Mark, Mute and More in this
     /// order, Mute and More at the foot, Reply in the accent; every item sends what its button or key
-    /// sent before and shows its key; a click on a group's icon sends its first item.
+    /// sent before and shows its key; a click on a group's icon sends its first item. Task E18.5: File
+    /// has no Done – Archive (`e`) stands in its place.
     #[test]
     fn an_entrys_rail_holds_every_group_with_the_messages_of_before() {
         let item = mail_entry();
@@ -3956,10 +3958,9 @@ mod tests {
                     (
                         tr("File").to_owned(),
                         vec![
-                            tr("Done").to_owned(),
+                            trc("action", "Archive").to_owned(),
                             tr("Later…").to_owned(),
                             move_to.clone(),
-                            trc("action", "Archive").to_owned(),
                             tr("Delete").to_owned(),
                             // The budget's sheet (task M12.6).
                             trf("Save attachments ({n})", &[("n", &1)]),
@@ -3981,12 +3982,11 @@ mod tests {
             assert!(mail(sends(&groups, reply, tr("Reply all")), MailAction::ReplyAll));
             assert!(mail(sends(&groups, reply, tr("Forward")), MailAction::Forward));
             let entry = |sent: Option<Message>| match sent {
-                Some(Message::SetDone(id, true) | Message::AskSnooze(id) | Message::AskLane(id)) => id == item.id,
+                Some(Message::AskSnooze(id) | Message::AskLane(id)) => id == item.id,
                 Some(Message::AskTask(id) | Message::AskEvent(id) | Message::AskCategory(id)) => id == item.id,
                 Some(Message::AskHide(id)) => id == item.id,
                 _ => false,
             };
-            assert!(entry(sends(&groups, file, tr("Done"))));
             assert!(matches!(sends(&groups, file, tr("Later…")), Some(Message::AskSnooze(_))));
             assert!(entry(sends(&groups, file, tr("Later…"))));
             assert!(
@@ -4008,13 +4008,13 @@ mod tests {
             let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
             assert!(mail(marks[0].press(), MailAction::Flag(!flagged)));
             assert!(matches!(marks[1].press(), Some(Message::Mail(MailAction::Read(_), id)) if id == "m:w1"));
-            // A in the opened mail archives; Reply all has no single-key shortcut here.
+            // `e` archives (task E18.5); Reply all has no single-key shortcut here.
             let keys: Vec<Vec<&str>> = groups.iter().map(|g| g.items.iter().map(|i| i.key).collect()).collect();
             assert_eq!(
                 keys,
                 [
                     vec!["R", "", "F"],
-                    vec!["E", "S", "L", "A", "#", ""],
+                    vec!["E", "S", "L", "#", ""],
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
@@ -4061,8 +4061,9 @@ mod tests {
         });
     }
 
-    /// Task E14.3: a done entry is opened again and not put off; "Re-categorize" only with a decision
-    /// model; an entry that cannot be muted has no group "Mute".
+    /// Task E14.3: a done entry is not put off – and, mail being archived (task E18.5), neither done nor
+    /// opened again from the rail; "Re-categorize" only with a decision model; an entry that cannot be
+    /// muted has no group "Mute".
     #[test]
     fn a_done_entry_reopens_and_the_model_adds_recategorize() {
         let item = Item { state: State::Done { at: now() }, ..mail_entry() };
@@ -4072,11 +4073,10 @@ mod tests {
             let entry = Some(ReaderEntry { item: &item, hide: false });
             let groups = action_groups(reading, entry, &folders, false, false, &anchors);
             let file = &group(&groups, tr("File")).items;
-            assert_eq!(file[0].label, tr("Reopen"));
-            assert!(
-                matches!(file[0].press(), Some(Message::SetDone(id, false)) if id == item.id),
-                "a done entry reopens"
-            );
+            let words: Vec<&str> = file.iter().map(|i| i.label.as_ref()).collect();
+            let save = trf("Save attachments ({n})", &[("n", &1)]);
+            assert_eq!(words, [trc("action", "Archive"), lane_word(Lane::Info).as_str(), tr("Delete"), save.as_str()]);
+            assert!(file.iter().all(|i| i.label != tr("Reopen") && i.label != tr("Done")), "no Done, no Reopen");
             assert!(file.iter().all(|i| i.label != tr("Later…")), "a done entry is not put off");
             assert!(groups.iter().all(|g| g.label != tr("Mute")), "nothing to mute: no group");
             let more = &group(&groups, tr("More")).items;
@@ -4107,7 +4107,7 @@ mod tests {
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
                 strings(&[trc("action", "Archive"), tr("Delete"), &save])
             );
-            assert_eq!((file[0].key, file[1].key), ("A", "#"), "`a` archives in a folder");
+            assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder (task E18.5)");
             assert!(matches!(file[2].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
