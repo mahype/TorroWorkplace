@@ -503,7 +503,7 @@ eine neue Schrift vorschlagen, warten auf L.24.
   schmal, hell und dunkel.
 
 ### L.24 Schriften Hyperlegible, Source, Nunito, JetBrains Mono
-- [ ] erledigt
+- [ ] erledigt – gezogen nach #299 (SR.5, JetBrains Mono in SR.7, [schriften.md](schriften.md)); hier nichts mehr zu tun
 - **Modell:** Opus · **Braucht:** L.23 · **Dateien:** `fonts/{hyperlegible,source,nunito,jetbrains-mono}/`
   (`font.toml`, Schriftdateien, `LICENSE.txt`), `crates/torroworkplace/src/designs.rs`
 - Vier Schriften unter OFL: Atkinson Hyperlegible Next; Source Sans 3 mit Source Serif 4 für `heading`; Nunito;

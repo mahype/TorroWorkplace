@@ -1,0 +1,38 @@
+# The font DM Sans (task SR.6, issue #299): DM Sans, figures DM Sans Figures. Its size adjustment comes from
+# its x-height.
+# Source: github.com/googlefonts/dm-fonts (Sans/fonts/ttf at commit 4412393, the source google/fonts builds
+# from), Version 4.004; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as
+# published.
+# Reserved Font Name: none.
+# The DM Sans files are the maker's, unchanged.
+# DM Sans Figures (Regular, Medium) is made from the DM Sans cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it does not mix with the text cuts;
+# Regular: tnum frozen, digits already one width (600); Medium: tnum frozen, digits already one width (600).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.504 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.083; widest figure
+# of numbers 0.600 em, 0.650 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 312-684, Medium 328-690,
+# SemiBold 348-698, Bold 364-704 units), so numbers takes DM Sans Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "DM Sans"
+version = "1.0.0"
+author = "Torro"
+description = "DM Sans: a low-contrast geometric sans, with tabular figures"
+
+[fonts.text]
+family = "DM Sans"
+regular = "DMSans-Regular.ttf"
+medium = "DMSans-Medium.ttf"
+semibold = "DMSans-SemiBold.ttf"
+bold = "DMSans-Bold.ttf"
+
+[fonts.numbers]
+family = "DM Sans Figures"
+regular = "DMSansFigures-Regular.ttf"
+medium = "DMSansFigures-Medium.ttf"

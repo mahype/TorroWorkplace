@@ -1,0 +1,37 @@
+# The font Manrope (task SR.5, issue #299): Manrope, figures Manrope Figures. Its size adjustment comes from
+# its x-height.
+# Source: github.com/googlefonts/manrope (fonts/ttf at commit 468c0db, the source google/fonts builds from),
+# Version 4.505; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Manrope files are the maker's, unchanged (only the file names spelled <Family>-<Weight>.ttf).
+# Manrope Figures (Regular, Medium) is made from the Manrope cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it does not mix with the text cuts;
+# Regular: tnum frozen, digits already one width (1240); Medium: tnum frozen, digits already one width (1240).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.540 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.011; widest figure
+# of numbers 0.620 em, 0.627 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 780-1241, Medium 812-1252,
+# SemiBold 844-1284, Bold 876-1316 units), so numbers takes Manrope Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Manrope"
+version = "1.0.0"
+author = "Torro"
+description = "Manrope: a modern geometric grotesque, with tabular figures"
+
+[fonts.text]
+family = "Manrope"
+regular = "Manrope-Regular.ttf"
+medium = "Manrope-Medium.ttf"
+semibold = "Manrope-SemiBold.ttf"
+bold = "Manrope-Bold.ttf"
+
+[fonts.numbers]
+family = "Manrope Figures"
+regular = "ManropeFigures-Regular.ttf"
+medium = "ManropeFigures-Medium.ttf"

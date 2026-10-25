@@ -346,14 +346,15 @@ dazu beginnt mit einer Kopie von `designs/compact/design.toml`.
 | Ordner | Datei | trägt | dazu |
 |---|---|---|---|
 | `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `mail_view`), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | `preview.png` |
-| `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
+| `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `kind` (optional: `sans`, `serif`, `mono`), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
 | `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird für sich geprüft. Wer nur einen Teil
 ändern will, legt nur dessen Ordner an: ein eigenes Farbschema braucht kein Design und keine Schrift.
 
 Die Suite legt ihre Beispiele in die Ordner im Datenordner, der Dienst beim Start, die Steuerzentrale bei
-„Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Schrift und Farbschema, Nord,
+„Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Schrift und Farbschema, die freien
+Schriften von Issue #299 nur als Schrift ([Mitgelieferte Schriften](#mitgelieferte-schriften)), Nord,
 Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema, dazu 21 Farbschemata nach freien Paletten ([Mitgelieferte Farbschemata](#mitgelieferte-farbschemata)). Beispiel-Designs gibt es seit Issue #291
 nicht mehr: Die drei Designs der Suite sind eingebaut ([unten](#drei-eingebaute-designs-standard-compact-console)), und
 eine Kopie der sechs alten Beispiel-Designs in einem Datenordner bleibt ein eigenes Design ihres Besitzers. Jedes Beispiel wird **einmal angeboten**
@@ -506,7 +507,7 @@ Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Untero
 | Ordner | Datei | bringt | dazu |
 |---|---|---|---|
 | `designs/<id>/` | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | ein **Design** | `preview.png` |
-| `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
+| `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `kind`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
 | `color-schemes/<id>/` | `color-scheme.toml`: `dark_only` (optional), `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 - Jede Datei hat ihr eigenes `[about]` (Name, Version, Autor, Beschreibung). Dieselbe id darf in mehreren Ordnern
@@ -647,18 +648,76 @@ kräftiger); `text` und `text_2` erreichen 4,5:1 auch auf den getönten Terminfl
 | Sonokai | `sonokai` | Dark only | github.com/sainnhe/sonokai | MIT | Stil default, Akzent sein Blau `#76CCE0`; ohne Cyan und Magenta (Violett, Gelb im Kalender); gedämpfter Text und Rot verschoben |
 | Synthwave ’84 | `synthwave-84` | Dark only | github.com/robb0wen/synthwave-vscode | MIT | Akzent Pink `#FF7EDB`; Blau und Cyan sind ein Neon-Cyan (Gelb als fünfte Kalenderfarbe); gedämpfter Text und Rot verschoben |
 
-### Mitgelieferte Schriften (Vorschlag)
+### Schriften des Systems
 
-Alle unter OFL, mit `LICENSE.txt`. Ziffern wie in L.5 prüfen: gleich breit, sonst eine Ziffernschrift dazu.
+Neben den Schriften von Torro kann die Suite die Schriften nutzen, die auf dem Rechner installiert sind (Issue #299).
+Sie **nutzt sie nur mit und gibt sie nicht weiter**: Nichts wird kopiert, die Dateien werden nur gelesen, um sie zu
+prüfen, und gespeichert wird nur die Id in `Settings::font`. Das Format der Einstellungen bleibt gleich.
 
-| Schrift | Familien | wozu |
-|---|---|---|
-| **Torro** | Inter, Ziffern Inter Tabular | Standard |
-| **Hyperlegible** | Atkinson Hyperlegible Next (Braille Institute) | eindeutige Buchstaben (I, l, 1), für Clear |
-| **Source** | Source Sans 3, Überschriften Source Serif 4 | Lesen, für Folio |
-| **Nunito** | Nunito | runde Strichenden, für Pebble |
-| **JetBrains Mono** | JetBrains Mono für alle Rollen | Terminal-Gefühl, für Square |
-| Plex, Commitr, Channelr, Guildr, Quattro, Ribbon | IBM Plex Sans, Mona Sans, Lato, Figtree, Roboto Flex, Selawik | gibt es schon in den Paketen |
+- **Ids:** `system` ist der Eintrag „System“, die Oberflächenschrift des Betriebssystems, beim Laden jedes Mal neu
+  aufgelöst: auf macOS `System Font` (SF, als Familie nicht noch einmal gelistet), auf Windows die erste von `Segoe UI Variable Text`, `Segoe UI Variable`,
+  `Segoe UI`, auf Linux die Familie von `fc-match -f '%{family[0]}' sans-serif`. `system:<Familie>` ist eine
+  installierte Familie (`system:Avenir Next`). Ordner-Ids sind `a-z0-9-`, keine kann mit `system:` beginnen;
+  `system` selbst ist wie `torro` als Ordnername gesperrt.
+- **Welche erscheinen:** Familien, deren Name nicht mit `.` beginnt, höchstens 64 Zeichen hat und keine Steuer-, Format-
+  oder Zeilentrennzeichen enthält (der Name stammt aus einer fremden Datei und wird Teil der Id), mit einem aufrechten Schnitt,
+  dessen regulärer Schnitt `A–Z a–z ä ö ü ß é` hat. Symbol-, Emoji- und nicht lateinische Schriften erscheinen gar
+  nicht.
+- **Regeln** (am aufrechten Schnitt mit Gewicht 400): Ohne ihn ist die Familie mit Grund ungültig. Schnitte gelten
+  nur, wo ein aufrechter Schnitt genau das Gewicht hat, sonst der nächste (`Font::nearest`); ein variabler regulärer
+  Schnitt mit Achse `wght` gilt als Regular, Medium und SemiBold, nicht als Bold (Iced zeichnet SF bei 500 und 600 aus
+  der Achse und fällt bei 700 auf eine andere Schrift). Sind die zehn Ziffern gleich breit, bleibt `numbers` die
+  Familie, sonst die eingebaute Inter Tabular; dann ist der Größenausgleich höchstens 1,11, damit die geliehenen
+  Ziffern in die Zeitachse passen (sonst würden Schriften mit kleiner x-Höhe wie Georgia abgelehnt). Der Größenausgleich kommt aus der x-Höhe, die Regeln für Schriften
+  gelten wie bei einem Ordner. Lizenz, Art (`kind`) und Version bleiben leer.
+- **Gründe** nennen nur die Familie, nie einen Dateipfad (er verriete Benutzernamen und Home-Verzeichnis).
+- **Fehlt die Schrift** auf einem Rechner (deinstalliert, anderer Rechner), zeichnen die Apps mit dem Standard;
+  die Steuerzentrale zeigt den Grund.
+- **Kein PDF:** Die PDF-Werkzeuge betten ihre Schrift ein. Eine Systemschrift einzubetten hieße, sie weiterzugeben;
+  bei gewählter Systemschrift setzt das PDF deshalb in Inter.
+- Ein Design kann keine Systemschrift vorschlagen (`[about] font` nimmt nur Ordner-Ids und `torro`).
+
+### Mitgelieferte Schriften
+
+Die Schriften von Torro: alle unter OFL, mit `LICENSE.txt` (die `OFL.txt` der Schrift wörtlich). Ziffern wie in L.5
+geprüft: gleich breit, sonst eine Ziffernschrift dazu. „Verändert“ heißt: Die Dateien sind nicht die der Quelle (feste
+Schnitte aus einer variablen Schrift, eingefrorene Ziffern); eine veränderte Datei einer Schrift mit Reserved Font
+Name (RFN) trägt einen anderen Familiennamen.
+
+| Id | Familien | Art | Quelle | Lizenz | RFN | verändert | Ziffern |
+|---|---|---|---|---|---|---|---|
+| `torro` | Inter, Ziffern Inter Tabular | sans | github.com/rsms/inter | OFL-1.1 | – | ja (Inter Tabular) | Inter Tabular, eingefroren |
+| `cantarell` | Cantarell (Regular, Bold), Ziffern Cantarell Figures | sans | google/fonts ofl/cantarell @e7db6ca, 1.004 | OFL-1.1 | – | ja (Cantarell Figures) | Cantarell Figures: Kopie des Regular, dessen Ziffern gleich breit sind (im Bold ist die 4 breiter) |
+| `channelr` | Lato | sans | google/fonts | OFL-1.1 | „Lato“ | nein | gleich breit |
+| `commitr` | Mona Sans, Ziffern Commitr Figures | sans | github/mona-sans 2.0.27 | OFL-1.1 | „Mona“ | ja (Commitr Figures) | Commitr Figures, eingefroren |
+| `dm-sans` | DM Sans, Ziffern DM Sans Figures | sans | googlefonts/dm-fonts @4412393, 4.004 | OFL-1.1 | – | ja (DM Sans Figures) | DM Sans Figures, `tnum` eingefroren |
+| `fira-code` | Fira Code | mono | tonsky/FiraCode 6.2 | OFL-1.1 | – | nein | gleich breit |
+| `fira-sans` | Fira Sans, Ziffern Fira Sans Figures | sans | google/fonts ofl/firasans @e7db6ca, 4.203 | OFL-1.1 | – | ja (Fira Sans Figures) | Fira Sans Figures, `tnum` eingefroren |
+| `geist` | Geist, Ziffern Geist Figures | sans | vercel/geist-font v1.8.2 | OFL-1.1 | – | ja (Geist Figures) | Geist Figures, `tnum` eingefroren |
+| `geist-mono` | Geist Mono | mono | vercel/geist-font v1.8.2 | OFL-1.1 | – | nein | gleich breit |
+| `guildr` | Figtree, Ziffern Figtree Tabular | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte, Figtree Tabular) | Figtree Tabular, eingefroren |
+| `hyperlegible` | Atkinson Hyperlegible Next, Ziffern Hyperlegible Figures | sans | googlefonts/atkinson-hyperlegible-next @7925f50, 2.001 | OFL-1.1 | – | ja (Hyperlegible Figures) | Hyperlegible Figures, `tnum` eingefroren |
+| `inconsolata` | Inconsolata | mono | google/fonts ofl/inconsolata/static @e7db6ca, 3.001 | OFL-1.1 | – | nein | gleich breit |
+| `jetbrains-mono` | JetBrains Mono | mono | JetBrains/JetBrainsMono v2.304 | OFL-1.1 | – | nein | gleich breit |
+| `lexend` | Lexend, Ziffern Lexend Figures | sans | googlefonts/lexend @7894f02, 1.008 | OFL-1.1 | nur „RevReading Lexend“ | ja (Lexend Figures) | Lexend Figures: die Standardziffern auf eine Breite gebracht und mittig (kein `tnum`) |
+| `literata` | Literata, Ziffern Literata Figures | serif | googlefonts/literata 3.103 | OFL-1.1 | – | ja (Literata Figures) | Literata Figures, `tnum` eingefroren |
+| `lora` | Lora, Ziffern Torro Quill Figures | serif | cyrealtype/Lora-Cyrillic v3.021 | OFL-1.1 | „Lora“ | ja (Torro Quill Figures, umbenannt) | Torro Quill Figures, `tnum` eingefroren |
+| `manrope` | Manrope, Ziffern Manrope Figures | sans | googlefonts/manrope @468c0db, 4.505 | OFL-1.1 | – | ja (Manrope Figures) | Manrope Figures, `tnum` eingefroren |
+| `merriweather` | Merriweather, Ziffern Torro Serif Figures | serif | EbenSorkin/Merriweather4 4.009 (feste Schnitte) | OFL-1.1 | „Merriweather“ | ja (Torro Serif Figures, umbenannt) | Torro Serif Figures, `tnum` eingefroren |
+| `newsreader` | Newsreader 16pt | serif | productiontype/NewsReader @cfcb4f7 (feste Schnitte 16pt), 1.003 | OFL-1.1 | – | nein | gleich breit je Schnitt |
+| `noto-sans` | Noto Sans | sans | notofonts/latin-greek-cyrillic NotoSans-v2.015 | OFL-1.1 | – | nein | gleich breit |
+| `nunito` | Nunito | sans | googlefonts/nunito @8c6a9bb, 3.602 | OFL-1.1 | – | ja (feste Schnitte) | gleich breit |
+| `open-sans` | Open Sans (ohne Medium) | sans | googlefonts/opensans @bd7e376, 3.003 | OFL-1.1 | – | nein | gleich breit |
+| `plex` | IBM Plex Sans | sans | github.com/IBM/plex 1.1.0 | OFL-1.1 | „Plex“ | nein | gleich breit |
+| `plex-mono` | IBM Plex Mono (Name „Plex Mono“) | mono | IBM/plex @ibm/plex-mono@2.5.0 | OFL-1.1 | „Plex“ | nein | gleich breit |
+| `public-sans` | Public Sans, Ziffern Public Sans Figures | sans | uswds/public-sans v2.001 | OFL-1.1 | – | ja (Public Sans Figures) | Public Sans Figures: die Standardziffern auf eine Breite gebracht und mittig (`tnum` wäre nach dem Größenausgleich zu breit) |
+| `quattro` | Roboto Flex | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte) | gleich breit |
+| `ribbon` | Selawik | sans | microsoft/Selawik 1.01 | OFL-1.1 | „Selawik“ | nein | gleich breit |
+| `roboto` | Roboto (ohne SemiBold) | sans | googlefonts/roboto-3-classic v3.016 | OFL-1.1 | – | nein | gleich breit je Schnitt |
+| `rubik` | Rubik, Ziffern Rubik Figures | sans | googlefonts/rubik @e337a5f, 2.300 | OFL-1.1 | – | ja (feste Schnitte, Rubik Figures) | Rubik Figures, `tnum` eingefroren |
+| `source` | Source Sans 3, Überschriften Source Serif 4 | sans | adobe-fonts/source-sans 3.052R, adobe-fonts/source-serif 4.005R | OFL-1.1 | „Source“ | nein | gleich breit je Schnitt |
+| `source-code-pro` | Source Code Pro | mono | adobe-fonts/source-code-pro 2.042R | OFL-1.1 | „Source“ | nein | gleich breit |
+| `work-sans` | Work Sans, Ziffern Work Sans Figures | sans | weiweihuanghuang/Work-Sans @b35c810, 2.012 | OFL-1.1 | – | ja (Work Sans Figures) | Work Sans Figures, `tnum` eingefroren |
 
 Zu prüfen beim Bauen: Höhere Seitenleistenzeilen (Airy 32, Clear 36) schieben in niedrigen Fenstern „Settings“ aus der
 Seitenleiste des Kalenders (siehe Plex). Clear braucht dort vielleicht eine rollende Seitenleiste, das wäre eine eigene

@@ -4,8 +4,8 @@
 //! app id a window manager matches on, where an app keeps its files on each system,
 //! the accounts all apps share, the types of AI accounts ([`ai`]), the words for a mail's category ([`category`]), translations (English first, German as a translation), the
 //! Torro theme tokens, the design packs that hold the whole look ([`design`]), the keyboard
-//! shortcuts of the mail window ([`shortcuts`]) and the timestamps that measure how fast the windows
-//! start ([`timing`]).
+//! shortcuts of the mail window ([`shortcuts`]), the timestamps that measure how fast the windows
+//! start ([`timing`]) and the checks on someone else's text before a person reads it ([`text`]).
 
 pub mod account;
 pub mod ai;
@@ -16,6 +16,7 @@ pub mod i18n;
 pub mod paths;
 pub mod settings;
 pub mod shortcuts;
+pub mod text;
 pub mod theme;
 pub mod timing;
 

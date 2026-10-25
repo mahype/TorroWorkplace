@@ -2917,9 +2917,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("The fonts can't be listed.", "Die Schriften können nicht aufgelistet werden."),
     (
-        "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder.",
-        "Die Schrift aller Torro-Apps, so bemessen, dass Text in jeder Schrift gleich groß wirkt. Weitere Schriften kommen in den Schriften-Ordner.",
+        "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder, and the fonts installed on this computer can be used too.",
+        "Die Schrift aller Torro-Apps, so bemessen, dass Text in jeder Schrift gleich groß wirkt. Weitere Schriften kommen in den Schriften-Ordner, und die auf diesem Rechner installierten Schriften lassen sich mitnutzen.",
     ),
+    // The font's dropdown (issue #299)
+    ("Mono", "Monospace"),
+    ("Sans", "Serifenlos"),
+    ("Serif", "Mit Serifen"),
+    ("System fonts", "Schriften des Systems"),
+    ("Torro fonts", "Schriften von Torro"),
     ("Fonts need their license in LICENSE.txt.", "Schriften brauchen ihre Lizenz in LICENSE.txt."),
     (
         "The figures of “{family}” are {width} em wide after the size adjustment; the time axis fits at most {max} em.",
@@ -2928,6 +2934,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The folder is larger than {limit} in total.", "Der Ordner ist insgesamt größer als {limit}."),
     ("There is no color scheme “{id}”.", "Es gibt kein Farbschema „{id}“."),
     ("There is no font “{id}”.", "Es gibt keine Schrift „{id}“."),
+    // Fonts of the computer (issue #299)
+    ("The files of “{family}” can't be read.", "Die Dateien von „{family}“ lassen sich nicht lesen."),
+    (
+        "“{family}” has no regular style to set running text in.",
+        "„{family}“ hat keinen normalen Schnitt für Fließtext.",
+    ),
+    (
+        "“{id}” stands for the font of the operating system. Give the folder another name.",
+        "„{id}“ steht für die Schrift des Betriebssystems. Gib dem Ordner einen anderen Namen.",
+    ),
     ("{file} can't be read (line {line}): {reason}", "{file} lässt sich nicht lesen (Zeile {line}): {reason}"),
     ("{path} from “{key}” lies outside its folder.", "{path} aus „{key}“ liegt außerhalb seines Ordners."),
     (

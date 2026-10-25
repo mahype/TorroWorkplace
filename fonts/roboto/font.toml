@@ -1,0 +1,25 @@
+# The font Roboto (task SR.5, issue #299): Roboto. Its size adjustment comes from its x-height.
+# Source: github.com/googlefonts/roboto-3-classic release v3.016 (Roboto_v3.016.zip, unhinted/static), Version
+# 3.016; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Roboto files are the maker's, unchanged.
+# x-height 0.528 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.033; widest figure
+# of numbers 0.574 em, 0.593 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 1151, Medium
+# 1164, Bold 1175 of 2048 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Roboto"
+version = "1.0.0"
+author = "Torro"
+description = "Roboto: a mechanical grotesque with open, friendly curves"
+
+[fonts.text]
+family = "Roboto"
+regular = "Roboto-Regular.ttf"
+medium = "Roboto-Medium.ttf"
+bold = "Roboto-Bold.ttf"

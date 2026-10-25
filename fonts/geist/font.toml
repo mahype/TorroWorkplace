@@ -1,0 +1,37 @@
+# The font Geist (task SR.6, issue #299): Geist, figures Geist Figures. Its size adjustment comes from its
+# x-height.
+# Source: github.com/vercel/geist-font release v1.8.2 (geist-font-v1.8.2.zip, Geist/ttf), Version 1.802;
+# downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Geist files are the maker's, unchanged.
+# Geist Figures (Regular, Medium) is made from the Geist cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it does not mix with the text cuts;
+# Regular: tnum frozen, digits already one width (600); Medium: tnum frozen, digits already one width (612).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.530 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.030; widest figure
+# of numbers 0.612 em, 0.630 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 384-663, Medium 406-673,
+# SemiBold 427-683, Bold 449-693 units), so numbers takes Geist Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Geist"
+version = "1.0.0"
+author = "Torro"
+description = "Geist: a precise, compact grotesque, with tabular figures"
+
+[fonts.text]
+family = "Geist"
+regular = "Geist-Regular.ttf"
+medium = "Geist-Medium.ttf"
+semibold = "Geist-SemiBold.ttf"
+bold = "Geist-Bold.ttf"
+
+[fonts.numbers]
+family = "Geist Figures"
+regular = "GeistFigures-Regular.ttf"
+medium = "GeistFigures-Medium.ttf"

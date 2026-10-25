@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::paths::AppPaths;
+use torro_core::text::is_format;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
 use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceKind, SourceRef};
@@ -2989,37 +2990,6 @@ fn quote_up_to(text: &str, max: usize) -> String {
     }
 }
 
-/// A Unicode format character (general category Cf, Unicode 16): invisible, yet able to change
-/// what a person reads. Bidi controls turn `Delete "gnihton"` around on screen, zero-width ones
-/// join or split words unseen, tag characters carry hidden text. Rust's standard library has no
-/// category lookup, so the ranges are listed here.
-fn is_format(c: char) -> bool {
-    matches!(
-        u32::from(c),
-        0x00AD
-            | 0x0600..=0x0605
-            | 0x061C
-            | 0x06DD
-            | 0x070F
-            | 0x0890..=0x0891
-            | 0x08E2
-            | 0x180E
-            | 0x200B..=0x200F
-            | 0x202A..=0x202E
-            | 0x2060..=0x2064
-            | 0x2066..=0x206F
-            | 0xFEFF
-            | 0xFFF9..=0xFFFB
-            | 0x110BD
-            | 0x110CD
-            | 0x13430..=0x1343F
-            | 0x1BCA0..=0x1BCA3
-            | 0x1D173..=0x1D17A
-            | 0xE0001
-            | 0xE0020..=0xE007F
-    )
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Mutex;
@@ -3657,6 +3627,21 @@ pub(crate) mod tests {
         // Another key never takes the design's facts.
         let font = Request::SetSetting { key: torro_ipc::SettingKey::Font, value: serde_json::json!("torro") };
         assert!(!summary(&font, &both).contains("jetbrains-mono"));
+    }
+
+    /// Issue #299: a font of the computer is named by its id, cut and cleaned like any text of a
+    /// client – a long family or one with bidi controls can't take over the question.
+    #[test]
+    fn a_font_of_the_computer_is_named_short_and_clean() {
+        let set = |id: &str| Request::SetSetting { key: torro_ipc::SettingKey::Font, value: serde_json::json!(id) };
+        let plain = summary(&set("system:Avenir Next"), &Facts::default());
+        assert_eq!(
+            plain,
+            trf("Change the setting {key} to {value}", &[("key", &"Font"), ("value", &"'system:Avenir Next'")])
+        );
+        let sneaky = summary(&set(&format!("system:Evil\u{202E}{}", "x".repeat(200))), &Facts::default());
+        assert!(!sneaky.contains('\u{202E}') && sneaky.contains('…'), "{sneaky}");
+        assert!(sneaky.chars().count() < 200, "{sneaky}");
     }
 
     #[test]

@@ -1,0 +1,27 @@
+# The font JetBrains Mono (task SR.7, issue #299): JetBrains Mono. Its size adjustment comes from its
+# x-height.
+# Source: github.com/JetBrains/JetBrainsMono release v2.304 (JetBrainsMono-2.304.zip, fonts/ttf), Version
+# 2.304; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The JetBrains Mono files are the maker's, unchanged.
+# x-height 0.550 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 0.993; widest figure
+# of numbers 0.600 em, 0.600 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 600, Medium 600,
+# SemiBold 600, Bold 600 of 1000 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Mono" in the control centre (#299).
+kind = "mono"
+
+[about]
+name = "JetBrains Mono"
+version = "1.0.0"
+author = "Torro"
+description = "JetBrains Mono: a monospace with a tall x-height, made for reading code"
+
+[fonts.text]
+family = "JetBrains Mono"
+regular = "JetBrainsMono-Regular.ttf"
+medium = "JetBrainsMono-Medium.ttf"
+semibold = "JetBrainsMono-SemiBold.ttf"
+bold = "JetBrainsMono-Bold.ttf"

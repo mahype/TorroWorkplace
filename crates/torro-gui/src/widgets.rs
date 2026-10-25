@@ -16,7 +16,8 @@
 //! [`RailMode`]) and the layer of an open group ([`rail_flyout`]). For the compact Appearance page
 //! (task L.18): a segment with a symbol and a word in each part ([`icon_segmented`]), a heading with
 //! quiet actions at its right ([`group_heading`]) and a grid of tiles with a preview to pick from
-//! ([`preview_tile`], [`preview_grid`]).
+//! ([`preview_tile`], [`preview_grid`]). For a long choice in a menu (issue #299, the fonts): a menu
+//! with a search field at its top ([`search_menu`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -2189,6 +2190,66 @@ pub fn menu<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Element<'a,
         list = list.extend(section.items.into_iter().map(menu_entry));
     }
     container(list).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+}
+
+/// A long choice in a floating menu (issue #299, the fonts of Appearance): a search field at the top
+/// (flat, [`style::text_input_flat`], with the symbol `Search`, [`size::control()`] high), a line, and
+/// under it the caller's `items` – section titles, lines, entries – scrolling past [`size::panel()`],
+/// in the card of a menu `width` wide. Without items it says "No matches" in `text_3`.
+///
+/// The caller keeps `query` and filters `items` by it itself; `on_input` comes with every change of
+/// the field, `on_submit` with Enter (the caller takes its first match). `id` names the field, so the
+/// caller can focus it when it opens the menu (`iced::widget::operation::focus(id)`). Show it with
+/// [`floating`]; Escape closes it like any menu ([`escape`]).
+///
+/// ```ignore
+/// let items: Vec<Element<_>> = fonts.iter().filter(|f| matches(f, &self.query)).map(font_item).collect();
+/// let menu = widgets::search_menu(FONT_SEARCH, &self.query, Message::Query, Message::First, items, size::props());
+/// widgets::floating(&anchor, Placement::Below(Align::End), menu, Message::Close)
+/// ```
+pub fn search_menu<'a, M: Clone + 'a>(
+    id: &'static str,
+    query: &'a str,
+    on_input: impl Fn(String) -> M + 'a,
+    on_submit: M,
+    items: Vec<Element<'a, M>>,
+    width: f32,
+) -> Element<'a, M> {
+    let level = typo::body();
+    let input = iced::widget::text_input(tr("Search"), query)
+        .id(id)
+        .size(level.size)
+        .line_height(level.line_height)
+        .font(level.font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input_flat)
+        .on_input(on_input)
+        .on_submit(on_submit);
+    let field =
+        row![toned(Icon::Search, icon::SIZE_SM, Tone::Text3), input].spacing(ICON_GAP).align_y(Alignment::Center);
+    let field =
+        container(field).width(Fill).height(size::control()).center_y(size::control()).padding(style::ITEM_PADDING);
+    let list = match search_results(items) {
+        Ok(items) => column(items),
+        Err(none) => {
+            column![container(typo::text(typo::body(), none).style(theme::text_3)).padding(style::ITEM_PADDING)]
+                .padding([space::s(), 0.0])
+        }
+    };
+    let body = scrollable(list)
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .height(Length::Shrink)
+        .width(Fill);
+    let line = container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]);
+    let card = column![field, line, container(body).max_height(size::panel())];
+    container(card).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
+}
+
+/// The entries of a [`search_menu`], or the words it shows instead when the search found none.
+fn search_results<M>(items: Vec<Element<'_, M>>) -> Result<Vec<Element<'_, M>>, &'static str> {
+    if items.is_empty() { Err(tr("No matches")) } else { Ok(items) }
 }
 
 /// The action rail as a context menu: its groups form vertical sections with separators.
@@ -4999,6 +5060,25 @@ mod badge {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #299: a search that finds nothing says so; one that finds something shows its entries.
+    #[test]
+    fn a_search_menu_says_when_nothing_matches() {
+        #[derive(Debug, Clone)]
+        enum Msg {
+            Query(String),
+            First,
+        }
+        assert_eq!(search_results::<Msg>(Vec::new()).err(), Some(tr("No matches")));
+        let found: Vec<Element<'_, Msg>> = vec![typo::text(typo::body(), "Inter").into(), blank().into()];
+        assert_eq!(search_results(found).map(|items| items.len()).ok(), Some(2));
+        let _: Element<'_, Msg> = search_menu("search", "", Msg::Query, Msg::First, Vec::new(), size::props());
+        let one = vec![typo::text(typo::body(), "Inter").into()];
+        let _: Element<'_, Msg> = search_menu("search", "in", Msg::Query, Msg::First, one, size::props());
+        // What the field hands the caller, typed: the whole text.
+        let typed = Msg::Query("mo".into());
+        assert!(matches!(&typed, Msg::Query(text) if text == "mo"), "{typed:?}");
+    }
+
     /// Task E12.7: the four group colours stand out on the panel in both modes, stay apart from
     /// one another, and there is one per group – no more.
     #[test]
