@@ -5267,7 +5267,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Werkzeuge wie Files arbeiten nur in diesen Ordnern; ArtCraft wird sie auch nutzen. Nur du kannst diese Liste ändern.",
     ),
     ("No allowed folders", "Keine freigegebenen Ordner"),
-    ("Add a folder above. The tool works only there.", "Füge oben einen Ordner hinzu. Das Werkzeug arbeitet nur dort."),
+    ("The tool works only in allowed folders.", "Das Werkzeug arbeitet nur in freigegebenen Ordnern."),
+    (
+        "At most {n} folders. Remove one to add another.",
+        "Höchstens {n} Ordner. Entferne einen, um einen weiteren hinzuzufügen.",
+    ),
     (
         "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose its folders.",
         "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet und unter Zugriff erlaubt ist. Nur du kannst es einschalten und seine Ordner wählen.",
