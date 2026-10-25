@@ -17,9 +17,6 @@
 
 pub mod catalogue;
 pub mod fetch;
-// `providers::wikipedia::Wikipedia::at`, the constructor for a fake server, is used by tests only (WEB.2); the
-// narrow fix, `#[cfg(test)]` on it, belongs to a file outside task WEB.4.
-#[cfg_attr(not(test), expect(dead_code, reason = "Wikipedia::at serves the tests only"))]
 pub mod providers;
 pub mod robots;
 pub mod router;

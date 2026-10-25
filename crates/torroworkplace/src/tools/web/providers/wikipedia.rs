@@ -32,7 +32,8 @@ impl Wikipedia {
     }
 
     /// Wikipedia's search at `base` for every language (a fake server in tests); the hits still point at
-    /// `<language>.wikipedia.org`.
+    /// `<language>.wikipedia.org`. Only tests need it: the router asks the real sites.
+    #[cfg(test)]
     pub fn at(http: reqwest::Client, base: &str) -> Wikipedia {
         Wikipedia { http, base: Some(base.trim_end_matches('/').to_string()) }
     }
