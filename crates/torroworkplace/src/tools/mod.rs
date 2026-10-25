@@ -86,9 +86,7 @@ impl Tools {
             .filter_map(|app| torro_core::paths::AppPaths::for_app(*app))
             .flat_map(|paths| [paths.config, paths.data, paths.state])
             .collect();
-        if let Some(env) = crate::client_setup::Env::current() {
-            excluded.extend(crate::client_setup::protected_files(&env));
-        }
+        excluded.extend(client_files(crate::client_setup::Env::current(), home.as_deref()));
         excluded.extend(home.as_deref().map(folders::key_stores).unwrap_or_default());
         let roots = Roots { data, desktop: dirs::desktop_dir(), home, fonts: torro_core::design::font_dir(), excluded };
         let (open, trash): (Opener, Trasher) = (Arc::new(system_open), Arc::new(system_trash));
@@ -226,6 +224,33 @@ impl Tools {
             Ok(Ok(())) => Response::Ok,
             Ok(Err(err)) => err.response(),
             Err(err) => ToolError::Write(err.to_string()).response(),
+        }
+    }
+}
+
+/// The files with client keys and hooks ([`crate::client_setup::protected_files`]) for the tool `files` to lock:
+/// those of `current` (`Env::current`), or, when it has no view of this process (no `HOME`, no config folder), those
+/// below `home` as the system names it, so they are locked all the same. Without either a warning goes to the log.
+fn client_files(current: Option<crate::client_setup::Env>, home: Option<&Path>) -> Vec<PathBuf> {
+    let env = current.or_else(|| {
+        let home = home?.to_path_buf();
+        // Only `home` and `app_config` name protected files; the record and the hooks' keys are in the core's config
+        // folder, which is locked as a whole.
+        let config_dir = torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE)
+            .map_or_else(|| home.join(".config").join(torro_core::AppId::WORKPLACE.binary), |paths| paths.config);
+        Some(crate::client_setup::Env {
+            app_config: dirs::config_dir().unwrap_or_else(|| home.join(".config")),
+            path: Vec::new(),
+            program: PathBuf::new(),
+            config_dir,
+            home,
+        })
+    });
+    match env {
+        Some(env) => crate::client_setup::protected_files(&env),
+        None => {
+            eprintln!("torroworkplace: no home folder, so the tool files cannot lock the files with client keys");
+            Vec::new()
         }
     }
 }
@@ -616,6 +641,17 @@ pub(crate) mod tests {
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
         let off = files(&settings, &rights);
         assert!(off.allowed && !off.enabled, "allowed, but switched off");
+    }
+
+    /// API review of issue #304: without a view of this process (`Env::current` is `None`) the files with client
+    /// keys are still locked, found below the home the system names.
+    #[test]
+    fn the_client_files_are_locked_without_the_process_view() {
+        let home = Path::new("/home/anna");
+        let files = client_files(None, Some(home));
+        assert!(files.contains(&home.join(".claude.json")), "{files:?}");
+        assert!(files.contains(&home.join(".claude").join("settings.json")), "{files:?}");
+        assert!(client_files(None, None).is_empty(), "no home, nothing to name");
     }
 
     /// Task WD.3: the system trash's errors carry paths and the system's text; the answer takes only their kind.

@@ -9,9 +9,10 @@
 //!   so an agent cannot feel out what there is beyond the allowed folders; writing where only reading is allowed is
 //!   `forbidden`.
 //! - Locked are the paths of `excluded` (the suite's own folders, the files with client keys and hooks, the system's
-//!   key stores, [`key_stores`]) and every name ending in [`BACKUP_SUFFIX`], also inside an allowed folder; their
-//!   parts are compared without regard to case, since `canonicalize` keeps the case a request gave on macOS and
-//!   Windows. Listing and finding leave them out.
+//!   key stores, other known stores of credentials and the browsers' profiles, [`key_stores`]) and every name ending
+//!   in [`BACKUP_SUFFIX`], also inside an allowed folder; their parts are compared without regard to case, since
+//!   `canonicalize` keeps the case a request gave on macOS and Windows. Listing and finding leave them out. A locked
+//!   path is `not-found` also when the system refuses the core there.
 //! - An entry that is or holds an allowed folder or something locked is not moved (and in WD.3 not trashed): else an
 //!   agent would reach what is in an inner "Read" folder through an outer one ([`Allowed::holds_protected`]).
 //!
@@ -226,28 +227,63 @@ impl Allowed {
     }
 
     /// The error for `path` that the system could not resolve: [`FolderError::Denied`] when it refused the core a
-    /// path in an allowed folder, else `not-found` – also when it refused one outside, which is nobody's business.
+    /// path in an allowed folder, else `not-found` – also when it refused one outside, which is nobody's business, and
+    /// one that is locked: the lock is looked at first, so the answer never tells that a locked path is there.
     fn missing(&self, path: &Path, err: &io::Error) -> FolderError {
-        let inside = || self.access_at(&resolved_far(path)).is_some();
+        let resolved = resolved_far(path);
+        if self.is_locked(path) || self.is_locked(&resolved) {
+            return FolderError::NotFound;
+        }
         match err.kind() {
-            io::ErrorKind::PermissionDenied if inside() => FolderError::Denied,
+            io::ErrorKind::PermissionDenied if self.access_at(&resolved).is_some() => FolderError::Denied,
             _ => FolderError::NotFound,
         }
     }
 }
 
-/// The system's key stores below `home`, locked for the tool `files` whatever folder holds them: `~/.ssh`,
-/// `~/.gnupg`, and the system's own (`~/Library/Keychains` on macOS, the keyrings on Linux, the credentials and
-/// the protected keys of Windows).
+/// The system's key stores and other known stores of credentials below `home`, locked for the tool `files` whatever
+/// folder holds them (decision 24): `~/.ssh`, `~/.gnupg`, the system's own (`~/Library/Keychains` on macOS, the
+/// keyrings and KWallet on Linux, the credentials and the protected keys of Windows), the files of cloud, GitHub,
+/// container and package registry tools that hold tokens, the password store `pass`, and the browsers' profiles
+/// (cookies and saved passwords). Each is locked with all it holds.
 pub fn key_stores(home: &Path) -> Vec<PathBuf> {
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "windows")), allow(unused_mut))]
     let mut stores = vec![home.join(".ssh"), home.join(".gnupg")];
+    stores.extend(
+        [
+            ".aws",
+            ".azure",
+            ".config/gcloud",
+            ".config/gh",
+            ".kube",
+            ".docker/config.json",
+            ".netrc",
+            ".git-credentials",
+            ".password-store",
+            ".npmrc",
+            ".pypirc",
+            ".cargo/credentials.toml",
+            ".cargo/credentials",
+        ]
+        .iter()
+        .map(|store| in_home(home, store)),
+    );
     #[cfg(target_os = "macos")]
-    stores.push(home.join("Library").join("Keychains"));
+    {
+        stores.push(home.join("Library").join("Keychains"));
+        let support = home.join("Library").join("Application Support");
+        let browsers = ["Google/Chrome", "Chromium", "BraveSoftware", "Microsoft Edge", "Firefox"];
+        stores.extend(browsers.iter().map(|browser| in_home(&support, browser)));
+        stores.push(home.join("Library").join("Safari"));
+        stores.push(home.join("Library").join("Cookies"));
+    }
     #[cfg(target_os = "linux")]
     {
         stores.push(home.join(".local").join("share").join("keyrings"));
         stores.extend(dirs::data_dir().map(|data| data.join("keyrings")));
+        stores.push(home.join(".local").join("share").join("kwalletd"));
+        stores.push(home.join(".mozilla"));
+        let browsers = ["google-chrome", "chromium", "BraveSoftware", "microsoft-edge"];
+        stores.extend(browsers.iter().map(|browser| home.join(".config").join(browser)));
     }
     #[cfg(target_os = "windows")]
     {
@@ -256,8 +292,17 @@ pub fn key_stores(home: &Path) -> Vec<PathBuf> {
         stores.push(roaming.join("Microsoft").join("Credentials"));
         stores.push(local.join("Microsoft").join("Credentials"));
         stores.push(roaming.join("Microsoft").join("Protect"));
+        stores.push(local.join("Google").join("Chrome").join("User Data"));
+        stores.push(local.join("Microsoft").join("Edge").join("User Data"));
+        stores.push(local.join("BraveSoftware"));
+        stores.push(roaming.join("Mozilla").join("Firefox"));
     }
     stores
+}
+
+/// `relative` (parts separated by `/`) below `base`, joined part by part so it has the system's separators.
+fn in_home(base: &Path, relative: &str) -> PathBuf {
+    relative.split('/').fold(base.to_path_buf(), |path, part| path.join(part))
 }
 
 /// `path` from a request as a path, when it is one the tool takes: absolute, at most [`MAX_PATH_BYTES`] bytes,
@@ -563,6 +608,87 @@ pub(crate) mod tests {
         assert!(stores.contains(&home.join("Library/Keychains")));
         #[cfg(target_os = "linux")]
         assert!(stores.contains(&home.join(".local/share/keyrings")));
+        for store in [".aws", ".config/gcloud", ".config/gh", ".kube", ".docker/config.json", ".git-credentials"] {
+            assert!(stores.contains(&home.join(store)), "{store}");
+        }
+        assert!(stores.contains(&home.join(".cargo").join("credentials.toml")));
+        #[cfg(target_os = "macos")]
+        for profile in
+            ["Library/Application Support/Google/Chrome", "Library/Application Support/Firefox", "Library/Safari"]
+        {
+            assert!(stores.contains(&home.join(profile)), "{profile}");
+        }
+        #[cfg(target_os = "linux")]
+        for profile in [".mozilla", ".config/google-chrome", ".local/share/kwalletd"] {
+            assert!(stores.contains(&home.join(profile)), "{profile}");
+        }
+    }
+
+    /// API review of issue #304: with the whole home allowed, the stores of credentials beyond the system's key
+    /// stores (here `~/.aws`) are not found, what they hold neither, and listing leaves them out.
+    #[test]
+    fn more_credential_stores_are_locked_in_an_allowed_home() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        fs::create_dir_all(home.join(".aws")).expect("made");
+        fs::write(home.join(".aws/credentials"), b"[default]").expect("written");
+        fs::write(home.join(".netrc"), b"machine x").expect("written");
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &key_stores(&home));
+        for locked in ["home/.aws", "home/.aws/credentials", "home/.netrc"] {
+            let path = place.path(locked);
+            assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+            assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+            assert_eq!(code(&allowed.entry(&path, FolderAccess::Read).expect_err("locked")), "not-found");
+        }
+        let list = Request::ListFolder { path: Some(place.path("home")) };
+        let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
+            panic!("listed")
+        };
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["Documents"], "the stores left out");
+    }
+
+    /// API review of issue #304: a locked path the system does not let the core into answers `not-found` like any
+    /// locked path, never the `error` that would tell it is there; one that is not locked still says the system
+    /// refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_locked_path_the_system_refuses_is_not_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        for folder in ["Vault/inner", "Closed/inner"] {
+            fs::create_dir_all(home.join(folder)).expect("made");
+        }
+        let closed = |folder: &str, mode: u32| {
+            fs::set_permissions(home.join(folder), fs::Permissions::from_mode(mode)).expect("permissions set");
+        };
+        closed("Vault", 0o000);
+        closed("Closed", 0o000);
+        // Run as root, the system lets the core in anyway: nothing to see then.
+        let refused = fs::read_dir(home.join("Closed")).is_err();
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &[home.join("Vault")]);
+        let results = |folder: &str| {
+            let path = place.path(&format!("home/{folder}/inner"));
+            [
+                allowed.existing(&path, FolderAccess::Read),
+                allowed.entry(&path, FolderAccess::Read),
+                allowed.new_target(&format!("{path}/new"), FolderAccess::ReadWrite),
+            ]
+        };
+        let (vault, open) = (results("Vault"), results("Closed"));
+        closed("Vault", 0o755);
+        closed("Closed", 0o755);
+        for result in vault {
+            assert_eq!(result, Err(FolderError::NotFound));
+        }
+        if refused {
+            for result in open {
+                assert_eq!(result, Err(FolderError::Denied));
+            }
+        }
     }
 
     #[test]

@@ -5,8 +5,9 @@
 //!
 //! - **Plan, then run** ([`plan`], [`run`]): every command is first resolved as it will run – which entry, which
 //!   target – with every check of the bounds. The core plans before it asks a person to approve, shows the paths of
-//!   the plan and pins the approval to them (`Core::ask_approval`); the run plans again and the core answers
-//!   `conflict` when the plan changed meanwhile (a link exchanged, a folder moved).
+//!   the plan and pins the approval to them (`Core::ask_approval`); the run plans again and runs that very plan only
+//!   when it is the approved one, compared on the same blocking thread just before ([`Tools::organize`]), else
+//!   `conflict` (a link exchanged, a folder moved).
 //! - **Never replace** (decision 21): a taken target gets a free name, `Report-2.pdf` up to `-999` as the PDF tool's
 //!   files ([`super::place::MAX_NUMBER`]), a folder `Invoices-2`; the answer names the path that came to be. Files
 //!   are made with `create_new` and moved with `fs::hard_link`, which never replaces either; a rename (folders,
@@ -27,6 +28,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use torro_core::i18n::tr;
 use torro_core::settings::{AllowedFolder, FolderAccess};
 use torro_ipc::Request;
 use torro_ipc::Response;
@@ -111,18 +113,11 @@ pub fn plan(allowed: &Allowed, request: &Request) -> Result<Option<Plan>, Folder
 /// [`Response::FilePath`] with the path that came to be for making, copying and moving. `Ok(None)` for a request
 /// that is no command of `files` this runs – `tools.trash_file` needs the system's trash: [`move_to_trash`].
 pub fn run(allowed: &Allowed, request: &Request) -> Result<Option<Response>, FolderError> {
-    let Some(planned) = planned(allowed, request)? else { return Ok(None) };
-    let listed = |(entries, truncated)| Response::FolderEntries { entries, truncated };
-    let made = |path: PathBuf| Response::FilePath { path: path.to_string_lossy().into_owned() };
-    Ok(Some(match planned {
-        Planned::Roots => listed(list_roots(allowed)),
-        Planned::List(folder) => listed(list_folder(allowed, &folder)?),
-        Planned::Find(folder, name) => listed(find_files(allowed, &folder, &name)?),
-        Planned::Create(target) => made(create_folder(&target)?),
-        Planned::Copy(from, to) => made(copy_file(&from, &to)?),
-        Planned::Move(from, to) => made(move_file(&from, &to)?),
-        Planned::Trash(_) => return Ok(None),
-    }))
+    match planned(allowed, request)? {
+        None | Some(Planned::Trash(_)) => Ok(None),
+        // The trash is never reached here: `Planned::Trash` is left out above.
+        Some(planned) => execute(allowed, planned, &|_: &Path| Err(NOT_FILES.to_string())).map(Some),
+    }
 }
 
 /// Runs `tools.trash_file` within `allowed` as [`plan`] resolves it: hands the entry itself (a symbolic link, not what
@@ -133,9 +128,10 @@ pub fn move_to_trash(
     request: &Request,
     trash: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<Option<Response>, FolderError> {
-    let Some(Planned::Trash(entry)) = planned(allowed, request)? else { return Ok(None) };
-    trash(&entry).map_err(FolderError::Failed)?;
-    Ok(Some(Response::Ok))
+    match planned(allowed, request)? {
+        Some(trashed @ Planned::Trash(_)) => execute(allowed, trashed, trash).map(Some),
+        _ => Ok(None),
+    }
 }
 
 fn planned(allowed: &Allowed, request: &Request) -> Result<Option<Planned>, FolderError> {
@@ -499,13 +495,20 @@ impl Tools {
     /// Runs a command of `files` ([`run`], [`move_to_trash`] with the tools' [`super::Trasher`]) within the allowed
     /// `folders` of now, on a blocking thread, planned and checked again. The switch, the rights and the approval are
     /// the core's to check before; `unsupported` for a request that is no command of `files`.
-    pub async fn organize(&self, request: Request, folders: &[AllowedFolder]) -> Response {
+    ///
+    /// `approved` is the fingerprint of the plan a person was shown ([`PathFacts::fingerprint`], `Core::run_approved`):
+    /// with it the command runs only when the plan made here, in the same blocking task just before it runs, has that
+    /// fingerprint – else `conflict` and nothing is done, so exactly what was approved runs. `None` for a command
+    /// nobody approved (the app key, a client never asked).
+    pub async fn organize(&self, request: Request, folders: &[AllowedFolder], approved: Option<&str>) -> Response {
         let (folders, excluded, trash) = (folders.to_vec(), self.roots.excluded.clone(), self.trash.clone());
+        let approved = approved.map(str::to_string);
         let ran = tokio::task::spawn_blocking(move || {
             let allowed = Allowed::of(&folders, &excluded);
-            match matches!(request, Request::TrashFile { .. }) {
-                true => move_to_trash(&allowed, &request, &*trash),
-                false => run(&allowed, &request),
+            match approved {
+                Some(approved) => run_approved(&allowed, &request, &approved, &*trash),
+                None if matches!(request, Request::TrashFile { .. }) => move_to_trash(&allowed, &request, &*trash),
+                None => run(&allowed, &request),
             }
         });
         match ran.await {
@@ -515,6 +518,52 @@ impl Tools {
             Err(err) => FolderError::Failed(err.to_string()).response(),
         }
     }
+}
+
+/// Runs `request` within `allowed` as [`plan`] resolves it now, only when that plan has the fingerprint `approved`
+/// ([`PathFacts::fingerprint`]) – else `conflict` ([`changed`]) and nothing is done: the plan compared is the plan
+/// that runs. The trash through `trash`. `Ok(None)` for a request that is no command of `files`.
+fn run_approved(
+    allowed: &Allowed,
+    request: &Request,
+    approved: &str,
+    trash: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<Option<Response>, FolderError> {
+    let Some(planned) = planned(allowed, request)? else { return Ok(None) };
+    if planned.plan().facts().fingerprint() != approved {
+        return Ok(Some(changed()));
+    }
+    execute(allowed, planned, trash).map(Some)
+}
+
+/// `conflict`: the paths of an approved command resolve otherwise now than when the person was shown them.
+fn changed() -> Response {
+    let message = tr("The files changed after the approval was asked for; nothing was done.").into();
+    Response::Error { code: "conflict".into(), message }
+}
+
+/// Runs the command `planned` as it was planned within `allowed`: [`Response::FolderEntries`] for listing and
+/// finding, [`Response::FilePath`] with the path that came to be for making, copying and moving, [`Response::Ok`] once
+/// `trash` took the entry.
+fn execute(
+    allowed: &Allowed,
+    planned: Planned,
+    trash: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<Response, FolderError> {
+    let listed = |(entries, truncated)| Response::FolderEntries { entries, truncated };
+    let made = |path: PathBuf| Response::FilePath { path: path.to_string_lossy().into_owned() };
+    Ok(match planned {
+        Planned::Roots => listed(list_roots(allowed)),
+        Planned::List(folder) => listed(list_folder(allowed, &folder)?),
+        Planned::Find(folder, name) => listed(find_files(allowed, &folder, &name)?),
+        Planned::Create(target) => made(create_folder(&target)?),
+        Planned::Copy(from, to) => made(copy_file(&from, &to)?),
+        Planned::Move(from, to) => made(move_file(&from, &to)?),
+        Planned::Trash(entry) => {
+            trash(&entry).map_err(FolderError::Failed)?;
+            Response::Ok
+        }
+    })
 }
 
 #[cfg(test)]
@@ -978,6 +1027,42 @@ mod tests {
         assert_eq!(plan(&allowed, &trash), Ok(Some(Plan { from: Some(docs.join("a.txt")), to: None })));
         assert_eq!(plan(&allowed, &Request::ListTools), Ok(None));
         assert_eq!(fs::read_dir(&docs).expect("listed").count(), 2, "planning changes nothing");
+    }
+
+    /// API review of issue #304: an approved command runs only on the plan the person was shown, compared in the same
+    /// blocking task just before it runs; another plan (a folder gone since) is `conflict` and nothing is done.
+    #[tokio::test]
+    async fn an_approved_command_runs_only_on_the_plan_it_was_approved_with() {
+        let place = Place::new();
+        write(&place, "home/Documents/a.txt", b"a");
+        let docs = resolved(&place, "home/Documents");
+        fs::create_dir(docs.join("Box")).expect("made");
+        let taken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&taken);
+        let tools = Tools::new(super::super::Roots::default()).with_trasher(std::sync::Arc::new(move |path: &Path| {
+            record.lock().expect("lock").push(path.to_path_buf());
+            Ok(())
+        }));
+        let folders = place.folders();
+        let fingerprint = |plan: Option<Plan>| plan.expect("a command of files").facts().fingerprint();
+
+        let copy = Request::CopyFile { from: place.path("home/Documents/a.txt"), to: place.path("home/Documents/Box") };
+        let approved = fingerprint(tools.plan(&copy, &folders).await.expect("planned"));
+        fs::remove_dir(docs.join("Box")).expect("removed");
+        let refused = tools.organize(copy.clone(), &folders, Some(&approved)).await;
+        let Response::Error { code, .. } = &refused else { panic!("refused: {refused:?}") };
+        assert_eq!(code, "conflict");
+        assert_eq!(fs::read_dir(&docs).expect("listed").count(), 2, "nothing copied");
+
+        let trash = Request::TrashFile { path: place.path("home/Documents/a.txt") };
+        let refused = tools.organize(trash.clone(), &folders, Some("not the plan")).await;
+        assert!(matches!(&refused, Response::Error { code, .. } if code == "conflict"), "{refused:?}");
+        assert!(taken.lock().expect("lock").is_empty(), "nothing handed to the trash");
+        let approved = fingerprint(tools.plan(&trash, &folders).await.expect("planned"));
+        assert_eq!(tools.organize(trash, &folders, Some(&approved)).await, Response::Ok);
+        assert_eq!(*taken.lock().expect("lock"), [docs.join("a.txt")]);
+        let made = tools.organize(copy, &folders, None).await;
+        assert_eq!(made, Response::FilePath { path: docs.join("Box").to_string_lossy().into_owned() }, "unpinned");
     }
 
     #[test]

@@ -1096,7 +1096,11 @@ WD.1 (Gerüst) ──┬── WD.2 (Kern: Ordner, auflisten, suchen, anlegen, k
   `AgentKind` und `skill_file`; sie tragen Client-Schlüssel und die Freigabe-Hooks) und mit den Schlüsselablagen
   des Systems: `~/.ssh`, `~/.gnupg`, auf macOS `~/Library/Keychains`, auf Linux `~/.local/share/keyrings`, auf
   Windows `%APPDATA%\Microsoft\Credentials`, `%LOCALAPPDATA%\Microsoft\Credentials` und
-  `%APPDATA%\Microsoft\Protect`.
+  `%APPDATA%\Microsoft\Protect`; dazu weitere bekannte Ablagen von Zugangsdaten (`~/.aws`, `~/.azure`,
+  `~/.config/gcloud`, `~/.config/gh`, `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`,
+  `~/.password-store`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials(.toml)`), auf Linux KWallet, und die
+  Browser-Profile je System (erweitert nach dem API-Review). Verweigert das System den Zugriff auf einen gesperrten
+  Pfad, bleibt die Antwort `not-found` (die Sperre wird zuerst geprüft).
 - `organize.rs`, alles in `spawn_blocking`: `list_folder` (ohne Pfad die freigegebenen Ordner mit `access`; sonst
   eine Ebene, Ordner zuerst, dann nach Namen, `symlink_metadata`, höchstens `MAX_LIST_ENTRIES`); `find_files`
   (eigener Stapel über `fs::read_dir`, folgt keinen Links, überspringt `excluded`, Muster ohne Groß-/Kleinschreibung,

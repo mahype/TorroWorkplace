@@ -3751,8 +3751,9 @@ impl Core {
             return Box::pin(self.reminder_request(request, reach, Some((client, &name)))).await;
         }
         // A command of the tool `files` runs only on the paths the person was shown (issue #304): resolved again
-        // now, and `conflict` without doing anything when they changed (a link exchanged, a folder moved). An
-        // approval without a fingerprint matches nothing.
+        // and compared with them on the thread that then runs it, so nothing changes in between; `conflict` without
+        // doing anything when they changed (a link exchanged, a folder moved). An approval without a fingerprint
+        // matches nothing. Its switch was checked above ([`Core::tool_off`]).
         if matches!(
             request,
             Request::CreateFolder { .. }
@@ -3760,14 +3761,8 @@ impl Core {
                 | Request::MoveFile { .. }
                 | Request::TrashFile { .. }
         ) {
-            let now = match self.tools.plan(&request, &settings.tools.folders).await {
-                Ok(plan) => plan.map(|plan| plan.facts().fingerprint()),
-                Err(refused) => return refused,
-            };
-            if now.as_deref() != Some(fingerprint.unwrap_or_default()) {
-                let message = tr("The files changed after the approval was asked for; nothing was done.").into();
-                return Response::Error { code: "conflict".into(), message };
-            }
+            let approved = Some(fingerprint.unwrap_or_default());
+            return self.tools.organize(request, &settings.tools.folders, approved).await;
         }
         if request.operation().area() == Area::Tools {
             return self.tools_request(request, reach, Maker::Client(client)).await;
@@ -6889,7 +6884,9 @@ impl Core {
             }
             (Request::OpenFile { file }, maker) => self.tools.open_file(&file, maker).await,
             (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
-            (request, _) if is_files_command(&request) => self.tools.organize(request, &settings.tools.folders).await,
+            (request, _) if is_files_command(&request) => {
+                self.tools.organize(request, &settings.tools.folders, None).await
+            }
             (other, _) => Refused::Forbidden { command: other.operation().name() }.response(),
         }
     }

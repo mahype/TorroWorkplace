@@ -409,10 +409,13 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
   freigegebener Ordner sie enthält), verglichen ohne Groß- und Kleinschreibung. Sonst könnte ein Agent mit dem
   Home-Verzeichnis als freigegebenem Ordner die Rechte-Datei der Clients verschieben. Ebenso gesperrt: die Dateien,
   in die Torro Client-Schlüssel und Hooks schreibt (`~/.claude.json`, `~/.claude/settings.json` … mit ihren
-  Sicherungen), und die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`, Schlüsselbund). Ein Eintrag, der einen
+  Sicherungen), die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`, Schlüsselbund), weitere bekannte Ablagen
+  von Zugangsdaten (Cloud, GitHub, Paketregister, Passwortspeicher) und die Browser-Profile. Auch wenn das System
+  den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Eintrag, der einen
   freigegebenen Ordner oder etwas Gesperrtes ist oder enthält, lässt sich nicht verschieben, umbenennen oder in den
-  Papierkorb legen. Nach einer Freigabe läuft nur, was die Karte zeigte: Der Kern hält die aufgelösten Pfade fest
-  und antwortet `conflict`, wenn sie sich bis zum Ausführen geändert haben.
+  Papierkorb legen. Nach einer Freigabe läuft nur, was die Karte zeigte: Der Kern hält die aufgelösten Pfade fest,
+  vergleicht sie unmittelbar vor dem Ausführen im selben Schritt und antwortet `conflict`, wenn sie sich geändert
+  haben.
 - **Nie überschreiben** (entschieden): Ist das Ziel belegt, wählt der Kern einen freien Namen wie das PDF-Werkzeug
   (`Bericht-2.pdf`, `Rechnungen-2`), und die Antwort nennt den Pfad, der entstanden ist.
 - **Kopieren nur Dateien** (entschieden); verschieben und umbenennen auch Ordner, solange es auf demselben Laufwerk
@@ -586,5 +589,6 @@ Getroffen am 2026-10-24 (Abschnitt „Werkzeug Dateien“, Issue #304).
 22. **Kopieren nur Dateien;** Ordner verschieben nur auf demselben Laufwerk.
 23. **Papierkorb** über das Crate `trash`, auf macOS mit `NSFileManager` (keine Erlaubnis für den Finder nötig, dafür
     fehlt „Zurücklegen“ manchmal); er fragt immer einen Menschen.
-24. **Gesperrt** sind immer die Ordner der Suite, die Dateien mit Client-Schlüsseln und Hooks und die
-    Schlüsselablagen des Systems, auch innerhalb eines freigegebenen Ordners.
+24. **Gesperrt** sind immer die Ordner der Suite, die Dateien mit Client-Schlüsseln und Hooks, die
+    Schlüsselablagen des Systems, weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub, Paketregister,
+    Passwortspeicher) und die Browser-Profile, auch innerhalb eines freigegebenen Ordners.
