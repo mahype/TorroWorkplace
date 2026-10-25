@@ -19,7 +19,7 @@
 //! Nothing here logs, and no error carries the address or the page: [`FetchError`] has fixed texts only, and a
 //! `reqwest::Error` loses its URL before anything looks at it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -45,7 +45,7 @@ pub const DEADLINE: Duration = Duration::from_secs(20);
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// The least time between two reads of pages on one host. Redirects within one read and `robots.txt` are part of
-/// that read.
+/// that read; a host a redirect leads to waits for its own turn, once per read.
 pub const HOST_GAP: Duration = Duration::from_secs(1);
 
 /// The media types read; anything else is refused ([`FetchError::WrongType`]).
@@ -266,10 +266,18 @@ impl Fetcher {
 
     /// Asks the page at `url` and follows its redirects, at most [`MAX_REDIRECTS`]: every address checked
     /// ([`checked_url`], public addresses) and, unless `by_person`, its host resolved and checked
-    /// ([`FetchError::Offline`], [`FetchError::NotPublic`]) and then asked about `robots.txt`; the first request
-    /// after the host's turn. The last address and its answer (not a redirect).
+    /// ([`FetchError::Offline`], [`FetchError::NotPublic`]) and then asked about `robots.txt`. Each host waits for
+    /// its turn before it is first asked in this read, `robots.txt` included: a redirect to another host must not
+    /// get past that host's turn (PR #311 review). The last address and its answer (not a redirect).
     async fn follow(&self, mut url: Url, by_person: bool) -> Result<(Url, reqwest::Response), FetchError> {
-        for redirects in 0..=MAX_REDIRECTS {
+        let mut taken = HashSet::new();
+        for _ in 0..=MAX_REDIRECTS {
+            let host = url.host_str().unwrap_or_default().to_string();
+            if !taken.contains(&host) {
+                let wait = self.turn(&host, Instant::now());
+                tokio::time::sleep(wait).await;
+                taken.insert(host);
+            }
             if !by_person {
                 // The host first: a name that leads nowhere or into the local network is said so, not blamed on
                 // robots.txt.
@@ -277,10 +285,6 @@ impl Fetcher {
                 if !self.robots_allow(&url).await? {
                     return Err(FetchError::Robots);
                 }
-            }
-            if redirects == 0 {
-                let wait = self.turn(url.host_str().unwrap_or_default(), Instant::now());
-                tokio::time::sleep(wait).await;
             }
             match self.step(&url, ACCEPTED).await? {
                 Step::Answer(response) => return Ok((url, response)),
@@ -804,6 +808,32 @@ mod tests {
         assert_eq!((five.markdown.as_str(), five.url), ("arrived", at(&server, "a.example.org", "/hop/6")));
         let six = fetcher.fetch(&at(&server, "b.example.org", "/hop/0"), true).await;
         assert_eq!(six, Err(FetchError::TooManyRedirects));
+    }
+
+    /// Found in the review of PR #311: a redirect to another host waits for that host's turn too, so pages that
+    /// all lead to one site do not ask it faster than [`HOST_GAP`].
+    #[tokio::test]
+    async fn a_redirect_to_another_host_takes_its_turn() {
+        let server = MockServer::start_async().await;
+        let port = server.port();
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/away");
+                then.status(302).header("Location", format!("http://b.example.org:{port}/page"));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/page");
+                then.status(200).header("content-type", "text/plain").body("arrived");
+            })
+            .await;
+        let fetcher = on_mock(&server, &[("a.example.org", "127.0.0.1"), ("b.example.org", "127.0.0.1")]);
+        let read = fetcher.fetch(&at(&server, "a.example.org", "/away"), true).await.expect("the page");
+        assert_eq!(read.markdown, "arrived");
+        let now = Instant::now();
+        assert!(fetcher.turn("b.example.org", now) > Duration::ZERO, "the read took b's turn");
+        assert!(fetcher.turn("c.example.org", now).is_zero(), "no other host's");
     }
 
     #[tokio::test]
