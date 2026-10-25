@@ -303,14 +303,12 @@ impl Web {
         Response::Error { code: code.into(), message }
     }
 
-    /// Which of the providers that are on rest, and until when the first of them does; or that they wait for
-    /// their turn.
+    /// Which of the providers a search can ask ([`WebSearch::askable`]: SearXNG only with an address) rest, and until
+    /// when the first of them does; or that they wait for their turn. One that cannot be asked is not named, even
+    /// with a rest from before.
     fn resting(&self, settings: &WebSearch) -> String {
-        let paused: Vec<_> = SearchProviderId::ORDER
-            .into_iter()
-            .filter(|id| settings.is_on(*id))
-            .filter_map(|id| Some((id, self.router.paused_until(id)?)))
-            .collect();
+        let paused: Vec<_> =
+            settings.askable().into_iter().filter_map(|id| Some((id, self.router.paused_until(id)?))).collect();
         let Some(first) = paused.iter().map(|(_, until)| *until).min() else {
             return tr("The web search providers are busy. Try again in a few seconds.").to_string();
         };
@@ -665,6 +663,27 @@ mod tests {
         let off = FakeProvider::finding(Brave);
         assert_eq!(code(&search(offline().with_providers(vec![off.clone()]), on(&[Tavily])).await), "not-connected");
         assert_eq!(off.calls(), 0);
+    }
+
+    /// Found in the second review of #305: the `busy` message names only providers a search can ask
+    /// (`WebSearch::askable`). SearXNG without an address, resting from before, is neither named nor sets the time.
+    #[tokio::test]
+    async fn the_busy_message_names_only_providers_that_can_be_asked() {
+        use SearchProviderId::{Duckduckgo, Searxng};
+        let web = offline().with_providers(vec![
+            FakeProvider::new(Searxng, Err(SearchError::RateLimited { retry_after: Some(Duration::from_secs(60)) })),
+            FakeProvider::new(Duckduckgo, Err(SearchError::Blocked)),
+        ]);
+        let mut settings = on(&[Searxng, Duckduckgo]);
+        settings.searxng = Some("https://search.example.org".into());
+        assert_eq!(code(&web.search(&settings, "Lisbon", None, None).await), "busy", "both rest now");
+        settings.searxng = None;
+        let busy = web.search(&settings, "Lisbon", None, None).await;
+        assert_eq!(code(&busy), "busy");
+        assert!(message(&busy).contains("DuckDuckGo") && !message(&busy).contains("SearXNG"), "{busy:?}");
+        let until = web.router.paused_until(Duckduckgo).expect("it rests");
+        let time = until.with_timezone(&chrono::Local).format("%H:%M").to_string();
+        assert!(message(&busy).contains(&time), "DuckDuckGo's hour, not SearXNG's minute: {busy:?}");
     }
 
     #[tokio::test]
