@@ -1096,7 +1096,10 @@ pub(super) mod tests {
         assert_eq!(when(now, now), now.with_timezone(&Local).format("%H:%M").to_string());
         let old = now - Age::days(9);
         assert_eq!(when(old, now), old.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
-        let yesterday = now - Age::days(1);
+        // Noon of the day before by the calendar, not 24 hours back: the day summer time ends has 25 hours, and
+        // in its last one 24 hours back is still the same day.
+        let noon = (now.with_timezone(&Local).date_naive() - Age::days(1)).and_hms_opt(12, 0, 0).expect("a time");
+        let yesterday = noon.and_local_timezone(Local).single().expect("noon is never skipped").with_timezone(&Utc);
         let clock = yesterday.with_timezone(&Local).format("%H:%M").to_string();
         assert_eq!(when(yesterday, now), trf("yesterday {time}", &[("time", &clock)]));
     }
