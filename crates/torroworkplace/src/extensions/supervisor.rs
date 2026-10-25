@@ -259,9 +259,11 @@ impl Supervisor {
         arguments: JsonObject,
     ) -> Result<ToolResult, SupervisorError> {
         let (server, generation, connection) = self.ensure(launch, Purpose::Use).await?;
-        server.use_run(generation, 1);
+        // Counted out when the call ends, also when it is dropped before (the assistant's "Stop" aborts its
+        // task): a count left behind would keep the server from ever ending when idle.
+        let in_flight = InFlight::new(&server, generation);
         let answer = connection.call_tool(tool, arguments, self.timing.call).await;
-        server.use_run(generation, -1);
+        drop(in_flight);
         match answer {
             Ok(result) => Ok(result),
             Err(ClientError::Timeout) => {
@@ -318,10 +320,14 @@ impl Supervisor {
     /// Ends the server if it runs (switched off, installed and not yet allowed, updated while off); not a
     /// failure. It is not started again, by no call and no tool list, until [`Supervisor::reset`]: also not by
     /// a call that began before and starts it after this ([`SupervisorError::Stopped`]).
+    ///
+    /// A start under way is broken off ([`SupervisorError::Stopped`] for whoever waits for it), so switching
+    /// off or removing a server that is starting answers at once instead of after the start's time limit.
     pub async fn stop(&self, id: &str) {
         // Marked before the turn is taken: a start that waits for the turn sees it, one under way is ended.
         lock(&self.stopped).insert(id.to_string());
         let Some(server) = self.get(id) else { return };
+        server.cancel.notify_waiters();
         let _turn = server.turn.lock().await;
         let run = lock(&server.state).run.take();
         if let Some(run) = run {
@@ -333,6 +339,9 @@ impl Supervisor {
     /// Forgets the failures of the server, so a crashed one starts again on the next call, and lifts a
     /// [`Supervisor::stop`] or [`Supervisor::forget`]: when a person switches it on (`extensions.set_enabled`),
     /// allows its tools, or installs or updates it.
+    ///
+    /// What it forgets can be taken first ([`Supervisor::health`]) and put back ([`Supervisor::restore`]):
+    /// an update whose trial start fails leaves a crashed server crashed.
     pub fn reset(&self, id: &str) {
         lock(&self.stopped).remove(id);
         let Some(server) = self.get(id) else { return };
@@ -341,6 +350,48 @@ impl Supervisor {
         state.crashed = None;
         drop(state);
         self.bump();
+    }
+
+    /// What [`Supervisor::reset`] would forget of the server `id` now: its failures, whether it is crashed and
+    /// whether it is stopped on purpose. A server it never saw has none of them.
+    pub fn health(&self, id: &str) -> Health {
+        let stopped = lock(&self.stopped).contains(id);
+        let Some(server) = self.get(id) else { return Health { stopped, ..Health::default() } };
+        let state = lock(&server.state);
+        Health { failures: state.failures.clone(), crashed: state.crashed, stopped }
+    }
+
+    /// Puts back what [`Supervisor::health`] took before a [`Supervisor::reset`]: the failures and whether it
+    /// is crashed as they were. Stopped on purpose it becomes again when it was; a stop meanwhile is never
+    /// lifted (a person switched it off or removed it during the update).
+    pub fn restore(&self, id: &str, health: Health) {
+        if health.stopped {
+            lock(&self.stopped).insert(id.to_string());
+        }
+        let Some(server) = self.get(id) else { return };
+        let mut state = lock(&server.state);
+        state.failures = health.failures;
+        state.crashed = health.crashed;
+        drop(state);
+        self.bump();
+    }
+
+    /// Ends the run of the server that was started with `launch`, when it runs; not stopped on purpose, so the
+    /// next call starts it again with what it is given then. For an update that failed after its trial start:
+    /// the program it tried does not keep running. A run with another launch is left alone.
+    pub async fn end(&self, launch: &Launch) {
+        let Some(server) = self.get(&launch.id) else { return };
+        let run = {
+            let mut state = lock(&server.state);
+            match &state.run {
+                Some(run) if run.launch == *launch => state.run.take(),
+                _ => None,
+            }
+        };
+        if let Some(run) = run {
+            self.bump();
+            run.finish(self.timing.stop_grace).await;
+        }
     }
 
     /// Ends the server and forgets it with its output: when it is removed (`extensions.remove_extension`). Like
@@ -385,6 +436,10 @@ impl Supervisor {
         let server =
             lock(&self.servers).entry(launch.id.clone()).or_insert_with(|| Arc::new(Server::new(&launch.id))).clone();
         let _turn = server.turn.lock().await;
+        // Taken before the mark is looked at: a `stop` marks first and then tells, so either this sees the mark
+        // or it hears the stop (a `Notified` hears every `notify_waiters` after it was made).
+        let cancelled = server.cancel.notified();
+        tokio::pin!(cancelled);
         // Under the turn: a `stop` marks before it takes the turn, so either it ends what starts here or this
         // sees the mark.
         if lock(&self.stopped).contains(&launch.id) {
@@ -417,17 +472,22 @@ impl Supervisor {
             return Err(SupervisorError::Crashed(reason));
         }
 
-        lock(&server.state).starting = true;
-        self.bump();
+        // `starting` goes again when this is dropped, also when the caller drops the start before it ends.
+        let starting = Starting::new(&server, &self.changes);
         let limit = match purpose {
             Purpose::Use => self.timing.start,
             Purpose::Install => self.timing.install_start,
         };
-        // A start that runs out of time is dropped: its process with it, which kills the tree.
-        let started = tokio::time::timeout(limit, self.start(launch, &server.output, limit))
-            .await
-            .unwrap_or(Err(SupervisorError::Failed(CrashReason::StartTimeout)));
+        // A start that runs out of time or is stopped is dropped: its process with it, which kills the tree.
+        let started = tokio::select! {
+            started = tokio::time::timeout(limit, self.start(launch, &server.output, limit)) => {
+                started.unwrap_or(Err(SupervisorError::Failed(CrashReason::StartTimeout)))
+            }
+            () = &mut cancelled => Err(SupervisorError::Stopped),
+        };
         let mut state = lock(&server.state);
+        // Under the same lock as the run, so the status goes from starting to running without a gap; the
+        // guard clears it again when it goes, which changes nothing then.
         state.starting = false;
         let result = match started {
             Ok((connection, process, tools)) => {
@@ -455,6 +515,7 @@ impl Supervisor {
             Err(err) => Err(err),
         };
         drop(state);
+        drop(starting);
         self.bump();
         result
     }
@@ -500,11 +561,22 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// What [`Supervisor::reset`] forgets of a server ([`Supervisor::health`]), to put back with
+/// [`Supervisor::restore`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Health {
+    failures: VecDeque<Instant>,
+    crashed: Option<CrashReason>,
+    stopped: bool,
+}
+
 /// One server the supervisor knows.
 struct Server {
     id: String,
     /// Held while it starts or stops, so calls at the same moment start it once.
     turn: tokio::sync::Mutex<()>,
+    /// Told by [`Supervisor::stop`]: a start under way breaks off.
+    cancel: tokio::sync::Notify,
     state: Mutex<State>,
     output: Arc<Mutex<Output>>,
 }
@@ -549,6 +621,7 @@ impl Server {
         Server {
             id: id.to_string(),
             turn: tokio::sync::Mutex::new(()),
+            cancel: tokio::sync::Notify::new(),
             state: Mutex::new(State::default()),
             output: Arc::new(Mutex::new(Output::default())),
         }
@@ -574,6 +647,48 @@ impl Server {
         eprintln!("torroworkplace: MCP server {} {}", self.id, reason_kind(reason));
         record_failure(&mut state, reason, timing);
         run
+    }
+}
+
+/// A call counted in to the run `generation` of a server ([`Server::use_run`]) until this is dropped: when the
+/// call ends, or when its future is dropped before.
+struct InFlight<'a> {
+    server: &'a Server,
+    generation: u64,
+}
+
+impl<'a> InFlight<'a> {
+    fn new(server: &'a Server, generation: u64) -> InFlight<'a> {
+        server.use_run(generation, 1);
+        InFlight { server, generation }
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.server.use_run(self.generation, -1);
+    }
+}
+
+/// A server marked as starting ([`Status::Starting`]) until this is dropped: when its start ends, or when the
+/// future that starts it is dropped before. Either way the change is told.
+struct Starting<'a> {
+    server: &'a Server,
+    changes: &'a watch::Sender<u64>,
+}
+
+impl<'a> Starting<'a> {
+    fn new(server: &'a Server, changes: &'a watch::Sender<u64>) -> Starting<'a> {
+        lock(&server.state).starting = true;
+        changes.send_modify(|count| *count += 1);
+        Starting { server, changes }
+    }
+}
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        lock(&self.server.state).starting = false;
+        self.changes.send_modify(|count| *count += 1);
     }
 }
 
@@ -1124,6 +1239,114 @@ mod tests {
                 Err(SupervisorError::Setup(EnvError::MissingSecret { name: "FIXTURE_VALUE".into() }))
             );
             assert_eq!(supervisor.status("fixture"), Status::Stopped);
+        }
+
+        /// A program that never answers `initialize`: its start takes until its time limit.
+        fn silent(work: &Path) -> Launch {
+            Launch {
+                server: ServerSpec::Stdio {
+                    command: "/bin/sleep".into(),
+                    args: vec!["30".into()],
+                    env: BTreeMap::new(),
+                },
+                ..launch(work, &[])
+            }
+        }
+
+        /// Whether the server `fixture` has `status` within [`WAIT`].
+        async fn reaches(supervisor: &Supervisor, status: Status) -> bool {
+            let deadline = Instant::now() + WAIT;
+            while supervisor.status("fixture") != status {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            true
+        }
+
+        /// Review of #302: a call whose future is dropped before it answers (the assistant's "Stop" aborts its
+        /// task) is counted out, so the server still ends when idle.
+        #[tokio::test]
+        async fn a_dropped_call_still_lets_the_server_end_when_idle() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let supervisor = supervisor(Timing { idle: Duration::from_millis(300), ..quick() });
+            let launch = launch(dir.path(), &[]);
+            supervisor.tools(&launch, Purpose::Use).await.expect("started");
+            let call = supervisor.call(&launch, "slow", JsonObject::new());
+            assert!(tokio::time::timeout(Duration::from_millis(100), call).await.is_err(), "dropped unanswered");
+            assert!(reaches(&supervisor, Status::Stopped).await, "ended when idle");
+            supervisor.stop_all().await;
+        }
+
+        /// Review of #302: a start whose future is dropped does not leave the server starting.
+        #[tokio::test]
+        async fn a_dropped_start_does_not_stay_starting() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let supervisor = supervisor(quick());
+            let silent = silent(dir.path());
+            let start = supervisor.tools(&silent, Purpose::Use);
+            assert!(tokio::time::timeout(Duration::from_millis(300), start).await.is_err(), "dropped unstarted");
+            assert_eq!(supervisor.status("fixture"), Status::Stopped);
+        }
+
+        /// Review of #302: stopping a server that is starting (switched off, removed) breaks the start off at
+        /// once instead of waiting for its time limit; the start is no failure.
+        #[tokio::test]
+        async fn stopping_a_starting_server_breaks_the_start_off() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let supervisor = Arc::new(supervisor(quick()));
+            let silent = silent(dir.path());
+            let start = tokio::spawn({
+                let supervisor = supervisor.clone();
+                async move { supervisor.tools(&silent, Purpose::Use).await }
+            });
+            assert!(reaches(&supervisor, Status::Starting).await, "it starts");
+            let began = Instant::now();
+            supervisor.stop("fixture").await;
+            assert!(began.elapsed() < Duration::from_secs(2), "stopped after {:?}", began.elapsed());
+            assert_eq!(start.await.expect("joined"), Err(SupervisorError::Stopped));
+            assert_eq!(supervisor.status("fixture"), Status::Stopped);
+            assert_eq!(supervisor.health("fixture").failures.len(), 0, "not counted");
+        }
+
+        /// Review of #302: `health` and `restore` put back what `reset` forgot; a stop meanwhile stays.
+        #[tokio::test]
+        async fn restore_puts_back_what_reset_forgot() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let supervisor = supervisor(quick());
+            let launch = launch(dir.path(), &[]);
+            for _ in 0..3 {
+                let _ = supervisor.call(&launch, "crash", JsonObject::new()).await;
+            }
+            let crashed = Status::Crashed { reason: CrashReason::Exited };
+            assert_eq!(supervisor.status("fixture"), crashed);
+            let health = supervisor.health("fixture");
+            supervisor.reset("fixture");
+            assert_eq!(supervisor.status("fixture"), Status::Stopped);
+            supervisor.restore("fixture", health);
+            assert_eq!(supervisor.status("fixture"), crashed);
+
+            supervisor.reset("fixture");
+            let health = supervisor.health("fixture");
+            supervisor.stop("fixture").await;
+            supervisor.restore("fixture", health);
+            assert_eq!(supervisor.tools(&launch, Purpose::Use).await, Err(SupervisorError::Stopped), "still off");
+        }
+
+        /// Review of #302: `end` ends only the run of its launch, and the next call starts the server again.
+        #[tokio::test]
+        async fn end_ends_only_the_run_of_its_launch() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let supervisor = supervisor(quick());
+            let launch = launch(dir.path(), &[]);
+            supervisor.tools(&launch, Purpose::Use).await.expect("started");
+            supervisor.end(&Launch { secrets: BTreeMap::new(), ..launch.clone() }).await;
+            assert_eq!(supervisor.status("fixture"), Status::Running, "another launch");
+            supervisor.end(&launch).await;
+            assert_eq!(supervisor.status("fixture"), Status::Stopped);
+            supervisor.call(&launch, "echo", JsonObject::new()).await.expect("started again");
+            supervisor.stop_all().await;
         }
 
         #[tokio::test]

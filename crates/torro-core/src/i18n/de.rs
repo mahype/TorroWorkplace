@@ -5741,6 +5741,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The tool “{name}” isn't offered: its name doesn't fit the rules for tool names (at most {n} characters with the server's id: letters, digits, _ and -).",
         "Das Werkzeug „{name}“ wird nicht angeboten: Sein Name passt nicht zu den Regeln für Werkzeugnamen (höchstens {n} Zeichen mit der Kennung des Servers: Buchstaben, Ziffern, _ und -).",
     ),
+    // MCP servers: installing and updating without holding the file over the start (review of #302).
+    (
+        "This MCP server changed while it was being updated. Look at it and try again.",
+        "Dieser MCP-Server hat sich während des Updates geändert. Sieh ihn dir an und versuch es noch einmal.",
+    ),
+    (
+        "This MCP server is being installed or updated. Try again in a moment.",
+        "Dieser MCP-Server wird gerade installiert oder aktualisiert. Versuch es gleich noch einmal.",
+    ),
     // Control centre › MCP servers, and the assistant's Tools that moved there (MA.7, #302)
     ("Built-in tools", "Eingebaute Werkzeuge"),
     (

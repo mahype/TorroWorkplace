@@ -26,9 +26,9 @@ pub mod store;
 #[allow(dead_code, reason = "`Supervisor::changes` waits for a live status in the control centre (task MA.8)")]
 pub mod supervisor;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use torro_core::i18n::{tr, trf};
 use torro_ipc::Response;
@@ -42,7 +42,7 @@ use torro_ipc::extensions::{
 use self::catalog::CatalogError;
 use self::prereq::Roots;
 use self::store::{SecretStore, Store, StoreError, StoredExtension};
-use self::supervisor::{Launch, Purpose, Supervisor, SupervisorError, Timing};
+use self::supervisor::{Health, Launch, Purpose, Supervisor, SupervisorError, Timing};
 use crate::pim::Reach;
 
 /// The core's MCP servers. [`Extensions::system`] looks for programs where the service does and keeps the
@@ -59,8 +59,13 @@ pub struct Extensions {
     store: Option<Store>,
     /// Where their secrets are: the keychain, a map in tests.
     secrets: Arc<dyn SecretStore>,
-    /// Held while the file is read, changed and written, so two changes never write over each other.
+    /// Held while the file is read, changed and written, so two changes never write over each other. Never
+    /// held over a server's start (installing and updating wait up to 180 seconds for it), so the changes of
+    /// others go on meanwhile.
     changing: Arc<tokio::sync::Mutex<()>>,
+    /// The ids an install or update is under way for ([`Extensions::claim`]): one at a time per id, since the
+    /// start runs without `changing`.
+    under_way: Arc<Mutex<HashSet<String>>>,
 }
 
 impl fmt::Debug for Extensions {
@@ -82,6 +87,7 @@ impl Extensions {
             store,
             secrets: Arc::new(store::SystemSecrets),
             changing: Arc::default(),
+            under_way: Arc::default(),
         }
     }
 
@@ -90,7 +96,14 @@ impl Extensions {
     /// [`Extensions::with_store`].
     pub fn with_roots(roots: Roots) -> Extensions {
         let supervisor = Arc::new(Supervisor::new(roots.clone(), Default::default(), Timing::default()));
-        Extensions { roots, supervisor, store: None, secrets: Arc::new(store::SystemSecrets), changing: Arc::default() }
+        Extensions {
+            roots,
+            supervisor,
+            store: None,
+            secrets: Arc::new(store::SystemSecrets),
+            changing: Arc::default(),
+            under_way: Arc::default(),
+        }
     }
 
     /// These servers kept in `store`, with their secrets in `secrets`: for tests, a temporary folder and a map.
@@ -275,8 +288,10 @@ impl Extensions {
     /// an unknown catalog entry, `unsupported` with what is missing for one whose programs are not on this
     /// computer, `conflict` for an id in use, `error` for an invalid id or name, a setting [`env::check_spec`]
     /// refuses and a server that does not start or speak MCP; then nothing is kept, also when storing its
-    /// secrets or the file fails after the start (its folder and secrets go again). Clients' levels for the id
-    /// are the caller's (`Core::install_extension`), before this.
+    /// secrets or the file fails after the start (its folder and secrets go again). `conflict` too while
+    /// another install of the same id is under way. The file is not locked during the start, only before and
+    /// after it, so other servers can be changed meanwhile. Clients' levels for the id are the caller's
+    /// (`Core::install_extension`), before this.
     pub async fn install(&self, from: InstallFrom) -> Response {
         let store = match self.writable() {
             Ok(store) => store,
@@ -313,17 +328,18 @@ impl Extensions {
         if let Err(err) = env::check_spec(&spec) {
             return error("error", err.to_string());
         }
-        let _changing = self.changing.lock().await;
-        let mut all = match self.load() {
-            Ok(all) => all,
-            Err(err) => return store_error(&err),
-        };
-        if all.iter().any(|stored| stored.id == id) {
-            return error("conflict", trf("An MCP server with the id “{id}” is installed already.", &[("id", &id)]));
-        }
-        let work_dir = match store.work_dir(&id) {
-            Ok(dir) => dir,
-            Err(err) => return store_error(&err),
+        let Some(_claim) = self.claim(&id) else { return under_way() };
+        let work_dir = {
+            let _changing = self.changing.lock().await;
+            match self.load() {
+                Ok(all) if all.iter().any(|stored| stored.id == id) => return in_use(&id),
+                Ok(_) => {}
+                Err(err) => return store_error(&err),
+            }
+            match store.work_dir(&id) {
+                Ok(dir) => dir,
+                Err(err) => return store_error(&err),
+            }
         };
         // The secrets as given go to this start only; the keychain gets them once the server started.
         let launch = Launch { id: id.clone(), server: store::stored_form(&spec), secrets: given(&spec), work_dir };
@@ -340,6 +356,19 @@ impl Extensions {
         };
         // Stored switched off: it runs again once a person allowed its tools and something calls it.
         self.supervisor.stop(&id).await;
+        let _changing = self.changing.lock().await;
+        // Read again: the file may have changed during the start.
+        let mut all = match self.load() {
+            Ok(all) => all,
+            Err(err) => {
+                self.undo_install(store, &id, &store::stored_form(&spec)).await;
+                return store_error(&err);
+            }
+        };
+        if all.iter().any(|stored| stored.id == id) {
+            // Not by an install here (the claim), so put in the file from outside: its folder is its own now.
+            return in_use(&id);
+        }
         let server = match self.save_secrets(&id, None, &spec).await {
             Ok(server) => server,
             Err(err) => {
@@ -413,18 +442,23 @@ impl Extensions {
     /// [`store::save_secrets`] with the old spec: a [`Value::Stored`] keeps its secret only for the same
     /// command and arguments or origin; a catalog server's program counts as the same, since the catalog
     /// moved it to its new version ([`as_catalog_moved`]). `not-found` for an unknown id,
-    /// `unsupported` when the catalog's programs are missing, `error` as for installing; then nothing changes.
+    /// `unsupported` when the catalog's programs are missing, `error` as for installing; then nothing changes,
+    /// and a crashed server stays crashed ([`Supervisor::health`]). The file is not locked during the start:
+    /// `conflict` when the server changed meanwhile (switched off, allowed, removed: a switch-off or removal
+    /// breaks the start off) and while another update of it is under way; then nothing changes either.
     pub async fn update(&self, id: &str, server: Option<ServerSpec>) -> Response {
         let store = match self.writable() {
             Ok(store) => store,
             Err(refused) => return refused,
         };
-        let _changing = self.changing.lock().await;
-        let (mut all, index) = match self.load_with(id) {
-            Ok(found) => found,
-            Err(refused) => return refused,
+        let Some(_claim) = self.claim(id) else { return under_way() };
+        let old = {
+            let _changing = self.changing.lock().await;
+            match self.find(id) {
+                Ok(old) => old,
+                Err(refused) => return refused,
+            }
         };
-        let old = all[index].clone();
         let (source, spec, moved) = match (&old.source, server) {
             (Source::Catalog { entry, .. }, None) => {
                 let entry = match catalog_entry(entry) {
@@ -464,24 +498,70 @@ impl Extensions {
         };
         secrets.extend(given(&spec));
         let launch = Launch { id: id.to_string(), server: store::stored_form(&spec), secrets, work_dir };
+        // Forgotten for the trial start (a crashed server is updated to mend it), put back when it fails.
+        let health = self.supervisor.health(id);
         self.supervisor.reset(id);
         let reported = match self.supervisor.tools(&launch, Purpose::Install).await {
             Ok(reported) => reported,
-            Err(err) => return error("error", err.to_string()),
+            Err(err) => {
+                self.undo_update(&launch, health).await;
+                return match err {
+                    SupervisorError::Stopped => changed_meanwhile(),
+                    err => error("error", err.to_string()),
+                };
+            }
+        };
+        let _changing = self.changing.lock().await;
+        // Read again: a person may have switched it off, allowed its tools or removed it during the start.
+        let (mut all, index) = match self.load_with(id) {
+            Ok((all, index)) if all[index] == old => (all, index),
+            Ok((all, index)) => {
+                if !all[index].enabled {
+                    self.supervisor.stop(id).await;
+                }
+                self.undo_update(&launch, health).await;
+                return changed_meanwhile();
+            }
+            Err(refused) => {
+                self.undo_update(&launch, health).await;
+                return match refused {
+                    Response::Error { code, .. } if code == "not-found" => changed_meanwhile(),
+                    other => other,
+                };
+            }
         };
         if !old.enabled {
             self.supervisor.stop(id).await;
         }
         let server = match self.save_secrets(id, Some(&moved), &spec).await {
             Ok(server) => server,
-            Err(err) => return store_error(&err),
+            Err(err) => {
+                self.undo_update(&launch, health).await;
+                return store_error(&err);
+            }
         };
         let updated = StoredExtension { source, server, reported, ..old };
         all[index] = updated.clone();
         if let Err(err) = self.save(&all) {
+            self.undo_update(&launch, health).await;
             return store_error(&err);
         }
         self.one(updated, Reach::Suite).await
+    }
+
+    /// What a failed update leaves behind, taken away again: the run of its trial start (`launch`) ends, and
+    /// the server's failures and whether it is crashed or stopped go back to `health`, taken before the
+    /// update's reset; a stop meanwhile stays ([`Supervisor::restore`]).
+    async fn undo_update(&self, launch: &Launch, health: Health) {
+        self.supervisor.end(launch).await;
+        self.supervisor.restore(&launch.id, health);
+    }
+
+    /// Claims `id` for an install or update; `None` while another one is under way for it. The id is free
+    /// again when the claim is dropped, also when the request is dropped before it ends.
+    fn claim(&self, id: &str) -> Option<Claim> {
+        let mut under_way = self.under_way.lock().unwrap_or_else(PoisonError::into_inner);
+        under_way.insert(id.to_string()).then(|| Claim { under_way: Arc::clone(&self.under_way), id: id.to_string() })
     }
 
     /// `extensions.set_secret` (the app key only): stores `value` as the secret `name` of the server `id` in
@@ -768,6 +848,33 @@ fn as_catalog_moved(old: &ServerSpec, new: &ServerSpec) -> ServerSpec {
         }
         _ => old.clone(),
     }
+}
+
+/// An install or update of one server under way ([`Extensions::claim`]).
+struct Claim {
+    under_way: Arc<Mutex<HashSet<String>>>,
+    id: String,
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.under_way.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+    }
+}
+
+/// `conflict` for an id that is installed already.
+fn in_use(id: &str) -> Response {
+    error("conflict", trf("An MCP server with the id “{id}” is installed already.", &[("id", &id)]))
+}
+
+/// `conflict` while another install or update of the same server is under way.
+fn under_way() -> Response {
+    error("conflict", tr("This MCP server is being installed or updated. Try again in a moment.").into())
+}
+
+/// `conflict` for an update whose server a person changed or removed during its start.
+fn changed_meanwhile() -> Response {
+    error("conflict", tr("This MCP server changed while it was being updated. Look at it and try again.").into())
 }
 
 /// Whether `reach` sees the server `id` at all: the app key every one, a client only one it has a level for.
@@ -1342,6 +1449,90 @@ mod tests {
             assert_eq!(updated.secrets, vec![SecretInfo { name: "FIXTURE_VALUE".into(), stored: true }]);
             let stored = secrets.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             assert_eq!(stored.get("ext:fixture:FIXTURE_VALUE").map(String::as_str), Some("second"));
+        }
+
+        /// A program that never answers `initialize`: installing or updating to it waits for the start.
+        fn silent() -> ServerSpec {
+            ServerSpec::Stdio { command: "/bin/sleep".into(), args: vec!["30".into()], env: BTreeMap::new() }
+        }
+
+        /// Whether the server `id` is starting within ten seconds.
+        async fn starting(extensions: &Extensions, id: &str) -> bool {
+            for _ in 0..500 {
+                if extensions.supervisor.status(id) == Status::Starting {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            false
+        }
+
+        /// Review of #302: the file is not locked during the start of an install (up to 180 seconds), so
+        /// switching another server off meanwhile answers at once.
+        #[tokio::test]
+        async fn another_server_can_be_switched_off_during_a_slow_install() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            installed(&extensions, &secrets, "fixture", &[("echo", Access::Read)]);
+            let slow = InstallFrom::Custom { id: "slow".into(), name: "Slow".into(), server: silent() };
+            let install = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.install(slow).await }
+            });
+            assert!(starting(&extensions, "slow").await, "the install starts it");
+            let switched = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                extensions.set_enabled("fixture", false, Reach::Suite),
+            )
+            .await
+            .expect("answered at once");
+            assert!(!info(switched).enabled);
+            let again = InstallFrom::Custom { id: "slow".into(), name: "Slow".into(), server: silent() };
+            assert_eq!(code(&extensions.install(again).await), "conflict", "one install of an id at a time");
+            install.abort();
+            assert!(install.await.is_err(), "aborted");
+            assert_eq!(extensions.supervisor.status("slow"), Status::Stopped);
+        }
+
+        /// Review of #302: switching a server off during its own update breaks the update's start off at once;
+        /// the update is `conflict` and changes nothing.
+        #[tokio::test]
+        async fn switching_a_server_off_during_its_update_breaks_the_update_off() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            let before = installed(&extensions, &secrets, "fixture", &[("echo", Access::Read)]);
+            let update = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.update("fixture", Some(silent())).await }
+            });
+            assert!(starting(&extensions, "fixture").await, "the update starts it");
+            let wait = std::time::Duration::from_secs(2);
+            let switched = tokio::time::timeout(wait, extensions.set_enabled("fixture", false, Reach::Suite)).await;
+            assert!(!info(switched.expect("answered at once")).enabled);
+            let updated = tokio::time::timeout(wait, update).await.expect("broken off").expect("joined");
+            assert_eq!(code(&updated), "conflict");
+            assert_eq!(stored_all(&extensions), vec![StoredExtension { enabled: false, ..before }], "unchanged");
+            assert_eq!(extensions.supervisor.status("fixture"), Status::Stopped);
+        }
+
+        /// Review of #302: an update whose trial start fails leaves a crashed server crashed; one that works
+        /// mends it.
+        #[tokio::test]
+        async fn a_failed_update_leaves_a_crashed_server_crashed() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            installed(&extensions, &secrets, "fixture", &[("echo", Access::Read), ("crash", Access::Read)]);
+            for _ in 0..3 {
+                assert_eq!(code(&extensions.call("fixture", "crash", Default::default()).await), "offline");
+            }
+            let crashed = Status::Crashed { reason: torro_ipc::extensions::CrashReason::Exited };
+            assert_eq!(extensions.supervisor.status("fixture"), crashed);
+            let broken =
+                ServerSpec::Stdio { command: "/nonexistent/server".into(), args: vec![], env: BTreeMap::new() };
+            assert_eq!(code(&extensions.update("fixture", Some(broken)).await), "error");
+            assert_eq!(extensions.supervisor.status("fixture"), crashed, "still crashed");
+            let mended = info(extensions.update("fixture", Some(fixture_spec(Value::Stored { secret: true }))).await);
+            assert_ne!(mended.status, crashed);
         }
 
         /// A catalog entry installs only with its programs: `unsupported` with what is missing, then with a

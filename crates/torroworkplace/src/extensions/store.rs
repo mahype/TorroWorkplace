@@ -309,7 +309,7 @@ pub fn stored_form(spec: &ServerSpec) -> ServerSpec {
 }
 
 /// `spec` for whom may see that a server is there but not how it is set up (a key that is not the app key):
-/// the command stays, each argument becomes [`REDACTED`], the address keeps only its origin
+/// the command stays, but of a path only its last part ([`redacted_command`]), each argument becomes [`REDACTED`], the address keeps only its origin
 /// (`https://host:port`, followed by `/…` when it had more), and the value of every variable or header
 /// becomes [`REDACTED`] (secrets stay [`Value::Stored`]). The names of variables and headers stay.
 pub fn redacted(spec: &ServerSpec) -> ServerSpec {
@@ -320,9 +320,20 @@ pub fn redacted(spec: &ServerSpec) -> ServerSpec {
     });
     match hidden {
         ServerSpec::Stdio { command, args, env } => {
-            ServerSpec::Stdio { command, args: args.iter().map(|_| REDACTED.to_string()).collect(), env }
+            let args = args.iter().map(|_| REDACTED.to_string()).collect();
+            ServerSpec::Stdio { command: redacted_command(&command), args, env }
         }
         ServerSpec::Http { url, headers } => ServerSpec::Http { url: redacted_url(&url), headers },
+    }
+}
+
+/// A command as [`redacted`] shows it: a name (`npx`) as it is, a path only by its last part after
+/// [`REDACTED`] (`…/server`), since the folders before it may name the person's home and user name.
+fn redacted_command(command: &str) -> String {
+    match command.rsplit_once(['/', '\\']) {
+        Some((_, "")) => REDACTED.to_string(),
+        Some((_, name)) => format!("{REDACTED}/{name}"),
+        None => command.to_string(),
     }
 }
 
@@ -808,6 +819,17 @@ mod tests {
         assert_eq!(headers["Authorization"], plain(REDACTED));
         assert_eq!(headers["X-Team"], plain(REDACTED));
         let bare = redacted(&remote("http://localhost:8080", plain("x")));
+        let program = |command: &str| ServerSpec::Stdio { command: command.into(), args: vec![], env: BTreeMap::new() };
+        for (command, shown) in [
+            ("/Users/anna/.local/bin/server", format!("{REDACTED}/server")),
+            ("C:\\Users\\anna\\server.exe", format!("{REDACTED}/server.exe")),
+            ("./server", format!("{REDACTED}/server")),
+            ("/opt/servers/", REDACTED.to_string()),
+            ("npx", "npx".to_string()),
+        ] {
+            let ServerSpec::Stdio { command, .. } = redacted(&program(command)) else { panic!("stdio") };
+            assert_eq!(command, shown, "no folders of a path");
+        }
         assert!(matches!(bare, ServerSpec::Http { url, .. } if url == "http://localhost:8080"));
         assert!(matches!(redacted(&remote("::", plain("x"))), ServerSpec::Http { url, .. } if url == REDACTED));
     }
