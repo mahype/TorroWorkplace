@@ -3116,9 +3116,9 @@ static SET_ITEM_DONE: Command = Command {
                   Talk conversation is marked read up to its newest known message and its chat notifications are \
                   deleted; ntfy is not told. `done: false`, snoozing, hiding and muting \
                   never reach the source. Approvals and account problems (the source `suite`) are the person's \
-                  and `not-found` for every key. To archive a mail as the app does, use mail_move_messages with \
-                  `{\"role\": \"archive\"}` and then mark its entry done here: mail_move_messages alone closes \
-                  it only once no unread mail of the conversation is left in the inbox.",
+                  and `not-found` for every key. To archive a mail, use mail_move_messages with `{\"role\": \"archive\"}`; \
+                  that closes its entry once no unread mail of the conversation is left in the inbox. Archiving \
+                  from the entry itself, the app then also marks the entry done here.",
 };
 
 static SNOOZE_ITEM: Command = Command {
