@@ -847,6 +847,20 @@ fn refuse_unknown_arguments(tool: &str, arguments: &JsonObject) -> Result<(), To
 pub fn result_of(response: Response) -> CallToolResult {
     let shown = match response {
         Response::ToolResult { output } => return server_result(output),
+        // `approvals_approval_status` after the wait of the call (APPROVAL_WAIT) was over: a server's answer as
+        // the call would have given it, behind its note; every other answer stays in the approval.
+        Response::Approval { approval: ApprovalInfo { state: ApprovalState::Done { response }, .. } }
+            if matches!(*response, Response::ToolResult { .. }) =>
+        {
+            return match *response {
+                Response::ToolResult { output } => server_result(output),
+                other => structured_result(other),
+            };
+        }
+        Response::Approvals { mut approvals } => {
+            approvals.iter_mut().for_each(left_out_server_answer);
+            return structured_result(Response::Approvals { approvals });
+        }
         Response::Extensions { mut extensions } => {
             extensions.iter_mut().for_each(|extension| extension.tools.iter_mut().for_each(shown_tool));
             Response::Extensions { extensions }
@@ -912,6 +926,23 @@ fn server_result(output: ToolResult) -> CallToolResult {
     match output.is_error {
         true => CallToolResult::error(content),
         false => CallToolResult::success(content),
+    }
+}
+
+/// A server tool's answer in `approvals_list_approvals` ([`result_of`]): left out, with where to read it. In
+/// the list it would be structured JSON without [`SERVER_NOTE`], its pictures as Base64.
+fn left_out_server_answer(approval: &mut ApprovalInfo) {
+    if let ApprovalState::Done { response } = &mut approval.state
+        && matches!(**response, Response::ToolResult { .. })
+    {
+        **response = Response::Error {
+            code: "left-out".to_string(),
+            message: format!(
+                "the answer of an MCP server outside Torro Workplace; read it with approvals_approval_status and id \
+                 {:?}",
+                approval.id
+            ),
+        };
     }
 }
 
@@ -1736,6 +1767,44 @@ mod tests {
 
         assert!(INSTRUCTIONS.contains("ext_<server>_<tool>") && INSTRUCTIONS.contains("next session"));
         assert!(INSTRUCTIONS.contains("extensions_list_extensions") && INSTRUCTIONS.contains("untrusted data"));
+    }
+
+    /// PR review of #302: a server's answer read after the wait (`approvals_approval_status`) keeps its note;
+    /// in `approvals_list_approvals` it is left out.
+    #[test]
+    fn server_answers_after_an_approval_keep_their_note() {
+        let output = ToolResult {
+            content: vec![Content::Image { data: "QUJD".into(), mime_type: "image/png".into() }],
+            is_error: false,
+            untrusted: true,
+        };
+        let done = |response: Response| {
+            let at = DateTime::<Utc>::from_timestamp(0, 0).expect("the epoch");
+            ApprovalInfo {
+                id: "9c1f0a7e3b2d4c58".into(),
+                client: "a1b2c3d4".into(),
+                client_name: "Claude Code".into(),
+                command: "extensions.call_tool".into(),
+                summary: "Use \"get_current_time\" of Time".into(),
+                details: Vec::new(),
+                created: at,
+                expires: at,
+                decided: Some(at),
+                state: ApprovalState::Done { response: Box::new(response) },
+            }
+        };
+        let status = result_of(Response::Approval { approval: done(Response::ToolResult { output: output.clone() }) });
+        assert!(status.content[0].as_text().is_some_and(|text| text.text == SERVER_NOTE), "{status:?}");
+        assert!(status.structured_content.is_none());
+
+        let other = done(Response::Ok);
+        let listed =
+            result_of(Response::Approvals { approvals: vec![done(Response::ToolResult { output }), other.clone()] });
+        let listed = listed.structured_content.expect("the approvals");
+        let left_out = &listed["approvals"][0]["response"];
+        assert_eq!(left_out["code"], json!("left-out"), "{listed}");
+        assert!(!listed.to_string().contains("QUJD"));
+        assert_eq!(listed["approvals"][1], serde_json::to_value(&other).expect("json"), "other answers as before");
     }
 
     /// Review of MA.1: an agent may only switch a server off, so the tool takes only `enabled: false`.
