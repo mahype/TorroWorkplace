@@ -77,6 +77,7 @@ pub fn status(state: &State, data: &Data) -> Option<String> {
             let n = data.accounts.iter().filter(|account| account.kind == "ai").count() + state.ai_connected.len();
             Some(if n == 1 { tr("1 account").to_string() } else { trf("{n} accounts", &[("n", &n)]) })
         }
+        Step::Web if super::web_waits(state, data) => Some(tr("Saving…").to_string()),
         Step::Web => Some(match providers_on(state, data).len() {
             0 => tr("Web search is off").to_string(),
             1 => tr("1 provider on").to_string(),
@@ -103,6 +104,8 @@ pub fn primary(state: &State, data: &Data) -> (&'static str, bool) {
             };
             (tr("Connect"), ready)
         }
+        // A switch waits for the core, and "Continue" would give the assistant `web` by the core's list.
+        Step::Web if super::web_waits(state, data) => (tr("Continue"), false),
         Step::Done => (tr("Finish"), true),
         _ => (tr("Continue"), true),
     }

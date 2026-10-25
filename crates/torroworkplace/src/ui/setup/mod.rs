@@ -291,7 +291,8 @@ impl State {
         }
     }
 
-    /// A sign-in runs; the shell reloads more often, so the end is seen soon.
+    /// A sign-in runs, or a provider's switch waits for the core's list; the shell reloads more often, so the end
+    /// is seen soon.
     pub fn busy(&self) -> bool {
         self.nextcloud.running()
             || self.github.checking()
@@ -300,6 +301,7 @@ impl State {
             || self.ai_searching
             || self.ai_connecting.is_some()
             || web::checking(&self.web)
+            || !self.switched.is_empty()
     }
 
     /// The add-account dialog lies over the setup; keys and the footer belong to it.
@@ -517,7 +519,9 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
         Message::Next if state.step == Step::Nextcloud && state.nextcloud.running() => stay(Action::None),
         // On the calendar and tasks steps the primary button sends the open form.
         Message::Next if state.in_form() => stay(submit_form(state)),
-        // Leaving the web step forward gives the assistant its rights for `web`, if ticked; "Skip" does not.
+        // Leaving the web step forward gives the assistant its rights for `web`, if ticked; "Skip" does not. While
+        // that hangs on a switch the core has not confirmed, the click waits ([`web_waits`]).
+        Message::Next if state.step == Step::Web && web_waits(state, data) => stay(Action::None),
         Message::Next if state.step == Step::Web => {
             let grant = grant_web(state, data);
             state.skipped.remove(&Step::Web);
@@ -744,6 +748,18 @@ fn grant_web(state: &mut State, data: &Data) -> Action {
     }
     state.web_granted = true;
     Action::Send(Request::UpdateClient { id: client.id.clone(), rights })
+}
+
+/// Whether "Continue" on the web step waits for the core: a switch of this setup is not in the core's list yet
+/// ([`State::switched`]) and "Continue" would give the assistant `web` – ticked, not given yet, and the assistant's
+/// client there without it. "Continue" goes by the core's list ([`grant_web`]), so a click before the reload would
+/// pass the step without the right; the button waits instead, and the shell reloads sooner ([`State::busy`]). A
+/// refusal ends the wait too ([`answered`]).
+pub(super) fn web_waits(state: &State, data: &Data) -> bool {
+    let grants = state.web_allowed
+        && !state.web_granted
+        && assistant_client(data).is_some_and(|client| with_web(&client.rights) != client.rights);
+    grants && !state.switched.is_empty()
 }
 
 /// `rights` with at least read access in the area `tools` and the tool `web` in its selection; everything else
@@ -1593,11 +1609,24 @@ mod tests {
         let second =
             requests(update(&mut setup, Message::Web(web::Message::Switch(SearchProviderId::Wikipedia, true)), &data));
         assert_eq!(second, vec![web::switch_request(SearchProviderId::Wikipedia, true)]);
-        assert_eq!(pages::status(&setup, &data), Some(trf("{n} providers on", &[("n", &2)])));
+        assert_eq!(pages::providers_on(&setup, &data), ["DuckDuckGo", "Wikipedia"], "shown at once");
+        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Saving…")), "until the core lists them");
+        let both = with_both(&data);
+        observe(&mut setup, &both);
+        assert_eq!(pages::status(&setup, &both), Some(trf("{n} providers on", &[("n", &2)])));
         let mut on = data.clone();
         on.settings.tools.set_on(ToolId::Web, true);
         let mut again = state(Step::Web);
         assert_eq!(requests(update(&mut again, duckduckgo_on(), &on)).len(), 1, "the tool is on already");
+    }
+
+    /// `data` as the core lists it once DuckDuckGo's and Wikipedia's switches are stored.
+    fn with_both(data: &Data) -> Data {
+        let mut stored = with_duckduckgo(data);
+        for info in &mut stored.search_providers {
+            info.enabled |= info.id == SearchProviderId::Wikipedia;
+        }
+        stored
     }
 
     /// `data` as the core lists it once DuckDuckGo's switch is stored.
@@ -1668,10 +1697,11 @@ mod tests {
         assert!(!duckduckgo(&setup, &data), "and the next reload does not bring it back");
         assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "no provider on: nothing given");
 
-        // Shown but not yet stored: "Continue" waits for the core's word.
+        // Shown but not yet stored: "Continue" waits for the core's word ([`continue_waits_for_the_cores_word`]).
         let mut early = state(Step::Web);
         update(&mut early, duckduckgo_on(), &data);
         assert!(requests(update(&mut early, Message::Next, &data)).is_empty());
+        assert_eq!(early.step, Step::Web, "the click waits, it does not pass the step");
 
         // Stored: the core's list carries it, the overlay is done.
         let stored = with_duckduckgo(&data);
@@ -1680,6 +1710,37 @@ mod tests {
         observe(&mut setup, &stored);
         assert!(setup.switched.is_empty() && setup.providers.is_none(), "confirmed");
         assert!(duckduckgo(&setup, &stored));
+    }
+
+    /// Found in the second review of #305: a click on "Continue" before the core confirmed a switch is not lost.
+    /// While a switch waits and "Continue" would give the assistant `web`, the button waits (pressed, it stays on
+    /// the step and sends nothing); once the core lists the switch, "Continue" gives `web` and goes on. Unticked
+    /// nothing hangs on the core's word, so the button goes on at once.
+    #[test]
+    fn continue_waits_for_the_cores_word() {
+        let data = data();
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        assert_eq!(pages::primary(&setup, &data), (tr("Continue"), false), "waits for the core");
+        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Saving…")));
+        assert!(setup.busy(), "the shell reloads sooner");
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty());
+        assert_eq!(setup.step, Step::Web, "Enter does not pass the waiting button by");
+
+        let stored = with_duckduckgo(&data);
+        observe(&mut setup, &stored);
+        assert_eq!(pages::primary(&setup, &stored), (tr("Continue"), true), "confirmed");
+        assert!(!setup.busy());
+        let sent = requests(update(&mut setup, Message::Next, &stored));
+        assert!(matches!(sent.as_slice(), [Request::UpdateClient { .. }]), "{sent:?}");
+        assert_eq!(setup.step, Step::Done);
+
+        let mut unticked = state(Step::Web);
+        update(&mut unticked, duckduckgo_on(), &data);
+        update(&mut unticked, Message::AllowWeb(false), &data);
+        assert_eq!(pages::primary(&unticked, &data), (tr("Continue"), true), "nothing to wait for");
+        update(&mut unticked, Message::Next, &data);
+        assert_eq!(unticked.step, Step::Done);
     }
 
     /// Found in the review of #305: while SearXNG's address is checked, the refusal of another request is not
