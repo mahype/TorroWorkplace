@@ -187,7 +187,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -525,6 +525,24 @@ const SCHEMA_V14: &str = "CREATE TABLE category_clear_jobs (
 );
 CREATE INDEX category_clear_jobs_latest ON category_clear_jobs (updated_at DESC);";
 
+/// From schema version 14 to 15 (task E18.1, "Hidden" in the mail window): what keeps mail of the
+/// inbox folder out of "All" by its id ([`Inbox::mail_hidden`]).
+///
+/// - `items` gets `hidden`: `NULL` for an entry nothing hid, `''` for a conversation hidden without
+///   a rule ([`mute_by`] or [`hide_sender`] closing just this entry), else the id of the rule with
+///   a trait and the effect hide that closed it. Opening the entry again clears it
+///   ([`update_item`]); a rule's mark holds while the rule does.
+/// - `muted_mail` gets `rule`: the rule with a trait and the effect hide that kept this mail from
+///   the inbox ([`file_mail`], a mail without an entry muted in [`Inbox::handle_message`]); `NULL`
+///   for every other catch (a whole source, a sender or domain, a remote report). Such rows stay
+///   while their rule does ([`remove_old_stats`]).
+///
+/// Rows of version 14 are hidden by nothing but senders and domains, which are read from the rules.
+const SCHEMA_V15: &str = "
+ALTER TABLE items ADD COLUMN hidden TEXT;
+ALTER TABLE muted_mail ADD COLUMN rule TEXT;
+";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -784,6 +802,65 @@ impl Inbox {
         later.map_err(|failure| failure.to_string())
     }
 
+    /// What is hidden from the inbox folder of `accounts` (`mail:<address>`) at `now` (task
+    /// E18.1), for `mail.search_messages` with `hidden`, which reads only stores the caller reaches
+    /// and so asks only for accounts whose entries it sees (as for [`Inbox::mail_later`]):
+    ///
+    /// 1. the senders and domains of every hiding rule still active ([`rules::is_hiding`],
+    ///    [`rules::is_active`]) – they hold for every mail account, so they are checked against
+    ///    each message's sender when the store reads it, older mail and mail without an entry too;
+    /// 2. per account the messages of done entries hidden as this conversation (`items.hidden`
+    ///    empty);
+    /// 3. per account the messages of done entries a rule with a trait and the effect hide closed,
+    ///    and the mail such a rule kept from the inbox (`muted_mail.rule`), while that rule is kept
+    ///    and has not ended.
+    ///
+    /// The messages of open and snoozed entries are listed apart ([`MailHidden::open_of`]): they are
+    /// never hidden. A rule for a whole source, "Only Info" and "No popup" hide nothing. Nothing
+    /// is changed. `Err` holds the message for the log.
+    pub fn mail_hidden(&self, accounts: &[String], now: DateTime<Utc>) -> Result<MailHidden, String> {
+        let hidden = self.work(false, |db| {
+            let mut hidden = MailHidden { accounts: accounts.iter().cloned().collect(), ..MailHidden::default() };
+            if accounts.is_empty() {
+                return Ok(hidden);
+            }
+            let hiding = "instr(source, ?) = 1 AND effect = 'muted' AND sender <> '' AND facet = ''";
+            for rule in read_rules(db, &Scope::All, hiding, vec![text(ACCOUNT_PREFIX)])? {
+                if !rules::is_hiding(&rule) || !rules::is_active(&rule, now) {
+                    continue;
+                }
+                match (rule.sender, rule.domain) {
+                    (Some(sender), _) => hidden.senders.insert(sender),
+                    (None, Some(domain)) => hidden.domains.insert(domain),
+                    (None, None) => false,
+                };
+            }
+            let live = "SELECT id FROM rules WHERE until IS NULL OR until > ?1";
+            let by_id = format!(
+                "SELECT m.account, m.message FROM mail_messages m JOIN items i ON i.id = m.item
+                 WHERE i.state = 'done' AND (i.hidden = '' OR i.hidden IN ({live}))
+                 UNION SELECT account, message FROM muted_mail WHERE rule IN ({live})"
+            );
+            let open = "SELECT m.account, m.message FROM mail_messages m JOIN items i ON i.id = m.item
+                        WHERE i.state IN ('new', 'seen', 'snoozed')";
+            for (sql, into) in [(by_id.as_str(), &mut hidden.hidden), (open, &mut hidden.open)] {
+                let mut statement = db.prepare(sql)?;
+                let values: Vec<Value> = if sql == open { Vec::new() } else { vec![text(stamp(now))] };
+                let rows = statement.query_map(params_from_iter(values), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for row in rows {
+                    let (account, message) = row?;
+                    if accounts.contains(&account) {
+                        into.entry(account).or_default().insert(message);
+                    }
+                }
+            }
+            Ok(hidden)
+        });
+        hidden.map_err(|failure| failure.to_string())
+    }
+
     /// What `inbox.list_mute_options` or `inbox.mute_item` with the id of a mail message without
     /// an entry (issue #123) would refuse `client`, before anyone is asked to approve it; `None`
     /// when it may run. `stand_in` is the message as an entry would hold it
@@ -817,6 +894,12 @@ impl Inbox {
                 Request::MuteItem { scope, until, effect, .. } => {
                     let tx = db.transaction()?;
                     let muted = mute_by(&tx, stand_in, Muting { scope, until, effect }, client, now)?;
+                    // Task E18.1: hidden by a trait, this mail leaves "All" as well, while the rule
+                    // holds; there is no entry to mark, so the mail itself is noted.
+                    let hiding = muted.rule.as_ref().filter(|rule| effect == MuteEffect::Hide && hides_by_id(rule));
+                    if let Some(rule) = hiding {
+                        note_muted_mail(&tx, &stand_in.source.key(), &stand_in.id, Some(&rule.id), now)?;
+                    }
                     tx.commit()?;
                     Ok(Response::Muted(muted))
                 }
@@ -3100,6 +3183,11 @@ fn hide_sender(
         if hidden {
             rules::set_done(&mut entry, true, now);
             update_item(db, &entry)?;
+            // A sender or domain hides its mail by the rule itself (task E18.1); only the
+            // conversation is marked.
+            if rule.is_none() {
+                mark_hidden(db, &entry.id, None)?;
+            }
             count(db, &entry, Count::Muted, now)?;
             if let Some(rule) = &rule {
                 hit(db, rule, &entry.source)?;
@@ -3334,6 +3422,9 @@ fn mute_by(
         }
         let Some(change) = rules::mute_entry(&mut entry, effect, now) else { continue };
         update_item(db, &entry)?;
+        if change == MutedEntry::Done {
+            mark_hidden(db, &entry.id, rule.as_ref())?;
+        }
         count(db, &entry, Count::Muted, now)?;
         if let Some(rule) = &rule {
             hit(db, rule, &entry.source)?;
@@ -3397,6 +3488,51 @@ fn muting_rule(
         .pop()
         .ok_or_else(|| Failure::Invalid("the rule could not be kept".into()))?;
     Ok((rule, true))
+}
+
+/// Whether `rule` hides the mail it keeps away by its id (task E18.1, [`SCHEMA_V15`]): a rule with a
+/// trait and the effect hide – a list, bulk mail, a sender as a trait, a conversation for a while.
+/// Not one for a whole account (the trait `account`, like a muted source): that hides nothing from
+/// "All". Rules for a sender or domain without a trait hide by the address instead
+/// ([`Inbox::mail_hidden`]).
+fn hides_by_id(rule: &Rule) -> bool {
+    rule.effect == RuleEffect::Muted && rule.facet.as_ref().is_some_and(|facet| facet.key != FacetKey::Account)
+}
+
+/// Marks the entry `id`, just closed by hiding, as hidden from "All" (task E18.1, `items.hidden`):
+/// by `rule` when it hides by id ([`hides_by_id`]), as this conversation without a rule; a rule for
+/// a whole account marks nothing.
+fn mark_hidden(db: &Connection, id: &str, rule: Option<&Rule>) -> Result<(), Failure> {
+    let mark = match rule {
+        None => String::new(),
+        Some(rule) if hides_by_id(rule) => rule.id.clone(),
+        Some(_) => return Ok(()),
+    };
+    db.execute("UPDATE items SET hidden = ?2 WHERE id = ?1", params![id, mark])?;
+    Ok(())
+}
+
+/// Notes that a rule kept the mail `message` of `account` from the inbox at `now` (`muted_mail`),
+/// with `rule` when it hides it by its id (task E18.1); returns whether the mail is new there, so
+/// it is counted once. A row already there takes the rule, so a catch of before keeps it hidden.
+fn note_muted_mail(
+    db: &Connection,
+    account: &str,
+    message: &str,
+    rule: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<bool, Failure> {
+    let first = db.execute(
+        "INSERT OR IGNORE INTO muted_mail (account, message, at, rule) VALUES (?1, ?2, ?3, ?4)",
+        params![account, message, stamp(now), rule],
+    )? > 0;
+    if !first && let Some(rule) = rule {
+        db.execute(
+            "UPDATE muted_mail SET rule = ?3 WHERE account = ?1 AND message = ?2",
+            params![account, message, rule],
+        )?;
+    }
+    Ok(first)
 }
 
 /// Removes the rules that ended at `now` or before ([`Rule::until`]); returns how many.
@@ -3503,9 +3639,13 @@ fn update_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
     write_item(db, item)?;
     // An entry that is no longer done is no longer dismissed either (opened again by hand or by a
     // new report), so `inbox.list_items` with `dismissed` never hides an open entry, and the next
-    // done counts as what it is (issue #117).
+    // done counts as what it is (issue #117). Nor is its mail hidden any more (task E18.1): opened
+    // again, by Undo or by a new reply, the conversation is back in "All".
     if !matches!(item.state, State::Done { .. }) {
-        db.execute("UPDATE items SET dismissed = 0 WHERE id = ?1 AND dismissed = 1", params![item.id])?;
+        db.execute(
+            "UPDATE items SET dismissed = 0, hidden = NULL WHERE id = ?1 AND (dismissed = 1 OR hidden IS NOT NULL)",
+            params![item.id],
+        )?;
     }
     // Done or put off again, it is no longer back from "Later" (task E9.1).
     if matches!(item.state, State::Done { .. } | State::Snoozed { .. }) {
@@ -3673,6 +3813,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 14 {
         tx.execute_batch(SCHEMA_V14)?;
+    }
+    if version < 15 {
+        tx.execute_batch(SCHEMA_V15)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -4285,6 +4428,46 @@ impl MailLater {
     }
 }
 
+/// What is hidden from the inbox folder of some mail accounts now ([`Inbox::mail_hidden`], task
+/// E18.1), for `mail.search_messages` with `hidden`. The store applies it to mail of the inbox
+/// folder only (`crate::mail::store::Hiding`): a message is hidden when its sender is among
+/// [`senders`](Self::senders), its domain among [`domains`](Self::domains) or it is among
+/// [`hidden_of`](Self::hidden_of) – and never when it is among [`open_of`](Self::open_of). Only for
+/// the [`accounts`](Self::accounts) asked for ([`holds_for`](Self::holds_for)); for any other
+/// account nothing is hidden. Keyed by account (`mail:<address>`), then message (`m:…`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MailHidden {
+    /// The accounts this was read for: the only ones whose mail counts as hidden.
+    pub accounts: BTreeSet<String>,
+    /// Senders' addresses hidden by a rule ([`rules::sender_key`]: trimmed, small letters). A
+    /// hiding rule holds for every mail account.
+    pub senders: BTreeSet<String>,
+    /// Domains hidden by a rule ([`rules::domain_of`]), exactly.
+    pub domains: BTreeSet<String>,
+    /// The messages hidden by their id: of a conversation hidden, closed by a rule with a trait, or
+    /// kept from the inbox by one ([`SCHEMA_V15`]).
+    pub hidden: BTreeMap<String, BTreeSet<String>>,
+    /// The messages of open or snoozed entries, which are never hidden.
+    pub open: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl MailHidden {
+    /// Whether this says what is hidden in `account`: it was asked for.
+    pub fn holds_for(&self, account: &str) -> bool {
+        self.accounts.contains(account)
+    }
+
+    /// The messages of `account` hidden by their id (none for an account without).
+    pub fn hidden_of(&self, account: &str) -> Vec<String> {
+        self.hidden.get(account).map(|ids| ids.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// The messages of `account` that are never hidden: those of its open or snoozed entries.
+    pub fn open_of(&self, account: &str) -> Vec<String> {
+        self.open.get(account).map(|ids| ids.iter().cloned().collect()).unwrap_or_default()
+    }
+}
+
 /// What the fixed rules make of `mail` for the sender `sender` (task E12.2): the category of the
 /// first sorting rule that holds (task E15.3; they hold for **every** mail account, like a hidden
 /// sender, task E3.11), else what the headers and the folder say ([`rules::mail_category`]).
@@ -4462,11 +4645,10 @@ fn file_mail(
     let dropping = rules.iter().find(|rule| rules::drops(rule, sender.as_deref()));
     let muting = deciding_mute(&rules, &incoming, now);
     if let Some(rule) = dropping.or(muting.and_then(|(rule, effect)| (effect == MuteEffect::Hide).then_some(rule))) {
-        // Counted once per mail (task E8.8a), however often a catch-up offers it again.
-        let first = tx.execute(
-            "INSERT OR IGNORE INTO muted_mail (account, message, at) VALUES (?1, ?2, ?3)",
-            params![mail.account, mail.message, stamp(now)],
-        )? > 0;
+        // Counted once per mail (task E8.8a), however often a catch-up offers it again. A trait
+        // hidden keeps it from "All" too, while its rule holds (task E18.1).
+        let hiding = rules.iter().find(|rule| hides_by_id(rule) && rules::mutes(rule, &incoming, now));
+        let first = note_muted_mail(&tx, &mail.account, &mail.message, hiding.map(|rule| rule.id.as_str()), now)?;
         if first {
             count(&tx, &incoming, Count::Muted, now)?;
             hit(&tx, rule, &incoming.source)?;
@@ -4900,7 +5082,11 @@ fn remove_old_stats(db: &Connection, now: DateTime<Utc>) -> Result<(), Failure> 
     // Only today's notes keep an entry from counting twice (task E8.8b).
     db.execute("DELETE FROM opened_items WHERE day < ?1", params![today.to_string()])?;
     let mail = now - TimeDelta::days(i64::try_from(KEEP_TRAIT_DAYS).unwrap_or(i64::MAX));
-    db.execute("DELETE FROM muted_mail WHERE at < ?1", params![stamp(mail)])?;
+    // A mail kept from "All" by a rule stays noted while the rule does (task E18.1).
+    db.execute(
+        "DELETE FROM muted_mail WHERE at < ?1 AND (rule IS NULL OR rule NOT IN (SELECT id FROM rules))",
+        params![stamp(mail)],
+    )?;
     db.execute(
         "DELETE FROM stats WHERE day = '' AND instr(metric, ?1) = 1
          AND substr(metric, length(?1) + 1) NOT IN (SELECT id FROM rules)",
@@ -6837,7 +7023,8 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "DROP TABLE sort_rules; DROP TABLE custom_categories; DROP TABLE category_edits;
-                     DROP TABLE category_jobs; DROP TABLE category_clear_jobs; PRAGMA user_version = 10;",
+                     DROP TABLE category_jobs; DROP TABLE category_clear_jobs; ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
+                     PRAGMA user_version = 10;",
                 )?;
                 insert_rule(db, kept("b", None, Some("shop.example"), Category::Promotion, 2))?;
                 insert_rule(db, kept("a", Some("billing@shop.example"), None, Category::Invoice, 1))?;
@@ -6900,7 +7087,8 @@ pub(crate) mod tests {
                         "ALTER TABLE category_edits DROP COLUMN icon;
                          ALTER TABLE custom_categories DROP COLUMN icon;
                          DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
-                         PRAGMA user_version = 11;",
+                         ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
+                     PRAGMA user_version = 11;",
                     )?;
                     Ok(())
                 })
@@ -8019,6 +8207,7 @@ pub(crate) mod tests {
                     "DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
+                     ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
                      PRAGMA user_version = 8;",
                 )?;
                 Ok(())
@@ -8049,6 +8238,7 @@ pub(crate) mod tests {
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
+                     ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
                      PRAGMA user_version = 7;",
                 )?;
                 Ok(())
@@ -8196,6 +8386,114 @@ pub(crate) mod tests {
             State::Seen,
             "opening it again reads nothing"
         );
+    }
+
+    /// Task E18.1: what is hidden from "All" – a conversation (until it opens again), a sender or
+    /// domain by the rule, a trait hidden by the entries it closed and the mail it kept away (while
+    /// the rule is kept and has not ended) – and the mail of open entries apart.
+    #[test]
+    fn the_inbox_says_which_mail_is_hidden() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let accounts = [ANNA.to_string()];
+        let person = |message: &str, address: &str| mail(message, message, "Hello", address, false, at(8, 0));
+        let ids = |of: &MailHidden| of.hidden_of(ANNA);
+        let reopen = |id: &str| Request::SetItemDone { id: id.into(), done: false, dismissed: false };
+
+        // This conversation, by muting or by hiding: hidden until it opens again.
+        let talk = filed(&inbox, &person("m:1", "bob@example.org"), at(8, 1));
+        muted(inbox.handle(mute(&talk, MuteScope::Conversation, None, MuteEffect::Hide), None, at(8, 2)));
+        let other = filed(&inbox, &person("m:2", "carl@example.org"), at(8, 3));
+        hidden(inbox.handle(hide(&other, HideScope::Conversation), None, at(8, 4)));
+        filed(&inbox, &person("m:3", "dora@example.org"), at(8, 5));
+        let now = inbox.mail_hidden(&accounts, at(8, 6)).expect("read");
+        assert_eq!(ids(&now), ["m:1", "m:2"]);
+        assert_eq!(now.open_of(ANNA), ["m:3"]);
+        assert!(now.holds_for(ANNA) && now.senders.is_empty() && now.domains.is_empty());
+        item(inbox.handle(reopen(&talk), None, at(8, 7)));
+        let now = inbox.mail_hidden(&accounts, at(8, 8)).expect("read");
+        assert_eq!((ids(&now), now.open_of(ANNA)), (vec!["m:2".to_string()], vec!["m:1".into(), "m:3".into()]));
+
+        // A sender and a domain: by the rule, not by id.
+        let news = filed(&inbox, &person("m:4", "News@Shop.example"), at(8, 9));
+        hidden(inbox.handle(hide(&news, HideScope::Sender), None, at(8, 10)));
+        let deals = filed(&inbox, &person("m:5", "deals@other.example"), at(8, 11));
+        hidden(inbox.handle(hide(&deals, HideScope::Domain), None, at(8, 12)));
+        let now = inbox.mail_hidden(&accounts, at(8, 13)).expect("read");
+        assert_eq!(now.senders, ["news@shop.example".to_string()].into());
+        assert_eq!(now.domains, ["other.example".to_string()].into());
+        assert_eq!(ids(&now), ["m:2"], "no ids for a sender or domain");
+
+        // A list hidden: the entries it closed and the mail it keeps away, while the rule is kept.
+        let list =
+            |message: &str| NewMail { list: Some("weekly.shop.example".into()), ..person(message, "x@y.example") };
+        let first = filed(&inbox, &list("m:6"), at(9, 0));
+        let rule = muted(inbox.handle(mute(&first, by(FacetKey::List), None, MuteEffect::Hide), None, at(9, 1)))
+            .rule
+            .expect("a rule");
+        assert_eq!(inbox.file_mail(&list("m:7"), Notify::All, at(9, 2)), Ok(None), "kept away");
+        assert_eq!(ids(&inbox.mail_hidden(&accounts, at(9, 3)).expect("read")), ["m:2", "m:6", "m:7"]);
+        inbox.handle(Request::RemoveRule { id: rule.id }, None, at(9, 4));
+        assert_eq!(ids(&inbox.mail_hidden(&accounts, at(9, 5)).expect("read")), ["m:2"], "the rule is gone");
+
+        // A rule that ends: hidden until then.
+        let promo = filed(&inbox, &mail("m:8", "m:8", "Promo", "promo@z.example", true, at(8, 0)), at(9, 6));
+        muted(inbox.handle(mute(&promo, by(FacetKey::Bulk), Some(at(10, 0)), MuteEffect::Hide), None, at(9, 7)));
+        assert_eq!(ids(&inbox.mail_hidden(&accounts, at(9, 8)).expect("read")), ["m:2", "m:8"]);
+        assert_eq!(ids(&inbox.mail_hidden(&accounts, at(10, 0)).expect("read")), ["m:2"], "ended");
+
+        // Only for the accounts asked for.
+        let elsewhere = inbox.mail_hidden(&["mail:bob@example.org".into()], at(9, 9)).expect("read");
+        assert!(!elsewhere.holds_for(ANNA) && ids(&elsewhere).is_empty() && elsewhere.open_of(ANNA).is_empty());
+        assert_eq!(inbox.mail_hidden(&[], at(9, 9)), Ok(MailHidden::default()));
+    }
+
+    /// Task E18.1: muting a whole account – as a source or by its trait `account` – hides nothing
+    /// from "All", nor do "Only Info" and "No popup".
+    #[test]
+    fn muting_a_whole_account_or_info_hides_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let accounts = [ANNA.to_string()];
+        let person = |message: &str| mail(message, message, "Hello", "bob@example.org", false, at(8, 0));
+        let one = filed(&inbox, &person("m:1"), at(8, 1));
+        muted(inbox.handle(mute(&one, by(FacetKey::Account), None, MuteEffect::Hide), None, at(8, 2)));
+        assert_eq!(inbox.file_mail(&person("m:2"), Notify::All, at(8, 3)), Ok(None), "kept away");
+        let three = filed(&inbox, &NewMail { account: WORK.into(), ..person("m:3") }, at(8, 4));
+        muted(inbox.handle(mute(&three, by(FacetKey::Sender), None, MuteEffect::Info), None, at(8, 5)));
+        let source = Request::MuteSource { source: SourceRef::mail("anna@work.example.org"), muted: true };
+        inbox.handle(source, None, at(8, 6));
+        assert_eq!(
+            inbox.file_mail(&NewMail { account: WORK.into(), ..person("m:4") }, Notify::All, at(8, 7)),
+            Ok(None)
+        );
+        let now = inbox.mail_hidden(&[accounts[0].clone(), WORK.into()], at(8, 8)).expect("read");
+        assert!(now.hidden.is_empty() && now.senders.is_empty() && now.domains.is_empty(), "{now:?}");
+    }
+
+    /// Task E18.1: a file of schema 14 learns what hides mail by its id, and keeps its entries.
+    #[test]
+    fn a_file_of_schema_14_learns_what_is_hidden() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
+                     PRAGMA user_version = 14;",
+                )?;
+                Ok(())
+            })
+            .expect("back to schema 14");
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        assert!(item(get(&inbox, &id, None)).state.is_open());
+        muted(inbox.handle(mute(&id, MuteScope::Conversation, None, MuteEffect::Hide), None, at(9, 0)));
+        assert_eq!(inbox.mail_hidden(&[ANNA.to_string()], at(9, 1)).expect("read").hidden_of(ANNA), ["m:1"]);
+        let db = Connection::open(file_in(dir.path())).expect("opens");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     /// Task E9.1: "Later" for mail – what waits, what came back and when – and decision 8: new mail
@@ -9345,6 +9643,7 @@ pub(crate) mod tests {
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
+                     ALTER TABLE items DROP COLUMN hidden;
                      PRAGMA user_version = 5;",
                 )?;
                 Ok(())

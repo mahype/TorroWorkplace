@@ -260,6 +260,7 @@ impl InboxClient {
             order: asked(order),
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         match self.ask(request).await? {
@@ -289,6 +290,7 @@ impl InboxClient {
             order: asked(order).filter(|_| sort == MailSort::Date),
             sort: (sort != MailSort::default()).then_some(sort),
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         match self.ask(request).await? {
@@ -672,6 +674,7 @@ impl InboxClient {
             order: asked(order),
             sort: None,
             snoozed: None,
+            hidden: None,
             categories,
         };
         match self.ask(request).await? {

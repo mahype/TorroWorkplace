@@ -2378,9 +2378,22 @@ pub enum Request {
         /// puts messages that came back from it (their `back`) by the time
         /// they came back instead of their date (not with `sort: relevance`); `true` gives only the
         /// snoozed ones. Left out: every message, by date. Filtered before paging, so pages and
-        /// `cursor` hold; a cursor belongs to this field as well.
+        /// `cursor` hold; a cursor belongs to this field as well. Only for accounts whose inbox
+        /// entries the caller sees (read access to `inbox`, the account among `inbox_sources`);
+        /// for the others nothing counts as snoozed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snoozed: Option<bool>,
+        /// "Hidden" (task E18.1): `false` leaves out mail of the inbox folder the person hid – from
+        /// a sender or domain hidden with `inbox.hide_sender`, of a conversation hidden and its
+        /// entry still done, or kept away by a trait muted with the effect `hide` while that rule
+        /// holds; `true` gives only that mail. Mail of an open or snoozed entry and mail in any other
+        /// folder are never hidden; muting a whole account, "Info" and "No popup" hide nothing.
+        /// Left out: every message, as before. Filtered before paging, so pages and `cursor` hold; a
+        /// cursor belongs to this field as well. With `snoozed` both hold. Like `snoozed` only for
+        /// accounts whose inbox entries the caller sees; for the others nothing is hidden, and
+        /// `true` gives none of their mail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hidden: Option<bool>,
         /// Only mail of one of these categories (task E12.4, `docs/kategorien.md`); empty or left
         /// out: every message, with a category or without. A typed set, not a word in `query`: a
         /// group of the sidebar is up to seven categories. Filtered before paging, so pages and

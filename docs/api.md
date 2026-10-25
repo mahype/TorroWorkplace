@@ -489,6 +489,15 @@ gespeichert; die Antwort ist der Eintrag, der es wäre. Rechte wie bei `mute_ite
 `mail.search_messages` mit dem optionalen Feld `snoozed`: `false` lässt zurückgestellte Mails weg und stellt
 zurückgekommene nach dem Zeitpunkt ihrer Rückkehr ein, `true` liefert nur die zurückgestellten; gefiltert wird vor dem
 Blättern. Jede Mail einer Suche trägt `back`, wenn sie aus „Später“ zurückkam (verträglich, kein `v: 2`).
+Ebenso `hidden` (E18.1, „Hidden“ im Mail-Fenster): `false` lässt Mails des Posteingangsordners weg, die der Mensch
+ausgeblendet hat – von einem Absender oder einer Domain (`hide_sender`, geprüft beim Lesen gegen den Absender, also
+auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr Eintrag erledigt ist, oder durch ein
+Merkmal mit Wirkung `hide` ferngehalten, solange die Regel besteht –, `true` liefert nur sie. Mail eines offenen oder
+zurückgestellten Eintrags und Mail in einem anderen Ordner ist nie ausgeblendet; ein stummes Konto, „Only Info“ und
+„No popup“ blenden nichts aus. Beide Felder gelten zusammen und nur für Konten, deren Einträge der Schlüssel sieht
+(Leserecht in `inbox`, Konto in `inbox_sources`); sonst gilt nichts als zurückgestellt oder ausgeblendet. Archivieren
+wie in der App ist `mail.move_messages` mit Rolle `archive`; der Eintrag wird erledigt, sobald keine ungelesene Mail
+der Unterhaltung mehr im Posteingang liegt.
 `set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
 Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
 

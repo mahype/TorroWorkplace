@@ -719,6 +719,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         }
     }

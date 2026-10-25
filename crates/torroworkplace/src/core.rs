@@ -16777,6 +16777,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
@@ -16870,6 +16871,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories,
         };
         let messages = |answer: Response| -> Vec<torro_mail::MessageSummary> {
@@ -17040,6 +17042,7 @@ mod tests {
                 order: None,
                 sort: None,
                 snoozed: None,
+                hidden: None,
                 categories: Vec::new(),
             };
             let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
@@ -17138,6 +17141,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
@@ -17215,6 +17219,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed,
+            hidden: None,
             categories: Vec::new(),
         };
         let page = |response: Response| match response {
@@ -17336,6 +17341,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
@@ -17400,6 +17406,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
@@ -19630,6 +19637,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };

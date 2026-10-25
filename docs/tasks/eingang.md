@@ -4049,7 +4049,7 @@ Nicht parallel zu E17 (#300): E17.2 und E18.4 ändern `sidebar`, `nav_menu` und 
 `crates/torroinbox/src/app.rs`. Wer später kommt, führt mit dem anderen Stand zusammen.
 
 ### E18.1 Kern: `mail.search_messages` mit `hidden`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
   `crates/torroworkplace/src/mail/read.rs`, `crates/torroworkplace/src/mail/store.rs`, `crates/torro-ipc/src/lib.rs`,
   `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/mcp.rs` (nur Test), `docs/api.md`, `docs/api-reference.md`;
