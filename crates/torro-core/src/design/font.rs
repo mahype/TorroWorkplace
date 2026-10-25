@@ -6,6 +6,9 @@
 //! named; `LICENSE.txt` and `license` as soon as there are files; `regular` of the text font; the size
 //! adjustment within its range; the widest figure of `numbers` within [`super::DIGIT_MAX_EM`]. A
 //! missing weight is no rule: it is drawn in the nearest ([`super::Font::nearest`]).
+//!
+//! [`load_font`] also answers the ids of the computer's fonts ([`super::SYSTEM_ID`], `system:<family>`,
+//! issue #299) from a fresh [`SystemFonts::scan`]; [`list_fonts`] lists the folders only.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +18,10 @@ use serde::Deserialize;
 use super::files::{FontInfo, Kind, Root, has_license};
 use super::pack::{AboutFile, Listed, header, listing, open, parse};
 use super::rules::{self, SIZE_ADJUST_AUTO};
-use super::{About, DesignError, Face, Font, FontSet, Fonts, INTER_X_HEIGHT, Part, STANDARD_ID};
+use super::{
+    About, DesignError, Face, Font, FontKind, FontSet, Fonts, INTER_X_HEIGHT, Part, STANDARD_ID, SystemFonts,
+    is_system_id,
+};
 
 /// Every font: the standard first, then each folder under `dir` (the fonts folder, see
 /// [`super::font_dir`]) by name, valid or with its reasons. Hidden folders and names that are not
@@ -26,12 +32,18 @@ pub fn list_fonts(dir: &Path) -> Vec<Listed<FontSet>> {
 }
 
 /// The font `id` from the fonts folder `dir`, merged with the standard and checked.
-/// [`STANDARD_ID`] gives [`FontSet::standard`] without touching the disk.
+/// [`STANDARD_ID`] gives [`FontSet::standard`] without touching the disk; [`super::SYSTEM_ID`] and
+/// `system:<family>` are looked up in the fonts installed on the computer (issue #299, one fresh
+/// [`SystemFonts::scan`]), and one that isn't installed is [`DesignError::NotFound`], so the apps
+/// draw with the standard.
 ///
 /// `Err` holds every reason the font can't be used (at least one).
 pub fn load_font(dir: &Path, id: &str) -> Result<FontSet, Vec<DesignError>> {
     if id == STANDARD_ID {
         return Ok(FontSet::standard());
+    }
+    if is_system_id(id) {
+        return SystemFonts::scan().load(id);
     }
     read(dir, id, &mut About::default())
 }
@@ -45,6 +57,8 @@ struct FontSetFile {
     about: AboutFile,
     license: Option<String>,
     size_adjust: Option<f32>,
+    /// `"sans"`, `"serif"` or `"mono"`; another word fails in the third pass with its line.
+    kind: Option<FontKind>,
     fonts: Option<FontsFile>,
 }
 
@@ -72,7 +86,7 @@ fn known(path: &str, key: &str) -> Option<bool> {
     let value = |ok: bool| ok.then_some(false);
     match path {
         "" => match key {
-            "format" | "license" | "size_adjust" => Some(false),
+            "format" | "license" | "size_adjust" | "kind" => Some(false),
             "about" | "fonts" => Some(true),
             _ => None,
         },
@@ -98,7 +112,7 @@ fn read(dir: &Path, id: &str, about: &mut About) -> Result<FontSet, Vec<DesignEr
 
 /// The font `file` in the folder `root`, checked; every broken rule goes to `problems`.
 fn build(id: &str, about: About, root: &Root, file: FontSetFile, problems: &mut Vec<DesignError>) -> FontSet {
-    let FontSetFile { license, size_adjust, fonts, .. } = file;
+    let FontSetFile { license, size_adjust, kind, fonts, .. } = file;
     let standard = FontSet::standard();
     let mut infos = BTreeMap::new();
     let fonts = merge_fonts(root, fonts.unwrap_or_default(), &standard.fonts, &mut infos, problems);
@@ -119,12 +133,13 @@ fn build(id: &str, about: About, root: &Root, file: FontSetFile, problems: &mut 
         _ => files(&fonts.numbers).filter_map(|path| infos.get(path)?.widest_figure).reduce(f32::max),
     };
     problems.extend(rules::font(size_adjust, factor, &fonts.numbers.family, widest));
-    FontSet { id: id.to_string(), about, license: license.unwrap_or(standard.license), fonts, size_adjust: factor }
+    let license = license.unwrap_or(standard.license);
+    FontSet { id: id.to_string(), about, license, fonts, size_adjust: factor, kind }
 }
 
 /// The widest figure of the embedded Inter Tabular, in em (1328 of 2048 units), for the figures rule of
 /// a font that keeps the embedded figures.
-const BUILTIN_WIDEST_FIGURE: f32 = 1328.0 / 2048.0;
+pub(super) const BUILTIN_WIDEST_FIGURE: f32 = 1328.0 / 2048.0;
 
 /// The size adjustment from the x-height of `text`'s regular face (task L.19): Inter's divided by its
 /// own, held to [`SIZE_ADJUST_AUTO`]. 1 for the embedded Inter and for a face without an x-height.
@@ -381,6 +396,26 @@ mod tests {
             [DesignError::PathOutside { key: "fonts.text.regular".into(), path: "../x.ttf".into() }]
         );
         assert_eq!(problems(&dir, "gone"), [DesignError::NotFound { part: Part::Font, id: "gone".into() }]);
+    }
+
+    /// Issue #299: `kind` groups a font in the control centre; a word the format doesn't know is refused
+    /// with its line, and a font without it has none.
+    #[test]
+    fn the_kind_is_read_and_an_unknown_one_refused() {
+        let data = Data::new();
+        let toml = |kind: &str| format!("format = 1\n{kind}\n[about]\nname = \"K\"\nversion = \"1.0.0\"\n");
+        data.write(Part::Font, "serif", &toml("kind = \"serif\""));
+        data.write(Part::Font, "none", &toml(""));
+        data.write(Part::Font, "script", &toml("kind = \"script\""));
+        let dir = data.dir(Part::Font);
+        assert_eq!(load_font(&dir, "serif").map(|font| font.kind), Ok(Some(FontKind::Serif)));
+        assert_eq!(load_font(&dir, "none").map(|font| font.kind), Ok(None));
+        assert_eq!(FontSet::standard().kind, Some(FontKind::Sans));
+        assert!(
+            matches!(&problems(&dir, "script")[..], [DesignError::Syntax { line: Some(2), .. }]),
+            "{:?}",
+            problems(&dir, "script")
+        );
     }
 
     #[test]

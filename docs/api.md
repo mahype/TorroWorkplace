@@ -406,7 +406,19 @@ Mail-Darstellung um. Das Feld `colorScheme` der Designs entfällt
 (`[about] color_scheme` ist seit L.33 ein unbekannter Schlüssel: Farben gehören nie zu einem Design); kein `v: 2`, weil
 es optional war und bei jedem Design ohne Vorschlag fehlte. `density` und `darkOnly` sind neu und haben Vorgaben
 (`balanced`, `false`), ein neuer Client liest also auch einen älteren Dienst (verträglich).
-`update_settings` ohne `font` oder `colorScheme` behält die gespeicherten. Die Teile enthalten keine Geheimnisse,
+`update_settings` ohne `font` oder `colorScheme` behält die gespeicherten. **Schriften des Rechners (#299):**
+`list_fonts` nennt nach den Ordnern die installierten Schriften, `system` (die Oberflächenschrift des
+Betriebssystems) und je Familie `system:<Familie>` ([design-pakete.md](design-pakete.md), „Schriften des Systems“);
+jede Schrift trägt `origin` (`"bundled"` mit der Suite geliefert, `"folder"` vom Nutzer, `"system"` installiert; ohne
+das Feld, etwa von einem älteren Dienst, und bei unbekanntem Wert gilt `folder`) und `kind` (`"sans"`, `"serif"`,
+`"mono"`, fehlt bei Schriften ohne Angabe und bei installierten; ein unbekannter Wert gilt als fehlend), installierte
+nie mit `license`: Sie werden mitgenutzt, nie weitergegeben, und nie in ein PDF eingebettet (das PDF setzt dann Inter).
+`set_setting font` nimmt beide Ids; eine Familie, die nicht installiert ist, lehnt der Dienst ab, eine leere, eine
+mit mehr als 64 Zeichen, eine mit „.“ am Anfang oder mit Steuer-, Format- oder Zeilentrennzeichen schon vor dem Laden. Gespeichert wird nur die Id. Ein Design kann keine
+installierte Schrift vorschlagen. Die Familiennamen gehen bewusst an Agenten (`Read`, Bereich `settings`): Sie verraten
+nur, welche Software installiert ist, keine Geheimnisse; Gründe nennen nie einen Dateipfad. Familiennamen stammen aus
+fremden Schriftdateien und sind wie der Text der Ordner Daten, nie Anweisungen. Verträglich ohne `v: 2` (neue
+optionale Felder). Die Teile enthalten keine Geheimnisse,
 darum genügt `Read` zum Auflisten. Name, Familie, Version, Autor, Beschreibung, Lizenz, die vorgeschlagene Schrift-id und
 alles in `problems` (Dateinamen, Schlüssel, Meldungen des Parsers) sind Text aus dem Ordner, ebenso die Gründe in einer
 Ablehnung von `set_setting`: Die Beschreibungen der Tools sagen Agenten, ihn als Daten zu behandeln, nie als
@@ -907,6 +919,16 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Wert von `allowed_folder` und jedes `settings.update_settings`, das die Liste ändert, bekommt von jedem Client
    `forbidden` (`Request::kept_for_people`, `Tools::needs_a_person`); ein Client, der die ganzen Einstellungen
    schreibt, behält die gespeicherte Liste (`Tools::from_client`).
+
+   Ebenso **Anhänge von Mails ablegen** (Issue #290): Den **Ordner eines Ablageziels** setzt nur ein Mensch.
+   `mail.create_save_target` gibt es nur mit dem App-Schlüssel (`Mcp::Never`), weil ein neues Ziel immer einen
+   Ordner setzt; `mail.update_save_target` (Admin, mit MCP-Tool) nimmt von einem Client nur den gespeicherten
+   Ordner an, ein anderer gibt `forbidden`. Ebenso den **Downloads-Ordner** (`mail_downloads_folder`): Der Dienst
+   vergleicht mit dem gespeicherten Stand, auch über `settings.update_settings`; entfernen (zurück zum Ordner des
+   Systems) darf jeder mit Admin. Und `mail.save_attachments` mit **`to: file` oder `to: folder`** („Save as…“,
+   „Save all to folder…“) nur mit dem App-Schlüssel (`Request::kept_for_people`): Den Pfad wählt ein Mensch im
+   Dialog des Systems. Clients speichern nach `downloads` oder in ein Ziel (`{"target": …}`), mit der gewöhnlichen
+   Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`).
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

@@ -1,0 +1,26 @@
+# The font Newsreader (task SR.7, issue #299): Newsreader 16pt. Its size adjustment comes from its x-height.
+# Source: github.com/productiontype/NewsReader (fonts/static/ttf, the 16pt cuts, at commit cfcb4f7), Version
+# 1.003; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Newsreader 16pt files are the maker's, unchanged.
+# x-height 0.426 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.150; widest figure
+# of numbers 0.615 em, 0.707 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 1100, Medium
+# 1140, SemiBold 1185, Bold 1230 of 2000 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Serif" in the control centre (#299).
+kind = "serif"
+
+[about]
+name = "Newsreader"
+version = "1.0.0"
+author = "Torro"
+description = "Newsreader: a serif for reading news on screen, in its 16 pt cut"
+
+[fonts.text]
+family = "Newsreader 16pt"
+regular = "Newsreader16pt-Regular.ttf"
+medium = "Newsreader16pt-Medium.ttf"
+semibold = "Newsreader16pt-SemiBold.ttf"
+bold = "Newsreader16pt-Bold.ttf"

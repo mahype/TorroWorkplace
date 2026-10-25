@@ -125,6 +125,12 @@ pub struct Settings {
     /// the rest of the window. Read leniently, like [`Settings::mail_view`].
     #[serde(default, deserialize_with = "lenient")]
     pub mail_appearance: MailAppearance,
+    /// What a click on an attachment's name does and where "Save to Downloads" puts files (issue
+    /// #290, [`MailAttachments`]). The save targets themselves are not here but in their own file
+    /// (`mail.list_save_targets`), so `settings.update_settings` never writes them. Read leniently:
+    /// a value that does not read gives the defaults (open, the system's Downloads folder).
+    #[serde(default, deserialize_with = "lenient")]
+    pub mail_attachments: MailAttachments,
     /// Which AI account and model each function of the suite uses (task E12.5, `docs/ki.md`
     /// "Zuordnung je Funktion"), by the function. Only functions a person set up are stored, so a
     /// new one starts unassigned. Read leniently ([`known_assignments`]): an entry that does not
@@ -734,6 +740,7 @@ impl Default for Settings {
             components_off: BTreeSet::new(),
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
+            mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
             reminders: Reminders::default(),
             maps: Maps::default(),
@@ -1810,6 +1817,64 @@ fn absolute_path(path: &str) -> bool {
     path.len() <= MAX_PATH_BYTES && !path.chars().any(char::is_control) && Path::new(path).is_absolute()
 }
 
+/// What a click on an attachment's name in the mail window does (issue #290, setting
+/// `mail_attachment_click`). The triangle beside it always offers every way.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentClick {
+    /// `"open"`: opens it with the system's program for it (the default).
+    #[default]
+    Open,
+    /// `"downloads"`: saves it in the Downloads folder ([`MailAttachments::downloads`]).
+    Downloads,
+    /// `"save_as"`: asks where in the system's save dialog.
+    SaveAs,
+    /// `"suggested"`: saves it to the target suggested for it with certainty, else opens it. A
+    /// category the model only guessed never saves by itself (decision 4 of issue #290).
+    Suggested,
+    /// `{"target": "<id>"}`: saves it to this save target (`mail.list_save_targets`). A target that
+    /// is gone opens the file instead; removing a target sets the click back to `"open"`.
+    Target(String),
+}
+
+/// What the mail window does with attachments (issue #290): the click on a name, and the folder
+/// "Save to Downloads" uses. Stored in `settings.json` as `mailAttachments`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MailAttachments {
+    /// What a click on an attachment's name does.
+    pub click: AttachmentClick,
+    /// The folder "Save to Downloads" saves in, an absolute path; `None` for the system's
+    /// Downloads folder. Only a person sets one (point 9 of "Was nie nach außen geht", like the
+    /// PDF folder); anyone allowed to change settings may remove it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloads: Option<String>,
+}
+
+impl MailAttachments {
+    /// The Downloads folder in `value`: an absolute path, or `null` or `""` for the system's.
+    /// Whether it exists is checked when a file is saved. For `settings.set_setting
+    /// mail_downloads_folder`.
+    pub fn downloads_from(value: &serde_json::Value) -> Result<Option<String>, String> {
+        PdfSettings::folder_from(value)
+    }
+
+    /// Whether going from these settings (as stored) to `new` does what only a person may (point 9):
+    /// set a Downloads folder other than the stored one. Removing it and the click are no such
+    /// change. The core refuses a client's `settings.update_settings` with it.
+    pub fn needs_a_person(&self, new: &MailAttachments) -> bool {
+        new.downloads.is_some() && new.downloads != self.downloads
+    }
+
+    /// `sent` as a client may store it over these settings (as stored), for
+    /// `settings.update_settings`: the click as sent, the Downloads folder removed when `sent`
+    /// removes it and otherwise as stored ([`kept_or_removed`]). So a person who removed the folder
+    /// between the core's check and the write is not undone.
+    pub fn from_client(&self, sent: &MailAttachments) -> MailAttachments {
+        MailAttachments { click: sent.click.clone(), downloads: kept_or_removed(&self.downloads, &sent.downloads) }
+    }
+}
+
 impl Settings {
     /// Whether `component` is on (task W.1): every component is, unless a person turned it off.
     pub fn component_on(&self, component: Component) -> bool {
@@ -2283,6 +2348,7 @@ mod tests {
             components_off: BTreeSet::new(),
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
+            mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
             reminders: Reminders::default(),
             maps: Maps::default(),
@@ -2294,6 +2360,63 @@ mod tests {
             workspaces: WorkspaceSettings::default(),
         };
         assert_eq!(load_from(&path), expected);
+    }
+
+    /// Issue #290: a file from before attachments could be saved opens them on a click and saves to
+    /// the system's Downloads; the setting travels in camelCase with snake_case values.
+    #[test]
+    fn mail_attachments_load_without_the_field_and_round_trip() {
+        let dir = TempDir::new("mail-attachments");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        assert_eq!(load_from(&path).mail_attachments, MailAttachments::default());
+        assert_eq!(MailAttachments::default().click, AttachmentClick::Open);
+        fs::write(&path, r#"{"mailAttachments":{"click":42}}"#).expect("write");
+        assert_eq!(load_from(&path).mail_attachments, MailAttachments::default(), "read leniently");
+
+        for (click, wire) in [
+            (AttachmentClick::Open, serde_json::json!("open")),
+            (AttachmentClick::Downloads, serde_json::json!("downloads")),
+            (AttachmentClick::SaveAs, serde_json::json!("save_as")),
+            (AttachmentClick::Suggested, serde_json::json!("suggested")),
+            (AttachmentClick::Target("0a1b2c3d".into()), serde_json::json!({"target": "0a1b2c3d"})),
+        ] {
+            assert_eq!(serde_json::to_value(&click).expect("writes"), wire);
+            assert_eq!(serde_json::from_value::<AttachmentClick>(wire).expect("reads"), click);
+        }
+        let set = MailAttachments { click: AttachmentClick::SaveAs, downloads: Some("/Users/anna/Ablage".into()) };
+        let json = serde_json::to_value(&set).expect("writes");
+        assert_eq!(json, serde_json::json!({"click": "save_as", "downloads": "/Users/anna/Ablage"}));
+        assert_eq!(serde_json::from_value::<MailAttachments>(json).expect("reads"), set);
+        let settings = Settings { mail_attachments: set.clone(), ..Settings::default() };
+        let text = serde_json::to_string(&settings).expect("writes");
+        assert!(text.contains(r#""mailAttachments":{"click":"save_as""#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).expect("reads").mail_attachments, set);
+    }
+
+    /// Issue #290, point 9: only a person sets the Downloads folder; a client keeps or removes it and
+    /// chooses the click freely.
+    #[test]
+    fn only_people_set_the_downloads_folder() {
+        let folder = |path: Option<&str>| MailAttachments { downloads: path.map(str::to_string), ..Default::default() };
+        let stored = folder(Some("/Users/anna/Ablage"));
+        assert!(stored.needs_a_person(&folder(Some("/Users/anna/Dropbox"))));
+        assert!(folder(None).needs_a_person(&stored));
+        assert!(!stored.needs_a_person(&stored) && !stored.needs_a_person(&folder(None)));
+        let clicked = MailAttachments { click: AttachmentClick::Downloads, ..stored.clone() };
+        assert!(!stored.needs_a_person(&clicked), "the click is an ordinary change");
+
+        let sent = MailAttachments { click: AttachmentClick::Suggested, downloads: Some("/Users/anna/Dropbox".into()) };
+        let kept = stored.from_client(&sent);
+        assert_eq!(kept, MailAttachments { click: AttachmentClick::Suggested, downloads: stored.downloads.clone() });
+        assert_eq!(stored.from_client(&folder(None)).downloads, None, "removing is allowed");
+        assert_eq!(folder(None).from_client(&sent).downloads, None, "never set anew");
+
+        let value = |value| MailAttachments::downloads_from(&value);
+        assert_eq!(value(serde_json::json!(null)), Ok(None));
+        assert_eq!(value(serde_json::json!("")), Ok(None));
+        assert!(value(serde_json::json!("Downloads")).is_err(), "absolute only");
+        assert!(value(serde_json::json!(3)).is_err());
     }
 
     /// Task C.17: mail stays with local models unless a person switched it on.
@@ -2479,6 +2602,10 @@ mod tests {
             components_off: BTreeSet::from([Component::Mail, Component::Assistant]),
             mail_view: MailFormat::Text,
             mail_appearance: MailAppearance::Dark,
+            mail_attachments: MailAttachments {
+                click: AttachmentClick::SaveAs,
+                downloads: Some("/Users/anna/Ablage".into()),
+            },
             mail_to_cloud: true,
             reminders: Reminders {
                 default_lead: None,

@@ -6722,6 +6722,7 @@ dependencies = [
 name = "torro-core"
 version = "0.1.0"
 dependencies = [
+ "fontdb",
  "keyring",
  "roxmltree 0.21.1",
  "schemars",

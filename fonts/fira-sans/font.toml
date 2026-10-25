@@ -1,0 +1,37 @@
+# The font Fira Sans (task SR.6, issue #299): Fira Sans, figures Fira Sans Figures. Its size adjustment comes
+# from its x-height.
+# Source: github.com/google/fonts (ofl/firasans at commit e7db6ca), Version 4.203; downloaded 2026-10-24.
+# Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Fira Sans files are the maker's, unchanged.
+# Fira Sans Figures (Regular, Medium) is made from the Fira Sans cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it does not mix with the text cuts;
+# Regular: tnum frozen, digits already one width (560); Medium: tnum frozen, digits already one width (560).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.527 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.036; widest figure
+# of numbers 0.560 em, 0.580 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 433-558, Medium 450-573,
+# SemiBold 456-579, Bold 464-585 units), so numbers takes Fira Sans Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Fira Sans"
+version = "1.0.0"
+author = "Torro"
+description = "Fira Sans: a humanist sans built for small screens, with tabular figures"
+
+[fonts.text]
+family = "Fira Sans"
+regular = "FiraSans-Regular.ttf"
+medium = "FiraSans-Medium.ttf"
+semibold = "FiraSans-SemiBold.ttf"
+bold = "FiraSans-Bold.ttf"
+
+[fonts.numbers]
+family = "Fira Sans Figures"
+regular = "FiraSansFigures-Regular.ttf"
+medium = "FiraSansFigures-Medium.ttf"

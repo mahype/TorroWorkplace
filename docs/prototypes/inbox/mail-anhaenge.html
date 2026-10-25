@@ -1,0 +1,800 @@
+<title>Mail-Anhänge ablegen</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: eine ruhige Lesespalte wie die anderen Torro-Prototypen; jede Bühne zeigt einen Ausschnitt des Mail-Fensters, das immer dunkel ist wie die App. */
+:root{
+  --bg:#f3f3f1; --fg:#1d1e21; --muted:#5d5f66; --line:#dcdcd7; --card:#ffffff; --accent:#c93b24;
+  --font-page:"Figtree",ui-sans-serif,system-ui,sans-serif;
+  --font-app:"Inter",ui-sans-serif,system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121315; --fg:#ececee; --muted:#9a9ca3; --line:#2b2d31; --card:#1a1b1e; --accent:#ef5a40; color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121315; --fg:#ececee; --muted:#9a9ca3; --line:#2b2d31; --card:#1a1b1e; --accent:#ef5a40; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-page);font-size:16px;line-height:1.55}
+.wrap{max-width:1080px;margin:0 auto;padding-block:40px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{font-size:clamp(28px,4vw,40px);line-height:1.15;margin:0 0 12px;text-wrap:balance;letter-spacing:-.01em}
+h2{font-size:26px;margin:0;text-wrap:balance}
+h3{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 8px;font-weight:600}
+p{margin:0 0 12px;max-width:68ch}
+.lead{font-size:18px;color:var(--muted);max-width:70ch}
+nav.jump{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0 8px}
+nav.jump a{color:var(--fg);text-decoration:none;border:1px solid var(--line);background:var(--card);border-radius:999px;padding:8px 16px;font-weight:600}
+nav.jump a:hover,nav.jump a:focus-visible{border-color:var(--accent);outline:none}
+section{margin-top:64px}
+.head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.tag{font-weight:700;color:var(--accent);font-size:15px;letter-spacing:.04em}
+.hint{font-size:14px;color:var(--muted);margin:6px 0 0}
+.stagebox{overflow-x:auto;margin:16px 0 22px;border-radius:14px;box-shadow:0 1px 0 var(--line),0 18px 50px -24px rgba(0,0,0,.45)}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.note{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;min-width:0}
+.note ul{margin:0;padding-left:18px}
+.note li{margin:4px 0}
+.note b{font-weight:600}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:20px;align-items:start}
+.pair > div{min-width:0}
+table.ph{border-collapse:collapse;width:100%;font-size:15px}
+.tbl{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:12px}
+table.ph th,table.ph td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+table.ph tr:last-child td{border-bottom:none}
+table.ph th{font-size:13px;color:var(--muted);font-weight:600;letter-spacing:.04em}
+table.ph code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;white-space:nowrap}
+.ask{margin-top:64px;border-top:1px solid var(--line);padding-top:24px}
+.ask ol{padding-left:22px;max-width:74ch}
+.ask li{margin:10px 0}
+@media (prefers-reduced-motion: reduce){.app *{transition:none !important}}
+
+/* ---------- Das Mail-Fenster (Torro-Tokens, dunkel) ---------- */
+.app{--a-bg:#08090A;--a-panel:#0F1011;--a-raise:#141518;--a-hover:#1a1b1f;--a-sel:#1C1E22;--a-menu:#17181B;
+  --a-fg:#EDEEF0;--a-fg2:#B4B8BF;--a-fg3:#8A8F98;--a-line:rgba(255,255,255,.06);--a-strong:rgba(255,255,255,.10);--a-pick:rgba(255,255,255,.28);
+  --a-acc:#D50C0C;--a-ok:#3FB984;--a-focus:rgba(255,255,255,.35);
+  background:var(--a-panel);color:var(--a-fg);font-family:var(--font-app);font-size:14px;line-height:22px;position:relative;user-select:none}
+.app *{box-sizing:border-box}
+.app svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+:where(.app) button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+.app button:focus-visible{outline:2px solid var(--a-focus);outline-offset:1px}
+.meta{font-size:13px;line-height:18px;color:var(--a-fg3);font-variant-numeric:tabular-nums}
+.cap{font-size:12px;line-height:16px;font-weight:500;color:var(--a-fg3)}
+
+/* Leser-Ausschnitt */
+.reader{width:880px;min-height:560px;display:grid;grid-template-columns:1fr 60px}
+.rmain{padding:28px 40px 0 48px;display:flex;flex-direction:column;min-width:0}
+.rail{border-left:1px solid var(--a-line);display:flex;flex-direction:column;align-items:center;gap:6px;padding-top:12px;color:var(--a-fg3)}
+.rail span{width:40px;height:40px;border-radius:4px;display:grid;place-items:center}
+.rail span.r{background:var(--a-acc);color:#fff}
+.rail i{display:block;width:28px;height:1px;background:var(--a-line);margin:2px 0}
+.subject{font-size:22px;line-height:28px;font-weight:600;margin:0 0 16px}
+.from{display:flex;gap:12px;align-items:center;margin-bottom:22px}
+.av{width:48px;height:48px;border-radius:50%;background:#262a33;display:grid;place-items:center;font-weight:600;font-size:15px;color:#c9ccd3;flex:none}
+.from b{display:block;font-weight:500}
+.mtext{font-size:16px;line-height:26px;color:#d9dade;max-width:600px}
+.mtext p{margin:0 0 14px;max-width:none}
+.attline{margin-top:auto;padding:8px 0 20px}
+/* Anhänge als eigener Block: Kopf als Band mit Linie, darunter die Dateien */
+.attbox{border:1px solid var(--a-strong);border-radius:4px}
+.atthead{display:flex;align-items:center;gap:8px;height:44px;padding:0 6px 0 14px;background:rgba(255,255,255,.03);border-bottom:1px solid var(--a-strong);border-radius:3px 3px 0 0}
+.atthead > svg{color:var(--a-fg3)}
+.atthead .ttl{font-weight:500}
+.atthead .grow{flex:1}
+.chips{display:flex;flex-wrap:wrap;gap:8px;padding:12px}
+
+/* Geteilter Chip: links öffnen bzw. Standardaktion, rechts das Dreieck */
+.split{display:inline-flex;height:36px;border-radius:4px;background:var(--a-raise);border:1px solid var(--a-strong);position:relative}
+.split > button{display:flex;align-items:center;gap:6px;height:100%;border-radius:3px}
+.split .main{padding:0 10px 0 12px}
+.split .main svg{color:var(--a-fg3);width:14px;height:14px}
+.split .main .meta{margin-left:4px}
+.split .tri{width:30px;justify-content:center;border-left:1px solid var(--a-strong);border-radius:0 3px 3px 0;color:var(--a-fg2)}
+.split > button:hover{background:var(--a-hover)}
+.split .tri[aria-expanded="true"]{background:var(--a-sel);color:var(--a-fg)}
+.split.small{height:32px}
+.split.small .main{font-size:12px;font-weight:500;padding:0 10px}
+/* „Save all“ ist eine Aktion, keine Datei: ohne Fläche und Rand, damit es nicht wie ein Anhang aussieht */
+.split.ghost{background:none;border-color:transparent}
+.split.ghost .main{color:var(--a-fg2)}
+.split.ghost .tri{border-left-color:var(--a-line)}
+.split.ghost > button:hover{color:var(--a-fg)}
+
+/* Menü */
+.menu{position:absolute;z-index:20;min-width:300px;background:var(--a-menu);border:1px solid var(--a-strong);border-radius:4px;padding:4px;
+  box-shadow:0 16px 40px -10px rgba(0,0,0,.8)}
+.menu[hidden]{display:none}
+.mi{display:flex;align-items:center;gap:10px;width:100%;height:30px;padding:0 8px;border-radius:4px;text-align:left;color:var(--a-fg)}
+.mi svg{color:var(--a-fg2)}
+.mi:hover,.mi:focus-visible{background:var(--a-sel);outline:none}
+.mi .lbl{flex:1;white-space:nowrap}
+.mi.tall{height:44px}
+.mi.tall .lbl small{display:block;font-size:12px;line-height:16px;color:var(--a-fg3);overflow:hidden;text-overflow:ellipsis;max-width:260px}
+.mi .click{font-size:11px;line-height:14px;font-weight:600;color:var(--a-fg3);border:1px solid #3a3d45;border-radius:4px;padding:1px 6px}
+.mi .sugg{font-size:11px;line-height:14px;font-weight:600;color:var(--a-ok);display:flex;align-items:center;gap:3px}
+.mi .sugg svg{width:12px;height:12px;color:var(--a-ok)}
+.msec{font-size:12px;line-height:16px;font-weight:500;color:var(--a-fg3);padding:8px 8px 4px}
+.msep{height:1px;background:var(--a-line);margin:4px 0}
+.mi.quiet{color:var(--a-fg2)}
+
+/* Hinweis */
+.toast{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);display:flex;align-items:center;gap:14px;height:40px;padding:0 6px 0 14px;
+  background:var(--a-menu);border:1px solid var(--a-strong);border-radius:4px;box-shadow:0 16px 40px -10px rgba(0,0,0,.8);white-space:nowrap;z-index:30;max-width:calc(100% - 32px)}
+.toast span{overflow:hidden;text-overflow:ellipsis}
+.toast button{height:28px;padding:0 10px;border-radius:4px;color:var(--a-fg2);font-size:12px;font-weight:500}
+.toast button:hover{background:var(--a-sel);color:var(--a-fg)}
+
+/* Panel und Liste */
+.narrow{width:400px;min-height:430px;border-left:1px solid var(--a-line)}
+.narrow .ptitle{padding:18px 16px 10px;font-weight:500}
+.prow{display:flex;align-items:center;gap:10px;height:38px;padding:0 6px 0 16px;position:relative}
+.prow:hover{background:var(--a-hover)}
+.prow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prow svg{color:var(--a-fg3)}
+.prow .tri{width:28px;height:28px;border-radius:4px;display:grid;place-items:center;color:var(--a-fg2)}
+.prow .tri:hover{background:var(--a-sel)}
+.psec{display:flex;align-items:center;padding:14px 16px 6px}
+.psec .grow{flex:1}
+.listbox{width:520px;min-height:430px;position:relative}
+.lrow{display:grid;grid-template-columns:40px 1fr;gap:12px;padding:14px 20px;border-bottom:1px solid var(--a-line)}
+.lrow.sel{background:var(--a-sel);box-shadow:inset 2px 0 0 var(--a-acc)}
+.lrow .av{width:40px;height:40px;font-size:13px}
+.lrow .t{display:flex;gap:8px}
+.lrow .t b{font-weight:500}
+.lrow .t .meta{margin-left:auto}
+.lrow .s{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow .s svg{width:13px;height:13px;color:var(--a-fg3);vertical-align:-2px;margin-left:4px}
+
+/* Einstellungen */
+.settings{width:900px;min-height:600px;display:grid;grid-template-columns:220px 1fr;background:var(--a-panel)}
+.sside{background:var(--a-bg);padding:16px 10px;display:flex;flex-direction:column;gap:2px;border-right:1px solid var(--a-line)}
+.sside .it{height:32px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:4px;color:var(--a-fg2)}
+.sside .it.on{background:var(--a-sel);color:var(--a-fg)}
+.sside .it svg{color:var(--a-fg3)}
+.spage{padding:24px 32px 32px;max-width:680px}
+.crumb{font-weight:500;margin-bottom:20px}
+.crumb span{color:var(--a-fg3);font-weight:400}
+.group{margin-bottom:24px}
+.group > .cap{margin-bottom:8px}
+.gbox{border:1px solid var(--a-strong);border-radius:4px}
+.grow2{display:flex;align-items:center;gap:16px;min-height:64px;padding:10px 16px;border-bottom:1px solid var(--a-line)}
+.grow2:last-child{border-bottom:none}
+.grow2 .txt{flex:1;min-width:0}
+.grow2 .txt small{display:block;font-size:13px;line-height:18px;color:var(--a-fg3)}
+.gnote{font-size:13px;line-height:18px;color:var(--a-fg2);margin-top:8px}
+.btn{height:36px;padding:0 12px;border-radius:4px;background:var(--a-raise);border:1px solid var(--a-strong) !important;font-size:12px !important;font-weight:500 !important;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover{background:var(--a-hover)}
+.btn.pri{background:var(--a-acc);border-color:var(--a-acc) !important;color:#fff}
+.btn.ghost{background:none;border-color:transparent !important;color:var(--a-fg2)}
+.btn.ghost:hover{background:var(--a-hover);color:var(--a-fg)}
+.btn.danger{background:none;border-color:transparent !important;color:#f0716a}
+.app select,.app input[type=text]{font:inherit;color:var(--a-fg);background:var(--a-raise);border:1px solid var(--a-strong);border-radius:4px;height:38px;padding:0 10px}
+.app select:focus-visible,.app input:focus-visible{outline:2px solid var(--a-focus);outline-offset:1px}
+.app select{min-width:260px}
+.trow{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 8px 8px 16px;border-bottom:1px solid var(--a-line)}
+.trow:last-child{border-bottom:none}
+.trow > svg{color:var(--a-fg3)}
+.trow .txt{flex:1;min-width:0}
+.trow .txt small{display:block;font-size:13px;line-height:18px;color:var(--a-fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow .fixed{font-size:12px;color:var(--a-fg3)}
+
+/* Editor eines Ablageziels: Formular mit Bezeichnung links und Feld rechts, in Abschnitten */
+.editor{width:900px;min-height:760px;background:rgba(0,0,0,.62);display:grid;place-items:start center;padding:36px 0;position:relative}
+.dlg{width:680px;background:var(--a-menu);border:1px solid var(--a-strong);border-radius:4px;box-shadow:0 30px 70px -20px rgba(0,0,0,.9)}
+.dlg header{display:flex;align-items:center;padding:16px 16px 4px 24px}
+.dlg header h4{margin:0;flex:1;font-size:22px;line-height:28px;font-weight:600}
+.dlg .body{padding:8px 24px 20px}
+.fsec{padding:16px 0;border-bottom:1px solid var(--a-line);display:flex;flex-direction:column;gap:12px}
+.fsec:last-of-type{border-bottom:none}
+.fsec > .cap{margin-bottom:-2px}
+.frow{display:grid;grid-template-columns:128px 1fr;gap:16px;align-items:start}
+.frow > label,.frow > .lab{font-size:14px;line-height:22px;color:var(--a-fg2);padding-top:8px}
+.fctl{display:flex;flex-direction:column;gap:6px;min-width:0}
+.fctl .row{display:flex;gap:8px;align-items:center}
+.fctl .row input{flex:1;min-width:0}
+.fctl small{font-size:13px;line-height:18px;color:var(--a-fg3)}
+.app input.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+/* Segmente */
+.seg{display:inline-flex;background:var(--a-bg);border:1px solid var(--a-strong);border-radius:4px;padding:2px;gap:2px;align-self:flex-start}
+.seg button{height:32px;padding:0 12px;border-radius:3px;font-size:12px;font-weight:500;color:var(--a-fg2);border:1px solid transparent}
+.seg button:hover{color:var(--a-fg)}
+.seg button[aria-pressed="true"]{background:var(--a-sel);border-color:var(--a-pick);color:var(--a-fg)}
+/* Bedingungen und Kategorien */
+.conds{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cond{height:32px;display:inline-flex;align-items:center;gap:6px;padding:0 4px 0 10px;border-radius:4px;background:var(--a-raise);border:1px solid var(--a-strong);font-size:12px;font-weight:500}
+.cond .k{color:var(--a-fg3);font-weight:400}
+.cond button{width:22px;height:22px;border-radius:3px;display:grid;place-items:center;color:var(--a-fg3)}
+.cond button:hover{background:var(--a-sel);color:var(--a-fg)}
+.cond button svg{width:12px;height:12px}
+.cc{height:32px;padding:0 10px;border-radius:4px;background:var(--a-raise);border:1px solid var(--a-strong);font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;color:var(--a-fg2)}
+.cc:hover{background:var(--a-hover);color:var(--a-fg)}
+.cc[aria-pressed="true"]{background:var(--a-sel);border-color:var(--a-pick);color:var(--a-fg)}
+.cc svg{width:14px;height:14px}
+.cc:not([aria-pressed="true"]) .ck{display:none}
+.sentence{display:flex;flex-wrap:wrap;align-items:center;gap:6px;line-height:32px;color:var(--a-fg2)}
+.pick{height:32px;display:inline-flex;align-items:center;gap:6px;padding:0 8px 0 10px;border-radius:4px;background:var(--a-raise);border:1px solid var(--a-strong);font-size:13px;color:var(--a-fg)}
+.pick:hover{background:var(--a-hover)}
+.pick svg{width:14px;height:14px;color:var(--a-fg3)}
+.mi .ex{font-size:12px;color:var(--a-fg3);font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace}
+.mi .box{width:14px;height:14px;border:1.5px solid var(--a-fg3);border-radius:3px;display:grid;place-items:center;flex:none}
+.mi .box svg{width:11px;height:11px;color:var(--a-fg)}
+.mi[aria-checked="true"] .box{background:var(--a-sel);border-color:var(--a-fg2)}
+.mi[aria-checked="false"] .box svg{display:none}
+/* Vorschau */
+.preview{background:var(--a-bg);border:1px solid var(--a-strong);border-radius:4px;padding:12px 14px;margin-top:4px}
+.preview .path{font-family:ui-monospace,Menlo,monospace;font-size:13px;line-height:20px;word-break:break-all;color:var(--a-fg)}
+.preview .path em{font-style:normal;color:var(--a-ok)}
+.preview .why{font-size:13px;line-height:18px;color:var(--a-fg3);margin-top:6px}
+.dlg footer{display:flex;align-items:center;gap:8px;padding:12px 16px 16px 24px;border-top:1px solid var(--a-line)}
+.dlg footer .grow{flex:1}
+/* Umschalter der Varianten auf der Seite */
+.states{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 0}
+.states button{font:600 14px var(--font-page);color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px;cursor:pointer}
+.states button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.states button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-reply" viewBox="0 0 24 24"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></symbol>
+</svg>
+
+<div class="wrap">
+  <h1>Mail-Anhänge öffnen und ablegen</h1>
+  <p class="lead">Entwurf zu #290: Ein Klick auf den Namen tut, was du eingestellt hast. Das Dreieck daneben bietet alles andere an: öffnen, in Downloads sichern, sichern unter und deine eigenen Ablageziele wie „Invoices“, die nach Jahr und Monat einsortieren.</p>
+  <p class="hint">Stand 2: Anhangblock klar abgegrenzt, Dialog aufgeräumt, Vorschläge nach Kategorie. Die Oberfläche ist englisch wie die App, Deutsch kommt als Übersetzung dazu. Alles hier ist klickbar. Die Einstellung „Click on an attachment“ in Abschnitt C steuert auch, was der Klick auf den Namen in A und B tut.</p>
+  <nav class="jump" aria-label="Abschnitte">
+    <a href="#leser">A · Leser</a><a href="#panel">B · Panel und Liste</a><a href="#einstellungen">C · Einstellungen</a><a href="#ziel">D · Ablageziel</a><a href="#logik">E · Logik</a><a href="#offen">Offen</a>
+  </nav>
+
+  <!-- ===================== A ===================== -->
+  <section id="leser">
+    <div class="head"><span class="tag">A</span><h2>Leser: Anhangzeile mit Dreieck</h2></div>
+    <p>Die Anhänge stehen in einem eigenen, gerahmten Block. Sein Kopf ist ein Band mit Linie darunter: Titel, Anzahl und Größe links, „Save all“ rechts, ohne Fläche und Rand, damit es nicht wie ein Anhang aussieht. Darunter ist jeder Anhang ein geteilter Chip. Ein Klick auf Büroklammer, Name oder Größe führt die Standardaktion aus. Rechts, nach einem Haarstrich, öffnet das Dreieck das Menü. „Save all“ gibt es ab zwei Anhängen.</p>
+    <div class="stagebox">
+      <div class="app reader" id="readerApp">
+        <div class="rmain">
+          <div class="subject">Ihre Rechnung März 2026</div>
+          <div class="from"><div class="av">SB</div><div><b>Stadtwerke Bonn</b><span class="meta">rechnung@stadtwerke-bonn.de · to me</span></div><span class="meta" style="margin-left:auto">Thu, 2 Apr · 08:14</span></div>
+          <div class="mtext">
+            <p>Guten Tag,</p>
+            <p>anbei erhalten Sie Ihre Rechnung für den Abrechnungszeitraum März 2026 sowie die Verbrauchsübersicht. Der Betrag von 84,20 € wird am 15.04. von Ihrem Konto abgebucht.</p>
+            <p>Mit freundlichen Grüßen<br>Ihre Stadtwerke Bonn</p>
+          </div>
+          <div class="attline"><div class="attbox">
+            <div class="atthead">
+              <svg><use href="#i-clip"/></svg><span class="ttl">Attachments</span><span class="meta">3 files · 1.5 MB</span><span class="grow"></span>
+              <span class="split small ghost" data-all="1">
+                <button class="main" type="button" data-act="saveall-default"><svg><use href="#i-dl"/></svg>Save all</button>
+                <button class="tri" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to save all"><svg><use href="#i-down"/></svg></button>
+              </span>
+            </div>
+            <div class="chips" id="chips"></div>
+          </div></div>
+        </div>
+        <div class="rail" aria-hidden="true"><span class="r"><svg><use href="#i-reply"/></svg></span><i></i><span><svg><use href="#i-check"/></svg></span><span><svg><use href="#i-flag"/></svg></span><span><svg><use href="#i-dots"/></svg></span></div>
+        <div class="menu" id="menu" role="menu" hidden></div>
+        <div class="toast" id="toast" hidden><span id="toastText"></span><button type="button" data-act="toast-folder">Show in folder</button></div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><h3>Menü am Dreieck</h3><ul>
+        <li><b>Open</b>, <b>Save to Downloads</b>, <b>Save as…</b>: immer da, in dieser Reihenfolge.</li>
+        <li><b>Save to</b>: deine Ablageziele mit dem Pfad, in dem die Datei landen würde. Ein Ziel, dessen Regel passt, steht oben mit „Suggested“.</li>
+        <li>Der Eintrag, den ein Klick auf den Namen auslöst, trägt rechts „Click“.</li>
+        <li><b>Manage save targets…</b> führt in die Einstellungen (C).</li>
+      </ul></div>
+      <div class="note"><h3>Nach dem Speichern</h3><ul>
+        <li>Ein Hinweis nennt Ziel und Namen, z. B. „Saved to Invoices › 2026 › 03“, mit „Show in folder“.</li>
+        <li>Bei „Save as…“ öffnet sich der Dialog des Systems mit dem Namen nach Schema. Wer abbricht, speichert nichts und bekommt keine Meldung.</li>
+        <li>Bei „Save all“ zu einem Ziel bekommt jede Datei ihren eigenen Pfad. Haben zwei Dateien verschiedene Daten, landen sie in verschiedenen Monaten.</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ===================== B ===================== -->
+  <section id="panel">
+    <div class="head"><span class="tag">B</span><h2>Panel und Kontextmenü der Liste</h2></div>
+    <p>In der schmalen Ansicht stehen die Anhänge als Zeilen im Panel. Jede Zeile hat rechts dasselbe Dreieck. In der Liste bietet der Rechtsklick auf eine Mail mit Anhängen „Save attachments“ mit denselben Zielen an.</p>
+    <div class="pair">
+      <div class="stagebox"><div class="app narrow" id="panelApp">
+        <div class="ptitle">Ihre Rechnung März 2026</div>
+        <div class="psec"><span class="cap">Attachments (3)</span><span class="grow"></span>
+          <span class="split small" data-all="1"><button class="main" type="button" data-act="saveall-default"><svg><use href="#i-dl"/></svg>Save all</button><button class="tri" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to save all"><svg><use href="#i-down"/></svg></button></span>
+        </div>
+        <div id="prows"></div>
+        <div class="menu" id="menu2" role="menu" hidden></div>
+        <div class="toast" id="toast2" hidden><span id="toastText2"></span><button type="button" data-act="toast-folder">Show in folder</button></div>
+      </div></div>
+      <div class="stagebox"><div class="app listbox">
+        <div class="lrow"><div class="av">AK</div><div style="min-width:0"><div class="t"><b>Anna Kühn</b><span class="meta">09:12</span></div><div class="s">Protokoll vom Dienstag</div></div></div>
+        <div class="lrow sel"><div class="av">SB</div><div style="min-width:0"><div class="t"><b>Stadtwerke Bonn</b><span class="meta">2 Apr</span></div><div class="s">Ihre Rechnung März 2026<svg><use href="#i-clip"/></svg></div></div></div>
+        <div class="lrow"><div class="av">JM</div><div style="min-width:0"><div class="t"><b>Jonas Meier</b><span class="meta">1 Apr</span></div><div class="s">Angebot Website-Relaunch</div></div></div>
+        <div class="menu" style="left:150px;top:96px;min-width:220px" role="menu" aria-label="Kontextmenü">
+          <div class="mi"><svg><use href="#i-reply"/></svg><span class="lbl">Reply</span></div>
+          <div class="mi"><span style="width:16px"></span><span class="lbl">Forward</span></div>
+          <div class="msep"></div>
+          <div class="mi" style="background:var(--a-sel)"><svg><use href="#i-dl"/></svg><span class="lbl">Save attachments (3)</span><svg><use href="#i-right"/></svg></div>
+          <div class="msep"></div>
+          <div class="mi"><span style="width:16px"></span><span class="lbl">Archive</span></div>
+          <div class="mi"><span style="width:16px"></span><span class="lbl">Delete</span></div>
+        </div>
+        <div class="menu" style="left:372px;top:170px;min-width:0;width:140px" role="menu" aria-label="Untermenü">
+          <div class="mi"><span class="lbl">Downloads</span></div>
+          <div class="mi"><span class="lbl">Save as…</span></div>
+          <div class="msep"></div>
+          <div class="mi"><span class="lbl">Invoices</span></div>
+          <div class="mi"><span class="lbl">Contracts</span></div>
+        </div>
+      </div></div>
+    </div>
+    <p class="hint">Im Untermenü der Liste steht nur der Name des Ziels, der Platz reicht dort nicht für den Pfad. Den Pfad zeigt das Menü am Dreieck.</p>
+  </section>
+
+  <!-- ===================== C ===================== -->
+  <section id="einstellungen">
+    <div class="head"><span class="tag">C</span><h2>Einstellungen › Mail › Attachments</h2></div>
+    <p>Hier stellst du ein, was ein Klick auf den Namen tut, wo Downloads liegt und welche Ablageziele es gibt. Downloads und „Save as…“ sind fest eingebaut, eigene Ziele kommen dazu und lassen sich bearbeiten.</p>
+    <div class="stagebox"><div class="app settings">
+      <div class="sside">
+        <div class="it"><svg><use href="#i-gear"/></svg>General</div>
+        <div class="it on"><svg><use href="#i-mail"/></svg>Mail</div>
+        <div class="it"><svg><use href="#i-folder"/></svg>Accounts</div>
+      </div>
+      <div class="spage">
+        <div class="crumb">Mail <span>› Attachments</span></div>
+        <div class="group">
+          <div class="cap">Clicking an attachment</div>
+          <div class="gbox">
+            <div class="grow2"><div class="txt">Click on an attachment<small>The triangle beside it always offers every way.</small></div>
+              <select id="clickSel" aria-label="Click on an attachment"></select></div>
+            <div class="grow2"><div class="txt">Downloads folder<small id="dlPath">~/Downloads</small></div><button class="btn" type="button">Change…</button></div>
+          </div>
+        </div>
+        <div class="group">
+          <div class="cap">Save targets</div>
+          <div class="gbox" id="targetList"></div>
+          <div class="gnote">A save target is a folder with a scheme for subfolders and file names. It appears in the triangle's menu and can be the click action.</div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ===================== D ===================== -->
+  <section id="ziel">
+    <div class="head"><span class="tag">D</span><h2>Ablageziel bearbeiten</h2></div>
+    <p>Der Dialog ist in drei Abschnitte geteilt: wohin, wie geordnet, wann vorgeschlagen. Platzhalter und Vorlagen stehen nicht mehr offen unter den Feldern, sondern hinter „Insert“ am Feld. Gewählt wird per Menü, eingefügt wird an der Stelle des Cursors, und im Feld lässt sich danach noch alles ändern. Die Vorschau unten rechnet mit der Rechnung aus A.</p>
+    <p>Für „Suggest when“ gibt es drei Varianten zum Vergleichen. Sie bauen auf den Kategorien auf, die Torro schon für Mails kennt (Invoice, Receipt, Order …), statt auf getippten Wörtern.</p>
+    <div class="states" role="group" aria-label="Variante für Suggest when">
+      <button type="button" data-var="1" aria-pressed="true">V1 · Bedingungen mit +</button>
+      <button type="button" data-var="2" aria-pressed="false">V2 · Kategorien antippen</button>
+      <button type="button" data-var="3" aria-pressed="false">V3 · Satz mit Auswahl</button>
+    </div>
+    <div class="stagebox"><div class="app editor" id="editorApp">
+      <div class="dlg" role="dialog" aria-labelledby="dlgTitle">
+        <header><h4 id="dlgTitle">Edit save target</h4><button class="btn ghost" type="button" aria-label="Close" style="width:36px;justify-content:center;padding:0"><svg><use href="#i-x"/></svg></button></header>
+        <div class="body">
+          <div class="fsec">
+            <div class="frow"><label for="fName">Name</label><div class="fctl"><input type="text" id="fName" value="Invoices"></div></div>
+            <div class="frow"><label for="fFolder">Folder</label><div class="fctl"><div class="row"><input type="text" id="fFolder" value="~/Documents/Finance/Invoices"><button class="btn" type="button">Choose…</button></div></div></div>
+          </div>
+          <div class="fsec">
+            <div class="frow"><label for="fSub">Subfolders</label><div class="fctl">
+              <div class="row"><input type="text" class="mono" id="fSub" value="{year}/{month}"><button class="btn" type="button" data-insert="sub" aria-haspopup="menu">Insert<svg><use href="#i-down"/></svg></button></div>
+              <small>A “/” starts a new folder.</small></div></div>
+            <div class="frow"><label for="fFile">File name</label><div class="fctl">
+              <div class="row"><input type="text" class="mono" id="fFile" value="{name}"><button class="btn" type="button" data-insert="file" aria-haspopup="menu">Insert<svg><use href="#i-down"/></svg></button></div></div></div>
+            <div class="frow"><span class="lab">Date from</span><div class="fctl">
+              <div class="seg" id="segDate"><button type="button" data-k="date" data-v="mail">Mail date</button><button type="button" data-k="date" data-v="file">File name, else mail</button></div>
+              <small>For invoices, the date in the file name is often the invoice date. The mail can come weeks later.</small></div></div>
+          </div>
+          <div class="fsec">
+            <div class="frow"><span class="lab">Suggest when</span><div class="fctl" id="suggestCtl"></div></div>
+            <div class="frow"><span class="lab">If file exists</span><div class="fctl">
+              <div class="seg" id="segDup"><button type="button" data-k="dup" data-v="number">Keep both</button><button type="button" data-k="dup" data-v="skip">Skip if identical</button></div></div></div>
+          </div>
+          <div class="preview" aria-live="polite"><div class="cap" style="margin-bottom:4px">Preview · Rechnung_2026-03-28_4711.pdf from Stadtwerke Bonn, 2 Apr 2026</div><div class="path" id="pvPath"></div><div class="why" id="pvWhy"></div></div>
+        </div>
+        <footer><button class="btn danger" type="button">Delete target</button><span class="grow"></span><button class="btn ghost" type="button">Cancel</button><button class="btn pri" type="button">Save</button></footer>
+      </div>
+      <div class="menu" id="menu3" role="menu" hidden></div>
+    </div></div>
+    <div class="notes">
+      <div class="note"><h3>V1 · Bedingungen mit +</h3><ul>
+        <li>Es steht nur da, was gesetzt ist: <b>Category: Invoice</b>, <b>Type: PDF</b>, jeweils mit ✕.</li>
+        <li>„Add condition“ öffnet ein Menü mit Kategorien, Dateitypen und Absendern zum Abhaken.</li>
+        <li>Lässt sich später um weitere Bedingungen erweitern, ohne dass der Dialog wächst.</li>
+      </ul></div>
+      <div class="note"><h3>V2 · Kategorien antippen</h3><ul>
+        <li>Die Kategorien rund um Belege stehen als Chips da, ein Tipp schaltet sie an oder aus.</li>
+        <li>Am schnellsten zu verstehen, zeigt aber immer alle sieben, auch die ungenutzten.</li>
+        <li>Dateityp als eigenes Segment darunter.</li>
+      </ul></div>
+      <div class="note"><h3>V3 · Satz mit Auswahl</h3><ul>
+        <li>Liest sich wie eine Regel: „Mail is <b>Invoice, Receipt</b> and file is <b>PDF</b>“.</li>
+        <li>Jedes fett gesetzte Stück ist ein Auswahlmenü.</li>
+        <li>Am kompaktesten, aber schwerer zu erweitern (Absender, mehrere Typen).</li>
+      </ul></div>
+    </div>
+    <p class="hint"><b>Empfehlung: V1.</b> Es zeigt nur, was gilt, und wächst mit, falls später Absender oder weitere Merkmale dazukommen.</p>
+  </section>
+  <!-- ===================== E ===================== -->
+  <section id="logik">
+    <div class="head"><span class="tag">E</span><h2>Logik: Platzhalter, Datum, Vorschläge</h2></div>
+    <p>Du hattest nach weiteren Ideen gefragt, wie man ablegen könnte. Hier ist, was der Entwurf vorschlägt. Alles davon rechnet der Dienst, die Oberfläche zeigt nur die Vorschau.</p>
+    <div class="tbl"><table class="ph">
+      <thead><tr><th>Platzhalter</th><th>Beispiel</th><th>Woher</th></tr></thead>
+      <tbody>
+        <tr><td><code>{year}</code> <code>{month}</code> <code>{day}</code></td><td>2026 · 03 · 28</td><td>Datum der Datei (siehe unten)</td></tr>
+        <tr><td><code>{month_name}</code></td><td>March / März</td><td>Monatsname in der Sprache der App</td></tr>
+        <tr><td><code>{quarter}</code></td><td>Q1</td><td>Quartal, praktisch für die Steuer</td></tr>
+        <tr><td><code>{date}</code></td><td>2026-03-28</td><td>ganzes Datum, sortiert richtig</td></tr>
+        <tr><td><code>{sender}</code> <code>{sender_domain}</code></td><td>Stadtwerke Bonn · stadtwerke-bonn.de</td><td>Absender der Mail</td></tr>
+        <tr><td><code>{account}</code></td><td>Privat</td><td>Mail-Konto, z. B. Privat und Firma getrennt</td></tr>
+        <tr><td><code>{subject}</code></td><td>Ihre Rechnung März 2026</td><td>Betreff, gekürzt</td></tr>
+        <tr><td><code>{name}</code> <code>{ext}</code></td><td>Rechnung_2026-03-28_4711 · pdf</td><td>ursprünglicher Dateiname</td></tr>
+      </tbody>
+    </table></div>
+    <div class="notes" style="margin-top:20px">
+      <div class="note"><h3>Datum der Datei</h3><ul>
+        <li><b>Mail date</b>: wann die Mail ankam. Immer vorhanden.</li>
+        <li><b>File name, else mail</b>: ein Datum im Namen (<code>2026-03-28</code>, <code>28.03.2026</code>, <code>20260328</code>), sonst das der Mail.</li>
+        <li><b>Später</b>: das Datum aus dem Inhalt eines PDFs, etwa „Rechnungsdatum“. Das braucht Textauslesen und gehört nicht in dieses Issue.</li>
+      </ul></div>
+      <div class="note"><h3>Vorschläge</h3><ul>
+        <li>Ein Ziel nennt Kategorien der Mail (Invoice, Receipt …), dazu optional Dateityp und Absender. Passt alles, steht es oben im Menü mit „Suggested“.</li>
+        <li>Die Kategorien gibt es schon, Torro ordnet eingehende Mails selbst ein. Nichts muss getippt werden.</li>
+        <li>Als Klick-Aktion gibt es „Suggested target, else open“. Für Rechnungen heißt das: ein Klick, abgelegt.</li>
+      </ul></div>
+      <div class="note"><h3>Sicher ablegen</h3><ul>
+        <li>Platzhalter werden bereinigt, also kein <code>/</code>, kein <code>..</code> und keine Steuerzeichen aus Absender oder Betreff. Nur das Schema selbst macht Ordner.</li>
+        <li>Fehlende Unterordner legt der Dienst an, den Grundordner nicht. Fehlt er, meldet der Dienst das.</li>
+        <li>Nie überschreiben. Entweder <code>Name (2).pdf</code> oder „Skip if identical“: Ist dieselbe Datei schon da, wird sie nicht noch einmal gespeichert.</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <section class="ask" id="offen">
+    <h3>Zu entscheiden</h3>
+    <ol>
+      <li><b>Klick-Aktion „Suggested target, else open“</b> mit aufnehmen? Sie macht Rechnungen zu einem Klick, ist aber weniger vorhersehbar als eine feste Aktion.</li>
+      <li><b>Variante für „Suggest when“</b>: V1, V2 oder V3 (Empfehlung V1)?</li>
+      <li><b>Kategorie vom Modell</b>: Eine Kategorie, die das Modell nur vermutet, ist ein Vorschlag. Darf sie die Klick-Aktion „Suggested target“ auslösen, also ohne Rückfrage speichern? Empfehlung: Im Menü ja, als „Suggested“. Beim Klick nur Kategorien aus Kopfzeile oder vom Menschen, sonst wird die Datei geöffnet.</li>
+      <li><b>Ablageziele je Konto</b>: für alle Konten gleich (Entwurf) oder eine Auswahl je Ziel?</li>
+      <li><b>Agenten</b>: Dürfen sie über MCP in ein Ablageziel speichern (Ziel per Name) und die Ziele lesen? Anlegen und Ändern von Zielen nur mit dem App-Schlüssel, weil ein Agent sonst an jeden Ort schreiben könnte.</li>
+      <li><b>Datum aus dem PDF-Inhalt</b> als eigenes, späteres Issue?</li>
+    </ol>
+  </section>
+</div>
+
+<script>
+(() => {
+  const files = [
+    { name: "Rechnung_2026-03-28_4711.pdf", size: "184 KB", ext: "pdf" },
+    { name: "Verbrauchsuebersicht_Maerz.pdf", size: "96 KB", ext: "pdf" },
+    { name: "AGB_Stadtwerke_2026.pdf", size: "1.2 MB", ext: "pdf" }
+  ];
+  const paperCats = ["Invoice", "Receipt", "Order", "Statement", "Document", "Booking", "Shipping"];
+  const mail = { category: "Invoice", date: "2026-04-02", sender: "Stadtwerke Bonn", domain: "stadtwerke-bonn.de", account: "Privat", subject: "Ihre Rechnung März 2026" };
+  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const targets = [
+    { id: "inv", name: "Invoices", folder: "~/Documents/Finance/Invoices", sub: "{year}/{month}", file: "{name}", date: "file", when: { cats: ["Invoice", "Receipt"], types: ["pdf"], senders: [] }, dup: "skip" },
+    { id: "con", name: "Contracts", folder: "~/Documents/Contracts", sub: "{sender}", file: "{date}_{name}", date: "mail", when: { cats: ["Document"], types: ["pdf"], senders: [] }, dup: "number" }
+  ];
+  const state = { click: "open", editing: targets[0] };
+
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const icon = id => `<svg><use href="#i-${id}"/></svg>`;
+  const clean = s => String(s).replace(/[\/\\:\u0000-\u001f]/g, "-").replace(/\.\.+/g, ".").trim();
+
+  function fileDate(f, t) {
+    if (t.date === "file") {
+      const m = f.name.match(/(20\d\d)-?(\d\d)-?(\d\d)/) || f.name.match(/(\d\d)\.(\d\d)\.(20\d\d)/);
+      if (m) return { d: m[1].length === 4 ? `${m[1]}-${m[2]}-${m[3]}` : `${m[3]}-${m[2]}-${m[1]}`, from: "file" };
+    }
+    return { d: mail.date, from: "mail" };
+  }
+  function resolve(t, f) {
+    const { d, from } = fileDate(f, t);
+    const [y, mo, da] = d.split("-");
+    const base = f.name.replace(/\.[^.]+$/, "");
+    const v = { year: y, month: mo, day: da, month_name: months[+mo - 1], quarter: "Q" + Math.ceil(+mo / 3), date: d,
+      sender: mail.sender, sender_domain: mail.domain, account: mail.account, subject: mail.subject, name: base, ext: f.ext };
+    const fill = s => s.replace(/\{(\w+)\}/g, (all, k) => k in v ? clean(v[k]) : all);
+    const sub = t.sub.trim() ? t.sub.split("/").map(fill).filter(Boolean) : [];
+    let file = fill(t.file || "{name}");
+    if (!file.toLowerCase().endsWith("." + f.ext)) file += "." + f.ext;
+    return { folder: t.folder.replace(/\/+$/, ""), sub, file, date: d, from };
+  }
+  /* Gesetzte Arten müssen alle passen, innerhalb einer Art reicht eine; ohne Bedingung nie ein Vorschlag. */
+  const typeOf = ext => ext === "pdf" ? "pdf" : /^(png|jpe?g|gif|heic|webp)$/.test(ext) ? "img" : /^(docx?|xlsx?|pptx?|odt|ods)$/.test(ext) ? "office" : "";
+  const suggests = (t, f) => { const c = t.when; if (!c.cats.length && !c.types.length && !c.senders.length) return false;
+    return (!c.cats.length || c.cats.includes(mail.category)) && (!c.types.length || c.types.includes(typeOf(f.ext))) && (!c.senders.length || c.senders.includes(mail.domain)); };
+
+  /* ---------- Menüs ---------- */
+  function actionLabel(a) {
+    if (a === "open") return "Open";
+    if (a === "downloads") return "Save to Downloads";
+    if (a === "saveas") return "Save as…";
+    if (a === "suggest") return "Suggested target, else open";
+    const t = targets.find(t => "t:" + t.id === a);
+    return t ? "Save to " + t.name : a;
+  }
+  function effectiveAction(f) {
+    if (state.click === "suggest") { const t = targets.find(t => suggests(t, f)); return t ? "t:" + t.id : "open"; }
+    return state.click;
+  }
+  function menuHtml(f, all) {
+    const tag = a => !all && effectiveAction(f) === a ? '<span class="click">Click</span>' : "";
+    const sorted = [...targets].sort((a, b) => (f && suggests(b, f)) - (f && suggests(a, f)));
+    let h = "";
+    if (!all) h += `<button class="mi" role="menuitem" data-do="open">${icon("open")}<span class="lbl">Open</span>${tag("open")}</button>`;
+    h += `<button class="mi" role="menuitem" data-do="downloads">${icon("dl")}<span class="lbl">${all ? "Save all to Downloads" : "Save to Downloads"}</span>${tag("downloads")}</button>`;
+    h += `<button class="mi" role="menuitem" data-do="saveas">${icon("save")}<span class="lbl">${all ? "Save all to folder…" : "Save as…"}</span>${tag("saveas")}</button>`;
+    if (targets.length) {
+      h += `<div class="msep"></div><div class="msec">Save to</div>`;
+      for (const t of sorted) {
+        const r = f ? resolve(t, f) : null;
+        const where = r ? [t.name, ...r.sub].join(" › ") : t.name + " · by each file's date";
+        const sug = f && suggests(t, f) ? `<span class="sugg">${icon("spark")}Suggested</span>` : "";
+        h += `<button class="mi tall" role="menuitem" data-do="t:${t.id}">${icon("folder")}<span class="lbl">${esc(t.name)}<small>${esc(where)}</small></span>${sug}${tag("t:" + t.id)}</button>`;
+      }
+    }
+    h += `<div class="msep"></div><button class="mi quiet" role="menuitem" data-do="manage"><span style="width:16px"></span><span class="lbl">Manage save targets…</span></button>`;
+    return h;
+  }
+  function describe(a, f, all) {
+    const n = all ? `${files.length} attachments` : f.name;
+    if (a === "open") return `Opening ${f.name}…`;
+    if (a === "downloads") return all ? `${n} saved to Downloads` : `Saved to Downloads: ${n}`;
+    if (a === "saveas") return all ? "Choose a folder… (system dialog)" : `Save as… (system dialog, name ${f.name})`;
+    const t = targets.find(t => "t:" + t.id === a);
+    if (!t) return "";
+    if (all) return `${n} saved to ${t.name}, each by its date`;
+    const r = resolve(t, f);
+    return `Saved to ${[t.name, ...r.sub].join(" › ")}: ${r.file}`;
+  }
+
+  function setupStage(app, menuEl, toastEl, toastText) {
+    let timer, openTri = null;
+    const close = () => { menuEl.hidden = true; if (openTri) openTri.setAttribute("aria-expanded", "false"); openTri = null; };
+    const toast = msg => { toastText.textContent = msg; toastEl.hidden = false; clearTimeout(timer); timer = setTimeout(() => toastEl.hidden = true, 5000); };
+    app.addEventListener("click", e => {
+      const tri = e.target.closest(".tri");
+      const item = e.target.closest("[data-do]");
+      const main = e.target.closest("[data-file] .main, [data-file].nmrow, [data-act='saveall-default']");
+      if (tri) {
+        if (openTri === tri) { close(); return; }
+        close();
+        const holder = tri.closest("[data-file],[data-all]");
+        const all = holder.hasAttribute("data-all");
+        const f = all ? null : files[+holder.dataset.file];
+        menuEl.innerHTML = menuHtml(f, all);
+        menuEl.dataset.file = all ? "" : holder.dataset.file;
+        menuEl.hidden = false;
+        const a = app.getBoundingClientRect(), b = tri.getBoundingClientRect();
+        let left = b.right - a.left - menuEl.offsetWidth;
+        left = Math.max(8, Math.min(left, app.offsetWidth - menuEl.offsetWidth - 8));
+        let top = b.bottom - a.top + 4;
+        if (top + menuEl.offsetHeight > app.offsetHeight - 8) top = b.top - a.top - menuEl.offsetHeight - 4;
+        menuEl.style.left = left + "px"; menuEl.style.top = Math.max(8, top) + "px";
+        tri.setAttribute("aria-expanded", "true"); openTri = tri;
+        menuEl.querySelector(".mi")?.focus();
+        return;
+      }
+      if (item) {
+        const a = item.dataset.do, all = menuEl.dataset.file === "";
+        close();
+        if (a === "manage") { document.getElementById("einstellungen").scrollIntoView({ behavior: "smooth" }); return; }
+        toast(describe(a, all ? files[0] : files[+menuEl.dataset.file], all));
+        return;
+      }
+      if (main) {
+        close();
+        const holder = main.closest("[data-file]");
+        if (!holder) {
+          const a = state.click === "open" || state.click === "suggest" ? "downloads" : state.click;
+          toast(describe(a, files[0], true)); return;
+        }
+        const f = files[+holder.dataset.file];
+        toast(describe(effectiveAction(f), f, false));
+        return;
+      }
+      if (e.target.closest("[data-act='toast-folder']")) { toast("The folder opens in the file manager"); return; }
+      if (!e.target.closest(".menu")) close();
+    });
+    app.addEventListener("keydown", e => {
+      if (e.key === "Escape" && !menuEl.hidden) { const t = openTri; close(); t?.focus(); }
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !menuEl.hidden) {
+        const items = [...menuEl.querySelectorAll(".mi")], i = items.indexOf(document.activeElement);
+        items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus(); e.preventDefault();
+      }
+    });
+    document.addEventListener("click", e => { if (!app.contains(e.target)) close(); });
+  }
+
+  function renderChips() {
+    const chipTitle = f => `${actionLabel(effectiveAction(f))}: ${f.name}`;
+    document.getElementById("chips").innerHTML = files.map((f, i) =>
+      `<span class="split" data-file="${i}"><button class="main" type="button" title="${esc(chipTitle(f))}">${icon("clip")}<span>${esc(f.name)}</span><span class="meta">${f.size}</span></button><button class="tri" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to open or save ${esc(f.name)}">${icon("down")}</button></span>`).join("");
+    document.getElementById("prows").innerHTML = files.map((f, i) =>
+      `<div class="prow" data-file="${i}"><button class="main nmrow" type="button" style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;height:38px;text-align:left" title="${esc(chipTitle(f))}">${icon("clip")}<span class="nm">${esc(f.name)}</span><span class="meta">${f.size}</span></button><button class="tri" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to open or save ${esc(f.name)}">${icon("down")}</button></div>`).join("");
+  }
+
+  /* ---------- Einstellungen ---------- */
+  function renderSettings() {
+    const opts = [["open", "Open"], ["downloads", "Save to Downloads"], ["saveas", "Save as…"],
+      ...targets.map(t => ["t:" + t.id, "Save to " + t.name]), ["suggest", "Suggested target, else open"]];
+    const sel = document.getElementById("clickSel");
+    sel.innerHTML = opts.map(([v, l]) => `<option value="${v}"${v === state.click ? " selected" : ""}>${esc(l)}</option>`).join("");
+    const fixed = `<div class="trow">${icon("dl")}<div class="txt">Downloads<small>~/Downloads</small></div><span class="fixed">Built in</span></div>
+      <div class="trow">${icon("save")}<div class="txt">Save as…<small>Asks every time, starts in the last folder used</small></div><span class="fixed">Built in</span></div>`;
+    const own = targets.map(t => `<div class="trow">${icon("folder")}<div class="txt">${esc(t.name)}<small>${esc(t.folder)}/${esc(t.sub || "")} · ${t.when.cats.length ? "suggested for " + esc(t.when.cats.join(", ")) : "never suggested"}</small></div><button class="btn ghost" type="button" data-edit="${t.id}">${icon("pencil")}Edit</button></div>`).join("");
+    document.getElementById("targetList").innerHTML = fixed + own +
+      `<div class="trow"><button class="btn ghost" type="button" data-edit="new">${icon("plus")}Add save target</button></div>`;
+  }
+  document.getElementById("clickSel").addEventListener("change", e => { state.click = e.target.value; renderChips(); });
+  document.getElementById("targetList").addEventListener("click", e => {
+    const b = e.target.closest("[data-edit]"); if (!b) return;
+    if (b.dataset.edit === "new") {
+      const t = { id: "n" + Date.now(), name: "Receipts", folder: "~/Documents/Receipts", sub: "{year}/{quarter}", file: "{date}_{sender}_{name}", date: "file", when: { cats: ["Receipt"], types: [], senders: [] }, dup: "number" };
+      targets.push(t); state.editing = t; renderSettings(); renderChips();
+    } else state.editing = targets.find(t => t.id === b.dataset.edit);
+    loadEditor(); document.getElementById("ziel").scrollIntoView({ behavior: "smooth" });
+  });
+
+  /* ---------- Editor ---------- */
+  const F = id => document.getElementById(id);
+  const patterns = {
+    sub: [["None", ""], ["Year", "{year}"], ["Year / Month", "{year}/{month}"], ["Year / Quarter", "{year}/{quarter}"], ["Sender / Year", "{sender}/{year}"], ["Year / Month name", "{year}/{month} {month_name}"]],
+    file: [["Keep original", "{name}"], ["Date first", "{date}_{name}"], ["Date and sender", "{date}_{sender}_{name}"]]
+  };
+  const placeholders = [
+    ["Date", [["Year", "{year}"], ["Month", "{month}"], ["Month name", "{month_name}"], ["Day", "{day}"], ["Quarter", "{quarter}"], ["Full date", "{date}"]]],
+    ["Mail", [["Sender", "{sender}"], ["Sender domain", "{sender_domain}"], ["Account", "{account}"], ["Subject", "{subject}"]]],
+    ["File", [["Original name", "{name}"]]]
+  ];
+  const fileTypes = [["PDF", "pdf"], ["Images", "img"], ["Office", "office"]];
+  const senders = ["stadtwerke-bonn.de", "telekom.de", "amazon.de"];
+  let variant = 1;
+
+  const editorApp = F("editorApp"), menu3 = F("menu3");
+  let menuFor = null;
+  function exampleOf(token) {
+    const t = { ...state.editing, sub: token, file: "" };
+    return resolve(t, files[0]).sub.join("/") || "";
+  }
+  function openMenu(btn, html, kind) {
+    menu3.innerHTML = html; menu3.hidden = false; menuFor = { btn, kind };
+    const a = editorApp.getBoundingClientRect(), b = btn.getBoundingClientRect();
+    menu3.style.left = Math.max(8, Math.min(b.right - a.left - menu3.offsetWidth, editorApp.offsetWidth - menu3.offsetWidth - 8)) + "px";
+    let top = b.bottom - a.top + 4;
+    if (top + menu3.offsetHeight > editorApp.offsetHeight - 8) top = b.top - a.top - menu3.offsetHeight - 4;
+    menu3.style.top = Math.max(8, top) + "px";
+    btn.setAttribute("aria-expanded", "true");
+    menu3.querySelector(".mi")?.focus();
+  }
+  function closeMenu() { if (menuFor) menuFor.btn.setAttribute("aria-expanded", "false"); menu3.hidden = true; menuFor = null; }
+  function insertMenu(field) {
+    let h = `<div class="msec">Patterns</div>` + patterns[field].map(([l, v]) => `<button class="mi" role="menuitem" data-pat="${esc(v)}"><span class="lbl">${l}</span><span class="ex">${esc(v || "—")}</span></button>`).join("");
+    for (const [grp, list] of placeholders) {
+      h += `<div class="msep"></div><div class="msec">${grp}</div>` + list.map(([l, v]) => `<button class="mi" role="menuitem" data-tok="${v}"><span class="lbl">${l}</span><span class="ex">${esc(exampleOf(v))}</span></button>`).join("");
+    }
+    return h;
+  }
+  const w = () => state.editing.when;
+  function check(label, on, attrs) { return `<button class="mi" role="menuitemcheckbox" aria-checked="${on}" ${attrs}><span class="box"><svg><use href="#i-check"/></svg></span><span class="lbl">${esc(label)}</span></button>`; }
+  function catMenu() { return `<div class="msec">Mail category</div>` + paperCats.map(c => check(c, w().cats.includes(c), `data-cat="${c}"`)).join(""); }
+  function typeMenu() { return `<div class="msec">File type</div>` + fileTypes.map(([l, v]) => check(l, w().types.includes(v), `data-type="${v}"`)).join(""); }
+  function senderMenu() { return `<div class="msec">Sender</div>` + senders.map(s => check(s, w().senders.includes(s), `data-sender="${s}"`)).join(""); }
+  function condMenu() { return catMenu() + `<div class="msep"></div>` + typeMenu() + `<div class="msep"></div>` + senderMenu(); }
+  const typeName = v => fileTypes.find(t => t[1] === v)[0];
+  function list(xs, none) { return xs.length ? xs.join(", ") : none; }
+
+  function drawSuggest() {
+    const el = F("suggestCtl"), cur = w();
+    if (variant === 1) {
+      const conds = [
+        ...cur.cats.map(c => ["Category", c, `data-rm-cat="${c}"`]),
+        ...cur.types.map(t => ["Type", typeName(t), `data-rm-type="${t}"`]),
+        ...cur.senders.map(s => ["From", s, `data-rm-sender="${s}"`])
+      ];
+      el.innerHTML = `<div class="conds">${conds.map(([k, v, a]) => `<span class="cond"><span class="k">${k}</span>${esc(v)}<button type="button" aria-label="Remove ${esc(v)}" ${a}><svg><use href="#i-x"/></svg></button></span>`).join("")}
+        <button class="btn ghost" type="button" data-menu="cond" aria-haspopup="menu"><svg><use href="#i-plus"/></svg>Add condition</button></div>
+        <small>${conds.length ? "Any category, and any of the types if set." : "Never suggested."}</small>`;
+    } else if (variant === 2) {
+      el.innerHTML = `<div class="conds">${paperCats.map(c => `<button type="button" class="cc" aria-pressed="${cur.cats.includes(c)}" data-tog-cat="${c}"><svg class="ck"><use href="#i-check"/></svg>${c}</button>`).join("")}</div>
+        <div class="seg" style="margin-top:4px">${[["Any file", ""], ...fileTypes].map(([l, v]) => `<button type="button" data-only-type="${v}" aria-pressed="${v ? cur.types.length === 1 && cur.types[0] === v : cur.types.length === 0}">${l}</button>`).join("")}</div>
+        <small>Mail categories as Torro sorts them. None chosen: never suggested.</small>`;
+    } else {
+      el.innerHTML = `<div class="sentence">Mail is <button type="button" class="pick" data-menu="cat" aria-haspopup="menu">${esc(list(cur.cats, "any category"))}<svg><use href="#i-down"/></svg></button>
+        and file is <button type="button" class="pick" data-menu="type" aria-haspopup="menu">${esc(list(cur.types.map(typeName), "any type"))}<svg><use href="#i-down"/></svg></button></div>`;
+    }
+  }
+  function drawEditor() {
+    const t = state.editing;
+    document.querySelectorAll("#segDate button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === t.date));
+    document.querySelectorAll("#segDup button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === t.dup));
+    drawSuggest();
+    const r = resolve(t, files[0]);
+    F("pvPath").innerHTML = esc(r.folder) + "/" + r.sub.map(s => `<em>${esc(s)}</em>/`).join("") + esc(r.file);
+    const dateWhy = r.from === "file" ? `Date ${r.date} from the file name (the mail came on 2 Apr 2026).` : `Date ${r.date} from the mail.`;
+    const sug = suggests(t, files[0]) ? " Suggested for this file: the mail is an invoice." : " Not suggested for this file.";
+    F("pvWhy").textContent = dateWhy + sug + (t.dup === "skip" ? " If the same file is already there, nothing is saved again." : " If a file of that name exists, the new one becomes “… (2).pdf”.");
+  }
+  function loadEditor() {
+    const t = state.editing;
+    F("fName").value = t.name; F("fFolder").value = t.folder; F("fSub").value = t.sub; F("fFile").value = t.file;
+    drawEditor();
+  }
+  const changed = () => { drawEditor(); renderSettings(); renderChips(); };
+  const toggle = (arr, v) => { const i = arr.indexOf(v); i < 0 ? arr.push(v) : arr.splice(i, 1); };
+
+  editorApp.addEventListener("click", e => {
+    const t = state.editing, c = w();
+    const ins = e.target.closest("[data-insert]"), mb = e.target.closest("[data-menu]");
+    if (ins || mb) {
+      const btn = ins || mb, kind = ins ? "ins:" + ins.dataset.insert : mb.dataset.menu;
+      if (menuFor && menuFor.btn === btn) { closeMenu(); return; }
+      closeMenu();
+      const html = ins ? insertMenu(ins.dataset.insert) : kind === "cond" ? condMenu() : kind === "cat" ? catMenu() : typeMenu();
+      openMenu(btn, html, kind); return;
+    }
+    const mi = e.target.closest(".menu .mi");
+    if (mi && menuFor) {
+      if (menuFor.kind.startsWith("ins:")) {
+        const field = menuFor.kind.slice(4), inp = field === "sub" ? F("fSub") : F("fFile");
+        if ("pat" in mi.dataset) inp.value = mi.dataset.pat;
+        else { const p = inp.selectionStart ?? inp.value.length, q = inp.selectionEnd ?? p; inp.value = inp.value.slice(0, p) + mi.dataset.tok + inp.value.slice(q); }
+        t[field] = inp.value; closeMenu(); inp.focus(); changed(); return;
+      }
+      if (mi.dataset.cat) toggle(c.cats, mi.dataset.cat);
+      if (mi.dataset.type) toggle(c.types, mi.dataset.type);
+      if (mi.dataset.sender) toggle(c.senders, mi.dataset.sender);
+      mi.setAttribute("aria-checked", mi.getAttribute("aria-checked") !== "true");
+      const keep = menuFor; changed(); menuFor = keep;
+      if (variant !== 1) { const nb = F("suggestCtl").querySelector(`[data-menu="${keep.kind}"]`); if (nb) { menuFor.btn = nb; nb.setAttribute("aria-expanded", "true"); } }
+      else { const nb = F("suggestCtl").querySelector('[data-menu="cond"]'); if (nb) menuFor.btn = nb; }
+      return;
+    }
+    const seg = e.target.closest(".seg [data-k]");
+    if (seg) { t[seg.dataset.k] = seg.dataset.v; changed(); return; }
+    const rm = e.target.closest("[data-rm-cat],[data-rm-type],[data-rm-sender]");
+    if (rm) { if (rm.dataset.rmCat) toggle(c.cats, rm.dataset.rmCat); if (rm.dataset.rmType) toggle(c.types, rm.dataset.rmType); if (rm.dataset.rmSender) toggle(c.senders, rm.dataset.rmSender); changed(); return; }
+    const tc = e.target.closest("[data-tog-cat]");
+    if (tc) { toggle(c.cats, tc.dataset.togCat); changed(); return; }
+    const ot = e.target.closest("[data-only-type]");
+    if (ot) { c.types = ot.dataset.onlyType ? [ot.dataset.onlyType] : []; changed(); return; }
+    if (!e.target.closest(".menu")) closeMenu();
+  });
+  editorApp.addEventListener("keydown", e => {
+    if (e.key === "Escape" && menuFor) { const b = menuFor.btn; closeMenu(); b.focus(); }
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && menuFor) {
+      const items = [...menu3.querySelectorAll(".mi")], i = items.indexOf(document.activeElement);
+      items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus(); e.preventDefault();
+    }
+  });
+  document.addEventListener("click", e => { if (!editorApp.contains(e.target)) closeMenu(); });
+  document.querySelectorAll("[data-var]").forEach(b => b.addEventListener("click", () => {
+    variant = +b.dataset.var; closeMenu();
+    document.querySelectorAll("[data-var]").forEach(x => x.setAttribute("aria-pressed", x === b));
+    drawSuggest();
+  }));
+  [["fName", "name"], ["fFolder", "folder"], ["fSub", "sub"], ["fFile", "file"]].forEach(([id, k]) =>
+    F(id).addEventListener("input", e => { state.editing[k] = e.target.value; changed(); }));
+  renderChips(); renderSettings(); loadEditor();
+  setupStage(document.getElementById("readerApp"), F("menu"), F("toast"), F("toastText"));
+  setupStage(document.getElementById("panelApp"), F("menu2"), F("toast2"), F("toastText2"));
+})();
+</script>

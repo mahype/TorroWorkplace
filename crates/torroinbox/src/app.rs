@@ -152,6 +152,14 @@
 //! sidebar holds the folders alone and it starts on the first account's inbox ([`View::Mail`]
 //! until the folders are in).
 //!
+//! Attachments (task M12.6, issue #290): a click on an attachment's name does what the setting
+//! `mail_attachments.click` says ([`MailLook::click`]) – open, save to Downloads or a save target, or
+//! ask with the system's save dialog; its triangle and "Save all ▾" open their menus
+//! ([`Menu::Attachment`], [`Menu::SaveAll`]), as "Save attachments (n)" in the rail's File and the
+//! list's context menu do (at the row, as "Later…"). Where each file would go is asked once a mail's
+//! text is in ([`App::saving`], `mail.list_save_targets`); every save is `mail.save_attachments`, and
+//! its hint has "Show in folder" ([`Hint::folder`]). A cancelled dialog sends nothing.
+//!
 //! Security rule 1 (`docs/tasks/eingang.md`): approvals, account problems and the suite's entries
 //! belong to the human. This window is the human (it holds the app key), so it may change them,
 //! with two limits of its own: an approval has no "done" (it closes once decided), and the suite
@@ -197,8 +205,8 @@ use torro_inbox::{
     InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef, State,
     StateFilter, rules,
 };
-use torro_ipc::inbox::{CalendarEvent, CategoryInfo, EventFields, MailFound};
-use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_ipc::inbox::{CalendarEvent, CategoryInfo, EventFields, MailFound, SaveTargets, SavedAttachments};
+use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, SaveTo};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
@@ -653,6 +661,10 @@ pub struct Hint {
     pub undo: Option<Undo>,
     /// When it appeared; it goes [`UNDO_FOR`] later.
     pub shown: Instant,
+    /// "Show in folder" after attachments were saved (task M12.6): the folder of the first file,
+    /// opened in the file manager as `mail::open_attachment` opens the folder of a program. A hint
+    /// has it or "Undo", never both – saving is not undone.
+    pub folder: Option<std::path::PathBuf>,
 }
 
 /// A message archived or deleted in this window (issue #205), kept out of what loads.
@@ -1013,6 +1025,16 @@ pub enum Sent {
     Fetch,
     /// `ui.json`: the action rail of the window with this key, expanded or collapsed (task E14.3).
     Actions(String, RailMode),
+    /// `mail.list_save_targets` for the message with this id (task M12.6).
+    SaveTargets(String),
+    /// `mail.save_attachments`: message, parts (none: all) and where to.
+    Save(String, Vec<String>, SaveTo),
+    /// The system's save dialog of "Save as…", starting with this name.
+    SaveDialog(String),
+    /// The system's folder dialog of "Save all to folder…".
+    FolderDialog,
+    /// "Show in folder": this folder in the file manager.
+    ShowFolder(std::path::PathBuf),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -1194,6 +1216,13 @@ pub enum Menu {
     /// The question "Delete permanently?" for [`App::mail_subject`] (task E10.1): a dialog over the
     /// window ([`App::question_layer`]), `Enter` or "Delete" removes the message for good.
     DeleteForGood,
+    /// The menu of an attachment's triangle (task M12.6, `mail::file_menu`) of the mail held: its ways
+    /// to open and save, at that triangle. The attachment by its place among the mail's attachments
+    /// that are not `inline` (`mail::files_of`).
+    Attachment(usize),
+    /// The menu of "Save all" (task M12.6) of the mail held: at its triangle, or – with `rail` – at
+    /// "Save attachments (n)" of the rail's File, and from the list's context menu at the row.
+    SaveAll { rail: bool },
 }
 
 /// Which buttons a menu for an entry hangs at (issue #122): the button clicked, else where the
@@ -1332,10 +1361,26 @@ pub enum Open {
     BackupError,
     /// That page with a complete backup, its verified archive and a finished restore.
     BackupDone,
+    /// "With attachments" with the demo's invoice open (task M12.6) and the menu of its first
+    /// attachment open at its triangle.
+    AttachmentMenu,
+    /// That invoice with the menu of "Save all" open.
+    SaveAllMenu,
+    /// That invoice after its first attachment was saved to its first save target: the hint with
+    /// "Show in folder", kept for good.
+    AttachmentSaved,
+    /// The mail window's "Waiting for me" open and shown, the group with the most categories of
+    /// the demo (issue #300); set once the catalogue is in.
+    CategoryGroup,
+    /// That group open with its first category shown.
+    Category,
+    /// That group open and shown with the navigation menu open (only the medium and narrow header
+    /// have it).
+    CategoryMenu,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 50] = [
+    const ALL: [(&'static str, Open); 56] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1386,6 +1431,12 @@ impl Open {
         ("backup-plan", Open::BackupPlan),
         ("backup-error", Open::BackupError),
         ("backup-done", Open::BackupDone),
+        ("attachment-menu", Open::AttachmentMenu),
+        ("save-all-menu", Open::SaveAllMenu),
+        ("attachment-saved", Open::AttachmentSaved),
+        ("category-group", Open::CategoryGroup),
+        ("category", Open::Category),
+        ("category-menu", Open::CategoryMenu),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -1783,6 +1834,7 @@ impl Launch {
             format: self.mail_view.unwrap_or(stored.format),
             colors: self.mail_colors.unwrap_or(stored.colors),
             hidden_categories: stored.hidden_categories,
+            click: stored.click,
         }
     }
 
@@ -1980,6 +2032,31 @@ impl SettingsBackend for CoreSettings {
     }
 }
 
+/// Asks where to save an attachment with the system's save dialog ("Save as…", task M12.6), starting
+/// with `name`; `None` when it is cancelled.
+async fn choose_save_file(name: String) -> Option<std::path::PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new().set_title(tr("Save attachment")).set_file_name(name);
+    dialog.save_file().await.map(|file| file.path().to_path_buf())
+}
+
+/// Asks for the folder of "Save all to folder…" (task M12.6) with the system's chooser; `None` when
+/// it is cancelled.
+async fn choose_save_folder() -> Option<std::path::PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new().set_title(tr("Choose a folder for the attachments"));
+    dialog.pick_folder().await.map(|folder| folder.path().to_path_buf())
+}
+
+/// Asks for a folder with the system's chooser for Settings › Attachments (task M12.7): the Downloads
+/// folder or the folder of a save target; `None` when it is cancelled.
+async fn choose_settings_folder(purpose: settings_mail::FolderFor) -> Option<std::path::PathBuf> {
+    let title = match purpose {
+        settings_mail::FolderFor::Downloads => tr("Choose the Downloads folder"),
+        settings_mail::FolderFor::Target => tr("Choose the folder of the save target"),
+    };
+    let dialog = rfd::AsyncFileDialog::new().set_title(title);
+    dialog.pick_folder().await.map(|folder| folder.path().to_path_buf())
+}
+
 /// Asks for a backup folder or a `.zip` archive with the system's chooser, for "Choose…" on a mail
 /// account's backup page; `None` when it is cancelled.
 async fn choose_backup_path(chooser: settings_mail::BackupChooser) -> Option<std::path::PathBuf> {
@@ -1999,7 +2076,7 @@ fn settings_update(
     sections: &mut SettingsState,
     message: SettingsMessage,
     data: &torro_settings_ui::Data,
-) -> torro_settings_ui::Action<()> {
+) -> torro_settings_ui::Action<settings_mail::AppAction> {
     match (sections, message) {
         (SettingsState::Inbox(state), SettingsMessage::Inbox(message)) => settings_inbox::update(state, message, data),
         (SettingsState::Mail(state), SettingsMessage::Mail(message)) => settings_mail::update(state, message, data),
@@ -2019,21 +2096,24 @@ fn is_mail_backup_request(request: &torro_ipc::Request) -> bool {
     )
 }
 
-/// What Escape means in the open section before it closes the settings (task E15.5): `None`
-/// lets the settings close.
+/// What Escape means in the open section before it closes the settings (task E15.5, the dialog of
+/// Attachments in task M12.7): `None` lets the settings close.
 fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
+    let SettingsState::Mail(state) = &pane.sections else { return None };
     // Only where the editor shows: a page left open behind another section must not take Escape.
-    if pane.host.current().id != CATEGORIZATION_SECTION {
-        return None;
-    }
-    match &pane.sections {
-        SettingsState::Mail(state) => settings_mail::escape(state).map(SettingsMessage::Mail),
-        SettingsState::Inbox(_) => None,
+    match pane.host.current().id {
+        CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
+        ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
+        _ => None,
     }
 }
 
 /// The mail window's section with the categories' editor (task E15.5).
 const CATEGORIZATION_SECTION: &str = "categorization";
+
+/// The mail window's section with the save targets (task M12.7), where "Manage save targets…" leads
+/// (task M12.6).
+const ATTACHMENTS_SECTION: &str = settings_mail::ATTACHMENTS_SECTION;
 
 /// The page of the open section, as the host takes it.
 fn settings_page<'a>(
@@ -2113,6 +2193,8 @@ fn shows_entries(message: &Message) -> bool {
             | Message::OpenFolders
             | Message::DismissAll
             | Message::Switcher(_)
+            | Message::ToggleCategoryGroup(_)
+            | Message::ShowCategoryGroup(_)
     )
 }
 
@@ -2132,6 +2214,9 @@ pub struct App<S> {
     launch: Launch,
     /// The one-time part of `launch.open` (opening a panel) has been done.
     opened: bool,
+    /// The category start states (`--open category-group` …) are in place, once the catalogue
+    /// came (issue #300).
+    categories_staged: bool,
     /// How far "now" is ahead of the clock: zero, or `--now` minus the clock at start, so the
     /// times in the list match the demo data.
     offset: TimeDelta,
@@ -2315,6 +2400,10 @@ pub struct App<S> {
     /// The HTML of the mail held ([`App::letter`]), parsed for the panel and the reader (task
     /// M9.7, [`App::follow_html`]); `None` while no mail with HTML is held.
     html: Option<mail::HtmlMail>,
+    /// The save targets and the plans of the attachments of a mail (task M12.6,
+    /// `mail.list_save_targets`), asked once its text is in: the message's id and the answer. Only an
+    /// answer for the mail held is taken, and only the one of the mail held counts ([`App::saving_of`]).
+    saving: Option<(String, Result<SaveTargets, String>)>,
     /// The settings `mail_view` and `mail_appearance` as last read, with `--mail-view` and
     /// `--mail-colors` over them ([`App::take_look`]).
     look: MailLook,
@@ -2443,8 +2532,13 @@ pub enum Message {
     AskLane(String),
     /// "Category ▸" on a mail (task E12.8): opens the list of categories.
     AskCategory(String),
-    /// Folds a group of "Categories" in the sidebar open or shut (task E12.8).
+    /// A click on a group of "Categories" (task E12.8, issue #300): a folded group opens and is
+    /// shown, an open group not shown is shown, the open group shown folds
+    /// ([`App::toggle_category_group`]).
     ToggleCategoryGroup(CategoryGroup),
+    /// A click on a group in the navigation menu or the rail (issue #300), where its fold does not
+    /// show: opens and shows the group and closes the menu like every view; never folds it.
+    ShowCategoryGroup(CategoryGroup),
     /// Opens the link held back from a fraudulent mail after all (task E12.9).
     OpenLinkAnyway,
     /// One category picked: the question "Always for this sender?" follows.
@@ -2629,6 +2723,9 @@ pub enum Message {
     MailBackupAnswered(String, Box<Result<torro_ipc::Response, String>>),
     /// What the system's chooser of a backup page returned: a path, or `None` when it was cancelled.
     BackupChosen(settings_mail::BackupChooser, Option<std::path::PathBuf>),
+    /// What the system's folder chooser of Settings › Attachments returned (task M12.7): the folder
+    /// for the Downloads folder or a save target, or `None` when it was cancelled.
+    SettingsFolderChosen(settings_mail::FolderFor, Option<std::path::PathBuf>),
     /// Open the control centre: what an entry about the suite links to ([`App::open_entry`] with
     /// `Link::App` on `torroworkplace`). Its own message, never the gear's – an entry must not be
     /// able to open a settings section in this window (task S.20).
@@ -2683,6 +2780,35 @@ pub enum Message {
     OpenAttachment(String, String),
     /// What became of opening an attachment.
     AttachmentOpened(Result<Opened, String>),
+    /// `mail.list_save_targets` answered for the message with this id (task M12.6).
+    SaveTargets(String, Result<SaveTargets, String>),
+    /// The triangle of an attachment (task M12.6): its menu ([`Menu::Attachment`]) – the message's id
+    /// and the attachment's place among those that are not `inline`.
+    AskAttachment(String, usize),
+    /// The triangle of "Save all" over the attachments of the message with this id: their menu.
+    AskSaveAll(String),
+    /// "Save attachments (n)" of the rail's File, and the list's context menu (task M12.6): the menu of
+    /// "Save all" at that item, or at the row.
+    AskSaveAttachments(String),
+    /// "Save all" itself: what its click does by the setting (`mail::all_act`).
+    SaveAll(String),
+    /// An entry of an attachment's menu (`Some(part)`) or of "Save all" (`None`), for the message with
+    /// this id; also what a click on a name or "Save all" does by the setting.
+    FileAct(String, Option<String>, mail::FileAct),
+    /// The save dialog of "Save as…" answered for the message and part: the file chosen, `None` when
+    /// it was cancelled – then nothing is sent and nothing said.
+    SaveAsChosen(String, String, Option<std::path::PathBuf>),
+    /// The folder dialog of "Save all to folder…" answered for the message, alike.
+    FolderChosen(String, Option<std::path::PathBuf>),
+    /// `mail.save_attachments` answered: the words of where, taken when it was sent
+    /// ([`mail::save_place`]), for the hint, and what was saved.
+    AttachmentsSaved(Option<String>, Result<SavedAttachments, String>),
+    /// "Show in folder" in the hint after saving (task M12.6).
+    ShowInFolder,
+    /// The file manager was asked to show that folder.
+    FolderShown(Result<(), String>),
+    /// "Manage save targets…" in an attachment's menu: Settings › Attachments of the mail window.
+    ManageSaveTargets,
     /// A web address under a mail's or an entry's text ("Links") was clicked.
     OpenMailLink(String),
     /// A click, drag or key on the text in the panel or the reader (issue #119): selects, never
@@ -3111,6 +3237,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             opened: false,
             categories: Vec::new(),
             open_groups: std::collections::BTreeSet::new(),
+            categories_staged: false,
             model_ready: false,
             picked_category: None,
             held_link: None,
@@ -3132,7 +3259,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     View::Overview
                 }
                 Some(Open::MailEntry | Open::MailActions | Open::MailGroup) => View::ForMe,
-                Some(Open::Attachments) => View::Attachments,
+                Some(Open::Attachments | Open::AttachmentMenu | Open::SaveAllMenu | Open::AttachmentSaved) => {
+                    View::Attachments
+                }
                 Some(Open::Invitations | Open::Invitation) => View::Invitations,
                 Some(
                     Open::Overview
@@ -3215,6 +3344,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             start_mail: launch.message.clone(),
             pinned_mail: None,
             html: None,
+            saving: None,
             look: launch.look(MailLook::default()),
             mail_format: launch.look(MailLook::default()).format,
             mail_scheme: None,
@@ -3232,7 +3362,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             appearance: Appearance::System,
             system_mode: Mode::None,
             menu: match open {
-                Some(Open::Menu) => Some(Menu::Nav),
+                Some(Open::Menu | Open::CategoryMenu) => Some(Menu::Nav),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 _ => None,
             },
@@ -3451,13 +3581,71 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Takes the settings `mail_view` and `mail_appearance` (task M9.7), with `--mail-view` and
     /// `--mail-colors` over them. When they changed, both switches go back to them; the same answer
     /// again (every tick) leaves the switches as the person set them.
-    fn take_look(&mut self, stored: MailLook) {
+    fn take_look(&mut self, stored: MailLook) -> Task<Message> {
         let look = self.launch.look(stored);
-        if look != self.look {
+        if look == self.look {
+            return Task::none();
+        }
+        let hidden_changed = look.hidden_categories != self.look.hidden_categories;
+        // Only the mail's view resets the switches: another click on attachments (task M12.6) or
+        // other hidden categories leave them as the person set them.
+        if (look.format, look.colors) != (self.look.format, self.look.colors) {
             self.mail_format = look.format;
-            self.look = look;
             self.mail_scheme = None;
         }
+        self.look = look;
+        // A shown group lists the categories it had when it was shown; one switched off since
+        // must leave its list now, not only after another view (issue #300).
+        if hidden_changed
+            && let View::Category(shown) = &self.view
+            && shown.only.is_none()
+        {
+            let group = shown.group;
+            // No category with mail left: the group is gone from the sidebar (`category_entries`),
+            // and its view would list nothing – or, with no category at all, ask the core for no
+            // filter, every mail under the group's name. Not through `Message::Show`: that one
+            // takes the content area back from open settings, and the category was just switched
+            // off there.
+            let hidden = &self.look.hidden_categories;
+            let listed = self
+                .categories
+                .iter()
+                .any(|held| held.group == group && held.messages > 0 && !hidden.contains(&held.category));
+            if !listed {
+                return self.show_view(View::Overview);
+            }
+            let view = self.category_group_view(group);
+            if view != self.view {
+                self.view = view;
+                return self.load();
+            }
+        }
+        Task::none()
+    }
+
+    /// Shows `view` as a click in the sidebar does: no selection, no detail, no search left from
+    /// the last one, and loads it when it is another.
+    fn show_view(&mut self, view: View) -> Task<Message> {
+        self.close_menus();
+        self.selected_mail.clear();
+        self.mail_anchor = None;
+        self.detail = None;
+        self.reading = false;
+        self.cursor = None;
+        self.pinned_mail = None;
+        // "Act now" again, all of it (task E8.5), and no more Insights (task E8.8b).
+        self.sorting = false;
+        self.filter = None;
+        self.insights.shown = false;
+        // Another view leaves the search: its field starts empty.
+        if view.search().is_none() {
+            self.leave_search_state();
+        }
+        if view != self.view {
+            self.view = view;
+            return self.load();
+        }
+        Task::none()
     }
 
     /// Asks the core for the mail settings (task M9.7), on every tick like the appearance.
@@ -3489,8 +3677,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         // The sidebar stays while the settings are open; anything that would show entries again
         // takes the content area back from them (task S.20).
+        let mut message = message;
         if self.settings.is_some() && shows_entries(&message) {
             self.leave_settings();
+            // The highlighted group row brings its list back over the settings, like every other
+            // row; folding it would leave nothing visible changed (issue #300).
+            if let Message::ToggleCategoryGroup(group) = message {
+                message = Message::ShowCategoryGroup(group);
+            }
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
@@ -3519,27 +3713,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Err(err) => self.error = Some(load_failed(&err)),
                 }
             }
-            Message::Show(view) => {
-                self.close_menus();
-                self.selected_mail.clear();
-                self.mail_anchor = None;
-                self.detail = None;
-                self.reading = false;
-                self.cursor = None;
-                self.pinned_mail = None;
-                // "Act now" again, all of it (task E8.5), and no more Insights (task E8.8b).
-                self.sorting = false;
-                self.filter = None;
-                self.insights.shown = false;
-                // Another view leaves the search: its field starts empty.
-                if view.search().is_none() {
-                    self.leave_search_state();
-                }
-                if view != self.view {
-                    self.view = view;
-                    return self.load();
-                }
-            }
+            Message::Show(view) => return self.show_view(view),
             Message::Select(id) => self.select(id),
             Message::Act(id, command) => return self.act(&id, command),
             Message::ToggleInfo(column) => return self.toggle_info(column),
@@ -3559,8 +3733,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Edited(result, after) => return self.edited(result, after),
             Message::Undo => return self.undo(),
             Message::HintTick(now) => {
-                // The forced hints of `--open undo` and `--open mute` stay, so they can be photographed.
-                let forced = matches!(self.launch.open, Some(Open::Undo | Open::Mute));
+                // The forced hints of `--open undo`, `mute` and `attachment-saved` stay, so they can be
+                // photographed.
+                let forced = matches!(self.launch.open, Some(Open::Undo | Open::Mute | Open::AttachmentSaved));
                 if !forced
                     && self.hint.as_ref().is_some_and(|hint| now.saturating_duration_since(hint.shown) >= UNDO_FOR)
                 {
@@ -3593,11 +3768,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return self.open_url(url);
                 }
             }
-            Message::ToggleCategoryGroup(group) => {
-                if !self.open_groups.remove(&group) {
-                    self.open_groups.insert(group);
-                }
-            }
+            Message::ToggleCategoryGroup(group) => return self.toggle_category_group(group),
+            Message::ShowCategoryGroup(group) => return self.show_category_group(group),
             Message::AskCategory(id) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_category(&id);
@@ -3657,7 +3829,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::MuteSuggested(id, scope, effect) => return self.mute_by(id, scope, effect),
             Message::MutedBy(Ok(muted), effect) => {
                 let text = muted_note(&muted, effect, self.now);
-                self.hint = Some(Hint { text, undo: Undo::of_muted(&muted), shown: Instant::now() });
+                self.hint = Some(Hint { text, undo: Undo::of_muted(&muted), shown: Instant::now(), folder: None });
                 return self.load();
             }
             Message::MutedBy(Err(err), _) => {
@@ -3974,6 +4146,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             // Cancelled: the field keeps what it had.
             Message::BackupChosen(_, None) => {}
+            Message::SettingsFolderChosen(purpose, Some(path)) => {
+                let chosen = SettingsMessage::Mail(settings_mail::folder_chosen(purpose, path));
+                return self.update(Message::SettingsPage(chosen));
+            }
+            // Cancelled: nothing is sent and the field keeps what it had.
+            Message::SettingsFolderChosen(_, None) => {}
             Message::MailBackupAnswered(account, answer) => {
                 if let Some(pane) = self.settings.as_mut()
                     && let SettingsState::Mail(state) = &mut pane.sections
@@ -4057,6 +4235,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 let unread = result.as_ref().is_ok_and(|mail| !mail.summary.flags.contains(&Flag::Seen))
                     && !self.seen_mail.contains(&id);
+                // Where its attachments would go (task M12.6), once its text says it has some.
+                let files = result.as_ref().is_ok_and(|mail| mail.attachments.iter().any(|file| !file.inline));
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
                     letter.loaded = Some(result);
                     let side = self.ask_invite_side(&id, invite.as_ref());
@@ -4065,7 +4245,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     } else {
                         Task::none()
                     };
-                    return Task::batch([side, read]);
+                    let saving = if files { self.ask_save_targets(&id) } else { Task::none() };
+                    return Task::batch([side, read, saving]);
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -4159,11 +4340,89 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.recent.clear();
                 return ui_state::save_searches_task(INBOX, Vec::new());
             }
+            // A click on an attachment's name does what the setting says (task M12.6).
             Message::OpenAttachment(id, part) => {
-                #[cfg(test)]
-                self.sent.push(Sent::Attachment(id.clone(), part.clone()));
-                let inbox = self.inbox.clone();
-                return Task::perform(mail::open_attachment(inbox, id, part), Message::AttachmentOpened);
+                let act = mail::click_act(&self.look.click, self.saving_of(&id), &part);
+                return self.file_act(id, Some(part), act);
+            }
+            Message::SaveTargets(id, result) => {
+                // A late answer for a mail no longer held would replace the plans of the one shown.
+                if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
+                    return Task::none();
+                }
+                let first = self.launch.open == Some(Open::AttachmentSaved) && self.hint.is_none();
+                // Said, not kept silently: without plans a click on a target still goes there
+                // ([`mail::click_act`]), but the menus lack the targets.
+                if let Err(err) = &result {
+                    self.error = Some(Failure::new(tr("Couldn't load the save targets."), err.clone()));
+                }
+                self.saving = Some((id.clone(), result));
+                // `--open attachment-saved`: the save that makes the hint, once the plans are in.
+                if first && let Some(saving) = self.saving_of(&id) {
+                    let (part, target) = (saving.files.first(), saving.targets.first());
+                    if let (Some(part), Some(target)) = (part, target) {
+                        let (part, act) = (part.part.clone(), mail::FileAct::Target(target.id.clone()));
+                        return self.file_act(id, Some(part), act);
+                    }
+                }
+            }
+            Message::AskAttachment(id, at) => self.ask_file_menu(&id, Menu::Attachment(at)),
+            Message::AskSaveAll(id) => self.ask_file_menu(&id, Menu::SaveAll { rail: false }),
+            Message::AskSaveAttachments(id) => self.ask_file_menu(&id, Menu::SaveAll { rail: true }),
+            Message::SaveAll(id) => {
+                let act = mail::all_act(&self.look.click, self.saving_of(&id));
+                return self.file_act(id, None, act);
+            }
+            Message::FileAct(id, part, act) => return self.file_act(id, part, act),
+            Message::SaveAsChosen(id, part, Some(path)) => match path.to_str() {
+                Some(path) => return self.save_files(id, Some(part), SaveTo::File(path.to_owned())),
+                None => {
+                    self.error = Some(Failure::new(tr("Couldn't save the attachments."), path.display().to_string()))
+                }
+            },
+            Message::FolderChosen(id, Some(path)) => match path.to_str() {
+                Some(path) => return self.save_files(id, None, SaveTo::Folder(path.to_owned())),
+                None => {
+                    self.error = Some(Failure::new(tr("Couldn't save the attachments."), path.display().to_string()))
+                }
+            },
+            // Cancelled in the dialog: nothing is sent, nothing is said.
+            Message::SaveAsChosen(_, _, None) | Message::FolderChosen(_, None) => {}
+            Message::AttachmentsSaved(place, Ok(saved)) => {
+                if saved.saved.is_empty() && saved.skipped.is_empty() {
+                    // Nothing lies anywhere: say why, as the core said it (a folder macOS keeps closed).
+                    if let Some(failed) = saved.failed.first() {
+                        self.error = Some(Failure::new(tr("Couldn't save the attachments."), failed.message.clone()));
+                    }
+                    return Task::none();
+                }
+                let place = mail::saved_place(place, &saved);
+                let (text, folder) = (mail::saved_text(&saved, &place), mail::saved_folder(&saved));
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
+            }
+            Message::AttachmentsSaved(_, Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't save the attachments."), err));
+            }
+            Message::ShowInFolder => {
+                if let Some(folder) = self.hint.as_ref().and_then(|hint| hint.folder.clone()) {
+                    #[cfg(test)]
+                    self.sent.push(Sent::ShowFolder(folder.clone()));
+                    return Task::perform(mail::show_folder(folder), Message::FolderShown);
+                }
+            }
+            Message::FolderShown(Ok(())) => {}
+            Message::FolderShown(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't show the folder."), err));
+            }
+            Message::ManageSaveTargets => {
+                self.close_menus();
+                // The save targets are the mail window's settings; elsewhere that window comes forward.
+                return match self.launch.kind {
+                    Kind::Mail => self.open_settings(Some(ATTACHMENTS_SECTION)),
+                    Kind::Hub | Kind::Notifications => {
+                        self.update(Message::OpenApp(Kind::Mail.app().window_class.to_string()))
+                    }
+                };
             }
             Message::AttachmentOpened(Ok(opened)) => self.note(mail::opened_text(&opened)),
             Message::AttachmentOpened(Err(err)) => {
@@ -4258,7 +4517,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::MailColors(scheme) => self.mail_scheme = Some(scheme),
             Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_link(url),
             Message::HtmlLink(_) => {}
-            Message::MailLook(Ok(look)) => self.take_look(look),
+            Message::MailLook(Ok(look)) => return self.take_look(look),
             // The core may be starting up; keep what the window shows.
             Message::MailLook(Err(_)) => {}
             Message::WindowScale(scale) => self.window_scale = scale,
@@ -4297,7 +4556,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
                 if !done.is_empty() {
                     let text = tr("Mail marked as done").to_owned();
-                    self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now() });
+                    self.hint =
+                        Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now(), folder: None });
                 }
                 return self.load();
             }
@@ -4503,7 +4763,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         if !done.is_empty() {
             let text = trf("{n} dismissed", &[("n", &done.len())]);
-            self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now() });
+            self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now(), folder: None });
         }
         self.load()
     }
@@ -4524,6 +4784,98 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Whether the panel is open: an entry's, or a folder's message.
     fn panel_open(&self) -> bool {
         self.detail.is_some() || (self.view.is_mail() && self.reading)
+    }
+
+    /// The save targets and plans of the mail `id` (task M12.6), once they are in for it.
+    fn saving_of(&self, id: &str) -> Option<&SaveTargets> {
+        match &self.saving {
+            Some((of, Ok(saving))) if of == id => Some(saving),
+            _ => None,
+        }
+    }
+
+    /// Asks the core where the attachments of the mail `id` would go (task M12.6,
+    /// `mail.list_save_targets`), for its menus and the click on a name.
+    fn ask_save_targets(&mut self, id: &str) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::SaveTargets(id.to_owned()));
+        let (inbox, id) = (self.inbox.clone(), id.to_owned());
+        Task::perform(
+            async move {
+                let answer = MailSource::save_targets(inbox.as_ref(), Some(id.clone())).await;
+                (id, answer.map_err(|err| err.to_string()))
+            },
+            |(id, answer)| Message::SaveTargets(id, answer),
+        )
+    }
+
+    /// The attachment `part` of the mail `id`, while that mail is held and loaded.
+    fn file_of(&self, id: &str, part: &str) -> Option<&torro_mail::AttachmentInfo> {
+        let Letter { loaded: Some(Ok(mail)), .. } = self.letter.as_ref().filter(|letter| letter.id == id)? else {
+            return None;
+        };
+        mail.attachments.iter().find(|file| file.part == part)
+    }
+
+    /// Opens `menu` – an attachment's or "Save all" – for the mail `id` while it is held (task M12.6),
+    /// at the button that asked for it; the same again closes it.
+    fn ask_file_menu(&mut self, id: &str, menu: Menu) {
+        if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
+            return;
+        }
+        self.menu_at = MenuAt::Panel;
+        self.toggle_menu(menu);
+    }
+
+    /// Carries out `act` for the attachment `part` of the mail `id` – `None`: all of them that are not
+    /// `inline` (task M12.6): opens it as before, saves it to Downloads or a target, or asks the
+    /// system's dialog first (the answer comes as [`Message::SaveAsChosen`] or
+    /// [`Message::FolderChosen`]).
+    fn file_act(&mut self, id: String, part: Option<String>, act: mail::FileAct) -> Task<Message> {
+        self.menu = None;
+        match (act, part) {
+            (mail::FileAct::Open, Some(part)) => {
+                #[cfg(test)]
+                self.sent.push(Sent::Attachment(id.clone(), part.clone()));
+                let inbox = self.inbox.clone();
+                Task::perform(mail::open_attachment(inbox, id, part), Message::AttachmentOpened)
+            }
+            // Several files are not opened at once; no menu offers it.
+            (mail::FileAct::Open, None) => Task::none(),
+            (mail::FileAct::Downloads, part) => self.save_files(id, part, SaveTo::Downloads),
+            (mail::FileAct::Target(target), part) => self.save_files(id, part, SaveTo::Target(target)),
+            (mail::FileAct::Choose, Some(part)) => {
+                let name = self
+                    .file_of(&id, &part)
+                    .map_or_else(|| tr("Attachment").to_owned(), |file| mail::dialog_name(self.saving_of(&id), file));
+                #[cfg(test)]
+                self.sent.push(Sent::SaveDialog(name.clone()));
+                Task::perform(choose_save_file(name), move |path| Message::SaveAsChosen(id.clone(), part.clone(), path))
+            }
+            (mail::FileAct::Choose, None) => {
+                #[cfg(test)]
+                self.sent.push(Sent::FolderDialog);
+                Task::perform(choose_save_folder(), move |path| Message::FolderChosen(id.clone(), path))
+            }
+        }
+    }
+
+    /// `mail.save_attachments` for the attachment `part` of the mail `id` (`None`: all) to `to`; the
+    /// words of where go along now, so the hint can say where even when another mail is open by the
+    /// time the answer comes ([`Message::AttachmentsSaved`]).
+    fn save_files(&mut self, id: String, part: Option<String>, to: SaveTo) -> Task<Message> {
+        let parts: Vec<String> = part.iter().cloned().collect();
+        #[cfg(test)]
+        self.sent.push(Sent::Save(id.clone(), parts.clone(), to.clone()));
+        let place = mail::save_place(&to, self.saving_of(&id), part.as_deref());
+        let inbox = self.inbox.clone();
+        Task::perform(
+            async move {
+                let saved = MailSource::save_attachments(inbox.as_ref(), id, parts, to).await;
+                saved.map_err(|err| err.to_string())
+            },
+            move |saved| Message::AttachmentsSaved(place.clone(), saved),
+        )
     }
 
     /// Whether the open menu for an entry hangs at the panel's (or reader's) buttons rather than at
@@ -4610,7 +4962,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
         let reopen = self.entry_of(&id);
         let text = if action == MailAction::Junk { tr("Moved to junk") } else { mail::moved_text(delete) };
-        let hint = Hint { text: text.to_owned(), undo: Some(Undo::Mail { edit: back, reopen }), shown: Instant::now() };
+        let hint = Hint {
+            text: text.to_owned(),
+            undo: Some(Undo::Mail { edit: back, reopen }),
+            shown: Instant::now(),
+            folder: None,
+        };
         self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
         self.mail_edit(Some(edit), Some(hint))
@@ -4889,7 +5246,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let undo = homes[0].as_ref().filter(|home| homes.iter().all(|held| held.as_ref() == Some(*home))).map(|home| {
             Undo::Mail { edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) }, reopen: None }
         });
-        let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now() });
+        let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now(), folder: None });
         for id in &ids {
             self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(id), answered: None });
             self.take_out(id);
@@ -5044,6 +5401,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             text: trf("Moved to {folder}", &[("folder", &name)]),
             undo: Some(Undo::Mail { edit: back, reopen: self.entry_of(&id) }),
             shown: Instant::now(),
+            folder: None,
         };
         self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
@@ -5066,7 +5424,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn delete_for_good(&mut self) -> Task<Message> {
         let Some(id) = self.mail_subject.clone() else { return Task::none() };
         self.close_menus();
-        let hint = Hint { text: tr("Deleted permanently").to_owned(), undo: None, shown: Instant::now() };
+        let hint = Hint { text: tr("Deleted permanently").to_owned(), undo: None, shown: Instant::now(), folder: None };
         self.take_out(&id);
         self.mail_edit(Some(MailEdit::DeleteForGood { ids: vec![id] }), Some(hint))
     }
@@ -5410,7 +5768,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.staged_backup = None;
         settings_mail::stage_backup(state, &account, scene);
         let open = settings_mail::Message::Accounts(settings_mail::accounts::Message::Open(account));
-        let _ = settings_mail::update::<()>(state, open, pane.host.data());
+        let _ = settings_mail::update(state, open, pane.host.data());
     }
 
     /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or
@@ -5451,7 +5809,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// What the host asks of the window: the browser and the control centre are the window's;
     /// everything else the host did itself.
-    fn settings_outcome(&mut self, outcome: Outcome<()>) -> Task<Message> {
+    fn settings_outcome(&mut self, outcome: Outcome<settings_mail::AppAction>) -> Task<Message> {
         match outcome {
             Outcome::None => Task::none(),
             Outcome::Work(task) => task.map(Message::SettingsHost),
@@ -5476,9 +5834,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 connect::open_section(&section);
                 Task::none()
             }
-            // No section of these windows needs what only the window itself can do.
-            Outcome::App(()) => Task::none(),
+            // "Change…" and "Choose…" of Attachments (task M12.7): only the window opens the
+            // system's chooser, and what was chosen goes back to the page
+            // ([`Message::SettingsFolderChosen`]).
+            Outcome::App(settings_mail::AppAction::PickFolder(purpose)) => {
+                Task::perform(choose_settings_folder(purpose), move |path| Message::SettingsFolderChosen(purpose, path))
+            }
         }
+    }
+
+    /// The dialog of the open settings section over the window – the editor of a save target in
+    /// Attachments (task M12.7) – while one is open.
+    fn settings_dialog(&self, class: SizeClass) -> Option<Element<'_, Message>> {
+        let pane = self.settings.as_ref()?;
+        let SettingsState::Mail(state) = &pane.sections else { return None };
+        settings_mail::overlay(state, pane.host.data(), pane.host.current().id, class)
+            .map(|dialog| dialog.map(|message| Message::SettingsPage(SettingsMessage::Mail(message))))
     }
 
     /// The header bar and the content area of the open settings, as the host draws them.
@@ -5549,6 +5920,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         {
             self.view = View::Folder(FolderView::of(inbox));
             return self.load();
+        }
+        if let Some(staged) = self.stage_categories() {
+            return staged;
         }
         if self.view.is_mail() {
             // The mail of `--message` keeps the cursor, listed or not (task E8.7b).
@@ -5759,9 +6133,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task | Menu::Event) => Focus::Task,
-            Some(Menu::Nav | Menu::Switcher | Menu::MailContext | Menu::MailAccounts | Menu::Folders) => {
-                Focus::Elsewhere
-            }
+            // The attachments' menus (task M12.6) take clicks only, like the other menus of entries here.
+            Some(
+                Menu::Nav
+                | Menu::Switcher
+                | Menu::MailContext
+                | Menu::MailAccounts
+                | Menu::Folders
+                | Menu::Attachment(_)
+                | Menu::SaveAll { .. },
+            ) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
             // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
             None if self.is_insights() => Focus::Elsewhere,
@@ -6266,6 +6647,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             text: tr("Moved to junk").to_owned(),
             undo: Some(Undo::Mail { edit: back, reopen: Some(id.to_owned()) }),
             shown: Instant::now(),
+            folder: None,
         };
         self.mail_edit(Some(edit), Some(hint))
     }
@@ -6882,9 +7264,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.pinned_mail = Some(id.clone());
         // Its invitation's calendars and overlaps (task E8.3c), as for a mail read from the list.
         let invite = self.ask_invite_side(&id, mail.summary.invite.as_ref());
+        // Where its attachments would go (task M12.6), as for a mail read from the list.
+        let files = mail.attachments.iter().any(|file| !file.inline);
         self.letter = Some(Letter { id: id.clone(), loaded: Some(Ok(mail)) });
         let read = if unread { self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None) } else { Task::none() };
-        Task::batch([self.load(), invite, read])
+        let saving = if files { self.ask_save_targets(&id) } else { Task::none() };
+        Task::batch([self.load(), invite, read, saving])
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -6994,7 +7379,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if let Ok(item) = &result {
             match after {
                 Some(After { text, undo }) => {
-                    self.hint = Some(Hint { text, undo: undo.map(Undo::Edit), shown: Instant::now() });
+                    self.hint = Some(Hint { text, undo: undo.map(Undo::Edit), shown: Instant::now(), folder: None });
                 }
                 None => {
                     // Undone: the entry is back in its place, and the cursor (and panel) with it.
@@ -7010,7 +7395,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// A hint without undo: what happened, or why nothing did.
     fn note(&mut self, text: String) {
-        self.hint = Some(Hint { text, undo: None, shown: Instant::now() });
+        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
     }
 
     /// The entries of the open menu of choices, in order; their digits are their place from 1.
@@ -7259,7 +7644,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return None;
         }
         let rail = self.rail(class, self.rail_groups(class, anchors)?);
-        Some(mail::reader(reading, entry, rail))
+        Some(mail::reader(reading, entry, rail, anchors))
     }
 
     /// The groups of the mail's action rail (task E14.3, `mail::action_groups`) for the mail the
@@ -7311,7 +7696,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return self.rail_open;
         }
         let label = match self.menu? {
-            Menu::Snooze | Menu::Pick | Menu::Lane => tr("File"),
+            Menu::Snooze | Menu::Pick | Menu::Lane | Menu::SaveAll { rail: true } => tr("File"),
             Menu::Task | Menu::Event | Menu::Category | Menu::CategoryAlways => tr("Torro"),
             Menu::Hide | Menu::Mute | Menu::Move => tr("Mute"),
             _ => return None,
@@ -7490,7 +7875,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.is_glance() {
             return Cover::Nothing;
         }
-        let question = self.menu == Some(Menu::DeleteForGood);
+        // A dialog of the settings (the save target's editor) covers the band like the window's own.
+        let question = self.menu == Some(Menu::DeleteForGood) || self.settings_dialog(class).is_some();
         Cover::dialog(question).or(Cover::panel(class, self.panel_open())).or(Cover::drawer(class, self.drawer))
     }
 
@@ -7551,7 +7937,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// badge; empty without a hint.
     fn hint_layer(&self) -> Element<'_, Message> {
         let Some(hint) = &self.hint else { return Space::new().into() };
-        widgets::toast(hint.text.as_str(), hint.undo.is_some().then(|| ToastAction::undo(Message::Undo)))
+        // "Undo" after a change, "Show in folder" after saving attachments (task M12.6).
+        let action = match (&hint.undo, &hint.folder) {
+            (Some(_), _) => Some(ToastAction::undo(Message::Undo)),
+            (None, Some(_)) => Some(ToastAction::new(tr("Show in folder"), None, Message::ShowInFolder)),
+            (None, None) => None,
+        };
+        widgets::toast(hint.text.as_str(), action)
     }
 
     /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
@@ -7609,10 +8001,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // The app switcher cannot be open at the same time: every `Message::Switcher` shows
             // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
             // the calendar and the tasks app.
+            // A dialog of the section (the save target's editor) lies over everything; the host's
+            // menu cannot be open with it, as a click next to that menu only closes it.
+            let overlay = self.settings_dialog(class).or(frame.overlay);
             return shell::shell(class, sidebar, frame.header, frame.body, None)
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
-                .overlay(frame.overlay)
+                .overlay(overlay)
                 .into();
         }
         let header = self.header(class, &nav, &accounts);
@@ -7628,6 +8023,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let (snooze_at, task_at, event_at, hide_at) =
             (at(|a| &a.snooze), at(|a| &a.task), at(|a| &a.event), at(|a| &a.hide));
         let (lane_at, category_at) = (at(|a| &a.lane), at(|a| &a.category));
+        let save_rail_at = at(|a| &a.save_rail);
         // At the rail by the window's right edge, menus and dialogs open beside it, to the left –
         // the rail and the item that opened them stay in view; below, they would cover the rail.
         let rail_shown = self.rail_groups(class, &anchors).is_some();
@@ -7712,6 +8108,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             // A question over the whole window ([`App::question_layer`]), not at a button.
             Some(Menu::DeleteForGood | Menu::PhishingLink) => None,
+            // At the triangle that opened it (task M12.6), its right edge in line, under it while
+            // there is room – the reader's block stands at the bottom, so mostly over it.
+            Some(Menu::Attachment(at)) => self.file_menu(Some(at)).map(|card| {
+                widgets::floating(&anchors.attachment, Placement::Below(Align::End), card, Message::CloseMenu)
+            }),
+            Some(Menu::SaveAll { rail: false }) => self.file_menu(None).map(|card| {
+                widgets::floating(&anchors.save_all, Placement::Below(Align::End), card, Message::CloseMenu)
+            }),
+            // From the rail beside it, as Later…; from the list's context menu at the row.
+            Some(Menu::SaveAll { rail: true }) => {
+                self.file_menu(None).map(|card| widgets::floating(&save_rail_at, below, card, Message::CloseMenu))
+            }
         };
         // The open group of the collapsed rail, over the whole window like a menu (task E14.3); it
         // never shows with one (`App::update` closes it when a menu opens).
@@ -7742,7 +8150,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let (Some(reading), mail::Bars::Command { entry: Some(entry), width }) =
                     (self.reading(), self.panel_bars(class))
                 {
-                    return side(mail::entry_panel(&reading, entry, self.view_label(), width));
+                    return side(mail::entry_panel(&reading, entry, self.view_label(), width, &anchors));
                 }
                 // The notifications window's panel and mail have the bell where the others have "…"
                 // (task E8.6b, issue #123).
@@ -7757,7 +8165,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     view: self.reading().map(|reading| reading.view_tools()),
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
-                let letter = self.reading().map(|reading| mail::body(&reading, mail::Bars::Split));
+                let letter = self.reading().map(|reading| mail::body(&reading, mail::Bars::Split, &anchors));
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
@@ -8052,7 +8460,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 scheme: self.mail_scheme(),
                 scale: self.html_scale(),
             }),
+            saving: self.saving_of(&letter.id),
+            click: &self.look.click,
+            file_menu: match self.menu {
+                Some(Menu::Attachment(at)) => Some(at),
+                _ => None,
+            },
         })
+    }
+
+    /// The card of an open attachment menu (task M12.6, `mail::file_menu`): of the attachment at `at`
+    /// among the mail's, or of "Save all" for `None`. As wide as it needs to show a path and two words
+    /// beside it – up to [`size::panel()`], less in a narrower window – and as high as the window
+    /// leaves. `None` while the mail is not loaded or has no such attachment.
+    fn file_menu(&self, at: Option<usize>) -> Option<Element<'_, Message>> {
+        let reading = self.reading()?;
+        let files = mail::files_of(&reading)?;
+        let part = match at {
+            Some(at) => Some(files.get(at)?.part.as_str()),
+            None => None,
+        };
+        let category = reading.summary().and_then(|summary| summary.category);
+        let menu = mail::FileMenu { id: reading.id, part, saving: reading.saving, click: reading.click, category };
+        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        Some(mail::file_menu_card(mail::file_menu(menu), width, tallest))
     }
 
     /// The content below the header: an error line if there is one, and the list – left-aligned
@@ -8337,13 +8769,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The group "Categories" of the mail window's sidebar (task E12.8, `docs/kategorien.md`):
-    /// one entry per group of categories with the unread mail it holds, and under an open group
+    /// one branch per group of categories with the unread mail it holds, and in an open group
     /// its categories – only those that occur, so the sidebar shows what is there and nothing
     /// else.
     ///
     /// The whole group is left out until at least one mail has a category: before that it would
-    /// be four empty rows.
-    fn category_entries(&self) -> Vec<NavEntry> {
+    /// be four empty rows. A group row is active while the group itself is shown
+    /// ([`App::category_group_active`]); the rail marks it also for one of its categories.
+    fn category_entries(&self) -> Vec<CategoryBranch> {
         // Only what is there: the catalogue always holds all of them, so a mailbox nothing has
         // been sorted in yet shows no "Categories" at all (task E12.8). A category the person
         // switched off under Settings › Categorization counts as not there either.
@@ -8352,7 +8785,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.launch.kind != Kind::Mail || !self.categories.iter().any(|held| occurs(&held)) {
             return Vec::new();
         }
-        let mut entries = Vec::new();
+        let mut branches = Vec::new();
         for group in CategoryGroup::ALL {
             let of_group: Vec<&CategoryInfo> =
                 self.categories.iter().filter(|held| held.group == group).filter(occurs).collect();
@@ -8360,37 +8793,131 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 continue;
             }
             let unread: u32 = of_group.iter().map(|held| held.unread).sum();
-            let view = View::Category(mail::CategoryView::of_group(group, &self.categories));
             let open = self.open_groups.contains(&group);
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
-            // four colours are learnt.
+            // four colours are learnt. The line of its branch takes it too (issue #300).
             let (mark, at) = mail::group_mark(group);
-            entries.push(NavEntry {
-                mark: Mark::Tinted(mark, self.category_colour(at)),
+            let line = self.category_colour(at);
+            let entry = NavEntry {
+                mark: Mark::Tinted(mark, line),
                 label: torro_core::category::group_label(group).to_string(),
                 count: (unread > 0).then_some(unread as usize),
-                active: view == self.view,
-                view,
+                active: self.category_group_active(group),
+                view: self.category_group_view(group),
                 target: Target::Fold(group),
-            });
-            if !open {
-                continue;
-            }
-            for held in of_group {
-                let view = View::Category(mail::CategoryView::of_category(held));
-                entries.push(NavEntry {
-                    mark: Mark::Tinted(mail::category_symbol(held.icon), self.category_colour(at)),
-                    label: held.label.clone(),
-                    // The number is what waits, as every other entry's is; the entry itself
-                    // stands as long as the category occurs.
-                    count: (held.unread > 0).then_some(held.unread as usize),
-                    active: view == self.view,
-                    view,
-                    target: Target::View,
-                });
-            }
+            };
+            let categories = if open {
+                of_group
+                    .into_iter()
+                    .map(|held| {
+                        let view = View::Category(mail::CategoryView::of_category(held));
+                        NavEntry {
+                            mark: Mark::Tinted(mail::category_symbol(held.icon), line),
+                            label: held.label.clone(),
+                            // The number is what waits, as every other entry's is; the entry
+                            // itself stands as long as the category occurs.
+                            count: (held.unread > 0).then_some(held.unread as usize),
+                            active: view == self.view,
+                            view,
+                            target: Target::View,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            branches.push(CategoryBranch { group: entry, open, line, categories });
         }
-        entries
+        branches
+    }
+
+    /// The view of the whole `group` (issue #300): the mail of every category the catalogue puts
+    /// in it, except those switched off under Settings › Categorization – the group lists exactly
+    /// the categories that could stand under it, so hidden mail does not come back through it.
+    fn category_group_view(&self, group: CategoryGroup) -> View {
+        let hidden = &self.look.hidden_categories;
+        let catalogue: Vec<CategoryInfo> =
+            self.categories.iter().filter(|held| !hidden.contains(&held.category)).cloned().collect();
+        View::Category(mail::CategoryView::of_group(group, &catalogue))
+    }
+
+    /// The whole `group` is shown, not one of its categories. Compared by the group, not by the
+    /// view's list of categories: the catalogue comes anew with every load, and a changed list
+    /// must not make a shown group a stranger (the second click would load it instead of folding).
+    fn category_group_active(&self, group: CategoryGroup) -> bool {
+        matches!(&self.view, View::Category(shown) if shown.group == group && shown.only.is_none())
+    }
+
+    /// The `group` or one of its categories is shown: what the rail marks, which lists no
+    /// categories.
+    fn category_group_shown(&self, group: CategoryGroup) -> bool {
+        matches!(&self.view, View::Category(shown) if shown.group == group)
+    }
+
+    /// What a click on the row of `group` does (issue #300): a folded group opens and is shown; an
+    /// open group not shown (one of its categories or another view is) is shown; the open group
+    /// shown folds, and the list stays as it is.
+    fn toggle_category_group(&mut self, group: CategoryGroup) -> Task<Message> {
+        let active = self.category_group_active(group);
+        if self.open_groups.contains(&group) && active {
+            self.open_groups.remove(&group);
+            return Task::none();
+        }
+        self.open_groups.insert(group);
+        if active {
+            return Task::none();
+        }
+        self.update(Message::Show(self.category_group_view(group)))
+    }
+
+    /// A click on `group` where its fold does not show – the navigation menu and the rail (issue
+    /// #300): it opens and is shown, and the menu closes like for every view. Folding there would
+    /// change nothing to see, only what the expanded sidebar shows later.
+    fn show_category_group(&mut self, group: CategoryGroup) -> Task<Message> {
+        self.open_groups.insert(group);
+        // Shown already: as a click on any shown view, without loading it again for a catalogue
+        // that came anew since (decision 7).
+        if self.category_group_active(group) {
+            return self.show_view(self.view.clone());
+        }
+        self.update(Message::Show(self.category_group_view(group)))
+    }
+
+    /// The group the category start states open (`--open category-group`, `category`,
+    /// `category-menu`): the one with the most categories that hold mail, the first of them on a
+    /// tie – "Waiting for me" in the demo.
+    fn staged_category_group(&self) -> Option<CategoryGroup> {
+        let hidden = &self.look.hidden_categories;
+        let held = |group: CategoryGroup| {
+            let occurs = |held: &&CategoryInfo| held.messages > 0 && !hidden.contains(&held.category);
+            self.categories.iter().filter(|held| held.group == group).filter(occurs).count()
+        };
+        let most = CategoryGroup::ALL.into_iter().map(held).max().filter(|most| *most > 0)?;
+        CategoryGroup::ALL.into_iter().find(|group| held(*group) == most)
+    }
+
+    /// Puts the category start states in place once the catalogue is in; the window then loads
+    /// the view they show. Only once, so a group folded afterwards stays folded.
+    fn stage_categories(&mut self) -> Option<Task<Message>> {
+        let open = self.launch.open?;
+        if self.categories_staged || !matches!(open, Open::CategoryGroup | Open::Category | Open::CategoryMenu) {
+            return None;
+        }
+        let group = self.staged_category_group()?;
+        let view = if open == Open::Category {
+            let hidden = &self.look.hidden_categories;
+            let first = self
+                .categories
+                .iter()
+                .find(|held| held.group == group && held.messages > 0 && !hidden.contains(&held.category))?;
+            View::Category(mail::CategoryView::of_category(first))
+        } else {
+            self.category_group_view(group)
+        };
+        self.categories_staged = true;
+        self.open_groups.insert(group);
+        self.view = view;
+        Some(self.load())
     }
 
     /// A link of the mail being read (task E12.9). From a mail the model called a fraud it is
@@ -8581,11 +9108,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let mut items: Vec<Element<'a, Message>> =
             if self.mail_only { Vec::new() } else { views.into_iter().map(row).collect() };
         // What the mail is (task E12.8): the four groups, with the categories of an open one
-        // under it. The group appears only once at least one mail has a category.
+        // indented under it (issue #300). The group appears only once at least one mail has a
+        // category.
         let categories = self.category_entries();
         if !categories.is_empty() {
             items.push(widgets::sidebar_group_in(mode, tr("Categories"), None));
-            items.extend(categories.into_iter().map(row));
+            for branch in categories {
+                items.extend(self.category_rows(mode, branch));
+            }
         }
         let smart = self.smart_entries();
         if !smart.is_empty() {
@@ -8645,6 +9175,32 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         shell::sidebar(head, items, footer)
     }
 
+    /// The rows of one group of "Categories" in the sidebar in `mode` (issue #300): the group as a
+    /// row that folds, and while it is open its categories in a branch with the group's line. The
+    /// rail lists no categories, so there the group is marked also while one of them is shown.
+    fn category_rows<'a>(&self, mode: SidebarMode, branch: CategoryBranch) -> Vec<Element<'a, Message>> {
+        let CategoryBranch { group: entry, open, line, categories } = branch;
+        let (active, message) = match (mode, entry.target) {
+            (SidebarMode::Rail, Target::Fold(group)) => {
+                (self.category_group_shown(group), Message::ShowCategoryGroup(group))
+            }
+            _ => (entry.active, entry.message()),
+        };
+        let trail = entry.trail();
+        let mut rows = vec![widgets::sidebar_fold_in(mode, entry.mark, entry.label, trail, active, open, message)];
+        if mode == SidebarMode::Expanded && !categories.is_empty() {
+            let children = categories
+                .into_iter()
+                .map(|e| {
+                    let (trail, message) = (e.trail(), e.message());
+                    widgets::sidebar_child(e.mark, e.label, trail, e.active, message)
+                })
+                .collect();
+            rows.push(widgets::sidebar_branch(line, children));
+        }
+        rows
+    }
+
     /// The navigation menu of the medium and narrow layouts: the sidebar's rows as a menu.
     fn nav_menu(&self) -> Element<'_, Message> {
         let (views, sources) = self.nav_entries();
@@ -8657,9 +9213,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !self.mail_only {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
+        // The groups, and the categories of an open one nested under it (issue #300).
         let categories = self.category_entries();
         if !categories.is_empty() {
-            sections.push(MenuSection::titled(tr("Categories"), categories.into_iter().map(item).collect()));
+            let entries = categories
+                .into_iter()
+                .flat_map(|branch| {
+                    // Folding shows nothing in the menu: its group only shows and opens.
+                    let target = branch.group.target;
+                    let children = branch.categories.into_iter().map(|e| item(e).nested());
+                    let mut group = item(branch.group);
+                    if let Target::Fold(of) = target {
+                        group.on_press = Message::ShowCategoryGroup(of);
+                    }
+                    std::iter::once(group).chain(children).collect::<Vec<_>>()
+                })
+                .collect();
+            sections.push(MenuSection::titled(tr("Categories"), entries));
         }
         let smart = self.smart_entries();
         if !smart.is_empty() {
@@ -9040,6 +9610,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                         text: tr("Done").to_owned(),
                         undo: Some(Undo::Edit(Edit::Done { id: item.id.clone(), done: false })),
                         shown: Instant::now(),
+                        folder: None,
                     });
                 }
             }
@@ -9112,6 +9683,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                         self.rail_open = Some(1);
                     }
                     _ => {}
+                }
+            }
+            // The demo's invoice in "With attachments" (task M12.6): two PDFs and a guessed category.
+            Some(open @ (Open::AttachmentMenu | Open::SaveAllMenu | Open::AttachmentSaved)) => {
+                let invoice = |message: &&MessageSummary| {
+                    message.category.is_some_and(|held| held.category == torro_mail::Category::Invoice)
+                };
+                let id = self.messages.iter().find(invoice).or(self.messages.first()).map(|message| message.id.clone());
+                if let Some(id) = id {
+                    self.cursor = Some(id);
+                    self.reading = true;
+                    self.menu_at = MenuAt::Panel;
+                    // Shown once the mail is in; the saved state saves once its plans are in.
+                    self.menu = match open {
+                        Open::AttachmentMenu => Some(Menu::Attachment(0)),
+                        Open::SaveAllMenu => Some(Menu::SaveAll { rail: false }),
+                        _ => None,
+                    };
                 }
             }
             Some(open @ (Open::MoveMail | Open::DeleteMail)) => {
@@ -9203,6 +9792,19 @@ struct MailGroup {
     rows: Vec<NavEntry>,
 }
 
+/// A group of "Categories" with its categories (issue #300): the sidebar draws the group as a row
+/// that folds and its categories indented in a branch, the menu the categories nested under it.
+struct CategoryBranch {
+    /// The group's row; its target is [`Target::Fold`].
+    group: NavEntry,
+    /// The group is open, its categories listed.
+    open: bool,
+    /// The group's colour, for the line of its branch.
+    line: iced::Color,
+    /// The categories that occur, while the group is open; else none.
+    categories: Vec<NavEntry>,
+}
+
 /// A row of the sidebar and the navigation menu.
 struct NavEntry {
     mark: Mark,
@@ -9224,8 +9826,8 @@ enum Target {
     ToSort,
     /// The hub's Insights (task E8.8b): what the inbox counted, not a view of entries.
     Insights,
-    /// A group of mail categories that folds open and shut (task E12.8): a click lists its
-    /// categories under it instead of showing the group.
+    /// A group of mail categories that folds open and shut (task E12.8): a click opens and shows
+    /// the group, or folds the group already shown (issue #300, [`App::toggle_category_group`]).
     Fold(CategoryGroup),
 }
 
@@ -9259,7 +9861,7 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
     } else {
         trf("Unmuted {source}", &[("source", &label)])
     };
-    Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now() }
+    Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now(), folder: None }
 }
 
 /// Whether `message` is one an item of the mail's action rail sends (task E14.3,
@@ -9279,6 +9881,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::Reclassify(_)
             | Message::AskHide(_)
             | Message::AskMuteMail(_)
+            | Message::AskSaveAttachments(_)
             | Message::ShowMailAs(_)
             | Message::MailColors(_)
             | Message::CopyText
@@ -9289,13 +9892,13 @@ fn closes_rail(message: &Message) -> bool {
 
 /// The title of a section of a menu card built here, as `widgets::menu` draws one: `typo::caption()`
 /// in `text_3`, 8 around and 4 below.
-fn menu_caption<'a>(title: &str) -> Element<'a, Message> {
+pub(crate) fn menu_caption<'a>(title: &str) -> Element<'a, Message> {
     let head = typo::text(typo::caption(), title.to_owned()).style(theme::text_3);
     container(head).padding(Padding::new(space::s()).bottom(space::xs())).into()
 }
 
 /// The line between the sections of a menu card built here, as `widgets::menu` draws it.
-fn menu_line<'a>() -> Element<'a, Message> {
+pub(crate) fn menu_line<'a>() -> Element<'a, Message> {
     container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
 }
 
@@ -9672,6 +10275,8 @@ mod tests {
     use chrono::TimeZone;
     use iced::futures::executor::block_on;
     use torro_inbox::demo::DemoSource;
+
+    use torro_core::settings::AttachmentClick;
 
     use super::*;
     use crate::empty::EmptySource;
@@ -12138,7 +12743,7 @@ mod tests {
     }
 
     fn look(format: MailFormat, colors: MailAppearance) -> Message {
-        Message::MailLook(Ok(MailLook { format, colors, hidden_categories: Vec::new() }))
+        Message::MailLook(Ok(MailLook { format, colors, ..MailLook::default() }))
     }
 
     /// `mail_view = html` (the default) shows a mail's HTML, `text` its text; a mail without HTML
@@ -12228,11 +12833,10 @@ mod tests {
 
         let launch = Launch::parse(&args(&["--mail-view", "text", "--mail-colors", "dark"])).expect("valid");
         assert_eq!((launch.mail_view, launch.mail_colors), (Some(MailFormat::Text), Some(MailAppearance::Dark)));
-        let stored =
-            MailLook { format: MailFormat::Html, colors: MailAppearance::Light, hidden_categories: Vec::new() };
+        let stored = MailLook { format: MailFormat::Html, colors: MailAppearance::Light, ..MailLook::default() };
         assert_eq!(
             launch.look(stored),
-            MailLook { format: MailFormat::Text, colors: MailAppearance::Dark, hidden_categories: Vec::new() }
+            MailLook { format: MailFormat::Text, colors: MailAppearance::Dark, ..MailLook::default() }
         );
         let mut forced = in_folder("f:private-inbox");
         forced.launch = launch;
@@ -12803,6 +13407,222 @@ mod tests {
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(mail::opened_text(&opened)));
     }
 
+    /// The demo's invoice (`m:p3`: two PDFs, a category the model guessed) read in its folder, with
+    /// the plans of its attachments in as `mail.list_save_targets` answers them (task M12.6).
+    fn invoice() -> App<DemoSource> {
+        invoice_in(&[])
+    }
+
+    /// [`invoice`] in the window of `words` (`--view mail`: the mail window, with its rail).
+    fn invoice_in(words: &[&str]) -> App<DemoSource> {
+        let mut app = overview_at(words);
+        let view = folder_view(&app, "f:private-inbox");
+        let _ = app.update(Message::Show(view));
+        load(&mut app);
+        let _ = app.update(Message::SelectMail("m:p3".into()));
+        deliver_letter(&mut app, "m:p3");
+        assert_eq!(app.sent.last(), Some(&Sent::SaveTargets("m:p3".into())), "asked once the text is in");
+        let saving = block_on(MailSource::save_targets(app.inbox.as_ref(), Some("m:p3".into())));
+        let _ = app.update(Message::SaveTargets("m:p3".into(), saving.map_err(|err| err.to_string())));
+        assert!(app.saving_of("m:p3").is_some_and(|saving| saving.files.len() == 2));
+        app
+    }
+
+    /// Review of PR #308: the save targets could not be loaded – that is said, and with a target as
+    /// the click "Save all" and a click on a name still go to it instead of silently to Downloads or
+    /// open; the core answers for a target that is gone.
+    #[test]
+    fn without_plans_the_click_still_goes_to_its_target() {
+        let mut app = invoice();
+        app.look.click = AttachmentClick::Target("demo-invoices".into());
+        let _ = app.update(Message::SaveTargets("m:p3".into(), Err("the core is busy".into())));
+        let failure = app.error.take().expect("said");
+        assert_eq!((failure.what, failure.why.as_str()), (tr("Couldn't load the save targets."), "the core is busy"));
+        let target = SaveTo::Target("demo-invoices".into());
+        let _ = app.update(Message::SaveAll("m:p3".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), target.clone())));
+        let _ = app.update(Message::OpenAttachment("m:p3".into(), "2".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], target)));
+    }
+
+    /// Task M12.6: the plans answer for the mail held only. A's answer arriving after B was opened and
+    /// answered would put A's plans under B's attachments; it is dropped, B's stay.
+    #[test]
+    fn a_late_answer_for_another_mail_keeps_the_plans_of_the_one_held() {
+        let mut app = invoice();
+        let _ = app.update(Message::SelectMail("m:p1".into()));
+        deliver_letter(&mut app, "m:p1");
+        let answer = |app: &App<DemoSource>| {
+            block_on(MailSource::save_targets(app.inbox.as_ref(), Some("m:p3".into()))).map_err(|err| err.to_string())
+        };
+        let held = answer(&app);
+        let _ = app.update(Message::SaveTargets("m:p1".into(), held));
+        let late = answer(&app);
+        let _ = app.update(Message::SaveTargets("m:p3".into(), late));
+        assert_eq!(app.saving.as_ref().map(|(id, _)| id.as_str()), Some("m:p1"), "the late answer was dropped");
+        assert!(app.saving_of("m:p1").is_some() && app.saving_of("m:p3").is_none());
+    }
+
+    /// Task M12.6: a click on an attachment's name does what the setting says – open, Downloads, the
+    /// save dialog, a target that is there – and opens for a target that is gone and for "Suggested
+    /// target, else open" on a category the model only guessed (decision 4 of issue #290); a sure
+    /// suggestion saves there.
+    #[test]
+    fn a_click_on_an_attachment_does_what_the_setting_says() {
+        let mut app = invoice();
+        let click = |app: &mut App<DemoSource>, click: AttachmentClick| {
+            app.look.click = click;
+            let _ = app.update(Message::OpenAttachment("m:p3".into(), "2".into()));
+            app.sent.last().cloned()
+        };
+        let one = || vec!["2".to_owned()];
+        assert_eq!(click(&mut app, AttachmentClick::Open), Some(Sent::Attachment("m:p3".into(), "2".into())));
+        assert_eq!(
+            click(&mut app, AttachmentClick::Downloads),
+            Some(Sent::Save("m:p3".into(), one(), SaveTo::Downloads))
+        );
+        assert_eq!(
+            click(&mut app, AttachmentClick::SaveAs),
+            Some(Sent::SaveDialog("invoice-2026-09-30.pdf".into())),
+            "the dialog starts with the plan's name"
+        );
+        let invoices = SaveTo::Target("demo-invoices".into());
+        assert_eq!(
+            click(&mut app, AttachmentClick::Target("demo-invoices".into())),
+            Some(Sent::Save("m:p3".into(), one(), invoices.clone()))
+        );
+        assert_eq!(
+            click(&mut app, AttachmentClick::Target("gone".into())),
+            Some(Sent::Attachment("m:p3".into(), "2".into())),
+            "a target that is gone opens"
+        );
+        // The invoice's category is a guess: "Invoices" is suggested, but the click opens.
+        let plan = app.saving_of("m:p3").and_then(|saving| saving.plan("2")).cloned().expect("a plan");
+        assert_eq!((plan.suggested.as_slice(), plan.sure.as_deref()), (&["demo-invoices".to_owned()][..], None));
+        assert_eq!(click(&mut app, AttachmentClick::Suggested), Some(Sent::Attachment("m:p3".into(), "2".into())));
+        // Filed by a person, the suggestion is sure and the click saves there.
+        if let Some((_, Ok(saving))) = app.saving.as_mut() {
+            saving.files[0].sure = Some("demo-invoices".into());
+        }
+        assert_eq!(click(&mut app, AttachmentClick::Suggested), Some(Sent::Save("m:p3".into(), one(), invoices)));
+        // "Save all" by the setting: Downloads for Open and Suggested, the folder dialog for Save as….
+        for (setting, sent) in [
+            (AttachmentClick::Open, Sent::Save("m:p3".into(), Vec::new(), SaveTo::Downloads)),
+            (AttachmentClick::Suggested, Sent::Save("m:p3".into(), Vec::new(), SaveTo::Downloads)),
+            (AttachmentClick::SaveAs, Sent::FolderDialog),
+        ] {
+            app.look.click = setting;
+            let _ = app.update(Message::SaveAll("m:p3".into()));
+            assert_eq!(app.sent.last(), Some(&sent));
+        }
+        draw_everywhere(&mut app);
+    }
+
+    /// Task M12.6: the triangles open the menus at the mail held – an attachment's, "Save all" from the
+    /// block and from the rail –, the same again closes them, and every size draws them; a cancelled
+    /// dialog sends nothing and says nothing.
+    #[test]
+    fn the_triangles_open_their_menus_and_a_cancelled_dialog_sends_nothing() {
+        let mut app = invoice();
+        let _ = app.update(Message::AskAttachment("m:p3".into(), 1));
+        assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Attachment(1)), true));
+        assert!(app.reading().is_some_and(|reading| reading.file_menu == Some(1)), "its triangle carries the anchor");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::AskAttachment("m:p3".into(), 1));
+        assert_eq!(app.menu, None, "the same triangle again closes it");
+        let _ = app.update(Message::AskSaveAll("m:p3".into()));
+        assert_eq!(app.menu, Some(Menu::SaveAll { rail: false }));
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::AskSaveAll("m:other".into()));
+        assert_eq!(app.menu, Some(Menu::SaveAll { rail: false }), "only for the mail held");
+
+        let before = app.sent.len();
+        let _ = app.update(Message::SaveAsChosen("m:p3".into(), "2".into(), None));
+        let _ = app.update(Message::FolderChosen("m:p3".into(), None));
+        assert_eq!((app.sent.len(), app.hint.as_ref(), app.error.as_ref()), (before, None, None), "cancelled");
+        let _ = app.update(Message::SaveAsChosen("m:p3".into(), "2".into(), Some("/home/anna/Bill.pdf".into())));
+        let file = SaveTo::File("/home/anna/Bill.pdf".into());
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], file)));
+        let _ = app.update(Message::FolderChosen("m:p3".into(), Some("/home/anna/Bills".into())));
+        let folder = SaveTo::Folder("/home/anna/Bills".into());
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), folder)));
+    }
+
+    /// Task M12.6, decision 6 of issue #290's plan: "Save attachments (n)" stands in the rail's File –
+    /// so in the list's context menu – and opens the menu of "Save all" at the row, as "Later…" does.
+    #[test]
+    fn the_context_menu_leads_to_the_menu_of_save_all() {
+        let mut app = invoice_in(&["--view", "mail"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the rail");
+        let file = groups.iter().find(|group| group.label == tr("File")).expect("File");
+        let words = trf("Save attachments ({n})", &[("n", &2)]);
+        let item = file.items.iter().find(|item| item.label == words.as_str()).expect("Save attachments (2)");
+        assert!(matches!(&item.on_press, Some(Message::AskSaveAttachments(id)) if id == "m:p3"));
+        let _ = app.update(Message::AskSaveAttachments("m:p3".into()));
+        assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::SaveAll { rail: true }), true), "at the item");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::ContextMail("m:p3".into()));
+        assert_eq!(app.menu, Some(Menu::MailContext));
+        let _ = app.update(Message::ContextAction(Box::new(Message::AskSaveAttachments("m:p3".into()))));
+        assert_eq!(app.menu, Some(Menu::SaveAll { rail: true }));
+        assert!(!app.menu_from_panel(), "at the row, as Later… from the context menu");
+        draw_everywhere(&mut app);
+    }
+
+    /// Task M12.6: after saving the hint says where – with "Show in folder", which opens the folder of
+    /// the first file –, a partial save names what failed, and a save of which nothing lies anywhere
+    /// says why.
+    #[test]
+    fn saving_shows_a_hint_with_show_in_folder() {
+        let mut app = invoice();
+        let _ = app.update(Message::FileAct(
+            "m:p3".into(),
+            Some("2".into()),
+            mail::FileAct::Target("demo-invoices".into()),
+        ));
+        let Some(Sent::Save(id, parts, to)) = app.sent.last().cloned() else { panic!("a save") };
+        let saved = block_on(MailSource::save_attachments(app.inbox.as_ref(), id.clone(), parts, to.clone()));
+        let place = mail::save_place(&to, app.saving_of(&id), Some("2"));
+        // Another mail opened before the answer: the hint still says where the file went.
+        app.saving = None;
+        let _ = app.update(Message::AttachmentsSaved(place, saved.map_err(|err| err.to_string())));
+        let hint = app.hint.clone().expect("a hint");
+        assert_eq!(hint.text, trf("Saved to {where}", &[("where", &"Invoices › 2026 › 09")]));
+        assert_eq!(hint.undo, None);
+        let folder = std::path::PathBuf::from("/home/anna/Documents/Invoices/2026/09");
+        assert_eq!(hint.folder.as_ref(), Some(&folder));
+        let _ = app.view();
+        let _ = app.update(Message::ShowInFolder);
+        assert_eq!(app.sent.last(), Some(&Sent::ShowFolder(folder)));
+        let _ = app.update(Message::FolderShown(Err("no file manager".into())));
+        let failure = app.error.take().expect("said");
+        assert_eq!((failure.what, failure.why.as_str()), (tr("Couldn't show the folder."), "no file manager"));
+
+        let file = |part: &str, path: &str| torro_ipc::mail::SavedFile { part: part.into(), path: path.into() };
+        let partly = SavedAttachments {
+            saved: vec![file("2", "/home/anna/Downloads/invoice-2026-09-30.pdf")],
+            failed: vec![torro_ipc::mail::FailedFile {
+                part: "3".into(),
+                name: "usage-september.pdf".into(),
+                code: "error".into(),
+                message: "Disk full".into(),
+            }],
+            ..SavedAttachments::default()
+        };
+        let _ = app.update(Message::AttachmentsSaved(Some(tr("Downloads").to_owned()), Ok(partly.clone())));
+        let text = app.hint.as_ref().map(|hint| hint.text.clone());
+        assert_eq!(text, Some(trf("{n} saved, {name} failed", &[("n", &1), ("name", &"usage-september.pdf")])));
+        app.hint = None;
+        let none = SavedAttachments { saved: Vec::new(), ..partly };
+        let _ = app.update(Message::AttachmentsSaved(Some(tr("Downloads").to_owned()), Ok(none)));
+        assert_eq!(
+            (app.hint.as_ref(), app.error.as_ref().map(|failure| failure.why.as_str())),
+            (None, Some("Disk full"))
+        );
+    }
+
     /// Issue #119: the text in the reader and the panel can be selected – never changed – and "Copy
     /// text" puts all of it on the clipboard, as written, with "Copied".
     #[test]
@@ -13220,13 +14040,308 @@ mod tests {
         let mut app = mail_window(Density::Comfortable, &[]);
         let held = app.categories.iter().find(|held| held.messages > 0).expect("a category in the demo").clone();
         app.open_groups.insert(held.group);
-        let entries = app.category_entries();
-        let child = entries.iter().find(|entry| entry.label == held.label).expect("the open group's category");
+        let branches = app.category_entries();
+        let branch = branches.iter().find(|branch| branch.group.target == Target::Fold(held.group)).expect("its group");
+        assert!(branch.open);
+        let colour = branch.line;
+        let child =
+            branch.categories.iter().find(|entry| entry.label == held.label).expect("the open group's category");
         assert!(matches!(
             child.mark,
-            Mark::Tinted(icon, _) if icon == mail::category_symbol(held.icon)
+            Mark::Tinted(icon, tint) if icon == mail::category_symbol(held.icon) && tint == colour
         ));
+        assert!(matches!(branch.group.mark, Mark::Tinted(_, tint) if tint == colour), "one colour for the group");
         let _ = app.category_menu();
+    }
+
+    /// The groups "Categories" lists in the demo's mail window, top to bottom.
+    fn listed_groups(app: &App<DemoSource>) -> Vec<CategoryGroup> {
+        let group = |branch: CategoryBranch| match branch.group.target {
+            Target::Fold(group) => Some(group),
+            _ => None,
+        };
+        app.category_entries().into_iter().filter_map(group).collect()
+    }
+
+    /// A category of `group` that holds mail in the demo.
+    fn occurring_in(app: &App<DemoSource>, group: CategoryGroup) -> CategoryInfo {
+        let held = app.categories.iter().find(|held| held.group == group && held.messages > 0);
+        held.expect("the demo has mail in every group").clone()
+    }
+
+    /// The branch of `group` in "Categories".
+    fn branch_of(app: &App<DemoSource>, group: CategoryGroup) -> CategoryBranch {
+        let branch = app.category_entries().into_iter().find(|branch| branch.group.target == Target::Fold(group));
+        branch.expect("the group is listed")
+    }
+
+    /// Issue #300 (task E17.2): a click on a folded group opens it and shows the mail of all its
+    /// categories; a click on the open group shown folds it and keeps the list; from one of its
+    /// categories a click shows the group again and keeps it open. For each of the four groups.
+    #[test]
+    fn a_click_on_a_group_opens_and_shows_it_then_folds_it() {
+        let app = mail_window(Density::Compact, &[]);
+        assert_eq!(listed_groups(&app), CategoryGroup::ALL, "the demo has mail in all four groups");
+        for group in CategoryGroup::ALL {
+            let mut app = mail_window(Density::Compact, &[]);
+            assert!(!app.open_groups.contains(&group));
+            // (a) Folded: open it and show it.
+            let task = app.update(Message::ToggleCategoryGroup(group));
+            assert!(task.units() > 0, "{group:?}: its mail is loaded");
+            assert!(app.open_groups.contains(&group), "{group:?}: open");
+            assert_eq!(app.view, app.category_group_view(group));
+            assert!(app.category_group_active(group) && app.category_group_shown(group));
+            load(&mut app);
+            let View::Category(shown) = &app.view else { panic!("{group:?}: the group's view") };
+            let categories = shown.categories();
+            assert!(!app.messages.is_empty(), "{group:?}: its mail is listed");
+            assert!(
+                app.messages.iter().all(|m| m.category.is_some_and(|held| categories.contains(&held.category))),
+                "{group:?}: only mail of its categories"
+            );
+            assert!(branch_of(&app, group).group.active, "{group:?}: the group row is the active one");
+            // (c) Open and shown: fold it, the list stays.
+            let (view, listed) = (app.view.clone(), app.messages.len());
+            let task = app.update(Message::ToggleCategoryGroup(group));
+            assert_eq!(task.units(), 0, "{group:?}: nothing is loaded");
+            assert!(!app.open_groups.contains(&group), "{group:?}: folded");
+            assert_eq!((app.view.clone(), app.messages.len()), (view.clone(), listed), "{group:?}: the list stays");
+            assert!(branch_of(&app, group).categories.is_empty(), "{group:?}: a folded group lists no categories");
+            // Folded but shown: only open it again, nothing to load.
+            assert_eq!(app.update(Message::ToggleCategoryGroup(group)).units(), 0);
+            assert!(app.open_groups.contains(&group) && app.view == view);
+            // (b) One of its categories shown: the group is shown again and stays open.
+            let held = occurring_in(&app, group);
+            let _ = app.update(Message::Show(View::Category(mail::CategoryView::of_category(&held))));
+            load(&mut app);
+            let task = app.update(Message::ToggleCategoryGroup(group));
+            assert!(task.units() > 0, "{group:?}: the group is loaded again");
+            assert!(app.open_groups.contains(&group), "{group:?}: still open");
+            assert!(app.category_group_active(group), "{group:?}: the group is shown");
+        }
+    }
+
+    /// Issue #300 (task E17.2, d): a click on a category shows only it; its group stays open, the
+    /// group row is no longer active, but the group counts as shown (the rail marks it).
+    #[test]
+    fn a_click_on_a_category_shows_only_it_and_keeps_its_group_open() {
+        for group in CategoryGroup::ALL {
+            let mut app = mail_window(Density::Compact, &[]);
+            let _ = app.update(Message::ToggleCategoryGroup(group));
+            load(&mut app);
+            let held = occurring_in(&app, group);
+            let _ = app.update(Message::Show(View::Category(mail::CategoryView::of_category(&held))));
+            load(&mut app);
+            assert!(app.messages.iter().all(|m| m.category.is_some_and(|c| c.category == held.category)));
+            assert!(app.open_groups.contains(&group), "{group:?}: the group stays open");
+            assert!(!app.category_group_active(group) && app.category_group_shown(group));
+            let branch = branch_of(&app, group);
+            assert!(!branch.group.active, "{group:?}: the group row is not active");
+            let child = branch.categories.iter().find(|entry| entry.label == held.label).expect("the category");
+            assert!(child.active, "{group:?}: the category row is");
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
+    /// Issue #300 (task E17.2, c2): whether a group is shown follows the group, not the list of its
+    /// categories – a catalogue that changed since does not turn the second click into a reload.
+    #[test]
+    fn a_shown_group_folds_after_its_catalogue_changed() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let gone = occurring_in(&app, group).category;
+        app.categories.retain(|held| held.category != gone);
+        assert_ne!(app.view, app.category_group_view(group), "the group's view would list other categories now");
+        let view = app.view.clone();
+        assert_eq!(app.update(Message::ToggleCategoryGroup(group)).units(), 0);
+        assert!(!app.open_groups.contains(&group), "folded");
+        assert_eq!(app.view, view);
+    }
+
+    /// Issue #300 (task E17.2, f): a category switched off under Settings › Categorization is no
+    /// part of its group's view.
+    #[test]
+    fn a_hidden_category_is_no_part_of_its_groups_view() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let hidden = occurring_in(&app, group).category;
+        let View::Category(all) = app.category_group_view(group) else { panic!("a category view") };
+        assert!(all.categories().contains(&hidden));
+        app.look.hidden_categories = vec![hidden];
+        let View::Category(shown) = app.category_group_view(group) else { panic!("a category view") };
+        assert!(!shown.categories().contains(&hidden), "the hidden category is left out");
+        assert_eq!(shown.categories().len(), all.categories().len() - 1, "the others stay");
+    }
+
+    /// Issue #300: a category switched off while its group is shown leaves the group's list at
+    /// once – the shown view is made anew and loaded, not kept with the old categories.
+    #[test]
+    fn hiding_a_category_of_the_shown_group_lists_the_group_anew() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let hidden = occurring_in(&app, group).category;
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: vec![hidden],
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored.clone()))).units() > 0, "the group is loaded again");
+        let View::Category(shown) = &app.view else { panic!("still the group") };
+        assert!(!shown.categories().contains(&hidden));
+        assert!(app.category_group_active(group) && app.open_groups.contains(&group));
+        load(&mut app);
+        assert!(app.messages.iter().all(|m| m.category.is_none_or(|held| held.category != hidden)));
+        assert_eq!(app.update(Message::MailLook(Ok(stored))).units(), 0, "the same settings change nothing");
+    }
+
+    /// Issue #300: with every category of the shown group switched off, the group is gone – the
+    /// window goes back to "For me" instead of asking the core with no categories at all (which
+    /// the core reads as no filter: all mail under the group's name).
+    #[test]
+    fn hiding_every_category_of_the_shown_group_goes_back_to_for_me() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let all: Vec<_> = app.categories.iter().filter(|held| held.group == group).map(|held| held.category).collect();
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: all,
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert_eq!(app.view, View::Overview);
+        assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
+    }
+
+    /// Issue #300: switching off the categories of the shown group that hold mail takes the group
+    /// from the sidebar, though its empty ones are left – the window goes back to "For me" too.
+    #[test]
+    fn hiding_the_shown_groups_categories_with_mail_goes_back_to_for_me() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let of_group = app.categories.iter().filter(|held| held.group == group);
+        let with_mail: Vec<_> = of_group.clone().filter(|held| held.messages > 0).map(|held| held.category).collect();
+        assert!(!with_mail.is_empty() && of_group.count() > with_mail.len(), "empty ones are left");
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: with_mail,
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
+        assert_eq!(app.view, View::Overview);
+    }
+
+    /// Issue #300: the last category of the shown group is switched off in the settings, so the
+    /// settings stay open – only the view behind them goes back to "For me".
+    #[test]
+    fn hiding_every_category_of_the_shown_group_keeps_the_settings_open() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let _ = app.update(Message::OpenSettings);
+        assert!(app.settings.is_some());
+        let all: Vec<_> = app.categories.iter().filter(|held| held.group == group).map(|held| held.category).collect();
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: all,
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert_eq!(app.view, View::Overview);
+        assert!(app.settings.is_some(), "the settings stay open");
+    }
+
+    /// Issue #300: a click on the shown group in the menu or the rail does what a click on any shown
+    /// view does – the open mail and the cursor go, the list stays and is not loaded again.
+    #[test]
+    fn showing_the_shown_group_again_clears_the_open_mail() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        load(&mut app);
+        let first = app.messages.first().map(|mail| mail.id.clone()).expect("the group holds mail");
+        let _ = app.update(Message::SelectMail(first));
+        assert!(app.panel_open() && app.cursor.is_some());
+        let shown = app.view.clone();
+        assert_eq!(app.update(Message::ShowCategoryGroup(group)).units(), 0, "nothing is loaded again");
+        assert!(!app.panel_open() && app.cursor.is_none(), "the open mail goes");
+        assert_eq!(app.view, shown);
+    }
+
+    /// Issue #300: with the settings open, a click on the group shown brings its list back instead
+    /// of folding it, as every other row of the sidebar does.
+    #[test]
+    fn a_click_on_the_shown_group_leaves_the_settings() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let _ = app.update(Message::OpenSettings);
+        assert!(app.settings.is_some());
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        assert!(app.settings.is_none(), "the list is back");
+        assert!(app.open_groups.contains(&group), "the group stays open");
+        assert!(app.category_group_active(group));
+    }
+
+    /// Issue #300 (task E17.2, g): the start states for the visual check – "Waiting for me" open and
+    /// shown, its first category shown, and the group with the navigation menu open.
+    #[test]
+    fn the_category_start_states_open_the_group() {
+        let group = CategoryGroup::WaitingForMe;
+        let mut app = mail_window(Density::Compact, &["--open", "category-group"]);
+        load(&mut app);
+        assert!(app.open_groups.contains(&group) && app.category_group_active(group));
+        assert!(!app.messages.is_empty(), "the group's mail is listed");
+        let mut app = mail_window(Density::Compact, &["--open", "category"]);
+        load(&mut app);
+        let first = occurring_in(&app, group);
+        assert!(app.open_groups.contains(&group));
+        assert_eq!(app.view, View::Category(mail::CategoryView::of_category(&first)));
+        assert!(app.category_group_shown(group) && !app.category_group_active(group));
+        let mut app = mail_window(Density::Compact, &["--open", "category-menu"]);
+        load(&mut app);
+        assert!(app.open_groups.contains(&group) && app.category_group_active(group));
+        assert_eq!(app.menu, Some(Menu::Nav));
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        // From the menu (and the rail, where folding shows nothing) a click on a group shows it and
+        // closes the menu, also on the group already shown – it never folds unseen.
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        assert_eq!(app.menu, None, "the menu closes like for every view");
+        assert!(app.open_groups.contains(&group) && app.category_group_active(group));
+        app.open_groups.remove(&group);
+        let _ = app.update(Message::ToggleNav);
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        assert_eq!(app.menu, None);
+        assert!(app.open_groups.contains(&group), "a folded group shown opens");
+        let other = CategoryGroup::Info;
+        assert!(app.update(Message::ShowCategoryGroup(other)).units() > 0, "another group is loaded");
+        assert!(app.open_groups.contains(&other) && app.category_group_active(other));
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        load(&mut app);
+        // Staged once: a group folded afterwards stays folded over the next load.
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        assert!(!app.open_groups.contains(&group));
     }
 
     #[test]
@@ -14339,8 +15454,8 @@ mod tests {
         for (words, ids) in [
             (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
-            // Mail settings include categorization and storage controls.
-            (vec!["--view", "mail"], vec!["accounts", "reading", "categorization", "storage"]),
+            // Mail settings include attachments (task M12.7), categorization and storage controls.
+            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization", "storage"]),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
@@ -14462,6 +15577,35 @@ mod tests {
         let _ = app.update(Message::OpenSettings);
         assert_eq!(accounts(&app), before, "the backup page remains after closing the settings");
         assert!(before.contains("demo-job"), "{before}");
+    }
+
+    /// Task M12.7: "Manage save targets…" opens Settings › Attachments; the editor of a target lies
+    /// over the window as a dialog, and Escape closes it before it closes the settings.
+    #[test]
+    fn the_save_targets_editor_is_a_dialog_over_the_window() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::ManageSaveTargets);
+        let data =
+            block_on(torro_settings_ui::load(Arc::new(torro_settings_ui::demo::Demo::new()), settings_mail::wanted()));
+        let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, ATTACHMENTS_SECTION);
+        let id = pane.host.data().save_targets.first().map(|target| target.id.clone()).expect("demo targets");
+        assert!(app.settings_dialog(SizeClass::Wide).is_none());
+
+        let edit = settings_mail::Message::Attachments(settings_mail::attachments::Message::Edit(id));
+        let _ = app.update(Message::SettingsPage(SettingsMessage::Mail(edit)));
+        assert!(app.settings_dialog(SizeClass::Wide).is_some(), "the editor is open");
+        assert_eq!(app.cover(), Cover::Dialog);
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_some() && app.settings_dialog(SizeClass::Wide).is_none(), "Escape closed the dialog");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none(), "then the settings");
+
+        // A cancelled chooser sends nothing.
+        let _ = app.update(Message::ManageSaveTargets);
+        let _ = app.update(Message::SettingsFolderChosen(settings_mail::FolderFor::Downloads, None));
+        assert!(app.settings.is_some());
     }
 
     /// `--demo --open backup…` opens the mail window's settings at the first account's backup page
@@ -14828,6 +15972,21 @@ mod tests {
             pinned(App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut hub);
         assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
+    }
+
+    /// Review of PR #308: a mail with attachments the window starts on (`--message`, no entry) asks
+    /// where they would go, as one read from the list does; one without attachments does not.
+    #[test]
+    fn the_mail_of_message_asks_where_its_attachments_go() {
+        let mut app = mail_window_on("m:w9");
+        let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:p3".into())).map(Box::new);
+        let _ = app.update(Message::StartMail("m:p3".into(), mail.map_err(|err| err.to_string())));
+        assert!(app.sent.contains(&Sent::SaveTargets("m:p3".into())), "the invoice's PDFs");
+        let mut app = mail_window_on("m:w9");
+        let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:w9".into())).map(Box::new);
+        assert!(mail.as_ref().is_ok_and(|mail| mail.attachments.iter().all(|file| file.inline)), "none to save");
+        let _ = app.update(Message::StartMail("m:w9".into(), mail.map_err(|err| err.to_string())));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::SaveTargets(_))));
     }
 
     #[test]

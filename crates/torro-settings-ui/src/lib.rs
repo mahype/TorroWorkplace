@@ -167,6 +167,13 @@ pub struct Data {
     /// What each rule of [`Data::rules`] caught since it was made (`inbox.list_rules`), one per
     /// rule by its id; empty from a core before task E8.8a.
     pub rule_hits: Vec<RuleHits>,
+    /// The save targets for attachments, in the order the person keeps them
+    /// (`mail.list_save_targets`, task M12.7): the mail window's section "Attachments" lists and
+    /// edits them, and offers each as the click on an attachment.
+    pub save_targets: Vec<torro_mail::SaveTarget>,
+    /// The folder "Save to Downloads" uses, an absolute path, as the same answer names it: the one a
+    /// person chose, else the system's. Empty until that answer came.
+    pub downloads: String,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
 }
@@ -229,6 +236,10 @@ impl Data {
                 }
             }
             Response::Sources { sources } => self.sources = sources,
+            Response::SaveTargets { targets, downloads, .. } => {
+                self.save_targets = targets;
+                self.downloads = downloads;
+            }
             Response::Rules { rules, hits } => {
                 self.rules = rules;
                 self.rule_hits = hits;
@@ -500,6 +511,17 @@ mod tests {
         twice.take(Response::Collections { collections: vec![both.clone()] });
         twice.take(Response::Collections { collections: vec![both] });
         assert_eq!((twice.calendars.len(), twice.task_lists.len()), (1, 1));
+    }
+
+    /// Task M12.7: the save targets and the Downloads folder come from one answer.
+    #[tokio::test]
+    async fn the_save_targets_come_with_the_downloads_folder() {
+        let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
+        let data = load(backend, vec![Request::ListSaveTargets { id: None }]).await;
+        assert!(data.error.is_none(), "{:?}", data.error);
+        let names: Vec<&str> = data.save_targets.iter().map(|target| target.spec.name.as_str()).collect();
+        assert_eq!(names, ["Invoices", "Contracts"]);
+        assert!(!data.downloads.is_empty(), "the Downloads folder comes along");
     }
 
     /// The app's part of an action can be wrapped, the rest stays as it is.

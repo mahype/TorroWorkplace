@@ -1043,6 +1043,9 @@ pub struct MailService {
     paused: AtomicBool,
     cache_workers: std::sync::Mutex<std::collections::HashSet<String>>,
     cache_jobs_lock: Mutex<()>,
+    /// Where attachments are saved to (task M12.3, issue #290): `<data>/mail/save-targets.json`,
+    /// beside the stores; none without a data directory.
+    save_targets: super::save::SaveTargets,
 }
 
 struct CacheWorkerGuard {
@@ -1077,6 +1080,8 @@ impl MailService {
         connector: Connector,
         timing: Timing,
     ) -> MailService {
+        let save_targets =
+            super::save::SaveTargets::at(dirs.as_ref().map(|dirs| dirs.data.join(super::save::FILE_NAME)));
         MailService {
             accounts_file,
             secrets,
@@ -1092,6 +1097,7 @@ impl MailService {
             paused: AtomicBool::new(false),
             cache_workers: std::sync::Mutex::new(std::collections::HashSet::new()),
             cache_jobs_lock: Mutex::new(()),
+            save_targets,
         }
     }
 
@@ -2241,6 +2247,20 @@ impl MailService {
     /// holds no password. [`MailError::NotFound`] for an unknown account or one whose mail is off.
     pub async fn config(&self, account: &str) -> Result<MailAccountConfig, MailError> {
         Ok(self.mailbox_of(account).await?.config.clone())
+    }
+
+    /// The save targets of attachments (task M12.3, [`super::save::SaveTargets`]), the same for every
+    /// account.
+    pub fn save_targets(&self) -> &super::save::SaveTargets {
+        &self.save_targets
+    }
+
+    /// What `{account}` of a save target's scheme names for `account` (task M12.3): the account's
+    /// display name, else its address. `None` for an unknown account or one whose mail is off.
+    pub async fn account_name(&self, account: &str) -> Option<String> {
+        let mailbox = self.mailbox_of(account).await.ok()?;
+        let named = mailbox.account.display_name.as_deref().map(str::trim).filter(|name| !name.is_empty());
+        Some(named.map_or_else(|| mailbox.config.address.clone(), str::to_string))
     }
 
     /// The managed folder for attachments ([`AttachmentCache`]): where `mail.get_attachment` puts

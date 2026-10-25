@@ -1,0 +1,39 @@
+# The font Lexend (task SR.6, issue #299): Lexend, figures Lexend Figures. Its size adjustment comes from its
+# x-height.
+# Source: github.com/googlefonts/lexend (fonts/lexend/ttf at commit 7894f02, the source google/fonts builds
+# from), Version 1.008; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as
+# published.
+# Reserved Font Name: "RevReading Lexend". Unchanged files keep their names.
+# The Lexend files are the maker's, unchanged.
+# Lexend Figures (Regular, Medium) is made from the Lexend cuts with fontTools 4.67.0, with a name of its own
+# so it does not mix with the text cuts; Regular: the font has no tnum, digits kerned against each other (up
+# to 25 units): mapped to unkerned copies, advances 500-620 equalised to 620 and centred; Medium: the font has
+# no tnum, digits kerned against each other (up to 25 units): mapped to unkerned copies, advances 522-635
+# equalised to 635 and centred. Copyright and licence records in the files are unchanged.
+# x-height 0.525 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.040; widest figure
+# of numbers 0.635 em, 0.660 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 500-620, Medium 522-635,
+# SemiBold 542-653, Bold 548-675 units), so numbers takes Lexend Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Lexend"
+version = "1.0.0"
+author = "Torro"
+description = "Lexend: a wide, open sans made for easy reading, with figures of one width"
+
+[fonts.text]
+family = "Lexend"
+regular = "Lexend-Regular.ttf"
+medium = "Lexend-Medium.ttf"
+semibold = "Lexend-SemiBold.ttf"
+bold = "Lexend-Bold.ttf"
+
+[fonts.numbers]
+family = "Lexend Figures"
+regular = "LexendFigures-Regular.ttf"
+medium = "LexendFigures-Medium.ttf"

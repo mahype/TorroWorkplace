@@ -8,13 +8,16 @@
 //! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
 //! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
 //! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
-//! mail window (task E11.1) the chips of attachments ([`file_chip`]); for the mail's actions at its
+//! mail window (task E11.1) the chips of attachments ([`file_chip`]); for saving them (task M12.5) the split
+//! chip with a menu at its triangle ([`split_file_chip`]), the block that holds them ([`file_block`]) and the
+//! "Save all" action ([`split_action`], framed [`split_action_framed`]); for the mail's actions at its
 //! right edge (task E14.1):
 //! the action rail ([`action_rail`] with [`RailGroup`]s of [`RailItem`]s, collapsed or expanded,
 //! [`RailMode`]) and the layer of an open group ([`rail_flyout`]). For the compact Appearance page
 //! (task L.18): a segment with a symbol and a word in each part ([`icon_segmented`]), a heading with
 //! quiet actions at its right ([`group_heading`]) and a grid of tiles with a preview to pick from
-//! ([`preview_tile`], [`preview_grid`]).
+//! ([`preview_tile`], [`preview_grid`]). For a long choice in a menu (issue #299, the fonts): a menu
+//! with a search field at its top ([`search_menu`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -752,6 +755,16 @@ pub fn file_chip<'a, M: Clone + 'a>(
     size_text: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    button(container(file_chip_content(name, size_text)).center_y(Fill))
+        .height(size::control())
+        .padding([0.0, space::m()])
+        .style(style::button::secondary)
+        .on_press_maybe(on_press)
+        .into()
+}
+
+/// The paperclip, name and size of an attachment, as in a file chip.
+fn file_chip_content<'a, M: 'a>(name: impl IntoFragment<'a>, size_text: impl IntoFragment<'a>) -> Element<'a, M> {
     let mut content = row![toned(Icon::Paperclip, icon::SIZE_SM, Tone::Text3), typo::text(typo::body(), name)]
         .spacing(ICON_GAP)
         .align_y(Alignment::Center);
@@ -759,11 +772,226 @@ pub fn file_chip<'a, M: Clone + 'a>(
     if !size_text.is_empty() {
         content = content.push(typo::text(typo::meta(), size_text).style(theme::text_3).wrapping(Wrapping::None));
     }
-    button(container(content).center_y(Fill))
-        .height(size::control())
+    content.into()
+}
+
+/// The corners of one part of a split control: the outer ones on its side, radius [`radius::sm()`].
+fn split_corners(left: bool) -> border::Radius {
+    let r = radius::sm();
+    if left {
+        border::Radius { top_left: r, bottom_left: r, ..border::Radius::default() }
+    } else {
+        border::Radius { top_right: r, bottom_right: r, ..border::Radius::default() }
+    }
+}
+
+/// A part of a split control: no surface at rest, `hover` on hover and `selected` when pressed,
+/// the word in `text` – or in `text_2` when `quiet`, so an action reads as an action, not a file.
+/// Off, the part is faded like every disabled control ([`style::DISABLED_ALPHA`]).
+fn split_part(corners: border::Radius, quiet: bool) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
+    move |theme, status| {
+        let p = palette(theme);
+        let rest = if quiet { p.text_2 } else { p.text };
+        let (background, text) = match status {
+            button::Status::Active => (None, rest),
+            button::Status::Hovered => (Some(p.hover), p.text),
+            button::Status::Pressed => (Some(p.selected), p.text),
+            button::Status::Disabled => (None, Color { a: style::DISABLED_ALPHA, ..rest }),
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: text,
+            border: border::Border { radius: corners, ..border::Border::default() },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// A rule between the two parts of a split control: `line` in an action, `line_strong` on a chip.
+fn split_divider(strong: bool) -> impl Fn(&Theme) -> rule::Style + Copy {
+    move |theme| {
+        let p = palette(theme);
+        rule::Style {
+            color: if strong { p.line_strong } else { p.line },
+            radius: border::Radius::default(),
+            fill_mode: rule::FillMode::Full,
+            snap: true,
+        }
+    }
+}
+
+/// The triangle of a split control: a quiet part with a chevron down (14, `text_2`) that opens the
+/// menu, `tip` as its tooltip, and the anchor of the menu when there is one.
+fn split_menu<'a, M: Clone + 'a>(
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+    corners: border::Radius,
+    tip: impl IntoFragment<'a>,
+) -> Element<'a, M> {
+    let chevron =
+        container(toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text2)).center_y(Fill).padding([0.0, space::s()]);
+    let trigger = button(chevron).height(Fill).style(split_part(corners, true)).on_press_maybe(on_menu);
+    with_tooltip(anchored_if(anchor, trigger), tip)
+}
+
+/// The frame of a framed split control ([`split_file_chip`], [`split_action_framed`]): `raised` with a
+/// `line_strong` border, radius [`radius::sm()`].
+fn split_frame(theme: &Theme) -> container::Style {
+    let p = palette(theme);
+    container::Style {
+        background: Some(Background::Color(p.raised)),
+        border: border::rounded(radius::sm()).color(p.line_strong).width(LINE),
+        ..container::Style::default()
+    }
+}
+
+/// A file attachment as a chip with a menu: [`file_chip`]'s part that opens the file (paperclip,
+/// `name`, `size_text`), a hairline in `line_strong`, and at the right the triangle that opens the
+/// menu of ways to open or save (task M12.5). The two parts have their own hover, the frame is
+/// shared; the chip is [`size::control()`] high. `on_open` and `on_menu` show their part off when
+/// `None`; `anchor` is where the menu floats (`anchored_if`). `open_tip` is the tooltip of the part
+/// that opens ("Open: invoice.pdf"), none when empty – it sits on that part alone, so it never stands
+/// over the triangle's own.
+///
+/// ```ignore
+/// widgets::split_file_chip(&a.name, format_size(a.size), "Open: a.pdf", Some(Msg::Open(i)), Some(Msg::Menu(i)), Some(&anchor))
+/// ```
+pub fn split_file_chip<'a, M: Clone + 'a>(
+    name: impl IntoFragment<'a>,
+    size_text: impl IntoFragment<'a>,
+    open_tip: impl IntoFragment<'a>,
+    on_open: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+) -> Element<'a, M> {
+    let open = button(container(file_chip_content(name, size_text)).center_y(Fill))
+        .height(Fill)
         .padding([0.0, space::m()])
-        .style(style::button::secondary)
-        .on_press_maybe(on_press)
+        .style(split_part(split_corners(true), false))
+        .on_press_maybe(on_open);
+    let open_tip = open_tip.into_fragment();
+    let open: Element<'a, M> = if open_tip.is_empty() { open.into() } else { with_tooltip(open, open_tip) };
+    let triangle = split_menu(on_menu, anchor, split_corners(false), tr("More ways to open or save"));
+    let parts = row![open, rule::vertical(LINE).style(split_divider(true)), triangle].height(Fill);
+    container(parts).height(size::control()).style(split_frame).into()
+}
+
+/// "Save all" and its menu as one ghost control (task M12.5): no surface and no frame, so it does
+/// not look like an attachment; the action with `which` (Download) and `label` in `text_2`, a quiet
+/// hairline and the triangle beside it as in [`split_file_chip`], with `menu_tip` as the triangle's
+/// tooltip ("More ways to save all"). [`size::control_sm()`] high, shown from two attachments on. For
+/// the head of a [`file_block`], whose band and frame hold it; where it stands alone, take
+/// [`split_action_framed`].
+///
+/// ```ignore
+/// widgets::split_action(Icon::Download, tr("Save all"), tr("More ways to save all"), Some(Msg::SaveAll), Some(Msg::SaveAllMenu), Some(&anchor))
+/// ```
+pub fn split_action<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    menu_tip: impl IntoFragment<'a>,
+    on_press: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+) -> Element<'a, M> {
+    split_action_parts(which, label, menu_tip, on_press, on_menu, anchor, false).height(size::control_sm()).into()
+}
+
+/// [`split_action`] in a frame like a secondary button (`raised`, `line_strong` border, radius
+/// [`radius::sm()`], the hairline between the parts in `line_strong`), [`size::control_sm()`] high: for
+/// "Save all ▾" where no block frames it, e.g. over the attachment rows of the panel (task M12.6), so
+/// its hairline does not stand alone.
+///
+/// ```ignore
+/// widgets::split_action_framed(Icon::Download, tr("Save all"), tr("More ways to save all"), Some(Msg::SaveAll), Some(Msg::SaveAllMenu), None)
+/// ```
+pub fn split_action_framed<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    menu_tip: impl IntoFragment<'a>,
+    on_press: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+) -> Element<'a, M> {
+    let parts = split_action_parts(which, label, menu_tip, on_press, on_menu, anchor, true).height(Fill);
+    container(parts).height(size::control_sm()).style(split_frame).into()
+}
+
+/// The two parts of a split action and the hairline between them: the action (`which`, `label` in
+/// `text_2`) and the triangle with `menu_tip`. The hairline is `line_strong` in a frame (`framed`),
+/// like a chip's, and the quieter `line` on a band without one.
+fn split_action_parts<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    menu_tip: impl IntoFragment<'a>,
+    on_press: Option<M>,
+    on_menu: Option<M>,
+    anchor: Option<&Anchor>,
+    framed: bool,
+) -> iced::widget::Row<'a, M> {
+    let content =
+        row![toned(which, icon::SIZE_SM, Tone::Text2), typo::text(typo::caption(), label).style(theme::text_2)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
+    let open = button(container(content).center_y(Fill))
+        .height(Fill)
+        .padding([0.0, space::s()])
+        .style(split_part(split_corners(true), true))
+        .on_press_maybe(on_press);
+    let triangle = split_menu(on_menu, anchor, split_corners(false), menu_tip);
+    row![open, rule::vertical(LINE).style(split_divider(framed)), triangle]
+}
+
+/// The head of an attachment block (see [`file_block`]): a band with the paperclip, `title` in
+/// `typo::body_strong()` and `meta` in `typo::meta()` in `text_3`, and `action` at its right end.
+///
+/// ```ignore
+/// widgets::file_block_head("3 attachments", "1.2 MB", Some(widgets::split_action(…)))
+/// ```
+pub fn file_block_head<'a, M: 'a>(
+    title: impl IntoFragment<'a>,
+    meta: impl IntoFragment<'a>,
+    action: Option<Element<'a, M>>,
+) -> Element<'a, M> {
+    let mut head = row![
+        toned(Icon::Paperclip, icon::SIZE, Tone::Text3),
+        container(typo::text(typo::body_strong(), title).wrapping(Wrapping::None)).width(Fill).clip(true),
+        typo::text(typo::meta().tabular(), meta).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(ICON_GAP)
+    .align_y(Alignment::Center);
+    if let Some(action) = action {
+        head = head.push(action);
+    }
+    // `center_y` with the control's height, not `Fill`: `Fill` would replace the band's height and let
+    // it take half a reader.
+    container(head)
+        .padding(Padding::new(0.0).left(space::m()).right(space::s()))
+        .center_y(size::control())
+        .width(Fill)
+        .into()
+}
+
+/// The block around a set of attachments (task M12.5, mail reader): `head` (see
+/// [`file_block_head`]) as a band with a [`LINE`] under it, then `content` with [`space::s()`]
+/// above and below and [`space::m()`] at the sides – the head's own inset, so the chips start under
+/// its paperclip – all in a `line_strong` frame with radius [`radius::sm()`].
+///
+/// ```ignore
+/// widgets::file_block(widgets::file_block_head(title, meta, None), chips)
+/// ```
+pub fn file_block<'a, M: 'a>(head: impl Into<Element<'a, M>>, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let body = column![
+        head.into(),
+        rule::horizontal(LINE).style(style::rule),
+        container(content).padding([space::s(), space::m()]).width(Fill),
+    ];
+    container(body)
+        .width(Fill)
+        .style(|t| container::Style {
+            border: border::rounded(radius::sm()).color(palette(t).line_strong).width(LINE),
+            ..container::Style::default()
+        })
         .into()
 }
 
@@ -805,8 +1033,108 @@ pub fn sidebar_item_in<'a, M: Clone + 'a>(
     active: bool,
     on_press: M,
 ) -> Element<'a, M> {
+    sidebar_row(mode, SidebarRow { mark: mark.into(), scale: Scale::Row, fold: None }, label, trail, active, on_press)
+}
+
+/// A group row that folds its children in and out (the category groups of the mail window, issue
+/// #300): expanded like [`sidebar_item_in`], with a chevron ([`Icon::ChevronDown`] when `open`, else
+/// [`Icon::ChevronRight`], 12 in `text_3`) right after the label, so the icons of all rows stay in one
+/// column; in the rail exactly a [`sidebar_item_in`], without a chevron (the rail shows no children).
+/// The whole row is the button; what a click does (show the group, fold it) is the app's to decide.
+/// Put the open group's children after it in a [`sidebar_branch`].
+///
+/// ```ignore
+/// let open = self.open_groups.contains(&group);
+/// items.push(widgets::sidebar_fold_in(mode, Mark::Tinted(icon, colour), tr("Paper trail"), Trail::Count(7), active, open, Message::Fold(group)));
+/// if open && mode == SidebarMode::Expanded {
+///     items.push(widgets::sidebar_branch(colour, children));
+/// }
+/// ```
+pub fn sidebar_fold_in<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    mark: impl Into<Mark>,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    open: bool,
+    on_press: M,
+) -> Element<'a, M> {
+    let row = SidebarRow { mark: mark.into(), scale: Scale::Row, fold: Some(open) };
+    sidebar_row(mode, row, label, trail, active, on_press)
+}
+
+/// The children of an open group ([`sidebar_fold_in`]) as one branch: `rows` ([`sidebar_child`])
+/// below one another with the sidebar's gap, [`icon::SIZE`] + [`space::s()`] further in than the
+/// group, and a 1-px line in `line` (the group's colour) under the middle of the group's icon, over
+/// the whole height of the branch – it binds the children to their group. Only in the expanded
+/// sidebar; the rail shows no branches.
+///
+/// ```ignore
+/// let children = categories.iter().map(|c| widgets::sidebar_child(Mark::Tinted(c.icon, colour), c.label, Trail::Count(c.unread), c.active, Message::Show(c.view))).collect();
+/// items.push(widgets::sidebar_branch(colour, children));
+/// ```
+pub fn sidebar_branch<'a, M: 'a>(line: Color, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let children = container(column(rows).spacing(crate::shell::SIDEBAR_GAP))
+        .width(Fill)
+        .padding(Padding::new(0.0).left(branch_indent()));
+    let stroke = container(blank())
+        .width(LINE)
+        .height(Fill)
+        .style(move |_| container::Style { background: Some(Background::Color(line)), ..container::Style::default() });
+    let guide =
+        container(stroke).width(Fill).height(Fill).padding(Padding::new(0.0).left(branch_line_x() - LINE / 2.0));
+    // The children are the stack's first layer and so give it its height; the line fills it.
+    stack![children, guide].width(Fill).into()
+}
+
+/// A child row in a [`sidebar_branch`] (a category under its group, issue #300): drawn like an
+/// expanded [`sidebar_item_in`], with the mark one step smaller ([`icon::SIZE_SM`]) so the group
+/// above it keeps the rank.
+///
+/// ```ignore
+/// widgets::sidebar_child(Mark::Tinted(Icon::TextQuote, colour), tr("Invoice received"), Trail::Count(2), shown, Message::Show(view))
+/// ```
+pub fn sidebar_child<'a, M: Clone + 'a>(
+    mark: impl Into<Mark>,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    on_press: M,
+) -> Element<'a, M> {
+    let row = SidebarRow { mark: mark.into(), scale: Scale::Small, fold: None };
+    sidebar_row(SidebarMode::Expanded, row, label, trail, active, on_press)
+}
+
+/// How far the children of a group stand in ([`sidebar_branch`], nested [`MenuItem`]s): one icon
+/// and the gap after it, so a child's mark starts where the group's label does.
+fn branch_indent() -> f32 {
+    icon::SIZE + space::s()
+}
+
+/// Where the line of a [`sidebar_branch`] runs, from the branch's left edge: the middle of the
+/// group's icon in the row above.
+fn branch_line_x() -> f32 {
+    style::ITEM_PADDING.left + icon::SIZE / 2.0
+}
+
+/// What sets the sidebar rows apart: the mark and its scale, and for a folding group whether it is
+/// open (`Some`, drawn with a chevron).
+struct SidebarRow {
+    mark: Mark,
+    scale: Scale,
+    fold: Option<bool>,
+}
+
+fn sidebar_row<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    parts: SidebarRow,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    on_press: M,
+) -> Element<'a, M> {
     let tone = if active { Tone::Text } else { Tone::Text2 };
-    let mark = mark_view(mark.into(), Scale::Row, tone);
+    let mark = mark_view(parts.mark, parts.scale, tone);
     let row_button = |content: Element<'a, M>, padding: Padding| {
         button(content)
             .width(Fill)
@@ -817,10 +1145,23 @@ pub fn sidebar_item_in<'a, M: Clone + 'a>(
     };
     match mode {
         SidebarMode::Expanded => {
-            let content = row![mark, line_label(typo::body(), label)]
-                .push(trail_view(trail))
-                .spacing(space::s())
-                .align_y(Alignment::Center);
+            let name = match parts.fold {
+                None => line_label(typo::body(), label),
+                Some(open) => {
+                    // The chevron follows the name instead of the row's end, so the label takes
+                    // only its own width. A name wider than the row pushes the chevron out of the
+                    // clip (Iced 0.14 has no ellipsis); the group names it is made for are short.
+                    let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
+                    let name = row![
+                        typo::text(typo::body(), label).wrapping(Wrapping::None),
+                        toned(chevron, GROUP_CHEVRON, Tone::Text3)
+                    ]
+                    .spacing(space::xs())
+                    .align_y(Alignment::Center);
+                    container(name).width(Fill).clip(true).into()
+                }
+            };
+            let content = row![mark, name].push(trail_view(trail)).spacing(space::s()).align_y(Alignment::Center);
             row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING).into()
         }
         SidebarMode::Rail => {
@@ -1634,14 +1975,67 @@ pub struct MenuItem<'a, M> {
     pub trail: Trail,
     /// Marks the current choice.
     pub current: bool,
+    /// A second line under the label in `text_3` ([`MenuItem::detail`]), e.g. the folder a save goes to.
+    pub detail: Option<iced::widget::text::Fragment<'a>>,
+    /// Words between the label and the trail, at most two ([`MenuItem::tag`]).
+    pub tags: Vec<MenuTag<'a>>,
+    /// A child of the entry above it (a category under its group, issue #300): indented by an icon
+    /// and its gap, with the mark one step smaller.
+    pub nested: bool,
     /// Sent when the entry is clicked; the app closes the menu itself.
     pub on_press: M,
 }
 
+/// A word at the end of a [`MenuItem`] (task M12.5), e.g. "Click" or "Suggested"; with `sparkles`
+/// the Torro sparkles in front of it, for a suggestion the model made.
+#[derive(Debug, Clone)]
+pub struct MenuTag<'a> {
+    /// The word, through `tr` like every label.
+    pub label: iced::widget::text::Fragment<'a>,
+    /// Whether the sparkles of the AI stand in front of the word.
+    pub sparkles: bool,
+}
+
+/// How many [`MenuTag`]s an entry shows: a third word would crowd the label out.
+const MENU_TAGS: usize = 2;
+
 impl<'a, M> MenuItem<'a, M> {
-    /// An entry with `mark` and `label` that sends `on_press`; no trail, not current.
+    /// An entry with `mark` and `label` that sends `on_press`; no trail, not current, not nested.
     pub fn new(mark: impl Into<Mark>, label: impl IntoFragment<'a>, on_press: M) -> Self {
-        Self { mark: Some(mark.into()), label: label.into_fragment(), trail: Trail::None, current: false, on_press }
+        Self {
+            mark: Some(mark.into()),
+            label: label.into_fragment(),
+            trail: Trail::None,
+            current: false,
+            detail: None,
+            tags: Vec::new(),
+            nested: false,
+            on_press,
+        }
+    }
+
+    /// The same entry with `text` as a second line in `typo::meta()` in `text_3`, cut with "…" when
+    /// it is too long. The entry is twice as high as one without it.
+    ///
+    /// ```ignore
+    /// MenuItem::new(Icon::Folder, tr("Save to Downloads"), Message::SaveTo(ToDownloads))
+    ///     .detail("~/Downloads")
+    /// ```
+    pub fn detail(self, text: impl IntoFragment<'a>) -> Self {
+        Self { detail: Some(text.into_fragment()), ..self }
+    }
+
+    /// The same entry with the word `label` after its label, before the trail; with `sparkles` the
+    /// AI's sparkles in `accent` in front of it. At most two words are shown; a third is left out.
+    ///
+    /// ```ignore
+    /// MenuItem::new(Icon::Folder, "Invoices", Message::Save(id)).tag("Suggested", true)
+    /// ```
+    pub fn tag(mut self, label: impl IntoFragment<'a>, sparkles: bool) -> Self {
+        if self.tags.len() < MENU_TAGS {
+            self.tags.push(MenuTag { label: label.into_fragment(), sparkles });
+        }
+        self
     }
 
     /// The same entry with `trail` at the end.
@@ -1652,6 +2046,11 @@ impl<'a, M> MenuItem<'a, M> {
     /// The same entry marked as the current choice when `current` is true.
     pub fn current(self, current: bool) -> Self {
         Self { current, ..self }
+    }
+
+    /// The same entry as a child of the one above it: indented, its mark one step smaller.
+    pub fn nested(self) -> Self {
+        Self { nested: true, ..self }
     }
 }
 
@@ -1692,11 +2091,24 @@ pub fn menu_item<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
 }
 
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
+    let height = menu_entry_height(item.detail.is_some());
+    let label: Element<'a, M> = match item.detail {
+        Some(detail) => column![menu_label(item.label), detail_line(detail)].width(Fill).into(),
+        // Without tags nothing takes from the label's width: clip it as every menu did before
+        // (task M12.5 must not move the entries of the suite's other menus).
+        None if item.tags.is_empty() => line_label(typo::body(), item.label),
+        None => menu_label(item.label),
+    };
+    let scale = if item.nested { Scale::Small } else { Scale::Row };
     let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(mark) = item.mark {
-        content = content.push(mark_view(mark, Scale::Row, Tone::Text));
+        content = content.push(mark_view(mark, scale, Tone::Text));
     }
-    content = content.push(line_label(typo::body(), item.label)).push(trail_view(item.trail));
+    content = content.push(label);
+    for tag in item.tags {
+        content = content.push(tag_view(tag));
+    }
+    content = content.push(trail_view(item.trail));
     if item.current {
         content = content.push(container(blank()).width(ICON_GAP).height(ICON_GAP).style(|t| container::Style {
             background: Some(Background::Color(palette(t).text_2)),
@@ -1704,13 +2116,63 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
             ..container::Style::default()
         }));
     }
-    button(container(content).center_y(Fill))
+    let entry = button(container(content).center_y(Fill))
         .width(Fill)
-        .height(style::MENU_ITEM_HEIGHT)
+        .height(height)
         .padding(style::ITEM_PADDING)
         .style(style::button::menu_item(false))
-        .on_press(item.on_press)
-        .into()
+        .on_press(item.on_press);
+    if item.nested {
+        // The whole entry moves in, hover surface included, as in the sidebar's branch.
+        container(entry).padding(Padding::new(0.0).left(branch_indent())).into()
+    } else {
+        entry.into()
+    }
+}
+
+/// How high a menu entry is: [`style::MENU_ITEM_HEIGHT`], and with a detail line that line's height
+/// of `typo::meta()` more, so title and detail stand close together in the middle of the entry with
+/// the same air above and below as a one-line entry has.
+fn menu_entry_height(detail: bool) -> f32 {
+    if detail { style::MENU_ITEM_HEIGHT + typo::line_height(typo::meta()) } else { style::MENU_ITEM_HEIGHT }
+}
+
+/// The label of a menu entry, cut with "…" to the width the tags and trail leave it (measured when
+/// laid out) instead of clipped mid-letter: the same look as [`line_label`] otherwise.
+fn menu_label<'a, M: 'a>(label: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
+    let label = label.to_string();
+    measured_line(typo::body(), move |size| {
+        let shown = typo::ellipsize(&label, typo::body(), size.width);
+        typo::text(typo::body(), shown).wrapping(Wrapping::None).into()
+    })
+}
+
+/// The second line of a menu entry: `typo::meta()` in `text_3`, cut with "…" to the width the
+/// label column has, which the tags behind the label take from (measured when laid out).
+fn detail_line<'a, M: 'a>(detail: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
+    let detail = detail.to_string();
+    measured_line(typo::meta(), move |size| {
+        let shown = typo::ellipsize(&detail, typo::meta(), size.width);
+        typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+    })
+}
+
+/// A line of text in `level` built by `view` from the width it gets, exactly one line of `level`
+/// high: `responsive` alone takes all the height it is offered, and its text would then sit at the
+/// top of the entry instead of in its middle.
+fn measured_line<'a, M: 'a>(level: typo::Level, view: impl Fn(Size) -> Element<'a, M> + 'a) -> Element<'a, M> {
+    container(responsive(view)).width(Fill).height(typo::line_height(level)).into()
+}
+
+/// A [`MenuTag`] behind the label of a menu entry: `typo::caption()` in `text_3`, with the sparkles
+/// of the AI in `accent` in front of it when it has them.
+fn tag_view<'a, M: 'a>(tag: MenuTag<'a>) -> Element<'a, M> {
+    let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
+    if tag.sparkles {
+        let sparkles = icon(Icon::Sparkles, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).accent) });
+        content = content.push(sparkles);
+    }
+    content.push(typo::text(typo::caption(), tag.label).style(theme::text_3).wrapping(Wrapping::None)).into()
 }
 
 /// A menu card: `menu` surface, `line_strong` border, radius 8, shadow, 4 inside, [`menu_width()`]
@@ -1728,6 +2190,66 @@ pub fn menu<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Element<'a,
         list = list.extend(section.items.into_iter().map(menu_entry));
     }
     container(list).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+}
+
+/// A long choice in a floating menu (issue #299, the fonts of Appearance): a search field at the top
+/// (flat, [`style::text_input_flat`], with the symbol `Search`, [`size::control()`] high), a line, and
+/// under it the caller's `items` – section titles, lines, entries – scrolling past [`size::panel()`],
+/// in the card of a menu `width` wide. Without items it says "No matches" in `text_3`.
+///
+/// The caller keeps `query` and filters `items` by it itself; `on_input` comes with every change of
+/// the field, `on_submit` with Enter (the caller takes its first match). `id` names the field, so the
+/// caller can focus it when it opens the menu (`iced::widget::operation::focus(id)`). Show it with
+/// [`floating`]; Escape closes it like any menu ([`escape`]).
+///
+/// ```ignore
+/// let items: Vec<Element<_>> = fonts.iter().filter(|f| matches(f, &self.query)).map(font_item).collect();
+/// let menu = widgets::search_menu(FONT_SEARCH, &self.query, Message::Query, Message::First, items, size::props());
+/// widgets::floating(&anchor, Placement::Below(Align::End), menu, Message::Close)
+/// ```
+pub fn search_menu<'a, M: Clone + 'a>(
+    id: &'static str,
+    query: &'a str,
+    on_input: impl Fn(String) -> M + 'a,
+    on_submit: M,
+    items: Vec<Element<'a, M>>,
+    width: f32,
+) -> Element<'a, M> {
+    let level = typo::body();
+    let input = iced::widget::text_input(tr("Search"), query)
+        .id(id)
+        .size(level.size)
+        .line_height(level.line_height)
+        .font(level.font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input_flat)
+        .on_input(on_input)
+        .on_submit(on_submit);
+    let field =
+        row![toned(Icon::Search, icon::SIZE_SM, Tone::Text3), input].spacing(ICON_GAP).align_y(Alignment::Center);
+    let field =
+        container(field).width(Fill).height(size::control()).center_y(size::control()).padding(style::ITEM_PADDING);
+    let list = match search_results(items) {
+        Ok(items) => column(items),
+        Err(none) => {
+            column![container(typo::text(typo::body(), none).style(theme::text_3)).padding(style::ITEM_PADDING)]
+                .padding([space::s(), 0.0])
+        }
+    };
+    let body = scrollable(list)
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .height(Length::Shrink)
+        .width(Fill);
+    let line = container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]);
+    let card = column![field, line, container(body).max_height(size::panel())];
+    container(card).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
+}
+
+/// The entries of a [`search_menu`], or the words it shows instead when the search found none.
+fn search_results<M>(items: Vec<Element<'_, M>>) -> Result<Vec<Element<'_, M>>, &'static str> {
+    if items.is_empty() { Err(tr("No matches")) } else { Ok(items) }
 }
 
 /// The action rail as a context menu: its groups form vertical sections with separators.
@@ -4538,6 +5060,25 @@ mod badge {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #299: a search that finds nothing says so; one that finds something shows its entries.
+    #[test]
+    fn a_search_menu_says_when_nothing_matches() {
+        #[derive(Debug, Clone)]
+        enum Msg {
+            Query(String),
+            First,
+        }
+        assert_eq!(search_results::<Msg>(Vec::new()).err(), Some(tr("No matches")));
+        let found: Vec<Element<'_, Msg>> = vec![typo::text(typo::body(), "Inter").into(), blank().into()];
+        assert_eq!(search_results(found).map(|items| items.len()).ok(), Some(2));
+        let _: Element<'_, Msg> = search_menu("search", "", Msg::Query, Msg::First, Vec::new(), size::props());
+        let one = vec![typo::text(typo::body(), "Inter").into()];
+        let _: Element<'_, Msg> = search_menu("search", "in", Msg::Query, Msg::First, one, size::props());
+        // What the field hands the caller, typed: the whole text.
+        let typed = Msg::Query("mo".into());
+        assert!(matches!(&typed, Msg::Query(text) if text == "mo"), "{typed:?}");
+    }
+
     /// Task E12.7: the four group colours stand out on the panel in both modes, stay apart from
     /// one another, and there is one per group – no more.
     #[test]
@@ -5158,6 +5699,52 @@ mod tests {
         assert_eq!(MenuSection::titled("Lists", vec![item]).title.as_deref(), Some("Lists"));
     }
 
+    /// Issue #300 (task E17.1): a nested entry is the builder's to set; a new entry is not nested.
+    #[test]
+    fn menu_items_are_nested_only_when_asked() {
+        assert!(!MenuItem::new(Icon::Inbox, "Waiting for me", Msg::Go).nested);
+        let child = MenuItem::new(Icon::Inbox, "Reply needed", Msg::Go).trail(Trail::Count(2)).nested();
+        assert!(child.nested);
+        assert_eq!(child.trail, Trail::Count(2), "nesting keeps the rest of the entry");
+        let _: Element<'_, Msg> = menu(vec![MenuSection::new(vec![child])]);
+    }
+
+    /// Issue #300 (task E17.1): the children of a group sit one icon and its gap further in, and the
+    /// line that binds them to the group runs under the middle of the group's icon, left of them.
+    #[test]
+    fn a_branch_is_indented_by_an_icon_with_its_line_under_the_group_icon() {
+        assert_eq!(branch_indent(), icon::SIZE + space::s());
+        assert_eq!(branch_indent(), 24.0, "the standard design's 16 + 8");
+        assert_eq!(branch_line_x(), style::ITEM_PADDING.left + icon::SIZE / 2.0);
+        assert_eq!(branch_line_x(), 16.0, "the middle of the group's icon");
+        assert!(branch_line_x() < branch_indent(), "the line stays left of the indented rows");
+    }
+
+    /// Issue #300 (task E17.1): the group row, its branch and its children build in both sidebar modes.
+    #[test]
+    fn the_folding_group_and_its_branch_build_in_both_modes() {
+        let colour = Color::from_rgb(0.2, 0.5, 0.9);
+        for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+            for (active, open) in [(false, false), (true, false), (false, true), (true, true)] {
+                let _ = sidebar_fold_in(
+                    mode,
+                    Mark::Tinted(Icon::Inbox, colour),
+                    "Waiting for me",
+                    Trail::Count(4),
+                    active,
+                    open,
+                    Msg::Go,
+                );
+            }
+            let children = vec![
+                sidebar_child(Mark::Tinted(Icon::Inbox, colour), "Reply needed", Trail::Count(2), true, Msg::Go),
+                sidebar_child(Mark::Tinted(Icon::Inbox, colour), "Waiting", Trail::None, false, Msg::Close),
+            ];
+            let _ = sidebar_branch(colour, children);
+            let _ = sidebar_branch::<Msg>(colour, Vec::new());
+        }
+    }
+
     #[test]
     fn marks_scale_with_their_place() {
         assert_eq!((Scale::Row.icon(), Scale::Row.ring(), Scale::Row.dot()), (16.0, 14.0, 8.0));
@@ -5348,6 +5935,62 @@ mod tests {
     fn the_attachment_chips_build_on_and_off() {
         let _: Element<'_, Msg> = file_chip("budget-q4.csv", "3 KB", Some(Msg::Go));
         let _: Element<'_, Msg> = file_chip("travel-policy.pdf", "", None);
+    }
+
+    /// Task M12.5: the split chip, the save-all action and the block build on, off and with or
+    /// without an anchor for their menu.
+    #[test]
+    fn the_split_chips_and_the_block_build_on_and_off() {
+        let anchor = Anchor::new();
+        let _: Element<'_, Msg> = split_file_chip(
+            "budget-q4.csv",
+            "3 KB",
+            "Open: budget-q4.csv",
+            Some(Msg::Go),
+            Some(Msg::Close),
+            Some(&anchor),
+        );
+        let _: Element<'_, Msg> = split_file_chip("travel-policy.pdf", "", "", None, None, None);
+        let tip = "More ways to save all";
+        let _: Element<'_, Msg> = split_action(Icon::Download, "Save all", tip, Some(Msg::Go), Some(Msg::Close), None);
+        let _: Element<'_, Msg> = split_action(Icon::Save, "Save all", tip, None, None, Some(&anchor));
+        let _: Element<'_, Msg> =
+            split_action_framed(Icon::Download, "Save all", tip, Some(Msg::Go), Some(Msg::Close), Some(&anchor));
+        let _: Element<'_, Msg> = split_action_framed(Icon::Download, "Save all", "", None, None, None);
+        let head = file_block_head(
+            "2 attachments",
+            "3 KB",
+            Some(split_action(Icon::Download, "Save all", tip, None, None, None)),
+        );
+        let chips: Element<'_, Msg> = row![file_chip("a.pdf", "", None)].into();
+        let _: Element<'_, Msg> = file_block(head, chips);
+    }
+
+    /// Task M12.5: a menu entry takes a detail line and at most two tags; a third is left out.
+    #[test]
+    fn menu_entries_take_a_detail_and_two_tags() {
+        let item = MenuItem::new(Icon::Folder, "Invoices", Msg::Go)
+            .detail("~/Documents/Invoices/2026/10")
+            .tag("Click", false)
+            .tag("Suggested", true)
+            .tag("Third", false);
+        assert_eq!(item.tags.len(), 2);
+        assert!(item.tags[1].sparkles && !item.tags[0].sparkles);
+        assert!(item.detail.is_some());
+        assert!(MenuItem::new(Icon::Folder, "Plain", Msg::Go).detail.is_none());
+        let _: Element<'_, Msg> = menu_item(item);
+        let _: Element<'_, Msg> = menu_item(MenuItem::new(Icon::Folder, "Tagged", Msg::Go).tag("Click", false));
+    }
+
+    /// Design review of #290: an entry without a detail keeps the height every menu had; one with a
+    /// detail grows by one line of `meta`, not by a whole entry, so its two lines stay together.
+    #[test]
+    fn a_detail_adds_one_meta_line_to_a_menu_entry() {
+        assert_eq!(menu_entry_height(false), style::MENU_ITEM_HEIGHT);
+        assert_eq!(menu_entry_height(true), style::MENU_ITEM_HEIGHT + typo::line_height(typo::meta()));
+        // Title and detail fit in it with air above and below.
+        let lines = typo::line_height(typo::body()) + typo::line_height(typo::meta());
+        assert!(menu_entry_height(true) > lines);
     }
 
     /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take

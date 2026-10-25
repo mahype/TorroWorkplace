@@ -1,0 +1,35 @@
+# The font Source (task SR.5, issue #299): Source Sans 3, headings Source Serif 4. Its size adjustment comes
+# from its x-height.
+# Source: github.com/adobe-fonts/source-sans release 3.052R (TTF-source-sans-3.052R.zip) and
+# github.com/adobe-fonts/source-serif release 4.005R (source-serif-4.005_Desktop.zip, TTF); downloaded
+# 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published (Source Sans 3, then
+# Source Serif 4).
+# Reserved Font Name: "Source". Unchanged files keep their names.
+# The Source Sans 3 and Source Serif 4 files are the maker's, unchanged (only the file names spelled
+# <Family>-<Weight>.ttf).
+# x-height 0.486 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.123; widest figure
+# of numbers 0.528 em, 0.593 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 497, Medium 505,
+# SemiBold 513, Bold 528 of 1000 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Source"
+version = "1.0.0"
+author = "Torro"
+description = "Source Sans 3 for text with Source Serif 4 for headings"
+
+[fonts.text]
+family = "Source Sans 3"
+regular = "SourceSans3-Regular.ttf"
+medium = "SourceSans3-Medium.ttf"
+semibold = "SourceSans3-SemiBold.ttf"
+bold = "SourceSans3-Bold.ttf"
+
+[fonts.heading]
+family = "Source Serif 4"
+regular = "SourceSerif4-Regular.ttf"
+semibold = "SourceSerif4-SemiBold.ttf"

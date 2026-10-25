@@ -152,6 +152,10 @@ pub enum Open {
     /// Appearance after Console was chosen: the demo switched the mail view as the core would, and
     /// the page says so ("Also switched: plain-text mail", task L.37).
     DesignSwitched,
+    /// Appearance with the font's dropdown open (issue #299).
+    DesignFonts,
+    /// The font's dropdown with "mo" typed into its search field (issue #299).
+    DesignFontsSearch,
     /// The first-run setup at this step (task W.4), with the demo's sample data.
     Setup(super::setup::Step),
     /// The setup's Nextcloud step without a Nextcloud account: the address form (task W.5).
@@ -169,7 +173,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 89] = [
+    pub const ALL: [(&'static str, Open); 91] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -245,6 +249,8 @@ impl Open {
         ("design", Open::Design),
         ("design-schemes", Open::DesignSchemes),
         ("design-switched", Open::DesignSwitched),
+        ("design-fonts", Open::DesignFonts),
+        ("design-fonts-search", Open::DesignFontsSearch),
         ("setup", Open::Setup(super::setup::Step::Welcome)),
         ("setup-nextcloud", Open::Setup(super::setup::Step::Nextcloud)),
         ("setup-nextcloud-address", Open::SetupNextcloudAddress),
@@ -583,7 +589,10 @@ fn demo_designs() -> Vec<DesignEntry> {
     entries
 }
 
-/// The fonts of [`demo_looks`].
+/// The fonts of [`demo_looks`]: the standard (bundled, Sans), Tabular from a folder without a kind
+/// ("Other"), Brush broken, and three fonts of the computer (issue #299) – "System", Avenir Next and
+/// Monaco – listed without a font to draw with, so their samples are the standard's and the pictures
+/// look alike on every computer.
 fn demo_fonts() -> Vec<FontEntry> {
     use torro_core::design::{DesignError, FontSet};
     let info = |font: &FontSet| FontInfo {
@@ -594,6 +603,8 @@ fn demo_fonts() -> Vec<FontEntry> {
         author: font.about.author.clone(),
         description: font.about.description.clone(),
         license: Some(font.license.clone()),
+        origin: torro_ipc::FontOrigin::Bundled,
+        kind: font.kind,
         standard: font.is_standard(),
         valid: true,
         problems: Vec::new(),
@@ -607,6 +618,27 @@ fn demo_fonts() -> Vec<FontEntry> {
         ..FontSet::standard()
     };
     (tabular.fonts.text, tabular.fonts.heading) = (figures.clone(), figures);
+    tabular.kind = None;
+    let installed = |id: &str, family: &str, name: &str| FontInfo {
+        id: id.into(),
+        family: Some(family.into()),
+        name: name.into(),
+        version: String::new(),
+        author: None,
+        description: None,
+        license: None,
+        origin: torro_ipc::FontOrigin::System,
+        kind: None,
+        standard: false,
+        valid: true,
+        problems: Vec::new(),
+        active: false,
+    };
+    let system = [
+        installed("system", "Helvetica Neue", "System"),
+        installed("system:Avenir Next", "Avenir Next", "Avenir Next"),
+        installed("system:Monaco", "Monaco", "Monaco"),
+    ];
     let brush = FontInfo {
         id: "brush".into(),
         family: None,
@@ -615,6 +647,8 @@ fn demo_fonts() -> Vec<FontEntry> {
         author: Some("Torro samples".into()),
         description: None,
         license: None,
+        origin: torro_ipc::FontOrigin::Folder,
+        kind: None,
         standard: false,
         valid: false,
         problems: [
@@ -631,8 +665,16 @@ fn demo_fonts() -> Vec<FontEntry> {
     if !fonts.iter().any(|font| font.id == forced.id) {
         fonts.push((*forced).clone());
     }
-    let mut entries: Vec<FontEntry> = fonts.into_iter().map(|font| Entry::new(info(&font), Some(font))).collect();
+    let folder = |mut info: FontInfo| {
+        if !info.standard && info.id == "tabular" {
+            info.origin = torro_ipc::FontOrigin::Folder;
+        }
+        info
+    };
+    let mut entries: Vec<FontEntry> =
+        fonts.into_iter().map(|font| Entry::new(folder(info(&font)), Some(font))).collect();
     entries.push(Entry::new(brush, None));
+    entries.extend(system.into_iter().map(|info| Entry::new(info, None)));
     entries
 }
 

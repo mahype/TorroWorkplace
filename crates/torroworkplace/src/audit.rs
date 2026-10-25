@@ -411,6 +411,22 @@ pub fn ids(request: &Request) -> Vec<String> {
         // Markdown, the template or a path.
         Request::ListTools | Request::CreatePdf { .. } => Vec::new(),
         Request::OpenFile { file } | Request::SaveFileAs { file, .. } => vec![random("file", file)],
+        // Save targets of attachments (issue #290): a target by the id the core made, never its name,
+        // folder or schemes; adding one names nothing.
+        Request::CreateSaveTarget { .. } => Vec::new(),
+        Request::UpdateSaveTarget { id: target, .. } | Request::RemoveSaveTarget { id: target } => {
+            vec![random("save-target", target)]
+        }
+        // Saving attachments: the message hashed and the target by its id, never a file name, a part's
+        // name or a path (`to: file | folder`, where the files went).
+        Request::SaveMailAttachments { id: message, to, .. } => {
+            let target = match to {
+                torro_ipc::mail::SaveTo::Target(target) => Some(random("save-target", target)),
+                _ => None,
+            };
+            [Some(format!("message:{}", hashed(message))), target].into_iter().flatten().collect()
+        }
+        Request::ListSaveTargets { id } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
         // The tool `files` (issue #304): nothing at all, every field is a path or a name searched for.
         Request::ListFolder { .. }
         | Request::FindFiles { .. }

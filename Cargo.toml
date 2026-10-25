@@ -148,6 +148,9 @@ trash = "5.2.9"
 # family names of a pack's fonts, the version Iced's font stack already brings.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
+# The fonts installed on the computer (torro-core, #299): listed and checked, never copied. The version and features
+# cosmic-text (Iced 0.14) already brings, so no new package comes into the build.
+fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs", "memmap", "fontconfig"] }
 # macOS only (torro-appkit, U.11): moves the window's traffic lights. The versions winit and rfd already bring.
 block2 = "0.6.2"
 objc2 = "0.6.3"

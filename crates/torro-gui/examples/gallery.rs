@@ -12,7 +12,8 @@
 //! reading text), `-- --mailbar` the mail's action rail (task E14.1: collapsed, with an open group
 //! at the top and one at the foot, without its button as in the panel, expanded; an item off) and
 //! the mail window's parts (task
-//! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips),
+//! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips; task M12.5:
+//! the split chips with their menu, the attachment block with "Save all", a menu with details and tags),
 //! `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
@@ -169,6 +170,8 @@ struct Gallery {
     page: Page,
     section: usize,
     query: String,
+    /// The words in the search field of the menu with search (issue #299).
+    search: String,
     notes: text_editor::Content,
     view: Option<&'static str>,
     checked: bool,
@@ -206,6 +209,7 @@ enum Msg {
     Page(Page),
     Section(usize),
     Query(String),
+    Search(String),
     Notes(text_editor::Action),
     View(&'static str),
     Check(bool),
@@ -249,6 +253,7 @@ impl Gallery {
             page: start.page,
             section: 0,
             query: String::new(),
+            search: String::new(),
             notes: text_editor::Content::with_text("Bring the printed agenda.\nAsk about the budget."),
             view: Some("Week"),
             checked: true,
@@ -314,6 +319,7 @@ impl Gallery {
             Msg::Page(page) => self.page = page,
             Msg::Section(i) => self.section = i,
             Msg::Query(q) => self.query = q,
+            Msg::Search(words) => self.search = words,
             Msg::Notes(action) => self.notes.perform(action),
             Msg::View(v) => self.view = Some(v),
             Msg::Check(c) => self.checked = c,
@@ -1335,6 +1341,35 @@ impl Gallery {
         items.extend(lists.map(|(name, colour, open)| {
             widgets::sidebar_item(Mark::Ring(p.calendar[colour]), name, Trail::Count(open), false, Msg::Noop)
         }));
+        // A group that folds its children in and out (issue #300): open with its branch, then closed.
+        let mode = shell::SidebarMode::Expanded;
+        let line = p.calendar[0];
+        items.push(widgets::sidebar_group("Areas", None));
+        items.push(widgets::sidebar_fold_in(
+            mode,
+            Mark::Tinted(Icon::Layers, line),
+            "Projects",
+            Trail::Count(7),
+            false,
+            true,
+            Msg::Noop,
+        ));
+        items.push(widgets::sidebar_branch(
+            line,
+            vec![
+                widgets::sidebar_child(Mark::Tinted(Icon::Flag, line), "Launch", Trail::Count(4), true, Msg::Noop),
+                widgets::sidebar_child(Mark::Tinted(Icon::Flag, line), "Website", Trail::Count(3), false, Msg::Noop),
+            ],
+        ));
+        items.push(widgets::sidebar_fold_in(
+            mode,
+            Mark::Tinted(Icon::Archive, p.calendar[1]),
+            "Someday",
+            Trail::Count(2),
+            false,
+            false,
+            Msg::Noop,
+        ));
         items.push(widgets::sidebar_group("Accounts", Some((true, Msg::Noop))));
         items.push(widgets::sidebar_item(Icon::Cloud, "cloud.example.org", Trail::Dot(p.ok), false, Msg::Noop));
         shell::sidebar(
@@ -1678,6 +1713,34 @@ impl Gallery {
     }
 
     /// The building blocks, each in place (menus and cards are drawn where they would float).
+    /// A menu with search (issue #299): 40 fonts in two sections with a line between, filtered by the
+    /// words in its field; titles without a match go, nothing at all says "No matches".
+    fn search_menu(&self) -> Element<'_, Msg> {
+        let words = self.search.to_lowercase();
+        let mut items: Vec<Element<'_, Msg>> = Vec::new();
+        for (title, names) in [("Torro fonts", &SEARCH_FONTS[..20]), ("System fonts", &SEARCH_FONTS[20..])] {
+            let found: Vec<&str> = names.iter().copied().filter(|name| name.to_lowercase().contains(&words)).collect();
+            if found.is_empty() {
+                continue;
+            }
+            if !items.is_empty() {
+                items.push(container(rule::horizontal(1).style(style::rule)).padding([space::xs(), 0.0]).into());
+            }
+            let title = typo::text(typo::caption(), title).style(theme::text_2);
+            items.push(container(title).padding(iced::Padding::new(space::s()).bottom(space::xs())).into());
+            items.extend(found.into_iter().map(|name| -> Element<'_, Msg> {
+                button(container(typo::text(typo::body(), name)).center_y(Fill))
+                    .width(Fill)
+                    .height(style::MENU_ITEM_HEIGHT)
+                    .padding(style::ITEM_PADDING)
+                    .style(style::button::menu_item(false))
+                    .on_press(Msg::Noop)
+                    .into()
+            }));
+        }
+        widgets::search_menu("gallery-search", &self.search, Msg::Search, Msg::Noop, items, size::props())
+    }
+
     fn blocks(&self) -> Element<'_, Msg> {
         let p = self.palette();
         let sidebar = container(self.tasks_sidebar(&Anchor::new()))
@@ -1844,6 +1907,7 @@ impl Gallery {
         .spacing(space::xl());
         let third = column![
             section("Menu", row![self.nav_menu(), view_menu].spacing(space::l()).into()),
+            section("Menu with search", self.search_menu()),
             section("Floating card", card),
             section("Properties", props.into()),
         ]
@@ -2505,17 +2569,47 @@ fn mailbar() -> Element<'static, Msg> {
         .collect();
     let styles = column![line("cell", cells), line("pill", pills), line("text_input_flat", flat),].spacing(space::l());
 
+    // The attachment block of the reader (M12.5): three split chips, "Save all" in its head, and the
+    // menu of a chip beside it with a detail line and both tags.
     let chips = row![
-        widgets::file_chip("budget-q4.csv", "3 KB", Some(Msg::Noop)),
-        widgets::file_chip("travel-policy.pdf", "184 KB", Some(Msg::Noop)),
-        widgets::file_chip("no-size.txt", "", None),
+        widgets::split_file_chip(
+            "budget-q4.csv",
+            "3 KB",
+            "Open: budget-q4.csv",
+            Some(Msg::Noop),
+            Some(Msg::Noop),
+            None
+        ),
+        widgets::split_file_chip(
+            "travel-policy.pdf",
+            "184 KB",
+            "Open: travel-policy.pdf",
+            Some(Msg::Noop),
+            Some(Msg::Noop),
+            None
+        ),
+        widgets::split_file_chip("no-size.txt", "", "", None, None, None),
     ]
     .spacing(space::s())
     .wrap()
     .vertical_spacing(space::s());
-    let reader_end =
-        column![rule::horizontal(1).style(style::rule), container(chips).padding([space::s(), space::xl()]),]
-            .width(720);
+    let tip = "More ways to save all";
+    let save_all = widgets::split_action(Icon::Download, "Save all", tip, Some(Msg::Noop), Some(Msg::Noop), None);
+    let block = widgets::file_block(widgets::file_block_head("3 attachments", "188 KB", Some(save_all)), chips);
+    let framed = widgets::split_action_framed(Icon::Download, "Save all", tip, Some(Msg::Noop), Some(Msg::Noop), None);
+    let menu = widgets::menu(vec![MenuSection::new(vec![
+        MenuItem::new(Icon::Folder, "Invoices", Msg::Noop)
+            .detail("~/Documents/Invoices/2026/10")
+            .tag("Click", false)
+            .tag("Suggested", true),
+        MenuItem::new(Icon::Download, "Save to Downloads", Msg::Noop).detail("~/Downloads"),
+        MenuItem::new(Icon::Save, "Save as…", Msg::Noop),
+    ])]);
+    let reader_end = column![
+        rule::horizontal(1).style(style::rule),
+        container(column![block, row![framed], menu].spacing(space::m())).padding([space::s(), space::xl()]),
+    ]
+    .width(720);
 
     column![
         section("Action rail of a mail (E14.1)", action_rails()),
@@ -2687,3 +2781,48 @@ fn bmp(picture: &iced::window::Screenshot) -> Vec<u8> {
     }
     out
 }
+
+/// The entries of the gallery's menu with search: twenty of the suite's fonts, then twenty of a
+/// computer's.
+const SEARCH_FONTS: [&str; 40] = [
+    "Inter",
+    "Atkinson Hyperlegible Next",
+    "Cantarell",
+    "DM Sans",
+    "Fira Code",
+    "Fira Sans",
+    "Geist",
+    "Geist Mono",
+    "IBM Plex Mono",
+    "IBM Plex Sans",
+    "Inconsolata",
+    "JetBrains Mono",
+    "Lato",
+    "Lexend",
+    "Literata",
+    "Lora",
+    "Manrope",
+    "Merriweather",
+    "Mona Sans",
+    "Newsreader 16pt",
+    "System",
+    "Arial",
+    "Avenir",
+    "Avenir Next",
+    "Baskerville",
+    "Charter",
+    "Courier New",
+    "Futura",
+    "Georgia",
+    "Gill Sans",
+    "Helvetica",
+    "Helvetica Neue",
+    "Iowan Old Style",
+    "Menlo",
+    "Monaco",
+    "Optima",
+    "Palatino",
+    "SF Mono",
+    "Trebuchet MS",
+    "Verdana",
+];

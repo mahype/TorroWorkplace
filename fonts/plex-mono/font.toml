@@ -1,0 +1,27 @@
+# The font Plex Mono (task SR.7, issue #299): IBM Plex Mono. Its size adjustment comes from its x-height.
+# Source: github.com/IBM/plex release @ibm/plex-mono@2.5.0 (ibm-plex-mono.zip, fonts/complete/ttf; LICENSE.txt
+# from the zip), Version 2.005; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL
+# text as published.
+# Reserved Font Name: "Plex". Unchanged files keep their names.
+# The IBM Plex Mono files are the maker's, unchanged.
+# x-height 0.516 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.058; widest figure
+# of numbers 0.600 em, 0.635 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 600, Medium 600,
+# SemiBold 600, Bold 600 of 1000 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Mono" in the control centre (#299).
+kind = "mono"
+
+[about]
+name = "Plex Mono"
+version = "1.0.0"
+author = "Torro"
+description = "Plex Mono: the calm monospace of the Plex family"
+
+[fonts.text]
+family = "IBM Plex Mono"
+regular = "IBMPlexMono-Regular.ttf"
+medium = "IBMPlexMono-Medium.ttf"
+semibold = "IBMPlexMono-SemiBold.ttf"
+bold = "IBMPlexMono-Bold.ttf"

@@ -872,6 +872,13 @@ fn describe(request: &Request) -> String {
         Request::GetMail { .. } => "get mail".into(),
         Request::GetMailThread { .. } => "get mail thread".into(),
         Request::GetMailAttachment { .. } => "get mail attachment".into(),
+        // Never a target's name, a file name or a path (issue #290).
+        Request::ListSaveTargets { .. } => "list save targets".into(),
+        Request::CreateSaveTarget { .. } => "create save target".into(),
+        Request::UpdateSaveTarget { id, .. } => format!("change save target {id}"),
+        Request::RemoveSaveTarget { id } => format!("remove save target {id}"),
+        Request::SaveMailAttachments { parts, .. } if parts.is_empty() => "save all mail attachments".into(),
+        Request::SaveMailAttachments { parts, .. } => format!("save {} mail attachments", parts.len()),
         Request::SetMailFlags { ids, .. } => format!("set flags of {} messages", ids.len()),
         Request::MoveMail { ids, .. } => format!("move {} messages", ids.len()),
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),

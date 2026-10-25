@@ -1616,6 +1616,9 @@ impl Detail {
                 label: choice.label().into(),
                 trail: Trail::None,
                 current: choice == self.draft.priority,
+                detail: None,
+                tags: Vec::new(),
+                nested: false,
                 on_press: Message::PrioritySelected(choice),
             })
             .collect();
@@ -1657,6 +1660,9 @@ impl Detail {
                 current: uid == self.draft.parent,
                 label: title.into(),
                 trail: Trail::None,
+                detail: None,
+                tags: Vec::new(),
+                nested: false,
                 on_press: Message::ParentSelected(uid),
             })
             .collect();

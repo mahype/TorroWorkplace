@@ -690,6 +690,35 @@ impl Demo {
         }
     }
 
+    /// The save targets (`mail.list_save_targets`, task M12.7): "Invoices" by month and suggested for
+    /// invoices and receipts that are PDFs, "Contracts" by sender and never suggested – the two of
+    /// the design and of the mail window's demo. Paths only: the demo reads no folder.
+    fn save_targets(&self) -> Vec<torro_mail::SaveTarget> {
+        use torro_mail::{Category, DateSource, FileKind, OnConflict, SaveTarget, SaveTargetSpec};
+        let mut invoices = SaveTargetSpec::new("Invoices", "/home/anna/Documents/Finance/Invoices");
+        invoices.date_from = DateSource::FileName;
+        invoices.suggest.categories = vec![Category::Invoice, Category::Receipt];
+        invoices.suggest.kinds = vec![FileKind::Pdf];
+        invoices.on_conflict = OnConflict::SkipIdentical;
+        let mut contracts = SaveTargetSpec::new("Contracts", "/home/anna/Documents/Contracts");
+        contracts.subfolders = "{sender}".into();
+        contracts.file_name = "{date}_{name}.{ext}".into();
+        vec![
+            SaveTarget { id: "demo-invoices".into(), spec: invoices },
+            SaveTarget { id: "demo-contracts".into(), spec: contracts },
+        ]
+    }
+
+    /// The save targets as `mail.list_save_targets` answers them, with the Downloads folder.
+    fn save_targets_answer(&self) -> Response {
+        let downloads = self.settings.mail_attachments.downloads.clone();
+        Response::SaveTargets {
+            targets: self.save_targets(),
+            downloads: downloads.unwrap_or_else(|| "/home/anna/Downloads".into()),
+            files: Vec::new(),
+        }
+    }
+
     /// Every request it was asked to send, in order: what a section's test looks at.
     pub fn sent(&self) -> Vec<Request> {
         match self.sent.lock() {
@@ -885,6 +914,23 @@ impl Backend for Demo {
             Request::CalendarCollections => Response::Collections { collections: self.collections(true) },
             Request::TaskCollections => Response::Collections { collections: self.collections(false) },
             Request::ListSources => Response::Sources { sources: self.sources() },
+            Request::ListSaveTargets { .. } => self.save_targets_answer(),
+            // A change of a save target is answered as stored, under a new id or its own, and noted;
+            // the next load shows the sample targets again.
+            Request::CreateSaveTarget { target } => {
+                let target = torro_mail::SaveTarget { id: "demo-new".into(), spec: target.clone() };
+                self.note(request);
+                Response::SaveTarget { target }
+            }
+            Request::UpdateSaveTarget { id, target } => {
+                let target = torro_mail::SaveTarget { id: id.clone(), spec: target.clone() };
+                self.note(request);
+                Response::SaveTarget { target }
+            }
+            Request::RemoveSaveTarget { .. } => {
+                self.note(request);
+                self.save_targets_answer()
+            }
             Request::ListRules => {
                 let (rules, hits) = self.rules();
                 Response::Rules { rules, hits }

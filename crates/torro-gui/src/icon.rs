@@ -186,6 +186,10 @@ pub enum Icon {
     Maximize,
     /// "Preview reminder": show an event's reminder now (review of #278).
     BellRing,
+    /// Download, "Save to Downloads": a tray with an arrow down into it.
+    Download,
+    /// Save, "Save as…": a floppy disk.
+    Save,
 }
 
 impl Icon {
@@ -295,6 +299,8 @@ impl Icon {
         Icon::Circle,
         Icon::Maximize,
         Icon::BellRing,
+        Icon::Download,
+        Icon::Save,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -414,6 +420,8 @@ impl Icon {
             Icon::Circle => include_bytes!("../assets/icons/circle.svg"),
             Icon::Maximize => include_bytes!("../assets/icons/maximize.svg"),
             Icon::BellRing => include_bytes!("../assets/icons/bell-ring.svg"),
+            Icon::Download => include_bytes!("../assets/icons/download.svg"),
+            Icon::Save => include_bytes!("../assets/icons/save.svg"),
         }
     }
 }

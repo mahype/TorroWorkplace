@@ -2,6 +2,8 @@
 # Its size adjustment comes from its x-height.
 format = 1
 license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
 
 [about]
 name = "Guildr"

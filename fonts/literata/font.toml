@@ -1,0 +1,37 @@
+# The font Literata (task SR.7, issue #299): Literata, figures Literata Figures. Its size adjustment comes
+# from its x-height.
+# Source: github.com/googlefonts/literata release 3.103 (3.103.zip, fonts/ttf), Version 3.103; downloaded
+# 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Literata files are the maker's, unchanged.
+# Literata Figures (Regular, Medium) is made from the Literata cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it does not mix with the text cuts;
+# Regular: tnum frozen, digits already one width (582); Medium: tnum frozen, digits already one width (582).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.507 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.077; widest figure
+# of numbers 0.582 em, 0.627 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 407-578, Medium 409-590,
+# SemiBold 411-601, Bold 414-616 units), so numbers takes Literata Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Serif" in the control centre (#299).
+kind = "serif"
+
+[about]
+name = "Literata"
+version = "1.0.0"
+author = "Torro"
+description = "Literata: a book serif made for long reading on screens, with tabular figures"
+
+[fonts.text]
+family = "Literata"
+regular = "Literata-Regular.ttf"
+medium = "Literata-Medium.ttf"
+semibold = "Literata-SemiBold.ttf"
+bold = "Literata-Bold.ttf"
+
+[fonts.numbers]
+family = "Literata Figures"
+regular = "LiterataFigures-Regular.ttf"
+medium = "LiterataFigures-Medium.ttf"

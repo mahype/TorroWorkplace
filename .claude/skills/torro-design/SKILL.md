@@ -397,6 +397,13 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
 - **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius `radius::md()`, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `typo::caption()`-
   Titel; Trenner `LINE`.
+- **Menü mit Suche** (#299, `widgets::search_menu(id, suche, on_input, on_submit, einträge, breite)`): für lange
+  Auswahlen (die Schriften in Appearance, über 150 auf einem Mac). Karte wie ein Menü (`MENU`, `LINE_STRONG`,
+  `style::MENU_INSET`, höchstens `size::panel()` hoch, darunter rollt es), oben ein flaches Suchfeld
+  (`style::text_input_flat`, Icon `Search` in `TEXT_3`, Platzhalter „Search“, `size::control()` hoch), darunter eine
+  `LINE`, darunter die Einträge des Aufrufers. Der Aufrufer filtert selbst (ohne Groß/Klein) und lässt Titel ohne
+  Treffer weg; ohne Treffer steht „No matches“ in `TEXT_3`. Beim Öffnen fokussiert er das Feld (`id`), Enter wählt
+  den ersten Treffer (`on_submit`), Escape schließt. Anschauen: `cargo run -p torro-gui --example gallery -- --blocks`.
 - **Schwebende Karte** (`widgets::popover`): 320 breit, `MENU`, Radius 10, Innenrand 16, Kopf mit
   Kalender/Liste, Titel `typo::title()`, Eigenschaftszeilen, unten Aktionen.
 - **Icons** nur aus `torro_gui::icon` (Lucide-SVG), nie Unicode-Glyphen wie ⟳ ‹ › ✓.
@@ -441,6 +448,12 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Ein Zustand an einem Eintrag (ein Anbieter, dessen Konto Aufmerksamkeit braucht oder einen Fehler hat) ist
   ein `Mark::Badged(icon, farbe)`: das eigene Icon im Ton der Zeile mit einem Punkt 6 in der Statusfarbe auf
   der Ecke oben rechts, gleich in Spalte, Leiste und Chip – nie nur ein getöntes Icon (#248).
+  Eine Gruppe mit Unterpunkten (die Kategoriegruppen der Mail, #300) ist `widgets::sidebar_fold_in`: Zeile wie
+  jede andere, Chevron 12 in `TEXT_3` direkt hinter dem Namen (die Icon-Spalte bleibt bündig), in der Leiste
+  ohne Chevron. Ihre Kinder stehen offen in `widgets::sidebar_branch` als `widgets::sidebar_child`: um
+  `icon::SIZE` + `space::s()` (24) eingerückt, Icon `icon::SIZE_SM` (14), eine 1-px-Linie in der Farbe der
+  Gruppe mittig unter deren Icon; die Leiste zeigt keine Kinder. Im Menü sind Kinder `MenuItem::nested()`
+  (gleich eingerückt, kleineres Icon, ohne Linie).
 - **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
   Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `typo::meta()` tabellarisch
@@ -559,12 +572,13 @@ switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail wizard-mail-certificate
 wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai menu drawer switcher remove delete-template rename-template design
-design-schemes design-switched api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
+design-schemes design-switched design-fonts design-fonts-search api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
 connect-client-rights connect-client-done connect-client-other` (`wizard-mail-certificate`: Frage „Trust this certificate?“ zu einem Server im lokalen Netz,
 `wizard-mail-certificate-public`: dieselbe Frage mit Warnung für einen öffentlichen Host; `design`: Appearance › Design mit
 Beispielpaketen, eines davon ungültig mit seinen Gründen; `design-schemes`: dieselbe Seite mit offener
-Auswahl der Farbschemata; `design-switched`: nach dem Wechsel zu Console, mit dem Hinweis, was mitgesetzt wurde
+Auswahl der Farbschemata; `design-fonts`: dieselbe Seite mit offenem Dropdown der Schriften (#299: Schriften von Torro, Linie, Schriften des
+Systems), `design-fonts-search`: dasselbe mit „mo“ im Suchfeld; `design-switched`: nach dem Wechsel zu Console, mit dem Hinweis, was mitgesetzt wurde
 („Also switched: plain-text mail“); `mcp-hooks`: Seite von Claude Code mit
 „Notification Hub“; `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
 einem unbekannten) und `--section overview|accounts|api|mcp|approvals|workspaces|appearance|general`.

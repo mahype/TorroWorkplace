@@ -1,0 +1,38 @@
+# The font Hyperlegible (task SR.5, issue #299): Atkinson Hyperlegible Next, figures Hyperlegible Figures. Its
+# size adjustment comes from its x-height.
+# Source: github.com/googlefonts/atkinson-hyperlegible-next (fonts/ttf at commit 7925f50, the source
+# google/fonts builds from), Version 2.001; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the
+# font's OFL text as published.
+# Reserved Font Name: none.
+# The Atkinson Hyperlegible Next files are the maker's, unchanged.
+# Hyperlegible Figures (Regular, Medium) is made from the Atkinson Hyperlegible Next cuts with
+# opentype-feature-freezer 1.32.2 (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it
+# does not mix with the text cuts; Regular: tnum frozen, digits already one width (632); Medium: tnum frozen,
+# digits already one width (632). Copyright and licence records in the files are unchanged.
+# x-height 0.496 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.101; widest figure
+# of numbers 0.632 em, 0.696 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 407-648, Medium 420-653,
+# SemiBold 430-656, Bold 440-659 units), so numbers takes Hyperlegible Figures, whose ten digits are one width
+# in each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Hyperlegible"
+version = "1.0.0"
+author = "Torro"
+description = "Atkinson Hyperlegible Next: a sans drawn so every letter and figure is easy to tell apart"
+
+[fonts.text]
+family = "Atkinson Hyperlegible Next"
+regular = "AtkinsonHyperlegibleNext-Regular.ttf"
+medium = "AtkinsonHyperlegibleNext-Medium.ttf"
+semibold = "AtkinsonHyperlegibleNext-SemiBold.ttf"
+bold = "AtkinsonHyperlegibleNext-Bold.ttf"
+
+[fonts.numbers]
+family = "Hyperlegible Figures"
+regular = "HyperlegibleFigures-Regular.ttf"
+medium = "HyperlegibleFigures-Medium.ttf"

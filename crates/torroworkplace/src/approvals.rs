@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::paths::AppPaths;
+use torro_core::text::is_format;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
 use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceKind, SourceRef};
@@ -418,7 +419,9 @@ pub struct MailFacts {
     /// The account's address as the core knows it (`anna@mailbox.org`); `None` when unknown: the
     /// summary then shows the account id the command runs with.
     pub account: Option<String>,
-    /// How many messages the command names (`ids`), known or not.
+    /// How many messages the command names (`ids`), known or not. For `mail.save_attachments`
+    /// (task M12.3) how many files it saves: the parts it names, else the message's attachments that
+    /// are not inline (from the store, else fetched once); 0 when they could not be read.
     pub count: usize,
     /// The subjects of the named messages the store holds, in the order of `ids`.
     pub subjects: Vec<String>,
@@ -1503,6 +1506,22 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             "Make the PDF \"{title}\" with the template {template}",
             &[("title", &quote(title)), ("template", &template_word(template.unwrap_or_default()))],
         ),
+        // Saving attachments (issue #290, task M12.3): the subject, the number of files and the
+        // target's name from the core's stores ([`MailFacts`], [`Facts::name`]), never the client's
+        // text; only a new name of a target is the client's, and shown as such.
+        Request::SaveMailAttachments { to, .. } => attachments_saved(to, facts),
+        Request::UpdateSaveTarget { target, .. } => match &facts.name {
+            Some(name) if name.trim() != target.name.trim() => trf(
+                "Change save target \"{name}\" (renamed to \"{new}\")",
+                &[("name", &quote(name)), ("new", &quote(&target.name))],
+            ),
+            Some(name) => trf("Change save target \"{name}\"", &[("name", &quote(name))]),
+            None => tr("Change an unknown save target").to_string(),
+        },
+        Request::RemoveSaveTarget { .. } => match &facts.name {
+            Some(name) => trf("Remove save target \"{name}\"", &[("name", &quote(name))]),
+            None => tr("Remove an unknown save target").to_string(),
+        },
         Request::OpenFile { .. } => match &facts.name {
             Some(title) => trf("Open the PDF \"{title}\"", &[("title", &quote(title))]),
             None => tr("Open an unknown file").to_string(),
@@ -2887,6 +2906,29 @@ fn mail_messages(facts: Option<&MailFacts>, count: usize) -> String {
     }
 }
 
+/// The summary of `mail.save_attachments` to `to` (task M12.3): the subject and the number of files
+/// the core's store holds ([`MailFacts`]), the target by its stored name ([`Facts::name`]).
+fn attachments_saved(to: &torro_ipc::mail::SaveTo, facts: &Facts) -> String {
+    use torro_ipc::mail::SaveTo;
+    let (Some(mail), Some(text)) = (facts.mail.as_ref(), facts.mail.as_ref().and_then(|mail| mail.subjects.first()))
+    else {
+        return tr("Save attachments of an unknown mail").to_string();
+    };
+    let subject = subject(text);
+    let target = match (to, &facts.name) {
+        (SaveTo::Downloads, _) => tr("Downloads").to_string(),
+        (SaveTo::Target(_), Some(name)) => format!("\"{}\"", quote(name)),
+        (SaveTo::Target(_), None) => tr("an unknown save target").to_string(),
+        (SaveTo::File(_) | SaveTo::Folder(_), _) => tr("a folder chosen in the app").to_string(),
+    };
+    let args: [(&str, &dyn std::fmt::Display); 3] = [("n", &mail.count), ("subject", &subject), ("target", &target)];
+    match mail.count {
+        0 => trf("Save the attachments of the mail {subject} to {target}", &args),
+        1 => trf("Save an attachment of the mail {subject} to {target}", &args),
+        _ => trf("Save {n} attachments of the mail {subject} to {target}", &args),
+    }
+}
+
 /// The summary of sending `draft` from the account with the address `account` (task M3.3, rules
 /// at [`MailFacts`]): subject, account, first recipient and how many more, attachments, the start
 /// of the text.
@@ -3046,37 +3088,6 @@ fn quote_up_to(text: &str, max: usize) -> String {
         Some((cut, _)) => format!("{}…", &one_line[..cut]),
         None => one_line,
     }
-}
-
-/// A Unicode format character (general category Cf, Unicode 16): invisible, yet able to change
-/// what a person reads. Bidi controls turn `Delete "gnihton"` around on screen, zero-width ones
-/// join or split words unseen, tag characters carry hidden text. Rust's standard library has no
-/// category lookup, so the ranges are listed here.
-fn is_format(c: char) -> bool {
-    matches!(
-        u32::from(c),
-        0x00AD
-            | 0x0600..=0x0605
-            | 0x061C
-            | 0x06DD
-            | 0x070F
-            | 0x0890..=0x0891
-            | 0x08E2
-            | 0x180E
-            | 0x200B..=0x200F
-            | 0x202A..=0x202E
-            | 0x2060..=0x2064
-            | 0x2066..=0x206F
-            | 0xFEFF
-            | 0xFFF9..=0xFFFB
-            | 0x110BD
-            | 0x110CD
-            | 0x13430..=0x1343F
-            | 0x1BCA0..=0x1BCA3
-            | 0x1D173..=0x1D17A
-            | 0xE0001
-            | 0xE0020..=0xE007F
-    )
 }
 
 #[cfg(test)]
@@ -3766,6 +3777,21 @@ pub(crate) mod tests {
         // Another key never takes the design's facts.
         let font = Request::SetSetting { key: torro_ipc::SettingKey::Font, value: serde_json::json!("torro") };
         assert!(!summary(&font, &both).contains("jetbrains-mono"));
+    }
+
+    /// Issue #299: a font of the computer is named by its id, cut and cleaned like any text of a
+    /// client – a long family or one with bidi controls can't take over the question.
+    #[test]
+    fn a_font_of_the_computer_is_named_short_and_clean() {
+        let set = |id: &str| Request::SetSetting { key: torro_ipc::SettingKey::Font, value: serde_json::json!(id) };
+        let plain = summary(&set("system:Avenir Next"), &Facts::default());
+        assert_eq!(
+            plain,
+            trf("Change the setting {key} to {value}", &[("key", &"Font"), ("value", &"'system:Avenir Next'")])
+        );
+        let sneaky = summary(&set(&format!("system:Evil\u{202E}{}", "x".repeat(200))), &Facts::default());
+        assert!(!sneaky.contains('\u{202E}') && sneaky.contains('…'), "{sneaky}");
+        assert!(sneaky.chars().count() < 200, "{sneaky}");
     }
 
     #[test]

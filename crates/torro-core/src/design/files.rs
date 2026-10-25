@@ -205,7 +205,13 @@ pub(super) struct FontInfo {
 
 /// [`FontInfo`] of the font `bytes`; `None` when they are no TrueType/OpenType font.
 pub(super) fn font_info(bytes: &[u8]) -> Option<FontInfo> {
-    let face = ttf_parser::Face::parse(bytes, 0).ok()?;
+    font_info_at(bytes, 0)
+}
+
+/// [`FontInfo`] of face `index` of the font `bytes`: a collection (`.ttc`) of the computer's fonts holds
+/// several faces (issue #299).
+pub(super) fn font_info_at(bytes: &[u8], index: u32) -> Option<FontInfo> {
+    let face = ttf_parser::Face::parse(bytes, index).ok()?;
     let ids = [ttf_parser::name_id::FAMILY, ttf_parser::name_id::TYPOGRAPHIC_FAMILY, ttf_parser::name_id::WWS_FAMILY];
     let mut families: Vec<String> = face
         .names()

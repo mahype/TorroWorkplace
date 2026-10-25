@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::i18n::{tr, trf};
 
-use super::{BUILT_IN_IDS, Mode, Part, STANDARD_ID};
+use super::{BUILT_IN_IDS, Mode, Part, STANDARD_ID, SYSTEM_ID};
 
 /// One reason a design, a font or a colour scheme can't be used. [`super::load`],
 /// [`super::load_font`] and [`super::load_color_scheme`] collect every reason they find.
@@ -81,6 +81,11 @@ pub enum DesignError {
     FontLicense,
     /// `preview.png` is larger than 1200 × 800.
     PreviewSize { width: u32, height: u32 },
+    /// A font of the computer (issue #299) has no regular face (weight 400, upright) to set running
+    /// text in. Names the family only, never a file: the path would tell a user name.
+    SystemNoRegular { family: String },
+    /// The file of a font of the computer can't be read or parsed any more. The family only, as above.
+    SystemUnreadable { family: String },
 }
 
 impl fmt::Display for DesignError {
@@ -89,6 +94,9 @@ impl fmt::Display for DesignError {
         let text = match self {
             DesignError::BadId { id } if id != STANDARD_ID && BUILT_IN_IDS.contains(&id.as_str()) => {
                 trf("“{id}” is the name of a design built into the suite. Give the folder another name.", &[("id", id)])
+            }
+            DesignError::BadId { id } if id == SYSTEM_ID => {
+                trf("“{id}” stands for the font of the operating system. Give the folder another name.", &[("id", id)])
             }
             DesignError::BadId { id } => trf(
                 "“{id}” can't be a folder name here. Use up to 32 characters a–z, 0–9 and -; “torro” is built in.",
@@ -199,6 +207,12 @@ impl fmt::Display for DesignError {
                 "preview.png is {width} × {height}; at most 1200 × 800 is allowed.",
                 &[("width", width), ("height", height)],
             ),
+            DesignError::SystemNoRegular { family } => {
+                trf("“{family}” has no regular style to set running text in.", &[("family", family)])
+            }
+            DesignError::SystemUnreadable { family } => {
+                trf("The files of “{family}” can't be read.", &[("family", family)])
+            }
         };
         f.write_str(&text)
     }

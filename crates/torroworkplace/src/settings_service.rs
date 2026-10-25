@@ -29,9 +29,9 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
-    self, AssistantDefault, ComponentSwitch, FolderChange, Language, ListOrderEntry, MailAppearance, MailFormat, Maps,
-    Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice,
-    WorkingHours, Zoom,
+    self, AssistantDefault, AttachmentClick, ComponentSwitch, FolderChange, Language, ListOrderEntry, MailAppearance,
+    MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings,
+    SetupState, ToolSwitch, Voice, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -171,6 +171,10 @@ impl SettingsStore {
     /// Nor does a client turn maps on or name another search or tile service (task TE.1): maps stay
     /// on only when on as stored and in `new`, both addresses stay as stored; `new` without `maps`
     /// keeps them all (`torro_core::settings::Maps::from_client`).
+    ///
+    /// Nor does a client set the folder of "Save to Downloads" (point 9, issue #290): it stays as
+    /// stored unless `new` removes it; the click on an attachment comes from `new`
+    /// (`torro_core::settings::MailAttachments::from_client`).
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
@@ -187,6 +191,7 @@ impl SettingsStore {
             let reminders = Reminders { calendars, ..new.reminders.clone() };
             let tools = settings.tools.from_client(&new.tools);
             let maps = settings.maps.from_client(&new.maps);
+            let mail_attachments = settings.mail_attachments.from_client(&new.mail_attachments);
             *settings = Settings {
                 hidden_collections: hidden,
                 ai_assignments: assignments,
@@ -198,6 +203,7 @@ impl SettingsStore {
                 reminders,
                 tools,
                 maps,
+                mail_attachments,
                 ..new
             };
         })
@@ -232,12 +238,13 @@ impl SettingsStore {
         self.change(|settings| self.apply_with_suggestions(change, settings))
     }
 
-    /// Like [`SettingsStore::set`], for clients: a PDF folder or a template's logo is written only
-    /// when it is removed or equals the stored one, read under the same lock as the write. The core
-    /// refuses a new path before (point 9, `Core::switches_on_for_people`); this keeps a path a
-    /// person removed between that check and the write removed. A design sets its suggestions as in
-    /// [`SettingsStore::set`]. The allowed folders are never a client's (point 9, issue #304): the core
-    /// refuses them before (`Request::kept_for_people`), and this refuses them too.
+    /// Like [`SettingsStore::set`], for clients: a PDF folder, a template's logo or the Downloads
+    /// folder of attachments (issue #290) is written only when it is removed or equals the stored
+    /// one, read under the same lock as the write. The core refuses a new path before (point 9,
+    /// `Core::switches_on_for_people`); this keeps a path a person removed between that check and
+    /// the write removed. A design sets its suggestions as in [`SettingsStore::set`]. The allowed
+    /// folders are never a client's (point 9, issue #304): the core refuses them before
+    /// (`Request::kept_for_people`), and this refuses them too.
     pub fn set_by_client(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
         if key == SettingKey::AllowedFolder {
             return Err("only a person manages the allowed folders".into());
@@ -375,6 +382,18 @@ impl SettingsStore {
         })
     }
 
+    /// Sets the click on an attachment back to `open` when it names the save target `id`, which was
+    /// just removed (issue #290): compared and written under the same lock, so a click a person
+    /// chose meanwhile stays. Writes nothing when the click names another.
+    pub fn release_attachment_click(&self, id: &str) -> Result<(), String> {
+        let named = torro_core::settings::AttachmentClick::Target(id.to_owned());
+        self.change(|settings| {
+            if settings.mail_attachments.click == named {
+                settings.mail_attachments.click = torro_core::settings::AttachmentClick::Open;
+            }
+        })
+    }
+
     /// Reads the stored settings, lets `edit` change them, saves and applies the result. An edit
     /// that changes nothing writes nothing.
     fn change(&self, edit: impl FnOnce(&mut Settings)) -> Result<(), String> {
@@ -428,8 +447,14 @@ impl SettingsStore {
     /// folder lacks but another holds also names the key that chooses it there (`"nord" is a colour
     /// scheme: choose it with the key color_scheme.`, task L.22).
     fn check_part(&self, part: Part, id: &str) -> Result<(), String> {
+        // Whole settings (`update_settings`) come here without `part_id`: the same limit, and the id is
+        // not repeated, so a long or invisible text never runs back into the message.
+        if bad_family(id) {
+            return Err(format!("the {} can't be used: {BAD_FAMILY}", part_name(part)));
+        }
         let refused = |reasons: String| format!("the {} {id:?} can't be used: {reasons}", part_name(part));
-        let Some(dir) = self.folder(part) else {
+        // The fonts of the computer (issue #299) need no folder either: they are checked where they are.
+        let Some(dir) = self.folder(part).or_else(|| system_font(part, id).then_some(Path::new(""))) else {
             // The built-in designs need no folder, as `settings.list_designs` shows them valid without one.
             let built_in = match part {
                 Part::Design => design::BUILT_IN_IDS.contains(&id),
@@ -442,7 +467,9 @@ impl SettingsStore {
         };
         let Err(problems) = load_part(part, dir, id) else { return Ok(()) };
         let mut reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        // An installed font is in no folder, so no other part can have its id.
         if matches!(problems[..], [DesignError::NotFound { .. }])
+            && !design::is_system_id(id)
             && let Some(hint) = self.found_elsewhere(part, id)
         {
             reasons.push(hint);
@@ -548,6 +575,12 @@ enum Change {
     MailView(MailFormat),
     /// The colours of a mail's content (task M9.5).
     MailAppearance(MailAppearance),
+    /// What a click on an attachment's name does (issue #290). Whether a named target exists is not
+    /// checked: one that is gone opens the file.
+    MailAttachmentClick(AttachmentClick),
+    /// The folder of "Save to Downloads"; `None` for the system's. Who may set one is the core's
+    /// check (`Core::switches_on_for_people`), as for the PDF folder.
+    MailDownloadsFolder(Option<String>),
     /// The data rule for mail (task C.17). Who may switch it on is the core's check
     /// (`Request::kept_for_people`).
     MailToCloud(bool),
@@ -621,6 +654,10 @@ impl Change {
             SettingKey::MailAppearance => {
                 Change::MailAppearance(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
+            SettingKey::MailAttachmentClick => {
+                Change::MailAttachmentClick(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
+            SettingKey::MailDownloadsFolder => Change::MailDownloadsFolder(MailAttachments::downloads_from(value)?),
             SettingKey::MailToCloud => Change::MailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?),
             // Strict, like the night: the file's reading falls back to the defaults instead.
             SettingKey::HiddenCategories => {
@@ -656,6 +693,9 @@ impl Change {
         use torro_core::settings::kept_or_removed;
         match self {
             Change::PdfFolder(folder) => Change::PdfFolder(kept_or_removed(&settings.tools.pdf.folder, &folder)),
+            Change::MailDownloadsFolder(folder) => {
+                Change::MailDownloadsFolder(kept_or_removed(&settings.mail_attachments.downloads, &folder))
+            }
             Change::PdfTemplate(id, mut template) => {
                 template.logo = kept_or_removed(&settings.tools.pdf.template(id).logo, &template.logo);
                 Change::PdfTemplate(id, template)
@@ -690,6 +730,8 @@ impl Change {
             Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
             Change::MailView(format) => settings.mail_view = format,
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
+            Change::MailAttachmentClick(click) => settings.mail_attachments.click = click,
+            Change::MailDownloadsFolder(folder) => settings.mail_attachments.downloads = folder,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
             Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
             Change::AllowApiKeys(allowed) => settings.allow_api_keys = allowed,
@@ -721,9 +763,27 @@ impl Change {
 /// [`SettingsStore::check_part`]'s check.
 fn part_id(key: SettingKey, value: &serde_json::Value) -> Result<String, String> {
     match value.as_str() {
+        // The family of an installed font is held to the rules its listing follows (issue #299)
+        // before anything is loaded, so no long or invisible text runs into a message or an approval.
+        Some(id) if bad_family(id) => Err(format!("not a font of this computer for {key:?}: {BAD_FAMILY}")),
         Some(id) if !id.is_empty() => Ok(id.to_string()),
         _ => Err(format!("{value} is not a value for {key:?}: send the id as a string, \"torro\" for the standard")),
     }
+}
+
+/// Why a `system:<family>` id is refused before anything is loaded ([`bad_family`]).
+const BAD_FAMILY: &str = "after \"system:\" comes a family name of 1 to 64 characters, not starting with \".\", \
+     without control, format or line-separator characters";
+
+/// Whether `id` is `system:` with a family name no listing would show (issue #299): too long, empty,
+/// hidden or with control, format or line-separator characters.
+fn bad_family(id: &str) -> bool {
+    id.strip_prefix(design::SYSTEM_PREFIX).is_some_and(|family| !design::is_family_name(family))
+}
+
+/// Whether `id` names a font of the computer for `part` (issue #299): only fonts have them.
+fn system_font(part: Part, id: &str) -> bool {
+    part == Part::Font && design::is_system_id(id)
 }
 
 /// Reads the design, font or colour scheme `id` from `dir`, only for its reasons.
@@ -1384,6 +1444,36 @@ mod tests {
         assert_eq!(store.current().font, "torro");
     }
 
+    /// Issue #299: a font of the computer is chosen by `system:<family>`; one that isn't installed is
+    /// refused with its reason and no hint at other folders, and a family name the listing would never
+    /// show (too long, control or format characters) is refused before anything is loaded. Without a
+    /// home directory such a font is still checked where it is, not refused for want of a folder.
+    #[test]
+    fn fonts_of_the_computer_are_checked_by_their_family() {
+        let (_dir, store) = store();
+        let gone = "system:Torro Test Font That Is Never Installed";
+        let missing = store.set(SettingKey::Font, &json!(gone)).expect_err("not installed");
+        let reason = DesignError::NotFound { part: Part::Font, id: gone.into() }.to_string();
+        assert!(missing.contains(&reason) && !missing.contains("the key"), "{missing}");
+        let long = format!("system:{}", "x".repeat(65));
+        for bad in ["system:", "system:.SF NS", "system:Evil\u{202E}Name", "system:Tab\tName", long.as_str()] {
+            let refused = store.set(SettingKey::Font, &json!(bad)).expect_err("no such family name");
+            let family = &bad[design::SYSTEM_PREFIX.len()..];
+            assert!(refused.contains("1 to 64 characters"), "{refused}");
+            assert!(family.is_empty() || !refused.contains(family), "the name never runs into the message: {refused}");
+        }
+        assert_eq!(store.current().font, "torro", "nothing changed");
+
+        // Whole settings take the same limit (they skip `part_id`).
+        let whole = store.check_part(Part::Font, &long).expect_err("too long");
+        assert!(whole.contains("1 to 64 characters") && !whole.contains("xxxxxxxx"), "{whole}");
+
+        let homeless = SettingsStore::without_file();
+        let refused = homeless.check_part(Part::Font, gone).expect_err("not installed");
+        assert!(refused.contains(&reason) && !refused.contains("folder"), "checked, not refused: {refused}");
+        assert!(homeless.check_part(Part::ColorScheme, gone).is_err(), "only fonts are installed");
+    }
+
     /// Task L.22: whole settings without the font and colour scheme (a client that does not know
     /// them) keep the stored ones; with them, they are checked like set_setting.
     #[test]
@@ -1573,6 +1663,7 @@ mod tests {
                 components_off: BTreeSet::from([Component::Mail]),
                 mail_view: MailFormat::Html,
                 mail_appearance: MailAppearance::App,
+                mail_attachments: MailAttachments::default(),
                 mail_to_cloud: false,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 maps: Maps { open_with: torro_core::settings::MapsApp::Apple, ..Maps::default() },
@@ -1644,6 +1735,20 @@ mod tests {
         store.set(SettingKey::MailAppearance, &json!("light")).expect("light");
         let current = store.current();
         assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::Light));
+    }
+
+    /// Issue #290: removing a save target sets the click on attachments back to `open` only when it
+    /// named that target.
+    #[test]
+    fn a_removed_target_releases_only_its_own_click() {
+        use torro_core::settings::AttachmentClick;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        store.set(SettingKey::MailAttachmentClick, &json!({ "target": "t1" })).expect("a target");
+        store.release_attachment_click("t2").expect("another target");
+        assert_eq!(store.current().mail_attachments.click, AttachmentClick::Target("t1".into()));
+        store.release_attachment_click("t1").expect("its target");
+        assert_eq!(store.current().mail_attachments.click, AttachmentClick::Open);
     }
 
     /// Task C.9: the voice settings are set one by one and checked; a client's whole settings
@@ -1956,6 +2061,34 @@ mod tests {
         store.set_by_client(SettingKey::PdfTemplate, &note.to_value(PdfTemplateId::Note)).expect("removed");
         let removed = store.current().tools.pdf;
         assert_eq!((removed.folder, removed.note.logo), (None, None), "a client may remove the paths");
+    }
+
+    /// Issue #290, point 9: the click on an attachment is set like any setting; the Downloads folder
+    /// only by a person, and a client keeps or removes it, one setting at a time and with the whole
+    /// settings, even when a person changed it after the core's check.
+    #[test]
+    fn a_client_keeps_or_removes_the_downloads_folder_and_sets_the_click() {
+        use torro_core::settings::AttachmentClick;
+        let (_dir, store) = store();
+        let folder = absolute("/Users/anna/Ablage");
+        store.set_by_client(SettingKey::MailAttachmentClick, &json!({"target": "0a1b2c3d"})).expect("a click");
+        store.set_by_client(SettingKey::MailDownloadsFolder, &json!(folder)).expect("written");
+        let kept = store.current().mail_attachments;
+        assert_eq!(kept.click, AttachmentClick::Target("0a1b2c3d".into()));
+        assert_eq!(kept.downloads, None, "no path of a client");
+        assert!(store.set(SettingKey::MailDownloadsFolder, &json!("Ablage")).is_err(), "absolute only");
+        assert!(store.set(SettingKey::MailAttachmentClick, &json!("print")).is_err(), "only the five clicks");
+
+        store.set(SettingKey::MailDownloadsFolder, &json!(folder)).expect("the person");
+        assert_eq!(store.current().mail_attachments.downloads.as_deref(), Some(&*folder));
+        let mut sent = store.current();
+        sent.mail_attachments.downloads = Some(absolute("/Users/anna/Dropbox"));
+        sent.mail_attachments.click = AttachmentClick::SaveAs;
+        store.update_keeping_hidden(sent).expect("written");
+        let kept = store.current().mail_attachments;
+        assert_eq!((kept.click, kept.downloads.as_deref()), (AttachmentClick::SaveAs, Some(&*folder)));
+        store.set_by_client(SettingKey::MailDownloadsFolder, &json!(null)).expect("removed");
+        assert_eq!(store.current().mail_attachments.downloads, None, "a client may remove it");
     }
 
     #[test]
