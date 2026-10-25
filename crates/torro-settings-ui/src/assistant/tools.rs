@@ -1,6 +1,6 @@
 //! Assistant › Tools: where the assistant's own tools went (task MA.7, issue #302). The switches, the
 //! PDF tool's folder and its templates (task WZ.6) moved to the control centre's section "MCP
-//! connections", next to the MCP servers, because a tool exists for every client there, not only for
+//! servers" as its built-in tools, next to the MCP servers, because a tool exists for every client there, not only for
 //! the assistant (`docs/assistent.md`, "Eigene Werkzeuge").
 //!
 //! ```text
@@ -25,7 +25,7 @@ pub const CONTROL_CENTRE_SECTION: &str = "connections";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
-    /// "Open": the control centre at MCP connections.
+    /// "Open": the control centre at MCP servers.
     Open,
 }
 
@@ -40,7 +40,7 @@ pub fn update(message: Message) -> Action {
 /// the tools no longer wait for it.
 pub fn view<'a>() -> Element<'a, Message> {
     let open = widgets::text_button(None, tr("Open"), style::button::secondary, Some(Message::Open));
-    let detail = tr("Under MCP connections, next to the MCP servers");
+    let detail = tr("Under MCP servers › Built-in tools");
     let row = setting_row(None, tr("Tools moved to the control centre"), Some(detail.to_string()), open);
     widgets::group(tr("Tools"), vec![row], None)
 }

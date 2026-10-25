@@ -8,7 +8,7 @@
 //! Access    what the assistant and each bot may use; the assistant on and off (task S.34)
 //! Profile   who the assistant is, and what it keeps because it was asked to (two pages below)
 //! Bots      the bots, each with "Edit" in the assistant and "Access" here
-//! Tools     where the assistant's own tools went: the control centre's MCP connections (task MA.7)
+//! Tools     where the assistant's own tools went: the control centre's MCP servers (task MA.7)
 //! Voice     talking by voice, speaking answers, the microphone, the programs on this computer
 //! History   how long conversations are kept
 //! ```

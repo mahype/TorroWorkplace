@@ -1,4 +1,4 @@
-# Aufgaben: MCP-Anbindungen (MA.1–MA.11)
+# Aufgaben: MCP-Server (MA.1–MA.11)
 
 Konzept: [erweiterungen.md](../erweiterungen.md) (Erweiterungen mit Code als MCP-Server, der Dienst als Client),
 [api.md](../api.md) („Was nie nach außen geht“, Rechte, Freigaben), [assistent.md](../assistent.md) („Eigene
@@ -6,10 +6,15 @@ Werkzeuge“), [settings.md](../settings.md). Issue #302, geplant am 2026-10-24.
 [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer einen
 Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review`.
 
+Namen seit der Nacharbeit (Entscheidung des Nutzers): Der Abschnitt der Steuerzentrale heißt „MCP servers“ (de
+„MCP-Server“, vorher „MCP connections“), der Abschnitt der Agenten „MCP clients“ (de „MCP-Clients“, vorher „MCP“); die
+Wörter für `--section` bleiben `connections` und `mcp`. Der Rechte-Bereich `extensions` heißt für Menschen ebenfalls
+„MCP servers“, in der API bleibt `extensions`.
+
 ```
 MA.1 (Gerüst) ──┬── MA.2 (Katalog, Voraussetzungen) ──────────────┐
                 ├── MA.3 (Speicher, Geheimnisse, Umgebung) ── MA.4 (Client, Prozessaufsicht) ── MA.5 (Befehle, Rechte, Freigaben) ──┬── MA.6 (Angebot an Assistent, Bots, MCP)
-                ├── MA.7 (Abschnitt MCP connections, eigene Werkzeuge ziehen um)                                                   │
+                ├── MA.7 (Abschnitt MCP servers, eigene Werkzeuge ziehen um)                                                       │
                 └── MA.10 (Rechte-Editor: Bereiche ext:<id>)                                                                       │
 MA.2 + MA.5 + MA.7 ── MA.8 (Katalog, Installieren, Seite eines Servers) ── MA.9 (Eigener Server, mcpServers einfügen) ────────────┘
 MA.11 (Doku) zuletzt
@@ -225,13 +230,13 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   `review`; Bot nur mit der Schnittmenge; MCP: `list_tools` enthält es für einen Schlüssel mit Recht, sonst nicht;
   `call` baut den richtigen Request; Ergebnis als Daten gekennzeichnet.
 
-### MA.7 Steuerzentrale › MCP connections: Abschnitt, eigene Werkzeuge ziehen um
+### MA.7 Steuerzentrale › MCP servers: Abschnitt, eigene Werkzeuge ziehen um
 - [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torroworkplace/src/ui/{mod,launch}.rs`,
   `crates/torroworkplace/src/ui/connections.rs` (neu), `crates/torroworkplace/Cargo.toml` (`rfd`),
   `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`, `crates/torro-settings-ui/src/{lib,demo}.rs`,
   `crates/torroassistant/src/app.rs`, `crates/torro-core/src/i18n/de.rs`
-- `Section::Connections` nach `Mcp`, Name „MCP connections“, `--section connections`. Teil 1 „Built-in tools“: die
+- `Section::Connections` nach `Mcp`, Name „MCP servers“ (zuerst „MCP connections“), `--section connections`. Teil 1 „Built-in tools“: die
   Seite aus `assistant/tools.rs` (Schalter, Ablage-Ordner, Vorlagen) wird von der Steuerzentrale gezeigt; Ordner und
   Logo wählt sie mit `rfd`. Teil 2 „Catalog“ und Teil 3 „Your own servers“ zunächst mit Leerzustand und den Zeilen
   aus `extensions.list_extensions` (Handler bis MA.5 `unsupported` → Fehlerzustand mit Satz).
@@ -240,7 +245,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
 - Demo-Zustände `connections`, `connections-empty`.
 - **Abnahme:** Tests: Abschnittsliste mit zehn Abschnitten; Schalter schickt genau einen `set_setting`; der
   Assistent schickt nichts mehr für Werkzeuge; `--section connections`; Sichtprüfung (`torro-design-review`, alle
-  Größen, drei Designs); Übersetzungen in `de.rs` („MCP connections“ → „MCP-Anbindungen“).
+  Größen, drei Designs); Übersetzungen in `de.rs` („MCP servers“ → „MCP-Server“, zuerst „MCP connections“ → „MCP-Anbindungen“).
 
 ### MA.8 Katalog, Installieren und Seite eines Servers
 - [x] erledigt
@@ -278,7 +283,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torro-settings-ui/src/{rights,lib,demo}.rs`,
   `crates/torroworkplace/src/ui/{api,mcp,mod}.rs`, `crates/torroassistant/src/{app,bots}.rs` und
   `crates/torroassistant/src/view/editor.rs` (nur `Known` füllen), `crates/torro-core/src/i18n/de.rs`
-- `Known::extensions` aus `extensions.list_extensions`. Unter „Extensions“ je installiertem Server eine Zeile mit
+- `Known::extensions` aus `extensions.list_extensions`. Unter „Extensions“ (heute „MCP servers“) je installiertem Server eine Zeile mit
   seinem Namen und den Stufen No access / Read / Write / Full; „Show commands“ zeigt seine zugestimmten Werkzeuge
   mit Zugriff und Schalter (`ext.<id>.<werkzeug>` in `denied`), Naming wie die Kern-Befehle. Ausgeschaltete Server
   mit Attention-Marke. Speichern wie bisher über `clients.update_client`. `commands()` und `off_count` nehmen
@@ -293,7 +298,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
 - `erweiterungen.md`: Fragen 1, 2, 5 und 6 als entschieden (MCP; fester Bereich `extensions` mit Rechten je Server
   statt `Area` je Erweiterung; Installieren nur in der Oberfläche; Geheimnisse beim Start an genau den Server),
   Abschnitt „MCP-Server (#302)“ mit den Festlegungen dieser Datei; kein eigener Schlüssel je Server.
-  `assistent.md`: Entscheidung 9 ersetzt („Fremde MCP-Server über MCP connections, #302“), Hinweis, dass ein Server
+  `assistent.md`: Entscheidung 9 ersetzt („Fremde MCP-Server über den Abschnitt „MCP servers“, #302“), Hinweis, dass ein Server
   mit Datei- oder Shell-Werkzeugen Entscheidung 6 nur mit Recht und Freigabe der Person aufweicht.
-  `settings.md`: Abschnitt „MCP connections“ in Tabelle, Seitenleiste und „Was wohin zieht“ (Assistent › Tools).
+  `settings.md`: Abschnitt „MCP servers“ in Tabelle, Seitenleiste und „Was wohin zieht“ (Assistent › Tools).
 - **Abnahme:** Verweise stimmen; nichts widerspricht dem Code.

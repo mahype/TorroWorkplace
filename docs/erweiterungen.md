@@ -176,7 +176,7 @@ window_class = "torro-ext-timetracking"
   vergeben.
 - Jeder Aufruf geht durch den Dienst: Schlüssel → Rechte im Bereich `ext:<id>` → Freigabe → an die
   Erweiterung → Protokoll. Oberfläche, API und MCP entstehen so ohne Zutun der Erweiterung.
-- Die Rechte für `ext:<id>` vergibt die Person im Rechte-Editor (API, MCP, Assistent › Access) wie für jeden Bereich, Standard
+- Die Rechte für `ext:<id>` vergibt die Person im Rechte-Editor (API, MCP clients, Assistent › Access) wie für jeden Bereich, Standard
   „Kein Zugriff“.
 
 ### Nahtlos einbinden: Daten statt fremder Oberfläche
@@ -371,7 +371,7 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   liefert `not-found`.
 - **Keine Liste im Gespräch:** Torros MCP-Server meldet geänderte Werkzeuglisten nicht (kein `list_changed`). Fremde
   Agenten sehen neue Server-Werkzeuge erst in der nächsten Sitzung.
-- **Oberfläche:** Steuerzentrale › MCP connections hat drei Teile, Built-in tools (mit der Unterseite „PDF templates“),
+- **Oberfläche:** Steuerzentrale › MCP servers hat drei Teile, Built-in tools (mit der Unterseite „PDF templates“),
   Catalog und Your own servers; jeder Server hat eine eigene Seite. Assistent › Tools zeigt nur noch einen Verweis.
 
 ## Entscheidungen und offene Fragen

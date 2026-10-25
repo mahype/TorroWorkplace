@@ -315,7 +315,7 @@ Einstellungen. Das erste macht **PDFs**. Weitere Werkzeuge kommen als eigene Iss
 
 ### Schalter und Rechte sind zwei Dinge
 
-- **Schalter** (Steuerzentrale › MCP connections › Built-in tools, Einstellung `tool_enabled`; seit #302 steht er dort,
+- **Schalter** (Steuerzentrale › MCP servers › Built-in tools, Einstellung `tool_enabled`; seit #302 steht er dort,
   der Assistent zeigt unter Tools nur noch einen Verweis): ob es das Werkzeug auf diesem
   Rechner gibt. Standard aus. Ist es aus, lehnt der Kern seine Befehle für **jeden** Client ab (`forbidden`,
   Grund „switched off in the assistant's settings“), und kein Modell bekommt es angeboten. Einschalten nur der
@@ -378,10 +378,10 @@ des Assistenten (der Titel steht ohnehin in der Werkzeugzeile), öffnen, sichern
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Werkzeuge auflisten (Schalter, erlaubt) | Steuerzentrale › MCP connections › Built-in tools; Auswahl im Rechte-Editor (Access, API, MCP) | `tools.list_tools` · Read | `tools_list_tools` |
-| Werkzeug an-/abschalten | Steuerzentrale › MCP connections › Built-in tools | `settings.set_setting tool_enabled` · Admin | **Never** fürs Einschalten (Punkt 9), ausschalten über `settings_set_setting` |
+| Werkzeuge auflisten (Schalter, erlaubt) | Steuerzentrale › MCP servers › Built-in tools; Auswahl im Rechte-Editor (Access, API, MCP clients) | `tools.list_tools` · Read | `tools_list_tools` |
+| Werkzeug an-/abschalten | Steuerzentrale › MCP servers › Built-in tools | `settings.set_setting tool_enabled` · Admin | **Never** fürs Einschalten (Punkt 9), ausschalten über `settings_set_setting` |
 | Ablage-Ordner, Vorlagen | ebenda | `settings.set_setting pdf_folder`, `pdf_template` · Admin | `settings_set_setting`; Ordner und Logo setzen nur Menschen (Punkt 9), alle übrigen Felder auch Agenten |
-| Welche Werkzeuge ein Client darf | Assistent › Einstellungen › Access; Steuerzentrale › API, MCP | `clients.update_client` · Admin | **Never** (Punkt 2) |
+| Welche Werkzeuge ein Client darf | Assistent › Einstellungen › Access; Steuerzentrale › API, MCP clients | `clients.update_client` · Admin | **Never** (Punkt 2) |
 | PDF erstellen | Chat: Werkzeugzeile und Datei-Karte | `tools.create_pdf` · Write | `tools_create_pdf` |
 | PDF öffnen | „Open“ auf der Karte | `tools.open_file` · Write | `tools_open_file` |
 | PDF an einen Ort sichern | „Save as…“ auf der Karte | `tools.save_file_as` · Write, nur App-Schlüssel | **Never** (Punkt 9) |
@@ -499,9 +499,9 @@ Getroffen am 2026-10-13.
 6. **Dateien und Shell** beim Agent-Antrieb immer aus.
 7. **Bereich `assistant` für andere Agenten** standardmäßig aus, auch in *Full access*.
 8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete Unterhaltungen bleiben.
-9. **Fremde MCP-Server über MCP connections, #302** (ersetzt „Fremde MCP-Server im Chat nicht in Stufe 1; Klärung
+9. **Fremde MCP-Server über den Abschnitt „MCP servers“, #302** (ersetzt „Fremde MCP-Server im Chat nicht in Stufe 1; Klärung
    in #79“): Die Werkzeuge erlaubter Server stehen dem Assistenten, seinen Bots und den MCP-Clients offen, je Server
-   nur mit einer Stufe, je Werkzeug nur nach Zustimmung der Person (Steuerzentrale › MCP connections, Abschnitt „Your
+   nur mit einer Stufe, je Werkzeug nur nach Zustimmung der Person (Steuerzentrale › MCP servers, Abschnitt „Your
    own servers“ bzw. „Catalog“). Ein Server mit Datei- oder Shell-Werkzeugen weicht Entscheidung 6 nur mit Recht und
    Freigabe der Person auf; von selbst tut er es nicht.
 10. **Mikrofon** einschalten ist neuer Punkt 6 in „Was nie nach außen geht“.

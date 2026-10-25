@@ -1,6 +1,6 @@
 //! `torroworkplace ui`: the control centre – one place for everything that concerns the
 //! whole **suite**: accounts, the keys of programs (API), the MCP clients and their rights, the
-//! built-in tools and the MCP servers the suite connects to (MCP connections, task MA.7),
+//! built-in tools and the MCP servers the suite connects to (section MCP servers, task MA.7),
 //! approvals, workspaces, how everything
 //! looks, and the general settings. What one app or window shows is set in that window, behind
 //! its gear (task S.21): the control centre no longer has pages for the apps, the assistant or
@@ -56,7 +56,7 @@ mod agent_wizard;
 mod api;
 mod approvals;
 mod connect;
-// MCP connections (task MA.7): the built-in tools, the catalog of MCP servers and one's own.
+// MCP servers (task MA.7): the built-in tools, the catalog of MCP servers and one's own.
 mod connections;
 mod general;
 mod glance;
@@ -149,8 +149,10 @@ impl Section {
             Section::Accounts => tr("Accounts"),
             Section::Ai => tr("AI"),
             Section::Api => tr("API"),
-            Section::Mcp => tr("MCP"),
-            Section::Connections => tr("MCP connections"),
+            // Who uses the suite through MCP (its clients), and the MCP servers the suite uses itself;
+            // the words of `--section` stay `mcp` and `connections`, so calls keep working.
+            Section::Mcp => tr("MCP clients"),
+            Section::Connections => tr("MCP servers"),
             Section::Approvals => tr("Approvals"),
             Section::Workspaces => tr("Workspaces"),
             Section::Appearance => tr("Appearance"),
@@ -169,9 +171,10 @@ impl Section {
             // A link: clients connected to Torro Workplace. Not the sparkles, which stand for AI in
             // the suite, nor a robot, which it has not.
             Section::Mcp => Icon::Link,
-            // A program window: what runs for the suite on this computer – its own tools and the MCP
-            // servers it starts. The suite has no plug icon; the link is MCP's.
-            Section::Connections => Icon::AppWindow,
+            // A screen: what runs for the suite on this computer – its own tools and the MCP servers it
+            // starts. Its outline (a screen on a stand) stands apart from the clients' link and from the
+            // grid of Overview next to them in the rail; the suite has no server or plug icon.
+            Section::Connections => Icon::Monitor,
             // A person who confirms: the agent asks, the person decides.
             Section::Approvals => Icon::UserCheck,
             Section::Workspaces => Icon::Layers,
@@ -244,7 +247,7 @@ pub struct Data {
     /// where a template loads at login; empty without a window manager.
     pub screens: Vec<torro_ipc::ScreenInfo>,
     /// The MCP servers installed (`extensions.list_extensions`, task MA.7), or why they could not be
-    /// listed: MCP connections shows that in its group.
+    /// listed: MCP servers shows that in its group.
     pub extensions: connections::Listing<torro_ipc::extensions::ExtensionInfo>,
     /// The core's built-in catalog of MCP servers (`extensions.list_catalog`), with what each needs
     /// that is missing on this computer, or why it could not be listed.
@@ -301,13 +304,13 @@ pub enum Action {
     /// Open the first-run setup at its first step (task W.9): "Continue setup" on the overview,
     /// "Run setup again" under General.
     OpenSetup,
-    /// Open the system's chooser for the PDF tool's folder or a template's logo (MCP connections,
+    /// Open the system's chooser for the PDF tool's folder or a template's logo (MCP servers,
     /// task MA.7) and hand what was chosen back as [`connections::Message::Picked`]. The demo opens
     /// nothing.
     Pick(connections::Chooser),
     /// Load everything again now, as the timer does: "Retry" in a group whose list failed.
     Reload,
-    /// Send this request for MCP connections (task MA.8) and hand the answer back to that section
+    /// Send this request for MCP servers (task MA.8) and hand the answer back to that section
     /// only, with what it was for ([`connections::Asked`]), as the core gave it: a refusal stays a
     /// `Response::Error` with its code, so the install dialog and a server's page show their
     /// outcome themselves ([`connections::answered`]). Then reload, as for [`Action::Send`]. The
@@ -443,7 +446,7 @@ pub enum Message {
     /// The answer to an [`Action::AskConnections`], with what it was for; `Err` only when no answer
     /// came.
     ConnectionsAnswered(connections::Asked, Result<Response, String>),
-    /// The catalog of MCP servers (`extensions.list_catalog`), asked for only while MCP connections is
+    /// The catalog of MCP servers (`extensions.list_catalog`), asked for only while the section MCP servers is
     /// open ([`Ui::reload`]): the core looks for programs on disk for it each time.
     Catalog(connections::Listing<torro_ipc::extensions::CatalogEntry>),
     /// The desktop's light/dark preference (once at start, then whenever it changes).
@@ -1004,7 +1007,7 @@ impl Ui {
     }
 
     /// Loads everything from the service; the demo has none and keeps its sample data. The catalog of
-    /// MCP servers only while MCP connections is open: the core looks for programs on disk for it.
+    /// MCP servers only while their section is open: the core looks for programs on disk for it.
     fn reload(&self) -> Task<Message> {
         match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
@@ -1907,7 +1910,7 @@ fn load() -> Task<Message> {
             if let Ok(Response::Engines { engines }) = client::call(&socket, &Request::ListEngines).await {
                 data.engines = engines;
             }
-            // MCP connections (task MA.7): a failure is shown in its group, not over the page.
+            // MCP servers (task MA.7): a failure is shown in its group, not over the page.
             let servers = listing(&socket, Request::ListExtensions, |answer| match answer {
                 Response::Extensions { extensions } => Ok(extensions),
                 other => Err(other),
@@ -1923,7 +1926,7 @@ fn load() -> Task<Message> {
 }
 
 /// Loads the catalog of MCP servers (task MA.8), apart from [`load`]: [`Ui::reload`] asks for it only
-/// while MCP connections is open. A failure is shown in its group.
+/// while MCP servers is open. A failure is shown in its group.
 fn load_catalog() -> Task<Message> {
     Task::perform(
         async {
@@ -2876,7 +2879,7 @@ mod tests {
         assert_eq!(Section::from_arg("mail"), None);
     }
 
-    /// Task MA.7: `--section connections` opens MCP connections – the word the assistant's Tools hands
+    /// Task MA.7: `--section connections` opens MCP servers – the word the assistant's Tools hands
     /// to the control centre –, and its demo states show the PDF tool set up or no server at all.
     #[test]
     fn mcp_connections_open_by_their_word_and_their_demo_states() {
@@ -2977,10 +2980,11 @@ mod tests {
                 "general"
             ]
         );
-        assert_eq!(Section::ALL.len(), 10, "MCP connections joined after MCP (task MA.7)");
-        assert_eq!(Section::Connections.label(), tr("MCP connections"));
+        assert_eq!(Section::ALL.len(), 10, "MCP servers joined after MCP clients (task MA.7)");
+        assert_eq!(Section::Connections.label(), tr("MCP servers"));
+        assert_eq!(Section::Mcp.label(), tr("MCP clients"));
         let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();
-        assert!(labels.contains(&tr("API")) && labels.contains(&tr("MCP")));
+        assert!(labels.contains(&tr("API")) && labels.contains(&tr("MCP clients")));
         let nav: Vec<Section> = Section::nav().collect();
         assert!(!nav.contains(&Section::General), "General sits at the foot");
         assert_eq!(nav.len(), Section::ALL.len() - 1);

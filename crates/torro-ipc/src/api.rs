@@ -940,8 +940,8 @@ impl Lack {
                 area.name()
             ),
             Lack::ToolOff { tool } => format!(
-                "the tool {} is switched off in the assistant's settings; only the person can switch it on, in \
-                 Torro Workplace",
+                "the tool {} is switched off in Torro Workplace, MCP servers (built-in tools); only the person can \
+                 switch it on there",
                 tool.name()
             ),
             Lack::Tool { tool } => format!(
@@ -7053,7 +7053,10 @@ mod tests {
     fn a_tool_switched_off_or_not_granted_says_so() {
         let off = Lack::ToolOff { tool: ToolId::Pdf };
         let not_granted = Lack::Tool { tool: ToolId::Pdf };
-        assert!(off.message().contains("switched off in the assistant's settings") && off.message().contains("pdf"));
+        // The switch moved to the control centre's MCP servers (issue #302): the message names that place.
+        assert!(
+            off.message().contains("switched off in Torro Workplace, MCP servers") && off.message().contains("pdf")
+        );
         assert!(not_granted.message().contains("not among the tools this client may use"));
         assert_eq!((off.area(), not_granted.area()), (Some(Area::Tools), Some(Area::Tools)));
         assert_eq!(serde_json::to_value(off).expect("json"), serde_json::json!({"kind": "tool_off", "tool": "pdf"}));

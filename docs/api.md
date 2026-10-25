@@ -736,8 +736,8 @@ Client ohne Löschrecht bekommt dann `forbidden` (oder eine Freigabe-Anfrage), b
 `not-found` für ein fehlendes Vorkommen sehen könnte; ein Kalender, den er nicht sehen darf, bleibt `not-found`. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
 die ganze Serie.
 
-²⁵ **MCP-Anbindungen** (Issue #302, [erweiterungen.md](erweiterungen.md), Aufgaben
-[tasks/mcp-anbindungen.md](tasks/mcp-anbindungen.md)): Der Dienst ist MCP-Client fremder Server (Programm über
+²⁵ **MCP-Server** (Issue #302, in der Steuerzentrale Abschnitt „MCP servers“, [erweiterungen.md](erweiterungen.md),
+Aufgaben [tasks/mcp-anbindungen.md](tasks/mcp-anbindungen.md)): Der Dienst ist MCP-Client fremder Server (Programm über
 stdio oder Adresse über Streamable HTTP). Der Bereich `extensions` verwaltet sie (auflisten, Katalog, ausschalten,
 entfernen) und steht in den Vorlagen wie jeder Bereich. Die Werkzeuge eines Servers dagegen öffnet keine Stufe in
 `extensions`, sondern eine **Stufe je Server** (`Rights::extensions`, Kennung → Stufe, fehlt = Kein Zugriff; siehe
@@ -967,8 +967,8 @@ Browser des Menschen; ein Agent bekommt nie ein Passwort zu sehen.
 ## Rechte
 
 Seit #231 je nach Weg ([settings.md › Accounts, API und MCP](settings.md#accounts-api-und-mcp-231)):
-Skripte und Programme mit Key in der **Steuerzentrale, Abschnitt „API“**, Agenten in **„MCP“**, der eigene
-Assistent und seine Bots im **Assistent-Fenster, Abschnitt „Access“**. Alle drei nutzen denselben Rechte-Editor;
+Skripte und Programme mit Key in der **Steuerzentrale, Abschnitt „API“**, Agenten in **„MCP clients“** (bis #302
+„MCP“), der eigene Assistent und seine Bots im **Assistent-Fenster, Abschnitt „Access“**. Alle drei nutzen denselben Rechte-Editor;
 dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
 ### Je Client
@@ -1135,7 +1135,7 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 
-## Steuerzentrale: Abschnitte „API“ und „MCP“
+## Steuerzentrale: Abschnitte „API“ und „MCP clients“
 
 Seit #231; ersetzt den Abschnitt „Agents & API“ (vorher „AI & agents“). Aufbau und Gründe:
 [settings.md › Accounts, API und MCP](settings.md#accounts-api-und-mcp-231). Der eigene Assistent und seine
@@ -1164,7 +1164,7 @@ Bots stehen nicht hier, sondern im Assistent-Fenster unter Access.
      wieder heraus, aber nur, was der Assistent selbst eingetragen hat (`client_setup.json`).
   4. **Fertig:** „Restart Claude Code to use Torro Workplace.“
 - **Detailseite eines Keys bzw. Clients**: der gemeinsame Rechte-Editor (Stufe je Bereich, aufgeklappt ein
-  Schalter je Befehl: unter API mit dem Endpunkt-Namen, unter MCP mit dem Tool-Namen), Sammlungen, Freigabe
+  Schalter je Befehl: unter API mit dem Endpunkt-Namen, unter MCP clients mit dem Tool-Namen), Sammlungen, Freigabe
   vorher, letzte Aktionen, „Create new key“ (alter wird ungültig), „Revoke…“ (API) bzw. „Disconnect…“ (MCP;
   bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
   Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
@@ -1213,7 +1213,7 @@ Getroffen am 2026-10-11.
 Getroffen am 2026-10-19 (#231):
 
 9. **API und MCP getrennt in der Oberfläche**, ein Client-Modell im Kern: Keys der Art `script` unter API,
-   MCP-Clients unter MCP, gleicher Rechte-Editor. Verworfen: getrennte Client-Modelle (doppelte Prüfung).
+   MCP-Clients unter MCP clients, gleicher Rechte-Editor. Verworfen: getrennte Client-Modelle (doppelte Prüfung).
 10. **Sperrliste je Befehl** (`Rights::denied`) unter der Stufe statt Schalter allein. Kein neuer Befehl:
     Sie reist mit `clients.update_client` in den ganzen Rechten.
 11. **Weg im Umschlag** (`via`) und die Schalter `allow_api_keys`, `allow_mcp`; einschalten nur Menschen.

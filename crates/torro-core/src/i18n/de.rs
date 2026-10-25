@@ -5070,7 +5070,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Postfächer und die Kalender und Aufgaben desselben Anbieters.",
     ),
     ("Manage models…", "Modelle verwalten…"),
-    ("MCP", "MCP"),
     ("MCP client", "MCP-Client"),
     ("MCP clients", "MCP-Clients"),
     ("MCP server", "MCP-Server"),
@@ -5187,8 +5186,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The assistant's own tools (WZ.2-WZ.4, #225): area, refusals, the PDF tool's errors and approvals
     ("The assistant's own tools, such as making PDFs", "Eigene Werkzeuge des Assistenten, etwa PDFs erstellen"),
     (
-        "The tool {tool} is switched off in the control centre under MCP connections.",
-        "Das Werkzeug {tool} ist in der Steuerzentrale unter MCP-Anbindungen ausgeschaltet.",
+        "The tool {tool} is switched off in the control centre under MCP servers.",
+        "Das Werkzeug {tool} ist in der Steuerzentrale unter MCP-Server ausgeschaltet.",
     ),
     ("The assistant may not use the tool {tool}.", "Der Assistent darf das Werkzeug {tool} nicht verwenden."),
     ("{tool} is switched off", "{tool} ist ausgeschaltet"),
@@ -5260,14 +5259,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
     // The rights editor › the selection of tools (WZ.7, #225)
     (
-        "Includes tools added later. Each works only while it is on under MCP connections in the control centre.",
-        "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Anbindungen eingeschaltet ist.",
+        "Includes tools added later. Each works only while it is on in the control centre under MCP servers.",
+        "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Server eingeschaltet ist.",
     ),
     (
-        "This agent can't use tools left off. Each works only while it is on under MCP connections in the control centre.",
-        "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Anbindungen eingeschaltet ist.",
+        "This agent can't use tools left off. Each works only while it is on in the control centre under MCP servers.",
+        "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Server eingeschaltet ist.",
     ),
-    ("Off under MCP connections", "Unter MCP-Anbindungen ausgeschaltet"),
+    ("Off under MCP servers", "Unter MCP-Server ausgeschaltet"),
     // The file card in the chat (WZ.8, #225)
     ("Save as…", "Speichern unter…"),
     ("Send by mail", "Per Mail senden"),
@@ -5629,12 +5628,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{placeholder}” is not a placeholder. Insert lists them all.",
         "„{placeholder}“ ist kein Platzhalter. „Einfügen“ zeigt alle.",
     ),
-    // MCP connections: the area, a server tool refused, what a server needs (MA.1, #302)
-    (
-        "Connected MCP servers: listing, switching off, removing",
-        "Angebundene MCP-Server: anzeigen, ausschalten, entfernen",
-    ),
-    ("Extensions", "Erweiterungen"),
+    // MCP servers: the area, a server tool refused, what a server needs (MA.1, #302)
+    ("Listing, switching off and removing servers", "Server anzeigen, ausschalten und entfernen"),
     ("Needs Docker", "Braucht Docker"),
     ("Needs Node.js (npx)", "Braucht Node.js (npx)"),
     ("Needs uv (uvx)", "Braucht uv (uvx)"),
@@ -5644,7 +5639,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The assistant may not use this tool of the MCP server.",
         "Der Assistent darf dieses Werkzeug des MCP-Servers nicht verwenden.",
     ),
-    // MCP connections: what a server may be given (MA.3, #302)
+    // MCP servers: what a server may be given (MA.3, #302)
     (
         "Enter the program by name (like npx) or by its full path.",
         "Gib das Programm mit Namen (etwa npx) oder mit vollem Pfad an.",
@@ -5746,8 +5741,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The tool “{name}” isn't offered: its name doesn't fit the rules for tool names (at most {n} characters with the server's id: letters, digits, _ and -).",
         "Das Werkzeug „{name}“ wird nicht angeboten: Sein Name passt nicht zu den Regeln für Werkzeugnamen (höchstens {n} Zeichen mit der Kennung des Servers: Buchstaben, Ziffern, _ und -).",
     ),
-    // Control centre › MCP connections, and the assistant's Tools that moved there (MA.7, #302)
-    ("MCP connections", "MCP-Anbindungen"),
+    // Control centre › MCP servers, and the assistant's Tools that moved there (MA.7, #302)
     ("Built-in tools", "Eingebaute Werkzeuge"),
     (
         "A tool works only while it is on here and a client's rights allow it. Only you can switch it on and choose the folder and the logos.",
@@ -5774,8 +5768,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Stopped after errors", "Nach Fehlern angehalten"),
     ("Starting…", "Startet…"),
     ("Tools moved to the control centre", "Die Werkzeuge sind in die Steuerzentrale umgezogen"),
-    ("Under MCP connections, next to the MCP servers", "Unter MCP-Anbindungen, neben den MCP-Servern"),
-    // Control centre › MCP connections: catalog, installing, a server's page (MA.8, #302)
+    ("Under MCP servers › Built-in tools", "Unter MCP-Server › Eingebaute Werkzeuge"),
+    // Control centre › MCP servers: catalog, installing, a server's page (MA.8, #302)
     ("Allow its tools below to switch it on.", "Erlaube unten seine Werkzeuge, um ihn einzuschalten."),
     ("Allow the tools as they are listed here.", "Erlaube die Werkzeuge so, wie sie hier stehen."),
     ("Allow the tools of {name}?", "Werkzeuge von {name} erlauben?"),
@@ -5791,7 +5785,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Enter {name}", "{name} eingeben"),
     ("Enter…", "Eingeben…"),
     ("Experimental", "Experimentell"),
-    ("Get one", "Besorgen"),
+    ("Get one", "Schlüssel holen"),
     ("Install", "Installieren"),
     ("Install {name}", "{name} installieren"),
     ("Installing…", "Wird installiert…"),
@@ -5855,8 +5849,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Was ein Aufruf jedes Werkzeugs braucht. Keins wird angeboten, bevor du die gemeldeten Werkzeuge erlaubst.",
     ),
     (
-        "Who may use it: API, MCP and the assistant's Access.",
-        "Wer ihn nutzen darf: API, MCP und Zugriff im Assistenten.",
+        "Who may use it: API, MCP clients and the assistant's Access.",
+        "Wer ihn nutzen darf: API, MCP-Clients und Zugriff im Assistenten.",
     ),
     ("{name} gets it when it starts next.", "{name} bekommt es beim nächsten Start."),
     (
@@ -5865,7 +5859,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("{needs}. Install it to use this server.", "{needs}. Installiere es, um diesen Server zu nutzen."),
     ("{publisher} · {license} · version {version}", "{publisher} · {license} · Version {version}"),
-    // MCP connections › a server of one's own (MA.9, #302)
+    // MCP servers › a server of one's own (MA.9, #302)
     (
         "A header's name has no spaces and no colon.",
         "Der Name eines Headers enthält keine Leerzeichen und keinen Doppelpunkt.",
@@ -5964,7 +5958,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The rights editor › a level per MCP server (MA.10, #302)
     ("MCP servers", "MCP-Server"),
     (
-        "No MCP servers yet. Each one you add under MCP connections gets its own level here.",
-        "Noch keine MCP-Server. Jeder, den du unter MCP-Anbindungen hinzufügst, bekommt hier eine eigene Stufe.",
+        "No MCP servers yet. Each one you add in the control centre under MCP servers gets its own level here.",
+        "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, bekommt hier eine eigene Stufe.",
     ),
 ];

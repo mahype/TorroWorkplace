@@ -1,4 +1,4 @@
-//! MCP connections (task MA.7 in `docs/tasks/mcp-anbindungen.md`, issue #302): what the suite runs
+//! MCP servers (task MA.7 in `docs/tasks/mcp-anbindungen.md`, issue #302): what the suite runs
 //! for its clients beyond its own commands – its built-in tools and the MCP servers it is a client of.
 //! The assistant's settings only point here since this task (`torro_settings_ui::assistant::tools`).
 //!
@@ -44,7 +44,7 @@
 //! that wait, its secrets as "Stored" or "Missing" with "Replace…" (`extensions.set_secret`), its
 //! output (`extensions.read_logs`, read when the page opens, in a field to select and copy from),
 //! and "Remove…" with a question first (`extensions.remove_extension`). Who may use it is set per
-//! client (API, MCP, the assistant's Access), never here. The sidebar marks the section while a
+//! client (API, MCP clients, the assistant's Access), never here. The sidebar marks the section while a
 //! server waits for its tools or stopped after errors ([`alert`]).
 //!
 //! Every request of this section goes out as [`Action::AskConnections`] with what it is for
@@ -1763,7 +1763,7 @@ fn status_group<'a>(
         status_row(widgets::status_dot(dot), word, status_detail(server, never_allowed), switch),
         source_row(page, data, server, words),
     ];
-    let footer = tr("Who may use it: API, MCP and the assistant's Access.");
+    let footer = tr("Who may use it: API, MCP clients and the assistant's Access.");
     widgets::group(tr("Status"), rows, Some(footer.to_string()))
 }
 
@@ -2130,7 +2130,8 @@ pub fn tools_dialog<'a>(
             .style(theme::text_2)
             .wrapping(Wrapping::WordOrGlyph),
         widgets::group(tr("Tools"), rows, footer),
-        typo::text(typo::meta(), tr("Who may use it: API, MCP and the assistant's Access.")).style(theme::text_2),
+        typo::text(typo::meta(), tr("Who may use it: API, MCP clients and the assistant's Access."))
+            .style(theme::text_2),
     ]
     .spacing(space::l());
     let allow = allow_button(server, install.busy, false, true);
