@@ -80,12 +80,18 @@ pub fn parse_denied_name(name: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether a server may not be given the variable `name` (`docs/tasks/mcp-anbindungen.md`,
-/// "Umgebung des Kindprozesses"), in any case: `PATH` and `PATHEXT` (the core sets them), what makes
+/// "Umgebung des Kindprozesses"), in any case: `PATH` and `PATHEXT` (the core sets them); what makes
 /// a program load other code (`LD_*`, `DYLD_*`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
-/// `PYTHONWARNINGS`, `NODE_OPTIONS`, `NODE_PATH`, `npm_config_*`, `PERL5LIB`, `PERL5OPT`, `RUBYOPT`,
-/// `RUBYLIB`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `BASH_ENV`, `ENV`, `IFS`, and on
-/// Windows `ComSpec` and `SystemRoot`), what sends a server's secrets to another Docker daemon (`DOCKER_HOST`,
-/// `DOCKER_CONTEXT`) and Torro's own (`TORRO_*`). Installing a server with one is refused with `error`.
+/// `PYTHONWARNINGS`, `PYTHONUSERBASE`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5LIB`, `PERLLIB`, `PERL5OPT`,
+/// `RUBYOPT`, `RUBYLIB`, `GEM_HOME`, `GEM_PATH`, `CLASSPATH`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`,
+/// `JDK_JAVA_OPTIONS`, `BASH_ENV`, `BASH_FUNC_*`, `ENV`, `IFS`, `SHELLOPTS`, `PS4`, `ZDOTDIR`, `GIT_SSH`,
+/// `GIT_SSH_COMMAND`, `GIT_EXEC_PATH`, `GIT_CONFIG*`, on Windows `ComSpec`, `SystemRoot` and `WINDIR`); where
+/// packages and settings come from (`npm_config_*`, `UV_*`, `PIP_*`, and the folders the core sets: `HOME`,
+/// `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_CONFIG_HOME`); what sends a server's secrets elsewhere (a
+/// Docker daemon or its settings: `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`; certificates to trust or
+/// none: `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+/// `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`); and Torro's own (`TORRO_*`). Installing a server with one is
+/// refused with `error`.
 pub fn blocked_env(name: &str) -> bool {
     const NAMES: &[&str] = &[
         "PATH",
@@ -94,24 +100,48 @@ pub fn blocked_env(name: &str) -> bool {
         "PYTHONHOME",
         "PYTHONSTARTUP",
         "PYTHONWARNINGS",
+        "PYTHONUSERBASE",
         "NODE_OPTIONS",
         "NODE_PATH",
         "PERL5LIB",
+        "PERLLIB",
         "PERL5OPT",
         "RUBYOPT",
         "RUBYLIB",
+        "GEM_HOME",
+        "GEM_PATH",
+        "CLASSPATH",
         "JAVA_TOOL_OPTIONS",
         "_JAVA_OPTIONS",
         "JDK_JAVA_OPTIONS",
         "BASH_ENV",
         "ENV",
         "IFS",
+        "SHELLOPTS",
+        "PS4",
+        "ZDOTDIR",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_EXEC_PATH",
         "COMSPEC",
         "SYSTEMROOT",
+        "WINDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
         "DOCKER_HOST",
         "DOCKER_CONTEXT",
+        "DOCKER_CONFIG",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
     ];
-    const PREFIXES: &[&str] = &["LD_", "DYLD_", "NPM_CONFIG_", "TORRO_"];
+    const PREFIXES: &[&str] = &["LD_", "DYLD_", "BASH_FUNC_", "GIT_CONFIG", "NPM_CONFIG_", "UV_", "PIP_", "TORRO_"];
     let upper = name.to_ascii_uppercase();
     NAMES.contains(&upper.as_str()) || PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
@@ -626,10 +656,19 @@ mod tests {
             "PYTHONWARNINGS",
             "JAVA_TOOL_OPTIONS",
             "ComSpec",
+            "HOME",
+            "DOCKER_CONFIG",
+            "UV_INDEX_URL",
+            "PIP_INDEX_URL",
+            "GIT_CONFIG_COUNT",
+            "BASH_FUNC_ls%%",
+            "SSL_CERT_FILE",
         ] {
             assert!(blocked_env(blocked), "{blocked}");
         }
-        for open in ["GITHUB_PERSONAL_ACCESS_TOKEN", "HOME_DIR", "ENVIRONMENT", "MY_PATH", "LDAP_URL"] {
+        for open in
+            ["GITHUB_PERSONAL_ACCESS_TOKEN", "HOME_DIR", "ENVIRONMENT", "MY_PATH", "LDAP_URL", "HTTPS_PROXY", "LANG"]
+        {
             assert!(!blocked_env(open), "{open}");
         }
         assert!(valid_env_name("API_KEY") && !valid_env_name("") && !valid_env_name("A=B") && !valid_env_name("A B"));

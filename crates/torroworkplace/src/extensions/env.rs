@@ -350,14 +350,14 @@ mod tests {
         let spec = program(&[
             ("STORED_TOKEN", Value::Stored { secret: true }),
             ("NEW_TOKEN", Value::Secret(Secret::new("new-value"))),
-            ("HOME", Value::Plain("/srv/server-home".into())),
+            ("LANG", Value::Plain("C".into())),
         ]);
         let secrets = BTreeMap::from([("STORED_TOKEN".to_string(), Secret::new("from-keychain"))]);
         let env = child_env(&spec, &secrets, &service(), &[]).expect("env");
         assert_eq!(get(&env, "STORED_TOKEN"), Some("from-keychain"));
         assert_eq!(get(&env, "NEW_TOKEN"), Some("new-value"));
-        assert_eq!(get(&env, "HOME"), Some("/srv/server-home"), "the server's own replaces the basic");
-        assert_eq!(names(&env).iter().filter(|name| **name == "HOME").count(), 1);
+        assert_eq!(get(&env, "LANG"), Some("C"), "the server's own replaces the basic");
+        assert_eq!(names(&env).iter().filter(|name| **name == "LANG").count(), 1);
         assert_eq!(get(&env, "PATH"), None, "no folder, no PATH");
 
         let missing = child_env(&spec, &BTreeMap::new(), &service(), &[]);

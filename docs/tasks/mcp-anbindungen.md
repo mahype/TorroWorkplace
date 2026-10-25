@@ -56,8 +56,10 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   Ordner aus MA.2), dann die Variablen des Servers. **Sperrliste** (Groß-/Kleinschreibung egal, abgelehnt beim
   Installieren mit `error`): `PATH`, `PATHEXT`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
   `NODE_OPTIONS`, `NODE_PATH`, `PERL5LIB`, `PERL5OPT`, `RUBYOPT`, `RUBYLIB`, `BASH_ENV`, `ENV`, `IFS`, `TORRO_*`;
-  nach dem PR-Review dazu `PYTHONWARNINGS`, `npm_config_*`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`,
-  `ComSpec`, `SystemRoot`, `DOCKER_HOST`, `DOCKER_CONTEXT`.
+  nach dem PR-Review dazu Variablen, die Code laden (`PYTHONWARNINGS`, `JAVA_TOOL_OPTIONS`, `GIT_SSH_COMMAND`,
+  `BASH_FUNC_*`, `ComSpec` u. a.), Pakete und Einstellungen umlenken (`npm_config_*`, `UV_*`, `PIP_*`, `HOME`,
+  `APPDATA` u. a.; ein Server überschreibt damit keine dieser Grundvariablen mehr) oder Geheimnisse woandershin
+  schicken (`DOCKER_HOST`, `DOCKER_CONFIG`, eigene Zertifikate); die vollständige Liste bei `blocked_env`.
 - **Prozess:** Start bei Bedarf (erster Aufruf, Installieren, Zustimmen), Startzeit höchstens 30 s, beim
   Installieren und Aktualisieren 180 s (der erste Lauf von `npx`, `uvx` bzw. `docker run` lädt das Paket erst),
   Aufruf höchstens 60 s, nach 10 min ohne Aufruf beendet. Nach einem Absturz neu beim nächsten Bedarf, höchstens 3 Starts in 5 min,
@@ -233,8 +235,8 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   `call` baut den richtigen Request; Ergebnis als Daten gekennzeichnet.
 
 ### MA.7 Steuerzentrale › MCP servers: Abschnitt, eigene Werkzeuge ziehen um
-- [x] erledigt (Sichtprüfung offen: kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur am
-  Code; die Zustände stehen im Test plan von PR #309)
+- [ ] erledigt bis auf die Sichtprüfung (kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur
+  am Code; die Zustände stehen im Test plan von PR #309)
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torroworkplace/src/ui/{mod,launch}.rs`,
   `crates/torroworkplace/src/ui/connections.rs` (neu), `crates/torroworkplace/Cargo.toml` (`rfd`),
   `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`, `crates/torro-settings-ui/src/{lib,demo}.rs`,
@@ -251,8 +253,8 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   Größen, drei Designs); Übersetzungen in `de.rs` („MCP servers“ → „MCP-Server“, zuerst „MCP connections“ → „MCP-Anbindungen“).
 
 ### MA.8 Katalog, Installieren und Seite eines Servers
-- [x] erledigt (Sichtprüfung offen: kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur am
-  Code; die Zustände stehen im Test plan von PR #309)
+- [ ] erledigt bis auf die Sichtprüfung (kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur
+  am Code; die Zustände stehen im Test plan von PR #309)
 - **Modell:** Opus · **Braucht:** MA.2, MA.5, MA.7 · **Dateien:** `crates/torroworkplace/src/ui/connections.rs`,
   `crates/torroworkplace/src/ui/{mod,launch}.rs`, `crates/torro-core/src/i18n/de.rs`
 - Katalog: je Eintrag Name, Herausgeber, Lizenz, Link, „Experimental“, Voraussetzungen mit fehlenden in Attention
@@ -269,8 +271,8 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   ohne Fehlendes kein „Install…“; Sichtprüfung aller neuen Zustände in allen Größen; Übersetzungen in `de.rs`.
 
 ### MA.9 Eigener Server: Formular und eingefügter `mcpServers`-Block
-- [x] erledigt (Sichtprüfung offen: kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur am
-  Code; die Zustände stehen im Test plan von PR #309)
+- [ ] erledigt bis auf die Sichtprüfung (kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur
+  am Code; die Zustände stehen im Test plan von PR #309)
 - **Modell:** Opus · **Braucht:** MA.8 · **Dateien:** `crates/torroworkplace/src/ui/connections.rs`,
   `crates/torroworkplace/src/ui/launch.rs`, `crates/torro-core/src/i18n/de.rs`
 - „Add server…“: Art (Command / Address), Name, Kennung (aus dem Namen vorgeschlagen), Befehl, Argumente (je Zeile
@@ -284,8 +286,8 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   Sichtprüfung; Übersetzungen in `de.rs`.
 
 ### MA.10 Rechte-Editor: Bereiche `ext:<id>`
-- [x] erledigt (Sichtprüfung offen: kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur am
-  Code; die Zustände stehen im Test plan von PR #309)
+- [ ] erledigt bis auf die Sichtprüfung (kein Hyprland und keine Bildschirmaufnahme, das Design-Review lief nur
+  am Code; die Zustände stehen im Test plan von PR #309)
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torro-settings-ui/src/{rights,lib,demo}.rs`,
   `crates/torroworkplace/src/ui/{api,mcp,mod}.rs`, `crates/torroassistant/src/{app,bots}.rs` und
   `crates/torroassistant/src/view/editor.rs` (nur `Known` füllen), `crates/torro-core/src/i18n/de.rs`

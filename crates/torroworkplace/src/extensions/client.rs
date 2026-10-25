@@ -157,8 +157,7 @@ where
 /// Connects to the address `url` over Streamable HTTP with `headers` on every request
 /// (`super::env::headers`) and runs `initialize`. The address must have passed `super::env::check_url`. The
 /// HTTP client follows no redirect and takes no proxy for plain HTTP, so a token in a header goes to this
-/// address only. Like [`connect`]
-/// without a time limit.
+/// address only. Like [`connect`] without a time limit.
 pub async fn connect_http(url: &str, headers: &[(String, String)]) -> Result<Connection, ClientError> {
     let mut custom = HashMap::new();
     for (name, value) in headers {
@@ -171,7 +170,7 @@ pub async fn connect_http(url: &str, headers: &[(String, String)]) -> Result<Con
     let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     // `HTTP_PROXY`/`ALL_PROXY` of the service would otherwise apply: a plain-text request to a local server
     // would carry its secret headers to the proxy, maybe over the network.
-    if !url.starts_with("https://") {
+    if !reqwest::Url::parse(url).is_ok_and(|parsed| parsed.scheme() == "https") {
         builder = builder.no_proxy();
     }
     let client = builder.build().map_err(|_| ClientError::Closed)?;

@@ -332,9 +332,12 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   Sampling und Roots kommen mit #304.
 - **Umgebung des Programms:** leer, dann nur `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL` und `TMPDIR` (unter Windows
   einige mehr), dann der `PATH` (der Ordner des gefundenen Programms vorn), dann die Variablen des Servers. Gesperrt und
-  beim Installieren mit Fehler abgelehnt: `PATH`, `PATHEXT`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`,
-  `npm_config_*`, `JAVA_TOOL_OPTIONS`, `ComSpec`, `DOCKER_HOST` u. a. sowie `TORRO_*`. Geheimnisse gehen nur beim
-  Start an genau diesen Server.
+  beim Installieren mit Fehler abgelehnt: was ein Programm anderen Code laden lässt (`LD_*`, `DYLD_*`,
+  `PYTHONPATH`, `NODE_OPTIONS`, `JAVA_TOOL_OPTIONS`, `GIT_SSH_COMMAND`, `ComSpec` u. a.), woher Pakete und
+  Einstellungen kommen (`npm_config_*`, `UV_*`, `PIP_*`, `HOME`, `APPDATA` u. a.), was Geheimnisse woandershin
+  schickt (`DOCKER_HOST`, `DOCKER_CONFIG`, eigene Zertifikate wie `SSL_CERT_FILE`), dazu `PATH`, `PATHEXT` und
+  `TORRO_*`. Die vollständige Liste steht bei `blocked_env` in `torro-ipc`. Geheimnisse gehen nur beim Start an
+  genau diesen Server.
 - **Adressen:** nur Streamable HTTP. `https://` ist Pflicht, `http://` nur für `localhost`, `127.0.0.1` und `::1`;
   keine Weiterleitungen, für `http://` kein Proxy; Anmeldung nur über Header. OAuth kommt als eigenes Issue.
 - **Prozess:** Start bei Bedarf (erster Aufruf, Installieren, Zustimmen), Startzeit höchstens 30 s, beim Installieren
