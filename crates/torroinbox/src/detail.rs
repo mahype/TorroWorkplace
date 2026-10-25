@@ -122,8 +122,8 @@ pub struct Anchors {
 pub struct RailAnchors {
     /// Reply · Reply all · Forward.
     pub reply: Anchor,
-    /// Done or Reopen · Later… · Move to … · Archive · Delete: the snooze menu and the lane
-    /// question fall back to it.
+    /// Archive · Later… · Move to … · Delete · Save attachments (task E18.5: mail has no Done): the
+    /// snooze menu and the lane question fall back to it.
     pub file: Anchor,
     /// Task · Event · Category… · Re-categorize: the dialogs of Task and Event and the list of
     /// categories fall back to it.
@@ -702,7 +702,7 @@ mod tests {
         let mut question = sample("demo-9");
         app::demo_task(&mut question, now());
         assert!(hub::is_follow_up(&question));
-        // Reply, Mark mail done, Done, the gap, Move to.
+        // Reply, Archive mail, Done, the gap, Move to.
         assert_eq!(buttons(&question, &footer(false)).len(), 5);
         let text = Selectable::new(&message_text(&question));
         let _ = panel(&question, tr("Act now").to_owned(), now(), footer(false), None, &text);
