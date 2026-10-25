@@ -799,7 +799,7 @@ fn detail<'a>(
 
 #[cfg(test)]
 pub(super) mod tests {
-    use chrono::Duration as Age;
+    use chrono::{Duration as Age, TimeZone};
     use iced::time::Instant;
     use torro_inbox::{SourceInfo, SourceRef};
     use torro_ipc::api::{Area, Confirm, Level, Rights, RightsTemplate};
@@ -1099,9 +1099,11 @@ pub(super) mod tests {
         assert_eq!(when(now, now), now.with_timezone(&Local).format("%H:%M").to_string());
         let old = now - Age::days(9);
         assert_eq!(when(old, now), old.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
-        let yesterday = now - Age::days(1);
-        let clock = yesterday.with_timezone(&Local).format("%H:%M").to_string();
-        assert_eq!(when(yesterday, now), trf("yesterday {time}", &[("time", &clock)]));
+        // Noon of the day before, not 24 hours ago: on the day summer time ends that is still today after 23:00.
+        let day_before = now.with_timezone(&Local).date_naive() - chrono::Days::new(1);
+        let noon = day_before.and_hms_opt(12, 0, 0).expect("noon");
+        let yesterday = Local.from_local_datetime(&noon).single().expect("one noon").with_timezone(&Utc);
+        assert_eq!(when(yesterday, now), trf("yesterday {time}", &[("time", &"12:00")]));
     }
 
     #[test]
