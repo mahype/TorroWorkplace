@@ -416,7 +416,8 @@ Website. Darum wählt die Person die Dienste selbst und gibt in jeder Unterhaltu
 - **Drosselung und Zwischenspeicher** je Anbieter; DuckDuckGo nur wenige Abfragen je Minute. Antworten bleiben
   eine Stunde im Speicher (nie auf der Platte), Brave nie.
 - **Jeder Anbieter sagt, wohin die Wörter gehen** (Host und Sitz) und verlinkt seine Bedingungen, in der
-  Einrichtung und in den Einstellungen gleich.
+  Einrichtung und in den Einstellungen gleich. Die SearXNG-Adresse zeigt oft ins lokale Netz: Ein Client sieht
+  sie in `tools.list_search_providers` nur, wenn er `web` selbst erreicht.
 - **Wählen und Adressen setzen nur Menschen** (wie Karten, Punkt 6 in „Was nie nach außen geht“): einschalten
   mit `settings.set_setting search_provider`, die Adresse mit `searxng_address`. Ausschalten darf jeder mit
   Admin in `settings`. **Schlüssel** gehen nur über die Oberfläche (`accounts.set_search_key`, Punkt 5) in den
@@ -428,7 +429,8 @@ Website. Darum wählt die Person die Dienste selbst und gibt in jeder Unterhaltu
   Name und jede Weiterleitung (höchstens 5) wird geprüft und nur ins öffentliche Internet verbunden (dieselben
   Wächter wie die Suche nach Diensten, `torro_pim_caldav::discover`). Sonst könnte ein Modell das lokale Netz der
   Person abtasten.
-- Größengrenze, kurze Zeitgrenzen, Drosselung je Host; nur HTML und Text.
+- Größengrenze, kurze Zeitgrenzen, Drosselung je Host (auch für jeden Host, zu dem eine Weiterleitung führt);
+  nur HTML und Text.
 - `robots.txt` (RFC 9309, Kennung `TorroWorkplace`) gilt für jede Seite, die das Modell selbst wählt; eine
   Adresse, die die Person in der Unterhaltung selbst geschrieben hat, liest der Kern wie ein Browser.
 - Treffer und Seiten sind **fremder Text** (`untrusted`): Danach braucht jede neue Notiz des Gedächtnisses eine
