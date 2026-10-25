@@ -754,8 +754,8 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
   und `mail.respond_to_invitation` sind dort gemeint). Ob es auf Freigabe wartet, entscheidet allein sein Zugriff aus
   dem Katalog (`Rights::needs_approval_of`). Folge: Der Nur-Lese-Modus des Assistenten hält ein Write-Werkzeug, das
   nach außen wirkt (z. B. ein Kommentar auf GitHub), nur über die Stufe auf; „Nach außen“ hält es nicht. Umgekehrt
-  fragt ein Write-Werkzeug bei „Mit Freigabe“ nicht nach; wer das will, setzt die Stufe auf Lesen oder sperrt das
-  Werkzeug.
+  wartet ein Write-Werkzeug bei „Nach außen: Mit Freigabe“ nicht auf eine Freigabe, sondern nur bei „Freigabe
+  vorher: Bei jeder Änderung“; sonst bleibt, die Stufe auf Lesen zu setzen oder das Werkzeug zu sperren.
 - **Abschalten für eine Unterhaltung:** Wird der Bereich `extensions` abgeschaltet, sind auch alle Server aus.
 - **Sichtbarkeit:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in `extensions.list_extensions` und
   `extensions.get_extension` nur Server, für die er eine Stufe hat, und deren Einrichtung geschwärzt (Argumente und
