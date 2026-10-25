@@ -3283,8 +3283,9 @@ impl Core {
 
     /// What a command of the tool `web` from an answer would be refused with anyway, so nobody is
     /// asked about it (task WEB.5): a search while no provider is on (`not-connected`, as the search
-    /// itself answers), an address that is no `http`/`https` address with a host (`unsupported`). The
-    /// handlers check all of it again, and more.
+    /// itself answers), then search words or a count outside the limits (`error`,
+    /// [`crate::tools::web::query_refusal`]), an address that is no `http`/`https` address with a host
+    /// (`unsupported`). The handlers check all of it again, and more.
     fn web_refusal(&self, request: &Request) -> Option<Response> {
         match request {
             Request::WebSearch { .. } if self.settings.current().web_search.providers.is_empty() => {
@@ -3294,6 +3295,7 @@ impl Core {
                         .into(),
                 })
             }
+            Request::WebSearch { query, count, .. } => crate::tools::web::query_refusal(query, *count),
             Request::FetchPage { url } => {
                 let parsed = reqwest::Url::parse(url.trim()).ok();
                 let web = parsed.filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
@@ -21245,6 +21247,33 @@ mod tests {
         assert_eq!(tool_lines(&entries), lines, "the person's page, then the model's as robots.txt says");
         assert!(read_by_model(&script, "tools_fetch_page").contains("Tram 28"), "the person's page");
         assert_eq!(approvals_asked(&core).await, 1);
+    }
+
+    /// Issue #305, task WEB.5: search words or a count outside the limits are `error` before the
+    /// person is asked for the web's yes (rights, switch, selection, limits, then the yes): too long,
+    /// with a line break, blank, too many results. Nobody is asked and nothing goes out.
+    #[tokio::test]
+    async fn a_search_outside_the_limits_is_refused_before_anyone_is_asked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let search = |input: serde_json::Value| calls("tools_web_search", input);
+        let script = Script::new(vec![
+            search(serde_json::json!({"query": "tram ".repeat(81)})),
+            search(serde_json::json!({"query": "Lisbon\ntrams"})),
+            search(serde_json::json!({"query": "   "})),
+            search(serde_json::json!({"query": "Lisbon trams", "count": 11})),
+            says("I could not search."),
+        ]);
+        let (core, _host, engine, _) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+
+        let id = tell(&core, &engine, "Find me something on Lisbon trams").await;
+        let entries = conversation_until(&core, &id, |running, _| !running).await;
+        let refused = ("tools.web_search".to_string(), Some("error".to_string()));
+        assert_eq!(tool_lines(&entries), [refused.clone(), refused.clone(), refused.clone(), refused]);
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (0, 0), "nobody asked, nothing sent");
+        let first = read_by_model(&script, "tools_web_search");
+        assert!(first.contains(tr("The search words are one line of at most 400 characters.")), "{first}");
     }
 
     /// Issue #305, task WEB.5: a bot asks for the web in its own conversation as the assistant does,

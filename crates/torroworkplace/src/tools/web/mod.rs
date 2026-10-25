@@ -397,8 +397,11 @@ impl Web {
     }
 }
 
-/// The `error` for search words or a count `tools.web_search` does not take; `None` when they fit.
-fn query_refusal(words: &str, count: Option<u8>) -> Option<Response> {
+/// The `error` for search words or a count `tools.web_search` does not take; `None` when they fit: no
+/// words, more than [`MAX_QUERY_CHARS`] characters or a line break in them, a count above
+/// [`MAX_HITS`]. [`Web::search`] checks it, and the core before it asks the person for the web's yes
+/// (`Core::web_gate`, task WEB.5), so nobody is asked about a search that would fail anyway.
+pub(crate) fn query_refusal(words: &str, count: Option<u8>) -> Option<Response> {
     let words = words.trim();
     let message = if words.is_empty() {
         tr("Enter the search words.")
