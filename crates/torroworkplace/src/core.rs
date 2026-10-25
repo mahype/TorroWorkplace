@@ -3282,15 +3282,15 @@ impl Core {
     }
 
     /// What a command of the tool `web` from an answer would be refused with anyway, so nobody is
-    /// asked about it (task WEB.5): a search while no provider is on (`not-connected`, as the search
-    /// itself answers), then search words or a count outside the limits (`error`,
+    /// asked about it (task WEB.5): a search while no provider can be asked (`not-connected`, as the
+    /// search itself answers; [`torro_core::settings::WebSearch::askable`]: SearXNG only with an address), then search words or a count outside the limits (`error`,
     /// [`crate::tools::web::query_refusal`]), an address the page reader refuses before it goes out
     /// (`unsupported`, too long `error`: [`crate::tools::web::Web::address_refusal`]). The handlers check
     /// all of it again, and more. Known exception: a search while only providers without their stored key
     /// are on (`auth`) is found only by the search, as that needs the keychain.
     fn web_refusal(&self, request: &Request) -> Option<Response> {
         match request {
-            Request::WebSearch { .. } if self.settings.current().web_search.providers.is_empty() => {
+            Request::WebSearch { .. } if self.settings.current().web_search.askable().is_empty() => {
                 Some(Response::Error {
                     code: "not-connected".into(),
                     message: tr("No web search provider is on. A person chooses one in the assistant's settings.")
@@ -3511,16 +3511,12 @@ impl Core {
                 (request, None, summary)
             }
             // The web's yes per conversation (issue #305, task WEB.5): the conversation by the title the
-            // assistant keeps, the providers switched on now, and what runs first by the request's own
-            // words, as they will go out.
+            // assistant keeps, the providers a search can ask now (SearXNG only with an address), and what
+            // runs first by the request's own words, as they will go out.
             (Request::WebSearch { .. } | Request::FetchPage { .. }, _) => {
                 let consent = origin.consent.clone().unwrap_or_default();
                 let facts = Facts { name: self.assistant.title(&consent.conversation).await, ..Facts::default() };
-                let settings = self.settings.current();
-                let providers: Vec<torro_ipc::web::SearchProviderId> = torro_ipc::web::SearchProviderId::ORDER
-                    .into_iter()
-                    .filter(|provider| settings.web_search.is_on(*provider))
-                    .collect();
+                let providers = self.settings.current().web_search.askable();
                 let (summary, details) = crate::approvals::web_question(&request, &facts, &consent, &providers);
                 shown = details;
                 (request, None, summary)
@@ -21387,6 +21383,37 @@ mod tests {
         assert!(matches!(run(crate::assistant::Actor::Assistant).await, Response::SearchResults { .. }));
         assert!(matches!(run(delegated).await, Response::SearchResults { .. }));
         assert_eq!((approvals_asked(&core).await, mojeek.calls()), (1, 3), "one yes for the conversation");
+    }
+
+    /// Found in the review of #305: SearXNG without an address is never asked, so it counts for
+    /// neither the refusal nor the question. Alone it is `not-connected` without asking anyone; beside
+    /// another provider the question names only that one.
+    #[tokio::test]
+    async fn searxng_without_an_address_is_no_provider_to_ask_about() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let searxng =
+            crate::tools::web::testing::FakeProvider::finding(torro_core::settings::SearchProviderId::Searxng);
+        let (core, _host, engine, _) = web_core(dir.path(), &ollama, &pages, &searxng, Script::new(Vec::new())).await;
+        assert!(settings(&core).await.web_search.searxng.is_none(), "on, without an address");
+        let web = crate::approvals::WebConsent { conversation: "main".into(), outside: false, by_person: false };
+        let run = || {
+            let (core, engine, web) = (Arc::clone(&core), engine.clone(), web.clone());
+            let search = Request::WebSearch { query: "Lisbon trams".into(), count: None, language: None };
+            async move {
+                Host::run_web(&*core, &crate::assistant::Actor::Assistant, search, &engine, Mode::Default, web).await
+            }
+        };
+
+        let alone = run().await;
+        assert_eq!(code(&alone), "not-connected", "{alone:?}");
+        assert_eq!((approvals_asked(&core).await, searxng.calls()), (0, 0), "nobody asked, nothing sent");
+
+        let mojeek = serde_json::json!({"provider": "mojeek", "enabled": true});
+        let switch = Request::SetSetting { key: SettingKey::SearchProvider, value: mojeek };
+        assert_eq!(core.handle(switch).await, Response::Ok);
+        let asked = waits(run().await);
+        assert_eq!(asked.summary, web_asked("main"), "only Mojeek is named");
     }
 
     /// Issue #134, end to end with a scripted model (engine A): every right switched on, mail with

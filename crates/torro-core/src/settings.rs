@@ -1803,6 +1803,18 @@ impl WebSearch {
         self.providers.contains(&provider)
     }
 
+    /// The providers a search can ask now, in [`SearchProviderId::ORDER`]: those switched on, SearXNG
+    /// only with an address. The one rule for building the providers of a search, for whether a
+    /// search is `not-connected` and for whom the question of the web's yes names. A provider without
+    /// its key counts: whether it is stored needs the keychain, and the search says `auth` then.
+    pub fn askable(&self) -> Vec<SearchProviderId> {
+        SearchProviderId::ORDER
+            .into_iter()
+            .filter(|provider| self.is_on(*provider))
+            .filter(|provider| *provider != SearchProviderId::Searxng || self.searxng.is_some())
+            .collect()
+    }
+
     /// Switches `provider` on or off.
     pub fn set_on(&mut self, provider: SearchProviderId, on: bool) {
         if on {
@@ -3408,6 +3420,22 @@ mod tests {
         let new = WebSearch { searxng: Some("https://new.example.org/?x".into()), ..WebSearch::default() };
         assert!(new.check_changes(&stored).is_err());
         assert_eq!(WebSearch::default().check_changes(&stored), Ok(()), "removing it");
+    }
+
+    /// Found in the review of #305: SearXNG counts as askable only with an address; the rest in the
+    /// fixed order, as switched on.
+    #[test]
+    fn searxng_is_askable_only_with_an_address() {
+        let mut web = WebSearch::default();
+        assert!(web.askable().is_empty());
+        web.set_on(SearchProviderId::Wikipedia, true);
+        web.set_on(SearchProviderId::Searxng, true);
+        web.set_on(SearchProviderId::Brave, true);
+        assert_eq!(web.askable(), [SearchProviderId::Brave, SearchProviderId::Wikipedia], "no address yet");
+        web.searxng = Some("https://search.example.org".into());
+        assert_eq!(web.askable(), [SearchProviderId::Searxng, SearchProviderId::Brave, SearchProviderId::Wikipedia]);
+        web.set_on(SearchProviderId::Searxng, false);
+        assert_eq!(web.askable(), [SearchProviderId::Brave, SearchProviderId::Wikipedia], "an address alone is not on");
     }
 
     /// Point 6, issue #305: switching a provider on and setting another SearXNG address is a person's;

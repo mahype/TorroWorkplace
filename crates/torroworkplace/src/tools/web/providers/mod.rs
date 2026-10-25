@@ -45,9 +45,9 @@ pub fn http_client() -> Option<reqwest::Client> {
         .ok()
 }
 
-/// The providers of `web` that are switched on, in [`SearchProviderId::ORDER`], each with the key `key` gives for
-/// it (from the keychain, `websearch-<id>`; only asked for providers that need one) and asking `http`. SearXNG
-/// only with an address. A provider whose key is missing is built too: it answers [`SearchError::NeedsKey`]
+/// The providers of `web` a search can ask ([`WebSearch::askable`]: switched on, in [`SearchProviderId::ORDER`],
+/// SearXNG only with an address), each with the key `key` gives for it (from the keychain, `websearch-<id>`; only
+/// asked for providers that need one) and asking `http`. A provider whose key is missing is built too: it answers [`SearchError::NeedsKey`]
 /// without sending anything, so the router can tell "only keys missing" apart.
 pub fn for_settings(
     http: &reqwest::Client,
@@ -66,7 +66,7 @@ pub fn for_settings(
             SearchProviderId::Wikipedia => Arc::new(wikipedia::Wikipedia::new(http)),
         })
     };
-    SearchProviderId::ORDER.into_iter().filter(|id| web.is_on(*id)).filter_map(built).collect()
+    web.askable().into_iter().filter_map(built).collect()
 }
 
 /// What came back from a provider: the status, the `Retry-After` it named and the body.

@@ -2944,8 +2944,8 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
 /// in that conversation.
 ///
 /// - The summary names the conversation by the title the assistant keeps ([`Facts::name`]; its id
-///   when there is none) and the search providers switched on now, `providers` in their order
-///   (`SearchProviderId::ORDER`): `Search the web and read web pages in "Trip to Lisbon"? Search
+///   when there is none) and the search providers a search can ask now, `providers` in their order
+///   (`WebSearch::askable`: switched on, SearXNG only with an address): `Search the web and read web pages in "Trip to Lisbon"? Search
 ///   words go to DuckDuckGo and Wikipedia.` After data from outside ([`WebConsent::outside`]) it
 ///   says so first: `This conversation has read mail or other outside data. Search the web and read
 ///   web pages in "Trip to Lisbon" anyway?`, and the providers move into the details.

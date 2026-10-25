@@ -253,7 +253,7 @@ impl Web {
         if let Some(fixed) = &self.fixed {
             return Ok(fixed.clone());
         }
-        if settings.providers.is_empty() {
+        if settings.askable().is_empty() {
             return Ok(Vec::new());
         }
         let Some(http) = self.http() else {
