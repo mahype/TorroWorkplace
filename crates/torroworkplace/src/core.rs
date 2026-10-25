@@ -4369,6 +4369,11 @@ impl Core {
                     // Nor of calendars outside its selection (task ER1.2).
                     let seen = |id: &String| rights.calendars.contains(id) && !hidden.contains(id);
                     settings.reminders.calendars.retain(|id, _| seen(id));
+                    // Nor the SearXNG address, which often points into the person's own network, unless
+                    // it reaches `web` (PR #311 review). What it sends back keeps the stored address.
+                    if !rights.reaches_tool(torro_core::settings::ToolId::Web) {
+                        settings.web_search.searxng = None;
+                    }
                 }
                 Response::Settings { settings }
             }
@@ -11897,8 +11902,9 @@ mod tests {
     }
 
     /// PR #311 review: the SearXNG address often points into the person's own network, so
-    /// `tools.list_search_providers` names it and its host only to a client that reaches `web`
-    /// and to the app key; reading in `tools` alone shows SearXNG without them.
+    /// `tools.list_search_providers` and `settings.get_settings` name it (and its host) only to a
+    /// client that reaches `web` and to the app key; reading in `tools` or `settings` alone shows
+    /// SearXNG without them.
     #[tokio::test]
     async fn only_a_client_reaching_the_web_sees_the_searxng_address() {
         use torro_core::settings::{SearchProviderId, ToolId};
@@ -11912,7 +11918,17 @@ mod tests {
         assert_eq!(Box::pin(ask(&core, Some(&app_key), update)).await, Response::Ok);
         let mut rights = RightsTemplate::FullAccess.rights();
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
         let (id, key) = client(&core, rights.clone()).await;
+        let stored = |asker: &Key| {
+            let core = &core;
+            let asker = asker.clone();
+            async move {
+                let got = ask(core, Some(&asker), Request::Settings).await;
+                let Response::Settings { settings } = got else { panic!("the settings, got {got:?}") };
+                settings.web_search.searxng
+            }
+        };
         let searxng = |asker: &Key| {
             let core = &core;
             let asker = asker.clone();
@@ -11925,11 +11941,15 @@ mod tests {
         };
 
         assert_eq!(searxng(&key).await, (None, String::new()), "all tools is not web");
+        assert_eq!(stored(&key).await, None, "nor in the settings");
         rights.tools = Selection::Only(vec!["web".into()]);
         core.clients.update(&id, rights).await.expect("updated");
         let named = (Some("http://192.168.1.20:8888".to_string()), "192.168.1.20".to_string());
         assert_eq!(searxng(&key).await, named, "named, so reached");
         assert_eq!(searxng(&app_key).await, named, "the person's settings");
+        for asker in [&key, &app_key] {
+            assert_eq!(stored(asker).await.as_deref(), Some("http://192.168.1.20:8888"));
+        }
     }
 
     /// Issue #305, point 5, task WEB.4: the key of a search provider is the person's alone. A client

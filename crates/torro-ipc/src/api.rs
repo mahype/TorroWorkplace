@@ -2668,7 +2668,9 @@ static GET_SETTINGS: Command = Command {
                   style of each calendar you see), whether keys of scripts and of MCP clients work at all \
                   (`allowApiKeys`, `allowMcp`), the modifiers of the template keys (`workspaces`) and the \
                   assistant's own tools (`tools`: the ones switched on in \
-                  `enabled`, the PDF folder and the templates `letter`, `report` and `note`).",
+                  `enabled`, the PDF folder and the templates `letter`, `report` and `note`) and the web search \
+                  providers switched on (`webSearch`; its SearXNG address only for a key that reaches the tool \
+                  `web`).",
 };
 
 static SET_SETTING: Command = Command {

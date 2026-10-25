@@ -417,7 +417,7 @@ Website. Darum wählt die Person die Dienste selbst und gibt in jeder Unterhaltu
   eine Stunde im Speicher (nie auf der Platte), Brave nie.
 - **Jeder Anbieter sagt, wohin die Wörter gehen** (Host und Sitz) und verlinkt seine Bedingungen, in der
   Einrichtung und in den Einstellungen gleich. Die SearXNG-Adresse zeigt oft ins lokale Netz: Ein Client sieht
-  sie in `tools.list_search_providers` nur, wenn er `web` selbst erreicht.
+  sie in `tools.list_search_providers` und `settings.get_settings` nur, wenn er `web` selbst erreicht.
 - **Wählen und Adressen setzen nur Menschen** (wie Karten, Punkt 6 in „Was nie nach außen geht“): einschalten
   mit `settings.set_setting search_provider`, die Adresse mit `searxng_address`. Ausschalten darf jeder mit
   Admin in `settings`. **Schlüssel** gehen nur über die Oberfläche (`accounts.set_search_key`, Punkt 5) in den
