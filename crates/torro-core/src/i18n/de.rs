@@ -5435,6 +5435,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{provider} is asked.", "Gefragt wird {provider}."),
     ("Wikipedia is asked as well.", "Wikipedia wird zusätzlich gefragt."),
     ("Check and save", "Prüfen und speichern"),
+    ("For example {address}", "Zum Beispiel {address}"),
     ("Key saved", "Schlüssel gespeichert"),
     ("No provider is on, so the web search is off.", "Kein Anbieter ist eingeschaltet, die Websuche ist also aus."),
     ("Only Wikipedia is asked.", "Nur Wikipedia wird gefragt."),

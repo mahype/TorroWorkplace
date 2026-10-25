@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! SearXNG     ● Search words go to your own server              [off]
-//!               Address  [https://search.example.org]   Check and save
+//!               Address                [https://…]   Check and save
+//!               For example https://search.example.org
 //!               (the core's reason, when the check failed)
 //!             Your own SearXNG instance. Torro checks …           (the provider's notice, in text_2)
 //! Brave       ● Search words go to api.search.brave.com · USA   [off]
@@ -328,13 +329,20 @@ fn provider_group<'a>(state: &'a State, info: &'a SearchProviderInfo, words: boo
     widgets::group(info.name.as_str(), rows, info.notice.clone())
 }
 
+/// The placeholder of SearXNG's address: only the scheme, so it stays whole beside "Check and save" and "Remove".
+const ADDRESS_HINT: &str = "https://…";
+
+/// The example under the label of SearXNG's address.
+const EXAMPLE_ADDRESS: &str = "https://search.example.org";
+
 /// SearXNG's address: the field with what is stored or typed, "Check and save" – always there, so the field keeps
-/// its width; it can be pressed while the typed address differs – and "Remove" while one is stored.
+/// its width; it can be pressed while the typed address differs – and "Remove" while one is stored. The example
+/// address stands under the label, where it has room: as the placeholder it was cut beside "Check and save" in a
+/// half row ([`setting_row`]), so the field only hints at the scheme.
 fn address_row<'a>(state: &'a State, info: &'a SearchProviderInfo, words: bool) -> Element<'a, Message> {
     let stored = info.address.as_deref();
     let value = state.address.as_deref().or(stored).unwrap_or_default();
-    let input =
-        field("https://search.example.org", value).on_input(Message::TypeAddress).on_submit(Message::CheckAddress);
+    let input = field(ADDRESS_HINT, value).on_input(Message::TypeAddress).on_submit(Message::CheckAddress);
     let check = state.address.as_deref().map(str::trim).is_some_and(|typed| !typed.is_empty() && Some(typed) != stored);
     let check = check.then_some(Message::CheckAddress);
     let mut buttons = row![].spacing(space::s()).align_y(Alignment::Center);
@@ -347,7 +355,8 @@ fn address_row<'a>(state: &'a State, info: &'a SearchProviderInfo, words: bool) 
         buttons = buttons.push(remove_button(tr("Remove"), Message::RemoveAddress));
     }
     let control = row![input, buttons].spacing(space::s()).align_y(Alignment::Center);
-    field_row(tr("Address"), None, control, words)
+    let example = trf("For example {address}", &[("address", &EXAMPLE_ADDRESS)]);
+    field_row(tr("Address"), Some(example), control, words)
 }
 
 /// A provider's key: "Key saved" or "No key" under the label, the masked field, "Save key" (it can be pressed once
@@ -647,6 +656,22 @@ mod tests {
         assert_eq!(status(&providers[5]), Status::Attention);
         providers[1].key = KeyState::Stored;
         assert_eq!(status(&providers[1]), Status::Ok);
+    }
+
+    /// The address field's placeholder stays whole beside its buttons in the half row of the widest page, also with
+    /// "Remove" and in German; the example address would not, so it stands under the label. Estimated as the
+    /// buttons choose their words ([`widgets::text_button_width`]).
+    #[test]
+    fn the_address_placeholder_fits_beside_its_buttons() {
+        // The group's row: its padding at both sides and the gap between the label and the control.
+        let half = (size::content_max() - 3.0 * space::l()) / 2.0;
+        let buttons = widgets::text_button_width(false, tr("Check and save"))
+            + widgets::text_button_width(false, tr("Remove"))
+            + 2.0 * space::s();
+        let padding = style::INPUT_PADDING;
+        let room = half - buttons - padding.left - padding.right;
+        assert!(typo::text_width(ADDRESS_HINT, typo::body()) < room, "{room}");
+        assert!(typo::text_width(EXAMPLE_ADDRESS, typo::body()) > room, "{room}");
     }
 
     /// Every provider builds in every size, with a key and an address typed, while checking and with a refusal.
