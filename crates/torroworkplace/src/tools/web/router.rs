@@ -11,8 +11,8 @@
 //! - **Rest:** a provider that blocked the core or hit a limit is not asked for an hour ([`PAUSE`]), or as long as
 //!   its `Retry-After` said (at most [`MAX_PAUSE`]), by anyone.
 //! - **Memory:** answers stay an hour ([`ANSWER_FOR`]), at most [`MAX_ANSWERS`], in memory only and never Brave's
-//!   (its terms allow results only for the answer). An answer from memory asks no provider and costs no turn;
-//!   [`Router::forget`] drops a provider's (the tool `web` does when SearXNG's address changes).
+//!   (its terms allow results only for the answer), per provider and instance ([`SearchProvider::instance`]:
+//!   another SearXNG address is another instance). An answer from memory asks no provider and costs no turn.
 //!
 //! Nothing here logs: errors are [`NoAnswer`] without the words.
 
@@ -173,13 +173,6 @@ impl Router {
         Some(Utc::now() + chrono::TimeDelta::from_std(left).ok()?)
     }
 
-    /// Drops every kept answer of `provider`: what it answered no longer holds (the person's SearXNG moved to
-    /// another address, another instance). Rests and turns stay.
-    pub fn forget(&self, provider: SearchProviderId) {
-        let prefix = format!("{}|", provider.name());
-        self.answers.lock().unwrap_or_else(PoisonError::into_inner).retain(|key, _| !key.starts_with(&prefix));
-    }
-
     /// One provider's hits for `query`: from memory when kept, else once from the provider when its turn comes. It
     /// is named in `asked` when it answered from memory or searched, not when it rested or lacked its key.
     async fn ask(
@@ -190,7 +183,7 @@ impl Router {
     ) -> Result<Vec<SearchHit>, Skip> {
         let id = provider.id();
         let keeps = provider.capabilities().cacheable && id != SearchProviderId::Brave;
-        let key = answer_key(id, query);
+        let key = answer_key(id, provider.instance(), query);
         if keeps && let Some(hits) = self.kept(&key) {
             asked.push(id);
             return Ok(hits);
@@ -281,9 +274,12 @@ fn why(skips: &[Skip]) -> NoAnswer {
     if skips.iter().any(|skip| matches!(skip, Skip::Resting)) { NoAnswer::Resting } else { NoAnswer::NeedsKey }
 }
 
-/// What an answer is kept under: provider, language, count and the words (in lower case).
-fn answer_key(provider: SearchProviderId, query: &Query) -> String {
-    format!("{}|{}|{}|{}", provider.name(), query.language, query.count, query.words.to_lowercase())
+/// What an answer is kept under: provider, instance ([`SearchProvider::instance`], quoted so no address runs into
+/// the parts after it), language, count and the words (in lower case). The instance is in the key, not dropped on a
+/// change of address, so a search with the old address that ends after the change keeps its answer where only
+/// that address finds it.
+fn answer_key(provider: SearchProviderId, instance: &str, query: &Query) -> String {
+    format!("{}|{instance:?}|{}|{}|{}", provider.name(), query.language, query.count, query.words.to_lowercase())
 }
 
 /// What the gate says to a request.
@@ -347,11 +343,25 @@ mod tests {
         answer: Mutex<Result<Vec<SearchHit>, SearchError>>,
         calls: AtomicUsize,
         cacheable: bool,
+        instance: String,
     }
 
     impl Fake {
         fn new(id: SearchProviderId, answer: Result<Vec<SearchHit>, SearchError>) -> Arc<Fake> {
-            Arc::new(Fake { id, answer: Mutex::new(answer), calls: AtomicUsize::new(0), cacheable: true })
+            Arc::new(Fake {
+                id,
+                answer: Mutex::new(answer),
+                calls: AtomicUsize::new(0),
+                cacheable: true,
+                instance: String::new(),
+            })
+        }
+
+        /// The instance `instance` of `id`, finding one page titled with the instance.
+        fn at(id: SearchProviderId, instance: &str) -> Arc<Fake> {
+            let mut hit = hits(id, 1);
+            hit[0].title = instance.to_string();
+            Arc::new(Fake { instance: instance.to_string(), ..Arc::into_inner(Fake::new(id, Ok(hit))).expect("one") })
         }
 
         /// A provider finding `n` pages of its own.
@@ -371,6 +381,10 @@ mod tests {
     impl SearchProvider for Fake {
         fn id(&self) -> SearchProviderId {
             self.id
+        }
+
+        fn instance(&self) -> &str {
+            &self.instance
         }
 
         fn capabilities(&self) -> Capabilities {
@@ -703,22 +717,24 @@ mod tests {
         assert_eq!(duckduckgo.calls(), 1);
     }
 
+    /// Found in the second review of #305: answers are kept per instance. An answer of SearXNG's old address – also
+    /// one of a search that ends after the address changed – never comes back for the new address, which is asked
+    /// anew; each instance's own answer stays kept.
     #[tokio::test]
-    async fn forgetting_a_provider_drops_only_its_answers() {
+    async fn answers_are_kept_per_instance() {
         let time = Time::new();
         let router = time.router();
-        let (searxng, mojeek) = (Fake::finding(Searxng, 1), Fake::finding(Mojeek, 1));
-        let providers = all(&[&searxng, &mojeek]);
-        let query = Query::new("x", None, None);
-        for id in [Searxng, Mojeek] {
-            router.search(&providers, &on(&[id]), &query).await.expect("hits");
+        let (old, new) = (Fake::at(Searxng, "https://old.example.org"), Fake::at(Searxng, "https://new.example.org"));
+        let (switched, query) = (on(&[Searxng]), Query::new("x", None, None));
+        let titles = |results: SearchResults| results.hits.into_iter().map(|hit| hit.title).collect::<Vec<_>>();
+        for (fake, title) in
+            [(&old, "https://old.example.org"), (&new, "https://new.example.org"), (&old, "https://old.example.org")]
+        {
+            let results = router.search(&all(&[fake]), &switched, &query).await.expect("hits");
+            assert_eq!(titles(results), [title]);
+            time.pass(Duration::from_secs(2));
         }
-        router.forget(Searxng);
-        time.pass(Duration::from_secs(2));
-        for id in [Searxng, Mojeek] {
-            router.search(&providers, &on(&[id]), &query).await.expect("hits");
-        }
-        assert_eq!((searxng.calls(), mojeek.calls()), (2, 1), "Mojeek's answer is still kept");
+        assert_eq!((old.calls(), new.calls()), (1, 1), "the new one asked anew, the old one's answer still kept");
     }
 
     #[test]

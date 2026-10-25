@@ -33,6 +33,11 @@ impl SearchProvider for Searxng {
         SearchProviderId::Searxng
     }
 
+    /// The person may move to another instance; its answers are not this one's.
+    fn instance(&self) -> &str {
+        &self.base
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities { max_hits: MAX_HITS, languages: true, cacheable: true }
     }
