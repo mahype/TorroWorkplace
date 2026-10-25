@@ -116,8 +116,9 @@ pub type Action = crate::Action<AppAction>;
 /// (the assistant's and the bots' clients).
 /// `accounts.list_accounts` tells, while no AI account is an engine, whether there are AI accounts
 /// with no model on (task S.26), and names the mail accounts Access offers; the calendars, task
-/// lists, inbox sources and the tools (`tools.list_tools`) are the other things it offers to
-/// choose from (task S.34, [`crate::rights::Known`]). The models of an AI account follow in a
+/// lists, inbox sources, the tools (`tools.list_tools`) and the installed MCP servers
+/// (`extensions.list_extensions`, task MA.10, each with a level of its own under "MCP servers") are the
+/// other things it offers to choose from (task S.34, [`crate::rights::Known`]). The models of an AI account follow in a
 /// second round, because only the loaded settings name the account ([`models_request`],
 /// [`Data::follow_up`]).
 pub fn wanted() -> Vec<Request> {
@@ -134,6 +135,7 @@ pub fn wanted() -> Vec<Request> {
         Request::CalendarCollections,
         Request::TaskCollections,
         Request::ListSources,
+        Request::ListExtensions,
     ]
 }
 
@@ -493,10 +495,14 @@ mod tests {
     /// What one load asks for, and the second round for an AI account's models.
     #[tokio::test]
     async fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted().len(), 12, "one request per thing the sections read");
-        for offered in
-            [Request::CalendarCollections, Request::TaskCollections, Request::ListSources, Request::ListTools]
-        {
+        assert_eq!(wanted().len(), 13, "one request per thing the sections read");
+        for offered in [
+            Request::CalendarCollections,
+            Request::TaskCollections,
+            Request::ListSources,
+            Request::ListTools,
+            Request::ListExtensions,
+        ] {
             assert!(wanted().contains(&offered), "what Access offers to choose from (task S.34)");
         }
         assert!(wanted().contains(&Request::ListClients), "to tell whether the assistant is on");

@@ -5022,8 +5022,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Calendars and tasks from your Nextcloud.", "Kalender und Aufgaben aus deiner Nextcloud."),
     (
-        "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen under Settings › Access.",
-        "Kalender, Listen, Repositories, Quellen, Mail-Konten, Werkzeuge, Senden und Admin-Befehle wählst du unter Einstellungen › Zugriff.",
+        "Calendars, lists, repositories, sources, mail accounts, tools, MCP servers, sending and admin commands are chosen under Settings › Access.",
+        "Kalender, Listen, Repositories, Quellen, Mail-Konten, Werkzeuge, MCP-Server, Senden und Admin-Befehle wählst du unter Einstellungen › Zugriff.",
     ),
     ("Change under Access", "Unter Zugriff ändern"),
     (
