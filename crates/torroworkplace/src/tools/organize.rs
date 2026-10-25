@@ -323,9 +323,12 @@ fn find_files(allowed: &Allowed, folder: &Path, name: &str) -> Result<(Vec<Folde
     let pattern = Pattern::of(name);
     let first = fs::read_dir(folder).map_err(|err| FolderError::of_io(&err))?;
     let (mut found, mut visited, mut truncated) = (Vec::new(), 0usize, false);
-    // Folders still to look into, with how deep their entries are; the first level is 1.
-    let mut stack = vec![(first, 1usize)];
-    'search: while let Some((items, depth)) = stack.pop() {
+    // Folders still to look into, with how deep their entries are; the first level is 1. Kept as paths and opened only
+    // when it is their turn: one open folder per level of the stack would run out of the files a process may have
+    // open (256 on macOS), and every other part of the core would fail with it.
+    let mut stack: Vec<(PathBuf, usize)> = Vec::new();
+    let mut next = Some((first, 1usize));
+    'search: while let Some((items, depth)) = next.take().or_else(|| open_next(&mut stack)) {
         for item in items {
             let Ok(item) = item else { continue };
             visited += 1;
@@ -346,8 +349,7 @@ fn find_files(allowed: &Allowed, folder: &Path, name: &str) -> Result<(Vec<Folde
             }
             if item.file_type().is_ok_and(|kind| kind.is_dir()) {
                 match depth < MAX_FIND_DEPTH {
-                    // A folder the system does not let in is passed over.
-                    true => stack.extend(fs::read_dir(&path).ok().map(|items| (items, depth + 1))),
+                    true => stack.push((path, depth + 1)),
                     false => truncated = true,
                 }
             }
@@ -355,6 +357,17 @@ fn find_files(allowed: &Allowed, folder: &Path, name: &str) -> Result<(Vec<Folde
     }
     found.sort_by(|a, b| a.path.cmp(&b.path));
     Ok((found, truncated))
+}
+
+/// The next folder of `stack` opened, with how deep its entries are; a folder the system does not let in (or that is
+/// gone) is passed over. `None` when none is left.
+fn open_next(stack: &mut Vec<(PathBuf, usize)>) -> Option<(fs::ReadDir, usize)> {
+    while let Some((folder, depth)) = stack.pop() {
+        if let Ok(items) = fs::read_dir(&folder) {
+            return Some((items, depth));
+        }
+    }
+    None
 }
 
 /// What `tools.find_files` looks for: without regard to case, with `*` or `?` a pattern for the whole name, else a
@@ -1252,6 +1265,45 @@ mod tests {
         // Elsewhere the folder is told apart only by when it was made, which the system may not keep finer than this.
         #[cfg(not(unix))]
         let _ = refused;
+    }
+
+    /// Review of issue #304: finding looks into many folders without opening them all at once. Run once more under
+    /// a limit of 64 open files (`ulimit -n`): with every folder of a level kept open it found only the hits of the
+    /// first ones and said nothing (and the rest of the core failed with it).
+    #[cfg(unix)]
+    #[test]
+    fn finding_opens_one_folder_at_a_time() {
+        let exe = std::env::current_exe().expect("the test program");
+        let name = "tools::organize::tests::finding_finds_in_many_folders";
+        let script = r#"ulimit -n 64 && exec "$0" --exact "$1" --test-threads=1"#;
+        let ran = std::process::Command::new("/bin/sh").arg("-c").arg(script).arg(&exe).arg(name).output();
+        let ran = ran.expect("started");
+        let out = String::from_utf8_lossy(&ran.stdout);
+        assert!(ran.status.success() && out.contains("1 passed"), "{out}{}", String::from_utf8_lossy(&ran.stderr));
+    }
+
+    /// 300 folders below one, a hit in every other: all of them found, `truncated` only once there are more than
+    /// [`MAX_FOUND`].
+    #[test]
+    fn finding_finds_in_many_folders() {
+        let place = Place::new();
+        let many = place.dir.path().join("home/Documents/many");
+        for n in 0..300 {
+            let folder = many.join(format!("folder {n:03}"));
+            fs::create_dir_all(&folder).expect("made");
+            if n % 2 == 0 {
+                fs::write(folder.join(format!("hit {n:03}.txt")), b"").expect("written");
+            }
+        }
+        let allowed = place.allowed();
+        let find = Request::FindFiles { folder: place.path("home/Documents/many"), name: "hit".into() };
+        let (found, truncated) = entries(run(&allowed, &find).expect("found"));
+        assert_eq!((found.len(), truncated), (150, false));
+        for n in (1..120).step_by(2) {
+            fs::write(many.join(format!("folder {n:03}/hit {n:03}.txt")), b"").expect("written");
+        }
+        let (found, truncated) = entries(run(&allowed, &find).expect("found"));
+        assert_eq!((found.len(), truncated), (MAX_FOUND, true), "210 hits");
     }
 
     /// Review of issue #304: a command that changes something waits for the one before it (the tools' lock), so two
