@@ -598,6 +598,8 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.hide_sender",
     // Muting the same trait again answers the rule already there (task E8.6a).
     "inbox.mute_item",
+    // Showing the same mail again, or taking that back again, changes nothing more (task E18.2).
+    "inbox.set_mail_shown",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
@@ -1671,6 +1673,12 @@ mod tests {
         // Task E9.1: "All" without what waits for later; a mail goes there by its id.
         let all = call("mail_search_messages", json!({"query": "in:inbox", "limit": 50, "snoozed": false}));
         assert!(matches!(all, Ok(Request::SearchMail { snoozed: Some(false), .. })), "{all:?}");
+        // Task E18.1: "All" without what the person hid, from the request's schema.
+        let shown = call("mail_search_messages", json!({"query": "in:inbox", "limit": 50, "hidden": false}));
+        assert!(matches!(shown, Ok(Request::SearchMail { hidden: Some(false), .. })), "{shown:?}");
+        // Task E18.2: "Show again" for one mail, onto its request.
+        let shown = call("inbox_set_mail_shown", json!({"ids": ["m:1"], "shown": true}));
+        assert_eq!(shown, Ok(Request::SetMailShown { ids: vec!["m:1".into()], shown: true }));
         let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
         assert!(matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_) }) if id == "m:1"), "{later:?}");
         let get = call("mail_get_message", json!({"id": "m:1", "include_body": true}));

@@ -3988,6 +3988,299 @@ E17.1 Bausteine in torro-gui ── E17.2 Mail-Fenster: Klickregel und Darstellu
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
   `TORRO_LANG=de cargo test --workspace`, `scripts/design-check.sh`.
 
+## E18 Mail-Fenster: „Archive“ statt „Done“, Seitenleiste All · Later · Hidden · Folders (Issue #301, Plan 2026-10-24)
+
+Wer mit einer Mail fertig ist, archiviert sie; „Done“ gibt es für Mails nirgends mehr. Das Mail-Fenster listet oben
+„All“ (der Posteingang aller Konten, mit der Zahl ungelesener Mails), „Later“ und „Hidden“, darunter Kategorien, Smart
+views und die Sektion „Folders“ (Archive, angeheftete Ordner, Open folders). Konzept: [eingang.md](../eingang.md),
+Abschnitte „Knöpfe je Eintrag“, „Aktionsleiste der Mail“, „Später für jede Mail“. Regeln:
+[CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`, Requests:
+Skill `torro-api`.
+
+**Drei Wege:**
+
+- **Oberfläche:** Seitenleiste, Navigationsmenü und Leiste des Mail-Fensters; „Show again“ an Mails in „Hidden“;
+  „Archive“ an Mail-Einträgen in Mail-Fenster und Zentrale; „Archive mail“ in der Zentrale.
+- **API:** `Request::SearchMail` · `mail.search_messages` · Zugriff Read, neues optionales Feld `hidden` (E18.1).
+  `Request::SetMailShown` · `inbox.set_mail_shown` · Zugriff Write, neu für „Show again“ (E18.2). Archivieren bleibt
+  `Request::MoveMail` · `mail.move_messages` (Rolle `archive`); der Kern schließt dabei den Eintrag (#205), dafür kein
+  neuer Request.
+- **MCP:** `mail_search_messages` bekommt `hidden` über das Schema des Requests; neues Tool `inbox_set_mail_shown`;
+  Verschieben weiter mit `mail_move_messages`.
+
+Entschieden am 2026-10-24 (Planung #301):
+
+1. **„All“ listet Mails, keine Einträge:** `mail.search_messages` mit `in:inbox`, `snoozed: false`, `hidden: false` über
+   alle gezeigten Konten, neueste zuerst, seitenweise. Verworfen: „For me“ und „Info“ zusammengelegt – das zeigte nur, was
+   der Kern als Eintrag abgelegt hat, keine schon gelesene und keine ältere Mail.
+2. **„Later“ bleibt die Ansicht der zurückgestellten Einträge** (`View::Snoozed`); zurückgestellte Mails stehen nur dort,
+   nicht in „All“. Verworfen: „Later“ als Suche mit `snoozed: true` – gleicher Inhalt, Umbau ohne Gewinn.
+3. **„Hidden“ als eigene Ansicht unter „Later“** (in der Planung entschieden): Ausgeblendete Mails stehen nicht in „All“,
+   sondern dort. Der Kern entscheidet, was ausgeblendet ist, über das neue Feld `hidden` (wie `snoozed`). Verworfen: in
+   der Oberfläche filtern – sie kennt die Regeln nicht, und Seiten und Cursor stimmten nicht mehr.
+4. **Die Zahl an „All“** kommt aus `total_estimate` einer Suche wie „All“ mit `unread: true` und `limit: 1`, je
+   gezeigtem Konto summiert. Verworfen: Summe von `unread` der Posteingänge aus `mail.list_folders` – zählte
+   zurückgestellte und ausgeblendete Mails mit.
+5. **Archivieren ist der Abschluss, kein neuer Request:** `e` an einer Mail und der Platz von „Done“ an einem
+   Mail-Eintrag archivieren die Mail (`App::mail_action`, `MailAction::Archive`); der Kern schließt den Eintrag, Undo
+   verschiebt zurück und öffnet ihn wieder. Verworfen: `inbox.archive_item` – doppelt zu `mail.move_messages`.
+6. **Ohne Archivordner** melden `e`, „Archive“ auf Karten der Zentrale und „Archive mail“ „This account has no archive
+   folder.“ und ändern nichts. Zeilen und Leiste der Mail bieten „Archive“ weiter nur, wo es geht (`mail::Filing`).
+7. **„Open folders“ trägt rechts einen Chevron** (`Trail::Icon(Icon::ChevronRight)`), wie Menüs mit „▸“; in der Leiste
+   steht er nicht, dort sagt der Tooltip den Namen. Verworfen: Pfeil nach unten (das Menü öffnet daneben, nicht
+   darunter) und „…“ (heißt „mehr Aktionen“).
+8. **Mini-Kachel und Leiste des Mail-Fensters bleiben**, wie sie sind (in der Planung entschieden); ein Klick öffnet
+   die Mail in „All“ statt in „For me“.
+9. **Unverändert:** Einträge, die keine Mail sind, behalten „Done“; „Done today“ der Zentrale behält „Reopen“; die Spur
+   „Info“ bleibt im Kern („Move to Info“ an Mail-Einträgen bleibt).
+10. **„Show again“ holt nur diese eine Mail zurück** (in der Planung entschieden): Der Kern merkt sich je Mail eine
+    Ausnahme (`inbox.set_mail_shown`); die Regel bleibt, weitere und neue Mail des Absenders bleibt ausgeblendet. Undo
+    nimmt die Ausnahme zurück. Wer die Regel loswerden will, entfernt sie wie heute in der Steuerzentrale. Verworfen:
+    die Regel aufheben – dann ließe sich keine einzelne Mail zurückholen.
+11. **„Show again“ öffnet den Eintrag nicht wieder** (in der Planung entschieden): Die Mail steht wieder in „All“, ihr
+    Eintrag bleibt erledigt, die Zentrale meldet sie nicht neu. Verworfen: den Eintrag wieder öffnen – „All“ zeigt
+    Mails, keine Einträge.
+
+```
+E18.1 ── E18.2 ── E18.3 ── E18.4 ── E18.5
+```
+
+Nicht parallel zu E17 (#300): E17.2 und E18.4 ändern `sidebar`, `nav_menu` und `nav_entries` in
+`crates/torroinbox/src/app.rs`. Wer später kommt, führt mit dem anderen Stand zusammen.
+
+### E18.1 Kern: `mail.search_messages` mit `hidden`
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
+  `crates/torroworkplace/src/mail/read.rs`, `crates/torroworkplace/src/mail/store.rs`, `crates/torro-ipc/src/lib.rs`,
+  `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/mcp.rs` (nur Test), `docs/api.md`, `docs/api-reference.md`;
+  nur das neue Feld nachziehen, wo `Request::SearchMail { … }` vollständig gebaut wird: `crates/torro-ipc/src/inbox.rs`,
+  `crates/torro-ipc/src/mail.rs`, `crates/torroworkplace/src/core.rs` (Tests), `crates/torroworkplace/src/audit.rs`
+  (Test), `crates/torroworkplace/src/mail/inbox_feed.rs` (Tests)
+- **Was als ausgeblendet gilt** – nur Mail, die im Posteingangsordner liegt; dieselbe Mail in einem anderen Ordner ist
+  nie ausgeblendet (sie behält beim Verschieben ihre Id):
+  1. **Absender und Domain:** Mail, deren Absender eine bestehende, nicht abgelaufene Ausblende-Regel mit `sender` oder
+     `domain` trifft (`hide_sender`, `rules::drops` mit Absender bzw. Domain). Geprüft **beim Lesen** gegen den Absender
+     der Mail im Speicher (z. B. `json_extract` auf `m.from_json`, Schlüssel wie `rules::sender_key`/`domain_of`), so
+     gelten auch ältere Mails und Mails ohne Eintrag, und die Regel braucht keine Liste von Ids.
+  2. **Diese Unterhaltung:** Mail eines Eintrags, den `mute_by` mit `MuteEffect::Hide` ohne Regel geschlossen hat.
+  3. **Merkmal-Regel mit Wirkung Hide** (Liste, Newsletter, …): Mail eines Eintrags, den die Regel geschlossen hat
+     (`mute_by`), und Mail, die sie beim Ablegen fernhielt (`file_mail`, `deciding_mute`) – je mit der Regel-Id, gültig,
+     solange die Regel besteht und nicht abgelaufen ist (`until`). Hat die Mail keinen Eintrag (`Inbox::handle_message`
+     mit Stand-in), wird diese eine Mail ebenso vermerkt.
+  Eine Regel für eine ganze Quelle (stummes Konto, `drops` ohne Absender und Domain), „Only Info“ und „No popup“ blenden
+  **nicht** aus. Mail eines offenen oder zurückgestellten Eintrags ist nie ausgeblendet.
+- `SCHEMA_V15` nach dem Muster der vorigen: `items.hidden TEXT` (NULL: nicht, `''`: diese Unterhaltung, sonst die
+  Regel-Id aus Punkt 3) und `muted_mail.rule TEXT` (nur für Merkmal-Regeln mit Hide; das `INSERT` in `file_remote` und
+  das für Regeln eines ganzen Kontos lassen sie NULL). `items.hidden` wird in `update_item` gelöscht, wo `dismissed`
+  zurückgesetzt wird. Das Aufräumen von `muted_mail` in `remove_old_stats` lässt Zeilen stehen, deren Regel noch
+  besteht.
+- `Inbox::mail_hidden(accounts, now) -> Result<MailHidden, String>` nach dem Muster von `Inbox::mail_later`, für
+  dieselben Konten (`later_accounts` in `mail/read.rs`): die Absender und Domains aus Punkt 1 und je Konto die Ids aus
+  Punkt 2 und 3 (`hidden_of(account)`).
+- `Request::SearchMail` bekommt `hidden: Option<bool>` (serde default, `skip_serializing_if`), Doc-Kommentar wie bei
+  `snoozed`: `false` lässt ausgeblendete Mail des Posteingangs weg, `true` gibt nur sie, ohne Feld wie bisher; vor dem
+  Seitenschnitt gefiltert, ein Cursor gehört auch zu diesem Feld.
+- `mail/read.rs`: `mail_hidden` neben `mail_later` lesen (ohne `hidden` darf ein Lesefehler wie bei `snoozed` nur ins
+  Protokoll) und in `LaterView` bzw. `SearchQuery` aufnehmen (`queries` und `counting`); `snoozed` und `hidden` zusammen
+  gelten beide. Die Bedingung gilt nur für Mail im Posteingangsordner des Kontos. Die Id-Mengen können groß werden:
+  `SearchQuery::except`/`only` gehen heute als `m.id NOT IN (?, …)` in die Abfrage (`mail/store.rs`, Bedingungen der
+  Suche); so umstellen, dass auch 50 000 Ids gehen (z. B. eine JSON-Liste mit `json_each` als ein Wert).
+- Katalog: `SEARCH_MESSAGES` um `hidden` ergänzen (was als ausgeblendet gilt, ein Satz; wie `snoozed` nur für Konten,
+  deren Einträge der Schlüssel sieht – das auch für `snoozed` sagen). `MOVE_MESSAGES`: ein Satz, dass eine Mail, die den
+  Posteingang verlässt, ihren Eintrag erledigt, sobald keine ungelesene Mail der Unterhaltung mehr dort liegt.
+  `SET_ITEM_DONE`: ein Satz, dass „Archivieren wie in der App“ `mail_move_messages` mit Rolle `archive` ist. `docs/api.md`
+  beim Absatz zu `snoozed` ergänzen. `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md` mitcommitten.
+- **Abnahme:** Kern-Tests: Unterhaltung ausgeblendet → `hidden: false` ohne, `hidden: true` mit ihrer Mail; Absender
+  ausgeblendet → auch seine ältere Mail ohne Eintrag nur in `hidden: true`; dieselbe Mail ins Archiv verschoben → in
+  `in:archive` auch mit `hidden: false`; Regel entfernt bzw. abgelaufen → wieder in `hidden: false`; Eintrag wieder
+  geöffnet (Undo) → nicht ausgeblendet; stummes Konto blendet nichts aus; Schlüssel ohne Lesezugriff auf `inbox` bekommt
+  mit `hidden: true` nichts; Seiten und Cursor stimmen mit `hidden` und `snoozed` zusammen; Suche mit 50 000 Ids in
+  `except`. MCP-Test: `mail_search_messages` mit `"hidden": false` baut `Request::SearchMail { hidden: Some(false), .. }`.
+  Migration von V14 auf V15.
+
+### E18.2 Kern: „Show again“ (`inbox.set_mail_shown`)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E18.1 · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
+  `crates/torroworkplace/src/mail/read.rs`, `crates/torroworkplace/src/mail/write.rs` (Fakten der Freigabe),
+  `crates/torroworkplace/src/core.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`,
+  `crates/torro-ipc/src/mail.rs` (Grenzen), `crates/torroworkplace/src/pim.rs` (`out_of_reach`),
+  `crates/torroworkplace/src/audit.rs` (`ids`), `crates/torroworkplace/src/approvals.rs` (`inbox_summary`,
+  `InboxFacts`), `crates/torroworkplace/src/daemon.rs` (`describe`), `crates/torroworkplace/src/mcp.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/api.md`, `docs/api-reference.md`
+- `Request::SetMailShown { ids: Vec<String>, shown: bool }`, serde `inbox.set_mail_shown`, Antwort `Response::Ok`.
+  Doc-Kommentar: `shown: true` nimmt die Mails `ids` (`m:…`) aus „Hidden“ – `mail.search_messages` zählt sie bei
+  `hidden` als nicht ausgeblendet, gleich welche Regel oder welche geschlossene Unterhaltung sie ausblendet; die Regel
+  bleibt, weitere Mail bleibt ausgeblendet, der Eintrag bleibt, wie er ist (Entscheidungen 10 und 11). Gemerkt wird
+  nur, was jetzt ausgeblendet ist; eine Mail, die es nicht ist, bleibt ohne Ausnahme (sonst schützte sie eine Zeile vor
+  künftigen Regeln), die Antwort ist trotzdem `Ok`. `shown: false` nimmt die Ausnahme zurück (Undo). Mails mehrerer
+  Konten sind erlaubt. `not-found` für den ganzen Aufruf, sobald eine Id in keinem Konto liegt, das der Schlüssel sieht
+  – dann wird nichts gemerkt.
+- **Reichweite** (wie `inbox.snooze_item` mit `m:`-Id): Ein Konto zählt nur, wenn `reach` es erreicht
+  (`mail.stores(reach)`, `mail_accounts`) **und** der Schlüssel seine Quelle im Eingang sieht
+  (`Scope::of(client).sees` für `mail:<adresse>`, `inbox_sources`, wie `check_message`). Geprüft **vor** einer Freigabe:
+  in `Core::handle_client` vor `ask_approval`, nach dem Muster von `mail::write::client_refusal` für `mail.*`; mit
+  `Confirm::OnEveryChange` öffnet eine fremde Id so keine Freigabe. Im Weg des App-Schlüssels (`handle_within_as` →
+  `inbox_request`) ruft der Handler `limit_refusal` selbst, wie `change_mail`.
+- **Grenzen:** `SetMailShown` in `Request::message_ids` (`torro-ipc/src/mail.rs`) aufnehmen, damit `mail_ids` die
+  Länge je Id prüft, und in `limit_refusal` in das Arm mit `ids.is_empty()`/`MAX_IDS` (1 bis 100 wie `mail.set_flags`).
+- Katalog `SET_MAIL_SHOWN`: `Area::Inbox`, `Access::Write` (ändert nur, was der Eingang zeigt, keine Regel – wie
+  `inbox.hide_sender` mit `scope: conversation`; kein Override in `Request::operation`), `Mcp::Tool`. In
+  `Request::operation`, im Array `CATALOGUE` und mit einem Beispiel in `samples()` eintragen. Beschreibung: was es tut,
+  dass die Regel bleibt und Undo `shown: false` ist, `not-found` for mail of accounts this key may not see (wie
+  `HIDE_SENDER`). `SEARCH_MESSAGES` um einen Halbsatz zu `hidden` ergänzen (so zurückgeholte Mail zählt nicht als
+  ausgeblendet). `mcp.rs`: `"inbox.set_mail_shown"` in die Liste der wiederholbaren Befehle. `docs/api.md` beim Absatz
+  zu `hidden`. `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md` mitcommitten.
+- Speicher: `SCHEMA_V15` aus E18.1 (noch nicht ausgeliefert, darum keine V16) bekommt die Tabelle
+  `shown_mail(account TEXT, message TEXT, at TEXT, PRIMARY KEY(account, message))`. `Inbox::set_mail_shown(&[(account,
+  message)], shown, now)` legt Zeilen an bzw. löscht sie. `Inbox::mail_hidden` liefert je Konto auch diese Ids
+  (`MailHidden::shown_of`); `mail/read.rs` nimmt sie aus dem Ausgeblendeten heraus, auch bei Absender- und
+  Domain-Regeln (dieselbe Form wie die großen Id-Mengen aus E18.1). Wo der Eingang beim Entfernen eines Kontos dessen
+  `mail_messages` aufräumt, gehen auch seine `shown_mail`-Zeilen; sonst räumt nichts sie auf (`remove_old_stats`
+  nicht).
+- **Erneut ausblenden gilt wieder:** `mute_by` mit `MuteEffect::Hide` und `hide_sender` löschen die `shown_mail`-Zeilen
+  der Mails des **genannten** Eintrags (über `mail_messages`), auch wenn er schon erledigt ist – eine zurückgeholte
+  Mail behält ja ihren erledigten Eintrag (Entscheidung 11) –, und setzen dort `items.hidden` wie in E18.1 Punkt 2
+  bzw. 3. Bei einer Mail ohne Eintrag (`Inbox::handle_message` mit Stand-in) die Zeile dieser Mail. Eine neue Regel
+  lässt andere zurückgeholte Mails in Ruhe.
+- `core.rs`: `SetMailShown` in die Liste des Eingangs in `handle_within_as` (Client → `forbidden`, App →
+  `inbox_request`) und ein eigenes Arm in `inbox_request` vor dem Rückfall; nicht in `mail_message_id`/`with_entry_id`
+  (mehrere Ids). `pim.rs` `out_of_reach`: in die Liste des Eingangs (`return None`, geprüft im Kern).
+- **Freigabe und Protokoll:** Requests aus `Area::Inbox` beschreibt `approvals::inbox_summary`: neues Arm mit den
+  Betreffen aus dem Mail-Speicher wie bei `mail.set_flags` (`mail_messages(facts.mail, n)`); dafür `InboxFacts` um
+  `mail: Option<MailFacts>` ergänzen, gefüllt über `mail::write::facts`/`message_facts`. Texte
+  `trf("Show {messages} in the inbox again", …)` bzw. `trf("Hide {messages} from the inbox again", …)`. `audit.rs`
+  `ids`: die Ids als `message:<hash>` wie im Mail-Zweig, nicht `random("inbox", …)`. `daemon.rs` `describe`: nur die
+  Anzahl („show N mails again“ / „hide N mails again“), keine Ids.
+- Übersetzungen in `de.rs`: „Show {messages} in the inbox again“ → „{messages} wieder im Eingang anzeigen“, „Hide
+  {messages} from the inbox again“ → „{messages} wieder aus dem Eingang ausblenden“.
+- **Abnahme:** Kern-Tests: Absender ausgeblendet, eine ältere Mail mit `shown: true` → sie steht in `hidden: false`,
+  die andere Mail des Absenders und eine neue bleiben in `hidden: true`; `shown: false` → wieder ausgeblendet;
+  `shown: true` an einer nicht ausgeblendeten Mail legt nichts an (eine spätere Regel blendet sie aus); Unterhaltung
+  ausgeblendet, `shown: true` → Mail in `hidden: false`, der Eintrag bleibt erledigt (`inbox.get_item`); danach
+  `mute_item` mit `hide` an demselben (erledigten) Eintrag → wieder ausgeblendet; dasselbe für eine Mail ohne Eintrag
+  über ihre `m:`-Id; Id eines Kontos außerhalb von `mail_accounts` → `not-found`, nichts gemerkt; Konto in
+  `mail_accounts`, aber nicht in `inbox_sources` → `not-found`; mit `Confirm::OnEveryChange` legt eine fremde Id keine
+  Freigabe an; 0 und `MAX_IDS + 1` Ids → `error`; Migration V14 → V15 hat `shown_mail`. Freigabe-Text nennt die
+  Betreffe. MCP-Test: `inbox_set_mail_shown` mit `{"ids": ["m:1"], "shown": true}` baut `Request::SetMailShown`.
+  Rechte-Tabellentest und Vertragstest des Katalogs laufen mit.
+
+### E18.3 Client und Quellen: Mails nach Rolle, Zahl ungelesener, Show again
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E18.2 · **Dateien:** `crates/torro-ipc/src/inbox.rs`,
+  `crates/torroinbox/src/mail.rs`, `crates/torroinbox/src/empty.rs`, `crates/torro-inbox/src/demo.rs`
+- `torro-ipc/src/inbox.rs`: `pub struct MailByRole { role: torro_mail::Role, account: Option<String>, snoozed:
+  Option<bool>, hidden: Option<bool>, order: Order, limit: u32, cursor: Option<String> }` neben `MailFind` und
+  `InboxClient::mail_by_role(find: MailByRole) -> Result<(Vec<MessageSummary>, Option<String>), InboxError>`: ein
+  `Request::SearchMail` ohne `folder`, `query` `in:<rolle>` (das serde-Wort der Rolle, `in:inbox`, `in:archive`).
+  `InboxClient::count_unread_in_all(account: Option<String>) -> Result<u64, InboxError>`: dieselbe Suche für
+  `Role::Inbox` mit `unread: Some(true)`, `snoozed: Some(false)`, `hidden: Some(false)`, `limit: 1`; Antwort
+  `total_estimate` (fehlt sie: 0).
+  `InboxClient::set_mail_shown(ids: Vec<String>, shown: bool) -> Result<(), InboxError>`: `Request::SetMailShown`
+  (E18.2), nach dem Muster von `set_mail_flags` (`ask_ok`).
+- `torroinbox/src/mail.rs`, Trait `MailSource`: `mail_by_role(find: MailByRole) -> MailPage`,
+  `unread_in_all(account: Option<String>) -> u64` und `set_mail_shown(ids, shown) -> ()` (alle als `Result<…,
+  InboxError>`), Doc-Kommentar mit dem Request. Umsetzen für `InboxClient`, `DemoSource` und
+  `crate::empty::EmptySource` (leer, 0, `Ok`).
+- `torro-inbox/src/demo.rs`: `DemoSource::by_role(role, snoozed, hidden, limit, order)` aus den Ordnern der Rolle
+  aller Konten; zurückgestellt sind die Mails zurückgestellter Demo-Einträge, ausgeblendet **eine** Demo-Mail (ein
+  Newsletter, fest im Demo-Datensatz), damit „Hidden“ in der Sichtprüfung nicht leer ist; `unread` zählt dasselbe wie
+  „All“. `set_mail_shown` merkt sich die Ausnahme im Demo-Zustand, so dass der Newsletter nach „Show again“ in „All“
+  steht und nach Undo wieder in „Hidden“.
+- **Abnahme:** Test im Client (Muster der vorhandenen `Request::SearchMail`-Tests in `inbox.rs`), dass `mail_by_role`
+  und `count_unread_in_all` die Felder wie oben setzen und `set_mail_shown` `Request::SetMailShown` schickt;
+  Demo-Tests: Archiv-Ordner liefert die archivierten, `hidden: false` ohne den Newsletter, `hidden: true` nur ihn, nach
+  `set_mail_shown(…, true)` umgekehrt.
+
+### E18.4 Seitenleiste und Ansichten des Mail-Fensters
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E18.3 · **Dateien:** `crates/torroinbox/src/app.rs`,
+  `crates/torroinbox/src/mail.rs` (Show again an Zeilen und in der Leiste), `crates/torroinbox/src/glance.rs` (nur der
+  Klick, falls dort), `crates/torro-gui/src/icon.rs`, `crates/torro-gui/assets/icons/eye-off.svg`,
+  `crates/torro-core/src/i18n/de.rs`
+- `View`: neue Fälle `All`, `Hidden`, `Archive` (Mail aller gezeigten Konten, `mail.*` only). `filter` → `None`,
+  `is_mail` → `true`, `listing` → `"all"`, `"hidden"`, `"archive"`; `name` `tr("All")`, `tr("Hidden")`, `tr("Archive")`
+  (das Wort des Ordners); `icon` `Icon::Mail`, `Icon::EyeOff` (neu: Lucide 0.469.0 `eye-off`, Strich 1.75, in
+  `Icon::ALL`), `Icon::Archive`.
+- Startansicht des Mail-Fensters ist `View::All` (statt `View::Overview`): ohne `--view`/`--open`, bei `Open::Overview`,
+  `Open::Info`, `Open::Done` und bei `Open::MailEntry | MailActions | MailGroup` (dort die erste Mail von „All“ im Leser
+  bzw. Paneel statt des ersten Eintrags). Neue `--open`-Wörter `archive` und `hidden` (Liste in `Open`). Die anderen
+  Fenster bleiben bei `View::Overview`.
+- `fetch_with_accounts`: für die drei Ansichten die erste Seite über `MailSource::mail_by_role` (`All`: Inbox,
+  `snoozed: false`, `hidden: false`; `Hidden`: Inbox, `hidden: true`; `Archive`: Archive), mit gewählten Konten
+  (`mail_accounts`) wie `category_selected` (neue Hilfsfunktion daneben). Für `Kind::Mail` die Zahl ungelesener in „All“
+  über `unread_in_all` je gezeigtem Konto (ohne Auswahl einmal mit `None`), neues Feld in `Loaded` und `App`; ein Fehler
+  lässt die Zahl weg, nicht die Liste. `more_mail`: dieselben drei Ansichten mit dem Cursor.
+- `nav_entries`, Zweig `Kind::Mail`: `All` (Zahl ungelesener, keine „0“), `Snoozed` („Later“), `Hidden` (keine Zahl).
+  „For me“, „Info“, „Done“ entfallen dort; ihre Namen und Icons in `Kind::view_name`/`view_icon` für `Kind::Mail` nur
+  entfernen, wo nichts sie mehr braucht. `App::lead` (Kopf „N new for you“ im schmalen „For me“) entfällt.
+- Neue Methode `folder_entries` statt `pinned_entries` in `sidebar` und `nav_menu`: zuerst `View::Archive`, nur wenn ein
+  gezeigtes Konto einen Ordner mit `Role::Archive` hat, dann die angehefteten Ordner wie bisher. `sidebar`: eine Gruppe
+  `tr("Folders")` (ersetzt „Pinned folders“) mit diesen Zeilen und darunter „Open folders“ mit
+  `Trail::Icon(Icon::ChevronRight)` (Entscheidung 7), angeheftet wie bisher an `folders`. `nav_menu`: ein Abschnitt
+  `MenuSection::titled(tr("Folders"), …)` mit denselben Zeilen und „Open folders“ (gleicher Trail). Gilt auch für
+  `mail_only`. Reihenfolge: Ansichten, Categories, Smart views, Folders.
+- **Show again** (Entscheidungen 10 und 11): in `View::Hidden` an jeder Zeile (neben den Knöpfen aus
+  `mail::filing_actions`) und in der Leiste der geöffneten Mail als erstes Item der Gruppe Mute (`mute_items`;
+  `action_groups` erfährt über einen Parameter wie `close`, dass die Mail aus „Hidden“ kommt) ein Knopf `Icon::Eye`,
+  `tr("Show again")`, ohne Taste, neue `Message::ShowMail(id)`. `App::show_mail`: `MailSource::set_mail_shown([id],
+  true)`, die Zeile verlässt die Liste wie beim Archivieren (`take_out`), Hinweis `tr("Back in All.")` mit Undo
+  (`set_mail_shown([id], false)`, Zeile zurück); ein Fehler bringt die Zeile zurück und meldet ihn. In anderen
+  Ansichten gibt es den Knopf nicht.
+- Glance: Der Klick (`Message::OpenForMe`) zeigt im Mail-Fenster `View::All` mit der Mail des Eintrags unter dem Cursor,
+  sobald sie in der Liste steht; die Zahlen der Kachel bleiben (Entscheidung 8).
+- Übersetzungen: „All“, „Hidden“, „Archive“, „Folders“ stehen schon in `de.rs`; neu „Show again“ → „Wieder
+  anzeigen“, „Back in All.“ → „Wieder in „Alle“.“ und weitere neue Texte dieser Aufgabe.
+- **Abnahme:** App-Tests (vorhandene Tests des Mail-Fensters mit „For me“/`View::Overview` auf `View::All`
+  umstellen): Seitenleiste und Menü zeigen oben genau All · Later · Hidden, Gruppe „Folders“ mit Archive, Angeheftetem,
+  Open folders mit Chevron, keine „Pinned folders“; ohne Archivordner kein Archive; Zahl an All aus `unread_in_all`;
+  „All“, „Hidden“, „Archive“ fragen `mail_by_role` mit den Feldern oben und laden nach; Glance-Klick öffnet All;
+  `tr("Show again")` nur in „Hidden“ (Zeile und Leiste), schickt `set_mail_shown(…, true)`, nimmt die Zeile heraus,
+  Undo schickt `false` und bringt sie zurück. Vergleiche mit `tr(…)`.
+
+### E18.5 „Archive“ statt „Done“ an jeder Mail, Doku, Sichtprüfung
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E18.4 · **Dateien:** `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/list.rs`,
+  `crates/torroinbox/src/mail.rs`, `crates/torroinbox/src/hub.rs`, `crates/torroinbox/src/detail.rs`,
+  `crates/torroinbox/src/keys.rs` (nur falls `e` im Leser noch nicht archiviert), `crates/torro-core/src/i18n/de.rs`,
+  `docs/eingang.md`
+- `App::run`, `Command::Done`: in Ansichten von Mail **und** an einem Eintrag mit `Link::Mail` (jedes Fenster)
+  `key_mail(MailAction::Archive)`; andere Einträge wie bisher. `e` archiviert auch mit Fokus im Leser
+  (`keys::command`, `Focus::MailDetail`).
+- `App::mail_action`, `MailAction::Archive`: hat das Konto der Mail (Zeile, geladene Mail oder Quelle des Eintrags,
+  `mail:<adresse>`) keinen Ordner mit `Role::Archive`, `note(tr("This account has no archive folder."))` und nichts
+  verschieben (Entscheidung 6). Sonst wie bisher (Hinweis „Archived“, Undo verschiebt zurück und öffnet den Eintrag).
+  Kommt das Archivieren von einem Mail-Eintrag (Taste oder Knopf am Eintrag, „Archive mail“), schließt das Fenster den
+  Eintrag nach dem erfolgreichen Verschieben zusätzlich mit `inbox.set_item_done`: Hält die Unterhaltung noch eine
+  ungelesene Mail im Posteingang, schlösse der Kern ihn sonst nicht (`Feed::settle`). Undo öffnet ihn wieder.
+- `list::actions`/`entry_actions`: an Mail-Einträgen kein „Done“/„Reopen“; `list::filing` setzt Archive mit Taste `"E"`.
+- `mail.rs`: `file_items` ohne „Done“/„Reopen“ für den Eintrag; das Archive-Item zeigt die Taste `"E"`. Tests der Leiste
+  (`sends(&groups, file, tr("Done"))` u. a.) anpassen; das Gruppen-Icon von File bleibt.
+- `hub.rs`: Karten von Mail-Einträgen `[Act::Task, Act::Event, Act::Later, Act::Archive]`; neuer Fall `Act::Archive`
+  (Icon `Archive`, Wort `trc("action", "Archive")`, Taste `"E"`, Nachricht `Message::Act(id, Command::Done)`, ruhig wie
+  Done). `Act::MarkMailDone` → `Act::ArchiveMail` (Icon `Archive`, `tr("Archive mail")`); `Message::MarkMailDone` →
+  `Message::ArchiveMail`, ebenso der Knopf in `detail.rs` (Fuß der Rückfrage).
+- `App::mark_mail_done` → `App::archive_task_mail`: Mail-Eintrag aus `task.mail_entry` über `App::find`, seine Mail
+  (`Link::Mail`) archivieren wie `mail_action` (ohne Archivordner Hinweis, Entscheidung 6) und die Rückfrage mit
+  `inbox.set_item_done` schließen; Undo verschiebt zurück und öffnet Mail-Eintrag und Rückfrage. Hält das Fenster den
+  Mail-Eintrag nicht, `note(tr("Couldn't find the mail of this task."))`. `Sent::MailDone` und `Message::MailDone`
+  entsprechend anpassen.
+- `detail.rs`: prüfen, dass Mail-Einträge im Paneel kein „Done“ mehr zeigen (Fuß und Kommentar am Dateianfang).
+- Übersetzungen in `de.rs`: „Archive mail“ → „Mail archivieren“, „This account has no archive folder.“ → „Dieses Konto
+  hat keinen Archivordner.“, „Couldn't find the mail of this task.“ → „Die Mail zu dieser Aufgabe wurde nicht
+  gefunden.“; nicht mehr benutzte Einträge („Mark mail done“) entfernen, wenn kein Aufrufer bleibt.
+- `docs/eingang.md`: Abschnitt „Die App“ (Tastatur: `e` archiviert Mail), „Knöpfe je Eintrag“ (Mail: Archive statt
+  Done), „Aktionsleiste der Mail“ (File ohne Done/Reopen), „Aufgabe mit Rückbezug“ („Archive mail“), „Später für jede
+  Mail“ (All, Later, Hidden; `hidden` wie `snoozed`; „Show again“ holt eine Mail zurück, die Regel bleibt) und eine
+  neue Zeile zur Seitenleiste des Mail-Fensters (All ·
+  Later · Hidden, Folders mit Archive, Angeheftetem und Open folders ›).
+- **Abnahme:** Tests: `e` an einer Mail in All, an einem Mail-Eintrag in Later und in der Zentrale schickt
+  `MailEdit::Move` nach `MoveRole::Archive` mit Undo, am Eintrag zusätzlich `set_item_done` (Undo öffnet ihn); ohne Archivordner nur der Hinweis, nichts gesendet; Zeilen,
+  Karten und Leiste von Mail zeigen kein `tr("Done")`; Agenten- und App-Einträge behalten `tr("Done")`; „Archive mail“
+  verschiebt, schließt die Rückfrage, Undo nimmt beides zurück. Sichtprüfung mit `torro-design-review` in allen
+  Größenklassen (`torroinbox --view mail --demo`, `--open menu`, `drawer`, `archive`, `hidden` mit „Show again“, Leiste und
+  ausgeklappt, hell und dunkel, Standard und Console). Abschließend die Prüfbefehle aus `docs/issue-workflow.md`
+  (`cargo fmt --all`, Clippy, `cargo test --workspace`, `TORRO_LANG=de cargo test --workspace`).
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur

@@ -1043,6 +1043,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } =
@@ -1088,6 +1089,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            hidden: None,
             categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } =
