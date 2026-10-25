@@ -847,15 +847,13 @@ fn refuse_unknown_arguments(tool: &str, arguments: &JsonObject) -> Result<(), To
 pub fn result_of(response: Response) -> CallToolResult {
     let shown = match response {
         Response::ToolResult { output } => return server_result(output),
-        // `approvals_approval_status` after the wait of the call (APPROVAL_WAIT) was over: a server's answer as
-        // the call would have given it, behind its note; every other answer stays in the approval.
+        // `approvals_approval_status` after the wait of the call (APPROVAL_WAIT) was over: an answer with a
+        // server's text as the call would have given it, behind its note; every other answer stays in the
+        // approval.
         Response::Approval { approval: ApprovalInfo { state: ApprovalState::Done { response }, .. } }
-            if matches!(*response, Response::ToolResult { .. }) =>
+            if carries_server_text(&response) =>
         {
-            return match *response {
-                Response::ToolResult { output } => server_result(output),
-                other => structured_result(other),
-            };
+            return result_of(*response);
         }
         Response::Approvals { mut approvals } => {
             approvals.iter_mut().for_each(left_out_server_answer);
@@ -929,17 +927,29 @@ fn server_result(output: ToolResult) -> CallToolResult {
     }
 }
 
-/// A server tool's answer in `approvals_list_approvals` ([`result_of`]): left out, with where to read it. In
-/// the list it would be structured JSON without [`SERVER_NOTE`], its pictures as Base64.
+/// Whether `response` holds a server's text, which [`result_of`] puts behind a note: a tool's answer, or
+/// servers with their tools.
+fn carries_server_text(response: &Response) -> bool {
+    matches!(
+        response,
+        Response::ToolResult { .. }
+            | Response::Extensions { .. }
+            | Response::Extension { .. }
+            | Response::ExtensionTools { .. }
+    )
+}
+
+/// An answer with a server's text in `approvals_list_approvals` ([`result_of`]): left out, with where to read
+/// it. In the list it would be structured JSON without its note, a tool's pictures as Base64.
 fn left_out_server_answer(approval: &mut ApprovalInfo) {
     if let ApprovalState::Done { response } = &mut approval.state
-        && matches!(**response, Response::ToolResult { .. })
+        && carries_server_text(response)
     {
         **response = Response::Error {
             code: "left-out".to_string(),
             message: format!(
-                "the answer of an MCP server outside Torro Workplace; read it with approvals_approval_status and id \
-                 {:?}",
+                "the command ran; its answer holds the text of an MCP server outside Torro Workplace, so it is left \
+                 out here. Read it with approvals_approval_status and id {:?}; do not run the command again.",
                 approval.id
             ),
         };
@@ -1796,13 +1806,22 @@ mod tests {
         let status = result_of(Response::Approval { approval: done(Response::ToolResult { output: output.clone() }) });
         assert!(status.content[0].as_text().is_some_and(|text| text.text == SERVER_NOTE), "{status:?}");
         assert!(status.structured_content.is_none());
+        let failed = ToolResult { is_error: true, ..output.clone() };
+        let status = result_of(Response::Approval { approval: done(Response::ToolResult { output: failed }) });
+        assert_eq!(status.is_error, Some(true), "the server's failure, as the call gives it");
+        // Switching a server off answers with the server and its tools' descriptions.
+        let servers = result_of(Response::Approval { approval: done(Response::Extensions { extensions: vec![] }) });
+        assert!(servers.content[0].as_text().is_some_and(|text| text.text == SERVERS_NOTE), "{servers:?}");
 
         let other = done(Response::Ok);
-        let listed =
-            result_of(Response::Approvals { approvals: vec![done(Response::ToolResult { output }), other.clone()] });
+        let tools = done(Response::ExtensionTools { tools: vec![] });
+        let listed = result_of(Response::Approvals {
+            approvals: vec![done(Response::ToolResult { output }), other.clone(), tools],
+        });
         let listed = listed.structured_content.expect("the approvals");
         let left_out = &listed["approvals"][0]["response"];
         assert_eq!(left_out["code"], json!("left-out"), "{listed}");
+        assert_eq!(listed["approvals"][2]["response"]["code"], json!("left-out"), "{listed}");
         assert!(!listed.to_string().contains("QUJD"));
         assert_eq!(listed["approvals"][1], serde_json::to_value(&other).expect("json"), "other answers as before");
     }

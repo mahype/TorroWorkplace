@@ -2411,7 +2411,7 @@ Für diesen Bereich vergibt niemand Rechte: Befehle mit MCP-Tool darf jeder gül
 
 Zugriff `read` · MCP-Tool `approvals_list_approvals`
 
-Lists this key's commands that wait for a person's approval, and those decided or expired within the last day with their outcome, newest first; sending mail lists its recipients, attachments and text start in `details`. An approval expires after ten minutes, a question of `approvals.ask_permission` after about 30 seconds.
+Lists this key's commands that wait for a person's approval, and those decided or expired within the last day with their outcome, newest first; sending mail lists its recipients, attachments and text start in `details`. An approval expires after ten minutes, a question of `approvals.ask_permission` after about 30 seconds. Over MCP, an answer that holds an MCP server's text (a tool of a server, a server with its tools) is left out: `response` is the code `left-out`; the command ran, read its answer with `approvals.approval_status`.
 
 Keine Felder.
 
@@ -2419,7 +2419,7 @@ Keine Felder.
 
 Zugriff `read` · MCP-Tool `approvals_approval_status`
 
-Tells whether a command that answered `pending` still waits for a person (`pending`), was denied, expired (after ten minutes; a question after about 30 seconds), or ran (`done`, with the command's answer in `response`). Pass the id of the pending answer. MCP tools already wait up to 60 seconds for the decision themselves, so ask only after a tool answered `pending`, and not in a tight loop. Only a person can approve; ask them to decide in Torro Workplace.
+Tells whether a command that answered `pending` still waits for a person (`pending`), was denied, expired (after ten minutes; a question after about 30 seconds), or ran (`done`, with the command's answer in `response`). Over MCP, an answer that holds an MCP server's text comes as the command itself gives it, marked untrusted, without the approval around it. Pass the id of the pending answer. MCP tools already wait up to 60 seconds for the decision themselves, so ask only after a tool answered `pending`, and not in a tight loop. Only a person can approve; ask them to decide in Torro Workplace.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

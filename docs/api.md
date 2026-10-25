@@ -1057,6 +1057,11 @@ freigeben. Das machen wir anders:
    eigene Antwort (`result: "pending"`).
 5. Bei „Allow“ prüft der Dienst Rechte und Reichweite des Clients **zum Zeitpunkt der
    Entscheidung** erneut und führt den Befehl dann aus; die Antwort steht danach in der Freigabe.
+   Ausnahme über MCP: Hält die Antwort Text eines MCP-Servers (ein Werkzeug eines Servers, ein Server mit
+   seinen Werkzeugen, #302), gibt `approvals_approval_status` sie so zurück wie der Aufruf selbst, mit dem
+   Hinweis „untrusted“ und ohne die Freigabe drumherum; `approvals_list_approvals` lässt sie weg (`response`
+   mit dem Code `left-out`: der Befehl lief, die Antwort steht bei `approvals_approval_status`). Über die API
+   bleibt alles in der Freigabe.
    Kam der Befehl über einen geliehenen Schlüssel (Assistent mit Claude Code, C.7), gilt dabei weiter, was dem
    Lauf entzogen war (Mail und abgeschaltete Bereiche); die Freigabe speichert das und den Antrieb, der auch in
    der Protokollzeile der Entscheidung steht (C.11).

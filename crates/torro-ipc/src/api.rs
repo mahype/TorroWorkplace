@@ -2999,7 +2999,9 @@ static LIST_APPROVALS: Command = Command {
     description: "Lists this key's commands that wait for a person's approval, and those decided or expired within \
                   the last day with their outcome, newest first; sending mail lists its recipients, attachments and \
                   text start in `details`. An approval expires after ten minutes, a question of \
-                  `approvals.ask_permission` after about 30 seconds.",
+                  `approvals.ask_permission` after about 30 seconds. Over MCP, an answer that holds an MCP server's \
+                  text (a tool of a server, a server with its tools) is left out: `response` is the code \
+                  `left-out`; the command ran, read its answer with `approvals.approval_status`.",
 };
 
 static APPROVAL_STATUS: Command = Command {
@@ -3008,7 +3010,9 @@ static APPROVAL_STATUS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Tells whether a command that answered `pending` still waits for a person (`pending`), was \
-                  denied, expired (after ten minutes; a question after about 30 seconds), or ran (`done`, with the command's answer in `response`). \
+                  denied, expired (after ten minutes; a question after about 30 seconds), or ran (`done`, with the \
+                  command's answer in `response`). Over MCP, an answer that holds an MCP server's text comes as the \
+                  command itself gives it, marked untrusted, without the approval around it. \
                   Pass the id of the pending answer. MCP tools already wait up to 60 seconds for the decision \
                   themselves, so ask only after a tool answered `pending`, and not in a tight loop. Only a person \
                   can approve; ask them to decide in Torro Workplace.",
