@@ -1160,7 +1160,8 @@ WD.1 (Gerüst) ──┬── WD.2 (Kern: Ordner, auflisten, suchen, anlegen, k
   `rfd` und schickt `set_setting allowed_folder` mit `access: "read"`. Erklärzeile: Werkzeuge wie Files arbeiten nur
   hier; ArtCraft nutzt die Liste später auch.
 - Gruppe des Werkzeugs `files` wie PDF: Schalter „Organize files“, Kurzbeschreibung, Zeile „may use it“; ist die
-  Liste leer, Hinweis „Add a folder above. The tool works only there.“
+  Liste leer, Zeile „No allowed folders“ mit „The tool works only in allowed folders.“ und „Add folder…“ direkt
+  daneben.
 - Demo mit zwei Ordnern (einmal Read, einmal Read and write). `docs/settings.md`: Zeilen in Bestand und „Was wohin
   gehört“.
 - **Abnahme:** Tests: „Add folder…“ gibt `AppAction`, Auswahl schickt genau einen `set_setting allowed_folder` mit der
