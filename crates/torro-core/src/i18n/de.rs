@@ -5660,8 +5660,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("This setting doesn't fit this kind of server.", "Diese Einstellung passt nicht zu dieser Art von Server."),
     (
-        "“{name}” can't be given to an MCP server: it could change which code the program loads. Remove it.",
-        "„{name}“ kann einem MCP-Server nicht übergeben werden: Damit ließe sich ändern, welchen Code das Programm lädt. Entferne die Variable.",
+        "“{name}” can't be given to an MCP server: it could change which code the program runs or where its secrets go. Remove it.",
+        "„{name}“ kann einem MCP-Server nicht übergeben werden: Damit ließe sich ändern, welchen Code das Programm ausführt oder wohin seine Geheimnisse gehen. Entferne die Variable.",
     ),
     (
         "“{name}” isn't a valid name for a variable or header.",

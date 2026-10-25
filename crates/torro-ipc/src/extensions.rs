@@ -85,12 +85,14 @@ pub fn parse_denied_name(name: &str) -> Option<(&str, &str)> {
 /// `PYTHONWARNINGS`, `PYTHONUSERBASE`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5LIB`, `PERLLIB`, `PERL5OPT`,
 /// `RUBYOPT`, `RUBYLIB`, `GEM_HOME`, `GEM_PATH`, `CLASSPATH`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`,
 /// `JDK_JAVA_OPTIONS`, `BASH_ENV`, `BASH_FUNC_*`, `ENV`, `IFS`, `SHELLOPTS`, `PS4`, `ZDOTDIR`, `GIT_SSH`,
-/// `GIT_SSH_COMMAND`, `GIT_EXEC_PATH`, `GIT_CONFIG*`, on Windows `ComSpec`, `SystemRoot` and `WINDIR`); where
-/// packages and settings come from (`npm_config_*`, `UV_*`, `PIP_*`, and the folders the core sets: `HOME`,
-/// `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_CONFIG_HOME`); what sends a server's secrets elsewhere (a
-/// Docker daemon or its settings: `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`; certificates to trust or
-/// none: `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
-/// `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`); and Torro's own (`TORRO_*`). Installing a server with one is
+/// `GIT_SSH_COMMAND`, `GIT_EXEC_PATH`, `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_EXTERNAL_DIFF`,
+/// `GIT_TEMPLATE_DIR`, `GIT_CONFIG*`, `PYTHONPLATLIBDIR`, on Windows `ComSpec`, `SystemRoot` and `WINDIR`);
+/// where packages and settings come from (`npm_config_*`, `UV_*`, `PIP_*`, and the folders the core sets or
+/// that hold settings and caches: `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_CONFIG_HOME`,
+/// `XDG_CACHE_HOME`, `XDG_DATA_HOME`); what sends a server's secrets elsewhere (a Docker daemon or its
+/// settings: `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`; certificates to trust or none:
+/// `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`,
+/// `CURL_CA_BUNDLE`, `GIT_SSL_NO_VERIFY`, `GIT_SSL_CAINFO`, `PYTHONHTTPSVERIFY`); and Torro's own (`TORRO_*`). Installing a server with one is
 /// refused with `error`.
 pub fn blocked_env(name: &str) -> bool {
     const NAMES: &[&str] = &[
@@ -123,6 +125,17 @@ pub fn blocked_env(name: &str) -> bool {
         "GIT_SSH",
         "GIT_SSH_COMMAND",
         "GIT_EXEC_PATH",
+        "GIT_PROXY_COMMAND",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_TEMPLATE_DIR",
+        "GIT_SSL_NO_VERIFY",
+        "GIT_SSL_CAINFO",
+        "PYTHONHTTPSVERIFY",
+        "PYTHONPLATLIBDIR",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
         "COMSPEC",
         "SYSTEMROOT",
         "WINDIR",
@@ -663,6 +676,8 @@ mod tests {
             "GIT_CONFIG_COUNT",
             "BASH_FUNC_ls%%",
             "SSL_CERT_FILE",
+            "GIT_PROXY_COMMAND",
+            "XDG_CACHE_HOME",
         ] {
             assert!(blocked_env(blocked), "{blocked}");
         }

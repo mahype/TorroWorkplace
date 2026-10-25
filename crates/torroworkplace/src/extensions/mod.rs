@@ -62,8 +62,9 @@ pub struct Extensions {
     secrets: Arc<dyn SecretStore>,
     /// Held while the file is read, changed and written, so two changes never write over each other. Never
     /// held over a server's start (installing and updating wait up to 180 seconds for it) nor over a call's
-    /// read of the keychain (it may wait for the person), so the changes of others, and switching off, go on
-    /// meanwhile.
+    /// read of the keychain (it may wait for the person), so the changes of others go on meanwhile. Installing,
+    /// updating, removing and setting a secret do use the keychain under it: while the keychain asks the person
+    /// for one of these, switching off waits too.
     changing: Arc<tokio::sync::Mutex<()>>,
     /// The ids an install or update is under way for ([`Extensions::claim`]): one at a time per id, since the
     /// start runs without `changing`.
@@ -237,6 +238,7 @@ impl Extensions {
             Err(SupervisorError::Stopped) => return no_server(id),
             Err(err) => return supervisor_error(&err),
         };
+        self.keep_called(&stored, &launch.server, reported.clone()).await;
         let unchanged = self.tools_of(&stored, &reported);
         if !unchanged.iter().any(|known| known.name == tool && known.state == ToolState::Allowed) {
             return no_tool(tool);
@@ -707,7 +709,9 @@ impl Extensions {
             let launch = self.launch(&stored).await.map_err(|err| store_error(&err))?;
             let _changing = self.changing.lock().await;
             match self.find(id) {
-                Ok(now) if now.server == stored.server => return Ok((stored, launch)),
+                Ok(now) if now.server == stored.server && now.enabled => return Ok((stored, launch)),
+                // Switched off meanwhile: its stop may still be on the way, so nothing must reach it.
+                Ok(now) if !now.enabled => return Err(no_server(id)),
                 Ok(_) => continue,
                 Err(refused) => return Err(refused),
             }
@@ -743,16 +747,41 @@ impl Extensions {
         let mut changed = false;
         for stored in &mut all {
             let Some((server, reported)) = self.supervisor.running(&stored.id) else { continue };
-            let under_way = self.under_way.lock().unwrap_or_else(PoisonError::into_inner).contains(&stored.id);
-            if server != stored.server || reported == stored.reported || under_way {
-                continue;
-            }
-            stored.reported = reported;
-            changed = true;
+            changed |= self.keep_in(stored, &server, reported);
         }
         if changed && let Err(err) = self.save(&all) {
             eprintln!("torroworkplace: MCP servers: {err}");
         }
+    }
+
+    /// The list `reported` a call got when it started `stored` with the spec `server` ([`Extensions::call`]),
+    /// kept as [`Extensions::keep_reported`] does, also when the server ended before the watcher came to it:
+    /// while it still runs with this spec its latest list counts. Nothing when the file's list is no longer
+    /// the one the call began with: the watcher kept a newer one meanwhile.
+    async fn keep_called(&self, stored: &StoredExtension, server: &ServerSpec, reported: Vec<store::ReportedTool>) {
+        let _changing = self.changing.lock().await;
+        let reported = match self.supervisor.running(&stored.id) {
+            Some((spec, latest)) if spec == *server => latest,
+            _ => reported,
+        };
+        let Ok((mut all, index)) = self.load_with(&stored.id) else { return };
+        if all[index].reported != stored.reported || !self.keep_in(&mut all[index], server, reported) {
+            return;
+        }
+        if let Err(err) = self.save(&all) {
+            eprintln!("torroworkplace: MCP server {}: {err}", stored.id);
+        }
+    }
+
+    /// Puts `reported`, the list of a run with the spec `server`, into `stored` when it is the spec stored,
+    /// the list differs and no install or update of the server is under way; whether it did.
+    fn keep_in(&self, stored: &mut StoredExtension, server: &ServerSpec, reported: Vec<store::ReportedTool>) -> bool {
+        let under_way = self.under_way.lock().unwrap_or_else(PoisonError::into_inner).contains(&stored.id);
+        if stored.server != *server || stored.reported == reported || under_way {
+            return false;
+        }
+        stored.reported = reported;
+        true
     }
 
     /// The tools the server reports: as it runs now, else as it reported them when it last ran.
@@ -1508,6 +1537,19 @@ mod tests {
             extensions.supervisor.stop("fixture").await;
             let shown = info(extensions.get("fixture", Reach::Suite).await);
             assert!(shown.tools.iter().all(|tool| tool.state == ToolState::Allowed), "{shown:?}");
+
+            // A call's own list counts once the server ended before the watcher came to it, but never over a
+            // list kept meanwhile.
+            store_all(&extensions, &all);
+            let began = stored_all(&extensions).remove(0);
+            let mut newer = all.clone();
+            newer[0].reported[0].description = "Kept meanwhile.".into();
+            store_all(&extensions, &newer);
+            extensions.keep_called(&began, &began.server, running.clone()).await;
+            assert_eq!(stored_all(&extensions)[0].reported, newer[0].reported, "kept meanwhile");
+            store_all(&extensions, &all);
+            extensions.keep_called(&began, &began.server, running.clone()).await;
+            assert_eq!(stored_all(&extensions)[0].reported, running);
         }
 
         /// The first call watches the supervisor, once.

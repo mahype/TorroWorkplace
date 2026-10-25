@@ -58,7 +58,7 @@ impl fmt::Display for EnvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
             EnvError::Blocked { name } => trf(
-                "“{name}” can't be given to an MCP server: it could change which code the program loads. Remove it.",
+                "“{name}” can't be given to an MCP server: it could change which code the program runs or where its secrets go. Remove it.",
                 &[("name", name)],
             ),
             EnvError::InvalidName { name } => {
