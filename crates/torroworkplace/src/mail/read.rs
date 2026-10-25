@@ -42,7 +42,9 @@
 //! **Hidden** (task E18.1, `hidden`): the inbox says what the person hid ([`Inbox::mail_hidden`]):
 //! senders and domains, checked against each message's sender in the store, and messages by id.
 //! The store applies it to mail of the inbox folder only (`Hiding`), before the page is cut, for
-//! the same accounts as "Later"; it is read only when a search asks for it.
+//! the same accounts as "Later"; it is read only when a search asks for it. Mail shown again one
+//! by one (task E18.2, `inbox.set_mail_shown`) is never hidden, like the mail of an open entry;
+//! which of some messages are hidden now says [`hidden_now`], with the same rules.
 //!
 //! **Attachments** go to the managed folder (`AttachmentCache`), at most
 //! [`ATTACHMENT_MAX_BYTES`], under a cleaned file name, so a name from outside never picks the
@@ -320,7 +322,8 @@ impl LaterView {
             senders: mail.senders.iter().cloned().collect(),
             domains: mail.domains.iter().cloned().collect(),
             ids: mail.hidden_of(account),
-            never: mail.open_of(account),
+            // Shown again (task E18.2): not hidden, whatever hides it, sender and domain too.
+            never: mail.open_of(account).into_iter().chain(mail.shown_of(account)).collect(),
         })
     }
 
@@ -332,6 +335,35 @@ impl LaterView {
             _ => summary.date,
         }
     }
+}
+
+/// Which of `messages` (pairs of account `mail:<address>` and message `m:…`) are hidden from their
+/// inbox folder at `now` (task E18.2), as `mail.search_messages` with `hidden: true` would list
+/// them ([`LaterView::hiding`]): for "Show again", which remembers only mail hidden now. Mail shown
+/// again already is not hidden. The caller checked that it may see them; a message its store no
+/// longer holds is not hidden. `Err` holds the message for the log.
+pub(crate) async fn hidden_now(
+    mail: &MailService,
+    inbox: &Inbox,
+    messages: &[(String, String)],
+    now: DateTime<Utc>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut by_account: std::collections::BTreeMap<&str, Vec<String>> = std::collections::BTreeMap::new();
+    for (account, message) in messages {
+        by_account.entry(account).or_default().push(message.clone());
+    }
+    let accounts: Vec<String> = by_account.keys().map(|account| account.to_string()).collect();
+    let mail_hidden = inbox.mail_hidden(&accounts, now)?;
+    let view = LaterView { later: MailLater::default(), snoozed: None, mail_hidden, hidden: Some(true) };
+    let mut hidden = Vec::new();
+    for (account, ids) in by_account {
+        let store = mail.store(account).await.map_err(|err| err.to_string())?;
+        let limit = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+        let query = SearchQuery { only: Some(ids), hidden: view.hiding(account), ..SearchQuery::default() };
+        let found = store.run(move |store| store.search(&query, limit, 0)).await.map_err(|err| err.to_string())?;
+        hidden.extend(found.into_iter().map(|summary| (account.to_string(), summary.id)));
+    }
+    Ok(hidden)
 }
 
 /// How deep a search pages: a page starts at most at the 10 000th match. Paging deeper would
@@ -1783,7 +1815,7 @@ pub(crate) mod tests {
     // ----- "Hidden" (task E18.1) -----
 
     /// A mail `days_ago` days old from `from` with `subject`, with a `List-Id` when `list` is given.
-    fn mail_from(subject: &str, days_ago: i64, from: &str, list: Option<&str>) -> String {
+    pub(crate) fn mail_from(subject: &str, days_ago: i64, from: &str, list: Option<&str>) -> String {
         let date = (Utc::now() - Duration::days(days_ago)).to_rfc2822();
         let id = subject.replace(' ', "-");
         let list = list.map(|list| format!("List-Id: <{list}>\r\n")).unwrap_or_default();
@@ -1794,7 +1826,7 @@ pub(crate) mod tests {
     }
 
     /// The mail `summary` as the feed would file it into the inbox.
-    fn filing(summary: &MessageSummary) -> crate::inbox::NewMail {
+    pub(crate) fn filing(summary: &MessageSummary) -> crate::inbox::NewMail {
         let from = summary
             .from
             .as_ref()

@@ -2146,6 +2146,30 @@ pub enum Request {
         /// `no_popup`, `info` or `hide`.
         effect: MuteEffect,
     },
+    /// "Show again" for hidden mail (task E18.2, decisions 10 and 11 of E18 in
+    /// `docs/tasks/eingang.md`). `shown: true` takes the mail messages `ids` (`m:…`) out of
+    /// "Hidden": `mail.search_messages` with `hidden` counts them as not hidden, whatever rule or
+    /// hidden conversation hides them. The rule stays, so further and new mail of the sender or
+    /// trait stays hidden; the message's inbox entry stays as it is (a done entry stays done, the
+    /// hub does not report it again). Only what is hidden now is remembered: a mail that is not
+    /// hidden gets no exception (else it would be shielded from rules made later), and the answer
+    /// is still [`Response::Ok`]. `shown: false` takes the exception back (Undo). Hiding the
+    /// mail's entry again (`inbox.mute_item` with `hide`, `inbox.hide_sender`) drops the exception
+    /// too.
+    ///
+    /// Mail of several accounts may go in one call. Answered with [`Response::Ok`]; `not-found`
+    /// for the whole call, with nothing remembered, as soon as one id is in no account whose mail
+    /// the caller reads (`mail_accounts`) and whose inbox entries it sees (the account among
+    /// `inbox_sources`); `error` for no id, more than [`mail::MAX_IDS`] or an id over
+    /// [`mail::MAX_ID_BYTES`] bytes. Write access to `inbox`: it changes only what the inbox
+    /// shows, never a rule or the mail.
+    #[serde(rename = "inbox.set_mail_shown")]
+    SetMailShown {
+        /// The mail messages' ids (`m:…`), 1 to 100.
+        ids: Vec<String>,
+        /// `true` shows them in "All" again, `false` takes that back.
+        shown: bool,
+    },
     /// The lasting rules: lanes remembered for sources, muted sources, hidden senders and domains
     /// and muted traits that have not ended ([`Response::Rules`]), only of sources the client may
     /// see. With each rule how many reports and entries it caught since it was made, as far as the
@@ -2386,8 +2410,9 @@ pub enum Request {
         /// "Hidden" (task E18.1): `false` leaves out mail of the inbox folder the person hid – from
         /// a sender or domain hidden with `inbox.hide_sender`, of a conversation hidden and its
         /// entry still done, or kept away by a trait muted with the effect `hide` while that rule
-        /// holds; `true` gives only that mail. Mail of an open or snoozed entry and mail in any other
-        /// folder are never hidden; muting a whole account, "Info" and "No popup" hide nothing.
+        /// holds; `true` gives only that mail. Mail of an open or snoozed entry, mail shown again
+        /// with [`Request::SetMailShown`] (task E18.2) and mail in any other folder are never
+        /// hidden; muting a whole account, "Info" and "No popup" hide nothing.
         /// Left out: every message, as before. Filtered before paging, so pages and `cursor` hold; a
         /// cursor belongs to this field as well. With `snoozed` both hold. Like `snoozed` only for
         /// accounts whose inbox entries the caller sees; for the others nothing is hidden, and

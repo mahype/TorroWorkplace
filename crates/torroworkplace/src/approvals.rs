@@ -2064,6 +2064,9 @@ pub struct InboxFacts {
     /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
     /// held across the awaits of asking for an approval, deep in the stack.
     pub sort_rule: Option<Box<torro_inbox::SortRule>>,
+    /// For `inbox.set_mail_shown` (task E18.2): the messages as the mail store holds them, looked
+    /// up by the ids the command runs with (`crate::mail::write::facts`), as for `mail.set_flags`.
+    pub mail: Option<MailFacts>,
 }
 
 /// What a person reads for `category` in a summary: its name in the catalogue the inbox keeps
@@ -2220,6 +2223,13 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
         ),
         Request::SnoozeItem { until: None, .. } => trf("Stop snoozing {entry}", &[("entry", &entry())]),
+        // "Show again" (task E18.2): the subjects the mail store holds, never the client's words.
+        Request::SetMailShown { ids, shown: true } => {
+            trf("Show {messages} in the inbox again", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
+        Request::SetMailShown { ids, shown: false } => {
+            trf("Hide {messages} from the inbox again", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
         // Filing a mail by hand and keeping that for its sender (task E12.4). The sender comes
         // from the stored entry (`InboxFacts`), never from the request.
         Request::SetItemCategory { category, remember: true, .. }
@@ -4511,6 +4521,24 @@ pub(crate) mod tests {
         assert_eq!(done(false), trf("Open {entry} again", &[("entry", &entry)]));
         let snooze = inbox_summary(&Request::SnoozeItem { id: "e1".into(), until: None }, &InboxFacts::default());
         assert_eq!(snooze, trf("Stop snoozing {entry}", &[("entry", &unknown)]));
+        // Task E18.2: "Show again" names the subjects the mail store holds.
+        let stored = MailFacts { count: 2, subjects: vec!["Weekly \"deals\"".into()], ..MailFacts::default() };
+        let mail = InboxFacts { mail: Some(stored), ..InboxFacts::default() };
+        let shown = |shown| Request::SetMailShown { ids: vec!["m:1".into(), "m:2".into()], shown };
+        let messages = trf("{n} messages, among them {subject}", &[("n", &2), ("subject", &"\"Weekly 'deals'\"")]);
+        assert_eq!(
+            inbox_summary(&shown(true), &mail),
+            trf("Show {messages} in the inbox again", &[("messages", &messages)])
+        );
+        assert_eq!(
+            inbox_summary(&shown(false), &mail),
+            trf("Hide {messages} from the inbox again", &[("messages", &messages)])
+        );
+        let unknown_mail = trf("{n} unknown messages", &[("n", &2)]);
+        assert_eq!(
+            inbox_summary(&shown(true), &InboxFacts::default()),
+            trf("Show {messages} in the inbox again", &[("messages", &unknown_mail)])
+        );
 
         let rule = |effect| InboxFacts {
             rule: Some(Rule {

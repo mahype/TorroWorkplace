@@ -4099,7 +4099,7 @@ Nicht parallel zu E17 (#300): E17.2 und E18.4 ändern `sidebar`, `nav_menu` und 
   Migration von V14 auf V15.
 
 ### E18.2 Kern: „Show again“ (`inbox.set_mail_shown`)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E18.1 · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
   `crates/torroworkplace/src/mail/read.rs`, `crates/torroworkplace/src/mail/write.rs` (Fakten der Freigabe),
   `crates/torroworkplace/src/core.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`,

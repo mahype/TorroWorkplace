@@ -559,7 +559,11 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::MailBackupCreate { file_name: Some(file_name), .. } if !valid_backup_filename(file_name) => {
             refuse(tr("Backup file name must be a plain .zip name or absolute app path.").into())
         }
-        Request::SetMailFlags { ids, .. } | Request::MoveMail { ids, .. } | Request::DeleteMail { ids, .. } => {
+        // "Show again" (task E18.2) names mail as `mail.set_flags` does.
+        Request::SetMailFlags { ids, .. }
+        | Request::MoveMail { ids, .. }
+        | Request::DeleteMail { ids, .. }
+        | Request::SetMailShown { ids, .. } => {
             if ids.is_empty() {
                 return refuse("name at least one message in ids".into());
             }
@@ -673,7 +677,8 @@ impl Request {
 
     /// Every message id a request names, in order: `id`/`ids` (also of `mail.list_save_targets` and
     /// `mail.save_attachments`), a draft's own id, the message it answers and the messages it
-    /// forwards parts of. Empty for every other request. If one of
+    /// forwards parts of, the mail shown again (`inbox.set_mail_shown`, task E18.2). Empty for every
+    /// other request. If one of
     /// them is in an account the caller does not reach, the whole call is `not-found` (checked
     /// before anything is read).
     pub fn message_ids(&self) -> Vec<&str> {
@@ -684,9 +689,10 @@ impl Request {
             | Request::SaveMailAttachments { id, .. }
             | Request::ListSaveTargets { id: Some(id) }
             | Request::SendDraft { id } => vec![id.as_str()],
-            Request::SetMailFlags { ids, .. } | Request::MoveMail { ids, .. } | Request::DeleteMail { ids, .. } => {
-                ids.iter().map(String::as_str).collect()
-            }
+            Request::SetMailFlags { ids, .. }
+            | Request::MoveMail { ids, .. }
+            | Request::DeleteMail { ids, .. }
+            | Request::SetMailShown { ids, .. } => ids.iter().map(String::as_str).collect(),
             Request::SaveDraft { draft } => {
                 let parts = draft.attachments.iter().filter_map(|attachment| match attachment {
                     DraftAttachment::MailPart { message, .. } => Some(message.as_str()),
@@ -853,6 +859,12 @@ mod tests {
         assert!(refused(&flags));
         let to = MoveTarget::Role(MoveRole::Archive);
         assert!(refused(&Request::MoveMail { ids: Vec::new(), to }));
+        // Task E18.2: "Show again" takes 1 to 100 ids, each within the length.
+        let shown = |ids| Request::SetMailShown { ids, shown: true };
+        assert!(refused(&shown(ids(0))) && refused(&shown(ids(MAX_IDS + 1))));
+        assert_eq!(limit_refusal(&shown(ids(MAX_IDS))), None);
+        assert!(refused(&shown(vec!["m:".to_string() + &"x".repeat(MAX_ID_BYTES)])));
+        assert_eq!(shown(ids(2)).message_ids(), ["m:0", "m:1"]);
 
         assert!(refused(&search(0, None)) && refused(&search(MAX_LIMIT + 1, None)));
         assert_eq!(limit_refusal(&search(MAX_LIMIT, Some("ä".repeat(MAX_QUERY_CHARS)))), None, "characters, not bytes");
