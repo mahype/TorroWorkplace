@@ -115,7 +115,8 @@ struct Group {
 fn groups(text: &str) -> Vec<Group> {
     let mut groups: Vec<Group> = Vec::new();
     let mut in_rules = false;
-    for line in text.lines() {
+    // RFC 9309 §2.2: a line ends with LF, CR or CR LF (CR LF gives an empty line between, which is skipped).
+    for line in text.split(['\n', '\r']) {
         let line = line.split_once('#').map_or(line, |(before, _)| before);
         let Some((key, value)) = line.split_once(':') else { continue };
         let (key, value) = (key.trim().to_ascii_lowercase(), value.trim());
@@ -364,6 +365,10 @@ mod tests {
         let robots = Robots::parse(text.as_bytes(), AGENT);
         assert!(!robots.allows("/secret/a"));
         assert!(robots.allows("/open"));
+        // Lines ending with CR alone (RFC 9309 §2.2; found in the review of PR #311).
+        let old_mac = Robots::parse(b"User-agent: *\rDisallow: /secret\rAllow: /secret/open\r", AGENT);
+        assert!(!old_mac.allows("/secret/a"));
+        assert!(old_mac.allows("/secret/open/a"));
         // `/robots.txt` itself is always allowed.
         assert!(Robots::parse(b"User-agent: *\nDisallow: /\n", AGENT).allows("/robots.txt"));
         assert!(Robots::DisallowAll.allows("/robots.txt"));
