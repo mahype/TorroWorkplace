@@ -2025,7 +2025,7 @@ Lists one level of a folder: name, path, kind (file, folder, link), size and whe
 
 Zugriff `read` · MCP-Tool `tools_find_files`
 
-Finds files and folders by name in `folder` (in an allowed folder, see tools_list_folder) and below, up to 10 levels deep, without following links: `name` is part of the name (`invoice`) or a pattern with * and ? (`*.pdf`), any case. At most 200 hits (`truncated` beyond). Never searches what a file holds.
+Finds files and folders by name in `folder` (in an allowed folder, see tools_list_folder) and below, up to 10 levels deep, without following links: `name` is part of the name (`invoice`) or a pattern with * and ? (`*.pdf`), any case. At most 200 hits (`truncated` beyond, or when a folder below did not open). Never searches what a file holds.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
