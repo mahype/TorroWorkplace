@@ -411,10 +411,14 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
   in die Torro Client-Schlüssel und Hooks schreibt (`~/.claude.json`, `~/.claude/settings.json` … mit ihren
   Sicherungen), das Programm, das die Hooks starten, die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`,
   Schlüsselbund), weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub, Paketregister, Passwortspeicher), die
-  Browser-Profile und der Papierkorb des Systems (`~/.Trash`, `~/.local/share/Trash`). Auch wenn das System
-  den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Name zählt so, wie das Laufwerk
-  ihn speichert: Findet das System einen Eintrag auch unter einer anderen Schreibweise (`.ſsh` für `.ssh`, `Verträge`
-  zerlegt, ein Kurzname unter Windows), ist die Antwort `not-found`. Ein Eintrag, der einen
+  Browser-Profile und der Papierkorb des Systems (`~/.Trash`, `~/.local/share/Trash`). Auch wenn das
+  System den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Name zählt so, wie das
+  Laufwerk ihn speichert: Findet das System einen Eintrag auch unter einer anderen Schreibweise (`.ſsh` für `.ssh`,
+  `Rechnung März.pdf` zusammengesetzt für die zerlegt gespeicherte Datei, ein Kurzname unter Windows), nimmt der Kern
+  den gespeicherten Namen, mit dessen Sperren und Rechten, und nennt ihn in der Antwort. Findet das System einen
+  eben angelegten, kopierten oder verschobenen Eintrag unter einem gesperrten Pfad (`~/.cursor/mcp.jſon` als das
+  fehlende `mcp.json`), nimmt der Kern das zurück und antwortet `not-found`. Offen: Linux-Laufwerke ohne Groß- und
+  Kleinschreibung (ext4 mit casefold, exFAT) bei den Ordnern über dem letzten Teil. Ein Eintrag, der einen
   freigegebenen Ordner oder etwas Gesperrtes ist oder enthält, lässt sich nicht verschieben, umbenennen oder in den
   Papierkorb legen. Nach einer Freigabe läuft nur, was die Karte zeigte: Der Kern hält die aufgelösten Pfade und die
   Einträge dort fest (Art, Erstellzeit, bei Dateien und Links Größe und Änderungszeit, unter Unix Laufwerk und

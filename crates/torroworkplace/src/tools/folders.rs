@@ -12,12 +12,17 @@
 //!   key stores, other known stores of credentials, the browsers' profiles and the system's trash, [`key_stores`])
 //!   and every name ending in [`BACKUP_SUFFIX`], also inside an allowed folder. Listing and finding leave them out. A
 //!   locked path is `not-found` also when the system refuses the core there.
-//! - Names count as the drive stores them. `canonicalize` gives the stored names on macOS and Windows, though the
-//!   system also finds an entry under another spelling (`.SSH`, `.ſsh`, `Verträge` decomposed, a short name like
-//!   `CLAUDE~1.JSO`, a dot at the end); the last part of an entry, which is not resolved, counts only when its folder
-//!   holds an entry of exactly that name ([`Allowed::entry`]), else it is `not-found`. Locks and allowed folders are
-//!   still compared without regard to case, since a locked path is named as written (`~/Library/Keychains`) and on
-//!   Linux a drive that does not tell cases apart keeps the spelling of a request.
+//! - Names count as the drive stores them. The system also finds an entry under another spelling (`.SSH`, `.ſsh`,
+//!   `Verträge` composed for one stored decomposed, a short name like `CLAUDE~1.JSO`, a dot at the end).
+//!   `canonicalize` gives the stored names on macOS and Windows; the last part of an entry, which is not resolved, is
+//!   looked up in its folder and taken as stored there ([`Allowed::entry`]), so `.ſsh` is `.ssh` and locked. A new
+//!   name is the request's, and the system may then find the new entry under a locked path (`mcp.jſon` as the
+//!   missing, locked `mcp.json`): after every entry made or moved the core looks whether it does
+//!   ([`Allowed::hits_a_lock`]) and takes it back. Locks and allowed folders are still compared without regard to
+//!   case, since a locked path is named as written (`~/Library/Keychains`).
+//! - Open: on Linux, a drive that does not tell cases apart (ext4 with casefold, exFAT, FAT) keeps the spelling of a
+//!   request in the folders above the last part – `canonicalize` there does not give the stored names – so a folder
+//!   named in another spelling than the folded one (`.ſsh`) is not taken as the locked one.
 //! - An entry that is or holds an allowed folder or something locked is not moved (and in WD.3 not trashed): else an
 //!   agent would reach what is in an inner "Read" folder through an outer one ([`Allowed::holds_protected`]).
 //!
@@ -25,7 +30,7 @@
 //! from a request.
 
 use std::cmp::Reverse;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -163,6 +168,9 @@ pub struct Allowed {
     /// locked file may be a symbolic link: the link itself stays locked, as [`Allowed::entry`] names it), and resolved
     /// as far as it exists.
     locked: Vec<Vec<String>>,
+    /// Each locked path with its folder resolved as far as it exists, its last part kept, and resolved as far as it
+    /// exists, as paths: what [`Allowed::hits_a_lock`] asks the system about.
+    lock_paths: Vec<PathBuf>,
 }
 
 impl Allowed {
@@ -178,11 +186,12 @@ impl Allowed {
             .filter(|(root, _)| root.is_dir())
             .collect();
         let folded_roots = roots.iter().map(|(root, _)| folded(root)).collect();
-        let locked = excluded
-            .iter()
-            .flat_map(|path| [folded(path), folded(&as_entry(path)), folded(&resolved_far(path))])
-            .collect();
-        Allowed { roots, folded_roots, locked }
+        let mut lock_paths: Vec<PathBuf> =
+            excluded.iter().flat_map(|path| [as_entry(path), resolved_far(path)]).collect();
+        lock_paths.dedup();
+        let locked =
+            excluded.iter().map(|path| folded(path)).chain(lock_paths.iter().map(|path| folded(path))).collect();
+        Allowed { roots, folded_roots, locked, lock_paths }
     }
 
     /// The allowed folders that exist, resolved, with their access, in the order of the settings (also for the
@@ -205,26 +214,37 @@ impl Allowed {
 
     /// `path` from a request with only its folder resolved and its last part kept as it is: the entry itself, also
     /// when it is a symbolic link (moving one moves the link, not what it points to; the source of a copy must be a
-    /// file, not a link). It must exist under exactly that name, byte for byte ([`holds_name`]): the system finds
-    /// `.ssh` also as `.ſsh` or `.SSH` on macOS and Windows, which would slip past the locks and the innermost folder,
-    /// so another spelling is `not-found`. The other rules are those of [`Allowed::existing`].
+    /// file, not a link). Its last part is taken as its folder stores it ([`stored_name`]): the system finds `.ssh`
+    /// also as `.ſsh` or `.SSH` on macOS and Windows, and a file stored decomposed (`Rechnung März.pdf` as macOS
+    /// often keeps it) under the composed name a client writes back. The answer has the stored name, and the locks,
+    /// the innermost folder and everything after go by it: `.ſsh` is `.ssh`, locked. The bounds are checked with the
+    /// name as given before the folder is read, so the core never reads a folder outside them or a locked one (on
+    /// macOS that could make the system ask the person), and again with the stored name. `not-found` when the folder
+    /// holds no such entry. The other rules are those of [`Allowed::existing`].
     pub fn entry(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
         let given = checked(path)?;
         let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else { return Err(FolderError::NotFound) };
         let parent = fs::canonicalize(parent).map_err(|err| self.missing(parent, &err))?;
         let entry = parent.join(name);
-        match holds_name(&parent, name) {
-            Ok(true) => {}
-            Ok(false) => return Err(FolderError::NotFound),
-            Err(err) => return Err(self.missing(&entry, &err)),
+        self.within(&entry, need)?;
+        // An allowed folder is resolved and so already as stored; its own folder may be outside them all.
+        if self.roots.iter().any(|(root, _)| *root == entry) {
+            return Ok(entry);
         }
+        let stored = match stored_name(&parent, name) {
+            Ok(Some(stored)) => stored,
+            Ok(None) => return Err(FolderError::NotFound),
+            Err(err) => return Err(self.missing(&entry, &err)),
+        };
+        let entry = parent.join(stored);
         self.within(&entry, need)?;
         Ok(entry)
     }
 
     /// `path` from a request as a new entry: its folder must exist and is resolved, its last part is a plain name of
     /// at most [`MAX_NAME_BYTES`] bytes (`error` otherwise). Whether something of that name is there already is the
-    /// command's to see (it then picks a free name). The other rules are those of [`Allowed::existing`].
+    /// command's to see (it then picks a free name), and so is whether the system finds what it made under a locked path
+    /// ([`Allowed::hits_a_lock`]). The other rules are those of [`Allowed::existing`].
     pub fn new_target(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
         let given = checked(path)?;
         let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else {
@@ -258,6 +278,24 @@ impl Allowed {
     pub fn is_locked(&self, path: &Path) -> bool {
         let parts = folded(path);
         parts.iter().any(|part| part.ends_with(BACKUP_SUFFIX)) || self.locked.iter().any(|lock| parts.starts_with(lock))
+    }
+
+    /// Whether the system now finds a locked path in `made`, an entry a command has just made or moved there under
+    /// a name of the request: on macOS and Windows `~/.cursor/mcp.jſon` is found as the locked `~/.cursor/mcp.json`
+    /// that was missing, and `~/.ſsh` as `~/.ssh`. True when a locked path (as [`Allowed::of`] resolved it, in every
+    /// form) not named below `made` is `made` itself – the same entry ([`identity`]) – or the longest part of it that
+    /// exists resolves to `made` or into it. Then the command takes the entry back and answers `not-found`. No table of spellings: the system decides. An entry that
+    /// becomes an allowed folder that was missing is harmless, so only the locks are looked at. On a system other than
+    /// Unix a link has no identity here, and a link made there is never found to hit a lock.
+    pub fn hits_a_lock(&self, made: &Path) -> bool {
+        let Some(id) = identity(made, false) else { return false };
+        let folded_made = folded(made);
+        // A lock named below `made` is locked by its name already, also in another case (`~/.cursor` made when
+        // `~/.cursor/mcp.json` is locked): such an entry is fine.
+        self.lock_paths
+            .iter()
+            .filter(|lock| !folded(lock).starts_with(&folded_made))
+            .any(|lock| identity(lock, false).as_ref() == Some(&id) || resolves_into(lock, &id))
     }
 
     /// Whether moving (or trashing) the entry `entry` would take along an allowed folder or something locked: it is
@@ -376,6 +414,61 @@ pub(super) fn holds_name(folder: &Path, name: &OsStr) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// The name `folder` stores the entry under that the system finds there as `name`: `name` itself when an entry is
+/// stored under exactly that ([`holds_name`]), else the entry that is the same ([`identity`]) – the system finds `.ssh`
+/// also as `.ſsh`, a name stored decomposed also composed. `None` when the folder holds no such entry, and on a system
+/// other than Unix when it is a link (a link has no identity there).
+fn stored_name(folder: &Path, name: &OsStr) -> io::Result<Option<OsString>> {
+    if holds_name(folder, name)? {
+        return Ok(Some(name.to_os_string()));
+    }
+    let Some(wanted) = identity(&folder.join(name), false) else { return Ok(None) };
+    for item in fs::read_dir(folder)? {
+        let item = item?;
+        if identity(&item.path(), false).as_ref() == Some(&wanted) {
+            return Ok(Some(item.file_name()));
+        }
+    }
+    Ok(None)
+}
+
+/// What tells two paths of one entry from two entries: on Unix its drive and number.
+#[cfg(unix)]
+pub(super) type Identity = (u64, u64);
+/// What tells two paths of one entry from two entries: elsewhere its resolved path, as stored (`canonicalize`).
+#[cfg(not(unix))]
+pub(super) type Identity = PathBuf;
+
+/// The identity of the entry at `path`; with `follow` of what a link at its end points to, else of the link itself.
+/// `None` when nothing is there, and on a system other than Unix for a link itself: its resolved path is where it
+/// points.
+pub(super) fn identity(path: &Path, follow: bool) -> Option<Identity> {
+    let meta = match follow {
+        true => fs::metadata(path),
+        false => fs::symlink_metadata(path),
+    }
+    .ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+        fs::canonicalize(path).ok()
+    }
+}
+
+/// Whether the longest part of `lock` that exists (following links, as the system does when it opens `lock`)
+/// resolves to the entry `id` or into it.
+fn resolves_into(lock: &Path, id: &Identity) -> bool {
+    let Some(resolved) = lock.ancestors().find_map(|part| fs::canonicalize(part).ok()) else { return false };
+    resolved.ancestors().any(|part| identity(part, true).as_ref() == Some(id))
 }
 
 /// `relative` (parts separated by `/`) below `base`, joined part by part so it has the system's separators.
@@ -790,19 +883,34 @@ pub(crate) mod tests {
         }
     }
 
-    /// Review of issue #304: the last part of an entry counts only as its folder stores it. APFS (and NTFS) also find
-    /// `.ssh` as `.ſsh` or `.SSH`, `.claude.json` as `.claude.jſon` and the inner "Read" folder `Verträge` decomposed;
-    /// taken as given, such a name would slip past the locks and the innermost folder, and "Read and write" on the home
-    /// would move, copy or trash them. On a drive that finds none of them they are not there anyway; the mechanism is
-    /// checked with a name that differs only in case.
+    /// The name an entry is stored under: the one asked for when the folder holds exactly that, `None` when there is
+    /// no such entry.
     #[test]
-    fn a_name_counts_only_as_stored() {
+    fn a_stored_name_is_the_one_asked_for() {
+        let place = Place::new();
+        let docs = fs::canonicalize(place.dir.path().join("home/Documents")).expect("resolved");
+        assert!(holds_name(&docs, OsStr::new("Private")).expect("listed"));
+        assert!(!holds_name(&docs, OsStr::new("private")).expect("listed"), "only byte for byte");
+        assert_eq!(stored_name(&docs, OsStr::new("Private")).expect("listed"), Some("Private".into()));
+        assert_eq!(stored_name(&docs, OsStr::new("missing")).expect("listed"), None);
+    }
+
+    /// Review of issue #304: the last part of an entry is taken as its folder stores it. APFS finds `.ssh` also as
+    /// `.ſsh` or `.SSH`, `.claude.json` as `.claude.jſon`, the inner "Read" folder `Verträge` decomposed and
+    /// `Documents` as `documents`: each resolves to the stored name, and so is locked, counts as "Read" or is found.
+    /// Taken as given, such a name would slip past the locks and the innermost folder.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_name_counts_as_stored() {
         let place = Place::new();
         let home = place.dir.path().join("home");
         fs::create_dir_all(home.join(".ssh")).expect("made");
         fs::write(home.join(".ssh/id_ed25519"), b"key").expect("written");
         fs::write(home.join(".claude.json"), b"{}").expect("written");
         fs::create_dir(home.join("Vertr\u{e4}ge")).expect("made");
+        if !home.join(".SSH").exists() {
+            return; // A drive that tells cases apart: no other spelling to find.
+        }
         let folders = [
             AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite },
             AllowedFolder { path: place.path("home/Vertr\u{e4}ge"), access: FolderAccess::Read },
@@ -810,23 +918,30 @@ pub(crate) mod tests {
         let mut locked = key_stores(&home);
         locked.push(home.join(".claude.json"));
         let allowed = Allowed::of(&folders, &locked);
-        let docs = fs::canonicalize(home.join("Documents")).expect("resolved");
-        assert!(holds_name(&docs, OsStr::new("Private")).expect("listed"));
-        assert!(!holds_name(&docs, OsStr::new("private")).expect("listed"), "only byte for byte");
+        let resolved = fs::canonicalize(&home).expect("resolved");
+        assert_eq!(stored_name(&resolved, OsStr::new(".\u{17f}sh")).expect("listed"), Some(".ssh".into()));
         let plan = |request: &Request| super::super::organize::plan(&allowed, request);
-        for spelling in [".\u{17f}sh", ".SSH", ".claude.j\u{17f}on", "Vertra\u{308}ge", "documents"] {
+        let to = place.path("home/Documents");
+        for spelling in [".\u{17f}sh", ".SSH", ".claude.j\u{17f}on"] {
             let path = place.path(&format!("home/{spelling}"));
-            assert_eq!(allowed.entry(&path, FolderAccess::ReadWrite), Err(FolderError::NotFound), "{spelling:?}");
-            let to = place.path("home/Documents");
+            for need in [FolderAccess::Read, FolderAccess::ReadWrite] {
+                assert_eq!(allowed.entry(&path, need), Err(FolderError::NotFound), "{spelling:?}");
+            }
             let moved = Request::MoveFile { from: path.clone(), to: to.clone() };
             assert_eq!(plan(&moved), Err(FolderError::NotFound), "{spelling:?}");
-            let copied = Request::CopyFile { from: path.clone(), to };
+            let copied = Request::CopyFile { from: path.clone(), to: to.clone() };
             assert_eq!(plan(&copied), Err(FolderError::NotFound), "{spelling:?}");
             assert_eq!(plan(&Request::TrashFile { path }), Err(FolderError::NotFound), "{spelling:?}");
         }
-        assert!(allowed.entry(&place.path("home/Documents"), FolderAccess::ReadWrite).is_ok(), "as stored");
-        let inner = allowed.entry(&place.path("home/Vertr\u{e4}ge"), FolderAccess::ReadWrite);
-        assert_eq!(inner, Err(FolderError::Forbidden(READ_ONLY)), "the inner folder as stored");
+        let decomposed = place.path("home/Vertra\u{308}ge");
+        let inner = allowed.entry(&decomposed, FolderAccess::Read);
+        assert_eq!(inner, Ok(resolved.join("Vertr\u{e4}ge")), "the inner folder as stored");
+        assert_eq!(allowed.entry(&decomposed, FolderAccess::ReadWrite), Err(FolderError::Forbidden(READ_ONLY)));
+        let moved = Request::MoveFile { from: decomposed.clone(), to: to.clone() };
+        assert_eq!(plan(&moved), Err(FolderError::Forbidden(READ_ONLY)), "counts as Read");
+        assert_eq!(plan(&Request::TrashFile { path: decomposed }), Err(FolderError::Forbidden(READ_ONLY)));
+        let docs = allowed.entry(&place.path("home/documents"), FolderAccess::ReadWrite);
+        assert_eq!(docs, Ok(resolved.join("Documents")), "found as stored");
     }
 
     /// Review of issue #304: with the whole home allowed, the system's trash is not found, what it holds neither, and

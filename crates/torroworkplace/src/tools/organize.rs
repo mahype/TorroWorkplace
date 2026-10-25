@@ -24,6 +24,10 @@
 //! - **Limits** ([`torro_ipc::tools`]): listing one level of at most `MAX_LIST_ENTRIES`, finding at most
 //!   `MAX_FIND_DEPTH` levels, `MAX_FOUND` hits and `MAX_VISITED` entries, without following links; reaching one says
 //!   `truncated`.
+//! - **No locked path by another spelling** ([`Allowed::hits_a_lock`]): after a folder is made, a file copied or an
+//!   entry moved, the core looks whether the system now finds a locked path there (`mcp.jſon` on APFS is also
+//!   `mcp.json`) and takes it back – the folder removed, the copy removed, the moved entry back where it was – and
+//!   answers `not-found` ([`undone_if_locked`]).
 //!
 //! Everything runs on a blocking thread ([`Tools::plan`], [`Tools::organize`]). Nothing here logs a path or a name.
 
@@ -44,7 +48,7 @@ use torro_ipc::tools::{
 };
 
 use super::Tools;
-use super::folders::{Allowed, Failure, FolderError, PROTECTED, holds_name};
+use super::folders::{Allowed, Failure, FolderError, PROTECTED, holds_name, identity};
 use super::place::MAX_NUMBER;
 use crate::approvals::PathFacts;
 
@@ -444,11 +448,12 @@ fn kind_of(meta: &fs::Metadata) -> EntryKind {
     }
 }
 
-/// Makes the folder `target`, or one with a free name next to it ([`free_names`]); answers the folder made.
-fn create_folder(target: &Path) -> Result<PathBuf, FolderError> {
+/// Makes the folder `target`, or one with a free name next to it ([`free_names`]); answers the folder made. One the
+/// system finds under a locked path is removed again (`not-found`, [`undone_if_locked`]).
+fn create_folder(allowed: &Allowed, target: &Path) -> Result<PathBuf, FolderError> {
     for candidate in free_names(target, true) {
         match fs::create_dir(&candidate) {
-            Ok(()) => return Ok(candidate),
+            Ok(()) => return undone_if_locked(allowed, candidate, |made| fs::remove_dir(made)),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(FolderError::of_io(&err)),
         }
@@ -457,8 +462,9 @@ fn create_folder(target: &Path) -> Result<PathBuf, FolderError> {
 }
 
 /// Copies the file `from` to `target` or a free name next to it, made with `create_new` so nothing is replaced,
-/// with the rights of `from`; answers the copy. A copy that could not be written whole is removed again.
-fn copy_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
+/// with the rights of `from`; answers the copy. A copy that could not be written whole is removed again, and so is
+/// one the system finds under a locked path (`not-found`, [`undone_if_locked`]).
+fn copy_file(allowed: &Allowed, from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
     let failed = |err: io::Error| FolderError::of_io(&err);
     let mut source = fs::File::open(from).map_err(failed)?;
     // Opened by its path: still a file, not a link or folder put there since it was planned.
@@ -475,12 +481,12 @@ fn copy_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
         let written = io::copy(&mut source, &mut file)
             .and_then(|_| file.sync_all())
             .and_then(|()| fs::set_permissions(&candidate, meta.permissions()));
+        drop(file);
         if let Err(err) = written {
-            drop(file);
             let _ = fs::remove_file(&candidate);
             return Err(failed(err));
         }
-        return Ok(candidate);
+        return undone_if_locked(allowed, candidate, |made| fs::remove_file(made));
     }
     Err(FolderError::Invalid(ALL_TAKEN))
 }
@@ -489,33 +495,39 @@ fn copy_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
 /// changes nothing; `target` naming `from` itself in another spelling renames it to that ([`same_entry`]). A file
 /// goes by `fs::hard_link`, which never replaces, and then `from` is removed; where hard links do not work, by a
 /// rename to a target looked at just before; to another drive as a copy ([`copy_file`]), then `from` is removed. A
-/// folder or a link goes by a rename only, on the same drive.
-fn move_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
+/// folder or a link goes by a rename only, on the same drive. Where the system finds the moved entry under a locked
+/// path, it goes back ([`undone_if_locked`]): the new hard link or the copy is removed before `from` is, a rename is
+/// renamed back – `from` is free, it was a moment ago and the tools' lock is held – and the answer is `not-found`.
+fn move_file(allowed: &Allowed, from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
     if from == target {
         return Ok(from.to_path_buf());
     }
+    let back = |made: &Path| fs::rename(made, from);
     if same_entry(from, target) {
         // The very entry `from`, so the rename replaces nothing; `hard_link` would find it taken and pick `-2`.
         fs::rename(from, target).map_err(|err| FolderError::of_io(&err))?;
-        return Ok(target.to_path_buf());
+        return undone_if_locked(allowed, target.to_path_buf(), back);
     }
     let meta = fs::symlink_metadata(from).map_err(|err| FolderError::of_io(&err))?;
     if !meta.is_file() {
         return match rename_free(from, target, meta.is_dir()) {
             Err(err) if err.kind() == io::ErrorKind::CrossesDevices => Err(FolderError::Unsupported(SAME_DRIVE)),
-            moved => moved.map_err(|err| FolderError::of_io(&err))?.ok_or(FolderError::Invalid(ALL_TAKEN)),
+            moved => undone_if_locked(allowed, renamed(moved)?, back),
         };
     }
     for candidate in free_names(target, false) {
         match fs::hard_link(from, &candidate) {
-            Ok(()) => return remove_source(from, candidate),
+            Ok(()) => {
+                let linked = undone_if_locked(allowed, candidate, |made| fs::remove_file(made))?;
+                return remove_source(from, linked);
+            }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) if err.kind() == io::ErrorKind::CrossesDevices => return copy_then_remove(from, target),
+            Err(err) if err.kind() == io::ErrorKind::CrossesDevices => return copy_then_remove(allowed, from, target),
             // No hard links on this drive (FAT, some network shares): rename instead.
             Err(_) => {
                 return match rename_free(from, target, false) {
-                    Err(err) if err.kind() == io::ErrorKind::CrossesDevices => copy_then_remove(from, target),
-                    moved => moved.map_err(|err| FolderError::of_io(&err))?.ok_or(FolderError::Invalid(ALL_TAKEN)),
+                    Err(err) if err.kind() == io::ErrorKind::CrossesDevices => copy_then_remove(allowed, from, target),
+                    moved => undone_if_locked(allowed, renamed(moved)?, back),
                 };
             }
         }
@@ -523,27 +535,38 @@ fn move_file(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
     Err(FolderError::Invalid(ALL_TAKEN))
 }
 
+/// Where [`rename_free`] put the entry; `error` when it failed or every free name was taken.
+fn renamed(moved: io::Result<Option<PathBuf>>) -> Result<PathBuf, FolderError> {
+    moved.map_err(|err| FolderError::of_io(&err))?.ok_or(FolderError::Invalid(ALL_TAKEN))
+}
+
+/// `made`, what a command has just made or moved there, unless the system now finds a locked path in it
+/// ([`Allowed::hits_a_lock`]): then `undo` takes it back and the answer is `not-found`, as for the locked path
+/// itself. When `undo` fails, `error` of its kind, without a path.
+fn undone_if_locked(
+    allowed: &Allowed,
+    made: PathBuf,
+    undo: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<PathBuf, FolderError> {
+    if !allowed.hits_a_lock(&made) {
+        return Ok(made);
+    }
+    match undo(&made) {
+        Ok(()) => Err(FolderError::NotFound),
+        Err(err) => Err(FolderError::Failed(Failure::of_kind(err.kind()))),
+    }
+}
+
 /// Whether `target` names the entry `from` itself in another spelling, as a drive that does not tell cases (or Unicode
 /// forms) apart finds it: in the same folder, not stored under that name ([`holds_name`]), and what the system finds
-/// there is `from` – on Unix the same drive and number, elsewhere the same resolved path (not for a link, whose
-/// resolved path is where it points).
+/// there is `from` ([`identity`]: on Unix the same drive and number, elsewhere the same resolved path, not for a link,
+/// whose resolved path is where it points).
 fn same_entry(from: &Path, target: &Path) -> bool {
     let (Some(folder), Some(name)) = (target.parent(), target.file_name()) else { return false };
     if from.parent() != Some(folder) || holds_name(folder, name).unwrap_or(true) {
         return false;
     }
-    let (Ok(source), Ok(found)) = (fs::symlink_metadata(from), fs::symlink_metadata(target)) else { return false };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (source.dev(), source.ino()) == (found.dev(), found.ino())
-    }
-    #[cfg(not(unix))]
-    {
-        !source.file_type().is_symlink()
-            && !found.file_type().is_symlink()
-            && fs::canonicalize(target).is_ok_and(|resolved| resolved == from)
-    }
+    identity(from, false).is_some_and(|source| identity(target, false) == Some(source))
 }
 
 /// Renames `from` to the first free name for `target` ([`free_names`], `whole`: a folder's name), looking at each
@@ -561,8 +584,8 @@ fn rename_free(from: &Path, target: &Path, whole: bool) -> io::Result<Option<Pat
 
 /// Copies the file `from` to another drive ([`copy_file`]) and removes it there; if it cannot be removed, the copy
 /// goes again, so the file is never in two places.
-fn copy_then_remove(from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
-    let copy = copy_file(from, target)?;
+fn copy_then_remove(allowed: &Allowed, from: &Path, target: &Path) -> Result<PathBuf, FolderError> {
+    let copy = copy_file(allowed, from, target)?;
     remove_source(from, copy)
 }
 
@@ -688,9 +711,9 @@ fn execute(
         Planned::Roots => listed(list_roots(allowed)),
         Planned::List(folder) => listed(list_folder(allowed, &folder)?),
         Planned::Find(folder, name) => listed(find_files(allowed, &folder, &name)?),
-        Planned::Create(target) => made(create_folder(&target)?),
-        Planned::Copy(from, to) => made(copy_file(&from, &to)?),
-        Planned::Move(from, to) => made(move_file(&from, &to)?),
+        Planned::Create(target) => made(create_folder(allowed, &target)?),
+        Planned::Copy(from, to) => made(copy_file(allowed, &from, &to)?),
+        Planned::Move(from, to) => made(move_file(allowed, &from, &to)?),
         Planned::Trash(entry) => {
             trash(&entry).map_err(FolderError::Failed)?;
             Response::Ok
@@ -1374,6 +1397,109 @@ mod tests {
             to: place.path("home/Documents/REPORT.pdf"),
         };
         assert_eq!(made(run(&allowed, &copy).expect("copied")), docs.join("REPORT-2.pdf"));
+    }
+
+    /// The home allowed with "Read and write", `~/.cursor/mcp.json` locked and `~/.ssh` (with the key stores), both
+    /// missing; `~/.cursor` there, a file and a folder in `Documents`. `None` on a drive that tells cases apart.
+    #[cfg(target_os = "macos")]
+    fn home_with_missing_locks(place: &Place) -> Option<Allowed> {
+        let home = place.dir.path().join("home");
+        fs::create_dir(home.join(".cursor")).expect("made");
+        write(place, "home/Documents/a.json", b"{\"mcpServers\":{}}");
+        fs::create_dir(home.join("Documents/Box")).expect("made");
+        write(place, "home/Documents/Box/authorized_keys", b"ssh-ed25519 AAAA");
+        if !home.join(".CURSOR").exists() {
+            return None;
+        }
+        let mut locked = super::super::folders::key_stores(&home);
+        locked.push(home.join(".cursor/mcp.json"));
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        Some(Allowed::of(&folders, &locked))
+    }
+
+    /// The names in `relative`, as stored.
+    #[cfg(target_os = "macos")]
+    fn stored(place: &Place, relative: &str) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(place.dir.path().join(relative))
+            .expect("listed")
+            .map(|item| item.expect("read").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Review of issue #304: a new name the drive also finds as a locked path that is missing (`mcp.jſon` as
+    /// `mcp.json`, `.ſsh` as `.ssh` on APFS) slipped past the locks, and Cursor would start an MCP server of the
+    /// agent's choice. Copying, making a folder and moving a file (a hard link) or a folder (a rename) there is taken
+    /// back and `not-found`; what was moved stays where it was.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_new_entry_the_drive_finds_as_a_locked_path_is_undone() {
+        let place = Place::new();
+        let Some(allowed) = home_with_missing_locks(&place) else { return };
+        let home = place.dir.path().join("home");
+        let copy = Request::CopyFile {
+            from: place.path("home/Documents/a.json"),
+            to: place.path("home/.cursor/mcp.j\u{17f}on"),
+        };
+        assert_eq!(run(&allowed, &copy).err(), Some(FolderError::NotFound));
+        assert!(stored(&place, "home/.cursor").is_empty(), "no copy");
+        assert!(fs::symlink_metadata(home.join(".cursor/mcp.json")).is_err());
+
+        let create = Request::CreateFolder { path: place.path("home/.\u{17f}sh") };
+        assert_eq!(run(&allowed, &create).err(), Some(FolderError::NotFound));
+        let moved = Request::MoveFile { from: place.path("home/Documents/a.json"), to: place.path("home/.\u{17f}sh") };
+        assert_eq!(run(&allowed, &moved).err(), Some(FolderError::NotFound));
+        let folder = Request::MoveFile { from: place.path("home/Documents/Box"), to: place.path("home/.\u{17f}sh") };
+        assert_eq!(run(&allowed, &folder).err(), Some(FolderError::NotFound));
+        assert_eq!(stored(&place, "home"), [".cursor", "Documents"], "no folder, nothing moved");
+        assert_eq!(stored(&place, "home/Documents"), ["Box", "Private", "a.json"]);
+        assert_eq!(fs::read(home.join("Documents/a.json")).expect("read"), b"{\"mcpServers\":{}}");
+        assert!(home.join("Documents/Box/authorized_keys").is_file(), "the folder as it was");
+        // A folder the drive finds as one that holds a locked path (`.curſor` as `.cursor`).
+        fs::remove_dir(home.join(".cursor")).expect("removed");
+        let around = Request::CreateFolder { path: place.path("home/.cur\u{17f}or") };
+        assert_eq!(run(&allowed, &around).err(), Some(FolderError::NotFound));
+        assert_eq!(stored(&place, "home"), ["Documents"]);
+    }
+
+    /// The same locks do not stand in the way of what is fine: `~/.cursor` itself (a lock below it is locked by its
+    /// name), a file in it and a folder of another name.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_entry_the_drive_finds_only_as_itself_stays() {
+        let place = Place::new();
+        let Some(allowed) = home_with_missing_locks(&place) else { return };
+        let home = resolved(&place, "home");
+        fs::remove_dir(home.join(".cursor")).expect("removed");
+        let create = Request::CreateFolder { path: place.path("home/.cursor") };
+        assert_eq!(made(run(&allowed, &create).expect("made")), home.join(".cursor"));
+        let copy =
+            Request::CopyFile { from: place.path("home/Documents/a.json"), to: place.path("home/.cursor/other.json") };
+        assert_eq!(made(run(&allowed, &copy).expect("copied")), home.join(".cursor/other.json"));
+        let moved = Request::MoveFile { from: place.path("home/Documents/Box"), to: place.path("home/Keys") };
+        assert_eq!(made(run(&allowed, &moved).expect("moved")), home.join("Keys"));
+    }
+
+    /// Review of issue #304: macOS keeps many names decomposed (`Rechnung Ma\u{308}rz.pdf`), a client writes them
+    /// back composed. The file `list_folder` showed is found, moved, and the answer names it as stored.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_decomposed_name_is_found_composed() {
+        let place = Place::new();
+        let docs = resolved(&place, "home/Documents");
+        let stored_name = "Rechnung Ma\u{308}rz.pdf";
+        fs::write(docs.join(stored_name), b"invoice").expect("written");
+        fs::create_dir(docs.join("Archive")).expect("made");
+        let composed = place.path("home/Documents/Rechnung M\u{e4}rz.pdf");
+        if fs::symlink_metadata(&composed).is_err() {
+            return; // A drive that tells Unicode forms apart.
+        }
+        let moved = Request::MoveFile { from: composed, to: place.path("home/Documents/Archive") };
+        let path = made(run(&place.allowed(), &moved).expect("moved"));
+        assert_eq!(path, docs.join("Archive").join(stored_name));
+        assert_eq!(fs::read(&path).expect("read"), b"invoice");
+        assert!(fs::symlink_metadata(docs.join(stored_name)).is_err(), "moved, not copied");
     }
 
     #[test]
