@@ -354,12 +354,21 @@ impl Web {
 
     /// `tools.list_search_providers`: every provider in [`SearchProviderId::ORDER`] as [`catalogue::info`] has it,
     /// with the switches and address of `settings`, whether its key is stored (never the key) and its rest.
-    pub async fn list(&self, settings: &WebSearch) -> Response {
+    /// Without `with_address` (a client that does not reach `web`) SearXNG comes without its address and host:
+    /// they often point into the person's own network, and such a client has nothing to search there.
+    pub async fn list(&self, settings: &WebSearch, with_address: bool) -> Response {
         let needing = SearchProviderId::ORDER.into_iter().filter(|id| catalogue::entry(*id).needs_key).collect();
         let stored = self.stored_keys(needing).await;
         let providers = SearchProviderId::ORDER
             .into_iter()
             .map(|id| catalogue::info(id, settings, stored.contains_key(&id), self.router.paused_until(id)))
+            .map(|mut info| {
+                if !with_address && info.address.is_some() {
+                    info.address = None;
+                    info.sends_to = String::new();
+                }
+                info
+            })
             .collect();
         Response::SearchProviders { providers }
     }
@@ -700,7 +709,7 @@ mod tests {
         assert_eq!(web.set_key(SearchProviderId::Brave, Some(Secret::new(" BSA_secret\n"))).await, Response::Ok);
         assert_eq!(keys.stored(SearchProviderId::Brave).as_deref(), Some("BSA_secret"), "trimmed");
 
-        let Response::SearchProviders { providers } = web.list(&on(&[SearchProviderId::Brave])).await else {
+        let Response::SearchProviders { providers } = web.list(&on(&[SearchProviderId::Brave]), true).await else {
             panic!("the providers")
         };
         let ids: Vec<_> = providers.iter().map(|info| info.id).collect();

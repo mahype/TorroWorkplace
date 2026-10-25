@@ -7121,7 +7121,14 @@ impl Core {
                 self.tools.web().search(&settings.web_search, &query, count, language.as_deref()).await
             }
             (Request::FetchPage { url }, _) => self.tools.web().fetch(&url, by_person).await,
-            (Request::ListSearchProviders, _) => self.tools.web().list(&settings.web_search).await,
+            // A client sees the SearXNG address only when it reaches `web` itself (PR #311 review).
+            (Request::ListSearchProviders, _) => {
+                let with_address = match reach {
+                    Reach::Suite => true,
+                    Reach::Client(rights) => rights.reaches_tool(torro_core::settings::ToolId::Web),
+                };
+                self.tools.web().list(&settings.web_search, with_address).await
+            }
             (other, _) => Refused::Forbidden { command: other.operation().name() }.response(),
         }
     }
@@ -11887,6 +11894,42 @@ mod tests {
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
         assert!(log.contains("tools.web_search") && log.contains("tools.fetch_page"), "{log}");
         assert!(!log.contains("Lisbon") && !log.contains("lisbon.example.org"), "no words, no address: {log}");
+    }
+
+    /// PR #311 review: the SearXNG address often points into the person's own network, so
+    /// `tools.list_search_providers` names it and its host only to a client that reaches `web`
+    /// and to the app key; reading in `tools` alone shows SearXNG without them.
+    #[tokio::test]
+    async fn only_a_client_reaching_the_web_sees_the_searxng_address() {
+        use torro_core::settings::{SearchProviderId, ToolId};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = with_web(dir.path(), crate::tools::web::testing::offline());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut whole = Box::new(settings(&core).await);
+        whole.tools.set_on(ToolId::Web, true);
+        whole.web_search.searxng = Some("http://192.168.1.20:8888".into());
+        let update = Request::UpdateSettings { settings: *whole };
+        assert_eq!(Box::pin(ask(&core, Some(&app_key), update)).await, Response::Ok);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        let (id, key) = client(&core, rights.clone()).await;
+        let searxng = |asker: &Key| {
+            let core = &core;
+            let asker = asker.clone();
+            async move {
+                let listed = ask(core, Some(&asker), Request::ListSearchProviders).await;
+                let Response::SearchProviders { providers } = listed else { panic!("the providers, got {listed:?}") };
+                let info = providers.into_iter().find(|info| info.id == SearchProviderId::Searxng).expect("SearXNG");
+                (info.address, info.sends_to)
+            }
+        };
+
+        assert_eq!(searxng(&key).await, (None, String::new()), "all tools is not web");
+        rights.tools = Selection::Only(vec!["web".into()]);
+        core.clients.update(&id, rights).await.expect("updated");
+        let named = (Some("http://192.168.1.20:8888".to_string()), "192.168.1.20".to_string());
+        assert_eq!(searxng(&key).await, named, "named, so reached");
+        assert_eq!(searxng(&app_key).await, named, "the person's settings");
     }
 
     /// Issue #305, point 5, task WEB.4: the key of a search provider is the person's alone. A client

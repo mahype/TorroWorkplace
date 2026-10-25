@@ -107,7 +107,7 @@ pub struct SearchProviderInfo {
     /// What people call it (`DuckDuckGo`).
     pub name: String,
     /// The host the search words go to (`html.duckduckgo.com`); for SearXNG the host of the person's
-    /// address, empty while none is set.
+    /// address, empty while none is set and for a client that does not reach `web`.
     pub sends_to: String,
     /// Where the provider has its seat, for people (`USA`, `Germany`); empty for SearXNG, which is the
     /// person's own.
@@ -123,7 +123,8 @@ pub struct SearchProviderInfo {
     /// Whether its key is stored; [`KeyState::NotNeeded`] when it needs none.
     pub key: KeyState,
     /// The person's SearXNG address (`settings.set_setting searxng_address`); `None` for every other
-    /// provider and while none is set.
+    /// provider, while none is set and for a client that does not reach `web` (it often points into
+    /// the person's own network).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
     /// A person switched it on (`settings.set_setting search_provider`).
