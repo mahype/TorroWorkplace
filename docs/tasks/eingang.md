@@ -4165,7 +4165,7 @@ Nicht parallel zu E17 (#300): E17.2 und E18.4 ändern `sidebar`, `nav_menu` und 
   Rechte-Tabellentest und Vertragstest des Katalogs laufen mit.
 
 ### E18.3 Client und Quellen: Mails nach Rolle, Zahl ungelesener, Show again
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E18.2 · **Dateien:** `crates/torro-ipc/src/inbox.rs`,
   `crates/torroinbox/src/mail.rs`, `crates/torroinbox/src/empty.rs`, `crates/torro-inbox/src/demo.rs`
 - `torro-ipc/src/inbox.rs`: `pub struct MailByRole { role: torro_mail::Role, account: Option<String>, snoozed:

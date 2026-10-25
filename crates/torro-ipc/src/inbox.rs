@@ -33,6 +33,11 @@
 //! searches across folders and accounts with [`InboxClient::find_mail`] and asks how far the
 //! index is with [`InboxClient::mail_index_status`].
 //!
+//! The mail window's views of every account (task E18.3, `docs/tasks/eingang.md` E18): "All",
+//! "Hidden" and "Archive" list the mail of one folder role with [`InboxClient::mail_by_role`]
+//! ([`MailByRole`]), the number on "All" comes from [`InboxClient::count_unread_in_all`], and
+//! "Show again" sends `inbox.set_mail_shown` with [`InboxClient::set_mail_shown`].
+//!
 //! Tasks of folder mail (task E8.1b): [`InboxClient::create_todo_from_mail`] sends
 //! `tasks.create_todo_from_mail` and answers the task in the inbox's model ([`ItemTask`]), so the
 //! window needs no calendar model of its own for the due day.
@@ -60,7 +65,9 @@ use serde::{Deserialize, Serialize};
 use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, MuteScope, Muted, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
-use torro_mail::{Category, CategoryGroup, Flag, Folder, InvitationAnswer, Message, MessageSummary, Order, SaveTarget};
+use torro_mail::{
+    Category, CategoryGroup, Flag, Folder, InvitationAnswer, Message, MessageSummary, Order, Role, SaveTarget,
+};
 use torro_pim::EventTime;
 
 use crate::assistant::EngineKind;
@@ -85,6 +92,31 @@ pub struct MailFind {
     /// At most this many messages, 1 to 100.
     pub limit: u32,
     /// The cursor of the previous page, asked with the same query, sort and order.
+    pub cursor: Option<String>,
+}
+
+/// The mail of one folder role across accounts as the mail window lists it
+/// ([`InboxClient::mail_by_role`], task E18.3): "All" is [`Role::Inbox`] with `snoozed` and
+/// `hidden` `Some(false)`, "Hidden" [`Role::Inbox`] with `hidden` `Some(true)`, "Archive"
+/// [`Role::Archive`]. Sent as one `mail.search_messages` without a folder and with the query
+/// `in:<role>`, so every account's folder of that role counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailByRole {
+    /// The folders of this role, in every account (or in `account` only).
+    pub role: Role,
+    /// Only this account (`mail:<address>`); `None`: every account the window reaches.
+    pub account: Option<String>,
+    /// `Some(false)` leaves out mail whose entry is snoozed now, `Some(true)` gives only that;
+    /// `None`: both ([`Request::SearchMail`]'s `snoozed`).
+    pub snoozed: Option<bool>,
+    /// `Some(false)` leaves out mail the person hid from the inbox, `Some(true)` gives only that;
+    /// `None`: both ([`Request::SearchMail`]'s `hidden`, task E18.1).
+    pub hidden: Option<bool>,
+    /// Newest or oldest first, by the message's date.
+    pub order: Order,
+    /// At most this many messages, 1 to 100.
+    pub limit: u32,
+    /// The cursor of the previous page, asked with the same fields.
     pub cursor: Option<String>,
 }
 
@@ -299,6 +331,70 @@ impl InboxClient {
             }
             other => Err(unexpected(other)),
         }
+    }
+
+    /// `mail.search_messages` for the mail of one folder role (task E18.3, [`MailByRole`]): no
+    /// `folder`, the query `in:<role>` (the role's serde word: `in:inbox`, `in:archive`), with
+    /// `account`, `snoozed`, `hidden`, `order`, `limit` and `cursor` as `find` says; nothing filters
+    /// by flags, time or category. Answers the page, newest first unless `find.order` says
+    /// otherwise, and the cursor of the next one (`None` on the last page).
+    pub async fn mail_by_role(&self, find: MailByRole) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
+        let MailByRole { role, account, snoozed, hidden, order, limit, cursor } = find;
+        let request = Request::SearchMail {
+            account,
+            folder: None,
+            query: Some(in_role(role)),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor,
+            order: asked(order),
+            sort: None,
+            snoozed,
+            hidden,
+            categories: Vec::new(),
+        };
+        match self.ask(request).await? {
+            Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// How much unread mail "All" holds (task E18.3, decision 4 of E18): the search of "All" –
+    /// [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)` – with `unread: Some(true)` and
+    /// `limit: 1`, for `account` or every account the window reaches. Answers the core's
+    /// `total_estimate`, 0 when it sends none.
+    pub async fn count_unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
+        let request = Request::SearchMail {
+            account,
+            folder: None,
+            query: Some(in_role(Role::Inbox)),
+            unread: Some(true),
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 1,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: Some(false),
+            hidden: Some(false),
+            categories: Vec::new(),
+        };
+        match self.ask(request).await? {
+            Response::MailMessages { total_estimate, .. } => Ok(total_estimate.unwrap_or(0)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.set_mail_shown` (task E18.2, "Show again"): `shown: true` takes the mail messages
+    /// `ids` (`m:…`, 1 to 100) out of "Hidden" – the rule that hid them stays, their entry stays as
+    /// it is –, `shown: false` takes that back (the undo). [`InboxError::NotFound`] when one of them
+    /// lies in an account the window may not see; nothing is remembered then.
+    pub async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
+        self.ask_ok(Request::SetMailShown { ids, shown }).await
     }
 
     /// `mail.index_status`: how far the core's search index of each mail account is (issue #136),
@@ -631,6 +727,20 @@ fn inbox_answer(answer: Result<Response, IpcError>) -> Result<Response, InboxErr
 /// it did before the field existed (task E8.15).
 fn asked(order: Order) -> Option<Order> {
     (order != Order::default()).then_some(order)
+}
+
+/// The query naming the folders of `role` in every account: `in:` with the role's serde word
+/// (`in:inbox`, `in:archive`), which `mail.search_messages` reads as that role.
+fn in_role(role: Role) -> String {
+    let word = match role {
+        Role::Inbox => "inbox",
+        Role::Drafts => "drafts",
+        Role::Sent => "sent",
+        Role::Archive => "archive",
+        Role::Junk => "junk",
+        Role::Trash => "trash",
+    };
+    format!("in:{word}")
 }
 
 /// An answer that is not the variant the request asks for.
@@ -1807,6 +1917,126 @@ mod tests {
         client.move_mail(vec!["m:1".into()], archive).await.expect("archived");
         client.delete_mail(vec!["m:1".into(), "m:2".into()]).await.expect("into the trash, not for good");
         assert_eq!(client.delete_mail(vec!["m:3".into()]).await, Err(InboxError::NotFound));
+    }
+
+    /// Answers the searches by role and `inbox.set_mail_shown` (task E18.3) with what arrived: a
+    /// search echoes its fields in the id of its one message, its `total_estimate` is 4 for an
+    /// account and missing without one.
+    fn role_answer(request: Request) -> Response {
+        match request {
+            Request::SearchMail {
+                account,
+                folder: None,
+                query,
+                unread,
+                flagged: None,
+                since: None,
+                before: None,
+                limit,
+                cursor,
+                order,
+                sort: None,
+                snoozed,
+                hidden,
+                categories,
+            } if categories.is_empty() => {
+                let id = format!(
+                    "{}|{}|{unread:?}|{snoozed:?}|{hidden:?}|{limit}|{}|{order:?}",
+                    account.as_deref().unwrap_or_default(),
+                    query.unwrap_or_default(),
+                    cursor.unwrap_or_default(),
+                );
+                Response::MailMessages {
+                    total_estimate: account.map(|_| 4),
+                    messages: vec![summary(&id, "f:inbox")],
+                    cursor: Some("next".into()),
+                    source: crate::mail::MailSource::Cache,
+                    complete: true,
+                    incomplete_reason: None,
+                    highlights: Vec::new(),
+                }
+            }
+            Request::SetMailShown { ids, shown: true } if ids == ["m:1"] => Response::Ok,
+            Request::SetMailShown { ids, shown: false } if ids == ["m:1", "m:2"] => Response::Ok,
+            Request::SetMailShown { .. } => Response::Error { code: "not-found".into(), message: "gone".into() },
+            other => Response::Error { code: "error".into(), message: format!("unexpected: {other:?}") },
+        }
+    }
+
+    #[tokio::test]
+    async fn mail_by_role_counting_and_showing_send_their_fields() {
+        let core = start(|request| async move { role_answer(request) }).await;
+        let client = core.client();
+        let all = MailByRole {
+            role: torro_mail::Role::Inbox,
+            account: None,
+            snoozed: Some(false),
+            hidden: Some(false),
+            order: Order::NewestFirst,
+            limit: 50,
+            cursor: None,
+        };
+        let (page, next) = client.mail_by_role(all.clone()).await.expect("a page");
+        assert_eq!(page[0].id, "|in:inbox|None|Some(false)|Some(false)|50||None", "no folder, the role as query");
+        assert_eq!(next.as_deref(), Some("next"));
+        let archive = MailByRole {
+            role: torro_mail::Role::Archive,
+            account: Some("mail:anna@example.org".into()),
+            snoozed: None,
+            hidden: None,
+            order: Order::OldestFirst,
+            limit: 20,
+            cursor: Some("c1".into()),
+        };
+        let (page, _) = client.mail_by_role(archive).await.expect("a page");
+        assert_eq!(page[0].id, "mail:anna@example.org|in:archive|None|None|None|20|c1|Some(OldestFirst)");
+        let hidden = MailByRole { hidden: Some(true), snoozed: None, ..all };
+        let (page, _) = client.mail_by_role(hidden).await.expect("a page");
+        assert_eq!(page[0].id, "|in:inbox|None|None|Some(true)|50||None");
+
+        // The number on "All": the same search, unread only, one message, its estimate.
+        assert_eq!(client.count_unread_in_all(Some("mail:anna@example.org".into())).await, Ok(4));
+        assert_eq!(client.count_unread_in_all(None).await, Ok(0), "no estimate counts as none");
+        let core_seen = start(|request| async move {
+            match request {
+                Request::SearchMail {
+                    query: Some(query),
+                    unread: Some(true),
+                    limit: 1,
+                    cursor: None,
+                    snoozed: Some(false),
+                    hidden: Some(false),
+                    folder: None,
+                    ..
+                } if query == "in:inbox" => Response::MailMessages {
+                    messages: Vec::new(),
+                    cursor: None,
+                    source: crate::mail::MailSource::Cache,
+                    complete: true,
+                    incomplete_reason: None,
+                    highlights: Vec::new(),
+                    total_estimate: Some(9),
+                },
+                _ => Response::Error { code: "error".into(), message: "not the count".into() },
+            }
+        })
+        .await;
+        assert_eq!(core_seen.client().count_unread_in_all(None).await, Ok(9), "asked as \"All\" with unread");
+
+        // "Show again" and its undo.
+        client.set_mail_shown(vec!["m:1".into()], true).await.expect("shown again");
+        client.set_mail_shown(vec!["m:1".into(), "m:2".into()], false).await.expect("hidden again");
+        assert_eq!(client.set_mail_shown(vec!["m:9".into()], true).await, Err(InboxError::NotFound));
+    }
+
+    /// The query of a search by role is `in:` with the role's serde word.
+    #[test]
+    fn a_role_is_searched_by_its_serde_word() {
+        use torro_mail::Role;
+        for role in [Role::Inbox, Role::Drafts, Role::Sent, Role::Archive, Role::Junk, Role::Trash] {
+            let word = serde_json::to_value(role).expect("json");
+            assert_eq!(in_role(role), format!("in:{}", word.as_str().expect("a word")));
+        }
     }
 
     #[tokio::test]

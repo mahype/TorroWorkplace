@@ -46,6 +46,9 @@
 //!   the core (`mail.list_save_targets`, [`MailSource::save_targets`]), saving is
 //!   `mail.save_attachments` ([`MailSource::save_attachments`]); the window adds only the system's
 //!   dialogs and "Show in folder" ([`saved_text`], [`saved_folder`]).
+//! - The mail window's views of every account (task E18.3): "All", "Hidden" and "Archive" list the
+//!   mail of one folder role ([`MailSource::mail_by_role`]), the number on "All" comes from
+//!   [`MailSource::unread_in_all`], and "Show again" is [`MailSource::set_mail_shown`].
 //!
 //! **Mail is foreign text** (`untrusted`). Its HTML comes cleaned by the core (no scripts, no
 //! forms, legacy attributes as CSS) and is drawn without JavaScript; a click on one of its links
@@ -80,7 +83,7 @@ use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
 use torro_ipc::inbox::CategoryInfo;
-use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound, SaveTargets, SavedAttachments};
+use torro_ipc::inbox::{CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, SaveTargets, SavedAttachments};
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
@@ -266,6 +269,31 @@ pub trait MailSource: Send + Sync {
     /// `mail.index_status`: how far the search index of each mail account is, for the honest line
     /// under the search field while matches may be missing.
     fn mail_index_status(&self) -> impl Future<Output = Result<Vec<MailIndexProgress>, InboxError>> + Send;
+
+    /// `mail.search_messages` without a folder and with the query `in:<role>` (task E18.3,
+    /// [`InboxClient::mail_by_role`]): the mail in the folders of `find.role` of every account the
+    /// window reaches (or of `find.account`), leaving out or giving only snoozed and hidden mail as
+    /// `find.snoozed` and `find.hidden` say, at most `find.limit` in `find.order` from
+    /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields).
+    /// "All" is [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)`, "Hidden" [`Role::Inbox`]
+    /// with `hidden` `Some(true)`, "Archive" [`Role::Archive`]. The page has no highlights.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
+    fn mail_by_role(&self, find: MailByRole) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
+
+    /// The number on "All" (task E18.3, decision 4 of E18): `mail.search_messages` as "All" asks it
+    /// – [`Role::Inbox`], `snoozed` and `hidden` `Some(false)` – with `unread: Some(true)` and
+    /// `limit: 1`, for `account` (`mail:<address>`) or every account the window reaches
+    /// ([`InboxClient::count_unread_in_all`]). Answers the core's `total_estimate`, 0 without one.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
+    fn unread_in_all(&self, account: Option<String>) -> impl Future<Output = Result<u64, InboxError>> + Send;
+
+    /// `inbox.set_mail_shown` (task E18.2, "Show again"; [`InboxClient::set_mail_shown`]): `shown:
+    /// true` takes the mail `ids` (`m:…`, 1 to 100) out of "Hidden" into "All" – the rule that hid
+    /// them stays, their entry stays as it is –, `shown: false` takes that back (the undo).
+    /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing is
+    /// remembered then. `Ok` also when there was nothing to remember.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
+    fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
 }
 
 /// One page of a folder ([`MailSource::search_mail`]) or of a search ([`MailSource::find_mail`]).
@@ -341,6 +369,19 @@ impl MailSource for InboxClient {
 
     async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
         InboxClient::mail_index_status(self).await
+    }
+
+    async fn mail_by_role(&self, find: MailByRole) -> Result<MailPage, InboxError> {
+        let (messages, next) = InboxClient::mail_by_role(self, find).await?;
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
+        InboxClient::count_unread_in_all(self, account).await
+    }
+
+    async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
+        InboxClient::set_mail_shown(self, ids, shown).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -484,6 +525,29 @@ impl MailSource for DemoSource {
 
     async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
         crate::search::demo_index(self)
+    }
+
+    /// The demo's mail of the role ([`DemoSource::by_role`]) a page at a time; the cursor is the
+    /// place of the next page, as in the demo's folders.
+    async fn mail_by_role(&self, find: MailByRole) -> Result<MailPage, InboxError> {
+        let found =
+            DemoSource::by_role(self, find.role, find.account.as_deref(), find.snoozed, find.hidden, find.order);
+        let mut page = demo_page(found, find.limit, find.cursor.as_deref())?;
+        for message in &mut page.messages {
+            message.invite = demo_invite(&message.id, message.date);
+        }
+        Ok(page)
+    }
+
+    /// The unread mail of what "All" lists, counted exactly.
+    async fn unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
+        let all =
+            DemoSource::by_role(self, Role::Inbox, account.as_deref(), Some(false), Some(false), Order::NewestFirst);
+        Ok(all.iter().filter(|message| !message.flags.contains(&Flag::Seen)).count() as u64)
+    }
+
+    async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
+        DemoSource::set_mail_shown(self, &ids, shown)
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -723,6 +787,35 @@ impl MailSource for crate::empty::EmptySource {
     async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
         Ok(Vec::new())
     }
+
+    async fn mail_by_role(&self, _find: MailByRole) -> Result<MailPage, InboxError> {
+        Ok(MailPage::of(Vec::new(), None))
+    }
+
+    async fn unread_in_all(&self, _account: Option<String>) -> Result<u64, InboxError> {
+        Ok(0)
+    }
+
+    /// No mail is hidden, so there is nothing to remember – as the core answers then.
+    async fn set_mail_shown(&self, _ids: Vec<String>, _shown: bool) -> Result<(), InboxError> {
+        Ok(())
+    }
+}
+
+/// The page of the demo's `found` that starts at `cursor` (the place the demo gave out, `None`: the
+/// start), at most `limit` long, with the cursor of the page after it. [`InboxError::Other`] for a
+/// cursor the demo did not give out, as its folders answer it.
+#[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E18.4 on"))]
+fn demo_page(found: Vec<MessageSummary>, limit: u32, cursor: Option<&str>) -> Result<MailPage, InboxError> {
+    let start = match cursor {
+        None => 0,
+        Some(cursor) => cursor.parse::<usize>().map_err(|_| InboxError::Other("not a cursor".into()))?,
+    };
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let total = found.len();
+    let messages: Vec<MessageSummary> = found.into_iter().skip(start).take(limit).collect();
+    let next = (start + messages.len() < total).then(|| (start + messages.len()).to_string());
+    Ok(MailPage::of(messages, next))
 }
 
 /// What the sidebar's group "Categories" shows (task E12.8): a whole group of mail categories, or
@@ -4717,6 +4810,64 @@ mod tests {
             None,
         ));
         assert!(unknown.is_err());
+    }
+
+    /// Task E18.3: the demo lists the mail of a role a page at a time, counts the unread mail of
+    /// "All" without the hidden newsletter, and shows it again in "All" until the undo.
+    #[test]
+    fn the_demo_lists_mail_by_role_counts_all_and_shows_mail_again() {
+        let demo = DemoSource::new(now());
+        let by_role = |role, hidden, limit, cursor: Option<String>| {
+            let find = MailByRole {
+                role,
+                account: None,
+                snoozed: (role == Role::Inbox).then_some(false),
+                hidden,
+                order: Order::NewestFirst,
+                limit,
+                cursor,
+            };
+            iced::futures::executor::block_on(MailSource::mail_by_role(&demo, find)).expect("a page")
+        };
+        let first = by_role(Role::Archive, None, 1, None);
+        assert_eq!((first.messages[0].id.as_str(), first.next.as_deref()), ("m:w9", Some("1")));
+        let last = by_role(Role::Archive, None, 1, first.next);
+        assert_eq!((last.messages[0].id.as_str(), last.next), ("m:p6", None), "the archives of both accounts");
+        let all = by_role(Role::Inbox, Some(false), 50, None).messages;
+        assert!(!all.iter().any(|message| message.id == demo::HIDDEN_MAIL), "hidden from All");
+        let hidden = by_role(Role::Inbox, Some(true), 50, None).messages;
+        assert_eq!(hidden.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(), [demo::HIDDEN_MAIL]);
+        let bad = MailByRole {
+            role: Role::Inbox,
+            account: None,
+            snoozed: None,
+            hidden: None,
+            order: Order::NewestFirst,
+            limit: 1,
+            cursor: Some("x".into()),
+        };
+        assert!(matches!(
+            iced::futures::executor::block_on(MailSource::mail_by_role(&demo, bad)),
+            Err(InboxError::Other(_))
+        ));
+
+        let unread = |account: Option<&str>| {
+            iced::futures::executor::block_on(MailSource::unread_in_all(&demo, account.map(str::to_owned)))
+                .expect("a number")
+        };
+        let unread_shown = all.iter().filter(|message| !message.flags.contains(&Flag::Seen)).count() as u64;
+        assert_eq!(unread(None), unread_shown, "the unread mail of All, the newsletter left out");
+        assert_eq!(unread(Some(demo::MAIL_ACCOUNTS[0])) + unread(Some(demo::MAIL_ACCOUNTS[1])), unread(None));
+
+        let show = |shown| {
+            iced::futures::executor::block_on(MailSource::set_mail_shown(&demo, vec![demo::HIDDEN_MAIL.into()], shown))
+        };
+        show(true).expect("shown again");
+        assert!(by_role(Role::Inbox, Some(false), 50, None).messages.iter().any(|m| m.id == demo::HIDDEN_MAIL));
+        assert!(by_role(Role::Inbox, Some(true), 50, None).messages.is_empty());
+        assert_eq!(unread(None), unread_shown + 1, "the unread newsletter counts again");
+        show(false).expect("undone");
+        assert_eq!(by_role(Role::Inbox, Some(false), 50, None).messages, all);
     }
 
     /// Task E8.3b: the smart view keeps the invitations not over yet, the soonest first; the demo's
