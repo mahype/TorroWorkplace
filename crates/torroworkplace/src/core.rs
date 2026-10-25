@@ -3333,7 +3333,8 @@ impl Core {
             }
             // A command of the tool `files` that changes something (issue #304; the trash: task WD.3): the paths as
             // the core resolves them now, shown whole in the details, and the approval pinned to them; nothing to
-            // ask about when they do not resolve.
+            // ask about when they do not resolve. Their facts are made only here, not in [`Core::facts`]: the
+            // refusal of a plan that does not resolve is the answer.
             (
                 Request::CreateFolder { .. }
                 | Request::CopyFile { .. }
@@ -3552,12 +3553,6 @@ impl Core {
             // whose it is was checked before.
             Request::OpenFile { file } | Request::SaveFileAs { file, .. } => {
                 Facts { name: self.tools.file(file, Maker::App).await.map(|file| file.title), ..Facts::default() }
-            }
-            // The paths of a command of the tool `files` as the core resolves them within the allowed folders of now
-            // (issue #304), never the client's text; the client's reach was checked before.
-            Request::CreateFolder { .. } | Request::CopyFile { .. } | Request::MoveFile { .. } => {
-                let planned = self.tools.plan(request, &self.settings.current().tools.folders).await;
-                Facts { paths: planned.ok().flatten().map(|plan| plan.facts()), ..Facts::default() }
             }
             // What choosing the design also sets (task L.33), looked up in the design and the fonts
             // folder with the rule the run applies again; never the design's name or the client's words.

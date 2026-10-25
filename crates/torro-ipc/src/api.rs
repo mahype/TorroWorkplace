@@ -1049,10 +1049,10 @@ impl Request {
     /// `voice_enabled` (point 6, the microphone), `mail_to_cloud` (task C.17, mail to models
     /// outside the person's computers), `allow_api_keys` or `allow_mcp` (#231, a way a person
     /// closed) to anything but `false`, or `tool_enabled` (point 9, issue #225) with `enabled`
-    /// anything but `false`, or `allowed_folder` (point 9, issue #304) with any value, or `maps` (task TE.1, the place search and the map) with `enabled`
-    /// anything but `false` or with `geocoder` or `tiles` at all. A value that is no boolean, a tool
-    /// switch without `enabled`, or `maps` that is no object counts as switching on: it is refused,
-    /// not tried.
+    /// anything but `false`, or `allowed_folder` (point 9, issue #304) with any value, or `maps`
+    /// (task TE.1, the place search and the map) with `enabled` anything but `false` or with
+    /// `geocoder` or `tiles` at all. A value that is no boolean, a tool switch without `enabled`, or
+    /// `maps` that is no object counts as switching on: it is refused, not tried.
     ///
     /// `settings.update_settings` carries the whole settings (maps included), and `pdf_folder` and `pdf_template`
     /// set a path only when it differs from the stored one, so whether they do what only a person
