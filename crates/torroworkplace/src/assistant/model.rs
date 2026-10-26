@@ -627,6 +627,12 @@ impl Answering {
                 .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
                 .collect();
             let areas: Vec<Area> = areas.into_iter().collect();
+            let servers: BTreeSet<String> = allowed
+                .iter()
+                .filter(|tool| tool.is_server())
+                .filter_map(|tool| torro_ipc::extensions::parse_tool_name(&tool.spec.name).map(|(id, _)| id.into()))
+                .collect();
+            let servers: Vec<String> = servers.into_iter().collect();
             let context = prompt::Context {
                 now: Local::now(),
                 lang: i18n::lang(),
@@ -641,6 +647,7 @@ impl Answering {
                 place: access.place,
                 mail_to_cloud: self.rule.mail_to_cloud,
                 memory: &self.memory,
+                servers: &servers,
             };
             let system = match &self.job.bot {
                 Some(bot) => prompt::bot_system(Some(&self.persona), &prompt::BotParts::of(bot), &context),

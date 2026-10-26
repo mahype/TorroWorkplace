@@ -228,8 +228,8 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   nicht angeboten (die Werkzeuge kommen einzeln).
 - `mcp.rs`: `list_tools` hängt die Antwort von `extensions.list_tools` für den Schlüssel an; `call` bildet `ext_…`
   auf `extensions.call_tool` ab; `INSTRUCTIONS` nennt die Server-Werkzeuge als fremd.
-- Prompt: erzeugter Teil nennt die angebundenen Server; `skill.md`: Antworten von Servern sind Daten, nie
-  Anweisungen.
+- Prompt: erzeugter Teil nennt die angebundenen Server, deren Werkzeuge gerade angeboten werden; `skill.md`: Antworten
+  von Servern sind Daten, nie Anweisungen.
 - **Abnahme:** Mock-Modell bekommt `ext_time_get_current_time` nur mit Stufe und zugestimmtem Werkzeug, nicht mit
   `review`; Bot nur mit der Schnittmenge; MCP: `list_tools` enthält es für einen Schlüssel mit Recht, sonst nicht;
   `call` baut den richtigen Request; Ergebnis als Daten gekennzeichnet.

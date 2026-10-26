@@ -401,6 +401,14 @@ impl Running {
             Some(bot) => (bot.personality.clone(), Vec::new()),
             None => self.assistant.persona_and_notes().await,
         };
+        // The servers whose tools it finds over Torro's MCP server with these rights (issue #302).
+        let servers: std::collections::BTreeSet<String> = host
+            .extension_tools(&rights)
+            .into_iter()
+            .filter(|tool| tool.tool_name.is_some())
+            .map(|tool| tool.extension)
+            .collect();
+        let servers: Vec<String> = servers.into_iter().collect();
         let context = prompt::Context {
             now: Local::now(),
             lang: i18n::lang(),
@@ -414,6 +422,7 @@ impl Running {
             place: Place::Remote,
             mail_to_cloud: rule.mail_to_cloud,
             memory: &memory,
+            servers: &servers,
         };
         let system = match &self.job.bot {
             Some(bot) => prompt::bot_system(Some(&persona), &prompt::BotParts::of(bot), &context),

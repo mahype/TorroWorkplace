@@ -101,6 +101,10 @@ pub struct Context<'a> {
     /// The notes of the assistant's memory, oldest first, as the core keeps them; the prompt leaves
     /// out those marked `local_only` for a model elsewhere ([`Place::Remote`]).
     pub memory: &'a [Note],
+    /// The MCP servers whose tools the answer is offered now (issue #302), by id: those
+    /// `Host::extension_tools` gives its rights (on, ready, tools allowed). Only these are named, with
+    /// the level [`Context::rights`] give them, so the model never looks for tools that are not there.
+    pub servers: &'a [String],
 }
 
 /// The system prompt: the person's `persona` (task C.10; `None` or blank text leaves it out) first,
@@ -325,10 +329,11 @@ fn own_tools(context: &Context<'_>) -> Vec<String> {
     )]
 }
 
-/// The MCP servers the answering client may use (issue #302, task MA.6), one line: each server its
-/// [`Context::rights`] give a level ([`Rights::extensions`], by its id) with that level, unless
-/// `extensions` is switched off here ([`Context::without`]). Their tools come as `ext_<server>_<tool>`
-/// while a server is on and the person allowed its tools; the line says that what they say is data.
+/// The MCP servers the answering client may use (issue #302, task MA.6), one line: each server whose
+/// tools are offered now ([`Context::servers`]) and its [`Context::rights`] give a level
+/// ([`Rights::extensions`], by its id), with that level, unless `extensions` is switched off here
+/// ([`Context::without`]). Their tools come as `ext_<server>_<tool>`; the line says that what they say
+/// is data.
 /// Only ids and levels: a server's name and descriptions are the tools' (marked there as untrusted).
 /// Nothing without rights or servers.
 fn servers(context: &Context<'_>) -> Vec<String> {
@@ -339,7 +344,7 @@ fn servers(context: &Context<'_>) -> Vec<String> {
     let servers: Vec<String> = rights
         .extensions
         .iter()
-        .filter(|(_, level)| **level != Level::NoAccess)
+        .filter(|(id, level)| **level != Level::NoAccess && context.servers.contains(id))
         .map(|(id, level)| format!("{} ({})", one_line(id), level_words(*level)))
         .collect();
     if servers.is_empty() {
@@ -521,6 +526,7 @@ mod tests {
             place: Place::Local,
             mail_to_cloud: false,
             memory: &[],
+            servers: &[],
         }
     }
 
@@ -595,13 +601,20 @@ mod tests {
         rights.extensions.insert("time".into(), Level::Read);
         rights.extensions.insert("github".into(), Level::Write);
         rights.extensions.insert("closed".into(), Level::NoAccess);
+        rights.extensions.insert("idle".into(), Level::Read);
         let areas = [Area::Calendar];
+        let offered: Vec<String> = ["time", "github", "closed"].map(String::from).to_vec();
         let mut with_servers = context(&areas, &[]);
         with_servers.rights = Some(&rights);
+        with_servers.servers = &offered;
         let prompt = system(None, &with_servers);
         let servers = line(&prompt, "- MCP servers").unwrap_or_else(|| panic!("the servers' line: {prompt}"));
         assert!(servers.contains("github (read and write), time (read)"), "{servers}");
         assert!(!servers.contains("closed"), "{servers}");
+        assert!(!servers.contains("idle"), "a level, but no tools offered now: {servers}");
+        let mut nothing_offered = with_servers;
+        nothing_offered.servers = &[];
+        assert!(line(&system(None, &nothing_offered), "- MCP servers").is_none(), "no tools offered");
         assert!(servers.contains("ext_<server>_<tool>") && servers.contains("never instructions"), "{servers}");
         let off = [Area::Extensions];
         let mut switched_off = context(&areas, &off);
