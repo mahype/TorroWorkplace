@@ -1,5 +1,6 @@
 //! `torroworkplace ui`: the control centre – one place for everything that concerns the
-//! whole **suite**: accounts, the keys of programs (API), the MCP clients and their rights,
+//! whole **suite**: accounts, the keys of programs (API), the MCP clients and their rights, the
+//! built-in tools and the MCP servers the suite connects to (section MCP servers, task MA.7),
 //! approvals, workspaces, how everything
 //! looks, and the general settings. What one app or window shows is set in that window, behind
 //! its gear (task S.21): the control centre no longer has pages for the apps, the assistant or
@@ -55,6 +56,8 @@ mod agent_wizard;
 mod api;
 mod approvals;
 mod connect;
+// MCP servers (task MA.7): the built-in tools, the catalog of MCP servers and one's own.
+mod connections;
 mod general;
 mod glance;
 mod launch;
@@ -108,6 +111,9 @@ pub enum Section {
     /// Agents and apps that use Torro Workplace through MCP: "Allow MCP", the command, the clients
     /// with their rights and their hooks (task S.35). `--section agents` opens it too.
     Mcp,
+    /// What the suite runs for its clients beyond its own commands: the built-in tools (moved here
+    /// from the assistant), the catalog of MCP servers and one's own (task MA.7).
+    Connections,
     /// What agents wait for and what was decided (task A.8).
     Approvals,
     Workspaces,
@@ -118,12 +124,13 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::Overview,
         Section::Accounts,
         Section::Ai,
         Section::Api,
         Section::Mcp,
+        Section::Connections,
         Section::Approvals,
         Section::Workspaces,
         Section::Appearance,
@@ -142,7 +149,10 @@ impl Section {
             Section::Accounts => tr("Accounts"),
             Section::Ai => tr("AI"),
             Section::Api => tr("API"),
-            Section::Mcp => tr("MCP"),
+            // Who uses the suite through MCP (its clients), and the MCP servers the suite uses itself;
+            // the words of `--section` stay `mcp` and `connections`, so calls keep working.
+            Section::Mcp => tr("MCP clients"),
+            Section::Connections => tr("MCP servers"),
             Section::Approvals => tr("Approvals"),
             Section::Workspaces => tr("Workspaces"),
             Section::Appearance => tr("Appearance"),
@@ -161,6 +171,10 @@ impl Section {
             // A link: clients connected to Torro Workplace. Not the sparkles, which stand for AI in
             // the suite, nor a robot, which it has not.
             Section::Mcp => Icon::Link,
+            // A screen: what runs for the suite on this computer – its own tools and the MCP servers it
+            // starts. Its outline (a screen on a stand) stands apart from the clients' link and from the
+            // grid of Overview next to them in the rail; the suite has no server or plug icon.
+            Section::Connections => Icon::Monitor,
             // A person who confirms: the agent asks, the person decides.
             Section::Approvals => Icon::UserCheck,
             Section::Workspaces => Icon::Layers,
@@ -178,6 +192,7 @@ impl Section {
             Section::Ai => "ai",
             Section::Api => "api",
             Section::Mcp => "mcp",
+            Section::Connections => "connections",
             Section::Approvals => "approvals",
             Section::Workspaces => "workspaces",
             Section::Appearance => "appearance",
@@ -231,6 +246,12 @@ pub struct Data {
     /// The screens the window manager has (`workspaces.list_screens`, task WS.6), for Workspaces and
     /// where a template loads at login; empty without a window manager.
     pub screens: Vec<torro_ipc::ScreenInfo>,
+    /// The MCP servers installed (`extensions.list_extensions`, task MA.7), or why they could not be
+    /// listed: MCP servers shows that in its group.
+    pub extensions: connections::Listing<torro_ipc::extensions::ExtensionInfo>,
+    /// The core's built-in catalog of MCP servers (`extensions.list_catalog`), with what each needs
+    /// that is missing on this computer, or why it could not be listed.
+    pub catalog: connections::Listing<torro_ipc::extensions::CatalogEntry>,
     /// The web search providers (`tools.list_search_providers`, task WEB.7) for the setup's step "Web search", in
     /// the order the core asks them; only loaded while the setup is open, since listing them asks the system
     /// keychain whether their keys are stored.
@@ -251,10 +272,10 @@ pub enum Action {
     /// `Response::Error` with its code, so the template dialog can tell `busy` from `not-found`
     /// ([`template_form::refusal`]). Then reload, as for [`Action::Send`].
     Ask(workspaces::Asked, Request),
-    /// Send this request for the setup's step "Web search" and hand the answer to the setup only
-    /// ([`setup::checked`]): the check of a new SearXNG address (task WEB.7), so the refusal of another
-    /// request that runs beside it is never shown as the check's reason. Then reload, as for
-    /// [`Action::Send`].
+    /// Send this request for the setup's step "Web search" or MCP servers' search providers and hand the answer
+    /// to the one that asked only ([`setup::checked`], [`connections::checked`]): the check of a new SearXNG
+    /// address (task WEB.7), so the refusal of another request that runs beside it is never shown as the check's
+    /// reason. Then reload, as for [`Action::Send`].
     CheckAddress(Request),
     /// Send these requests to the daemon, then reload: for the one place where a change is two
     /// requests (the setup's mail source, task S.21). They are independent of each other, so they
@@ -268,8 +289,9 @@ pub enum Action {
     /// zoom, so it applies at once and, with `--demo`, stays in the process.
     Zoom(zoom::Step),
     /// Give the keyboard focus to the text field with this id (the search field of the font's dropdown
-    /// as it opens, issue #299).
-    Focus(&'static str),
+    /// as it opens, issue #299; the first field marked wrong in the form of a server of one's own,
+    /// #302).
+    Focus(iced::widget::Id),
     /// Put this text on the clipboard (a new key, task A.6).
     Copy(String),
     /// Find, connect or disconnect a coding agent's MCP entry or hooks (task A.7), or read the
@@ -292,6 +314,18 @@ pub enum Action {
     /// Open the first-run setup at its first step (task W.9): "Continue setup" on the overview,
     /// "Run setup again" under General.
     OpenSetup,
+    /// Open the system's chooser for the PDF tool's folder or a template's logo (MCP servers,
+    /// task MA.7) and hand what was chosen back as [`connections::Message::Picked`]. The demo opens
+    /// nothing.
+    Pick(connections::Chooser),
+    /// Load everything again now, as the timer does: "Retry" in a group whose list failed.
+    Reload,
+    /// Send this request for MCP servers (task MA.8) and hand the answer back to that section
+    /// only, with what it was for ([`connections::Asked`]), as the core gave it: a refusal stays a
+    /// `Response::Error` with its code, so the install dialog and a server's page show their
+    /// outcome themselves ([`connections::answered`]). Then reload, as for [`Action::Send`]. The
+    /// demo answers from [`launch::demo_answer`].
+    AskConnections(connections::Asked, Request),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -377,6 +411,7 @@ pub struct Ui {
     workspaces: workspaces::State,
     api: api::State,
     mcp: mcp::State,
+    connections: connections::State,
     approvals: approvals::State,
     general: general::State,
     /// The first-run setup while it is open (task W.4): it takes the window instead of the
@@ -418,6 +453,12 @@ pub enum Message {
     Sent(Result<Response, String>),
     /// The answer to an [`Action::Ask`], with what it was for; `Err` only when no answer came.
     Answered(workspaces::Asked, Result<Response, String>),
+    /// The answer to an [`Action::AskConnections`], with what it was for; `Err` only when no answer
+    /// came.
+    ConnectionsAnswered(connections::Asked, Result<Response, String>),
+    /// The catalog of MCP servers (`extensions.list_catalog`), asked for only while the section MCP servers is
+    /// open ([`Ui::reload`]): the core looks for programs on disk for it each time.
+    Catalog(connections::Listing<torro_ipc::extensions::CatalogEntry>),
     /// The answer to an [`Action::CheckAddress`], as [`Message::Sent`] has it.
     Checked(Result<Response, String>),
     /// The desktop's light/dark preference (once at start, then whenever it changes).
@@ -441,6 +482,7 @@ pub enum Message {
     Workspaces(workspaces::Message),
     Api(api::Message),
     Mcp(mcp::Message),
+    Connections(connections::Message),
     Approvals(approvals::Message),
     General(general::Message),
 }
@@ -541,6 +583,7 @@ impl Ui {
             workspaces: workspaces::State::default(),
             api: api::State::default(),
             mcp: mcp::State::default(),
+            connections: connections::State::default(),
             approvals: approvals::State::default(),
             general: general::State::default(),
             setup: None,
@@ -806,9 +849,12 @@ impl Ui {
                 let kind = if open == Open::McpHooks { "claude-code" } else { "codex" };
                 let client = self.data.clients.iter_mut().find(|client| client.kind == kind).map(|client| {
                     match open {
-                        // The rights editor's commands too (task S.33): one switched off.
+                        // The rights editor's commands too (task S.33): one switched off. And the
+                        // MCP servers (task MA.10): "Time" read, one of its tools switched off.
                         Open::McpDetail => {
                             client.rights.denied.insert("calendar.list_reminders".into());
+                            client.rights.extensions.insert("time".into(), torro_ipc::api::Level::Read);
+                            client.rights.denied.insert(torro_ipc::extensions::denied_name("time", "convert_time"));
                         }
                         // An agent that may use bots and read the assistant's conversations: both
                         // warnings.
@@ -831,6 +877,8 @@ impl Ui {
                     Open::McpDetail => {
                         let calendar = torro_settings_ui::rights::Message::Expand(torro_ipc::api::Area::Calendar);
                         messages.push(page(api::PageMessage::Rights(calendar)));
+                        let time = torro_settings_ui::rights::Message::ExpandServer("time".into());
+                        messages.push(page(api::PageMessage::Rights(time)));
                     }
                     _ => {}
                 }
@@ -855,6 +903,61 @@ impl Ui {
                 }
                 if matches!(open, Open::ConnectClientDone | Open::ConnectClientOther) {
                     messages.push(wizard(Step::Connect));
+                }
+                messages
+            }
+            // The PDF tool on with a folder and a logo, servers of the catalog and one's own.
+            Open::Connections => {
+                launch::demo_connections(&mut self.data);
+                vec![Message::Select(Section::Connections)]
+            }
+            // The same, on the page of the tool `web`'s search providers.
+            Open::SearchProviders => {
+                launch::demo_connections(&mut self.data);
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::SearchProviders)]
+            }
+            // No server installed, the PDF tool as it starts, the assistant without it.
+            Open::ConnectionsEmpty => {
+                launch::demo_connections_empty(&mut self.data);
+                vec![Message::Select(Section::Connections)]
+            }
+            // GitHub's install dialog (task MA.8), its server taken out first; with a token typed and
+            // "Install" pressed, the tools it reported.
+            Open::CatalogInstall | Open::CatalogInstallTools => {
+                launch::demo_uninstalled(&mut self.data);
+                let step = |message| Message::Connections(message);
+                let mut messages =
+                    vec![Message::Select(Section::Connections), step(connections::Message::Install("github".into()))];
+                if open == Open::CatalogInstallTools {
+                    let token = torro_ipc::Secret::new("github_pat_demo");
+                    let name = "GITHUB_PERSONAL_ACCESS_TOKEN".to_string();
+                    messages.push(step(connections::Message::TypeSecret(name, token)));
+                    messages.push(step(connections::Message::SubmitInstall));
+                }
+                messages
+            }
+            // A server's page (task MA.8): "Time" running or with a changed tool, "GitHub" stopped
+            // after errors.
+            Open::ExtensionDetail | Open::ExtensionReview | Open::ExtensionCrashed => {
+                if open == Open::ExtensionReview {
+                    launch::demo_review(&mut self.data);
+                }
+                let id = if open == Open::ExtensionCrashed { "github" } else { "time" };
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Open(id.into()))]
+            }
+            // A server of one's own (task MA.9): the form filled in from a pasted block, the field
+            // with a block of two servers, or the choice among them.
+            Open::CustomServer | Open::CustomServerPaste | Open::CustomServerChoose => {
+                use connections::Message as Step;
+                let block = if open == Open::CustomServer { launch::DEMO_PASTE_ONE } else { launch::DEMO_PASTE_TWO };
+                let mut messages = vec![
+                    Message::Select(Section::Connections),
+                    Message::Connections(Step::AddServer),
+                    Message::Connections(Step::OpenPaste),
+                    Message::Connections(Step::PasteText(connections::Typed::paste(block))),
+                ];
+                if open != Open::CustomServerPaste {
+                    messages.push(Message::Connections(Step::FillFromPaste));
                 }
                 messages
             }
@@ -920,9 +1023,15 @@ impl Ui {
         }
     }
 
-    /// Loads everything from the service; the demo has none and keeps its sample data.
+    /// Loads everything from the service; the demo has none and keeps its sample data. The catalog of
+    /// MCP servers only while their section is open: the core looks for programs on disk for it.
     fn reload(&self) -> Task<Message> {
-        if self.launch.demo { Task::none() } else { load(self.setup.is_some()) }
+        match (self.launch.demo, self.section) {
+            (true, _) => Task::none(),
+            // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
+            (false, Section::Connections) => Task::batch([load(true), load_catalog()]),
+            (false, _) => load(self.setup.is_some()),
+        }
     }
 
     /// The first [`Ui::reload`], after the core answers: one started just now does not listen yet
@@ -985,6 +1094,8 @@ impl Ui {
                     Section::Accounts => accounts::opened(&mut self.accounts),
                     // Which agent each hook client reports for (task S.35).
                     Section::Mcp => mcp::opened(),
+                    // The catalog is asked for only while the section is open (task MA.8).
+                    Section::Connections => Action::Reload,
                     _ => Action::None,
                 }
             }
@@ -1026,7 +1137,10 @@ impl Ui {
                 // `--setup-if-open` (an app's "Open Settings", task W.9): the setup, at the app's step,
                 // as long as it is not done; decided once, with the first settings that came.
                 let first = !self.loaded;
+                // The catalog comes apart from the rest ([`Message::Catalog`]): a reload keeps it.
+                let catalog = std::mem::take(&mut self.data.catalog);
                 self.data = *data;
+                self.data.catalog = catalog;
                 let mut providers = Task::none();
                 if first && self.launch.setup_if_open && !self.launch.demo && self.data.error.is_none() {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
@@ -1056,6 +1170,7 @@ impl Ui {
                 api::loaded(&mut self.api);
                 // The hook switch takes the hooks out once the reload no longer lists their client.
                 let unhook = mcp::loaded(&mut self.mcp, &self.data);
+                connections::loaded(&mut self.connections, &self.data);
                 // The app switcher of this window follows the components (task W.2).
                 if self.data.error.is_none() {
                     torro_gui::components::set_off(&self.data.settings.components_off);
@@ -1111,9 +1226,11 @@ impl Ui {
                 tasks.push(self.reload());
                 return Task::batch(tasks);
             }
-            // Only the setup's address check gets this answer; a refusal shows under its field.
+            // Only the address check of the setup or of MCP servers' search providers gets this answer; a refusal
+            // shows under its field.
             Message::Checked(result) => {
-                let shown = self.setup.as_mut().is_some_and(|setup| setup::checked(setup, &result));
+                let shown = self.setup.as_mut().is_some_and(|setup| setup::checked(setup, &result))
+                    || connections::checked(&mut self.connections, &result);
                 self.notice = if shown { None } else { result.err() };
                 return self.reload();
             }
@@ -1129,6 +1246,14 @@ impl Ui {
                 let mut tasks: Vec<Task<Message>> = next.into_iter().map(|action| self.perform(action)).collect();
                 tasks.push(self.reload());
                 return Task::batch(tasks);
+            }
+            Message::ConnectionsAnswered(asked, result) => {
+                let next = connections::answered(&mut self.connections, asked, &result);
+                return Task::batch([self.perform(next), self.reload()]);
+            }
+            Message::Catalog(catalog) => {
+                self.data.catalog = catalog;
+                Action::None
             }
             Message::SystemMode(mode) => {
                 self.system_mode = mode;
@@ -1169,6 +1294,7 @@ impl Ui {
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
                     Section::Api => api::escape(&self.api).map(Message::Api),
                     Section::Mcp => mcp::escape(&self.mcp).map(Message::Mcp),
+                    Section::Connections => connections::escape(&self.connections).map(Message::Connections),
                     Section::Appearance => general::escape(&self.general).map(Message::General),
                     _ => None,
                 };
@@ -1206,6 +1332,7 @@ impl Ui {
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
             Message::Api(m) => api::update(&mut self.api, m, &self.data),
             Message::Mcp(m) => mcp::update(&mut self.mcp, m, &self.data),
+            Message::Connections(m) => connections::update(&mut self.connections, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
             Message::General(m) => general::update(&mut self.general, m, &self.data),
         };
@@ -1297,7 +1424,16 @@ impl Ui {
                 Some(response) => self.update(Message::Answered(asked, Ok(response))),
                 None => Task::none(),
             },
-            Action::Ask(asked, request) => ask(asked, request),
+            Action::Ask(asked, request) => ask(request, move |result| Message::Answered(asked, result)),
+            Action::AskConnections(asked, request) if self.launch.demo => {
+                match launch::demo_answer(&request, &self.data) {
+                    Some(response) => self.update(Message::ConnectionsAnswered(asked, Ok(response))),
+                    None => Task::none(),
+                }
+            }
+            Action::AskConnections(asked, request) => {
+                ask(request, move |result| Message::ConnectionsAnswered(asked, result))
+            }
             Action::CheckAddress(request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
                 Some(response) => self.update(Message::Checked(Ok(response))),
                 None => Task::none(),
@@ -1347,6 +1483,11 @@ impl Ui {
             Action::Setup(job) => {
                 Task::perform(crate::client_setup::perform(job), |outcome| Message::Mcp(mcp::Message::Setup(outcome)))
             }
+            Action::Pick(_) if self.launch.demo => Task::none(),
+            Action::Pick(chooser) => Task::perform(connections::pick(chooser), move |path| {
+                Message::Connections(connections::Message::Picked(chooser, path))
+            }),
+            Action::Reload => self.reload(),
         }
     }
 
@@ -1528,6 +1669,7 @@ impl Ui {
             Section::Workspaces => self.data.templates.len(),
             Section::Api => api::listed(&self.data, api::Home::Api).count(),
             Section::Mcp => api::listed(&self.data, api::Home::Mcp).count(),
+            Section::Connections => connections::count(&self.data),
             Section::Approvals => approvals::pending(&self.data.approvals).count(),
             _ => 0,
         };
@@ -1538,10 +1680,12 @@ impl Ui {
     /// foot. The rail (U.2) has no room for the version line. Where the window has the band (macOS),
     /// "General" sits there in the top right corner instead (U.10).
     fn sidebar(&self, mode: SidebarMode, switcher: &Anchor) -> Element<'_, Message> {
+        // The sidebar may draw in a theme of its own (a design pack's sidebar colours).
+        let palette = palette(&theme::sidebar_theme(&self.theme()));
         let item = |section: Section| {
             widgets::sidebar_item_in(
                 mode,
-                section.icon(),
+                self.mark(section, &palette),
                 section.label(),
                 self.trail(section),
                 section == self.section,
@@ -1567,11 +1711,27 @@ impl Ui {
         )
     }
 
+    /// What stands in front of a section in the sidebar and the section menu: its icon, for MCP
+    /// connections with a dot in a status colour while a server needs the person (task MA.8,
+    /// [`connections::alert`]): the dot is a shape, so the state does not rest on colour alone, and
+    /// the icon stays the section's own (issue #248). The text colours: the status colours are too
+    /// light for a small dot on light surfaces.
+    fn mark(&self, section: Section, palette: &theme::Palette) -> widgets::Mark {
+        match (section, connections::alert(&self.data)) {
+            (Section::Connections, Some(widgets::Status::Error)) => {
+                widgets::Mark::Badged(section.icon(), palette.error_text)
+            }
+            (Section::Connections, Some(_)) => widgets::Mark::Badged(section.icon(), palette.attention_text),
+            _ => widgets::Mark::Icon(section.icon()),
+        }
+    }
+
     /// The section menu of the medium and narrow layouts: the sidebar's sections, "General" in a
     /// part of its own as at the sidebar's foot.
     fn nav_menu(&self) -> Element<'_, Message> {
+        let palette = palette(&self.theme());
         let entry = |section: Section| {
-            MenuItem::new(section.icon(), section.label(), Message::Select(section))
+            MenuItem::new(self.mark(section, &palette), section.label(), Message::Select(section))
                 .trail(self.trail(section))
                 .current(section == self.section)
         };
@@ -1589,6 +1749,7 @@ impl Ui {
             }
             Section::Api => api::header(&self.api, &self.data, class).map(Message::Api),
             Section::Mcp => mcp::header(&self.mcp, &self.data, class).map(Message::Mcp),
+            Section::Connections => connections::header(&self.connections, &self.data, class).map(Message::Connections),
             Section::Workspaces => workspaces::header(&self.workspaces, &self.data, class).map(Message::Workspaces),
             _ => Header::default(),
         }
@@ -1604,6 +1765,8 @@ impl Ui {
                 .map(|e| e.map(Message::Workspaces)),
             Section::Api => api::overlay(&self.api, &self.data).map(|e| e.map(Message::Api)),
             Section::Mcp => mcp::overlay(&self.mcp, &self.data).map(|e| e.map(Message::Mcp)),
+            Section::Connections => connections::overlay(&self.connections, &self.data, layout::of(self.size))
+                .map(|e| e.map(Message::Connections)),
             Section::Appearance => general::overlay(&self.general, &self.data).map(|e| e.map(Message::General)),
             _ => None,
         }
@@ -1658,6 +1821,7 @@ impl Ui {
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data, class).map(Message::Workspaces),
             Section::Api => api::view(&self.api, &self.data).map(Message::Api),
             Section::Mcp => mcp::view(&self.mcp, &self.data).map(Message::Mcp),
+            Section::Connections => connections::view(&self.connections, &self.data, class).map(Message::Connections),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::Appearance => general::appearance(&self.general, &self.data).map(Message::General),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
@@ -1801,6 +1965,12 @@ fn load(with_providers: bool) -> Task<Message> {
             if let Ok(Response::Engines { engines }) = client::call(&socket, &Request::ListEngines).await {
                 data.engines = engines;
             }
+            // MCP servers (task MA.7): a failure is shown in its group, not over the page.
+            let servers = listing(&socket, Request::ListExtensions, |answer| match answer {
+                Response::Extensions { extensions } => Ok(extensions),
+                other => Err(other),
+            });
+            data.extensions = connections::Listing::from_result(servers.await);
             // The setup's step "Web search" (task WEB.7).
             if with_providers
                 && let Ok(Response::SearchProviders { providers }) =
@@ -1814,6 +1984,24 @@ fn load(with_providers: bool) -> Task<Message> {
             timing::took("load", started);
             Message::Loaded(Box::new(data))
         },
+    )
+}
+
+/// Loads the catalog of MCP servers (task MA.8), apart from [`load`]: [`Ui::reload`] asks for it only
+/// while MCP servers is open. A failure is shown in its group.
+fn load_catalog() -> Task<Message> {
+    Task::perform(
+        async {
+            let Some(socket) = torro_ipc::socket_path() else {
+                return connections::Listing::Failed(tr("No home directory").into());
+            };
+            let catalog = listing(&socket, Request::ListCatalog, |answer| match answer {
+                Response::Catalog { entries } => Ok(entries),
+                other => Err(other),
+            });
+            connections::Listing::from_result(catalog.await)
+        },
+        Message::Catalog,
     )
 }
 
@@ -1991,15 +2179,16 @@ async fn answer(request: Request) -> Result<Response, String> {
     }
 }
 
-/// Sends one request for the page that will match its answer ([`Action::Ask`]). The core's answer
-/// comes back as it is, a refusal with its code; `Err` only when no answer came.
-fn ask(asked: workspaces::Asked, request: Request) -> Task<Message> {
+/// Sends one request for the page that will match its answer ([`Action::Ask`],
+/// [`Action::AskConnections`]) and hands the answer to `answered`. The core's answer comes back as
+/// it is, a refusal with its code; `Err` only when no answer came.
+fn ask(request: Request, answered: impl FnOnce(Result<Response, String>) -> Message + Send + 'static) -> Task<Message> {
     Task::perform(
         async move {
             let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
             client::call(&socket, &request).await.map_err(|err| err.to_string())
         },
-        move |result| Message::Answered(asked, result),
+        answered,
     )
 }
 
@@ -2767,6 +2956,85 @@ mod tests {
         assert_eq!(Section::from_arg("mail"), None);
     }
 
+    /// Task MA.7: `--section connections` opens MCP servers – the word the assistant's Tools hands
+    /// to the control centre –, and its demo states show the PDF tool set up or no server at all.
+    #[test]
+    fn mcp_connections_open_by_their_word_and_their_demo_states() {
+        assert_eq!(Section::Connections.arg(), torro_settings_ui::assistant::tools::CONTROL_CENTRE_SECTION);
+        let page = started(&["--demo", "--section", "connections"]);
+        assert_eq!((page.section, page.launch.client.clone()), (Section::Connections, None));
+        assert_eq!(instance_of(&page.launch), None, "a start with a page opens a window of its own");
+        let full = started(&["--demo", "--open", "connections"]);
+        assert_eq!(full.section, Section::Connections);
+        assert!(full.data.settings.tools.pdf.folder.is_some() && full.data.tools.iter().all(|tool| tool.enabled));
+        assert_eq!(full.trail(Section::Connections), Trail::Count(connections::count(&full.data)));
+        let mut empty = started(&["--demo", "--open", "connections-empty"]);
+        assert_eq!((empty.section, empty.trail(Section::Connections)), (Section::Connections, Trail::None));
+        assert!(!connections::assistant_may_use(&empty.data, torro_core::settings::ToolId::Pdf));
+        // The demo opens no chooser and sends nothing; "Templates" opens the page below the list,
+        // with its name in the header and Escape back.
+        let choose = Message::Connections(connections::Message::Choose(connections::Chooser::Folder));
+        assert_eq!(empty.update(choose).units(), 0);
+        let _ = empty.update(Message::Connections(connections::Message::Templates));
+        assert!(empty.page_header(SizeClass::Wide).sub_page.is_some());
+        let _ = empty.update(Message::Escape);
+        assert_eq!(empty.connections.page, connections::Page::List);
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = empty.window(class);
+        }
+    }
+
+    /// Task MA.8: the demo states open the install dialog over the window, at its form or at the
+    /// tools the server reported, and a server's page with its output read; the section's row is
+    /// marked while a server needs the person, the others are not; a reload keeps the catalog, which
+    /// is asked for apart.
+    #[test]
+    fn the_install_dialog_and_a_server_s_page_open_as_demo_states() {
+        let form = started(&["--demo", "--open", "catalog-install"]);
+        assert_eq!(form.section, Section::Connections);
+        assert!(form.page_overlay().is_some() && matches!(form.cover(), Cover::Dialog));
+        let tools = started(&["--demo", "--open", "catalog-install-tools"]);
+        assert!(tools.page_overlay().is_some(), "the dialog at the tools the demo reported");
+        for (name, id) in [("extension-detail", "time"), ("extension-review", "time"), ("extension-crashed", "github")]
+        {
+            let ui = started(&["--demo", "--open", name]);
+            assert_eq!(ui.connections.page, connections::Page::Server(id.into()), "{name}");
+            assert!(ui.page_header(SizeClass::Wide).sub_page.is_some() && ui.page_overlay().is_none(), "{name}");
+        }
+        let review = started(&["--demo", "--open", "extension-review"]);
+        let time = connections::server_of(&review.data, "time").expect("Time");
+        assert_eq!(time.status, torro_ipc::extensions::Status::Review);
+
+        let mut ui = started(&["--demo", "--open", "connections"]);
+        let palette = palette(&ui.theme());
+        let icon = Section::Connections.icon();
+        assert_eq!(ui.mark(Section::Connections, &palette), widgets::Mark::Badged(icon, palette.error_text));
+        assert_eq!(ui.mark(Section::Mcp, &palette), widgets::Mark::Icon(Section::Mcp.icon()));
+        ui.data.extensions = connections::Listing::Entries(Vec::new());
+        assert_eq!(ui.mark(Section::Connections, &palette), widgets::Mark::Icon(icon));
+
+        let catalog = ui.data.catalog.clone();
+        assert!(!catalog.entries().is_empty());
+        let _ = ui.update(Message::Loaded(Box::default()));
+        assert_eq!(ui.data.catalog, catalog, "a reload without the catalog keeps it");
+        let _ = ui.update(Message::Catalog(connections::Listing::Failed("unsupported".into())));
+        assert_eq!(ui.data.catalog, connections::Listing::Failed("unsupported".into()));
+    }
+
+    /// Task MA.9: the demo states of a server of one's own open its dialog over the window – the form
+    /// filled in from a pasted block, the field with a block, the choice of its servers – and the list
+    /// has "Add server…" in its header.
+    #[test]
+    fn the_form_of_one_s_own_server_opens_as_demo_states() {
+        for name in ["custom-server", "custom-server-paste", "custom-server-choose"] {
+            let ui = started(&["--demo", "--open", name]);
+            assert_eq!(ui.section, Section::Connections, "{name}");
+            assert!(ui.page_overlay().is_some() && matches!(ui.cover(), Cover::Dialog), "{name}");
+            assert_eq!(ui.page_header(SizeClass::Wide).actions.len(), 1, "{name}");
+            assert!(connections::escape(&ui.connections).is_some(), "{name}");
+        }
+    }
+
     /// The sidebar is the suite's own list – Overview, Accounts, AI, API, MCP,
     /// Approvals, Workspaces, Appearance, with General at its foot. Apps, Assistant, the
     /// Notification Hub and the old section of agents and scripts are gone from it; their words lead to the sections that
@@ -2776,10 +3044,24 @@ mod tests {
         let words: Vec<&str> = Section::ALL.iter().map(|section| section.arg()).collect();
         assert_eq!(
             words,
-            ["overview", "accounts", "ai", "api", "mcp", "approvals", "workspaces", "appearance", "general"]
+            [
+                "overview",
+                "accounts",
+                "ai",
+                "api",
+                "mcp",
+                "connections",
+                "approvals",
+                "workspaces",
+                "appearance",
+                "general"
+            ]
         );
+        assert_eq!(Section::ALL.len(), 10, "MCP servers joined after MCP clients (task MA.7)");
+        assert_eq!(Section::Connections.label(), tr("MCP servers"));
+        assert_eq!(Section::Mcp.label(), tr("MCP clients"));
         let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();
-        assert!(labels.contains(&tr("API")) && labels.contains(&tr("MCP")));
+        assert!(labels.contains(&tr("API")) && labels.contains(&tr("MCP clients")));
         let nav: Vec<Section> = Section::nav().collect();
         assert!(!nav.contains(&Section::General), "General sits at the foot");
         assert_eq!(nav.len(), Section::ALL.len() - 1);

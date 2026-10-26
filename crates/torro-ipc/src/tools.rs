@@ -113,7 +113,7 @@ pub struct ToolInfo {
     pub name: String,
     /// What it does, one sentence in the suite's language, for people.
     pub description: String,
-    /// A person switched it on in the assistant's settings (`tool_enabled`).
+    /// A person switched it on in Torro Workplace under MCP servers (`tool_enabled`).
     pub enabled: bool,
     /// The key that asked may use it: the tool's level in `tools` ([`ToolAccess::access`]: write for
     /// `pdf`, whose commands make and open files; read for `web` and `files`) and the tool in its

@@ -67,7 +67,6 @@ use torro_inbox::{Rule, SourceInfo};
 use torro_ipc::assistant::{Engine, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::tools::ToolInfo;
-use torro_ipc::web::SearchProviderInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 use torro_pim::Collection;
 
@@ -111,13 +110,15 @@ pub struct Data {
     /// The bots (`bots.list_bots`); none from a daemon that has none.
     pub bots: Vec<BotSummary>,
     /// The assistant's own tools (`tools.list_tools`, task WZ.6), each with whether a person
-    /// switched it on. Asked with the app key, so `allowed` is always `true` here; whether the
-    /// assistant may use a tool comes from its client's rights ([`assistant::tools`]).
+    /// switched it on: what Access offers to choose from ([`rights::Known`]). Asked with the app key,
+    /// so `allowed` is always `true` here. They are switched and set in the control centre since
+    /// task MA.7 ([`assistant::tools`] only leads there).
     pub tools: Vec<ToolInfo>,
-    /// The search providers of the tool `web` (`tools.list_search_providers`, task WEB.6), in the order the core
-    /// asks them: where the search words go, the terms, whether a key is stored – never the key – and whether a
-    /// person switched each on ([`assistant::web`]).
-    pub search_providers: Vec<SearchProviderInfo>,
+    /// The installed MCP servers (`extensions.list_extensions`, task MA.10), each with whether it is
+    /// switched on and the tools a person allowed: what Access offers a level of its own for, under
+    /// "Extensions" ([`rights::Known`]). Empty from a load that did not ask for them, and from a core
+    /// before issue #302, which answers `unsupported`.
+    pub extensions: Vec<torro_ipc::extensions::ExtensionInfo>,
     /// What the assistant can answer with (`assistant.list_engines`): an AI account, a coding
     /// agent with its own models.
     pub engines: Vec<Engine>,
@@ -194,7 +195,7 @@ impl Data {
             Response::Memories { notes } => self.memories = notes,
             Response::Bots { bots } => self.bots = bots,
             Response::Tools { tools } => self.tools = tools,
-            Response::SearchProviders { providers } => self.search_providers = providers,
+            Response::Extensions { extensions } => self.extensions = extensions,
             Response::Engines { engines } => self.engines = engines,
             Response::AiModels { account, models } => {
                 // Several accounts answer the same command in one load (task E12.10); each

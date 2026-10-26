@@ -52,7 +52,7 @@ use torro_gui::{style, typo};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Level, Rights, Selection};
 use torro_ipc::web::{SearchProviderId, SearchProviderInfo};
 use torro_ipc::{AiServer, ClientInfo, Request, Response, SettingKey};
-use torro_settings_ui::assistant::{tools as tool_settings, web};
+use torro_settings_ui::assistant::web;
 
 use super::connect::caldav::{self, CalDavSignIn};
 use super::connect::github::{self, GithubSignIn};
@@ -729,7 +729,7 @@ fn switch_provider(state: &mut State, data: &Data, id: SearchProviderId, on: boo
     show_switched(state, data);
     let switch = web::switch_request(id, on);
     match first && !data.settings.tools.is_on(ToolId::Web) {
-        true => Action::SendAll(vec![switch, tool_settings::switch_request(ToolId::Web, true)]),
+        true => Action::SendAll(vec![switch, crate::ui::connections::switch_request(ToolId::Web, true)]),
         false => Action::Send(switch),
     }
 }
@@ -1609,7 +1609,7 @@ mod tests {
             first,
             vec![
                 web::switch_request(SearchProviderId::Duckduckgo, true),
-                tool_settings::switch_request(ToolId::Web, true)
+                crate::ui::connections::switch_request(ToolId::Web, true)
             ]
         );
         assert!(first.iter().all(|request| request.operation().area() == Area::Settings), "nothing of clients.*");
@@ -1766,7 +1766,10 @@ mod tests {
 
         let mut setup = state(Step::Web);
         let sent = requests(update(&mut setup, duckduckgo_on(), &data));
-        assert!(sent.contains(&tool_settings::switch_request(ToolId::Web, true)), "the first askable: {sent:?}");
+        assert!(
+            sent.contains(&crate::ui::connections::switch_request(ToolId::Web, true)),
+            "the first askable: {sent:?}"
+        );
 
         // With its address it counts.
         for info in &mut data.search_providers {

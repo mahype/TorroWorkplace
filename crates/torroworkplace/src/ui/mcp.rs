@@ -2,7 +2,7 @@
 //! coding agents and apps that use Torro Workplace through `torroworkplace mcp`, each with its own
 //! key, and the hooks with which an agent reports to the Notification Hub.
 //!
-//! - **"MCP server":** the switch "Allow MCP" (`settings.set_setting allow_mcp`). Off, the core
+//! - **"Torro's MCP server":** the switch "Allow MCP" (`settings.set_setting allow_mcp`). Off, the core
 //!   refuses every MCP client and its hooks; only a person turns it on again
 //!   (`Request::kept_for_people`). Below it the command a client runs, to copy for one set up by
 //!   hand ([`client_setup::mcp_command`], the key in `TORRO_TOKEN`).
@@ -505,7 +505,7 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
         .into()
 }
 
-/// "MCP server": the switch and, under "Command", the command to copy – its row as high as the
+/// "Torro's MCP server": the switch and, under "Command", the command to copy – its row as high as the
 /// label and the field need, 12 above and below like a wrapping row.
 fn server_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let allow = allow_row(
@@ -521,7 +521,7 @@ fn server_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         "The command for a client you set up yourself; it takes the client's key as {variable}. Only you can turn MCP on again.",
         &[("variable", &client_setup::TOKEN_VARIABLE)],
     );
-    widgets::group(tr("MCP server"), vec![allow, command], Some(footer))
+    widgets::group(tr("Torro's MCP server"), vec![allow, command], Some(footer))
 }
 
 /// A hook client whose agent is gone: what it is, and "Remove".

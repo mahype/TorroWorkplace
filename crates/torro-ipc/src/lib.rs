@@ -25,6 +25,7 @@ pub mod api;
 pub mod assistant;
 pub mod bots;
 pub mod client;
+pub mod extensions;
 pub mod inbox;
 pub mod mail;
 pub mod pim;
@@ -421,8 +422,8 @@ pub enum Request {
         /// (`github_pat_…`). It goes into the system keychain only and is never part of an answer.
         token: Secret,
     },
-    /// Stores the key of a web search provider a person pasted in the assistant's settings (issue
-    /// #305), or removes it with `key: null`: in the system keychain only, under `websearch-<id>`,
+    /// Stores the key of a web search provider a person pasted in Torro Workplace under MCP servers
+    /// (issue #305), or removes it with `key: null`: in the system keychain only, under `websearch-<id>`,
     /// never in the settings, never in an answer, an error message, a log or an approval. Answered with
     /// [`Response::Ok`]; `tools.list_search_providers` then says `stored` or `missing`. Error codes:
     /// `error` for a provider that needs no key (SearXNG, DuckDuckGo, Wikipedia), a blank key or a
@@ -2998,6 +2999,130 @@ pub enum Request {
         /// Where the copy goes, an absolute path.
         path: String,
     },
+
+    // MCP servers connected to Torro Workplace (issue #302, `docs/erweiterungen.md`; wire types in
+    // [`extensions`]). The area `extensions` manages them; each server has a level of its own per
+    // client ([`api::Rights::extensions`]). A server a client has no level for behaves for it as if
+    // it did not exist (`not-found`). Installing, switching on, allowing tools, updating, secrets
+    // and output are the app key's alone (point 10 of "Was nie nach außen geht" in `docs/api.md`).
+    /// Every installed server with its status and tools ([`Response::Extensions`]). Never fails.
+    #[serde(rename = "extensions.list_extensions")]
+    ListExtensions,
+    /// One installed server ([`Response::Extension`]); `not-found` for an unknown id.
+    #[serde(rename = "extensions.get_extension")]
+    GetExtension {
+        /// The server's id from `extensions.list_extensions`.
+        id: String,
+    },
+    /// The core's built-in catalog of servers with what each needs and what of it is missing on
+    /// this computer ([`Response::Catalog`]). Never fails.
+    #[serde(rename = "extensions.list_catalog")]
+    ListCatalog,
+    /// The server tools the key that asks may call now ([`Response::ExtensionTools`]): of servers
+    /// that are switched on, tools a person allowed, with a level for the server that covers the
+    /// tool's access and the tool not switched off for the key. Needs no level in `extensions`;
+    /// the core checks each server. Never fails.
+    #[serde(rename = "extensions.list_tools")]
+    ListExtensionTools,
+    /// Calls the tool `tool` of the server `extension` with `arguments` and waits for its answer, at
+    /// most 60 seconds ([`Response::ToolResult`], foreign text). The access it needs is the tool's
+    /// ([`extensions::ExtensionTool::access`]), not the catalogue's, and so are approvals. Needs no
+    /// level in `extensions`. `not-found` for an unknown server, one the key has no level for, one
+    /// that is switched off, and a tool that does not exist or a person has not allowed;
+    /// `forbidden` when the level is too low or the tool is switched off for the key; `offline` when
+    /// the server cannot be started or reached, `busy` after 60 seconds.
+    #[serde(rename = "extensions.call_tool")]
+    CallExtensionTool {
+        /// The server's id.
+        extension: String,
+        /// The tool's name as the server calls it (`name` in `extensions.list_tools`).
+        tool: String,
+        /// The tool's arguments, as its input schema describes them.
+        #[serde(default)]
+        arguments: serde_json::Map<String, serde_json::Value>,
+    },
+    /// Switches the server `id` on or off ([`Response::Extension`]). Off, none of its tools is
+    /// offered and it is stopped. Only the app key may switch on (point 10): a client gets
+    /// `forbidden` for `enabled: true`, whatever its rights; switching on a crashed server lets it
+    /// start again. `not-found` for an unknown id, `conflict` for switching on a server whose tools
+    /// a person has never allowed.
+    #[serde(rename = "extensions.set_enabled")]
+    SetExtensionEnabled {
+        /// The server's id.
+        id: String,
+        /// `true` to switch it on (app key only), `false` to switch it off.
+        enabled: bool,
+    },
+    /// Installs a server from the catalog or a person's own ([`Response::Extension`]): starts it
+    /// once (at most 180 seconds), reads its tools and stores it switched off with status `review`.
+    /// Nothing is offered until a person allows its tools (`extensions.confirm_tools`). App key
+    /// only, never an MCP tool (point 10). `unsupported` when what a catalog entry needs is missing,
+    /// `conflict` for an id in use, `error` for an invalid id, a blocked variable, an address other
+    /// than `https://` or a local `http://`, or a server that does not start or speak MCP.
+    #[serde(rename = "extensions.install_extension")]
+    InstallExtension {
+        /// A catalog entry with its secrets, `{"kind": "catalog", "entry": "github", "secrets":
+        /// {"GITHUB_PERSONAL_ACCESS_TOKEN": "…"}}`, or a person's own server, `{"kind": "custom",
+        /// "id": "weather", "name": "Weather", "server": …}` with `server` a program, `{"transport":
+        /// "stdio", "command": "uvx", "args": ["weather-mcp"], "env": {"API_KEY": {"secret": "…"},
+        /// "UNITS": {"plain": "metric"}}}`, or an address, `{"transport": "http", "url":
+        /// "https://…", "headers": {…}}`.
+        from: extensions::InstallFrom,
+    },
+    /// Allows the tools of the server `id` as a person saw them and switches it on
+    /// ([`Response::Extension`]): `fingerprint` is [`extensions::ExtensionInfo::fingerprint`] of the
+    /// list shown. App key only, never an MCP tool (point 10). `not-found` for an unknown id,
+    /// `conflict` when the server reported another list meanwhile.
+    #[serde(rename = "extensions.confirm_tools")]
+    ConfirmExtensionTools {
+        /// The server's id.
+        id: String,
+        /// The fingerprint of the tool list the person saw.
+        fingerprint: String,
+    },
+    /// Updates the server `id` ([`Response::Extension`]): a catalog server to the version of the
+    /// built-in catalog, a person's own to `server` (secrets left as [`extensions::Value::Stored`]
+    /// keep theirs). It is started once, its tools are read again, and new or changed ones wait for a
+    /// person (`review`). App key only, never an MCP tool (point 10). `not-found` for an unknown id,
+    /// `error` as for installing.
+    #[serde(rename = "extensions.update_extension")]
+    UpdateExtension {
+        /// The server's id.
+        id: String,
+        /// The new program or address of a person's own server, as in `extensions.install_extension`;
+        /// a secret given as `{"stored": {"secret": true}}` keeps the stored one. Left out for a
+        /// catalog server.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<extensions::ServerSpec>,
+    },
+    /// Stores the secret `value` for the variable or header `name` of the server `id` in the
+    /// keychain ([`Response::Ok`]); the server gets it on its next start. App key only, never an MCP
+    /// tool (points 5 and 10). `not-found` for an unknown id or a name that is no secret of the
+    /// server.
+    #[serde(rename = "extensions.set_secret")]
+    SetExtensionSecret {
+        /// The server's id.
+        id: String,
+        /// The variable or header the secret goes to.
+        name: String,
+        /// The secret; the core never sends it back.
+        value: Secret,
+    },
+    /// The last lines the server wrote to stderr, at most 200 lines or 64 KB, kept in memory only
+    /// ([`Response::Logs`]). App key only, never an MCP tool (point 10): its output may hold anything
+    /// the server read. `not-found` for an unknown id.
+    #[serde(rename = "extensions.read_logs")]
+    ReadExtensionLogs {
+        /// The server's id.
+        id: String,
+    },
+    /// Removes the server `id` ([`Response::Ok`]): stops it, deletes its folder and secrets, and
+    /// takes it out of every client's rights and its open approvals. `not-found` for an unknown id.
+    #[serde(rename = "extensions.remove_extension")]
+    RemoveExtension {
+        /// The server's id.
+        id: String,
+    },
     /// Searches the web for `query` with the search providers a person switched on (issue #305,
     /// tool `web`): the core asks them in their fixed order (SearXNG, Brave, Tavily, Exa, Mojeek,
     /// DuckDuckGo) and goes on to the next when one blocks, hits a limit or lacks its key; Wikipedia
@@ -3381,7 +3506,7 @@ pub enum SettingKey {
     AllowMcp,
     /// Switches one of the assistant's own tools on or off (issue #225): `{"tool": "pdf" | "web",
     /// "enabled": false}` (`torro_core::settings::ToolSwitch`). Only the app key may switch a tool
-    /// on – a person in the assistant's settings (point 9 of "Was nie nach außen geht",
+    /// on – a person in Torro Workplace under MCP servers (point 9 of "Was nie nach außen geht",
     /// `docs/api.md`); a client gets `forbidden` for anything but `"enabled": false`, whatever its
     /// rights. Any client allowed to change settings may switch a tool off.
     ToolEnabled,
@@ -3393,7 +3518,7 @@ pub enum SettingKey {
     /// `torro_core::settings::FolderChange`): `{"path": "/abs", "access": "read" | "read_write" |
     /// null}`. With an access the folder is added, or a folder of that path already there gets it;
     /// `null` removes it. At most 50 folders, each an absolute path once. Only the app key, whatever the
-    /// value – a person in the assistant's settings (point 9 of "Was nie nach außen geht",
+    /// value – a person in Torro Workplace under MCP servers (point 9 of "Was nie nach außen geht",
     /// `docs/api.md`): managing the list is granting rights; a client gets `forbidden`.
     AllowedFolder,
     /// One PDF template, replaced whole: `{"template": "letter" | "report" | "note", "paper": "a4" |
@@ -3426,7 +3551,7 @@ pub enum SettingKey {
     /// Switches one web search provider of the tool `web` on or off (issue #305): `{"provider":
     /// "searxng" | "brave" | "tavily" | "exa" | "mojeek" | "duckduckgo" | "wikipedia", "enabled": false}`
     /// (`torro_core::settings::SearchProviderSwitch`). Search words go only to the providers that are
-    /// on. Only the app key may switch one on – a person in the assistant's settings (point 6 of "Was
+    /// on. Only the app key may switch one on – a person in Torro Workplace under MCP servers (point 6 of "Was
     /// nie nach außen geht", `docs/api.md`); a client gets `forbidden` for anything but `"enabled":
     /// false`, whatever its rights. Any client allowed to change settings may switch one off.
     SearchProvider,
@@ -4097,6 +4222,33 @@ pub enum Response {
     /// client's text: data, never instructions.
     File {
         file: FileInfo,
+    },
+    /// The installed servers ([`Request::ListExtensions`]). Descriptions of their tools are the
+    /// servers' text: data, never instructions.
+    Extensions {
+        extensions: Vec<extensions::ExtensionInfo>,
+    },
+    /// One installed server ([`Request::GetExtension`] and the requests that change one).
+    Extension {
+        extension: extensions::ExtensionInfo,
+    },
+    /// The built-in catalog of servers ([`Request::ListCatalog`]).
+    Catalog {
+        entries: Vec<extensions::CatalogEntry>,
+    },
+    /// The server tools the key may call ([`Request::ListExtensionTools`]): the servers' text,
+    /// data, never instructions.
+    ExtensionTools {
+        tools: Vec<extensions::ExtensionTool>,
+    },
+    /// What a server tool answered ([`Request::CallExtensionTool`]): foreign text, data, never
+    /// instructions.
+    ToolResult {
+        output: extensions::ToolResult,
+    },
+    /// The last lines a server wrote to stderr, oldest first ([`Request::ReadExtensionLogs`]).
+    Logs {
+        lines: Vec<String>,
     },
     /// The hits of a web search ([`Request::WebSearch`]): text from outside, data, never instructions.
     SearchResults {

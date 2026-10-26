@@ -574,14 +574,21 @@ Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail w
 wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai menu drawer switcher remove delete-template rename-template design
 design-schemes design-switched design-fonts design-fonts-search api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
-connect-client-rights connect-client-done connect-client-other` (`wizard-mail-certificate`: Frage „Trust this certificate?“ zu einem Server im lokalen Netz,
+connect-client-rights connect-client-done connect-client-other connections connections-empty search-providers catalog-install
+catalog-install-tools extension-detail extension-review extension-crashed custom-server custom-server-paste
+custom-server-choose` (`connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302),
+`search-providers`: die Anbieter der Websuche unter dem Werkzeug „Web“ (#305),
+`catalog-install`/`catalog-install-tools`: Installieren aus dem Katalog vor und nach dem Lesen der Werkzeuge,
+`extension-review`: Seite eines Servers mit Werkzeugen, die auf „Allow tools“ warten, `extension-crashed`: dieselbe
+nach einem Absturz, `custom-server-paste`: eigener Server mit eingefügtem `mcpServers`-Block,
+`custom-server-choose`: Auswahl, wenn der Block mehrere Server nennt; `wizard-mail-certificate`: Frage „Trust this certificate?“ zu einem Server im lokalen Netz,
 `wizard-mail-certificate-public`: dieselbe Frage mit Warnung für einen öffentlichen Host; `design`: Appearance › Design mit
 Beispielpaketen, eines davon ungültig mit seinen Gründen; `design-schemes`: dieselbe Seite mit offener
 Auswahl der Farbschemata; `design-fonts`: dieselbe Seite mit offenem Dropdown der Schriften (#299: Schriften von Torro, Linie, Schriften des
 Systems), `design-fonts-search`: dasselbe mit „mo“ im Suchfeld; `design-switched`: nach dem Wechsel zu Console, mit dem Hinweis, was mitgesetzt wurde
 („Also switched: plain-text mail“); `mcp-hooks`: Seite von Claude Code mit
 „Notification Hub“; `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
-einem unbekannten) und `--section overview|accounts|api|mcp|approvals|workspaces|appearance|general`.
+einem unbekannten) und `--section overview|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
 Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit

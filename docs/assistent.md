@@ -315,7 +315,8 @@ Einstellungen. Das erste macht **PDFs**. Weitere Werkzeuge kommen als eigene Iss
 
 ### Schalter und Rechte sind zwei Dinge
 
-- **Schalter** (Assistent › Einstellungen › Tools, Einstellung `tool_enabled`): ob es das Werkzeug auf diesem
+- **Schalter** (Steuerzentrale › MCP servers › Built-in tools, Einstellung `tool_enabled`; seit #302 steht er dort,
+  der Assistent zeigt unter Tools nur noch einen Verweis): ob es das Werkzeug auf diesem
   Rechner gibt. Standard aus. Ist es aus, lehnt der Kern seine Befehle für **jeden** Client ab (`forbidden`,
   Grund „switched off in the assistant's settings“), und kein Modell bekommt es angeboten. Einschalten nur der
   Mensch (Punkt 9 in „Was nie nach außen geht“, [api.md](api.md)), wie das Mikrofon.
@@ -377,10 +378,10 @@ des Assistenten (der Titel steht ohnehin in der Werkzeugzeile), öffnen, sichern
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Werkzeuge auflisten (Schalter, erlaubt) | Assistent › Einstellungen › Tools; Auswahl im Rechte-Editor (Access, API, MCP) | `tools.list_tools` · Read | `tools_list_tools` |
-| Werkzeug an-/abschalten | Assistent › Einstellungen › Tools | `settings.set_setting tool_enabled` · Admin | **Never** fürs Einschalten (Punkt 9), ausschalten über `settings_set_setting` |
+| Werkzeuge auflisten (Schalter, erlaubt) | Steuerzentrale › MCP servers › Built-in tools; Auswahl im Rechte-Editor (Access, API, MCP clients) | `tools.list_tools` · Read | `tools_list_tools` |
+| Werkzeug an-/abschalten | Steuerzentrale › MCP servers › Built-in tools | `settings.set_setting tool_enabled` · Admin | **Never** fürs Einschalten (Punkt 9), ausschalten über `settings_set_setting` |
 | Ablage-Ordner, Vorlagen | ebenda | `settings.set_setting pdf_folder`, `pdf_template` · Admin | `settings_set_setting`; Ordner und Logo setzen nur Menschen (Punkt 9), alle übrigen Felder auch Agenten |
-| Welche Werkzeuge ein Client darf | Assistent › Einstellungen › Access; Steuerzentrale › API, MCP | `clients.update_client` · Admin | **Never** (Punkt 2) |
+| Welche Werkzeuge ein Client darf | Assistent › Einstellungen › Access; Steuerzentrale › API, MCP clients | `clients.update_client` · Admin | **Never** (Punkt 2) |
 | PDF erstellen | Chat: Werkzeugzeile und Datei-Karte | `tools.create_pdf` · Write | `tools_create_pdf` |
 | PDF öffnen | „Open“ auf der Karte | `tools.open_file` · Write | `tools_open_file` |
 | PDF an einen Ort sichern | „Save as…“ auf der Karte | `tools.save_file_as` · Write, nur App-Schlüssel | **Never** (Punkt 9) |
@@ -463,7 +464,8 @@ wie bei „Send on my behalf“. Den Agenten-Antrieb (B) gibt
 es nicht mehr; ein geliehener Schlüssel bekommt die Websuche nicht.
 
 **Einrichtung:** neuer Schritt „Web search“ vor „Done“ ([einrichtung.md](einrichtung.md)), dieselbe Auswahl wie
-in Assistent › Einstellungen › Tools. Wer dort einen Anbieter einschaltet, schaltet das Werkzeug ein; mit dem
+in Steuerzentrale › MCP servers › Built-in tools › Search providers (seit dem Merge mit #302 dort, vorher Assistent › Einstellungen › Tools). Wer dort einen Anbieter
+einschaltet, schaltet das Werkzeug ein; mit dem
 vorbelegten Haken „Let the assistant use it“ bekommt der Assistent Lesen in `tools` mit `web` in der Auswahl (in der
 Planung entschieden).
 
@@ -471,9 +473,9 @@ Planung entschieden).
 |---|---|---|---|
 | Im Web suchen | Chat: Werkzeugzeile | `tools.web_search` · Read, Freigabe einmal je Unterhaltung | `tools_web_search` |
 | Webseite lesen | Chat: Werkzeugzeile | `tools.fetch_page` · Read, Freigabe einmal je Unterhaltung | `tools_fetch_page` |
-| Anbieter anzeigen (wohin, Bedingungen, Schlüssel gespeichert/fehlt) | Einrichtung, Assistent › Einstellungen › Tools | `tools.list_search_providers` · Read | `tools_list_search_providers` |
+| Anbieter anzeigen (wohin, Bedingungen, Schlüssel gespeichert/fehlt) | Einrichtung, Steuerzentrale › MCP servers › Built-in tools › Search providers | `tools.list_search_providers` · Read | `tools_list_search_providers` |
 | Anbieter ein-/ausschalten, SearXNG-Adresse | ebenda | `settings.set_setting search_provider`, `searxng_address` · Admin | `settings_set_setting` nur fürs Ausschalten und Entfernen; einschalten und Adresse setzen nur Menschen (Punkt 6) |
-| Schlüssel eines Anbieters speichern oder entfernen | Assistent › Einstellungen › Tools | `accounts.set_search_key` · Admin, nur App-Schlüssel | **Never** (Punkt 5) |
+| Schlüssel eines Anbieters speichern oder entfernen | Steuerzentrale › MCP servers › Built-in tools › Search providers | `accounts.set_search_key` · Admin, nur App-Schlüssel | **Never** (Punkt 5) |
 | Werkzeug `web` an-/abschalten, Auswahl | wie beim PDF | `settings.set_setting tool_enabled`, `clients.update_client` | wie beim PDF |
 
 Aufgaben: [tasks/assistent.md](tasks/assistent.md), WEB.1–WEB.7.
@@ -484,7 +486,7 @@ Rechner: Ordner auflisten, nach Namen suchen, Ordner anlegen, kopieren, verschie
 legen. Den **Inhalt** einer Datei liest oder ändert es nicht; das machen Dokument-Werkzeuge wie ArtCraft (#303).
 Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalter, Ordnerliste und Freigabe-Karten.
 
-- **Freigegebene Ordner** (Assistent › Einstellungen › Tools, Gruppe „Allowed folders“, Einstellung
+- **Freigegebene Ordner** (Steuerzentrale › MCP servers, Gruppe „Allowed folders“; seit dem Merge mit #302 dort, Einstellung
   `allowed_folder`): eine gemeinsame Liste für alle Werkzeuge, die mit Dateien arbeiten; auch #303 begrenzt ArtCraft
   damit. Je Ordner „Read“ oder „Read and write“, neu hinzugefügt zuerst „Read“. Die Liste verwalten heißt Rechte
   vergeben: nur Menschen, auch das Entfernen (Punkt 9 in [api.md](api.md)). Liegen Ordner ineinander, gilt der
@@ -538,8 +540,8 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
 | Kopieren | ebenso | `tools.copy_file` · Write | `tools_copy_file` |
 | Verschieben, umbenennen | ebenso | `tools.move_file` · Write | `tools_move_file` |
 | In den Papierkorb | Freigabe-Karte, immer | `tools.trash_file` · Delete | `tools_trash_file` |
-| Werkzeug an-/abschalten | Assistent › Einstellungen › Tools | `settings.set_setting tool_enabled` · Admin | wie beim PDF-Werkzeug |
-| Freigegebene Ordner verwalten | Assistent › Einstellungen › Tools, „Allowed folders“ | `settings.set_setting allowed_folder` · Admin, nur App-Schlüssel | **Never** (Punkt 9) |
+| Werkzeug an-/abschalten | Steuerzentrale › MCP servers › Built-in tools | `settings.set_setting tool_enabled` · Admin | wie beim PDF-Werkzeug |
+| Freigegebene Ordner verwalten | Steuerzentrale › MCP servers, „Allowed folders“ | `settings.set_setting allowed_folder` · Admin, nur App-Schlüssel | **Never** (Punkt 9) |
 
 Die Entscheidung 6 („Dateien und Shell beim Agent-Antrieb immer aus“) bleibt: Sie meint die eingebauten Werkzeuge
 eines Agenten wie Claude Code. Das Werkzeug Dateien ist ein Befehl des Kerns mit Schalter, Rechten, Ordnergrenzen
@@ -637,9 +639,10 @@ Sprache (C.9) kommt zuletzt, wenn der Chat steht. Persönlichkeit und Gedächtni
 
 ## Offen
 
-Nichts. Zusätzliche MCP-Server im Chat (z. B. von Drittanbietern) werden mit den Erweiterungen in
-#79 geklärt ([erweiterungen.md](erweiterungen.md), Punkt 4); Stufe 1 nutzt nur die Werkzeuge der
-Suite.
+Fremde MCP-Server im Chat sind mit #302 gebaut (Entscheidung 9): Ihre Werkzeuge bekommt der Assistent nur über
+den Kern, mit der Stufe je Server, nur nach Zustimmung der Person zu jedem Werkzeug und mit Freigabe, wo der
+Zugriff sie verlangt ([erweiterungen.md](erweiterungen.md#mcp-server-302)). Weitere Erweiterungspunkte (Quellen,
+Fenster-Manager, Apps) bleiben in [erweiterungen.md](erweiterungen.md) offen.
 
 ## Entscheidungen
 
@@ -655,7 +658,11 @@ Getroffen am 2026-10-13.
 6. **Dateien und Shell** beim Agent-Antrieb immer aus.
 7. **Bereich `assistant` für andere Agenten** standardmäßig aus, auch in *Full access*.
 8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete Unterhaltungen bleiben.
-9. **Fremde MCP-Server im Chat** nicht in Stufe 1; Klärung in #79.
+9. **Fremde MCP-Server über den Abschnitt „MCP servers“, #302** (ersetzt „Fremde MCP-Server im Chat nicht in Stufe 1; Klärung
+   in #79“): Die Werkzeuge erlaubter Server stehen dem Assistenten, seinen Bots und den MCP-Clients offen, je Server
+   nur mit einer Stufe, je Werkzeug nur nach Zustimmung der Person (Steuerzentrale › MCP servers, Abschnitt „Your
+   own servers“ bzw. „Catalog“). Ein Server mit Datei- oder Shell-Werkzeugen weicht Entscheidung 6 nur mit Recht und
+   Freigabe der Person auf; von selbst tut er es nicht.
 10. **Mikrofon** einschalten ist neuer Punkt 6 in „Was nie nach außen geht“.
 11. **Weckwort** zum Start fest („Hey Torro“), frei wählbar in einer späteren Aufgabe.
 

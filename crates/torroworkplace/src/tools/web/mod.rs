@@ -288,13 +288,14 @@ impl Web {
         let (code, message) = match why {
             NoAnswer::NoneOn => (
                 "not-connected",
-                tr("No web search provider is on. A person chooses one in the assistant's settings.").to_string(),
+                tr("No web search provider is on. A person chooses one in Torro Workplace under MCP servers.")
+                    .to_string(),
             ),
             NoAnswer::Resting => ("busy", self.resting(settings)),
             NoAnswer::NeedsKey => (
                 "auth",
                 tr("The web search providers that are on need a key, and none is stored. \
-                    A person adds one in the assistant's settings.")
+                    A person adds one in Torro Workplace under MCP servers.")
                 .to_string(),
             ),
             NoAnswer::Failed(OFFLINE) => ("offline", tr("The search provider cannot be reached.").to_string()),
@@ -647,7 +648,7 @@ mod tests {
         assert_eq!(code(&none), "not-connected");
         assert_eq!(
             message(&none),
-            tr("No web search provider is on. A person chooses one in the assistant's settings.")
+            tr("No web search provider is on. A person chooses one in Torro Workplace under MCP servers.")
         );
         // Only providers without their key: `auth`.
         let keyless = offline().with_providers(vec![FakeProvider::new(Brave, Err(SearchError::NeedsKey))]);

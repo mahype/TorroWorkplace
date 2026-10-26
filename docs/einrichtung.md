@@ -203,7 +203,7 @@ models only unless you change it.“
 ### 9 Web search
 
 Seit Issue #305 (Konzept: „Werkzeug Web“ in [assistent.md](assistent.md)). Nur, wenn die Komponente Assistent an
-ist. Dieselbe Liste wie in Assistent › Einstellungen › Tools: je Anbieter ein Schalter, darunter wohin die
+ist. Dieselbe Liste wie in Steuerzentrale › MCP servers › Built-in tools › Search providers: je Anbieter ein Schalter, darunter wohin die
 Suchwörter gehen („Search words go to duckduckgo.com · USA“), ein Link „Terms“ und bei DuckDuckGo und Brave der
 Hinweis; bei Brave, Tavily, Exa und Mojeek ein maskiertes Feld für den Schlüssel, bei SearXNG das Feld für die
 Adresse. Vorbelegt ist nichts (Aus). Wer einen Anbieter einschaltet, schaltet das Werkzeug `web` ein; der Haken

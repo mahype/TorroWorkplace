@@ -81,11 +81,12 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_shown`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
-| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten) |
+| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
-| `tools` ²² | `list_tools`, `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
+| `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
+| `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret` (die letzten vier **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 
@@ -346,7 +347,8 @@ Anweisungen. Die Sicherheitsregeln aus
 - **Hook-Clients** (`HOOK_CLIENT`, für die Hooks von Claude Code, Codex, Gemini CLI) haben höchstens
   `Rights::hook()`: Schreiben in `inbox`, sonst nichts, keine Quelle sichtbar (`Rights::for_kind`,
   beim Anlegen und Ändern der Rechte).
-  Sie können melden und auflösen; `list_items` und `get_item` liefern `not-found`.
+  Sie können melden und auflösen; `list_items` und `get_item` liefern `not-found`. Sie haben auch keinen
+  MCP-Server (Fußnote ²⁵): `extensions.list_tools` ist für sie leer, `extensions.call_tool` liefert `not-found`.
 - Ein Hook-Client gehört zu **genau einem Agenten** (E1.2b): `clients.create_client` mit Art `hook`
   braucht `agent` (`claude-code`, `codex`, `gemini`), andere Arten dürfen keins nennen. Das Feld steht
   in `clients.json` und in `ClientInfo.agent`. Meldungen landen unter `agent:<dieser Agent>`; nennt
@@ -737,6 +739,9 @@ und antwortet mit dem entstandenen Pfad (`file-path`). `list_folder` und `find_f
 `folder-entries` und `truncated` an ihren Grenzen (500 Einträge; 200 Treffer, 10 Ebenen, 50.000 angesehene
 Einträge). `trash_file` ist `Delete` und fragt **immer** einen Menschen, auch bei „Ask first: Never“. Protokoll und
 Log nennen weder Pfade noch Suchbegriffe.
+Das Werkzeug `web` (#305) braucht nur Lesen, muss aber in der Auswahl einzeln angehakt sein („All“ reicht nicht,
+`ToolId::needs_naming`): `web_search` und `fetch_page` schicken Suchwörter und Adressen aus dem Rechner, im
+Gespräch des Assistenten erst nach einem Ja je Unterhaltung. `list_search_providers` gehört zu keinem Werkzeug.
 
 ²³ **Tasten und Laden beim Start** (Issue #243, [tasks/workspaces.md](tasks/workspaces.md)): Je Eigenschaft einer
 Vorlage ein Befehl, damit nichts Ausgelassenes verloren geht; der Name bleibt bei `rename_template`.
@@ -765,6 +770,43 @@ er nicht zählen (auch bei einer ungültigen Änderung), gilt die Änderung als 
 Client ohne Löschrecht bekommt dann `forbidden` (oder eine Freigabe-Anfrage), bevor er `unsupported`, `error` oder
 `not-found` für ein fehlendes Vorkommen sehen könnte; ein Kalender, den er nicht sehen darf, bleibt `not-found`. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
 die ganze Serie.
+
+²⁵ **MCP-Server** (Issue #302, in der Steuerzentrale Abschnitt „MCP servers“, [erweiterungen.md](erweiterungen.md),
+Aufgaben [tasks/mcp-anbindungen.md](tasks/mcp-anbindungen.md)): Der Dienst ist MCP-Client fremder Server (Programm über
+stdio oder Adresse über Streamable HTTP). Der Bereich `extensions` verwaltet sie (auflisten, Katalog, ausschalten,
+entfernen) und steht in den Vorlagen wie jeder Bereich. Die Werkzeuge eines Servers dagegen öffnet keine Stufe in
+`extensions`, sondern eine **Stufe je Server** (`Rights::extensions`, Kennung → Stufe, fehlt = Kein Zugriff; siehe
+„Rechte“). `list_tools` und `call_tool` brauchen deshalb keine Stufe im Bereich; der Dienst prüft je Server
+(`Rights::allows_extension`). `call_tool` steht im Katalog mit `Delete`, gebraucht wird aber der Zugriff des
+Werkzeugs (`Read`, `Write` oder `Delete` aus dem Katalog-Eintrag, ohne Angabe `Delete`; Hinweise des Servers zählen
+nicht), auch für Freigaben und Nur-Lese-Unterhaltungen. Nach außen heißt jedes Werkzeug `ext_<id>_<werkzeug>`;
+`extensions_call_tool` ist deshalb kein eigenes MCP-Tool. Ein Server ohne Stufe verhält sich für den Client wie nicht
+vorhanden (`not-found`); zu niedrige Stufe oder ein gesperrtes Werkzeug ist `forbidden` (`Lack::Extension`).
+Beschreibungen, Schemas und Antworten eines Servers sind fremder Text (`untrusted`).
+
+Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › MCP-Server (#302)](erweiterungen.md#mcp-server-302)):
+- **Ausgehend:** Ein Werkzeug eines Servers zählt nicht als „Nach außen“ (`Rights::outbound`, nur `mail.send_draft`
+  und `mail.respond_to_invitation` sind dort gemeint). Ob es auf Freigabe wartet, entscheidet allein sein Zugriff aus
+  dem Katalog (`Rights::needs_approval_of`). Folge: Der Nur-Lese-Modus des Assistenten hält ein Write-Werkzeug, das
+  nach außen wirkt (z. B. ein Kommentar auf GitHub), nur über die Stufe auf; „Nach außen“ hält es nicht. Umgekehrt
+  wartet ein Write-Werkzeug bei „Nach außen: Mit Freigabe“ nicht auf eine Freigabe, sondern nur bei „Freigabe
+  vorher: Bei jeder Änderung“; sonst bleibt, die Stufe auf Lesen zu setzen oder das Werkzeug zu sperren.
+- **Datenregel:** Antworten von Server-Werkzeugen haben keine eigene Regel. Sie gehen an das Modell, das antwortet,
+  auch an ein Modell, das woanders rechnet (Cloud). Anders als Mail: Die geht nur mit „Mail to cloud models“ an ein
+  solches Modell (Aufgabe C.17), und eine Notiz nach gelesener Mail bleibt lokal (`local_only`,
+  `Answering::kept_local`). Wirksam ist bei Servern allein die Stufe je Server: Wer nicht will, dass Antworten eines
+  Servers ein Modell anderswo erreichen, gibt dem Assistenten bzw. dem Client für diesen Server keine Stufe.
+- **Abschalten für eine Unterhaltung:** Wird der Bereich `extensions` abgeschaltet, sind auch alle Server aus.
+- **Sichtbarkeit:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in `extensions.list_extensions` und
+  `extensions.get_extension` nur Server, für die er eine Stufe hat, und deren Einrichtung geschwärzt (Argumente und
+  Klartextwerte als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil, etwa „…/server“, weil die Ordner davor
+  Home und Benutzernamen verraten). Nur der App-Schlüssel sieht sie vollständig.
+- **Länge:** `extensions.call_tool` mit mehr als 64 KB Argumenten (als JSON) wird mit `error` abgelehnt.
+- **Neu eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft, wartet wieder auf Zustimmung.
+- **Geheimnisse bei Update:** eigene Server behalten gespeicherte Geheimnisse nur bei gleichem Befehl und gleichen
+  Argumenten (stdio) bzw. gleichem Ursprung (HTTP); Katalog-Server beim Versionswechsel aus dem Katalog.
+- **Keine Änderungsmeldung:** Torros MCP-Server meldet geänderte Werkzeuglisten nicht; fremde Agenten sehen neue
+  Server-Werkzeuge erst in der nächsten Sitzung.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
@@ -954,6 +996,18 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Wert von `allowed_folder` und jedes `settings.update_settings`, das die Liste ändert, bekommt von jedem Client
    `forbidden` (`Request::kept_for_people`, `Tools::needs_a_person`); ein Client, der die ganzen Einstellungen
    schreibt, behält die gespeicherte Liste (`Tools::from_client`).
+10. **Einen MCP-Server installieren, einschalten, seinen Werkzeugen zustimmen, ihn aktualisieren, seine
+   Geheimnisse setzen und seine Ausgaben lesen** (Issue #302, Fußnote ²⁵): `extensions.install_extension`,
+   `extensions.confirm_tools`, `extensions.update_extension`, `extensions.set_secret` und `extensions.read_logs`
+   nur mit dem App-Schlüssel (`Mcp::Never`), `extensions.set_enabled` mit `enabled: true` wie das Mikrofon nach dem
+   Wert (`Request::kept_for_people`): Jeder Client bekommt `forbidden`, auch mit Admin-Rechten, und niemand wird um
+   eine Freigabe gefragt. Ausschalten und Entfernen (mit Freigabe) dürfen Agenten. Grund: Ein Server ist ein
+   Programm, das mit den Rechten der Person auf ihrem Rechner läuft; wer ihn installiert oder einschaltet,
+   entscheidet, welcher Code dort läuft und welche Werkzeuge Agenten bekommen. Seine Ausgaben (stderr) können alles
+   enthalten, was er gelesen hat, und sein Status nennt deshalb nur feste Fehlerarten (`exited`, `start_timeout`,
+   `spawn_failed`, `protocol`), nie seinen Text. Geheimnisse eines Servers liegen im Schlüsselbund
+   (`ext:<id>:<NAME>`) und gehen nur beim Start an genau diesen Server; jede Antwort nennt nur „gespeichert“ oder
+   „fehlt“ (Punkt 1).
 
    Ebenso **Anhänge von Mails ablegen** (Issue #290): Den **Ordner eines Ablageziels** setzt nur ein Mensch.
    `mail.create_save_target` gibt es nur mit dem App-Schlüssel (`Mcp::Never`), weil ein neues Ziel immer einen
@@ -974,8 +1028,8 @@ Browser des Menschen; ein Agent bekommt nie ein Passwort zu sehen.
 ## Rechte
 
 Seit #231 je nach Weg ([settings.md › Accounts, API und MCP](settings.md#accounts-api-und-mcp-231)):
-Skripte und Programme mit Key in der **Steuerzentrale, Abschnitt „API“**, Agenten in **„MCP“**, der eigene
-Assistent und seine Bots im **Assistent-Fenster, Abschnitt „Access“**. Alle drei nutzen denselben Rechte-Editor;
+Skripte und Programme mit Key in der **Steuerzentrale, Abschnitt „API“**, Agenten in **„MCP clients“** (bis #302
+„MCP“), der eigene Assistent und seine Bots im **Assistent-Fenster, Abschnitt „Access“**. Alle drei nutzen denselben Rechte-Editor;
 dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
 ### Je Client
@@ -998,6 +1052,13 @@ dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
   Wird ein Konto entfernt (`accounts.remove_account`), fallen das Konto und seine Sammlungen aus
   allen Auswahlen (M2.7b); wird dieselbe Adresse später neu verbunden, bekommt kein Agent seinen
   Zugriff von selbst zurück.
+- **Je MCP-Server eine Stufe** (Issue #302, Fußnote ²⁵): `Rights::extensions` (Kennung des Servers → Kein Zugriff ·
+  Lesen · Lesen und Schreiben · Voll; fehlt sie, kein Zugriff). Sie deckt die Werkzeuge des Servers nach ihrem
+  Zugriff ab; was auf Freigabe wartet, entscheidet allein dieser Zugriff, nicht „Nach außen“ (Fußnote ²⁵). Keine
+  Vorlage öffnet einen Server, auch *Full access* nicht (wie Assistent und Bots), und auch die
+  Stufe im Bereich `extensions` nicht. Ein einzelnes Werkzeug lässt sich sperren: `ext.<id>.<werkzeug>` in
+  `Rights::denied`. Wird ein Server entfernt, fällt er mit seinen gesperrten Werkzeugen aus den Rechten aller
+  Clients.
 - **Freigabe vorher**: Nie · Beim Löschen (Standard) · Bei jeder Änderung.
 - **Nach außen** (Mail senden, M2.1): Nie · Mit Freigabe (Standard, in allen Vorlagen) · Frei. Senden ist kein
   gewöhnliches Schreiben: Es verlässt den Rechner und lässt sich nicht zurückholen. Es gilt die strengere
@@ -1051,6 +1112,11 @@ freigeben. Das machen wir anders:
    eigene Antwort (`result: "pending"`).
 5. Bei „Allow“ prüft der Dienst Rechte und Reichweite des Clients **zum Zeitpunkt der
    Entscheidung** erneut und führt den Befehl dann aus; die Antwort steht danach in der Freigabe.
+   Ausnahme über MCP: Hält die Antwort Text eines MCP-Servers (ein Werkzeug eines Servers, ein Server mit
+   seinen Werkzeugen, #302), gibt `approvals_approval_status` sie so zurück wie der Aufruf selbst, mit dem
+   Hinweis „untrusted“ und ohne die Freigabe drumherum; `approvals_list_approvals` lässt sie weg (`response`
+   mit dem Code `left-out`: der Befehl lief, die Antwort steht bei `approvals_approval_status`). Über die API
+   bleibt alles in der Freigabe.
    Kam der Befehl über einen geliehenen Schlüssel (Assistent mit Claude Code, C.7), gilt dabei weiter, was dem
    Lauf entzogen war (Mail und abgeschaltete Bereiche); die Freigabe speichert das und den Antrieb, der auch in
    der Protokollzeile der Entscheidung steht (C.11).
@@ -1135,7 +1201,7 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 
-## Steuerzentrale: Abschnitte „API“ und „MCP“
+## Steuerzentrale: Abschnitte „API“ und „MCP clients“
 
 Seit #231; ersetzt den Abschnitt „Agents & API“ (vorher „AI & agents“). Aufbau und Gründe:
 [settings.md › Accounts, API und MCP](settings.md#accounts-api-und-mcp-231). Der eigene Assistent und seine
@@ -1164,7 +1230,7 @@ Bots stehen nicht hier, sondern im Assistent-Fenster unter Access.
      wieder heraus, aber nur, was der Assistent selbst eingetragen hat (`client_setup.json`).
   4. **Fertig:** „Restart Claude Code to use Torro Workplace.“
 - **Detailseite eines Keys bzw. Clients**: der gemeinsame Rechte-Editor (Stufe je Bereich, aufgeklappt ein
-  Schalter je Befehl: unter API mit dem Endpunkt-Namen, unter MCP mit dem Tool-Namen), Sammlungen, Freigabe
+  Schalter je Befehl: unter API mit dem Endpunkt-Namen, unter MCP clients mit dem Tool-Namen), Sammlungen, Freigabe
   vorher, letzte Aktionen, „Create new key“ (alter wird ungültig), „Revoke…“ (API) bzw. „Disconnect…“ (MCP;
   bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
   Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
@@ -1213,7 +1279,7 @@ Getroffen am 2026-10-11.
 Getroffen am 2026-10-19 (#231):
 
 9. **API und MCP getrennt in der Oberfläche**, ein Client-Modell im Kern: Keys der Art `script` unter API,
-   MCP-Clients unter MCP, gleicher Rechte-Editor. Verworfen: getrennte Client-Modelle (doppelte Prüfung).
+   MCP-Clients unter MCP clients, gleicher Rechte-Editor. Verworfen: getrennte Client-Modelle (doppelte Prüfung).
 10. **Sperrliste je Befehl** (`Rights::denied`) unter der Stufe statt Schalter allein. Kein neuer Befehl:
     Sie reist mit `clients.update_client` in den ganzen Rechten.
 11. **Weg im Umschlag** (`via`) und die Schalter `allow_api_keys`, `allow_mcp`; einschalten nur Menschen.

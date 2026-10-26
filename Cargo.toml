@@ -110,7 +110,15 @@ keyring = "4.2.0"
 # (no GTK needed), asynchronous so it never blocks the window.
 rfd = "0.17.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "charset", "http2", "json", "form"] }
-rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
+# The MCP server of the suite (`torroworkplace mcp`) and, since #302 (task MA.4), the core as the MCP client of the
+# servers a person connects: over stdin/stdout of a program the core starts itself (`process-wrap`), or over
+# Streamable HTTP with the workspace's reqwest (rustls, no redirects).
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io", "client", "transport-streamable-http-client-reqwest", "reqwest"] }
+# The processes of MCP servers (task MA.4): a process group on Unix and a Job Object on Windows, so ending a server
+# takes the whole tree along; `CREATE_NO_WINDOW` on Windows. The version rmcp uses.
+process-wrap = { version = "10.0.1", default-features = false, features = ["tokio1", "process-group", "job-object", "creation-flags", "kill-on-drop"] }
+# Only for the flag `CREATE_NO_WINDOW` of a server's process on Windows (task MA.4); the version process-wrap brings.
+windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 roxmltree = "0.21.1"
 # Bundled: builds SQLite from source, so no system library is needed on Linux, macOS or Windows.
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "blob"] }

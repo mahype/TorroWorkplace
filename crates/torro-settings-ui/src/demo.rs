@@ -15,16 +15,14 @@ use std::sync::Mutex;
 use chrono::{TimeZone, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
-use torro_core::settings::{
-    AllowedFolder, AssistantDefault, CalendarReminders, FolderAccess, PdfTemplateId, Reminders, Settings, ToolId,
-    Tools, WebSearch,
-};
+use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Settings, ToolId, Tools};
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
+use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
+use torro_ipc::extensions::{ExtensionInfo, ExtensionTool, ServerSpec, Source, Status, ToolState};
 use torro_ipc::inbox::{
     CategoryClearAccount, CategoryClearJob, CategoryClearPreview, CategoryClearProgress, CategoryJob,
     CategoryJobAccount, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState,
@@ -34,7 +32,6 @@ use torro_ipc::mail::{
     MailCachePolicy, MailFolderStats,
 };
 use torro_ipc::tools::ToolInfo;
-use torro_ipc::web::{KeyState, SearchProviderId, SearchProviderInfo};
 use torro_ipc::{
     AccountInfo, ClientInfo, FolderChoice, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response,
     RuleHits, ServiceState, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
@@ -71,25 +68,10 @@ impl Demo {
     /// A demo with the sample settings: dark, so the first look shows the suite's own look.
     pub fn new() -> Demo {
         let mut reminders = Reminders::default();
-        // The PDF tool on, with a folder and a logo of its own (task WZ.6), so Tools shows the
-        // switch on, "Use desktop" and "Remove". Paths only: the demo reads no file.
+        // The PDF tool on (task WZ.6), so Access offers it without the mark of a tool switched off.
+        // Its folder and templates are set in the control centre since task MA.7.
         let mut tools = Tools::default();
         tools.set_on(ToolId::Pdf, true);
-        tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
-        tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
-        // The files tool on, with two allowed folders, one to read and one to write (task WD.4), so
-        // Tools shows both steps of the picker.
-        tools.set_on(ToolId::Files, true);
-        tools.folders = vec![
-            AllowedFolder { path: "/home/anna/Documents".into(), access: FolderAccess::Read },
-            AllowedFolder { path: "/home/anna/Projects/Invoices".into(), access: FolderAccess::ReadWrite },
-        ];
-        // The tool web on with DuckDuckGo and Wikipedia (task WEB.6); DuckDuckGo rests after a block
-        // ([`Demo::search_providers`]), so Tools shows a provider that is asked and one that is not.
-        tools.set_on(ToolId::Web, true);
-        let mut web_search = WebSearch::default();
-        web_search.set_on(SearchProviderId::Duckduckgo, true);
-        web_search.set_on(SearchProviderId::Wikipedia, true);
         reminders.calendars.insert(WORK_CALENDAR.into(), CalendarReminders::FullScreen);
         let settings = Settings {
             appearance: Appearance::Dark,
@@ -104,7 +86,6 @@ impl Demo {
             hidden_collections: vec![SHARED_CALENDAR.into()],
             reminders,
             tools,
-            web_search,
             ..Settings::default()
         };
         Demo {
@@ -123,7 +104,8 @@ impl Demo {
     }
 
     /// The assistant's client, so the sections show the assistant as on, with one command switched
-    /// off, so the rights editor shows what that looks like (task S.33); and the clients of the
+    /// off, so the rights editor shows what that looks like (task S.33), and reading the MCP server
+    /// "Time" with one of its tools switched off (task MA.10, [`Demo::extensions`]); and the clients of the
     /// sample bots ([`Demo::bots`]): the travel planner reads two calendars, so Access has a bot to
     /// open (task S.34), the release helper may use nothing. The demo only pretends to switch or
     /// change them.
@@ -147,7 +129,11 @@ impl Demo {
                 "a51c3e88",
                 "Assistant",
                 ASSISTANT_CLIENT,
-                Rights { denied: ["calendar.list_reminders".to_string()].into(), ..Rights::assistant() },
+                Rights {
+                    denied: ["calendar.list_reminders".to_string(), "ext.time.convert_time".to_string()].into(),
+                    extensions: [("time".to_string(), Level::Read)].into(),
+                    ..Rights::assistant()
+                },
             ),
             client("c0000001", tr("Travel planner"), BOT_CLIENT, travel),
             client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none()),
@@ -508,7 +494,7 @@ impl Demo {
 
     /// The assistant's own tools as `tools.list_tools` lists them for the app key: switched on as the
     /// settings say, `allowed` always (the app key may use every tool). The assistant's client has
-    /// no access to `tools` ([`Rights::assistant`]), so Tools shows where it is allowed.
+    /// no access to `tools` ([`Rights::assistant`]), so Access shows the tool not chosen.
     fn tools(&self) -> Vec<ToolInfo> {
         ToolId::ALL
             .into_iter()
@@ -533,73 +519,56 @@ impl Demo {
             .collect()
     }
 
-    /// The web search providers as `tools.list_search_providers` lists them, in the core's order: the facts of its
-    /// catalogue (`crates/torroworkplace/src/tools/web/catalogue.rs`), switched on as the sample settings say.
-    /// DuckDuckGo rests after a block until a fixed time, so the pictures of `--demo` stay the same; Brave has a
-    /// key stored, the other providers with a key have none.
-    fn search_providers(&self) -> Vec<SearchProviderInfo> {
-        let paused = Utc.with_ymd_and_hms(2026, 10, 24, 14, 30, 0).single();
-        SearchProviderId::ORDER
-            .into_iter()
-            .map(|id| {
-                let (sends_to, seat, terms, notice) = match id {
-                    SearchProviderId::Searxng => (
-                        "",
-                        "",
-                        "",
-                        Some("Your own SearXNG instance. Torro checks that it answers in JSON when you enter its address."),
-                    ),
-                    SearchProviderId::Brave => (
-                        "api.search.brave.com",
-                        "USA",
-                        "https://api-dashboard.search.brave.com/terms-of-service",
-                        Some("Brave allows its results to be used for the answer only, not stored. Torro does not keep them."),
-                    ),
-                    SearchProviderId::Tavily => ("api.tavily.com", "USA", "https://www.tavily.com/terms", None),
-                    SearchProviderId::Exa => ("api.exa.ai", "USA", "https://exa.ai/terms", None),
-                    SearchProviderId::Mojeek => {
-                        ("www.mojeek.com", "United Kingdom", "https://www.mojeek.com/about/terms.html", None)
-                    }
-                    SearchProviderId::Duckduckgo => (
-                        "html.duckduckgo.com",
-                        "USA",
-                        "https://duckduckgo.com/terms",
-                        Some(
-                            "DuckDuckGo offers no official interface for this. Torro reads the results page like a browser. \
-                             DuckDuckGo may block this at any time.",
-                        ),
-                    ),
-                    SearchProviderId::Wikipedia => (
-                        "wikipedia.org",
-                        "USA",
-                        "https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use",
-                        Some("Asked in addition to the others. Its text is under CC BY-SA 4.0, named at every result."),
-                    ),
-                };
-                let needs_key = matches!(
-                    id,
-                    SearchProviderId::Brave | SearchProviderId::Tavily | SearchProviderId::Exa | SearchProviderId::Mojeek
-                );
-                let key = match (needs_key, id == SearchProviderId::Brave) {
-                    (false, _) => KeyState::NotNeeded,
-                    (true, true) => KeyState::Stored,
-                    (true, false) => KeyState::Missing,
-                };
-                SearchProviderInfo {
-                    id,
-                    name: id.title().to_string(),
-                    sends_to: sends_to.into(),
-                    seat: if seat.is_empty() { String::new() } else { tr(seat).to_string() },
-                    terms: terms.into(),
-                    notice: notice.map(|text| tr(text).to_string()),
-                    needs_key,
-                    key,
-                    address: None,
-                    enabled: self.settings.web_search.is_on(id),
-                    paused_until: paused.filter(|_| id == SearchProviderId::Duckduckgo),
-                }
-            })
-            .collect()
+    /// The installed MCP servers as `extensions.list_extensions` lists them (task MA.10), for the
+    /// rows of Access under "Extensions": "Time", switched on, with two read tools a person allowed;
+    /// "Notes", a server of one's own switched off after its tools were allowed, so its row shows the
+    /// mark of a server that is off. Nothing runs: the demo starts no program.
+    fn extensions(&self) -> Vec<ExtensionInfo> {
+        let tool = |server: &str, name: &str, description: &str, access| ExtensionTool {
+            extension: server.into(),
+            extension_name: server.into(),
+            name: name.into(),
+            tool_name: torro_ipc::extensions::tool_name(server, name),
+            description: description.into(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            access,
+            state: ToolState::Allowed,
+        };
+        let server = |id: &str, name: &str, command: &str, enabled, tools| ExtensionInfo {
+            id: id.into(),
+            name: name.into(),
+            source: Source::Custom,
+            server: ServerSpec::Stdio { command: command.into(), args: Vec::new(), env: Default::default() },
+            enabled,
+            status: Status::Stopped,
+            tools,
+            secrets: Vec::new(),
+            notes: Vec::new(),
+            fingerprint: Some(format!("demo-{id}")),
+        };
+        vec![
+            server(
+                "time",
+                "Time",
+                "uvx",
+                true,
+                vec![
+                    tool("time", "get_current_time", "Get the current time in a time zone.", Access::Read),
+                    tool("time", "convert_time", "Convert a time between time zones.", Access::Read),
+                ],
+            ),
+            server(
+                "notes",
+                "Notes",
+                "/usr/local/bin/notes-mcp",
+                false,
+                vec![
+                    tool("notes", "search_notes", "Search the notes.", Access::Read),
+                    tool("notes", "add_note", "Add a note.", Access::Write),
+                    tool("notes", "delete_note", "Delete a note for good.", Access::Delete),
+                ],
+            ),
+        ]
     }
 
     /// The sample engine: an AI account. Coding agents are not offered any more (task C.19,
@@ -830,7 +799,7 @@ impl Backend for Demo {
             Request::ListMemories => Response::Memories { notes: self.memories() },
             Request::ListBots => Response::Bots { bots: self.bots() },
             Request::ListTools => Response::Tools { tools: self.tools() },
-            Request::ListSearchProviders => Response::SearchProviders { providers: self.search_providers() },
+            Request::ListExtensions => Response::Extensions { extensions: self.extensions() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
@@ -1045,6 +1014,23 @@ mod tests {
         let answer = demo.call(Request::Settings).await.expect("the demo answers");
         assert_eq!(answer, Response::Settings { settings: demo.settings().clone() });
         assert!(demo.sent().is_empty(), "reading is not a change");
+    }
+
+    /// Task MA.10: the MCP servers come with a load that asks for them, so Access offers each a
+    /// level; the assistant's client reads "Time", one of its tools switched off.
+    #[tokio::test]
+    async fn the_servers_reach_access() {
+        let demo: Arc<dyn Backend> = Arc::new(Demo::new());
+        let data = crate::load(demo, vec![Request::ListClients, Request::ListExtensions]).await;
+        let known = crate::rights::Known::of(&data);
+        let ids: Vec<&str> = known.extensions.iter().map(|server| server.id.as_str()).collect();
+        assert_eq!(ids, ["time", "notes"]);
+        assert!(known.extensions.iter().any(|server| !server.enabled), "one switched off, with its mark");
+        let assistant = data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant");
+        assert_eq!(assistant.rights.extension("time"), Level::Read);
+        let listed = crate::rights::server_tools(&known.extensions[0], &assistant.rights);
+        assert_eq!(listed.len(), 2, "both read tools");
+        assert_eq!(crate::rights::server_off_count(&known.extensions[0], &assistant.rights), 1);
     }
 
     /// A change is answered as done and remembered, but nothing is kept.

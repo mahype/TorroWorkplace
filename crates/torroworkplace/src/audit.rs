@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 use torro_ipc::assistant::{ChatWindow, TEST_ENGINE};
+use torro_ipc::extensions::{self, InstallFrom};
 use torro_ipc::mail::MoveTarget;
 use torro_ipc::{ActivityEntry, Request, Response};
 
@@ -429,6 +430,24 @@ pub fn ids(request: &Request) -> Vec<String> {
             [Some(format!("message:{}", hashed(message))), target].into_iter().flatten().collect()
         }
         Request::ListSaveTargets { id } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
+        // MCP servers (issue #302): a server by its id and a tool by its name when they have their
+        // form, never the arguments, a command, an address or a secret.
+        Request::ListExtensions | Request::ListCatalog | Request::ListExtensionTools => Vec::new(),
+        Request::GetExtension { id }
+        | Request::SetExtensionEnabled { id, .. }
+        | Request::ConfirmExtensionTools { id, .. }
+        | Request::UpdateExtension { id, .. }
+        | Request::SetExtensionSecret { id, .. }
+        | Request::ReadExtensionLogs { id }
+        | Request::RemoveExtension { id }
+        | Request::InstallExtension { from: InstallFrom::Custom { id, .. } }
+        | Request::InstallExtension { from: InstallFrom::Catalog { entry: id, .. } } => {
+            vec![checked("extension", id, extensions::valid_id)]
+        }
+        Request::CallExtensionTool { extension, tool, .. } => vec![
+            checked("extension", extension, extensions::valid_id),
+            checked("tool", tool, |tool| extensions::tool_name("x", tool).is_some()),
+        ],
         // The tool `files` (issue #304): nothing at all, every field is a path or a name searched for.
         Request::ListFolder { .. }
         | Request::FindFiles { .. }
@@ -888,6 +907,27 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&save), vec!["file:1a2b3c4d".to_string()]);
         let open = super::ids(&Request::OpenFile { file: "/Users/anna/Salary.pdf".into() }).join(" ");
         assert!(open.starts_with("file:hash:") && !open.contains("Salary"), "{open}");
+        // MCP servers (issue #302): the server and the tool, never the arguments or a secret.
+        let call = Request::CallExtensionTool {
+            extension: "github".into(),
+            tool: "search_issues".into(),
+            arguments: serde_json::json!({"query": "salary"}).as_object().cloned().unwrap_or_default(),
+        };
+        assert_eq!(super::ids(&call), ["extension:github", "tool:search_issues"]);
+        let odd = Request::CallExtensionTool {
+            extension: "Salary Talk".into(),
+            tool: "a b".into(),
+            arguments: Default::default(),
+        };
+        let logged = super::ids(&odd).join(" ");
+        assert!(logged.starts_with("extension:hash:") && !logged.contains("Salary"), "{logged}");
+        let secret = Request::SetExtensionSecret {
+            id: "github".into(),
+            name: "GITHUB_PERSONAL_ACCESS_TOKEN".into(),
+            value: torro_ipc::Secret::new("ghp_salary"),
+        };
+        assert_eq!(super::ids(&secret), ["extension:github"]);
+        assert!(super::ids(&Request::ListExtensionTools).is_empty());
         // The tool `files` (issue #304): never a path or a name searched for.
         let path = || "/Users/anna/Salary/2026.pdf".to_string();
         for request in [

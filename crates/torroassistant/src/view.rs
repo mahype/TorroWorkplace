@@ -147,6 +147,8 @@ fn area_icon(area: Option<Area>) -> Icon {
         Some(Area::Bots) => Icon::Users,
         // The assistant's own tools (task WZ.8): the only one makes files.
         Some(Area::Tools) => cards::FILE_ICON,
+        // MCP servers (issue #302): connections to programs and addresses.
+        Some(Area::Extensions) => Icon::Link,
         _ => Icon::Search,
     }
 }

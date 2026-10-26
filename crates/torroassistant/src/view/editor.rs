@@ -439,7 +439,7 @@ fn access_group<'a>(draft: &'a BotDraft) -> Element<'a, Message> {
     let row =
         setting_row(None, tr("What the bot may use"), detail, tinted(Icon::ChevronRight, icon::SIZE, |p| p.text_3));
     let footer = tr(
-        "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen under Settings › Access.",
+        "Calendars, lists, repositories, sources, mail accounts, tools, MCP servers, sending and admin commands are chosen under Settings › Access.",
     );
     let open = draft.id.clone().map(Message::BotAccess);
     widgets::group(tr("Access"), vec![pressable(row, open)], Some(footer.to_string()))

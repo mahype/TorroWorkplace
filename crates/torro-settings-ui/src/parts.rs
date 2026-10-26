@@ -39,7 +39,8 @@ pub fn setting_row<'a, M: 'a>(
     row_frame(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center), tall)
 }
 
-/// `content` as one line of a settings group: 44 high (56 with two lines of text), 16 at the sides.
+/// `content` as one line of a settings group: as high as the header bar (64 in Torro, 76 with two lines of
+/// text), 16 at the sides.
 pub fn row_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool) -> Element<'a, M> {
     let height = if tall { size::header() + space::m() } else { size::header() };
     container(content).width(Fill).center_y(height).padding([0.0, space::l()]).into()

@@ -574,10 +574,14 @@ impl Origin {
     }
 
     /// `rights` without the areas [`Origin::without`] names, as the lent key had them, and in the
-    /// permission mode [`Origin::mode`] (issue #132).
+    /// permission mode [`Origin::mode`] (issue #132). Without `extensions` also without a level for any MCP
+    /// server ([`Rights::extensions`]): their tools need none in the area.
     pub fn narrow(&self, rights: &Rights) -> Rights {
         let mut rights = self.mode.narrow(rights);
         rights.areas.retain(|area, _| !self.without.contains(area));
+        if self.without.contains(&Area::Extensions) {
+            rights.extensions.clear();
+        }
         rights
     }
 
@@ -1009,6 +1013,41 @@ impl Approvals {
             eprintln!("torroworkplace: cannot store the outcome of approval {id}: {err}");
         }
         Ok(info)
+    }
+
+    /// Denies every open approval whose request `names` says so, as of `now`, and returns how many: when
+    /// what they would run is gone (an MCP server removed, issue #302), so none runs later on something
+    /// installed again under the same id. Stored before it counts; the person's questions about them go
+    /// ([`Notifier`]). Without a file no approval can be open: `Ok(0)`.
+    pub async fn withdraw(
+        &self,
+        now: DateTime<Utc>,
+        names: impl Fn(&Request) -> bool,
+    ) -> Result<usize, ApprovalsError> {
+        if self.file.is_none() {
+            return Ok(0);
+        }
+        let mut state = self.state(now).await?;
+        let before = state.entries.clone();
+        let mut withdrawn = Vec::new();
+        for entry in state.entries.iter_mut().filter(|entry| entry.info.state.is_pending() && names(&entry.request)) {
+            entry.info.decided = Some(now);
+            entry.info.state = ApprovalState::Denied;
+            withdrawn.push(entry.info.id.clone());
+        }
+        if withdrawn.is_empty() {
+            return Ok(0);
+        }
+        if let Err(err) = self.write(&state).await {
+            state.entries = before;
+            return Err(err);
+        }
+        drop(state);
+        self.changed.send_replace(());
+        for id in &withdrawn {
+            (self.notify.settled)(id);
+        }
+        Ok(withdrawn.len())
     }
 
     /// The state, read from the file on first use, with expired approvals marked and old ones
@@ -1591,10 +1630,59 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             ),
             None => trf("Cancel an unknown backup of the mail account {account}", &[("account", &named(account))]),
         },
+        // MCP servers (issue #302): the server by the name the core keeps ([`Facts::name`], else its id),
+        // the tool by the name the call runs with, the arguments marked as the agent's and cut visibly.
+        Request::CallExtensionTool { extension, tool, arguments } => {
+            let (tool, extension) = (quote(tool), named(extension));
+            match arguments.is_empty() {
+                true => trf("Use “{tool}” of {extension}", &[("tool", &tool), ("extension", &extension)]),
+                false => trf(
+                    "Use “{tool}” of {extension}, with what the agent gives it: {arguments}",
+                    &[("tool", &tool), ("extension", &extension), ("arguments", &agent_arguments(arguments))],
+                ),
+            }
+        }
+        Request::RemoveExtension { id } => trf("Remove MCP server “{name}”", &[("name", &named(id))]),
+        Request::SetExtensionEnabled { id, enabled: false } => {
+            trf("Switch off MCP server “{name}”", &[("name", &named(id))])
+        }
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// At most this many characters of a server tool's arguments in the summary of its approval (issue #302);
+/// the details hold all of them.
+pub const ARGUMENTS_MAX: usize = 500;
+
+/// The arguments of a server tool's call as the agent gave them, for the summary: `name: value` each (the
+/// value as compact JSON), made harmless ([`quote_up_to`]) and cut at [`ARGUMENTS_MAX`] characters, followed
+/// by how many more there are ("… +120 characters").
+fn agent_arguments(arguments: &serde_json::Map<String, serde_json::Value>) -> String {
+    let text = argument_lines(arguments).join("; ");
+    let cleaned = quote_up_to(&text, text.chars().count());
+    let count = cleaned.chars().count();
+    match cleaned.char_indices().nth(ARGUMENTS_MAX) {
+        Some((cut, _)) => {
+            trf("{text}… +{n} characters", &[("text", &&cleaned[..cut]), ("n", &(count - ARGUMENTS_MAX))])
+        }
+        None => cleaned,
+    }
+}
+
+/// One `name: value` per argument, the value as compact JSON; the agent's text, not yet made harmless. The
+/// name is escaped as JSON escapes it, without its quotes: a line break in it would start a line of its own
+/// in the details ([`whole`]).
+fn argument_lines(arguments: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    arguments
+        .iter()
+        .map(|(name, value)| {
+            let quoted = serde_json::Value::from(name.as_str()).to_string();
+            let name = quoted.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')).unwrap_or(&quoted);
+            format!("{name}: {value}")
+        })
+        .collect()
 }
 
 /// The summary of a command of the tool `files` (issue #304) from the paths the core resolved ([`Facts::paths`]),
@@ -3017,10 +3105,22 @@ pub const DETAIL_MAX: usize = 200;
 /// Every text from the draft is made harmless as in the summary ([`quote`]: one line, no format
 /// characters, no double quotes, no braces), but cut at [`DETAIL_MAX`] characters instead of 60.
 /// The person sees all of it, so nothing is left out but the end of a long text.
+///
+/// For a tool of an MCP server (issue #302): `What the agent gives the tool:`, then each argument as
+/// `name: value` (the value as compact JSON), whole ([`whole`]): the summary cuts them at
+/// [`ARGUMENTS_MAX`] characters, the person deciding sees all of them here.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
     if let Some(lines) =
         profile_details(request, facts).or_else(|| bot_details(request)).or_else(|| files_details(request, facts))
     {
+        return lines;
+    }
+    if let Request::CallExtensionTool { arguments, .. } = request {
+        if arguments.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![tr("What the agent gives the tool:").to_string()];
+        lines.extend(argument_lines(arguments).iter().flat_map(|line| whole(line)));
         return lines;
     }
     let Request::SendDraft { .. } = request else { return Vec::new() };
@@ -4581,6 +4681,12 @@ pub(crate) mod tests {
             .insert(Area::Mail, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
         assert_eq!(origin.narrow(&rights).area(Area::Mail), torro_ipc::api::AreaRights::NONE);
         assert_eq!(origin.narrow(&rights).area(Area::Calendar), rights.area(Area::Calendar), "the rest stays");
+        // F3 of the API review: without `extensions` no level for a server either; without mail it stays.
+        let mut servers = rights.clone();
+        servers.extensions.insert("time".into(), torro_ipc::api::Level::Full);
+        assert_eq!(origin.narrow(&servers).extensions, servers.extensions);
+        let no_servers = Origin { without: vec![Area::Extensions], ..origin.clone() };
+        assert!(no_servers.narrow(&servers).extensions.is_empty());
         // Issue #132: the mode of the answer that asked narrows what an allowed command runs with.
         let read_only = Origin { mode: Mode::ReadOnly, ..origin.clone() };
         let mut writing = rights.clone();
@@ -5547,6 +5653,79 @@ pub(crate) mod tests {
                 "Change the mail category {category}: {changes}",
                 &[("category", &bills), ("changes", &trf("call it {name}", &[("name", &"\"Rechnungen\"")]))]
             )
+        );
+    }
+
+    /// Issue #302: a server tool's approval names the server by the core's name (else its id) and the tool,
+    /// marks the arguments as the agent's, cuts them visibly at 500 characters and shows them whole in the
+    /// details; removing and switching off a server have words of their own, not "Run …".
+    #[test]
+    fn server_tools_and_servers_are_summed_up_from_the_store() {
+        let named = Facts { name: Some("Time".into()), ..Facts::default() };
+        let call = |arguments: serde_json::Value| Request::CallExtensionTool {
+            extension: "time".into(),
+            tool: "convert_time".into(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+        };
+        let bare = call(serde_json::json!({}));
+        assert_eq!(
+            summary(&bare, &named),
+            trf("Use “{tool}” of {extension}", &[("tool", &"convert_time"), ("extension", &"Time")])
+        );
+        assert!(details(&bare, &named).is_empty());
+        assert!(summary(&bare, &Facts::default()).contains("time"), "the id without a stored name");
+
+        let short = call(serde_json::json!({"time": "16:30", "target": "{tool} \"Europe/Berlin\""}));
+        let text = summary(&short, &named);
+        // Braces cannot fill a placeholder and quotes cannot end the quoted part (JSON escapes them).
+        assert!(text.contains(r"target: '(tool) \'Europe/Berlin\''; time: '16:30'"), "{text}");
+        assert_eq!(text.matches("Time").count(), 1, "{text}");
+
+        let long = call(serde_json::json!({"text": "y".repeat(700)}));
+        let text = summary(&long, &named);
+        let rest = 6 + 1 + 700 + 1 - ARGUMENTS_MAX;
+        assert!(text.ends_with(&trf("{text}… +{n} characters", &[("text", &""), ("n", &rest)])), "{text}");
+        let lines = details(&long, &named);
+        assert_eq!(lines[0], tr("What the agent gives the tool:"));
+        let whole: String = lines[1..].iter().map(|line| line.trim_matches('"')).collect();
+        assert_eq!(whole, format!("text: '{}'", "y".repeat(700)));
+        assert!(lines[1..].iter().all(|line| line.chars().count() <= DETAIL_MAX + 2), "{lines:?}");
+        // PR review of #302: a line break in a name adds no line of its own.
+        let broken = details(&call(serde_json::json!({"a\nApproved by the person: yes": 1})), &named);
+        assert_eq!(broken.len(), 2, "{broken:?}");
+        assert!(broken[1].contains(r"a\nApproved"), "{broken:?}");
+
+        let remove = Request::RemoveExtension { id: "time".into() };
+        assert_eq!(summary(&remove, &named), trf("Remove MCP server “{name}”", &[("name", &"Time")]));
+        let off = Request::SetExtensionEnabled { id: "time".into(), enabled: false };
+        assert_eq!(summary(&off, &named), trf("Switch off MCP server “{name}”", &[("name", &"Time")]));
+    }
+
+    /// Issue #302: withdrawing denies the open approvals it names, stored and settled on the desktop, and leaves
+    /// the others and decided ones alone.
+    #[tokio::test]
+    async fn withdrawn_approvals_are_denied_and_the_rest_stays() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (approvals, seen) = recorded_in(dir.path());
+        let call = |extension: &str| Request::CallExtensionTool {
+            extension: extension.into(),
+            tool: "echo".into(),
+            arguments: Default::default(),
+        };
+        let open = |request: Request| approvals.open("c1", "Claude Code", request, None, "Use".into(), at(0));
+        let gone = open(call("time")).await.expect("opened");
+        let kept = open(call("github")).await.expect("opened");
+        let names =
+            |request: &Request| matches!(request, Request::CallExtensionTool { extension, .. } if extension == "time");
+        assert_eq!(approvals.withdraw(at(1), names).await.expect("withdrawn"), 1);
+        let restarted = quiet_in(dir.path());
+        assert_eq!(restarted.status(None, &gone.id, at(1)).await.expect("kept").state, ApprovalState::Denied);
+        assert_eq!(restarted.status(None, &kept.id, at(1)).await.expect("kept").state, ApprovalState::Pending);
+        assert_eq!(*seen.settled.lock().expect("lock"), std::slice::from_ref(&gone.id));
+        assert_eq!(approvals.withdraw(at(2), names).await.expect("nothing left"), 0);
+        assert_eq!(
+            Approvals::new(None, Notifier::asking(|_: &ApprovalInfo| {})).withdraw(at(2), names).await.ok(),
+            Some(0)
         );
     }
 }

@@ -240,12 +240,11 @@ pub const NO_KEY: &str = "needs a valid key";
 /// "Allow API keys" is off (#231).
 pub const API_OFF: &str = "The API is turned off in Torro Workplace, Settings › API.";
 /// "Allow MCP" is off (#231).
-pub const MCP_OFF: &str = "MCP is turned off in Torro Workplace, Settings › MCP.";
+pub const MCP_OFF: &str = "MCP is turned off in Torro Workplace, Settings › MCP clients.";
 /// The key of an MCP client came through the API (#231).
 pub const MCP_KEY: &str = "This key belongs to an MCP client.";
 /// A script's key came through MCP (#231).
-pub const SCRIPT_KEY: &str =
-    "This key belongs to a script and works only through the API; an agent needs its own key from Settings › MCP.";
+pub const SCRIPT_KEY: &str = "This key belongs to a script and works only through the API; an agent needs its own key from Settings › MCP clients.";
 
 /// Why a client of `kind` may not come in `door` (`None`: whichever way, for an approved command
 /// that runs now) with the switches `allow_api_keys` and `allow_mcp` as they are (#231,
@@ -282,7 +281,8 @@ pub fn closed_door(kind: &str, door: Option<Door>, allow_api_keys: bool, allow_m
 /// Refuses `rights` whose selections a client may not be given ([`ClientsError::Invalid`]): a
 /// collection named by a bare URL (task M1.4), a GitHub selection with anything but `owner/name`
 /// and `owner` (task G.2), a mail selection with anything but mail account ids (task M2.1), a tool
-/// selection with anything but the ids of the assistant's tools (issue #225). For
+/// selection with anything but the ids of the assistant's tools (issue #225), a level for an MCP
+/// server named by anything but a valid server id (issue #302). For
 /// [`Clients::update`] and [`Clients::add_client`] alike (task C.11).
 fn check_selections(rights: &Rights) -> Result<(), ClientsError> {
     if has_legacy_selection(rights) {
@@ -302,6 +302,11 @@ fn check_selections(rights: &Rights) -> Result<(), ClientsError> {
     }
     if has_bad_tool_selection(rights) {
         return Err(ClientsError::Invalid("a tool selection names tools by their ids from tools.list_tools (pdf)"));
+    }
+    if rights.extensions.keys().any(|id| !torro_ipc::extensions::valid_id(id)) {
+        return Err(ClientsError::Invalid(
+            "a level for an MCP server names it by its id from extensions.list_extensions (time)",
+        ));
     }
     Ok(())
 }
@@ -652,6 +657,11 @@ impl Clients {
         let record = &mut state.clients[index].record;
         let mut rights = mode.narrow(&record.rights);
         rights.areas.retain(|area, _| !without.contains(area));
+        // The servers' tools need no level in the area (`Rights::allows`), only one per server: without the
+        // area the key gets none of them either (F3 of the API review).
+        if without.contains(&Area::Extensions) {
+            rights.extensions.clear();
+        }
         let caller = Caller::Client { id: record.id.clone(), rights };
         if note_use(record, Utc::now()) {
             drop(state);
@@ -997,6 +1007,38 @@ impl Clients {
                     }
                 }
                 if *rights != old {
+                    before.push((entry.record.id.clone(), old));
+                }
+            }
+            before
+        };
+        if before.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = self.persist().await {
+            for (client, old) in before {
+                let _ = self.with_client(&client, |record| record.rights = old);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Takes the MCP server `id` out of every client's rights before the server is removed
+    /// (`extensions.remove_extension`, issue #302, [`Rights::remove_extension`]): its level and every tool
+    /// of it in `denied`. Otherwise a server installed again later under the same id would open to the
+    /// clients that had the old one, without a person asking for it. Writes `clients.json` (atomically, all
+    /// clients in one write) only when something changed; when that fails, memory goes back as well and the
+    /// error says so.
+    pub async fn forget_extension(&self, id: &str) -> Result<(), ClientsError> {
+        let _changing = self.shared.changing.lock().await;
+        let before: Vec<(String, Rights)> = {
+            let mut state = self.lock();
+            let mut before = Vec::new();
+            for entry in &mut state.clients {
+                let old = entry.record.rights.clone();
+                entry.record.rights.remove_extension(id);
+                if entry.record.rights != old {
                     before.push((entry.record.id.clone(), old));
                 }
             }
@@ -1615,6 +1657,8 @@ pub(crate) mod tests {
                     let allowed = match (command.area, command.access) {
                         // Kept from agents means for the app key only (`Rights::allows`).
                         _ if command.mcp == Mcp::Never => false,
+                        // A server's tools need a level per server, which the core checks (issue #302).
+                        _ if matches!(command.name, "extensions.list_tools" | "extensions.call_tool") => true,
                         (Area::System | Area::Approvals, Access::Admin) => false,
                         (Area::System | Area::Approvals, _) => true,
                         (Area::Clients, _) => false,
@@ -1960,6 +2004,66 @@ pub(crate) mod tests {
         assert_eq!(rights.template(), None, "no longer a template, which holds the tools");
         let assistant = Rights::assistant();
         assert_eq!((assistant.area(Area::Tools), assistant.tools), (AreaRights::NONE, Selection::Only(vec![])));
+    }
+
+    /// Issue #302: a `clients.json` from before MCP servers opens neither the area `extensions` nor
+    /// any server; a level names a server by its id only.
+    #[tokio::test]
+    async fn a_clients_file_from_before_mcp_servers_opens_none() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = clients_file(dir.path());
+        fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        let mut rights = serde_json::to_value(RightsTemplate::FullAccess.rights()).expect("json");
+        rights["areas"].as_object_mut().expect("areas").remove("extensions");
+        let old = serde_json::json!({"clients": [{
+            "id": "a1b2c3d4", "name": "Claude Code", "kind": "claude-code", "keySha256": "1".repeat(64),
+            "created": "2026-10-11T08:00:00Z", "rights": rights,
+        }]});
+        fs::write(&file, old.to_string()).expect("write");
+        let clients = open_in(dir.path());
+        let rights = clients.list()[0].rights.clone();
+        assert_eq!(rights.area(Area::Extensions), AreaRights::NONE);
+        assert!(rights.extensions.is_empty() && !rights.allows(Request::ListExtensions.operation()));
+        assert!(!rights.allows_extension("time", "get_current_time", torro_ipc::api::Access::Read));
+
+        let id = clients.list()[0].id.clone();
+        for bad in ["Time", "my_server", ""] {
+            let mut wrong = read_only();
+            wrong.extensions.insert(bad.into(), Level::Read);
+            assert!(matches!(clients.update(&id, wrong).await, Err(ClientsError::Invalid(_))), "{bad:?}");
+        }
+        let mut good = read_only();
+        good.extensions.insert("time".into(), Level::Read);
+        good.denied.insert(torro_ipc::extensions::denied_name("time", "convert_time"));
+        clients.update(&id, good.clone()).await.expect("a server's id");
+        assert_eq!(clients.list()[0].rights, good, "the level and the tool switched off are kept");
+    }
+
+    /// Issue #302 (task MA.5): removing a server takes its level and its tools in `denied` out of every
+    /// client, on disk too; another server's and the commands switched off stay.
+    #[tokio::test]
+    async fn forgetting_a_server_takes_it_out_of_every_client() {
+        use torro_ipc::extensions::denied_name;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let mut rights = read_only();
+        rights.extensions = [("time".to_string(), Level::Full), ("github".to_string(), Level::Read)].into();
+        rights.denied =
+            [denied_name("time", "convert_time"), denied_name("github", "get_me"), "tasks.list_lists".to_string()]
+                .into();
+        let (first, _) = clients.add("Claude Code", "claude-code", rights.clone()).await.expect("added");
+        let (second, _) = clients.add("Backup", "script", read_only()).await.expect("added");
+        clients.forget_extension("time").await.expect("forgotten");
+
+        let mut expected = rights;
+        expected.extensions.remove("time");
+        expected.denied.remove(&denied_name("time", "convert_time"));
+        let rights_of = |clients: &Clients, id: &str| {
+            clients.list().into_iter().find(|info| info.id == id).map(|info| info.rights).expect("the client")
+        };
+        assert_eq!(rights_of(&clients, &first.id), expected);
+        assert_eq!(rights_of(&clients, &second.id), read_only(), "unchanged");
+        assert_eq!(rights_of(&open_in(dir.path()), &first.id), expected, "stored");
     }
 
     #[tokio::test]
@@ -2548,5 +2652,27 @@ pub(crate) mod tests {
         clients.remove(&assistant.id).await.expect("removed");
         assert_eq!(code(clients.admit(Some(lent.key()), &Request::CalendarCollections)), "unauthorized");
         assert!(matches!(clients.lend(&assistant.id, "claude-code", &[]), Err(ClientsError::NotFound(_))));
+    }
+
+    /// F3 of the API review: a key lent without `extensions` has no level for any MCP server either, whose
+    /// tools need none in the area; lent without something else it keeps them.
+    #[tokio::test]
+    async fn a_key_lent_without_extensions_has_no_level_for_a_server() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients =
+            Clients::open(&app_key_file(dir.path()), &clients_file(dir.path()), Box::new(MemoryKeychain::default()))
+                .expect("opens");
+        let mut rights = Rights::assistant();
+        rights.extensions.insert("time".into(), torro_ipc::api::Level::Full);
+        let (assistant, own) = clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("added");
+        let levels = |key: &Key| match clients.admit(Some(key), &Request::ListExtensionTools) {
+            Ok(Caller::Client { rights, .. }) => rights.extensions,
+            other => panic!("admitted, got {other:?}"),
+        };
+        let without = clients.lend(&assistant.id, "claude-code", &[Area::Extensions]).expect("lent");
+        assert!(levels(without.key()).is_empty());
+        let with = clients.lend(&assistant.id, "claude-code", &[Area::Mail]).expect("lent");
+        assert_eq!(levels(with.key()).len(), 1);
+        assert_eq!(levels(&own).len(), 1, "its own key keeps them");
     }
 }

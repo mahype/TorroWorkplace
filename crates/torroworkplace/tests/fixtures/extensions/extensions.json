@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "extensions": [
+    {
+      "id": "time",
+      "name": "Time",
+      "source": { "kind": "catalog", "entry": "time", "version": "2025.9.25" },
+      "server": { "transport": "stdio", "command": "uvx", "args": ["mcp-server-time==2025.9.25"] },
+      "enabled": true,
+      "allowed": [
+        {
+          "name": "get_current_time",
+          "description": "Get current time in a specific timezone",
+          "inputSchema": { "type": "object", "properties": { "timezone": { "type": "string" } } },
+          "access": "read",
+          "fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "reported": [
+        {
+          "name": "get_current_time",
+          "description": "Get current time in a specific timezone",
+          "inputSchema": { "type": "object", "properties": { "timezone": { "type": "string" } } }
+        }
+      ]
+    },
+    {
+      "id": "team",
+      "name": "Team server",
+      "source": { "kind": "custom" },
+      "server": {
+        "transport": "http",
+        "url": "http://127.0.0.1:8808/mcp",
+        "headers": { "Authorization": { "stored": { "secret": true } }, "X-Team": { "plain": "torro" } }
+      },
+      "enabled": false
+    }
+  ]
+}

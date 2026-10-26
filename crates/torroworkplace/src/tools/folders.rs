@@ -161,7 +161,7 @@ const COLON: &str = "A name may not contain a colon.";
 pub const TRASH_FOLDERS: [&str; 3] = [".Trash", ".Trashes", "$Recycle.Bin"];
 /// Writing in a folder with `read` access.
 pub const READ_ONLY: &str =
-    "The tools may only read in this folder; a person can allow more in the assistant's settings.";
+    "The tools may only read in this folder; a person can allow more in Torro Workplace under MCP servers.";
 /// Moving (in WD.3 trashing) what is or holds an allowed folder or something locked.
 pub const PROTECTED: &str = "This is or holds an allowed folder or files the suite protects; it stays where it is.";
 
