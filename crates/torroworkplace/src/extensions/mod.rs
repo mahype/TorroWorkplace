@@ -1671,6 +1671,36 @@ mod tests {
             assert_eq!(stored.get("ext:fixture:FIXTURE_VALUE").map(String::as_str), Some("second"));
         }
 
+        /// A server of a person's own over Streamable HTTP, through the supervisor: installed with a secret
+        /// header, which goes to the keychain only; once its tools are allowed, a call sends the stored secret
+        /// as the header, and every request had it.
+        #[tokio::test]
+        async fn a_server_over_http_is_installed_and_called_with_its_stored_header() {
+            let (base, seen) = client::http_fixture::serve().await;
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            let server = ServerSpec::Http {
+                url: format!("{base}/mcp"),
+                headers: BTreeMap::from([("Authorization".into(), Value::Secret(Secret::new("Bearer s3cret")))]),
+            };
+            let from = InstallFrom::Custom { id: "remote".into(), name: "Remote".into(), server };
+            let installed = info(extensions.install(from).await);
+            assert_eq!(installed.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["now"]);
+            assert_eq!(secrets.keys(), ["ext:remote:Authorization"]);
+            let file = std::fs::read_to_string(dir.path().join("extensions/extensions.json")).expect("file");
+            assert!(!file.contains("s3cret"));
+
+            seen.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            info(extensions.confirm("remote", &installed.fingerprint.expect("a fingerprint")).await);
+            let Response::ToolResult { output } = extensions.call("remote", "now", Default::default()).await else {
+                panic!("an answer");
+            };
+            assert_eq!(output.content, vec![torro_ipc::extensions::Content::Text { text: "called \"now\"".into() }]);
+            let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            assert!(seen.iter().any(|request| request.body["method"] == "tools/call"), "{seen:?}");
+            assert!(seen.iter().all(|request| request.header("authorization") == Some("Bearer s3cret")));
+        }
+
         /// A keychain that stores, then puts a folder in place of the file of the servers, so writing the file
         /// fails after the secrets of an update are in.
         struct Breaking {

@@ -522,6 +522,129 @@ pub(crate) mod fixture {
 }
 
 #[cfg(test)]
+pub(crate) mod http_fixture {
+    //! A small MCP server over Streamable HTTP for the tests (task MA.4), on 127.0.0.1 and without the network:
+    //! JSON answers, a session id, every request seen with its headers.
+
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// One request as the server got it.
+    #[derive(Debug, Clone)]
+    pub(crate) struct Seen {
+        pub(crate) method: String,
+        pub(crate) path: String,
+        pub(crate) headers: Vec<(String, String)>,
+        pub(crate) body: serde_json::Value,
+    }
+
+    impl Seen {
+        pub(crate) fn header(&self, name: &str) -> Option<&str> {
+            self.headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_str())
+        }
+    }
+
+    /// Serves on a free port of 127.0.0.1; `/moved` answers every request with a redirect to `/mcp`.
+    pub(crate) async fn serve() -> (String, Arc<Mutex<Vec<Seen>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let address = listener.local_addr().expect("its address");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(answer(stream, Arc::clone(&log)));
+            }
+        });
+        (format!("http://{address}"), seen)
+    }
+
+    /// Reads one request (head and a body of `Content-Length`), answers it and closes the connection.
+    async fn answer(mut stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>) {
+        let mut raw = Vec::new();
+        let mut buffer = [0u8; 4096];
+        let head_end = loop {
+            if let Some(end) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                break end;
+            }
+            match stream.read(&mut buffer).await {
+                Ok(0) | Err(_) => return,
+                Ok(read) => raw.extend_from_slice(&buffer[..read]),
+            }
+        };
+        let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+        let mut lines = head.split("\r\n");
+        let mut start = lines.next().unwrap_or_default().split(' ');
+        let (method, path) = (start.next().unwrap_or_default().to_string(), start.next().unwrap_or_default());
+        let headers: Vec<(String, String)> = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+            .collect();
+        let length: usize = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, value)| value.parse().ok())
+            .unwrap_or(0);
+        let mut body = raw[head_end + 4..].to_vec();
+        while body.len() < length {
+            match stream.read(&mut buffer).await {
+                Ok(0) | Err(_) => return,
+                Ok(read) => body.extend_from_slice(&buffer[..read]),
+            }
+        }
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        let request = Seen { method, path: path.to_string(), headers, body };
+        seen.lock().unwrap_or_else(PoisonError::into_inner).push(request.clone());
+
+        let response = match (request.method.as_str(), request.path.as_str()) {
+            (_, "/moved") => "HTTP/1.1 307 Temporary Redirect\r\nLocation: /mcp\r\nContent-Length: 0\r\n".into(),
+            ("POST", _) => match result(&request.body) {
+                Some(result) => {
+                    let id = request.body.get("id").cloned().unwrap_or_default();
+                    let json = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMcp-Session-Id: fixture-session\r\n\
+                             Content-Length: {}\r\n\r\n{json}",
+                        json.len()
+                    )
+                }
+                None => "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n".into(),
+            },
+            ("DELETE", _) => "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n".into(),
+            _ => "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n".into(),
+        };
+        let response = match response.contains("\r\n\r\n") {
+            true => response,
+            false => format!("{response}\r\n"),
+        };
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+    }
+
+    /// The result for a JSON-RPC request, `None` for a notification.
+    fn result(body: &serde_json::Value) -> Option<serde_json::Value> {
+        body.get("id")?;
+        let method = body.get("method").and_then(|method| method.as_str()).unwrap_or_default();
+        Some(match method {
+            "initialize" => serde_json::json!({
+                "protocolVersion": body["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "http-fixture", "version": "1.0.0"},
+            }),
+            "tools/list" => serde_json::json!({
+                "tools": [{"name": "now", "description": "The time", "inputSchema": {"type": "object"}}],
+            }),
+            "tools/call" => serde_json::json!({
+                "content": [{"type": "text", "text": format!("called {}", body["params"]["name"])}],
+                "isError": false,
+            }),
+            _ => serde_json::json!({}),
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::fixture::{Fixture, tool};
     use super::*;
@@ -686,6 +809,58 @@ mod tests {
         let _ = server.cancel().await;
         tokio::time::timeout(WAIT, connection.closed()).await.expect("noticed");
         assert!(connection.is_closed());
+    }
+
+    /// Streamable HTTP against the server of `http_fixture`.
+    mod http {
+        use super::super::http_fixture::{Seen, serve};
+        use super::*;
+
+        /// The tools are listed and called over HTTP, and every request carries the header.
+        #[tokio::test]
+        async fn tools_are_listed_and_called_with_the_header() {
+            let (base, seen) = serve().await;
+            let headers = [("Authorization".to_string(), "Bearer s3cret".to_string())];
+            let connection =
+                tokio::time::timeout(WAIT, connect_http(&format!("{base}/mcp"), &headers)).await.expect("in time");
+            let connection = connection.expect("connected");
+            let tools = connection.list_tools(WAIT).await.expect("listed");
+            assert_eq!(tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["now"]);
+            let called = connection.call_tool("now", JsonObject::new(), WAIT).await.expect("called");
+            assert_eq!(called.content, vec![Content::Text { text: "called \"now\"".into() }]);
+            assert!(called.untrusted && !called.is_error);
+            connection.close(WAIT).await;
+
+            let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            let posts: Vec<&Seen> = seen.iter().filter(|request| request.method == "POST").collect();
+            let methods: Vec<&str> = posts.iter().filter_map(|request| request.body["method"].as_str()).collect();
+            assert_eq!(methods, ["initialize", "notifications/initialized", "tools/list", "tools/call"]);
+            assert!(seen.iter().all(|request| request.header("authorization") == Some("Bearer s3cret")), "{seen:?}");
+            assert!(posts[1..].iter().all(|request| request.header("mcp-session-id") == Some("fixture-session")));
+        }
+
+        /// A redirect is not followed, so the header never goes to another address.
+        #[tokio::test]
+        async fn a_redirect_is_not_followed() {
+            let (base, seen) = serve().await;
+            let headers = [("Authorization".to_string(), "Bearer s3cret".to_string())];
+            let connection =
+                tokio::time::timeout(WAIT, connect_http(&format!("{base}/moved"), &headers)).await.expect("in time");
+            assert!(connection.is_err());
+            let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            assert!(seen.iter().all(|request| request.path == "/moved"), "{seen:?}");
+        }
+
+        /// A header that cannot be sent is refused before anything goes out.
+        #[tokio::test]
+        async fn a_broken_header_is_refused() {
+            let (base, seen) = serve().await;
+            let headers = [("Bad Name".to_string(), "x".to_string())];
+            assert_eq!(connect_http(&format!("{base}/mcp"), &headers).await.err(), Some(ClientError::BadHeader));
+            let headers = [("X-Token".to_string(), "line\nbreak".to_string())];
+            assert_eq!(connect_http(&format!("{base}/mcp"), &headers).await.err(), Some(ClientError::BadHeader));
+            assert!(seen.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+        }
     }
 
     #[test]
