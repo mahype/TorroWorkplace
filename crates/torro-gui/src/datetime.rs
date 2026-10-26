@@ -257,7 +257,7 @@ mod tests {
 
     /// A local wall-clock time as the instant the functions get.
     fn local(y: i32, m: u32, day: u32, h: u32, min: u32) -> DateTime<Utc> {
-        to_utc(d(y, m, day).and_hms_opt(h, min, 12).unwrap())
+        to_utc(d(y, m, day).and_hms_opt(h, min, 12).expect("a valid time"))
     }
 
     #[test]

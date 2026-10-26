@@ -920,6 +920,24 @@ impl Session {
             .collect()
     }
 
+    /// The sizes (`RFC822.SIZE`) of the messages `uids` of the selected folder, as `(uid, bytes)`
+    /// (#314). Lenient where [`Session::fetch_backup_metadata`] is strict: a `FETCH` without a size
+    /// or for a UID that was not asked for (a flag another client changed meanwhile) is left out, so
+    /// it costs one size, not the whole batch.
+    pub async fn fetch_sizes(&mut self, uids: &[u32]) -> Result<Vec<(u32, u64)>, ImapError> {
+        self.require_selected()?;
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let set = uid_set(uids);
+        let data = self.run(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw("(UID RFC822.SIZE)")], "FETCH").await?;
+        let asked: std::collections::BTreeSet<u32> = uids.iter().copied().collect();
+        Ok(fetched(&data)
+            .filter(|item| asked.contains(&item.uid))
+            .filter_map(|item| Some((item.uid, item.get("RFC822.SIZE").and_then(Token::number)?)))
+            .collect())
+    }
+
     /// Returns at most 64 KiB of original RFC-822 bytes via IMAP partial `BODY.PEEK[]`. A server
     /// that omits the requested item is reported as a vanished message by the backup caller.
     pub async fn fetch_backup_chunk(

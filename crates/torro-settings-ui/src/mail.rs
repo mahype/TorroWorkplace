@@ -173,6 +173,12 @@ pub fn attachments_escape(state: &State) -> Option<Message> {
     attachments::escape(&state.attachments).map(Message::Attachments)
 }
 
+/// A change or a load of the host came back (the window calls it on every one): what was being
+/// saved is saved or failed, so the save bar of an account's page takes clicks again.
+pub fn sent(state: &mut State) {
+    accounts::sent(&mut state.accounts);
+}
+
 /// What Escape means while "Accounts" shows: close the "…" menu of an account's head (task DS.6).
 /// `None` without one, which lets the window close the settings.
 pub fn accounts_escape(state: &State) -> Option<Message> {
@@ -292,6 +298,9 @@ pub mod accounts {
         backup: backup::State,
         backup_account: Option<String>,
         backup_others: BTreeMap<String, backup::State>,
+        /// "Save" sent the name and the signature and the answer has not come yet: the save bar
+        /// says "Saving…" and takes no second click.
+        saving: bool,
     }
 
     /// The parts of an account's page (task DS.6), "Overview" first.
@@ -498,9 +507,13 @@ pub mod accounts {
                 }
                 Action::None
             }
+            // A second "Save" (Enter in the name) while the first is on its way sends nothing.
+            Message::Save if state.saving => Action::None,
             Message::Save => {
                 let Some((draft, mail)) = open_draft(state, data) else { return Action::None };
-                draft.changes(mail).map_or(Action::None, Action::send)
+                let Some(request) = draft.changes(mail) else { return Action::None };
+                state.saving = true;
+                Action::send(request)
             }
             Message::Format(format) => change(state, data, |mail| {
                 (format != mail.settings.format).then(|| MailChange { format: Some(format), ..MailChange::default() })
@@ -524,6 +537,11 @@ pub mod accounts {
         } else {
             let _: Action<()> = update(state, Message::Open(id.to_string()), data);
         }
+    }
+
+    /// A change or a load came back: "Save" is done, the save bar shows what is still different.
+    pub(super) fn sent(state: &mut State) {
+        state.saving = false;
     }
 
     /// The answer of a backup request for `account`, to its page whether it is open or not.
@@ -607,7 +625,14 @@ pub mod accounts {
                 // differs from what is stored, on every tab.
                 match draft.summary(mail) {
                     Some(summary) => {
-                        page.save_bar(widgets::save_bar(summary, Some(Message::Discard), Some(Message::Save), false))
+                        let idle = !state.saving;
+                        let bar = widgets::save_bar(
+                            summary,
+                            idle.then_some(Message::Discard),
+                            idle.then_some(Message::Save),
+                            state.saving,
+                        );
+                        page.save_bar(bar)
                     }
                     None => page,
                 }
@@ -848,6 +873,15 @@ pub mod accounts {
                 _ => trf("{n} other folders", &[("n", &others.len())]),
             };
             parts.push(SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Other));
+        }
+        // With a quota the strip is the quota: what is used but no folder accounts for (sizes still
+        // coming, labels counted twice by Gmail) is a part of its own, so "Free" is the free share.
+        if let Some(quota) = &stats.quota {
+            let counted: u64 = sized.iter().map(|(_, bytes)| bytes).sum();
+            let rest = quota.used_bytes.saturating_sub(counted);
+            if rest > 0 {
+                parts.push(SharePart::new(tr("Not counted by folder"), rest, format_bytes(rest), ChartColor::Other));
+            }
         }
         let free = stats
             .quota
@@ -1403,6 +1437,22 @@ pub mod accounts {
             }
         }
 
+        /// "Save" makes the save bar busy until the host's answer is back; a second click sends
+        /// nothing.
+        #[test]
+        fn save_waits_for_its_answer() {
+            let data = data();
+            let mut state = opened(&data);
+            let _: Action<()> = update(&mut state, Message::SenderName("Anna B.".into()), &data);
+            let saved: Action<()> = update(&mut state, Message::Save, &data);
+            assert!(matches!(saved, Act::Send(_)));
+            assert!(state.saving);
+            let again: Action<()> = update(&mut state, Message::Save, &data);
+            assert_eq!(again, Action::None, "one save at a time");
+            sent(&mut state);
+            assert!(!state.saving);
+        }
+
         /// "Sync now" sends exactly `accounts.sync`.
         #[test]
         fn sync_now_sends_the_sync() {
@@ -1446,7 +1496,10 @@ pub mod accounts {
             let unknown = server_figure(&stats(&[("INBOX", 30, 8, None)], None));
             assert_eq!(unknown.value, UNKNOWN);
             let (parts, free) = server_parts(&quota);
-            assert_eq!(parts.len(), 1);
+            assert_eq!(parts.len(), 2, "the folder and what no folder accounts for");
+            assert_eq!(parts[1].label, tr("Not counted by folder"));
+            let whole: u64 = parts.iter().map(|part| part.value).sum::<u64>() + free.as_ref().map_or(0, |(_, b)| *b);
+            assert_eq!(whole, 10 * GIB, "the strip is the quota");
             assert_eq!(free.map(|(_, bytes)| bytes), Some(10 * GIB - GIB * 236 / 100));
             assert!(server_parts(&stats(&[("INBOX", 30, 8, Some(1))], None)).1.is_none(), "no quota, no free room");
         }
@@ -1526,6 +1579,36 @@ pub mod accounts {
             assert!(overlay(&state).is_none());
             let server: Action<()> = update(&mut state, Message::ServerSettings, &data);
             assert_eq!(server, Action::ControlCentre("accounts".into()));
+        }
+
+        /// DS.7: Storage & index shows none of the account's numbers, only estimates and the job: its
+        /// page reads no field of the statistics (the account's page is where they stand).
+        #[test]
+        fn storage_shows_none_of_the_accounts_numbers() {
+            let source = include_str!("mail.rs");
+            let start = source.find("pub mod storage {").expect("the storage section");
+            let page = &source[start..];
+            let page = &page[page.find("pub fn page<'a>").expect("its page")..];
+            let page = &page[..page.find("\n    }\n").expect("the end of its page")];
+            for field in [
+                "cached_bodies",
+                "body_cache_bytes",
+                "search_index_bytes",
+                "last_index_run",
+                "oldest_cached_body",
+                "indexed_full",
+                "indexed_partial_or_unverified",
+                "text_unavailable",
+                "awaiting_index",
+                "database_bytes",
+                "cached_attachments",
+                "attachment_cache_bytes",
+                "messages",
+                "unread",
+                "quota",
+            ] {
+                assert!(!page.contains(&format!("stats.{field}")), "Storage & index shows {field}");
+            }
         }
 
         /// DS.7: "Show account" in Storage & index opens the account at "Overview"; an account

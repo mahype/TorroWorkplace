@@ -164,13 +164,17 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
             Err(err) => return Err(err),
         }
     }
-    note_quota(mailbox, &store).await?;
     store
         .run(|store| {
             store.prune_bodies(Utc::now())?;
             store.prune_gone_originals(Utc::now()).map(drop)
         })
         .await?;
+    // The quota is an extra after a finished sync: losing the connection there makes no sync
+    // problem of the account; the next sync asks again.
+    if note_quota(mailbox, &store).await.is_err() {
+        eprintln!("torroworkplace: the storage quota of {} was not read: the connection ended", mailbox.id());
+    }
     Ok(())
 }
 
@@ -680,7 +684,7 @@ async fn fill_sizes(
             lease.done();
             return Ok(());
         }
-        let sizes = match lease.session().fetch_backup_metadata(batch).await.map_err(MailError::from) {
+        let sizes = match lease.session().fetch_sizes(batch).await.map_err(MailError::from) {
             Ok(sizes) => sizes,
             Err(err) if connection_lost(&err) => return Err(err),
             // Dropping the lease closes a connection that answered something unexpected.
@@ -690,8 +694,8 @@ async fn fill_sizes(
         let folder = target.id.clone();
         store
             .run(move |store| {
-                for message in &sizes {
-                    store.set_size(&folder, message.uid, message.bytes)?;
+                for (uid, bytes) in &sizes {
+                    store.set_size(&folder, *uid, *bytes)?;
                 }
                 Ok(())
             })
@@ -1756,6 +1760,8 @@ pub(crate) mod fake {
                 message.uid
             )
             .into_bytes()
+        } else if items.contains("RFC822.SIZE") {
+            format!("* {seq} FETCH (UID {} RFC822.SIZE {claimed})", message.uid).into_bytes()
         } else {
             format!("* {seq} FETCH (UID {} FLAGS ({flags}) MODSEQ ({}))", message.uid, message.modseq).into_bytes()
         }
@@ -2217,7 +2223,7 @@ mod tests {
         store.run(|store| store.forget_sizes()).await.expect("a store of before");
         assert_eq!(inbox_bytes(&store).await, None);
         sync_account(&mailbox).await.expect("synced again");
-        assert_eq!(fetches(&server, "(UID FLAGS INTERNALDATE RFC822.SIZE)").len(), 1, "one batch for the inbox");
+        assert_eq!(fetches(&server, "(UID RFC822.SIZE)").len(), 1, "one batch for the inbox");
         assert_eq!(inbox_bytes(&store).await, Some(bytes), "filled in without a change in the folder");
 
         let lines = server.lines().len();

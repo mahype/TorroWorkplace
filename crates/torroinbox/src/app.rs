@@ -2276,7 +2276,7 @@ fn rules_message(kind: Kind) -> Option<Message> {
 fn answered_settings(sections: &mut SettingsState) {
     match sections {
         SettingsState::Inbox(state) => settings_inbox::answered(state),
-        SettingsState::Mail(_) => {}
+        SettingsState::Mail(state) => settings_mail::sent(state),
     }
 }
 

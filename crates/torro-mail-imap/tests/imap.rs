@@ -190,6 +190,24 @@ async fn gmail_metadata_carries_its_message_id() {
     server.received().await;
 }
 
+/// #314: sizes are read leniently; a flag change of another client in between costs nothing.
+#[tokio::test]
+async fn sizes_skip_answers_without_one() {
+    let mut steps = examined_inbox("");
+    steps.extend([
+        expect("a3 UID FETCH 7:8 (UID RFC822.SIZE)"),
+        send("* 1 FETCH (UID 7 RFC822.SIZE 9)"),
+        send("* 3 FETCH (UID 12 FLAGS (\\Seen))"),
+        send("* 2 FETCH (UID 8 RFC822.SIZE 4096)"),
+        send("a3 OK sizes"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    session.examine("INBOX").await.expect("examined");
+    assert_eq!(session.fetch_sizes(&[7, 8]).await.expect("sizes"), vec![(7, 9), (8, 4096)]);
+    server.received().await;
+}
+
 #[tokio::test]
 async fn restore_append_streams_raw_bytes_with_date_and_keywords() {
     let mut steps = signed_in("");

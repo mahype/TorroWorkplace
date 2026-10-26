@@ -545,9 +545,11 @@ impl Host {
         for section in &self.sections {
             let open = section.id == current;
             match child.clone().filter(|_| open) {
-                Some((name, back)) => {
-                    entries.push(MenuItem::new(section.icon, section.name(), back));
+                // Both entries stay on the open page: a choice must close the menu, which only the
+                // host's own message does; the way up is the arrow in front of the path.
+                Some((name, _)) => {
                     let stay = wrap(Message::Select(section.id));
+                    entries.push(MenuItem::new(section.icon, section.name(), stay.clone()));
                     entries.push(MenuItem::new(section.icon, name, stay).current(true).nested());
                 }
                 None => entries
@@ -674,8 +676,10 @@ mod tests {
         let _: Frame<'_, Message> = host.view(SizeClass::Wide, below, |m| m);
         host.menu = true;
         let below = page().sub_page("Work", Message::Back);
-        let frame = host.view(SizeClass::Medium, below, |m| m);
-        assert!(frame.overlay.is_some());
+        assert!(host.view(SizeClass::Medium, below, |m| m).overlay.is_some());
+        // The section's entry in the menu selects it, so the menu closes.
+        let _: Outcome<()> = host.update(Message::Select("reminders"));
+        assert!(!host.menu, "a choice closes the menu");
     }
 
     /// DS.5: a page with a save bar builds in every form.
