@@ -438,6 +438,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ConfirmExtensionTools { id, .. }
         | Request::UpdateExtension { id, .. }
         | Request::SetExtensionSecret { id, .. }
+        | Request::SetExtensionFolder { id, .. }
         | Request::ReadExtensionLogs { id }
         | Request::RemoveExtension { id }
         | Request::InstallExtension { from: InstallFrom::Custom { id, .. } }

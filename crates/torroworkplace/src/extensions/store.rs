@@ -60,6 +60,10 @@ pub struct StoredExtension {
     /// `review` still shows what to allow after the core restarted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reported: Vec<ReportedTool>,
+    /// The allowed folder a person chose for a catalog server that works in one (`extensions.set_folder`,
+    /// issue #303), as its path; `None` while none is chosen. Files written before have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 /// A tool a person allowed (`extensions.confirm_tools`).
@@ -614,6 +618,7 @@ mod tests {
                 description: "Opens an issue".into(),
                 input_schema: serde_json::json!({"type": "object", "properties": {"title": {"type": "string"}}}),
             }],
+            folder: None,
         }
     }
 
@@ -624,7 +629,7 @@ mod tests {
         assert_eq!(store.load().expect("no file yet"), Vec::new());
 
         let written = vec![
-            extension("github", github()),
+            StoredExtension { folder: Some("/Users/anna/Documents".into()), ..extension("github", github()) },
             StoredExtension {
                 source: Source::Custom,
                 allowed: Vec::new(),
@@ -666,6 +671,8 @@ mod tests {
         assert_eq!(read.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["time", "team"]);
         assert_eq!(read[0].allowed[0].access, Access::Read);
         assert_eq!(read[1].server, remote("http://127.0.0.1:8808/mcp", Value::Stored { secret: true }));
+        // Written before issue #303: no folder chosen.
+        assert!(read.iter().all(|e| e.folder.is_none()));
     }
 
     #[test]

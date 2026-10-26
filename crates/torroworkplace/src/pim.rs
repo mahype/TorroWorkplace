@@ -1346,6 +1346,7 @@ impl PimService {
             | Request::ConfirmExtensionTools { .. }
             | Request::UpdateExtension { .. }
             | Request::SetExtensionSecret { .. }
+            | Request::SetExtensionFolder { .. }
             | Request::ReadExtensionLogs { .. }
             | Request::RemoveExtension { .. } => return None,
             // No collection either: the web is outside the suite (issue #305).

@@ -6109,6 +6109,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("None of its tools is offered.", "Keins seiner Werkzeuge wird angeboten."),
     ("Not allowed yet", "Noch nicht erlaubt"),
     ("Not offered", "Nicht angeboten"),
+    ("Blocked by Torro", "Von Torro gesperrt"),
     ("Not offered until you allow them", "Nicht angeboten, bevor du sie erlaubst"),
     ("Output", "Ausgabe"),
     ("Program", "Programm"),

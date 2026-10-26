@@ -1731,6 +1731,7 @@ impl Request {
             Request::ConfirmExtensionTools { .. } => &CONFIRM_TOOLS,
             Request::UpdateExtension { .. } => &UPDATE_EXTENSION,
             Request::SetExtensionSecret { .. } => &SET_EXTENSION_SECRET,
+            Request::SetExtensionFolder { .. } => &SET_EXTENSION_FOLDER,
             Request::ReadExtensionLogs { .. } => &READ_EXTENSION_LOGS,
             Request::RemoveExtension { .. } => &REMOVE_EXTENSION,
             Request::WebSearch { .. } => &WEB_SEARCH,
@@ -1980,6 +1981,7 @@ pub static CATALOGUE: &[&Command] = &[
     &CONFIRM_TOOLS,
     &UPDATE_EXTENSION,
     &SET_EXTENSION_SECRET,
+    &SET_EXTENSION_FOLDER,
     &READ_EXTENSION_LOGS,
     &REMOVE_EXTENSION,
     &WEB_SEARCH,
@@ -4436,6 +4438,17 @@ static SET_EXTENSION_SECRET: Command = Command {
                   keychain. Only the app key may use it: secrets never come from agents.",
 };
 
+// Kept from agents (point 10): choosing a folder is granting rights, like `allowed_folder`.
+static SET_EXTENSION_FOLDER: Command = Command {
+    name: "extensions.set_folder",
+    area: Area::Extensions,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Chooses the allowed folder (`folder`, its path, or `null` for none) the MCP server `id` works in; \
+                  the server is started with it as its bound. Only the app key may use it: choosing a folder grants \
+                  rights.",
+};
+
 static READ_EXTENSION_LOGS: Command = Command {
     name: "extensions.read_logs",
     area: Area::Extensions,
@@ -5181,6 +5194,8 @@ mod tests {
                 name: "GITHUB_PERSONAL_ACCESS_TOKEN".into(),
                 value: crate::Secret::new("ghp_example"),
             },
+            Request::SetExtensionFolder { id: "wordcraft".into(), folder: Some("/Users/anna/Documents".into()) },
+            Request::SetExtensionFolder { id: "wordcraft".into(), folder: None },
             Request::ReadExtensionLogs { id: "time".into() },
             Request::RemoveExtension { id: "time".into() },
             Request::WebSearch {
@@ -5346,6 +5361,8 @@ mod tests {
                         | "extensions.confirm_tools"
                         | "extensions.update_extension"
                         | "extensions.set_secret"
+                        // Point 10: choosing a folder grants rights (issue #303).
+                        | "extensions.set_folder"
                         | "extensions.read_logs"
                         // Point 5: the key of a web search provider (issue #305).
                         | "accounts.set_search_key"
@@ -7518,6 +7535,7 @@ mod tests {
             Request::ConfirmExtensionTools { id: "time".into(), fingerprint: "ab".into() },
             Request::UpdateExtension { id: "time".into(), server: None },
             Request::SetExtensionSecret { id: "time".into(), name: "KEY".into(), value: crate::Secret::new("k") },
+            Request::SetExtensionFolder { id: "time".into(), folder: Some("/tmp".into()) },
             Request::ReadExtensionLogs { id: "time".into() },
         ];
         let mut every = RightsTemplate::FullAccess.rights();

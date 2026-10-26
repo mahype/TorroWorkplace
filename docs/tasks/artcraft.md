@@ -72,7 +72,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   Arbeitsordner (`#[cfg(unix)]`). Ordner in Temp-Verzeichnissen.
 
 ### AC.1 Gerüst: Ordner je Server, Typen, Request, Katalogeintrag
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,api,extensions}.rs`,
   `crates/torroworkplace/src/{core,mcp,audit,approvals,daemon,pim}.rs` (nur `match`-Arme, Handler, Tests; Logzeile in
   `daemon.rs` ohne Pfad, etwa „choose folder of mcp server {id}“),

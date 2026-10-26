@@ -157,6 +157,7 @@ fn entry_of(raw: RawEntry) -> Result<Entry, CatalogError> {
             secrets,
             tools,
             missing: Vec::new(),
+            folder: None,
         },
         command: raw.command,
         args: raw.args,

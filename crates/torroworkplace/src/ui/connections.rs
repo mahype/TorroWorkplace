@@ -2237,6 +2237,7 @@ fn tool_state(server: &ExtensionInfo, tool: &ExtensionTool) -> (Dot, String) {
         }
         ToolState::Review => (Dot::Attention, tr("Not allowed yet").to_string()),
         ToolState::Unsupported => (Dot::Inactive, tr("Not offered").to_string()),
+        ToolState::Blocked => (Dot::Inactive, tr("Blocked by Torro").to_string()),
     }
 }
 

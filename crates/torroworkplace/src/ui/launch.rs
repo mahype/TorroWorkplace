@@ -1136,6 +1136,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             secrets: Vec::new(),
             notes: Vec::new(),
             fingerprint: Some("demo-time".into()),
+            folder: None,
         },
         ExtensionInfo {
             id: "github".into(),
@@ -1159,6 +1160,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             secrets: vec![SecretInfo { name: "GITHUB_PERSONAL_ACCESS_TOKEN".into(), stored: true }],
             notes: Vec::new(),
             fingerprint: Some("demo-github".into()),
+            folder: None,
         },
         ExtensionInfo {
             id: "notes".into(),
@@ -1174,6 +1176,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             secrets: Vec::new(),
             notes: Vec::new(),
             fingerprint: Some("demo-notes".into()),
+            folder: None,
         },
     ]
 }
@@ -1317,6 +1320,7 @@ fn demo_custom(
         secrets,
         notes: Vec::new(),
         fingerprint: Some(format!("demo-{id}")),
+        folder: None,
     }
 }
 
@@ -1356,6 +1360,7 @@ fn demo_server(id: &str, data: &Data) -> Option<torro_ipc::extensions::Extension
         secrets: entry.secrets.iter().map(|secret| SecretInfo { name: secret.name.clone(), stored: true }).collect(),
         notes: Vec::new(),
         fingerprint: Some(format!("demo-{}", entry.id)),
+        folder: None,
     })
 }
 

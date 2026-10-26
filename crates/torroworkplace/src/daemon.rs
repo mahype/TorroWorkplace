@@ -954,6 +954,7 @@ fn describe(request: &Request) -> String {
         Request::ConfirmExtensionTools { id, .. } => format!("allow tools of mcp server {id}"),
         Request::UpdateExtension { id, .. } => format!("update mcp server {id}"),
         Request::SetExtensionSecret { id, .. } => format!("secret of mcp server {id}"),
+        Request::SetExtensionFolder { id, .. } => format!("choose folder of mcp server {id}"),
         Request::ReadExtensionLogs { id } => format!("output of mcp server {id}"),
         Request::RemoveExtension { id } => format!("remove mcp server {id}"),
         // Never a path or a name searched for (issue #304).

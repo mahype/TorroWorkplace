@@ -386,6 +386,7 @@ impl Extensions {
             enabled: false,
             allowed: Vec::new(),
             reported,
+            folder: None,
         };
         let committed = self.commit(changing, &id, None, &spec, all, None, entry).await;
         let (installed, _changing) = match committed {
@@ -995,6 +996,7 @@ impl Extensions {
             secrets,
             notes,
             fingerprint: Some(client::list_fingerprint(&reported)),
+            folder: stored.folder,
         }
     }
 }
@@ -1264,6 +1266,7 @@ pub(crate) mod testing {
             enabled: true,
             allowed,
             reported: tools,
+            folder: None,
         };
         secrets
             .0
@@ -1430,6 +1433,7 @@ mod tests {
             enabled: true,
             allowed: vec![client::allow(&reported[0], Access::Write), client::allow(&reported[1], Access::Read)],
             reported,
+            folder: None,
         };
         store_all(&extensions, &[stored]);
         let shown = info(extensions.get("time", Reach::Suite).await);

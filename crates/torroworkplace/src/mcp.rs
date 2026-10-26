@@ -1679,6 +1679,7 @@ mod tests {
             "extensions_confirm_tools",
             "extensions_update_extension",
             "extensions_set_secret",
+            "extensions_set_folder",
             "extensions_read_logs",
         ] {
             assert!(!names.contains(name), "{name}");

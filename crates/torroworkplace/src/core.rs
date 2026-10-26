@@ -4902,6 +4902,7 @@ impl Core {
             | Request::ConfirmExtensionTools { .. }
             | Request::UpdateExtension { .. }
             | Request::SetExtensionSecret { .. }
+            | Request::SetExtensionFolder { .. }
             | Request::ReadExtensionLogs { .. }
             | Request::RemoveExtension { .. }) => self.extensions_request(request, reach).await,
         }
@@ -4909,7 +4910,7 @@ impl Core {
 
     /// The `extensions.*` requests but the catalog (issue #302, task MA.5) for `reach`. For a client the
     /// refusals of [`Core::extension_refusal`] once more (the callers checked them), and `forbidden` for what
-    /// only the app key may: installing, allowing tools, updating, secrets, output and switching on.
+    /// only the app key may: installing, allowing tools, updating, secrets, the folder, output and switching on.
     async fn extensions_request(&self, request: Request, reach: Reach<'_>) -> Response {
         if let Reach::Client(rights) = reach {
             if matches!(
@@ -4918,6 +4919,7 @@ impl Core {
                     | Request::ConfirmExtensionTools { .. }
                     | Request::UpdateExtension { .. }
                     | Request::SetExtensionSecret { .. }
+                    | Request::SetExtensionFolder { .. }
                     | Request::ReadExtensionLogs { .. }
                     | Request::SetExtensionEnabled { enabled: true, .. }
             ) {
@@ -4939,6 +4941,11 @@ impl Core {
             Request::ConfirmExtensionTools { id, fingerprint } => self.extensions.confirm(&id, &fingerprint).await,
             Request::UpdateExtension { id, server } => self.extensions.update(&id, server).await,
             Request::SetExtensionSecret { id, name, value } => self.extensions.set_secret(&id, &name, value).await,
+            // The folder of a catalog server (issue #303): its handler comes with task AC.3.
+            Request::SetExtensionFolder { .. } => Response::Error {
+                code: "unsupported".into(),
+                message: "choosing the folder of an mcp server is not supported yet".into(),
+            },
             Request::ReadExtensionLogs { id } => self.extensions.logs(&id),
             Request::RemoveExtension { id } => self.remove_extension(&id).await,
             other => Response::Error {
@@ -11531,7 +11538,7 @@ mod tests {
     }
 
     /// Issue #302, point 10: what only a person does with a server (installing, allowing tools, updating,
-    /// secrets, output, switching on) is `forbidden` for a client before anything else, also with every right,
+    /// secrets, output, switching on, its folder) is `forbidden` for a client before anything else, also with every right,
     /// and nobody is asked to approve it. Listing works for a client, a server it does not know is `not-found`.
     #[tokio::test]
     async fn mcp_servers_keep_for_people_what_is_theirs() {
@@ -11546,6 +11553,9 @@ mod tests {
             Request::SetExtensionSecret { id: id(), name: "KEY".into(), value: torro_ipc::Secret::new("k") },
             Request::ReadExtensionLogs { id: id() },
             Request::SetExtensionEnabled { id: id(), enabled: true },
+            // Choosing a folder grants rights (issue #303), taking the choice back too.
+            Request::SetExtensionFolder { id: id(), folder: Some(dir.path().display().to_string()) },
+            Request::SetExtensionFolder { id: id(), folder: None },
         ];
         let mut rights = RightsTemplate::FullAccess.rights();
         for area in Area::ALL {
