@@ -619,6 +619,7 @@ mod tests {
         let off = [Area::Extensions];
         let mut switched_off = context(&areas, &off);
         switched_off.rights = Some(&rights);
+        switched_off.servers = &offered;
         assert!(line(&system(None, &switched_off), "- MCP servers").is_none(), "switched off here");
         assert!(line(&system(None, &context(&areas, &[])), "- MCP servers").is_none(), "no rights");
         let none = Rights::assistant();

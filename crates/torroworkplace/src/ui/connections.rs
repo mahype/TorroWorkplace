@@ -125,6 +125,11 @@ fn value_field(at: usize) -> iced::widget::Id {
     format!("custom-server-value-{at}").into()
 }
 
+/// The id of the value field of the variable or header in the row `at` of the form.
+fn value_text_field(at: usize) -> iced::widget::Id {
+    format!("custom-server-value-{at}-text").into()
+}
+
 /// The field a configuration is pasted into shows this many lines before it scrolls.
 const PASTE_LINES: f32 = 10.0;
 
@@ -2368,7 +2373,12 @@ fn first_marked(kind: Kind, checked: &Checked) -> Option<iced::widget::Id> {
     let fixed = [(checked.name, NAME_FIELD), (checked.id, ID_FIELD), (checked.target, target)];
     match fixed.into_iter().find(|(wrong, _)| wrong.is_some()) {
         Some((_, field)) => Some(field.into()),
-        None => checked.values.iter().position(Option::is_some).map(value_field),
+        // A row whose name is fine but whose secret is missing: the value field, so typing fills it in.
+        None => checked.values.iter().enumerate().find_map(|(at, problem)| match problem {
+            Some(problem) if *problem == tr("Enter its value.") => Some(value_text_field(at)),
+            Some(_) => Some(value_field(at)),
+            None => None,
+        }),
     }
 }
 
@@ -2506,6 +2516,7 @@ fn entry_row<'a>(
         .on_submit(Message::SubmitCustom);
     let hint = if entry.secret && entry.stored { tr("Stored – type to replace") } else { tr("Value") };
     let value = field(hint, entry.value.expose())
+        .id(value_text_field(at))
         .secure(entry.secret)
         .on_input(move |value| Message::ValueText(at, Secret::new(value)))
         .on_submit(Message::SubmitCustom);
@@ -3836,6 +3847,8 @@ mod tests {
         assert_eq!(first_marked(Kind::Address, &checked), Some(URL_FIELD.into()));
         let only_a_row = Checked { values: vec![None, Some("wrong")], ..Checked::default() };
         assert_eq!(first_marked(Kind::Command, &only_a_row), Some(value_field(1)));
+        let a_missing_value = Checked { values: vec![Some(tr("Enter its value."))], ..Checked::default() };
+        assert_eq!(first_marked(Kind::Command, &a_missing_value), Some(value_text_field(0)), "where the value goes");
         assert_eq!(first_marked(Kind::Command, &Checked::default()), None);
     }
 

@@ -227,10 +227,14 @@ impl fmt::Debug for ServerSpec {
 }
 
 /// `url` up to its host and port, without a user or password, followed by `/…` when it had more:
-/// what `Debug` of [`ServerSpec`] shows of an address.
+/// what `Debug` of [`ServerSpec`] shows of an address. An `@` after the first `/`, `?` or `#` may end a
+/// password that holds one of them (an address not checked yet), so then only the scheme shows.
 fn shown_origin(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    if rest[end..].contains('@') {
+        return format!("{scheme}://…");
+    }
     let authority = &rest[..end];
     let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
     let more = if end < rest.len() { "/…" } else { "" };
@@ -674,6 +678,8 @@ mod tests {
         let bare = ServerSpec::Http { url: "http://localhost:3000".into(), headers: BTreeMap::new() };
         assert_eq!(format!("{bare:?}"), r#"Http { url: "http://localhost:3000", headers: [] }"#);
         assert_eq!(shown_origin("no address"), "no address");
+        assert_eq!(shown_origin("https://user:pa/ss@host/x"), "https://…", "a password with a slash");
+        assert_eq!(shown_origin("https://host/users/@me"), "https://…");
     }
 
     #[test]
