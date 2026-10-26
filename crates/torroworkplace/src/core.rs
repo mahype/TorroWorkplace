@@ -11942,10 +11942,15 @@ mod tests {
             }
             other => panic!("expected the catalog, got {other:?}"),
         };
+        let cli = |app: &str| (app.to_string(), vec![Prerequisite::Program { name: format!("{app}-cli") }]);
         let expected = vec![
             ("time".to_string(), Vec::new()),
             ("sequential-thinking".to_string(), vec![Prerequisite::Npx]),
             ("github".to_string(), vec![Prerequisite::Docker]),
+            cli("wordcraft"),
+            cli("deckcraft"),
+            cli("gridcraft"),
+            cli("pdfcraft"),
         ];
         assert_eq!(missing(core.handle(Request::ListCatalog).await), expected);
         let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;

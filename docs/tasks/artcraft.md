@@ -93,7 +93,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   torro-ipc` und `docs/api-reference.md`.
 
 ### AC.2 Katalog: Format und die vier Einträge
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** AC.1 · **Dateien:** `crates/torroworkplace/assets/extensions/catalog.toml`,
   `crates/torroworkplace/src/extensions/{catalog,prereq,mod}.rs`
 - Neue Felder in `catalog.toml` (`deny_unknown_fields` bleibt): je Server `[server.folder]` mit `read_root` und

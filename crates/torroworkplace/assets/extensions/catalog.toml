@@ -4,13 +4,22 @@
 #
 # Rules for every entry:
 # - `id`: `[a-z0-9-]`, 1–24 characters, starts with a letter, unique; the installed server keeps it.
-# - `version`: fixed, and the arguments name it, so an update of the catalog is the only way to a newer one.
+# - `version`: for `npx`, `uvx` and `docker` fixed, and the arguments name it, so an update of the catalog is the
+#   only way to a newer one. A program a person installs themselves (ArtCraft) has no fixed version: `version` is
+#   the one the entry was tested with.
 # - Nothing may ask on stdin (stdin is the MCP connection): `npx` always with `-y`, Docker with `run -i --rm`.
 #   Docker gets each variable as `-e NAME` (the value comes from the environment the core gives `docker`).
 # - `access` per tool: `read` changes nothing, `write` creates or changes, `delete` removes or overwrites for
 #   good. A tool the server reports but this file does not name needs `delete`. The server's own hints
 #   (`readOnlyHint`, `destructiveHint`) do not count.
 # - `description`, `hint`: English, the control centre shows them as they are.
+# - Servers that work on the person's files (issue #303) have `[server.folder]`: `read_root` and `write_root` name
+#   the options that bound the server to the folder a person chose (both, or neither when the server has no bound
+#   of its own and only Torro's check of the paths keeps it there). Never `--connect` or `--root` then. Per tool
+#   `reads` names the arguments that are paths it reads, `target` the one it writes a new file to, and
+#   `target_required` that without it the tool writes over the file it opened. `blocked` tools are never offered
+#   or allowed; `blocked_commands` are commands Torro refuses inside the all-purpose tools (`ui.*` for all of
+#   `ui.`). `look_in` are folders below `{ProgramFiles}` the program is looked for in besides the usual ones.
 #
 # Looked up on 2026-10-24:
 # - Time: https://github.com/modelcontextprotocol/servers/tree/main/src/time, PyPI `mcp-server-time` 2026.10.19
@@ -27,6 +36,25 @@
 #   `ghcr.io/github/github-mcp-server:2.0.3` (the release workflow tags `{{version}}`), licence MIT. Default
 #   toolsets: context, repos, issues, pull_requests, users; tool names from the README at v2.0.3. Listed is a
 #   selection; every other tool of it needs `delete`.
+#
+# Looked up on 2026-10-26 (issue #303, `docs/tasks/artcraft.md`): the ArtCraft apps by Storytold,
+# https://github.com/storytold, each `MIT OR Apache-2.0` and `unsafe_code = "forbid"`, each with an MCP server over
+# stdio (`<app>-cli mcp`) that runs without a window. Tested with WordCraft v0.11.0, DeckCraft v0.11.1, GridCraft
+# v0.12.1 and PdfCraft v0.14.0; tool names from `crates/mcp/src/tools.rs` of the first three and
+# `crates/automation/src/tools.rs` of PdfCraft (179 tools, `tool_search` and `tool_call` only with `--compact`,
+# which Torro does not use). Where `<app>-cli` is: Linux (deb, rpm) `/usr/bin`; macOS only in the release's own
+# `<app>-cli-<version>-macos-universal.zip`, not in the `.app` (the person puts it into `/usr/local/bin` or
+# `~/.local/bin`); Windows `%ProgramFiles%\<App>\<app>-cli.exe`, not on the `PATH` (`look_in`).
+# - WordCraft, DeckCraft and PdfCraft take one folder each with `--automation-read-root` and
+#   `--automation-write-root`; without them they write anywhere. GridCraft has no bound of its own.
+# - The tools that work the running app's window are blocked (`screenshot`, `click`, `key`, `ui_inspect`,
+#   `pointer`, `call_app`, commands `ui.*`), and so are GridCraft's `execute_command` (paths under any key and
+#   relative to its folder) and PdfCraft's JavaScript console and the tools that reach keys in the system's
+#   keychain or certificate store (`sign_*`).
+# - Saving without a path saves over the opened file, so the save tools need one. Tools that write several files
+#   or files of names Torro does not know, the all-purpose tools (`execute`, `batch`, `run_command`, `tool_call`,
+#   `command_run`, `doc_batch` …), printing and scripts need `delete`. PdfCraft's changes to the open document
+#   (comments, bookmarks, form fields, removing pages) are `write`: they count once saved, as a new file.
 
 [[server]]
 id = "time"
@@ -107,3 +135,319 @@ tools = [
 name = "GITHUB_PERSONAL_ACCESS_TOKEN"
 hint = "A GitHub personal access token for the repositories it may use; fine-grained tokens limit it best."
 url = "https://github.com/settings/personal-access-tokens/new"
+
+[[server]]
+id = "wordcraft"
+name = "WordCraft"
+publisher = "Storytold (ArtCraft)"
+license = "MIT OR Apache-2.0"
+url = "https://github.com/storytold/wordcraft/releases"
+description = "Opens, reads and edits documents (.docx, .odt, .rtf, .md and more) with WordCraft, which you install yourself. Works only in the folder you choose; Torro saves changes as new files. On macOS put wordcraft-cli from the release's own zip into /usr/local/bin or ~/.local/bin."
+version = "0.11.0"
+experimental = true
+requires = ["wordcraft-cli"]
+command = "wordcraft-cli"
+args = ["mcp"]
+look_in = ["{ProgramFiles}/WordCraft"]
+blocked = ["screenshot", "click", "key", "ui_inspect"]
+blocked_commands = ["ui.*"]
+tools = [
+    { name = "list_commands", access = "read" },
+    { name = "get_text", access = "read" },
+    { name = "inspect_document", access = "read" },
+    { name = "render_page", access = "read" },
+    { name = "list_documents", access = "read" },
+    { name = "parity", access = "read" },
+    { name = "open_document", access = "read", reads = ["path"] },
+    { name = "new_document", access = "write" },
+    { name = "type_text", access = "write" },
+    { name = "select_text", access = "write" },
+    { name = "save_document", access = "write", target = "path", target_required = true },
+    { name = "execute", access = "delete" },
+    { name = "batch", access = "delete" },
+]
+
+[server.folder]
+read_root = "--automation-read-root"
+write_root = "--automation-write-root"
+
+[[server]]
+id = "deckcraft"
+name = "DeckCraft"
+publisher = "Storytold (ArtCraft)"
+license = "MIT OR Apache-2.0"
+url = "https://github.com/storytold/deckcraft/releases"
+description = "Opens, reads and edits presentations (.pptx) with DeckCraft, which you install yourself. Works only in the folder you choose; Torro saves changes as new files. On macOS put deckcraft-cli from the release's own zip into /usr/local/bin or ~/.local/bin."
+version = "0.11.1"
+experimental = true
+requires = ["deckcraft-cli"]
+command = "deckcraft-cli"
+args = ["mcp"]
+look_in = ["{ProgramFiles}/DeckCraft"]
+blocked = ["screenshot", "key", "pointer", "call_app"]
+blocked_commands = ["ui.*"]
+tools = [
+    { name = "list_commands", access = "read" },
+    { name = "inspect_document", access = "read" },
+    { name = "inspect_slide", access = "read" },
+    { name = "render_slide", access = "read" },
+    { name = "go_to_slide", access = "read" },
+    { name = "open_presentation", access = "read", reads = ["path"] },
+    { name = "new_presentation", access = "write" },
+    { name = "add_slide", access = "write" },
+    { name = "add_shape", access = "write" },
+    { name = "add_text_box", access = "write" },
+    { name = "set_text", access = "write" },
+    { name = "insert_picture", access = "write", reads = ["path"] },
+    { name = "insert_table", access = "write" },
+    { name = "insert_chart", access = "write" },
+    { name = "select", access = "write" },
+    { name = "select_tool", access = "write" },
+    { name = "type_text", access = "write" },
+    { name = "save_presentation", access = "write", target = "path", target_required = true },
+    # With `all` it writes one image per slide, under names Torro does not know.
+    { name = "export", access = "delete" },
+    { name = "run_command", access = "delete" },
+    { name = "batch", access = "delete" },
+]
+
+[server.folder]
+read_root = "--automation-read-root"
+write_root = "--automation-write-root"
+
+[[server]]
+id = "gridcraft"
+name = "GridCraft"
+publisher = "Storytold (ArtCraft)"
+license = "MIT OR Apache-2.0"
+url = "https://github.com/storytold/gridcraft/releases"
+description = "Opens, reads and edits spreadsheets (.xlsx, .csv) with GridCraft, which you install yourself. GridCraft doesn't keep to a folder itself: Torro checks every path, and saving a file waits for your approval. On macOS put gridcraft-cli from the release's own zip into /usr/local/bin or ~/.local/bin."
+version = "0.12.1"
+experimental = true
+requires = ["gridcraft-cli"]
+command = "gridcraft-cli"
+args = ["mcp"]
+look_in = ["{ProgramFiles}/GridCraft"]
+blocked = ["screenshot", "execute_command"]
+tools = [
+    { name = "list_commands", access = "read" },
+    { name = "inspect_workbook", access = "read" },
+    { name = "read_range", access = "read" },
+    { name = "get_cell", access = "read" },
+    { name = "evaluate_formula", access = "read" },
+    { name = "list_functions", access = "read" },
+    { name = "open_workbook", access = "read", reads = ["path"] },
+    { name = "write_range", access = "write" },
+    { name = "set_cell", access = "write" },
+    { name = "select", access = "write" },
+    { name = "format_range", access = "write" },
+    { name = "insert_chart", access = "write" },
+    { name = "create_table", access = "write" },
+    { name = "sort_range", access = "write" },
+    { name = "filter", access = "write" },
+    { name = "new_workbook", access = "write" },
+    { name = "undo", access = "write" },
+    { name = "redo", access = "write" },
+    # No bound of its own: every file it writes waits for the person.
+    { name = "save_workbook", access = "delete", target = "path", target_required = true },
+]
+
+[server.folder]
+
+[[server]]
+id = "pdfcraft"
+name = "PdfCraft"
+publisher = "Storytold (ArtCraft)"
+license = "MIT OR Apache-2.0"
+url = "https://github.com/storytold/pdfcraft/releases"
+description = "Reads, comments, fills in, combines and splits PDFs with PdfCraft, which you install yourself. Works only in the folder you choose; Torro saves changes as new files. Signing with keys of your keychain stays with you. On macOS put pdfcraft-cli from the release's own zip into /usr/local/bin or ~/.local/bin."
+version = "0.14.0"
+experimental = true
+requires = ["pdfcraft-cli"]
+command = "pdfcraft-cli"
+args = ["mcp"]
+look_in = ["{ProgramFiles}/PdfCraft"]
+blocked = ["sign_trust", "sign_id_create", "js_run", "sign_document", "sign_keychain_ids", "sign_windows_ids"]
+blocked_commands = ["tools.js_console", "sign.digital"]
+tools = [
+    { name = "doc_batch", access = "delete" },
+    { name = "attachment_add", access = "write", reads = ["path"] },
+    { name = "attachment_delete", access = "write" },
+    { name = "doc_open", access = "read", reads = ["path"] },
+    { name = "doc_list", access = "read" },
+    { name = "doc_info", access = "read" },
+    { name = "doc_close", access = "read" },
+    { name = "doc_save", access = "write", target = "path", target_required = true },
+    { name = "doc_set_info", access = "write" },
+    { name = "page_render", access = "read" },
+    { name = "object_list", access = "read" },
+    { name = "object_move", access = "write" },
+    { name = "text_word_count", access = "read" },
+    { name = "text_extract", access = "read" },
+    { name = "text_find", access = "read" },
+    { name = "page_rotate", access = "write" },
+    { name = "page_enhance_camera", access = "write" },
+    { name = "page_delete", access = "write" },
+    { name = "page_move", access = "write" },
+    { name = "page_reverse", access = "write" },
+    { name = "page_insert_blank", access = "write" },
+    { name = "page_insert_file", access = "write", reads = ["path"] },
+    { name = "page_extract", access = "delete" },
+    { name = "doc_combine", access = "write", reads = ["paths"], target = "out" },
+    { name = "doc_create_multiple", access = "delete" },
+    { name = "doc_split", access = "delete" },
+    { name = "bookmark_list", access = "read" },
+    { name = "bookmark_add", access = "write" },
+    { name = "bookmark_rename", access = "write" },
+    { name = "bookmark_delete", access = "write" },
+    { name = "bookmark_move", access = "write" },
+    { name = "bookmark_set_page", access = "write" },
+    { name = "bookmark_set_style", access = "write" },
+    { name = "bookmark_from_structure", access = "write" },
+    { name = "page_number", access = "write" },
+    { name = "form_fields", access = "read" },
+    { name = "form_fill", access = "write" },
+    { name = "form_reset", access = "write" },
+    { name = "form_add_field", access = "write" },
+    { name = "form_add_field_table", access = "write" },
+    { name = "stamp_custom", access = "write", reads = ["path"] },
+    { name = "form_set_image", access = "write", reads = ["path"] },
+    { name = "form_set_props", access = "write" },
+    { name = "form_tab_order", access = "write" },
+    { name = "form_calculation_order", access = "write" },
+    { name = "doc_export_data", access = "write", target = "path", target_required = true },
+    { name = "doc_import_data", access = "write", reads = ["path"] },
+    { name = "form_delete_field", access = "write" },
+    { name = "redact_mark", access = "write" },
+    { name = "redact_apply", access = "write" },
+    { name = "redact_clear", access = "write" },
+    { name = "doc_hidden_info", access = "read" },
+    { name = "doc_remove_hidden", access = "write" },
+    { name = "doc_audit_redactions", access = "read" },
+    { name = "printers", access = "read" },
+    { name = "printer_options", access = "read" },
+    { name = "doc_print", access = "delete" },
+    { name = "content_list", access = "read" },
+    { name = "page_add_text", access = "write" },
+    { name = "page_add_image", access = "write", reads = ["path"] },
+    { name = "content_update", access = "write", reads = ["image"] },
+    { name = "content_copy", access = "write" },
+    { name = "content_delete", access = "write" },
+    { name = "link_list", access = "read" },
+    { name = "link_open", access = "read" },
+    { name = "link_add", access = "write" },
+    { name = "link_edit", access = "write" },
+    { name = "link_delete", access = "write" },
+    { name = "links_from_urls", access = "write" },
+    { name = "links_remove", access = "write" },
+    { name = "measure_distance", access = "write" },
+    { name = "measure_perimeter", access = "write" },
+    { name = "measure_area", access = "write" },
+    { name = "measure_info", access = "read" },
+    { name = "measure_list", access = "read" },
+    { name = "measure_scale", access = "write" },
+    { name = "measure_snap", access = "read" },
+    { name = "measure_export", access = "write", target = "out", target_required = true },
+    { name = "comment_list", access = "read" },
+    { name = "comment_add", access = "write", reads = ["path"] },
+    { name = "comment_reply", access = "write" },
+    { name = "comment_set_status", access = "write" },
+    { name = "sign_list", access = "read" },
+    { name = "comment_mark", access = "write" },
+    { name = "comment_lock", access = "write" },
+    { name = "layer_set", access = "write" },
+    { name = "comments_hide", access = "write" },
+    { name = "view_reading_colors", access = "write" },
+    { name = "comments_summarize", access = "write", target = "out" },
+    { name = "comment_edit", access = "write" },
+    { name = "comment_image_preview", access = "read" },
+    { name = "comment_delete", access = "write" },
+    { name = "doc_protect", access = "write" },
+    { name = "doc_unprotect", access = "write" },
+    { name = "page_replace", access = "write", reads = ["path"] },
+    { name = "page_duplicate", access = "write" },
+    { name = "page_transition_set", access = "write" },
+    { name = "page_set_box", access = "write" },
+    { name = "doc_header_footer", access = "write" },
+    { name = "doc_watermark", access = "write", reads = ["file"] },
+    { name = "doc_background", access = "write", reads = ["file"] },
+    { name = "doc_remove_marks", access = "write" },
+    { name = "doc_export_images", access = "delete" },
+    { name = "accessibility_autotag_preview", access = "read" },
+    { name = "accessibility_autotag_apply", access = "write" },
+    { name = "accessibility_autotag_form_fields", access = "write" },
+    { name = "accessibility_check", access = "read" },
+    { name = "accessibility_find_untagged", access = "read" },
+    { name = "accessibility_report", access = "write", target = "path", target_required = true },
+    { name = "accessibility_review_record", access = "write", target = "path", target_required = true },
+    { name = "accessibility_review_save", access = "write", target = "path", target_required = true },
+    { name = "accessibility_review_load", access = "read", reads = ["path"] },
+    { name = "accessibility_review_html", access = "write", target = "path", target_required = true },
+    { name = "accessibility_fix", access = "write" },
+    { name = "accessibility_figures", access = "read" },
+    { name = "accessibility_set_alt", access = "write" },
+    { name = "accessibility_tags", access = "read" },
+    { name = "accessibility_tag_content", access = "read" },
+    { name = "accessibility_set_tag_property", access = "write" },
+    { name = "accessibility_mark_tag_artifact", access = "write" },
+    { name = "accessibility_move_tag", access = "write" },
+    { name = "form_merge_data", access = "write", reads = ["paths"], target = "path", target_required = true },
+    { name = "js_document_scripts", access = "read" },
+    { name = "js_set_document_script", access = "delete" },
+    { name = "form_set_script", access = "delete" },
+    { name = "doc_export_office", access = "write", target = "path", target_required = true },
+    { name = "pdfa_verify", access = "read" },
+    { name = "print_readiness", access = "read" },
+    { name = "pdfa_convert", access = "write" },
+    { name = "standards_remove_id", access = "write" },
+    { name = "action_list", access = "read" },
+    { name = "action_run", access = "delete" },
+    { name = "doc_compare", access = "read" },
+    { name = "doc_compare_report", access = "write", target = "path", target_required = true },
+    { name = "doc_compare_mark", access = "write" },
+    { name = "form_detect_fields", access = "write" },
+    { name = "form_actions", access = "read" },
+    { name = "form_set_actions", access = "delete" },
+    { name = "js_enabled", access = "delete" },
+    { name = "ocr_recognize", access = "write" },
+    { name = "ocr_recognize_files", access = "delete" },
+    { name = "ocr_status", access = "read" },
+    { name = "doc_export_all_images", access = "delete" },
+    { name = "doc_export_text", access = "write", target = "path", target_required = true },
+    { name = "fill_sign_add", access = "write", reads = ["path"] },
+    { name = "fill_sign_date_format", access = "write" },
+    { name = "doc_create", access = "write", reads = ["paths", "path"] },
+    { name = "doc_reduce", access = "write", target = "path", target_required = true },
+    { name = "doc_initial_view", access = "write" },
+    { name = "doc_audit_space", access = "read" },
+    { name = "text_lines", access = "read" },
+    { name = "image_hit", access = "read" },
+    { name = "page_images", access = "read" },
+    { name = "image_edit", access = "write", reads = ["path"] },
+    { name = "image_save", access = "write", target = "path", target_required = true },
+    { name = "text_font_files", access = "read", reads = ["directories"] },
+    { name = "text_font_import", access = "write", reads = ["path"] },
+    { name = "text_fonts", access = "read" },
+    { name = "text_paragraphs", access = "read" },
+    { name = "text_edit_layout", access = "read" },
+    { name = "text_edit", access = "write" },
+    { name = "doc_revisions", access = "write" },
+    { name = "doc_open_revision", access = "write" },
+    { name = "doc_optimize", access = "write", target = "path", target_required = true },
+    { name = "doc_flatten", access = "write" },
+    { name = "xfa_to_static", access = "write" },
+    { name = "edit_undo", access = "write" },
+    { name = "edit_redo", access = "write" },
+    { name = "command_list", access = "read" },
+    { name = "command_run", access = "delete" },
+    { name = "command_batch", access = "delete" },
+    { name = "doc_inspect", access = "read" },
+    { name = "render_preview", access = "read" },
+    # Only with --compact, which Torro does not use.
+    { name = "tool_search", access = "read" },
+    { name = "tool_call", access = "delete" },
+]
+
+[server.folder]
+read_root = "--automation-read-root"
+write_root = "--automation-write-root"

@@ -22,14 +22,20 @@ pub struct Roots {
     /// The usual folders outside the home directory, in order: `/opt/homebrew/bin`, `/usr/local/bin` and on
     /// macOS Docker Desktop's `/Applications/Docker.app/Contents/Resources/bin`; on Windows
     /// `%ProgramFiles%\nodejs`, `%APPDATA%\npm` and Docker Desktop's `%ProgramFiles%\Docker\Docker\resources\bin`.
+    /// Then the folders the built-in catalog names for its programs ([`super::catalog::look_in`], issue #303:
+    /// `%ProgramFiles%\WordCraft` and the like, which ArtCraft's installers leave off the `PATH`).
     pub fixed: Vec<PathBuf>,
 }
 
 impl Roots {
-    /// The service's view: its `PATH`, its home directory and the usual folders of this system.
+    /// The service's view: its `PATH`, its home directory, the usual folders of this system and those of
+    /// the built-in catalog. The service's supervisor looks with it too, so a program found for the catalog
+    /// also starts.
     pub fn system() -> Roots {
         let path = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
-        Roots { path, home: dirs::home_dir(), fixed: fixed_dirs() }
+        let mut fixed = fixed_dirs();
+        fixed.extend(super::catalog::look_in(|name| std::env::var_os(name)));
+        Roots { path, home: dirs::home_dir(), fixed }
     }
 
     /// The usual folders that exist, in the order they are looked in after the `PATH`: [`Roots::fixed`], then
