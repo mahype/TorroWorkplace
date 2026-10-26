@@ -364,9 +364,9 @@ impl Extensions {
         reset.keep();
         // Stored switched off: it runs again once a person allowed its tools and something calls it.
         self.supervisor.stop(&id).await;
-        let _changing = self.changing.lock().await;
+        let changing = Arc::clone(&self.changing).lock_owned().await;
         // Read again: the file may have changed during the start.
-        let mut all = match self.load() {
+        let all = match self.load() {
             Ok(all) => all,
             Err(err) => {
                 self.undo_install(store, &id, &store::stored_form(&spec)).await;
@@ -377,20 +377,23 @@ impl Extensions {
             // Not by an install here (the claim), so put in the file from outside: its folder is its own now.
             return in_use(&id);
         }
-        let server = match self.save_secrets(&id, None, &spec).await {
-            Ok(server) => server,
+        let owner = id.clone();
+        let entry = move |server| StoredExtension {
+            id: owner,
+            name,
+            source,
+            server,
+            enabled: false,
+            allowed: Vec::new(),
+            reported,
+        };
+        let installed = match self.commit(changing, &id, None, &spec, all, None, entry).await {
+            Ok(installed) => installed,
             Err(err) => {
-                // Some secrets may be in the keychain already: they go with the folder.
                 self.undo_install(store, &id, &store::stored_form(&spec)).await;
                 return store_error(&err);
             }
         };
-        let installed = StoredExtension { id, name, source, server, enabled: false, allowed: Vec::new(), reported };
-        all.push(installed.clone());
-        if let Err(err) = self.save(&all) {
-            self.undo_install(store, &installed.id, &installed.server).await;
-            return store_error(&err);
-        }
         self.one(installed, Reach::Suite).await
     }
 
@@ -522,9 +525,9 @@ impl Extensions {
                 };
             }
         };
-        let _changing = self.changing.lock().await;
+        let changing = Arc::clone(&self.changing).lock_owned().await;
         // Read again: a person may have switched it off, allowed its tools or removed it during the start.
-        let (mut all, index) = match self.load_with(id) {
+        let (all, index) = match self.load_with(id) {
             Ok((all, index)) if all[index] == old => (all, index),
             Ok((all, index)) => {
                 if !all[index].enabled {
@@ -541,33 +544,14 @@ impl Extensions {
                 };
             }
         };
-        // What the keychain holds now, put back when saving fails: the file keeps the old spec then, and its
-        // secrets must stay those of the old spec.
-        let snapshot = {
-            let (owner, old, new) = (id.to_string(), moved.clone(), spec.clone());
-            match self.with_secrets(move |secrets| store::snapshot_secrets(secrets, &owner, &old, &new)).await {
-                Ok(snapshot) => snapshot,
-                Err(err) => {
-                    self.undo_update(&launch, reset).await;
-                    return store_error(&err);
-                }
-            }
-        };
-        let server = match self.save_secrets(id, Some(&moved), &spec).await {
-            Ok(server) => server,
+        let entry = move |server| StoredExtension { source, server, reported, ..old };
+        let updated = match self.commit(changing, id, Some(&moved), &spec, all, Some(index), entry).await {
+            Ok(updated) => updated,
             Err(err) => {
-                self.restore_secrets(id, snapshot).await;
                 self.undo_update(&launch, reset).await;
                 return store_error(&err);
             }
         };
-        let updated = StoredExtension { source, server, reported, ..old };
-        all[index] = updated.clone();
-        if let Err(err) = self.save(&all) {
-            self.restore_secrets(id, snapshot).await;
-            self.undo_update(&launch, reset).await;
-            return store_error(&err);
-        }
         reset.keep();
         if !updated.enabled {
             self.supervisor.stop(id).await;
@@ -582,14 +566,45 @@ impl Extensions {
         drop(reset);
     }
 
-    /// The keychain entries of the server `id` as `snapshot` held them, after a failed update saved its
-    /// secrets. A failure goes to the log; the answer is the update's failure.
-    async fn restore_secrets(&self, id: &str, snapshot: BTreeMap<String, Option<Secret>>) {
+    /// Stores the secrets of `spec` for the server `id` (replacing those of `old`; `None` when installing),
+    /// then the file `all` with what `entry` makes of the stored form at `index` (added when `None`). Both on
+    /// the keychain's thread and under the file's lock, which `changing` takes along: a request dropped on the
+    /// way (the keychain may wait for the person) leaves neither half done without the other, and no other
+    /// change comes between. When the secrets or the file cannot be saved, the keychain gets back what it
+    /// held before, so the spec the file keeps never has the secrets of another. The entry as stored.
+    #[allow(clippy::too_many_arguments, reason = "one step of install and update, each part their own")]
+    async fn commit(
+        &self,
+        changing: tokio::sync::OwnedMutexGuard<()>,
+        id: &str,
+        old: Option<&ServerSpec>,
+        spec: &ServerSpec,
+        mut all: Vec<StoredExtension>,
+        index: Option<usize>,
+        entry: impl FnOnce(ServerSpec) -> StoredExtension + Send + 'static,
+    ) -> Result<StoredExtension, StoreError> {
+        let file = self.store.clone().ok_or_else(no_store)?;
         self.secrets_change(id);
-        let owner = id.to_string();
-        if let Err(err) = self.with_secrets(move |secrets| store::restore_secrets(secrets, &owner, &snapshot)).await {
-            eprintln!("torroworkplace: MCP server {id}: {err}");
-        }
+        let (owner, old, new) = (id.to_string(), old.cloned(), spec.clone());
+        self.with_secrets(move |secrets| {
+            let _changing = changing;
+            let snapshot = store::snapshot_secrets(secrets, &owner, old.as_ref().unwrap_or(&new), &new)?;
+            let saved = store::save_secrets(secrets, &owner, old.as_ref(), &new).and_then(|server| {
+                let stored = entry(server);
+                match index.and_then(|at| all.get_mut(at)) {
+                    Some(slot) => *slot = stored.clone(),
+                    None => all.push(stored.clone()),
+                }
+                file.save(&all).map(|()| stored)
+            });
+            if saved.is_err()
+                && let Err(err) = store::restore_secrets(secrets, &owner, &snapshot)
+            {
+                eprintln!("torroworkplace: MCP server {owner}: {err}");
+            }
+            saved
+        })
+        .await
     }
 
     /// Claims `id` for an install or update; `None` while another one is under way for it. The id is free
@@ -699,17 +714,6 @@ impl Extensions {
         crate::account::keychain(move || Ok(work(secrets.as_ref()))).await.map_err(StoreError::Keychain)?
     }
 
-    async fn save_secrets(
-        &self,
-        id: &str,
-        old: Option<&ServerSpec>,
-        new: &ServerSpec,
-    ) -> Result<ServerSpec, StoreError> {
-        self.secrets_change(id);
-        let (id, old, new) = (id.to_string(), old.cloned(), new.clone());
-        self.with_secrets(move |secrets| store::save_secrets(secrets, &id, old.as_ref(), &new)).await
-    }
-
     /// Counts a change of the secrets of `id`; called under `changing`, before the keychain is touched.
     fn secrets_change(&self, id: &str) {
         *self.secret_changes.lock().unwrap_or_else(PoisonError::into_inner).entry(id.to_string()).or_default() += 1;
@@ -769,8 +773,9 @@ impl Extensions {
 
     /// Keeps the tool lists of the servers in the file once the supervisor announces a change, from the first
     /// call on (only a call starts a server for use): [`Extensions::keep_reported`]. Once per set of servers;
-    /// nothing without a store. The watcher holds the supervisor only while it keeps a list, so it ends with
-    /// the supervisor (the service's lives until the service ends, a test's with the test).
+    /// nothing without a store. The watcher holds the supervisor only while it keeps a list, so it never keeps
+    /// it alive (the service's lives until the service ends, a test's with the test); it ends once the changes
+    /// end, when the supervisor and the tasks of its servers are gone, or at the next change after that.
     fn watch_tools(&self) {
         if self.store.is_none() || self.watching.swap(true, Ordering::SeqCst) {
             return;
@@ -1627,7 +1632,7 @@ mod tests {
             without_store.watch_tools();
             assert!(!without_store.watching.load(Ordering::SeqCst), "nothing to keep");
 
-            // The watcher does not keep the supervisor: once the servers are gone, so is it, and the watcher ends.
+            // The watcher does not keep the supervisor: once the servers are gone, so is it.
             let supervisor = Arc::downgrade(&extensions.supervisor);
             drop((extensions, without_store));
             for _ in 0..100 {
@@ -1788,6 +1793,67 @@ mod tests {
             assert_eq!(code(&extensions.update("fixture", Some(given)).await), "error");
             let stored = secrets.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             assert_eq!(stored.get("ext:fixture:FIXTURE_VALUE").map(String::as_str), Some("first"));
+        }
+
+        /// A keychain whose first `set` waits until the test lets it go, as when it asks the person.
+        struct AskingOnSet {
+            secrets: MemorySecrets,
+            gate: std::sync::Mutex<Option<(tokio::sync::oneshot::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+        }
+
+        impl SecretStore for AskingOnSet {
+            fn get(&self, key: &str) -> Result<Option<Secret>, String> {
+                self.secrets.get(key)
+            }
+            fn set(&self, key: &str, secret: &Secret) -> Result<(), String> {
+                let gate = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                if let Some((entered, release)) = gate {
+                    let _ = entered.send(());
+                    let _ = release.recv();
+                }
+                self.secrets.set(key, secret)
+            }
+            fn delete(&self, key: &str) -> Result<(), String> {
+                self.secrets.delete(key)
+            }
+        }
+
+        /// Review of #302: an update dropped while the keychain stores its secrets still writes the file
+        /// with them (both on the keychain's thread, under the lock it takes along), so the old spec never
+        /// keeps the new spec's secrets; another change waits for both.
+        #[tokio::test]
+        async fn an_update_dropped_while_the_keychain_stores_still_writes_the_file() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (entered, entered_rx) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let memory = MemorySecrets::default();
+            let asking =
+                AskingOnSet { secrets: memory.clone(), gate: std::sync::Mutex::new(Some((entered, release_rx))) };
+            let extensions = Extensions::with_roots(roots()).with_store(Store::in_data(dir.path()), Arc::new(asking));
+            installed(&extensions, &memory, "fixture", &[("echo", Access::Read)]);
+            let other = ServerSpec::Stdio {
+                command: "sh".into(),
+                args: vec![script()],
+                env: BTreeMap::from([("FIXTURE_VALUE".to_string(), Value::Secret(Secret::new("for-other")))]),
+            };
+            let update = tokio::spawn({
+                let (extensions, other) = (extensions.clone(), other.clone());
+                async move { extensions.update("fixture", Some(other)).await }
+            });
+            entered_rx.await.expect("the keychain stores");
+            update.abort();
+            let _ = update.await;
+            let switch = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.set_enabled("fixture", false, Reach::Suite).await }
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert!(!switch.is_finished(), "waits for the update's file");
+            release.send(()).expect("let go");
+            info(switch.await.expect("joined"));
+            assert_eq!(stored_all(&extensions)[0].server, store::stored_form(&other), "the file has the new spec");
+            let stored = memory.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            assert_eq!(stored.get("ext:fixture:FIXTURE_VALUE").map(String::as_str), Some("for-other"));
         }
 
         /// A program that never answers `initialize`: installing or updating to it waits for the start.
