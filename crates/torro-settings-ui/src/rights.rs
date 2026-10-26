@@ -1570,6 +1570,7 @@ mod tests {
             notes: Vec::new(),
             fingerprint: None,
             folder: None,
+            folder_unusable: false,
         }
     }
 

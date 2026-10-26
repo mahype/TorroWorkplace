@@ -1146,6 +1146,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             notes: Vec::new(),
             fingerprint: Some("demo-time".into()),
             folder: None,
+            folder_unusable: false,
         },
         ExtensionInfo {
             id: "github".into(),
@@ -1170,6 +1171,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             notes: Vec::new(),
             fingerprint: Some("demo-github".into()),
             folder: None,
+            folder_unusable: false,
         },
         ExtensionInfo {
             id: "notes".into(),
@@ -1186,6 +1188,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             notes: Vec::new(),
             fingerprint: Some("demo-notes".into()),
             folder: None,
+            folder_unusable: false,
         },
         // Issue #303: WordCraft works in an allowed folder; GridCraft has none chosen yet.
         ExtensionInfo {
@@ -1214,6 +1217,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             notes: vec![demo_blocked_note(&["screenshot", "click"])],
             fingerprint: Some("demo-wordcraft".into()),
             folder: Some("/home/anna/Projects/Invoices".into()),
+            folder_unusable: false,
         },
         ExtensionInfo {
             id: "gridcraft".into(),
@@ -1239,6 +1243,7 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             notes: vec![demo_blocked_note(&["screenshot", "execute_command"])],
             fingerprint: Some("demo-gridcraft".into()),
             folder: None,
+            folder_unusable: false,
         },
     ]
 }
@@ -1400,6 +1405,7 @@ fn demo_custom(
         notes: Vec::new(),
         fingerprint: Some(format!("demo-{id}")),
         folder: None,
+        folder_unusable: false,
     }
 }
 
@@ -1440,6 +1446,7 @@ fn demo_server(id: &str, data: &Data) -> Option<torro_ipc::extensions::Extension
         notes: Vec::new(),
         fingerprint: Some(format!("demo-{}", entry.id)),
         folder: None,
+        folder_unusable: false,
     })
 }
 

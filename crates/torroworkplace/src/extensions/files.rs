@@ -6,8 +6,9 @@
 //!
 //! - A tool the catalog blocks is not there (`not-found`, as a tool not allowed); for GridCraft also every tool the
 //!   catalog does not name ([`Entry::blocks`]).
-//! - A blocked tool or command named under `name`, `id`, `command` or `method` anywhere in the arguments is
-//!   `forbidden`: the all-purpose tools (`execute`, `tool_call`, `command_run` …) reach every command by name.
+//! - A blocked tool or command named under `name`, `id`, `command`, `method` (and the like, [`NAME_KEYS`]) anywhere in
+//!   the arguments of an all-purpose tool is `forbidden`: those (`execute`, `tool_call`, `command_run` …,
+//!   [`Entry::runs_commands`]) reach every command by name. Other tools take names of their own.
 //! - Without a usable folder (none chosen, no longer allowed, or no longer one that may be chosen) every call is
 //!   `forbidden`.
 //! - The arguments the catalog names as read must exist in the chosen folder and not be locked.
@@ -60,7 +61,7 @@ pub fn refusal(
     if entry.blocks(tool) {
         return Some(super::no_tool(tool));
     }
-    if arguments.iter().any(|(key, value)| names_a_blocked(entry, key, value)) {
+    if entry.runs_commands(tool) && arguments.iter().any(|(key, value)| names_a_blocked(entry, key, value)) {
         let message = tr("Torro blocks this command: it works the app's window, runs scripts or reaches keys.");
         return Some(error("forbidden", message.into()));
     }
@@ -364,6 +365,9 @@ mod tests {
         for (app, tool, arguments) in [
             ("wordcraft", "execute", json!({"command": "file.save", "params": {"path": home.path("Docs/new.docx")}})),
             ("wordcraft", "execute", json!({"command": "uiconfig.set"})),
+            // Names of a tool's own are no commands: DeckCraft's drawing tool, a field called "key".
+            ("deckcraft", "select_tool", json!({"name": "pointer"})),
+            ("pdfcraft", "form_add_field", json!({"doc": 1, "name": "key"})),
             ("pdfcraft", "command_run", json!({"id": "tools.other"})),
             ("pdfcraft", "bookmark_rename", json!({"doc": 1, "path": [2, 1], "title": "x"})),
         ] {

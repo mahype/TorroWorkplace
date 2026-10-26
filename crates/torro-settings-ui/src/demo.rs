@@ -546,6 +546,7 @@ impl Demo {
             notes: Vec::new(),
             fingerprint: Some(format!("demo-{id}")),
             folder: None,
+            folder_unusable: false,
         };
         vec![
             server(

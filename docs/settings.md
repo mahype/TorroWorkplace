@@ -402,8 +402,9 @@ MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen B
 („Changed since you allowed it“, mit „Allow tools“), Geheimnisse als „Stored“ bzw. „Missing“ mit „Replace…“, „Output“
 (die letzte Ausgabe zum Kopieren), „Update“, wenn der Katalog eine neuere Version hat, und „Remove…“ mit Rückfrage.
 Ein Server, der mit Dateien arbeitet (#303, ArtCraft), hat vor den Werkzeugen die Gruppe **„Folder“**: der gewählte
-freigegebene Ordner oder „No folder chosen“, „Choose…“ mit den freigegebenen Ordnern und „None“
-(`extensions.set_folder`, nur Menschen, MCP Never); gesperrte Werkzeuge stehen als „Blocked by Torro“.
+freigegebene Ordner (mit Achtungspunkt, wenn er gerade nicht nutzbar ist) oder „No folder chosen“, „Choose…“ mit den
+freigegebenen Ordnern und „None“ (`extensions.set_folder`, nur Menschen, MCP Never), ohne freigegebene Ordner „Add
+folder…“; gesperrte Werkzeuge stehen als „Blocked by Torro“.
 Wer den Server nutzen darf, sagt der Hinweis „Who may use it: API, MCP clients and the assistant's Access“; die Stufe je
 Server setzt der Rechte-Editor. Die Seitenleiste markiert den Abschnitt, wenn ein Server auf Zustimmung wartet oder
 nach Fehlern steht.

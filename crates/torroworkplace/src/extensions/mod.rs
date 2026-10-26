@@ -228,7 +228,10 @@ impl Extensions {
         let Ok(all) = self.load() else { return Vec::new() };
         let mut tools = Vec::new();
         for stored in all.iter().filter(|stored| stored.enabled && sees(reach, &stored.id)) {
-            if matches!(self.status(stored, &[]), Status::Crashed { .. } | Status::Missing { .. }) {
+            // A server that lost its bounds runs nothing (issue #303), so nothing of it is offered either.
+            if matches!(self.status(stored, &[]), Status::Crashed { .. } | Status::Missing { .. })
+                || bounds_lost(stored)
+            {
                 continue;
             }
             // Compared with what a person allowed also while it does not run: a tool changed since it was
@@ -833,15 +836,10 @@ impl Extensions {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<Response> {
         let stored = self.stored(id)?;
-        let Some(entry) = entry_of(&stored.source).filter(|entry| entry.info.folder.is_some()) else {
-            return lost_bounds(&stored).then(|| {
-                let message = tr(
-                    "This MCP server worked in a folder, but the catalog no longer says how to keep it there. Remove \
-                     it and install it again.",
-                );
-                error("forbidden", message.into())
-            });
-        };
+        if bounds_lost(&stored) {
+            return Some(error("forbidden", tr(LOST_BOUNDS).into()));
+        }
+        let entry = entry_of(&stored.source).filter(|entry| entry.info.folder.is_some())?;
         let place = match self.usable_folder(&stored) {
             Some((root, access)) => files::Folder::Usable(root, access),
             None if stored.folder.is_some() => files::Folder::Unusable,
@@ -1145,6 +1143,9 @@ impl Extensions {
         let mut notes = notes;
         let blocked: Vec<&str> =
             tools.iter().filter(|tool| tool.state == ToolState::Blocked).map(|tool| tool.name.as_str()).collect();
+        if bounds_lost(&stored) {
+            notes.push(tr(LOST_BOUNDS).into());
+        }
         if !blocked.is_empty() {
             notes.push(trf(
                 "Torro blocks these tools: {tools}. No one may use them: they work the app's window, run scripts, reach \
@@ -1153,6 +1154,7 @@ impl Extensions {
             ));
         }
         let status = self.status(&stored, &tools);
+        let folder_unusable = stored.folder.is_some() && self.usable_folder(&stored).is_none();
         let (server, status) = match reach {
             Reach::Suite => (shown, status),
             Reach::Client(_) => (store::redacted(&shown), redacted_status(status)),
@@ -1168,6 +1170,7 @@ impl Extensions {
             secrets,
             notes,
             fingerprint: Some(client::list_fingerprint(&reported)),
+            folder_unusable,
             folder: stored.folder,
         }
     }
@@ -1175,12 +1178,17 @@ impl Extensions {
 
 /// Whether `stored` is a catalog server that worked in a folder but whose entry no longer bounds it (dropped,
 /// renamed or without `[server.folder]` in a later catalog): a folder chosen for it, or an id of
-/// [`catalog::WORK_IN_A_FOLDER`]. Such a server is refused every call – it would run without its bounds and without
-/// the check of its paths (decision 3 of #303: never without a bound).
-fn lost_bounds(stored: &StoredExtension) -> bool {
+/// [`catalog::WORK_IN_A_FOLDER`]. Such a server is refused every call and none of its tools is offered – it would run
+/// without its bounds and without the check of its paths (decision 3 of #303: never without a bound).
+fn bounds_lost(stored: &StoredExtension) -> bool {
     matches!(stored.source, Source::Catalog { .. })
+        && entry_of(&stored.source).is_none_or(|entry| entry.info.folder.is_none())
         && (stored.folder.is_some() || catalog::WORK_IN_A_FOLDER.contains(&stored.id.as_str()))
 }
+
+/// Why a server that lost its bounds runs nothing ([`bounds_lost`]): the refusal of its calls and the note on it.
+const LOST_BOUNDS: &str = "This MCP server worked in a folder, but the catalog no longer says how to keep it there, \
+                           so none of its tools runs. Remove it.";
 
 /// The allowed folder `path` names, resolved, with its access: `None` when it is not there or is no allowed folder
 /// of `allowed` (a folder inside one is none either: a person chooses among the allowed folders).
@@ -1819,6 +1827,7 @@ mod tests {
             .push(AllowedFolder { path: path("Plain/Inner"), access: FolderAccess::Read });
         let stored = extensions.stored("wordcraft").expect("stored");
         assert_eq!(extensions.usable_folder(&stored), None, "an inner read folder made later counts at once");
+        assert!(info(extensions.get("wordcraft", Reach::Suite).await).folder_unusable, "and the page says so");
         let refused = extensions.files_refusal("wordcraft", "get_text", &Default::default());
         assert_eq!(refused.as_ref().map(code), Some("forbidden"));
         plain = info(extensions.get("wordcraft", Reach::Suite).await);
@@ -1842,8 +1851,8 @@ mod tests {
 
     /// Review of PR #316: a stored server that worked in a folder but whose catalog entry is gone (or no longer has a
     /// folder) is refused every call, by its folder or by its id; another server whose entry is gone is not.
-    #[test]
-    fn a_folder_server_without_its_entry_never_runs() {
+    #[tokio::test]
+    async fn a_folder_server_without_its_entry_never_runs() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (extensions, _) = extensions_in(dir.path(), roots());
         let gone = |id: &str, entry: &str, folder: Option<String>| StoredExtension {
@@ -1868,6 +1877,24 @@ mod tests {
         assert_eq!(refused("old-craft").as_ref().map(code), Some("forbidden"), "a folder was chosen");
         assert_eq!(refused("deckcraft").as_ref().map(code), Some("forbidden"), "its id works in a folder");
         assert_eq!(refused("weather"), None, "never worked in a folder");
+        // Nothing of them is offered, and their page says why.
+        let allowed_all = |mut stored: StoredExtension| {
+            let tools = artcraft_tools();
+            stored.allowed = tools.iter().map(|tool| client::allow(tool, Access::Delete)).collect();
+            stored.reported = tools;
+            stored
+        };
+        store_all(
+            &extensions,
+            &[
+                allowed_all(gone("old-craft", "old-craft", Some("/somewhere".into()))),
+                allowed_all(gone("weather", "weather", None)),
+            ],
+        );
+        let offered: Vec<String> = extensions.offered(Reach::Suite).into_iter().map(|tool| tool.extension).collect();
+        assert!(!offered.is_empty() && offered.iter().all(|id| id == "weather"), "{offered:?}");
+        let page = info(extensions.get("old-craft", Reach::Suite).await);
+        assert!(page.notes.contains(&tr(LOST_BOUNDS).to_string()), "{:?}", page.notes);
     }
 
     /// Issue #303: only catalog servers with bounds get them; Time, a person's own server and GridCraft none.

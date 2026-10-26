@@ -76,6 +76,9 @@ pub struct Entry {
     pub blocked_commands: Vec<String>,
     /// The arguments of its tools that are paths read or written, by tool; only tools that have some.
     pub files: BTreeMap<String, ToolFiles>,
+    /// Its all-purpose tools (`commands = true`): they run other tools or commands by name, so their arguments are
+    /// searched for [`Entry::blocked`] and [`Entry::blocked_commands`].
+    pub commands: Vec<String>,
 }
 
 /// The two options that bound a server to folders (ArtCraft: `--automation-read-root` and
@@ -107,6 +110,13 @@ impl Entry {
         self.blocked.iter().any(|name| name == tool)
             || (self.info.folder == Some(FolderCheck::TorroOnly)
                 && !self.info.tools.iter().any(|known| known.name == tool))
+    }
+
+    /// Whether the arguments of `tool` are searched for blocked names: it is an all-purpose tool of the entry
+    /// ([`Entry::commands`]), or the entry does not name it and nobody knows what it takes. Other tools take names of
+    /// their own (a form field called "key", the drawing tool "pointer"), which are no commands.
+    pub fn runs_commands(&self, tool: &str) -> bool {
+        self.commands.iter().any(|name| name == tool) || !self.info.tools.iter().any(|known| known.name == tool)
     }
 
     /// [`Entry::look_in`] with `{ProgramFiles}` replaced by the variable `ProgramFiles` as `var` reads it; a
@@ -245,6 +255,8 @@ struct RawTool {
     target: Option<String>,
     #[serde(default)]
     target_required: bool,
+    #[serde(default)]
+    commands: bool,
 }
 
 fn invalid(entry: &str, reason: &'static str) -> CatalogError {
@@ -272,6 +284,7 @@ fn entry_of(raw: RawEntry) -> Result<Entry, CatalogError> {
             (tool.name.clone(), files)
         })
         .collect();
+    let commands = raw.tools.iter().filter(|tool| tool.commands).map(|tool| tool.name.clone()).collect();
     let tools = raw.tools.into_iter().map(|tool| CatalogTool { name: tool.name, access: tool.access }).collect();
     let (folder, bounds) = match raw.folder {
         None => (None, Ok(None)),
@@ -306,6 +319,7 @@ fn entry_of(raw: RawEntry) -> Result<Entry, CatalogError> {
         blocked: raw.blocked,
         blocked_commands: raw.blocked_commands,
         files,
+        commands,
     };
     check(&entry).map_err(|reason| invalid(&entry.info.id, reason))?;
     Ok(entry)
@@ -565,6 +579,10 @@ mod tests {
         }
         // PdfCraft without --compact: 181 tools = 49 read + 17 delete + 109 write + 6 blocked (`link_open`, planned
         // read, waits for approval: it opens the file a link names, which Torro does not see).
+        let commands = |id: &str| entry(id).commands.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(commands("wordcraft"), ["execute", "batch"]);
+        assert_eq!(commands("deckcraft"), ["run_command", "batch"]);
+        assert!(commands("gridcraft").is_empty(), "its execute_command is blocked");
         let pdf = entry("pdfcraft");
         let count = |wanted: Access| pdf.info.tools.iter().filter(|tool| tool.access == wanted).count();
         assert_eq!((count(Access::Read), count(Access::Delete), count(Access::Write)), (49, 17, 109));

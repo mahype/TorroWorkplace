@@ -200,6 +200,8 @@ pub enum Icon {
     Sheet,
     /// PdfCraft, a PDF.
     FileType,
+    /// "None" in the menu of a server's folder: no folder chosen (issue #303).
+    FolderX,
 }
 
 impl Icon {
@@ -316,6 +318,7 @@ impl Icon {
         Icon::Presentation,
         Icon::Sheet,
         Icon::FileType,
+        Icon::FolderX,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -442,6 +445,7 @@ impl Icon {
             Icon::Presentation => include_bytes!("../assets/icons/presentation.svg"),
             Icon::Sheet => include_bytes!("../assets/icons/sheet.svg"),
             Icon::FileType => include_bytes!("../assets/icons/file-type.svg"),
+            Icon::FolderX => include_bytes!("../assets/icons/folder-x.svg"),
         }
     }
 }

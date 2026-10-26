@@ -802,8 +802,8 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
   Klartextwerte als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil, etwa „…/server“, weil die Ordner davor
   Home und Benutzernamen verraten). Nur der App-Schlüssel sieht sie vollständig.
 - **Länge:** `extensions.call_tool` mit mehr als 64 KB Argumenten (als JSON) wird mit `error` abgelehnt.
-- **Server mit Ordner (#303, ArtCraft):** Den gewählten Ordner (`ExtensionInfo::folder`) sieht jeder Client mit einer
-  Stufe für den Server ungeschwärzt: Ein Agent braucht ihn, um Pfade darin zu bilden, er ist eine Grenze, kein
+- **Server mit Ordner (#303, ArtCraft):** Den gewählten Ordner (`ExtensionInfo::folder`, dazu `folder_unusable`,
+  solange er nicht nutzbar ist) sieht jeder Client mit einer Stufe für den Server ungeschwärzt: Ein Agent braucht ihn, um Pfade darin zu bilden, er ist eine Grenze, kein
   Geheimnis. Vor der Freigabe und beim Ausführen prüft der Dienst die Pfade des Aufrufs: außerhalb des Ordners oder
   gesperrt `not-found`, ohne nutzbaren Ordner oder mit einem gesperrten Befehl `forbidden`, ein Ziel, das es gibt,
   `conflict`, ein fehlendes Pflicht-Ziel oder ein relativer Pfad `error`. Ein Werkzeug, das der Katalog sperrt, gibt

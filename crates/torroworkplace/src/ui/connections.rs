@@ -2045,7 +2045,9 @@ fn catalog_row<'a>(data: &'a Data, entry: &'a CatalogEntry, words: bool) -> Elem
     if server.is_none() && !entry.missing.is_empty() {
         let needs =
             typo::text(typo::meta(), missing_sentence(entry)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
-        let line = row![widgets::status_dot(Dot::Attention), needs].spacing(space::s()).align_y(Alignment::Center);
+        // The dot in an icon's cell: this line starts where the line of a server without its own bound does.
+        let line =
+            row![mark_cell(widgets::status_dot(Dot::Attention)), needs].spacing(space::s()).align_y(Alignment::Center);
         lines = lines.push(container(line).padding([space::xs(), 0.0]));
     }
     let mut controls = row![].spacing(space::s()).align_y(Alignment::Center);
@@ -2271,7 +2273,8 @@ fn folder_group<'a>(
     let chosen = server.folder.as_deref();
     // As paths, so a slash at the end of one does not count (the core keeps the folder without it).
     let allowed = chosen.and_then(|path| folders.iter().find(|folder| Path::new(&folder.path) == Path::new(path)));
-    let attention = || widgets::status_dot(Dot::Attention);
+    // Every mark of the group in a cell as wide as an icon, so the dot and the folder line up, and so does the text.
+    let attention = || mark_cell(widgets::status_dot(Dot::Attention));
     let press = folder_press(page, data, server);
     let row = if adds_folder(data, server) {
         let button = match words {
@@ -2289,9 +2292,14 @@ fn folder_group<'a>(
         };
         let button = widgets::anchored(&page.anchor, button);
         match (chosen, allowed) {
+            // Allowed still, but the core can't use it now (not there, or it holds what Torro protects).
+            (Some(path), Some(_)) if server.folder_unusable => {
+                let detail = trf("{path} · Can't be used now: choose another.", &[("path", &path)]);
+                status_row(attention(), file_name(path), Some(detail), button)
+            }
             (Some(path), Some(folder)) => {
                 let detail = format!("{path} · {}", AccessChoice(folder.access));
-                setting_row(Some(folder_mark()), file_name(path), Some(detail), button)
+                status_row(mark_cell(folder_mark()), file_name(path), Some(detail), button)
             }
             (Some(path), None) => {
                 let detail = trf("{path} · No longer allowed: choose another.", &[("path", &path)]);
@@ -2313,6 +2321,12 @@ fn folder_group<'a>(
         footer = format!("{footer} {}", unbounded_sentence(&server.name));
     }
     widgets::group(tr("Folder"), vec![row], Some(footer))
+}
+
+/// `mark` (a dot, an icon) centred in a cell as wide as an icon ([`icon::SIZE`]), so the text after marks of either
+/// kind starts on one line.
+fn mark_cell<'a>(mark: Element<'a, Message>) -> Element<'a, Message> {
+    container(mark).center_x(icon::SIZE).into()
 }
 
 /// Whether "Folder" offers "Add folder…" instead of "Choose…": no folder is allowed, and none is chosen.
@@ -2348,7 +2362,7 @@ fn folder_menu<'a>(data: &'a Data, server: &'a ExtensionInfo) -> Element<'a, Mes
         })
         .collect();
     let none =
-        MenuItem::new(Icon::X, tr("None"), Message::SetFolder(server.id.clone(), None)).current(chosen.is_none());
+        MenuItem::new(Icon::FolderX, tr("None"), Message::SetFolder(server.id.clone(), None)).current(chosen.is_none());
     widgets::menu(vec![MenuSection::titled(tr("Allowed folders"), items), MenuSection::new(vec![none])])
 }
 

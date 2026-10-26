@@ -20,6 +20,8 @@
 #   `target_required` that without it the tool writes over the file it opened. `blocked` tools are never offered
 #   or allowed; `blocked_commands` are commands Torro refuses inside the all-purpose tools (`ui.*` for all of
 #   `ui.`). `look_in` are folders below `{ProgramFiles}` the program is looked for in besides the usual ones.
+#   `commands = true` marks an all-purpose tool, which runs other tools or commands by name: only its arguments (and
+#   those of tools the catalog does not name) are searched for blocked names.
 #
 # Looked up on 2026-10-24:
 # - Time: https://github.com/modelcontextprotocol/servers/tree/main/src/time, PyPI `mcp-server-time` 2026.10.19
@@ -163,8 +165,8 @@ tools = [
     { name = "type_text", access = "write" },
     { name = "select_text", access = "write" },
     { name = "save_document", access = "write", target = "path", target_required = true },
-    { name = "execute", access = "delete" },
-    { name = "batch", access = "delete" },
+    { name = "execute", access = "delete", commands = true },
+    { name = "batch", access = "delete", commands = true },
 ]
 
 [server.folder]
@@ -207,8 +209,8 @@ tools = [
     { name = "save_presentation", access = "write", target = "path", target_required = true },
     # With `all` it writes one image per slide, under names Torro does not know.
     { name = "export", access = "delete" },
-    { name = "run_command", access = "delete" },
-    { name = "batch", access = "delete" },
+    { name = "run_command", access = "delete", commands = true },
+    { name = "batch", access = "delete", commands = true },
 ]
 
 [server.folder]
@@ -270,7 +272,7 @@ look_in = ["{ProgramFiles}/PdfCraft"]
 blocked = ["sign_trust", "sign_id_create", "js_run", "sign_document", "sign_keychain_ids", "sign_windows_ids"]
 blocked_commands = ["tools.js_console", "sign.digital"]
 tools = [
-    { name = "doc_batch", access = "delete" },
+    { name = "doc_batch", access = "delete", commands = true },
     { name = "attachment_add", access = "write", reads = ["path"] },
     { name = "attachment_delete", access = "write" },
     { name = "doc_open", access = "read", reads = ["path"] },
@@ -402,7 +404,7 @@ tools = [
     { name = "pdfa_convert", access = "write" },
     { name = "standards_remove_id", access = "write" },
     { name = "action_list", access = "read" },
-    { name = "action_run", access = "delete" },
+    { name = "action_run", access = "delete", commands = true },
     { name = "doc_compare", access = "read" },
     { name = "doc_compare_report", access = "write", target = "path", target_required = true },
     { name = "doc_compare_mark", access = "write" },
@@ -440,13 +442,13 @@ tools = [
     { name = "edit_undo", access = "write" },
     { name = "edit_redo", access = "write" },
     { name = "command_list", access = "read" },
-    { name = "command_run", access = "delete" },
-    { name = "command_batch", access = "delete" },
+    { name = "command_run", access = "delete", commands = true },
+    { name = "command_batch", access = "delete", commands = true },
     { name = "doc_inspect", access = "read" },
     { name = "render_preview", access = "read" },
     # Only with --compact, which Torro does not use.
     { name = "tool_search", access = "read" },
-    { name = "tool_call", access = "delete" },
+    { name = "tool_call", access = "delete", commands = true },
 ]
 
 [server.folder]

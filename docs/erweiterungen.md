@@ -424,8 +424,9 @@ ArtCraft selbst nicht kennt.
   GridCraft `execute_command`, PdfCraft `js_run` und die Signatur-Werkzeuge mit Schlüsseln des Systems
   (`sign_document`, `sign_trust`, `sign_id_create`, `sign_keychain_ids`, `sign_windows_ids`, Befehle
   `tools.js_console` und `sign.digital`).
-- **Den Ordner sehen** der App-Schlüssel und jeder Client mit einer Stufe für den Server (`ExtensionInfo::folder`),
-  damit ein Agent absolute Pfade darin bilden kann. Er ist eine Grenze, kein Geheimnis.
+- **Den Ordner sehen** der App-Schlüssel und jeder Client mit einer Stufe für den Server (`ExtensionInfo::folder`,
+  dazu `folder_unusable`, solange er nicht nutzbar ist), damit ein Agent absolute Pfade darin bilden kann. Er ist
+  eine Grenze, kein Geheimnis.
 - **Oberfläche:** Seite des Servers unter MCP servers, Gruppe „Folder“ vor „Tools“ mit „Choose…“ (Menü der
   freigegebenen Ordner und „None“); GridCraft sagt in Katalog, Dialog und Seite, dass es sich an keinen Ordner hält.
   Die Einrichtung stellt die Apps im Schritt „Documents“ vor ([einrichtung.md](einrichtung.md)).
@@ -446,10 +447,15 @@ ArtCraft selbst nicht kennt.
   Gesperrte Namen sucht Torro auch unter `tool`, `tools`, `op`, `action`, `cmd` und `commands`.
 - **Eintrag nicht mehr im Katalog:** Grenzen und Pfadprüfung hängen am Katalog-Eintrag. Nimmt ein späteres Update
   einen ArtCraft-Eintrag heraus oder benennt ihn um, wird eine gespeicherte Installation, die in einem Ordner
-  gearbeitet hat (gewählter Ordner oder eine Kennung aus `catalog::WORK_IN_A_FOLDER`), bei jedem Aufruf abgelehnt:
-  nie ohne Grenze. Die Person entfernt sie und installiert sie neu.
-- **Fehlalarme:** Gesperrte Namen gelten in den Argumenten jedes Werkzeugs, nicht nur der Allzweck-Befehle; ein
-  Formularfeld namens „key“ in WordCraft wird darum abgelehnt.
+  gearbeitet hat (gewählter Ordner oder eine Kennung aus `catalog::WORK_IN_A_FOLDER`), bei jedem Aufruf vor dem Start
+  abgelehnt, und keines ihrer Werkzeuge wird angeboten: nie ohne Grenze. Ihre Seite sagt das; die Person entfernt sie.
+- **Nur in Allzweck-Befehlen:** Gesperrte Namen sucht Torro in den Argumenten der Werkzeuge, die der Katalog mit
+  `commands = true` als Allzweck-Befehle kennzeichnet (WordCraft `execute`, `batch`; DeckCraft `run_command`,
+  `batch`; PdfCraft `tool_call`, `command_run`, `command_batch`, `doc_batch`, `action_run`), und in Werkzeugen, die der
+  Katalog nicht nennt. Ein Formularfeld namens „key“ oder DeckCrafts Zeichenwerkzeug „pointer“ sind keine Befehle.
+- **Nicht nutzbarer Ordner:** Ist ein gewählter Ordner gerade nicht nutzbar (nicht mehr freigegeben, nicht da,
+  etwas Gesperrtes oder ein innerer „Read“-Ordner darin), sagt das `ExtensionInfo::folder_unusable`; die Seite zeigt
+  ihn mit Achtungspunkt („Can't be used now: choose another.“), und jeder Aufruf nennt den Grund.
 - DeckCraft schreibt durch symbolische Links, und WordCraft v0.11.0 prüft den Verzeichniseintrag noch nicht; Torro
   deckt das nur für die Ziele ab, die es selbst prüft.
 - Die Werkzeugtabelle von PdfCraft steht in `crates/automation/src/tools.rs`, nicht in `crates/mcp`. GridCraft

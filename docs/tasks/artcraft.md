@@ -59,8 +59,10 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   `tools.js_console` und `sign.digital` (dahin führt `command_run`). Werkzeuge,
   die der Katalog nicht nennt, bleiben `delete` wie seit #302; bei GridCraft (keine eigene Grenze) sind sie gesperrt
   (nach dem API-Review geändert, `Entry::blocks`). Gesperrte Namen sucht Torro auch unter `tool`, `tools`, `op`,
-  `action`, `cmd` und `commands`. Ein gespeicherter Server, der in einem Ordner gearbeitet hat und dessen Eintrag
-  fehlt, wird nicht gestartet (`catalog::WORK_IN_A_FOLDER`, nach dem PR-Review).
+  `action`, `cmd` und `commands`, und nur in den Allzweck-Befehlen (`commands = true` im Katalog) und in Werkzeugen,
+  die der Katalog nicht nennt (nach dem PR-Review, gegen Fehlalarme). Ein gespeicherter Server, der in einem Ordner gearbeitet hat und dessen Eintrag
+  fehlt, bekommt jeden Aufruf vor dem Start abgelehnt, und keines seiner Werkzeuge wird angeboten
+  (`catalog::WORK_IN_A_FOLDER`, nach dem PR-Review).
 - **Den Ordner sehen** der App-Schlüssel und jeder Client mit einer Stufe für diesen Server
   (`ExtensionInfo::folder`): Ein Agent braucht ihn, um absolute Pfade darin zu bilden; er ist eine Grenze, kein
   Geheimnis. Clients ohne Stufe sehen den Server gar nicht (`extension_unseen`).

@@ -6158,10 +6158,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Installed", "Installiert"),
     ("Set up", "Eingerichtet"),
     ("Get {app}", "{app} holen"),
+    (
+        "This version of Torro Workplace doesn't list the ArtCraft apps yet.",
+        "Diese Version von Torro Workplace führt die ArtCraft-Apps noch nicht.",
+    ),
     ("No folder chosen", "Kein Ordner gewählt"),
     ("Every call is refused until you choose one.", "Jeder Aufruf wird abgelehnt, bis du einen wählst."),
     ("Allow a folder first; then choose it here.", "Gib zuerst einen Ordner frei und wähle ihn dann hier."),
     ("{path} · No longer allowed: choose another.", "{path} · Nicht mehr freigegeben: Wähle einen anderen."),
+    ("{path} · Can't be used now: choose another.", "{path} · Gerade nicht nutzbar: Wähle einen anderen."),
     (
         "{app} works only in the folder you choose. Torro saves its changes as new files, never over the original.",
         "{app} arbeitet nur in dem Ordner, den du wählst. Torro speichert Änderungen als neue Dateien, nie über das \
@@ -6178,10 +6183,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("This MCP server doesn't work in a folder.", "Dieser MCP-Server arbeitet nicht in einem Ordner."),
     (
-        "This MCP server worked in a folder, but the catalog no longer says how to keep it there. Remove it and \
-         install it again.",
-        "Dieser MCP-Server hat in einem Ordner gearbeitet, aber der Katalog sagt nicht mehr, wie er dort bleibt. \
-         Entferne ihn und installiere ihn neu.",
+        "This MCP server worked in a folder, but the catalog no longer says how to keep it there, so none of its tools \
+         runs. Remove it.",
+        "Dieser MCP-Server hat in einem Ordner gearbeitet, aber der Katalog sagt nicht mehr, wie er dort bleibt; \
+         darum läuft keines seiner Werkzeuge. Entferne ihn.",
     ),
     (
         "Torro blocks this command: it works the app's window, runs scripts or reaches keys.",

@@ -798,9 +798,15 @@ fn documents(data: &Data, class: SizeClass) -> Element<'_, Message> {
                     Some(app_row(data, entry, *symbol, tr(what), words))
                 })
                 .collect();
-            match rows.is_empty() {
-                true => widgets::loading(),
-                false => {
+            match (rows.is_empty(), entries.is_empty()) {
+                // Nothing listed yet: the catalog has not answered.
+                (true, true) => widgets::loading(),
+                // Answered, without the apps: a service of another version.
+                (true, false) => {
+                    let sentence = tr("This version of Torro Workplace doesn't list the ArtCraft apps yet.");
+                    typo::text(typo::body(), sentence).style(theme::text_2).into()
+                }
+                (false, _) => {
                     let footer = tr(
                         "Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each \
                          one works only in a folder you choose; changes are saved as new files, and anything that \
