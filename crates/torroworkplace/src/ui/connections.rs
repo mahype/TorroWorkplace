@@ -1585,8 +1585,8 @@ fn tools_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     for info in page_order(&data.tools) {
         rows.push(switch_row(info));
         rows.push(access_row(data, info.id));
-        if info.id == ToolId::Files && data.settings.tools.folders.is_empty() {
-            rows.push(no_folder_row(assistant_may_use(data, ToolId::Files), words));
+        if works_in_allowed_folders(info.id) && data.settings.tools.folders.is_empty() {
+            rows.push(no_folder_row(no_folder_flagged(data), words));
         }
         if info.id == ToolId::Pdf {
             rows.push(folder_row(data, words));
@@ -1736,10 +1736,19 @@ fn no_folder_row<'a>(flagged: bool, words: bool) -> Element<'a, Message> {
     setting_row(Some(mark), tr("No allowed folders"), Some(detail.to_string()), button)
 }
 
+/// Whether "No allowed folders" carries the orange dot: once the assistant may use the tool `files`, the missing
+/// folder is what is left to do; before, the row to its Access has the one dot of the tool.
+fn no_folder_flagged(data: &Data) -> bool {
+    assistant_may_use(data, ToolId::Files)
+}
+
+/// What the allowed folders' group says below it.
+const FOLDERS_FOOTER: &str =
+    "Tools like Files work only in these folders; ArtCraft will use them too. Only you can change this list.";
+
 /// What the allowed folders' group says below it, with the limit once it is reached.
 fn folders_footer(count: usize) -> String {
-    let footer =
-        tr("Tools like Files work only in these folders; ArtCraft will use them too. Only you can change this list.");
+    let footer = tr(FOLDERS_FOOTER);
     match count < MAX_ALLOWED_FOLDERS {
         true => footer.to_string(),
         false => {
@@ -1753,8 +1762,17 @@ fn folders_footer(count: usize) -> String {
 /// in the core's order.
 pub fn page_order(tools: &[ToolInfo]) -> Vec<&ToolInfo> {
     let mut ordered: Vec<&ToolInfo> = tools.iter().collect();
-    ordered.sort_by_key(|info| info.id != ToolId::Files);
+    ordered.sort_by_key(|info| !works_in_allowed_folders(info.id));
     ordered
+}
+
+/// Whether `tool` works in the allowed folders: every tool is placed here on purpose, so a new one that works with
+/// files stands next to them.
+fn works_in_allowed_folders(tool: ToolId) -> bool {
+    match tool {
+        ToolId::Files => true,
+        ToolId::Pdf | ToolId::Web => false,
+    }
 }
 
 /// "Search providers": the providers switched on, in the order they are asked, and the page they are set on.
@@ -3449,13 +3467,67 @@ mod tests {
         assert!(matches!(update(&mut state, same, &data), Action::None), "as stored");
         let removed = one(update(&mut state, Message::RemoveFolder(folders[0].path.clone()), &data));
         assert_eq!(removed, allowed_folder_request(&folders[0].path, None));
-        assert_eq!(page_order(&data.tools).first().map(|info| info.id), Some(ToolId::Files));
+        let listed: Vec<ToolId> = data.tools.iter().map(|info| info.id).collect();
+        assert_eq!(listed, ToolId::ALL, "the core's order");
+        let shown: Vec<ToolId> = page_order(&data.tools).iter().map(|info| info.id).collect();
+        assert_eq!(shown, [ToolId::Files, ToolId::Pdf, ToolId::Web], "web keeps its place after pdf");
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let odd = Path::new(std::ffi::OsStr::from_bytes(b"/home/anna/\xff"));
+            assert_eq!(added_folder_request(&data, odd), None, "not plain text");
+        }
+        // As many folders as may be allowed: "Add folder…" stands disabled and the sentence below says why.
+        let mut full = data.clone();
+        full.settings.tools.folders = (0..MAX_ALLOWED_FOLDERS)
+            .map(|at| AllowedFolder { path: format!("/home/anna/{at}"), access: FolderAccess::Read })
+            .collect();
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
+            let _ = view(&state, &full, class);
+        }
         for class in [SizeClass::Wide, SizeClass::Narrow] {
             let _ = view(&state, &data, class);
             data.settings.tools.folders.clear();
             let _ = view(&state, &data, class);
             data.settings.tools.folders = folders.clone();
         }
+    }
+
+    /// Sight check of WD.4: one orange dot in the files tool's rows. While the assistant may not use the tool, the
+    /// row that leads to Access has it and "No allowed folders" shows the folder icon; once it may, the missing
+    /// folder is what is left to do.
+    #[test]
+    fn the_files_tool_has_one_orange_dot_at_most() {
+        let mut empty = data();
+        empty.settings.tools.folders.clear();
+        fn assistant(data: &mut Data) -> &mut torro_ipc::api::Rights {
+            &mut data.clients.iter_mut().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant").rights
+        }
+        assistant(&mut empty).set_level(Area::Tools, Level::NoAccess, Vec::new);
+        assert!(!assistant_may_use(&empty, ToolId::Files));
+        assert!(!no_folder_flagged(&empty), "the row to Access has the dot");
+        assistant(&mut empty).set_level(Area::Tools, Level::Read, Vec::new);
+        assistant(&mut empty).tools = Selection::All;
+        assert!(no_folder_flagged(&empty), "allowed, the missing folder has it");
+    }
+
+    /// Sight check of WD.4: with as many folders as may be allowed, the sentence below the list says why "Add
+    /// folder…" stands disabled; below that it does not.
+    #[test]
+    fn a_full_list_names_the_limit() {
+        let limit = trf("At most {n} folders. Remove one to add another.", &[("n", &MAX_ALLOWED_FOLDERS)]);
+        assert!(folders_footer(MAX_ALLOWED_FOLDERS).ends_with(&limit));
+        assert!(!folders_footer(MAX_ALLOWED_FOLDERS - 1).contains(&limit));
+        assert_eq!(folders_footer(0), tr(FOLDERS_FOOTER));
+    }
+
+    /// The access picker says what each step allows, and a folder shows its name.
+    #[test]
+    fn a_folder_row_says_its_name_and_access() {
+        assert_eq!(AccessChoice(FolderAccess::Read).to_string(), tr("Read"));
+        assert_eq!(AccessChoice(FolderAccess::ReadWrite).to_string(), tr("Read and write"));
+        assert_eq!(file_name("/home/anna/Documents"), "Documents");
+        assert_eq!(file_name("/"), "/", "a folder without a name shows its path");
     }
 
     /// Task WEB.6: the tool `web` needs reading in `tools` and `web` ticked by name; "All" tools is not enough, as
