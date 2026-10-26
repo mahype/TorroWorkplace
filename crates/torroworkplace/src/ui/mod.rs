@@ -252,6 +252,10 @@ pub struct Data {
     /// The core's built-in catalog of MCP servers (`extensions.list_catalog`), with what each needs
     /// that is missing on this computer, or why it could not be listed.
     pub catalog: connections::Listing<torro_ipc::extensions::CatalogEntry>,
+    /// The web search providers (`tools.list_search_providers`, task WEB.7) for the setup's step "Web search", in
+    /// the order the core asks them; only loaded while the setup is open, since listing them asks the system
+    /// keychain whether their keys are stored.
+    pub search_providers: Vec<torro_ipc::web::SearchProviderInfo>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -268,6 +272,11 @@ pub enum Action {
     /// `Response::Error` with its code, so the template dialog can tell `busy` from `not-found`
     /// ([`template_form::refusal`]). Then reload, as for [`Action::Send`].
     Ask(workspaces::Asked, Request),
+    /// Send this request for the setup's step "Web search" or MCP servers' search providers and hand the answer
+    /// to the one that asked only ([`setup::checked`], [`connections::checked`]): the check of a new SearXNG
+    /// address (task WEB.7), so the refusal of another request that runs beside it is never shown as the check's
+    /// reason. Then reload, as for [`Action::Send`].
+    CheckAddress(Request),
     /// Send these requests to the daemon, then reload: for the one place where a change is two
     /// requests (the setup's mail source, task S.21). They are independent of each other, so they
     /// go at once.
@@ -450,6 +459,8 @@ pub enum Message {
     /// The catalog of MCP servers (`extensions.list_catalog`), asked for only while the section MCP servers is
     /// open ([`Ui::reload`]): the core looks for programs on disk for it each time.
     Catalog(connections::Listing<torro_ipc::extensions::CatalogEntry>),
+    /// The answer to an [`Action::CheckAddress`], as [`Message::Sent`] has it.
+    Checked(Result<Response, String>),
     /// The desktop's light/dark preference (once at start, then whenever it changes).
     SystemMode(Mode),
     /// Reload everything (every few seconds, and "Retry" when the core does not answer).
@@ -900,6 +911,11 @@ impl Ui {
                 launch::demo_connections(&mut self.data);
                 vec![Message::Select(Section::Connections)]
             }
+            // The same, on the page of the tool `web`'s search providers.
+            Open::SearchProviders => {
+                launch::demo_connections(&mut self.data);
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::SearchProviders)]
+            }
             // No server installed, the PDF tool as it starts, the assistant without it.
             Open::ConnectionsEmpty => {
                 launch::demo_connections_empty(&mut self.data);
@@ -1012,8 +1028,9 @@ impl Ui {
     fn reload(&self) -> Task<Message> {
         match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
-            (false, Section::Connections) => Task::batch([load(), load_catalog()]),
-            (false, _) => load(),
+            // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
+            (false, Section::Connections) => Task::batch([load(true), load_catalog()]),
+            (false, _) => load(self.setup.is_some()),
         }
     }
 
@@ -1124,10 +1141,13 @@ impl Ui {
                 let catalog = std::mem::take(&mut self.data.catalog);
                 self.data = *data;
                 self.data.catalog = catalog;
+                let mut providers = Task::none();
                 if first && self.launch.setup_if_open && !self.launch.demo && self.data.error.is_none() {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
                     if self.data.settings.setup.state != SetupState::Done {
                         self.setup = Some(setup::State::new(step, &self.data.settings));
+                        // Loaded without the setup's search providers (task WEB.7): once more with them.
+                        providers = self.reload();
                     }
                 }
                 self.loaded = true;
@@ -1150,6 +1170,7 @@ impl Ui {
                 api::loaded(&mut self.api);
                 // The hook switch takes the hooks out once the reload no longer lists their client.
                 let unhook = mcp::loaded(&mut self.mcp, &self.data);
+                connections::loaded(&mut self.connections, &self.data);
                 // The app switcher of this window follows the components (task W.2).
                 if self.data.error.is_none() {
                     torro_gui::components::set_off(&self.data.settings.components_off);
@@ -1184,7 +1205,7 @@ impl Ui {
                 // loads its fonts.
                 let design = design.map_or_else(Task::none, |task| task.map(Message::Design));
                 let unhook = unhook.map_or_else(Task::none, |action| self.perform(action));
-                return Task::batch([import, hooks, design, unhook]);
+                return Task::batch([import, hooks, design, unhook, providers]);
             }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
@@ -1204,6 +1225,14 @@ impl Ui {
                     next.into_iter().flatten().map(|action| self.perform(action)).collect();
                 tasks.push(self.reload());
                 return Task::batch(tasks);
+            }
+            // Only the address check of the setup or of MCP servers' search providers gets this answer; a refusal
+            // shows under its field.
+            Message::Checked(result) => {
+                let shown = self.setup.as_mut().is_some_and(|setup| setup::checked(setup, &result))
+                    || connections::checked(&mut self.connections, &result);
+                self.notice = if shown { None } else { result.err() };
+                return self.reload();
             }
             // Only the page that asked gets the answer: the template dialog shows its errors itself,
             // the `Saved` of "Save workspace…" opens it; every other refusal is the notice.
@@ -1350,6 +1379,22 @@ impl Ui {
         }
     }
 
+    /// The demo stores nothing, yet a web search provider switched in the setup shows as switched in the demo's
+    /// list (issue #305): the setup's "Continue" waits until the list carries a switch, and in the demo no reload
+    /// ever brings one. Every other request leaves the demo's data as it is.
+    fn demo_keep(&mut self, request: &Request) {
+        let Request::SetSetting { key: torro_ipc::SettingKey::SearchProvider, value } = request else { return };
+        let Ok(switch) = serde_json::from_value::<torro_core::settings::SearchProviderSwitch>(value.clone()) else {
+            return;
+        };
+        if let Some(info) = self.data.search_providers.iter_mut().find(|info| info.id == switch.provider) {
+            info.enabled = switch.enabled;
+        }
+        if let Some(setup) = self.setup.as_mut() {
+            setup::observe(setup, &self.data);
+        }
+    }
+
     fn perform(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::None => Task::none(),
@@ -1357,10 +1402,13 @@ impl Ui {
             // reaches the clipboard, so nothing is stored and nothing starts. A few requests get a
             // sample answer from the process itself (a client's activity, a new key), so their
             // states can be shown; so do the jobs, the hook notes from the demo's own.
-            Action::Send(request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
-                Some(response) => self.update(Message::Sent(Ok(response))),
-                None => Task::none(),
-            },
+            Action::Send(request) if self.launch.demo => {
+                self.demo_keep(&request);
+                match launch::demo_answer(&request, &self.data) {
+                    Some(response) => self.update(Message::Sent(Ok(response))),
+                    None => Task::none(),
+                }
+            }
             Action::OpenUrl(_) | Action::Copy(_) if self.launch.demo => Task::none(),
             Action::Setup(job) if self.launch.demo => {
                 let outcome = match job {
@@ -1386,7 +1434,13 @@ impl Ui {
             Action::AskConnections(asked, request) => {
                 ask(request, move |result| Message::ConnectionsAnswered(asked, result))
             }
+            Action::CheckAddress(request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
+                Some(response) => self.update(Message::Checked(Ok(response))),
+                None => Task::none(),
+            },
+            Action::CheckAddress(request) => Task::perform(answer(request), Message::Checked),
             Action::SendAll(requests) if self.launch.demo => {
+                requests.iter().for_each(|request| self.demo_keep(request));
                 let answers: Vec<Response> =
                     requests.iter().filter_map(|request| launch::demo_answer(request, &self.data)).collect();
                 let tasks: Vec<Task<Message>> =
@@ -1421,7 +1475,8 @@ impl Ui {
             Action::OpenSetup => {
                 self.close_menus();
                 self.setup = Some(setup::State::new(setup::Step::Welcome, &self.data.settings));
-                Task::none()
+                // The setup's data includes the search providers, loaded only while it is open.
+                self.reload()
             }
             Action::Copy(text) => iced::clipboard::write(text),
             Action::Focus(id) => iced::widget::operation::focus(id),
@@ -1852,12 +1907,12 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
     }
 }
 
-/// Loads everything the pages show.
-fn load() -> Task<Message> {
+/// Loads everything the pages show; the search providers only `with_providers` (the setup is open).
+fn load(with_providers: bool) -> Task<Message> {
     // How long the core took to answer, with `TORRO_TIMING` (issue #206).
     let started = Instant::now();
     Task::perform(
-        async {
+        async move {
             let Some(socket) = torro_ipc::socket_path() else {
                 return Data { error: Some(tr("No home directory").into()), ..Data::default() };
             };
@@ -1916,6 +1971,13 @@ fn load() -> Task<Message> {
                 other => Err(other),
             });
             data.extensions = connections::Listing::from_result(servers.await);
+            // The setup's step "Web search" (task WEB.7).
+            if with_providers
+                && let Ok(Response::SearchProviders { providers }) =
+                    client::call(&socket, &Request::ListSearchProviders).await
+            {
+                data.search_providers = providers;
+            }
             data
         },
         move |data| {
@@ -2104,17 +2166,17 @@ fn open_folder(part: Part) -> Result<(), String> {
 
 /// Sends one request and reports the answer; errors come back as text.
 fn send(request: Request) -> Task<Message> {
-    Task::perform(
-        async move {
-            let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
-            match client::call(&socket, &request).await {
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(response) => Ok(response),
-                Err(err) => Err(err.to_string()),
-            }
-        },
-        Message::Sent,
-    )
+    Task::perform(answer(request), Message::Sent)
+}
+
+/// The daemon's answer to `request`: a refusal as `Err` with its message, as is no answer.
+async fn answer(request: Request) -> Result<Response, String> {
+    let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
+    match client::call(&socket, &request).await {
+        Ok(Response::Error { message, .. }) => Err(message),
+        Ok(response) => Ok(response),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 /// Sends one request for the page that will match its answer ([`Action::Ask`],
@@ -2196,6 +2258,21 @@ mod tests {
         ] {
             assert_eq!(of(exception), None, "{exception:?}");
         }
+    }
+
+    /// Issue #305: the demo keeps a web search provider switched in the setup in its own list, so "Continue" on the
+    /// web step does not wait for a reload that never comes.
+    #[test]
+    fn the_demo_keeps_a_web_switch_of_the_setup() {
+        use torro_core::settings::SearchProviderId;
+        let mut ui = started(&["--demo", "--open", "setup-web"]);
+        let switch =
+            setup::Message::Web(torro_settings_ui::assistant::web::Message::Switch(SearchProviderId::Duckduckgo, true));
+        let _ = ui.update(Message::Setup(switch));
+        let duckduckgo = ui.data.search_providers.iter().find(|info| info.id == SearchProviderId::Duckduckgo);
+        assert!(duckduckgo.is_some_and(|info| info.enabled), "the demo's list carries the switch");
+        let setup = ui.setup.as_ref().expect("the setup is open");
+        assert!(!setup::web_waits(setup, &ui.data), "Continue goes on");
     }
 
     #[test]

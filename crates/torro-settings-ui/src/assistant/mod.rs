@@ -57,6 +57,9 @@ pub mod history;
 pub mod profile;
 pub mod tools;
 pub mod voice;
+/// Not a section: the search providers of the tool `web`, shown in the control centre's MCP servers next to
+/// the other built-in tools (task MA.7 with WEB.6) and in the setup (task WEB.7).
+pub mod web;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, container, svg};
@@ -488,7 +491,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(files, SECTIONS.len() + 1, "one file per section and this one");
+        assert_eq!(files, SECTIONS.len() + 2, "one file per section, this one and the web view");
         assert!(found.is_empty(), "a section reaches into the rights: {found:?}");
     }
 

@@ -31,6 +31,11 @@
 //!   WZ.7; "All" or the switched-on ones, [`Pick`]) for each area the rights reach; a tool that is
 //!   switched off under MCP servers (task MA.7) gets a mark in the attention colour. What they
 //!   offer comes from [`Known`], which the window that shows the editor fills from its own data.
+//! - **`web` only by name** (issue #305, task WEB.6): "All" tools never includes a tool that must be ticked by name
+//!   ([`ToolId::needs_naming`], the web search). With "All" its row stands unticked under the choice; ticking it
+//!   makes "All" a selection of every tool, itself included. "Selected" from "All" and switching the area on tick
+//!   every tool but those. Ticked for a client that reads mail, it gets a warning like "Send on my behalf"
+//!   ([`sends_outside`]).
 //!
 //! Every change edits a draft of the client's rights, which the editor shows at once
 //! ([`shown`]); [`SAVE_DELAY`] after the last change (`docs/settings.md`: autosave after 500 ms) it
@@ -61,7 +66,7 @@ use torro_ipc::api::{
     RightsTemplate, Selection, active_level, has_command, levels, shows_area,
 };
 use torro_ipc::extensions::{self, ExtensionInfo, ExtensionTool, ToolState};
-use torro_ipc::tools::ToolInfo;
+use torro_ipc::tools::{ToolId, ToolInfo};
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response};
 use torro_pim::Collection;
 
@@ -267,9 +272,9 @@ impl Pick {
             (Pick::MailAccounts, false) => tr("Mail accounts left off don't exist for this agent."),
             // The switch is the person's, under MCP servers in the control centre (task MA.7): the
             // rights alone never make a tool work (`docs/assistent.md`, "Schalter und Rechte sind zwei
-            // Dinge").
+            // Dinge"). `web` must be ticked by name (`ToolId::needs_naming`): "All" does not include it.
             (Pick::Tools, true) => tr(
-                "Includes tools added later. Each works only while it is on in the control centre under MCP servers.",
+                "Includes tools added later, but not web search: tick it by name. Each works only while it is on in the control centre under MCP servers.",
             ),
             (Pick::Tools, false) => tr(
                 "This agent can't use tools left off. Each works only while it is on in the control centre under MCP servers.",
@@ -423,8 +428,13 @@ pub fn change_rights(
     let before = rights.clone();
     match message {
         Message::Level(area, level) if shows_area(area, kind) => {
+            // Never a tool that must be ticked by name: switching `tools` on gives what "All" would.
             let present = || match Pick::ALL.into_iter().find(|pick| pick.area() == area) {
-                Some(pick) => candidates(pick, known, &Selection::Only(Vec::new())).into_iter().map(|c| c.id).collect(),
+                Some(pick) => candidates(pick, known, &Selection::Only(Vec::new()))
+                    .into_iter()
+                    .map(|c| c.id)
+                    .filter(|id| pick != Pick::Tools || !by_name_only(id))
+                    .collect(),
                 None => Vec::new(),
             };
             rights.set_level(area, level, present);
@@ -452,9 +462,23 @@ pub fn change_rights(
         Message::Confirm(confirm) => rights.confirm = confirm,
         Message::Outbound(outbound) => rights.outbound = outbound,
         Message::All(pick, true) => *pick.of_mut(rights) = Selection::All,
+        // What "All" reached stays ticked; for tools that is every one but those ticked by name.
         Message::All(pick, false) if !matches!(pick.of(rights), Selection::Only(_)) => {
-            let ids = candidates(pick, known, pick.of(rights)).into_iter().map(|candidate| candidate.id).collect();
+            let ids = candidates(pick, known, pick.of(rights))
+                .into_iter()
+                .map(|candidate| candidate.id)
+                .filter(|id| pick != Pick::Tools || !by_name_only(id))
+                .collect();
             *pick.of_mut(rights) = Selection::Only(ids);
+        }
+        // Ticking `web` under "All" (where it stands unticked) selects every tool, `web` included.
+        Message::Tick(Pick::Tools, id, true) if rights.tools == Selection::All && by_name_only(&id) => {
+            let mut ids: Vec<String> =
+                candidates(Pick::Tools, known, &Selection::All).into_iter().map(|candidate| candidate.id).collect();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+            rights.tools = Selection::Only(ids);
         }
         Message::Tick(pick, id, on) => tick(pick.of_mut(rights), id, on),
         Message::AddRepo => {
@@ -694,6 +718,18 @@ fn outbound_options() -> [(&'static str, Outbound); 3] {
 /// (plus the switch of its own), so below "Write" the core refuses it whatever the switch says.
 pub fn can_send(level: Level) -> bool {
     level >= Level::Write
+}
+
+/// Whether the tool `id` is one a client gets only when it is ticked by name ([`ToolId::needs_naming`]: `web`), never
+/// through "All". An id no tool has is not.
+pub fn by_name_only(id: &str) -> bool {
+    ToolId::ALL.into_iter().any(|tool| tool.name() == id && tool.needs_naming())
+}
+
+/// Whether the warning under the tools is due: the client reaches `web` (ticked by name) and may read mail, so it
+/// could put text it read into search words or an address without anyone looking first.
+pub fn sends_outside(rights: &Rights) -> bool {
+    rights.reaches_tool(ToolId::Web) && rights.area(Area::Mail).level != Level::NoAccess
 }
 
 /// Whether the warning under "Send on my behalf" is due: the client sends without asking. Mail it
@@ -1039,6 +1075,15 @@ fn tool_candidates(known: &Known) -> Vec<Candidate> {
             Candidate::plain(tool.id.name().to_string(), tool.name.clone(), Some(detail))
         })
         .collect()
+}
+
+/// What a selection shows under "All": the tools that must be ticked by name ([`by_name_only`]), which "All" does
+/// not include, each to be shown unticked; nothing for every other selection, whose "All" includes everything.
+pub fn named_under_all(pick: Pick, known: &Known) -> Vec<Candidate> {
+    match pick {
+        Pick::Tools => tool_candidates(known).into_iter().filter(|candidate| by_name_only(&candidate.id)).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Whether the tool `id` is known and switched off under MCP servers (`tools.list_tools`):
@@ -1387,6 +1432,10 @@ fn selection_group<'a>(
         usize::from(!all),
     );
     let mut rows = vec![widgets::segment_row(tr("Access to"), None, switch, column)];
+    if all {
+        let named = named_under_all(pick, known).into_iter();
+        rows.extend(named.map(|candidate| candidate_row(pick, candidate, false, None, column)));
+    }
     if !all {
         let offered = candidates(pick, known, selection);
         if offered.is_empty() && pick != Pick::GithubRepos {
@@ -1406,6 +1455,11 @@ fn selection_group<'a>(
         if pick == Pick::GithubRepos {
             rows.push(add_repo_row(repo_input));
         }
+    }
+    if pick == Pick::Tools && sends_outside(rights) {
+        rows.push(warning_row(tr(
+            "This agent can then put text it read into search words and web addresses. Only the assistant asks first, once in each conversation.",
+        )));
     }
     widgets::group(pick.title(), rows, Some(pick.footer(all).to_string()))
 }
@@ -1458,7 +1512,6 @@ mod tests {
     use chrono::Utc;
     use torro_inbox::AgentKind;
     use torro_ipc::api::{ASSISTANT_CLIENT, BOT_CLIENT};
-    use torro_ipc::tools::ToolId;
     use torro_pim::model::GitHubFilter;
     use torro_pim::{AccountState, CollectionKind};
 
@@ -1541,6 +1594,17 @@ mod tests {
     /// The tool PDF as `tools.list_tools` lists it for the app key, switched on or not.
     fn pdf(enabled: bool) -> ToolInfo {
         ToolInfo { id: ToolId::Pdf, name: "PDF".into(), description: "Makes PDFs.".into(), enabled, allowed: true }
+    }
+
+    /// The tool web as `tools.list_tools` lists it for the app key.
+    fn web(enabled: bool) -> ToolInfo {
+        ToolInfo {
+            id: ToolId::Web,
+            name: "Web".into(),
+            description: "Searches the web.".into(),
+            enabled,
+            allowed: true,
+        }
     }
 
     fn client(id: &str, name: &str, kind: &str, rights: Rights) -> ClientInfo {
@@ -1962,6 +2026,69 @@ mod tests {
         assert_eq!(Pick::Tools.area(), Area::Tools);
         // Without an answer of `tools.list_tools` there is nothing to choose from.
         assert!(candidates(Pick::Tools, &Known::default(), &Selection::All).is_empty());
+    }
+
+    /// Task WEB.6: "All" tools shows `web` unticked and does not reach it; ticking it gives every tool with `web`;
+    /// "Selected" from "All" and switching the area on never tick it; unticked it goes again.
+    #[test]
+    fn web_is_only_ever_ticked_by_name() {
+        let mut fixture = fixture();
+        fixture.tools = vec![pdf(true), web(false)];
+        let known = fixture.known();
+        let mut repo = String::new();
+        let mut change =
+            |rights: &mut Rights, message: Message| change_rights(rights, ASSISTANT_CLIENT, message, &known, &mut repo);
+        let ids = |selection: &Selection| match selection {
+            Selection::Only(ids) => ids.clone(),
+            Selection::All => panic!("expected a selection, got All"),
+        };
+
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert_eq!(rights.tools, Selection::All, "the templates give all tools");
+        assert!(rights.reaches_tool(ToolId::Pdf) && !rights.reaches_tool(ToolId::Web));
+        let shown: Vec<String> = named_under_all(Pick::Tools, &known).into_iter().map(|c| c.id).collect();
+        assert_eq!(shown, ["web"], "under All only web stands, unticked");
+        assert!(named_under_all(Pick::Calendars, &known).is_empty());
+        assert!(by_name_only("web") && !by_name_only("pdf") && !by_name_only("chart"));
+
+        assert!(change(&mut rights, Message::Tick(Pick::Tools, "web".into(), true)));
+        assert_eq!(ids(&rights.tools), ["pdf", "web"], "ticking web selects every tool with it");
+        assert!(rights.reaches_tool(ToolId::Web));
+        assert!(change(&mut rights, Message::Tick(Pick::Tools, "web".into(), false)));
+        assert_eq!(ids(&rights.tools), ["pdf"]);
+
+        // "Selected" from "All" keeps what All reached: never web.
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert!(change(&mut rights, Message::All(Pick::Tools, false)));
+        assert_eq!(ids(&rights.tools), ["pdf"]);
+        // "All" again leaves web out as before; a tick off under All changes nothing.
+        assert!(change(&mut rights, Message::All(Pick::Tools, true)));
+        assert!(!change(&mut rights, Message::Tick(Pick::Tools, "pdf".into(), false)));
+
+        // Switching the area on ticks every tool there is but web.
+        let mut rights = Rights::none();
+        assert!(change(&mut rights, Message::Level(Area::Tools, Level::Read)));
+        assert_eq!(ids(&rights.tools), ["pdf"]);
+    }
+
+    /// Task WEB.6: `web` ticked for a client that reads mail gets the warning; without mail or under "All" none.
+    #[test]
+    fn web_for_a_client_that_reads_mail_is_warned_about() {
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert!(rights.area(Area::Mail).level >= Level::Read);
+        assert!(!sends_outside(&rights), "All does not reach web");
+        rights.tools = Selection::Only(vec!["web".into()]);
+        assert!(sends_outside(&rights));
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+        assert!(!sends_outside(&rights), "no mail, nothing read to send");
+        let mut fixture = fixture();
+        fixture.tools = vec![pdf(true), web(true)];
+        for tools in [Selection::All, Selection::Only(vec!["web".into()])] {
+            let mut rights = RightsTemplate::ReadOnly.rights();
+            rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+            rights.tools = tools;
+            drop(selection_group("", Pick::Tools, &rights, &fixture.known(), None));
+        }
     }
 
     /// Task S.30: the data rule left the rights; the access group of the assistant with mail builds

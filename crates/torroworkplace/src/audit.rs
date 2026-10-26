@@ -448,6 +448,10 @@ pub fn ids(request: &Request) -> Vec<String> {
             checked("extension", extension, extensions::valid_id),
             checked("tool", tool, |tool| extensions::tool_name("x", tool).is_some()),
         ],
+        // The web (issue #305): never the search words, the language asked for or the address of a page;
+        // a key by its provider only, never the key.
+        Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders => Vec::new(),
+        Request::SetSearchKey { provider, .. } => vec![id("provider", provider.name())],
         mail @ (Request::MailFolders { .. }
         | Request::MailAccountStats { .. }
         | Request::GetMailCachePolicy { .. }

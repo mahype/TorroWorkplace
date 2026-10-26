@@ -1000,3 +1000,212 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
 - **Abnahme:** App-Tests mit Test-Backend: Karte aus `get_cards`, jeder Knopf schickt seinen Request; `Target`
   parst `file:<id>`, fremde Kennung und Datei eines anderen Clients `not-found`; `compose` parst `--attach`; `--demo` mit Datei-Karte,
   `scripts/design-check.sh`, `torro-design-review`, `TORRO_LANG=de cargo test --workspace`; Übersetzungen in `de.rs`.
+
+## Werkzeug Web: Websuche und Seite lesen (WEB.1–WEB.7)
+
+Konzept: Abschnitt „Werkzeug Web“ in [assistent.md](../assistent.md) (Entscheidungen 20–26), Schritt „Web search“ in
+[einrichtung.md](../einrichtung.md), Punkte 5 und 6 in „Was nie nach außen geht“ ([api.md](../api.md)). Issue #305,
+geplant am 2026-10-24.
+
+```
+WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) ── WEB.5 (Assistent: Freigabe je Unterhaltung)
+                 ├── WEB.3 (Seite) ──┘
+                 └── WEB.6 (Einstellungen › Tools › Web) ── WEB.7 (Einrichtung)
+```
+
+**Festlegungen für alle WEB-Aufgaben:**
+- Werkzeug `ToolId::Web` (`web`, Titel „Web“); `ToolId::of_command`: `tools.web_search`, `tools.fetch_page` → `Web`;
+  `tools.list_search_providers` → keines (wie `tools.list_tools`). Beide Befehle `Read`; `ToolInfo::allowed` ist für
+  `web` Lesen in `tools`, für `pdf` weiter Schreiben.
+- **`web` nur ausdrücklich:** `Rights::reaches_tool(ToolId::Web)` nur mit `Selection::Only`, die `web` enthält;
+  `Selection::All` (alle Vorlagen) reicht für `pdf`, nie für `web` (`ToolId::needs_naming`, nur `Web`). Weil
+  `Selection::common` bei `All` die andere Seite zurückgibt, wird `All` in `tools` **vor jeder Schnittmenge** zu
+  `Only` mit allen Werkzeugen ohne `needs_naming` (neue `Rights::reached_tools() -> Selection`): in `Rights::common`,
+  `assistant::tools::with_tools_on` und `my_access` (`core.rs`).
+- **Stufe je Werkzeug:** `ToolId::access()` (`pdf` Write, `web` Read); `ToolInfo::allowed`, `usable_tools` und
+  `allowed_for` nehmen sie statt fest Schreiben.
+- Anbieter `SearchProviderId` in `torro_core::settings`: `searxng`, `brave`, `tavily`, `exa`, `mojeek`, `duckduckgo`,
+  `wikipedia`; `SearchProviderId::ORDER` ist genau diese Reihenfolge (Rückfall), Wikipedia zählt nicht zum Rückfall.
+  Einstellung `Settings::web_search: WebSearch { providers: BTreeSet<SearchProviderId>, searxng: Option<String> }`.
+- Schlüssel im Schlüsselbund unter `websearch-<id>`; `websearch-` wird reservierter Präfix wie `client-`
+  (`torro_core::account::is_reserved_id`). Ein Schlüssel erscheint in keiner Antwort, keinem Fehler, keinem Log.
+- Protokoll und Log nennen nie Suchwörter, Adressen oder Inhalte, nur Anbieter und Fehlerart; `reqwest::Error`
+  immer `without_url()` (Mojeek trägt den Schlüssel in der Adresse).
+- User-Agent überall `crate::places::USER_AGENT` (Projekt-URL als Kontakt, wie Wikimedia es verlangt), nie ein
+  Browser-User-Agent.
+- Tests ohne Netz: Antworten der Anbieter und Seiten als Dateien unter `crates/torroworkplace/tests/fixtures/web/`;
+  HTTP-Tests mit `httpmock` nur über einen Konstruktor, der Basisadresse und Wächter als Parameter nimmt.
+
+### WEB.1 Gerüst: Werkzeug `web`, Requests, Katalog, Einstellungen
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api,
+  tools}.rs`, `crates/torro-ipc/src/web.rs` (neu), `crates/torroworkplace/src/{core,settings_service,audit,daemon,pim,
+  mcp}.rs` (nur `match`-Zweige, `unsupported`, `INSTRUCTIONS`), `crates/torroworkplace/src/assistant/tools.rs`,
+  `crates/torroworkplace/src/assistant/tools.rs` (`with_tools_on`, `usable_tools`), `crates/torroworkplace/src/tools/mod.rs`
+  (`list`: `allowed` nach `ToolId::access`), `crates/torroassistant/src/chat.rs` (`tool_title`),
+  `crates/torro-settings-ui/src/demo.rs` (Testdaten),
+  `docs/api.md`, `docs/settings.md`, `docs/api-reference.md`, `crates/torro-core/src/i18n/de.rs`
+- `ToolId::Web` (in `ALL` nach `Pdf`), `SearchProviderId` mit `ORDER`, `name()`, `title()`; `WebSearch` mit
+  `needs_a_person(&self, new)` (Menge wächst oder neue Adresse) und `check_changes` (Adresse `http`/`https`, ohne
+  Query und Anmeldung, wie `Maps`). `SettingKey::SearchProvider` (`{provider, enabled}`) und `SearxngAddress`
+  (Adresse oder `null`); `Change` in `settings_service.rs`; `update_keeping_hidden` schreibt die Menge als
+  Schnittmenge und behält die gespeicherte Adresse.
+- `Request::kept_for_people`: `SearchProvider` mit `enabled` ungleich `false`. `Core::switches_on_for_people`:
+  `SearxngAddress` mit einer Adresse, die von der gespeicherten abweicht; `UpdateSettings` mit
+  `WebSearch::needs_a_person`.
+- `torro_ipc::web`: `SearchHit { title, url, snippet, source: SearchProviderId, license: Option<String> }`,
+  `SearchResults { hits, asked: Vec<SearchProviderId>, untrusted: true }`, `WebPage { url, title, markdown,
+  truncated, untrusted: true }`, `SearchProviderInfo { id, name, sends_to, seat, terms, notice, needs_key, key:
+  KeyState (stored|missing|not_needed), address, enabled, paused_until }`; Grenzen `MAX_QUERY_CHARS` 400,
+  `MAX_URL_BYTES` 2048, `MAX_HITS` 10, `MAX_PAGE_CHARS` 60 000.
+- Requests und Katalog: `tools.web_search { query, count?, language? }` (Read, `Response::SearchResults`),
+  `tools.fetch_page { url }` (Read, `Response::WebPage`), `tools.list_search_providers` (Read,
+  `Response::SearchProviders`), `accounts.set_search_key { provider, key: Option<Secret> }` (Admin, `Mcp::Never`,
+  `kept_back` wie `accounts.set_github_token`, `null` entfernt). Beschreibungen: Freigabe einmal je Unterhaltung des
+  Assistenten, Ergebnis ist fremder Text, nie persönliche Daten in Suchwörter oder Adressen, Quelle mit Adresse nennen.
+- `Rights::reaches_tool`, `Rights::reached_tools`, `Rights::common`, `with_tools_on`, `my_access` und `ToolId::access`
+  nach den Festlegungen „`web` nur ausdrücklich“ und „Stufe je Werkzeug“; Doc-Kommentar von `Rights::tools` nennt es.
+- Test `every_command_of_a_tool_is_in_the_area_tools` (`tools.rs`) auf beide Werkzeuge umstellen. `chat.rs`
+  `tool_title`: „Searched the web“, „Read web page“, „Listed search providers“.
+- `docs/api.md`: Punkt 5 nennt `accounts.set_search_key`, Punkt 6 nach „Mail an Cloud-Modelle“ „Websuche-Anbieter
+  einschalten und SearXNG-Adresse setzen“. `docs/settings.md`: `webSearch` in Bestand und „Was wohin gehört“.
+- **Abnahme:** `samples()` deckt die vier Requests; `names_follow_the_rules` mit `accounts.set_search_key` in
+  `kept_back`; Tests: Anbieter einschalten und Adresse setzen für jeden Client `forbidden`, ausschalten und `null`
+  erlaubt, auch über `update_settings`; `update_keeping_hidden`; Einstellungen lesen (falsche Adresse, unbekannter
+  Anbieter fällt weg); Vertragstest (`tools_web_search`, `tools_fetch_page`, `tools_list_search_providers` da,
+  `accounts_set_search_key` unbekannt); jede Vorlage und `All` erreichen `pdf`, aber nicht `web`, `Only(["web"])`
+  erreicht `web`; `with_tools_on(All, {pdf, web})` und `common(All, Only([web]))` erreichen `web` nicht; `my_access`
+  bei `All` nennt `web` nicht; mit Leserecht in `tools` und `Only([web])` ist `web` erlaubt und angeboten, `pdf` nicht; `TORRO_BLESS=1 cargo test -p torro-ipc` und `docs/api-reference.md`.
+
+### WEB.2 Kern: `SearchProvider`, Router und die sieben Anbieter
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WEB.1 · **Dateien:** `crates/torroworkplace/src/tools/mod.rs` (`pub mod web`),
+  `crates/torroworkplace/src/tools/web/{mod,router,catalogue}.rs` (neu),
+  `crates/torroworkplace/src/tools/web/providers/{mod,searxng,brave,tavily,exa,mojeek,duckduckgo,wikipedia}.rs` (neu),
+  `crates/torroworkplace/src/places.rs` (`USER_AGENT` `pub(crate)`), `Cargo.toml` (Wurzel: `dom_query`),
+  `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/tests/fixtures/web/**`, `crates/torro-core/src/i18n/de.rs`
+- Trait `SearchProvider`: `id()`, `capabilities()` (`max_hits`, `languages`, `cacheable`), `search(&Query) ->
+  BoxFuture<Result<Vec<SearchHit>, SearchError>>`; `SearchError`: `RateLimited { retry_after }`, `Blocked`, `NeedsKey`,
+  `Failed(&'static str)`. Je Anbieter eine reine Funktion `parse(&[u8]) -> Result<Vec<SearchHit>, SearchError>` und
+  ein dünner HTTP-Teil; Endpunkte bei der Umsetzung an der Doku der Anbieter prüfen.
+- DuckDuckGo: POST `https://html.duckduckgo.com/html/`, Treffer mit `dom_query`, `uddg`-Weiterleitung aufgelöst;
+  Seite mit Captcha/Anomalie, 202, 403 → `Blocked`. SearXNG: `<adresse>/search?q=…&format=json`. Brave, Tavily,
+  Exa, Mojeek mit Schlüssel (fehlt oder 401/403 → `NeedsKey`). Wikipedia: REST `search/page` der Sprache der Suite,
+  Lizenz „CC BY-SA 4.0“ am Treffer, Auszug ohne HTML.
+- `router.rs`: eingeschaltete Anbieter in `SearchProviderId::ORDER`, nächster bei `RateLimited`, `Blocked`, `NeedsKey`;
+  Wikipedia zusätzlich (höchstens 3 Treffer nach den anderen). Drosselung: DuckDuckGo eine Abfrage je 10 s, die
+  übrigen je 1 s; gesperrt oder 429 → eine Stunde Pause (oder `Retry-After`), für alle Clients. Zwischenspeicher im
+  Speicher: 1 h, 64 Antworten, Schlüssel aus Anbieter, Wörtern, Sprache, Zahl; nie für Brave.
+- `catalogue.rs`: je Anbieter Name, `sends_to` (Host), Sitz, Link auf die Bedingungen, Hinweis (`tr()`, DuckDuckGo
+  wörtlich nach Konzept, Brave: Speichern nicht erlaubt), ob ein Schlüssel nötig ist.
+- **Abnahme:** je Anbieter ein Test gegen eine aufgezeichnete Antwort; DuckDuckGo-Captcha-Seite gibt `Blocked`;
+  Router-Tests mit Fake-Anbietern: Reihenfolge, Rückfall, nur Eingeschaltete gefragt, Pause nach Sperre,
+  Zwischenspeicher trifft, Brave nie im Speicher, Wikipedia zusätzlich; kein Netz.
+
+### WEB.3 Kern: Seite lesen mit Wächtern, `robots.txt` und Markdown
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WEB.1 · **Dateien:** `crates/torroworkplace/src/tools/web/{fetch,robots}.rs` (neu),
+  `Cargo.toml` (Wurzel: `dom_smoothie`), `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/tests/fixtures/web/**`
+- `fetch.rs`: Adresse prüfen (`http`/`https`, Hostname per `torro_pim_caldav::discover::checked_domain`, keine
+  IP-Literale, kein `user:pass@`, nur Port 80/443, `MAX_URL_BYTES`); Client mit `GuardedDns` und `is_public`,
+  Weiterleitungen von Hand (höchstens 5, jede neu geprüft, auch gegen `robots.txt`); Zeitgrenzen 5 s Verbinden,
+  20 s gesamt; Körper höchstens 2 MB gestreamt; nur `text/html`, `application/xhtml+xml`, `text/plain`; Drosselung
+  1 Abruf je Host und Sekunde. Hauptinhalt mit `dom_smoothie` (`TextMode::Markdown`), sonst der Text von `body`;
+  Links absolut; über `MAX_PAGE_CHARS` gekürzt mit `truncated`. Parameter `by_person`: `true` überspringt nur
+  `robots.txt`.
+- `robots.rs`: eigener Leser nach RFC 9309: Gruppen nach User-Agent (`TorroWorkplace`, sonst `*`), `Allow`/`Disallow`
+  mit längstem Treffer, `*` und `$`, höchstens 500 KiB; 4xx → alles erlaubt, 5xx oder nicht erreichbar → nichts;
+  24 h je Origin im Speicher.
+- `dom_smoothie` in der neuesten Fassung; bringt sie eine zweite `html5ever`-Fassung neben der von `ammonia`, das im
+  Kommentar der Wurzel-`Cargo.toml` nennen. Kein `htmd`, kein `texting_robots`.
+- **Abnahme:** Tabellen-Tests für Adressen (lokal, privat, IP, Port, Anmeldung abgelehnt), für `robots.txt` (Beispiele
+  aus RFC 9309, längster Treffer, `$`, 4xx/5xx), Weiterleitung ins lokale Netz abgelehnt (Fake-Resolver),
+  Hauptinhalt aus einer Artikel-Seite ohne Navigation und Skripte, Kürzen, falscher Typ abgelehnt.
+
+### WEB.4 Kern: Befehle, Schlüssel und SearXNG-Prüfung
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WEB.2, WEB.3 · **Dateien:** `crates/torroworkplace/src/core.rs`,
+  `crates/torroworkplace/src/tools/{mod,web/mod}.rs`, `crates/torroworkplace/src/approvals.rs`,
+  `crates/torro-core/src/account.rs` (`websearch-`), `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`
+- Handler: `tools.list_search_providers` (Katalog, Schalter, `KeyState`, Pause); `tools.web_search` (Schalter
+  `web` und Auswahl wie beim PDF über `tool_off`/`tool_unselected`; keiner eingeschaltet → `not-connected` „No web
+  search provider is on. A person chooses one in the assistant's settings.“; alle gesperrt → `busy` mit Anbieter und
+  Zeit; nur Schlüssel fehlt → `auth`); `tools.fetch_page` (`by_person: false` für jeden Client; abgelehnte Adresse
+  oder `robots.txt` → `unsupported` mit Grund); `accounts.set_search_key` (nur App-Schlüssel, Schlüsselbund,
+  Antwort `Ok`).
+- `SetSetting SearxngAddress`: vor dem Speichern `GET <adresse>/search?q=torro&format=json`; kein JSON mit `results`
+  → `unsupported` „This SearXNG instance does not answer in JSON. Turn on the json format in its settings.“ Die
+  Adresse der Person darf im lokalen Netz liegen (kein `is_public`).
+- Clients über API und MCP: keine Freigabe (Read; „Ask first“ fragt bei Lesebefehlen nie), nur Schalter, Rechte,
+  Auswahl. `audit::ids`: nichts aus Wörtern oder Adresse.
+- **Abnahme:** Handler-Tests mit Fake-Router und Temp-Wurzeln: Schalter aus → `forbidden` auch für den App-Schlüssel,
+  nicht gewählt → `forbidden`, keiner eingeschaltet → `not-connected`; `list_search_providers` ohne Schlüssel im
+  JSON; `set_search_key` mit Client-Schlüssel `forbidden`, ein Client mit `Only([web])` sucht ohne Freigabe, gespeichert/entfernt im Fake-Schlüsselbund; SearXNG ohne
+  JSON abgelehnt, mit JSON gespeichert (`httpmock`); Protokollzeile ohne Wörter und Adresse.
+
+### WEB.5 Assistent: Freigabe je Unterhaltung, Angebot ans Modell, fremder Text
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WEB.4 · **Dateien:** `crates/torroworkplace/src/assistant/{model,tools,prompt}.rs`,
+  `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/approvals.rs`,
+  `crates/torroworkplace/assets/assistant/skill.md`, `crates/torro-core/src/i18n/de.rs`
+- `model.rs` `Answering::run`: `tools.web_search`/`tools.fetch_page` über eine neue `Host`-Methode mit der Unterhaltung
+  (`job.conversation`, für `Actor::Delegated` die des Hauptbots, Feld `conversation` in `Delegation`), dem Merkmal
+  `outside` und `by_person` (die Adresse steht wörtlich in einer Nachricht der Person in `job.history`); Standard der
+  Methode `forbidden`. Andere Wege des Assistenten (geliehener Schlüssel) → `forbidden`.
+- Zwei Merkmale getrennt: `untrusted` (C.11, Gedächtnis) zählt auch die Web-Befehle; `outside` (Zustimmung) zählt
+  nur, was `may_have_read_untrusted` heute zählt (Mail, GitHub, Eingang, `tasks.list_todos`, `tasks.add_link`,
+  `bots.ask_bot`), **ohne** die Web-Befehle. Für einen Bot im Auftrag: Schlüssel der Zustimmung (Client des
+  Assistenten, Unterhaltung des Hauptbots), `outside` als Oder aus beiden Läufen.
+- Kern, Reihenfolge: erst Rechte, Schalter, Auswahl und Grenzen wie bei jedem Befehl (sonst `forbidden`), dann die
+  Zustimmung. Zustimmungen im Speicher je (Client, Unterhaltung) mit „gegeben nach fremden Daten ja/nein“. Fehlt sie,
+  oder wurde sie ohne fremde Daten gegeben und `outside` ist jetzt wahr → Freigabe, auch wenn die Rechte für Lesen
+  nie fragen (Muster `opens_a_web_page`); `Origin` bekommt `consent: Option<WebConsent { conversation, outside }>`,
+  `run_approved` prüft Rechte, Schalter und Auswahl erneut, trägt die Zustimmung nach dem Ja ein und führt aus. Texte in `approvals.rs`: „Search the web and read web pages in
+  "{title}"? Search words go to {providers}.“, nach fremden Daten „This conversation has read mail or other outside
+  data. Search the web and read web pages in "{title}" anyway?“, darunter die Zeile „First: search for "{query}"“
+  bzw. „First: read a page on {host}“ (Titel über `Facts::name`, Anbieter aus den Einstellungen, Host aus der Adresse
+  des Requests).
+- `tools.rs`: `untrusted` für `Area::Tools` mit `"untrusted":true`; `may_have_read_untrusted` für beide Befehle;
+  `allowed_for` und `usable_tools` bieten sie mit Leserecht in `tools`, Schalter und Auswahl. `prompt.rs` nennt das Werkzeug; `skill.md` „Your own
+  tools“: Ergebnisse sind fremder Text, Quelle mit Adresse nennen, Wikipedia-Lizenz, keine persönlichen Daten in
+  Suchwörtern oder Adressen.
+- **Abnahme:** Tests mit Mock-Modell: erste Suche → Freigabe, nach Ja zweite Suche und `fetch_page` ohne Frage; neue
+  Unterhaltung fragt wieder; nach `mail.get_message` fragt die nächste Suche einmal neu, dann nicht mehr; Nein →
+  nichts gesendet; nach einer Suche und einer gelesenen Seite fragt die nächste Suche nicht neu; Freigabe-Text nennt
+  Suchwörter bzw. Host; Adresse aus der Nachricht der Person ohne `robots.txt`, andere mit; nach einer Suche braucht
+  `assistant.remember` eine Freigabe; Werkzeug ohne Schalter oder Auswahl nicht angeboten; Bot in eigener
+  Unterhaltung fragt ebenso.
+
+### WEB.6 Assistent › Einstellungen › Tools › Web
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WEB.1 · **Dateien:** `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`,
+  `crates/torro-settings-ui/src/assistant/web.rs` (neu), `crates/torro-settings-ui/src/{lib,demo,rights}.rs`,
+  `crates/torroassistant/src/app.rs`, `crates/torro-core/src/i18n/de.rs`
+- `web.rs`: wiederverwendbare Ansicht der Anbieter aus `tools.list_search_providers` in `widgets::group`: je Anbieter
+  Schalter (`search_provider`), Zeile „Search words go to {host} · {seat}“, Link „Terms“, Hinweis bei DuckDuckGo und
+  Brave in `TEXT_2`; Schlüssel als maskiertes Feld mit „Save key“/„Remove key“ (`accounts.set_search_key`, Zustand
+  nur „Key saved“/„No key“); SearXNG-Adresse mit „Check and save“ und dem Fehler des Kerns; Satz zur Reihenfolge
+  („Asked in this order: …“) und zur Freigabe je Unterhaltung. Neue `AppAction::OpenUrl(String)` für „Terms“, die App
+  öffnet mit `webbrowser`. `tools.rs`: Gruppe für `web` mit `tool_enabled` und dieser Ansicht; „Allow it in the
+  control centre“ wie beim PDF.
+- Rechte-Editor (`rights.rs`, `Pick::Tools`): bei `All` steht `web` ohne Haken; den Haken setzen macht aus `All`
+  `Only` mit allen Werkzeugen samt `web`; „alle an“ und das Anschalten des Bereichs (Regel aus B.5) setzen `web`
+  nie mit. Wer `web` für einen Client mit Leserecht in Mail ankreuzt, sieht eine Warnung wie bei „Send on my behalf“
+  („This client can then send text it read to websites without asking.“).
+- **Abnahme:** Tests: Rechte-Editor zeigt `web` bei `All` aus, Haken ergibt `Only([pdf, web])`, Anschalten ohne `web`;
+  Schalter schickt genau einen `set_setting search_provider`, Schlüssel genau ein
+  `set_search_key` und nie einen `set_setting`, kein `clients.*`; `--demo`-Zustand mit einem eingeschalteten und einem
+  gesperrten Anbieter; `scripts/design-check.sh`, `torro-design-review` (schmal bis breit, hell und dunkel).
+
+### WEB.7 Einrichtung: Schritt „Web search“
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WEB.6 · **Dateien:** `crates/torroworkplace/src/ui/setup/{mod,pages}.rs`,
+  `crates/torroworkplace/src/ui/{mod,launch}.rs`, `crates/torro-core/src/settings.rs` (`Setup::VERSION` 2),
+  `crates/torro-core/src/i18n/de.rs`
+- `Step::Web` zwischen `Ai` und `Done`, nur mit Komponente Assistent; Seite aus `torro_settings_ui::assistant::web`;
+  der erste eingeschaltete Anbieter schickt zusätzlich `tool_enabled web true`; Haken „Let the assistant use it“
+  (vorbelegt an): ist der Client des Assistenten da, `clients.update_client` mit mindestens Lesen in `tools` und `web`
+  zur Auswahl ergänzt, sonst nichts. Done-Seite: „Web search · DuckDuckGo“ bzw. „Off“. Demo `setup-web`.
+- **Abnahme:** Tests: Einschalten schickt `search_provider` und `tool_enabled`, mit Haken einmal `update_client`, das
+  vorhandene Werkzeuge behält, ohne Haken keins; Überspringen schickt nichts; `has_new_steps` mit Version 1;
+  Sichtprüfung `--demo --open setup-web` in allen Größen; `TORRO_LANG=de cargo test --workspace`.

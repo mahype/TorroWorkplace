@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
-| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_shown`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -876,8 +876,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Nach einem Quit startet kein MCP-Server den Dienst neu, siehe [lebenszyklus.md](lebenszyklus.md).
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Import aus einem fremden
-   Schlüsselbund): nur mit
+   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
+   Websuche-Anbieters `accounts.set_search_key` (#305), Import aus einem fremden Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Darum setzt auch **Server und vertraute Zertifikate eines Mail-Kontos** nur ein Mensch
    (`connect_mail`, `trusted_certificates`, #284): Der Kern verbindet sich mit jedem dort eingetragenen Host,
@@ -910,6 +910,19 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests
    `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
    `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
+
+   Ebenso **Websuche-Anbieter einschalten und SearXNG-Adresse setzen** (Werkzeug `web`, #305,
+   [assistent.md](assistent.md) „Werkzeug Web“): Suchwörter gehen an die eingeschalteten Anbieter, die
+   SearXNG-Adresse kann ins lokale Netz zeigen. `settings.set_setting` mit `search_provider` und `enabled`
+   ungleich `false`, mit `searxng_address` und einer anderen Adresse als der gespeicherten, und ein
+   `settings.update_settings`, das einen Anbieter einschalten oder die Adresse ändern würde, bekommen von jedem
+   Client `forbidden`, auch mit Admin-Rechten. Ausschalten und `searxng_address: null` sind gewöhnliche
+   Admin-Änderungen; ein `update_settings` eines Clients behält die gespeicherte Adresse. Den Schlüssel eines
+   Anbieters nimmt nur `accounts.set_search_key` entgegen (Punkt 5). Wer `web` benutzen darf, entscheidet der
+   Haken eines Menschen in der Auswahl `tools` des Clients: „alle Werkzeuge“ (`Selection::All`, jede Vorlage)
+   deckt `web` nicht ab, auch in keiner Schnittmenge (`Rights::reached_tools`; Tests
+   `only_people_switch_a_search_provider_on` und `web_is_reached_only_when_named` in `torro-ipc`,
+   `only_people_switch_search_providers_on_and_set_the_searxng_address` im Kern).
 
    Ebenso **Karten und Ortssuche einschalten** (Termin-Editor, Aufgabe TE.1, [termin-editor.md](termin-editor.md)):
    Die Suche schickt den getippten Ort mit der Sprache der Suite (bei Photon auch `near`), die Karte die Koordinaten,

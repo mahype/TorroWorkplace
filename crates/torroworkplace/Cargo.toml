@@ -72,6 +72,11 @@ sysinfo.workspace = true
 # The map of the event editor (task TE.5): tiles put together, darkened and sent as Base64 PNG.
 image.workspace = true
 base64.workspace = true
+# The tool web (WEB.2): DuckDuckGo's results page and the HTML in extracts of the search providers.
+dom_query.workspace = true
+# The tool web (WEB.3): the main content of a page as Markdown.
+dom_smoothie.workspace = true
+encoding_rs.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
 # script, so a cross build for Windows (cargo-xwin) would not get the crate. `build.rs` decides by the target OS.

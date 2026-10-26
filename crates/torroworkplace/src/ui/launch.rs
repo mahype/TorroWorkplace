@@ -144,10 +144,13 @@ pub enum Open {
     ConnectClientDone,
     /// "Connect client" with the key of a new "Other MCP client" and its command, shown once.
     ConnectClientOther,
-    /// MCP servers (task MA.7) with the PDF tool on, a folder and a logo of its own, and the
-    /// demo's servers: two of the catalog (one running, one stopped after errors) and one of one's
-    /// own with tools to review ([`demo_connections`]).
+    /// MCP servers (task MA.7) with the PDF tool on, a folder and a logo of its own, the tool `web` on
+    /// with DuckDuckGo and Wikipedia, and the demo's servers: two of the catalog (one running, one
+    /// stopped after errors) and one of one's own with tools to review ([`demo_connections`]).
     Connections,
+    /// The page of the search providers below the tool `web` (task WEB.6, here since #302), as
+    /// `connections` sets them up.
+    SearchProviders,
     /// MCP servers without any server, the PDF tool as it starts and the assistant without it
     /// ([`demo_connections_empty`]).
     ConnectionsEmpty,
@@ -200,7 +203,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 101] = [
+    pub const ALL: [(&'static str, Open); 103] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -275,6 +278,7 @@ impl Open {
         ("connect-client-other", Open::ConnectClientOther),
         ("connections", Open::Connections),
         ("connections-empty", Open::ConnectionsEmpty),
+        ("search-providers", Open::SearchProviders),
         ("catalog-install", Open::CatalogInstall),
         ("catalog-install-tools", Open::CatalogInstallTools),
         ("extension-detail", Open::ExtensionDetail),
@@ -301,6 +305,7 @@ impl Open {
         ("setup-mail-add", Open::SetupMailAdd),
         ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
         ("setup-ai", Open::SetupAi),
+        ("setup-web", Open::Setup(super::setup::Step::Web)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
@@ -1055,6 +1060,7 @@ pub fn demo_data() -> Data {
         screens: demo_screens(),
         extensions: super::connections::Listing::Entries(demo_extensions()),
         catalog: super::connections::Listing::Entries(demo_catalog()),
+        search_providers: demo_search_providers(),
         error: None,
     }
 }
@@ -1173,15 +1179,22 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
 }
 
 /// `--open connections` (task MA.7): the PDF tool on, a folder of its own and a logo in the report
-/// template, so every row of "Built-in tools" and the templates shows. Paths only: the demo reads no
-/// file.
+/// template, so every row of "Built-in tools" and the templates shows; the tool `web` on with DuckDuckGo
+/// and Wikipedia (task WEB.6). Paths only: the demo reads no file and stores no key.
 pub fn demo_connections(data: &mut Data) {
     use torro_core::settings::{PdfTemplateId, ToolId};
+    use torro_ipc::web::SearchProviderId;
     let tools = &mut data.settings.tools;
     tools.set_on(ToolId::Pdf, true);
+    tools.set_on(ToolId::Web, true);
     tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
     tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
     data.tools = demo_tools(&data.settings.tools);
+    for info in &mut data.search_providers {
+        if matches!(info.id, SearchProviderId::Duckduckgo | SearchProviderId::Wikipedia) {
+            info.enabled = true;
+        }
+    }
 }
 
 /// `--open connections-empty` (task MA.7): no server installed, the PDF tool off as it starts, and
@@ -1357,6 +1370,16 @@ fn demo_logs(id: &str) -> Vec<String> {
         _ => &[],
     };
     lines.iter().map(|line| line.to_string()).collect()
+}
+
+/// The web search providers as the core lists them for a first setup (task WEB.7): every one off, no key stored,
+/// no SearXNG address – what the setup's step "Web search" starts from.
+fn demo_search_providers() -> Vec<torro_ipc::web::SearchProviderInfo> {
+    let settings = torro_core::settings::WebSearch::default();
+    torro_ipc::web::SearchProviderId::ORDER
+        .into_iter()
+        .map(|id| crate::tools::web::catalogue::info(id, &settings, false, None))
+        .collect()
 }
 
 /// The demo's screens (task WS.6): the wide main screen the templates were saved on, and a
@@ -2216,7 +2239,7 @@ mod tests {
         let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
         assert!(
             err.to_string()
-                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, done"),
+                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, web, done"),
             "{err}"
         );
     }

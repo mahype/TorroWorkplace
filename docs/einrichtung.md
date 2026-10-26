@@ -200,7 +200,20 @@ models only unless you change it.“
 - Bis auf Anthropic sprechen alle das OpenAI-Protokoll; ein neuer Anbieter ist ein Eintrag im Katalog,
   kein neuer Code.
 
-### 9 Done
+### 9 Web search
+
+Seit Issue #305 (Konzept: „Werkzeug Web“ in [assistent.md](assistent.md)). Nur, wenn die Komponente Assistent an
+ist. Dieselbe Liste wie in Steuerzentrale › MCP servers › Built-in tools › Search providers: je Anbieter ein Schalter, darunter wohin die
+Suchwörter gehen („Search words go to duckduckgo.com · USA“), ein Link „Terms“ und bei DuckDuckGo und Brave der
+Hinweis; bei Brave, Tavily, Exa und Mojeek ein maskiertes Feld für den Schlüssel, bei SearXNG das Feld für die
+Adresse. Vorbelegt ist nichts (Aus). Wer einen Anbieter einschaltet, schaltet das Werkzeug `web` ein; der Haken
+„Let the assistant use it“ (vorbelegt an) gibt dem Assistenten das Leserecht für `web`. Ein Satz darunter: „The
+assistant asks once in each conversation before it searches.“ Überspringen lässt die Websuche aus.
+
+Mit dem Schritt steigt `Setup::VERSION` auf 2; wer die Einrichtung schon abgeschlossen hat, sieht in der Overview
+„New in setup“.
+
+### 10 Done
 
 Eine Zeile je gewählter Komponente mit Zustand und Kurzinfo („Calendar · 3 calendars“,
 „Mail · Skipped“, „AI · Ollama, qwen3:8b“), daneben „Open“ für die App. Primär „Finish“ setzt den Stand
@@ -240,6 +253,7 @@ Befehle. Neu sind nur zwei Einstellungen und ein Feld.
 | Eingangsquellen | Schritt 7 | `inbox.list_sources`, `inbox.mute_source` | `inbox_list_sources`, `inbox_mute_source` (gibt es) |
 | Lokale KI finden, Modelle | Schritt 8 | `FindAiServers`, `AiModels` · Read | `ai_find_local_servers`, `ai_list_models` (gibt es) |
 | Modell des Assistenten | Schritt 8 | `SetSetting { key: AssistantDefault }` · Admin | `settings_set_setting` |
+| Websuche: Anbieter, Adresse, Schlüssel, Recht des Assistenten | Schritt 9 | `tools.list_search_providers` · Read; `SetSetting { key: SearchProvider \| SearxngAddress \| ToolEnabled }` · Admin, einschalten nur Menschen; `accounts.set_search_key` · Admin, nur App-Schlüssel; `clients.update_client` | `tools_list_search_providers`; `settings_set_setting` nur fürs Ausschalten; Schlüssel und Rechte **Never** (Punkte 2, 5) |
 | KI-Anbieter-Katalog | Schritt 8, Accounts › Add › AI | statisch in `torro_core::ai` (keine Daten, nur Beschreibung); Agenten brauchen ihn nicht, weil sie keine KI-Konten verbinden | – |
 
 ## Entscheidungen

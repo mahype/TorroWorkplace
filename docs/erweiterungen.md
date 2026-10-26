@@ -381,8 +381,8 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   liefert `not-found`.
 - **Keine Liste im Gespräch:** Torros MCP-Server meldet geänderte Werkzeuglisten nicht (kein `list_changed`). Fremde
   Agenten sehen neue Server-Werkzeuge erst in der nächsten Sitzung.
-- **Oberfläche:** Steuerzentrale › MCP servers hat drei Teile, Built-in tools (mit der Unterseite „PDF templates“),
-  Catalog und Your own servers; jeder Server hat eine eigene Seite. Assistent › Tools zeigt nur noch einen Verweis.
+- **Oberfläche:** Steuerzentrale › MCP servers hat drei Teile, Built-in tools (mit den Unterseiten „PDF templates“
+  und „Search providers“ der Websuche, #305), Catalog und Your own servers; jeder Server hat eine eigene Seite. Assistent › Tools zeigt nur noch einen Verweis.
 
 ## Entscheidungen und offene Fragen
 

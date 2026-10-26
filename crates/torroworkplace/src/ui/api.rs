@@ -799,7 +799,7 @@ fn detail<'a>(
 
 #[cfg(test)]
 pub(super) mod tests {
-    use chrono::{Duration as Age, TimeZone};
+    use chrono::Duration as Age;
     use iced::time::Instant;
     use torro_inbox::{SourceInfo, SourceRef};
     use torro_ipc::api::{Area, Confirm, Level, Rights, RightsTemplate};
@@ -1095,15 +1095,24 @@ pub(super) mod tests {
         assert_eq!(outcome("pending").0, Status::Attention);
         assert_eq!(outcome("denied").0, Status::Inactive);
         assert_eq!(outcome("conflict"), (Status::Error, trf("Failed: {code}", &[("code", &"conflict")])));
-        let now = Utc::now();
+        // Noon of today, so a day back is yesterday also on the day the clocks go back (24 hours before
+        // 23:40 is then 00:40 of the same day).
+        let noon = Local::now().date_naive().and_hms_opt(12, 0, 0).expect("noon");
+        let now = noon.and_local_timezone(Local).earliest().expect("noon exists").with_timezone(&Utc);
         assert_eq!(when(now, now), now.with_timezone(&Local).format("%H:%M").to_string());
         let old = now - Age::days(9);
         assert_eq!(when(old, now), old.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
-        // Noon of the day before, not 24 hours ago: on the day summer time ends that is still today after 23:00.
-        let day_before = now.with_timezone(&Local).date_naive() - chrono::Days::new(1);
-        let noon = day_before.and_hms_opt(12, 0, 0).expect("noon");
-        let yesterday = Local.from_local_datetime(&noon).single().expect("one noon").with_timezone(&Utc);
-        assert_eq!(when(yesterday, now), trf("yesterday {time}", &[("time", &"12:00")]));
+        // Noon of the day before, not 24 hours back: on the day summer time ends that is still today.
+        let yesterday = now
+            .with_timezone(&Local)
+            .date_naive()
+            .pred_opt()
+            .and_then(|day| day.and_hms_opt(12, 0, 0))
+            .and_then(|noon| noon.and_local_timezone(Local).single())
+            .expect("yesterday noon exists")
+            .with_timezone(&Utc);
+        let clock = yesterday.with_timezone(&Local).format("%H:%M").to_string();
+        assert_eq!(when(yesterday, now), trf("yesterday {time}", &[("time", &clock)]));
     }
 
     #[test]

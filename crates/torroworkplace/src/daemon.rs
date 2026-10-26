@@ -956,6 +956,11 @@ fn describe(request: &Request) -> String {
         Request::SetExtensionSecret { id, .. } => format!("secret of mcp server {id}"),
         Request::ReadExtensionLogs { id } => format!("output of mcp server {id}"),
         Request::RemoveExtension { id } => format!("remove mcp server {id}"),
+        // Never the search words or the address (issue #305), never a key.
+        Request::WebSearch { .. } => "search the web".into(),
+        Request::FetchPage { .. } => "read a web page".into(),
+        Request::ListSearchProviders => "search providers".into(),
+        Request::SetSearchKey { provider, .. } => format!("set the key of {}", provider.name()),
         Request::GetMailCachePolicy { account } => format!("cache policy of {account}"),
         Request::SetMailCachePolicy { policy } => format!("set cache policy of {}", policy.account),
         Request::PreviewMailCache { account, .. } => format!("cache estimate of {account}"),

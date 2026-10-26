@@ -4,7 +4,9 @@
 //!
 //! ```text
 //! Built-in tools     Make PDFs (switch) · whether the assistant may use it · Folder · Templates ›
+//!                    Search the web (switch) · whether the assistant may use it · Search providers ›
 //!   › PDF templates  Letter · Report · Note: paper, margins, font size, header, footer, page numbers, logo
+//!   › Search providers  a group per provider of the tool `web` (`torro_settings_ui::assistant::web`)
 //! Catalog            a row per entry of the core's catalog, with the status of an installed one
 //! Your own servers   a row per server a person added, with its status
 //! ```
@@ -21,6 +23,13 @@
 //! pdf_template` with the **whole** template as loaded, the one field changed ([`template_request`]):
 //! the key replaces a template whole. Header and footer go out with Enter or "Save", when another
 //! line is started, or when the templates' page is left – never on every key.
+//!
+//! **Search providers** (issue #305, task WEB.6, here since #302): the view the setup's step "Web search"
+//! shows too ([`web`]), on a page below the tool `web`: a provider's switch, its key
+//! (`accounts.set_search_key`, only from this window, typed as a [`Secret`] and dropped when sent or when the
+//! page is left) and SearXNG's address, whose check (`settings.set_setting searxng_address`) goes out as
+//! [`Action::CheckAddress`] and comes back here ([`checked`]). The shell lists the providers
+//! (`tools.list_search_providers`) only while this section or the setup is open: listing asks the keychain.
 //!
 //! **Catalog** and **Your own servers** list what `extensions.list_catalog` and
 //! `extensions.list_extensions` answered ([`Data::catalog`], [`Data::extensions`], each a
@@ -86,13 +95,14 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status as Dot};
 use torro_gui::{style, typo};
-use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area};
 use torro_ipc::extensions::{
     CatalogEntry, CrashReason, ExtensionInfo, ExtensionTool, InstallFrom, MAX_ID_CHARS, ParseError, ServerSpec, Source,
     Status, ToolState, Value, blocked_env, parse_mcp_servers, valid_env_name, valid_header_name, valid_id,
 };
-use torro_ipc::tools::ToolInfo;
+use torro_ipc::tools::{ToolAccess, ToolInfo};
 use torro_ipc::{Request, Response, Secret, SettingKey};
+use torro_settings_ui::assistant::web;
 use torro_settings_ui::rights::{first_sentence, plain, tool_level};
 
 use super::{
@@ -181,6 +191,8 @@ pub enum Page {
     List,
     /// "PDF templates", below the PDF tool's row "Templates": Letter, Report and Note.
     PdfTemplates,
+    /// "Search providers", below the row of that name of the tool `web`: a group per provider (task WEB.6).
+    SearchProviders,
     /// The page of the installed server with this id (task MA.8), below its row in the list.
     Server(String),
 }
@@ -202,6 +214,9 @@ pub struct State {
     custom: Option<Box<Custom>>,
     /// What the page of a server shows besides its data; new with every page opened.
     server: ServerState,
+    /// What is typed into a search provider's key or SearXNG's address, and whether its check waits; new when the
+    /// page of the search providers is left.
+    web: web::State,
 }
 
 /// The install dialog (task MA.8): first the form, then the tools the server reported.
@@ -671,6 +686,10 @@ pub enum Message {
     UseDesktop,
     /// The row "Templates": the page "PDF templates".
     Templates,
+    /// The row "Search providers": their page.
+    SearchProviders,
+    /// A control of the search providers' page ([`web`]).
+    Web(web::Message),
     /// The back button of a page below the list, or Escape there.
     Back,
     /// A paper of the template's picker.
@@ -804,10 +823,26 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.page = Page::PdfTemplates;
             Action::None
         }
-        // Leaving the templates saves a line being typed, so nothing typed is dropped silently.
+        Message::SearchProviders => {
+            state.page = Page::SearchProviders;
+            Action::None
+        }
+        // The check's answer comes back here alone ([`checked`]).
+        Message::Web(web::Message::CheckAddress) => {
+            match web::update(&mut state.web, web::Message::CheckAddress, &data.search_providers) {
+                torro_settings_ui::Action::Send(mut requests) if requests.len() == 1 => {
+                    requests.pop().map_or(Action::None, Action::CheckAddress)
+                }
+                other => from_view(other),
+            }
+        }
+        Message::Web(message) => from_view(web::update(&mut state.web, message, &data.search_providers)),
+        // Leaving the templates saves a line being typed, so nothing typed is dropped silently; a key typed for a
+        // search provider is dropped.
         Message::Back => {
             state.page = Page::List;
             state.server = ServerState::default();
+            state.web = web::State::default();
             saved_draft(state, data)
         }
         Message::Paper(id, paper) => changed(data, id, |template| template.paper = paper),
@@ -1324,9 +1359,12 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.server.removing {
         return Some(Message::CancelRemove);
     }
+    if let Some(typed) = web::escape(&state.web).filter(|_| state.page == Page::SearchProviders) {
+        return Some(Message::Web(typed));
+    }
     match (&state.draft, &state.page) {
         (Some(_), _) => Some(Message::DiscardLine),
-        (None, Page::PdfTemplates | Page::Server(_)) => Some(Message::Back),
+        (None, Page::PdfTemplates | Page::SearchProviders | Page::Server(_)) => Some(Message::Back),
         (None, Page::List) => None,
     }
 }
@@ -1337,6 +1375,9 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
     match &state.page {
         Page::PdfTemplates => {
             Header { sub_page: Some((tr("PDF templates").to_string(), Message::Back)), actions: vec![] }
+        }
+        Page::SearchProviders => {
+            Header { sub_page: Some((tr("Search providers").to_string(), Message::Back)), actions: vec![] }
         }
         Page::Server(id) => {
             let name = server_of(data, id).map_or_else(|| id.clone(), |server| server.name.clone());
@@ -1473,13 +1514,15 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
             .spacing(layout::section_gap())
             .into(),
         Page::PdfTemplates => templates_page(state, data, words),
+        Page::SearchProviders => providers_page(state, data, class),
         Page::Server(id) => server_page(state, data, id, words),
     };
     column![].push(state.problem.clone().map(notice)).push(body).spacing(layout::section_gap()).into()
 }
 
 /// "Built-in tools": per tool its switch with what it does and whether the assistant may use it, for
-/// the PDF tool the folder its files go to and the row to its templates.
+/// the PDF tool the folder its files go to and the row to its templates, for the tool `web` the row to
+/// its search providers.
 fn tools_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     let mut rows = Vec::new();
     for info in &data.tools {
@@ -1488,6 +1531,9 @@ fn tools_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
         if info.id == ToolId::Pdf {
             rows.push(folder_row(data, words));
             rows.push(templates_row());
+        }
+        if info.id == ToolId::Web {
+            rows.push(providers_row(data));
         }
     }
     if rows.is_empty() {
@@ -1538,6 +1584,7 @@ fn tall_strut() -> Space {
 fn switch_label(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Make PDFs"),
+        ToolId::Web => tr("Search the web"),
     }
 }
 
@@ -1578,6 +1625,58 @@ fn templates_row<'a>() -> Element<'a, Message> {
     let names: Vec<&str> = PdfTemplateId::ALL.into_iter().map(template_name).collect();
     let row = setting_row(None, tr("Templates"), Some(names.join(", ")), chevron());
     pressable(row, Some(Message::Templates))
+}
+
+/// "Search providers": the providers switched on, in the order they are asked, and the page they are set on.
+fn providers_row(data: &Data) -> Element<'_, Message> {
+    let on: Vec<&str> =
+        data.search_providers.iter().filter(|info| info.enabled).map(|info| info.name.as_str()).collect();
+    let detail = match on.is_empty() {
+        true => tr("No provider is on, so the web search is off.").to_string(),
+        false => on.join(", "),
+    };
+    let row = setting_row(None, tr("Search providers"), Some(detail), chevron());
+    pressable(row, Some(Message::SearchProviders))
+}
+
+/// "Search providers": the order they are asked in and that the assistant asks first ([`web::summary`]), then a
+/// group per provider ([`web::view`]).
+fn providers_page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
+    let summary = typo::text(typo::meta(), web::summary(&data.search_providers))
+        .style(theme::text_2)
+        .wrapping(Wrapping::WordOrGlyph);
+    let groups = web::view(&state.web, &data.search_providers, class).map(Message::Web);
+    column![summary, groups].spacing(layout::section_gap()).into()
+}
+
+/// A reload of `data`: SearXNG's check ends once its address is stored ([`web::sent`]).
+pub fn loaded(state: &mut State, data: &Data) {
+    web::sent(&mut state.web, Ok(web::stored_address(&data.search_providers)));
+}
+
+/// The answer to the check of a SearXNG address ([`Action::CheckAddress`]) while it waits here: a refusal shows its
+/// reason under the field; a success ends the check with the next reload, once the address is stored. `true` when
+/// this page shows it (the shell then shows no notice).
+pub fn checked(state: &mut State, result: &Result<Response, String>) -> bool {
+    if !web::checking(&state.web) {
+        return false;
+    }
+    if let Err(problem) = result {
+        web::sent(&mut state.web, Err(problem));
+    }
+    true
+}
+
+/// What the search providers' view asks for, as the shell's [`Action`]: one request, several, or the terms to open.
+fn from_view(action: torro_settings_ui::Action<()>) -> Action {
+    match action {
+        torro_settings_ui::Action::Send(mut requests) if requests.len() == 1 => {
+            requests.pop().map_or(Action::None, Action::Send)
+        }
+        torro_settings_ui::Action::Send(requests) if !requests.is_empty() => Action::SendAll(requests),
+        torro_settings_ui::Action::OpenUrl(url) => Action::OpenUrl(url),
+        _ => Action::None,
+    }
 }
 
 /// "PDF templates": a group per template; the last one says below it what header and footer fill in.
@@ -2836,13 +2935,14 @@ pub fn address(spec: &ServerSpec) -> String {
 }
 
 /// Whether the assistant may use `tool`, after its client's rights as `clients.list_clients` lists
-/// them: write access to `tools` and the tool in its selection. The switch is the other half.
-/// `false` while the assistant is off (it has no client).
+/// them: the level the tool needs in `tools` (`ToolAccess::access`: writing for `pdf`, reading for `web`) and the
+/// tool in its selection – `web` only when it is ticked by name, never through "All" (`Rights::reaches_tool`).
+/// The switch is the other half. `false` while the assistant is off (it has no client).
 pub fn assistant_may_use(data: &Data, tool: ToolId) -> bool {
     data.clients
         .iter()
         .find(|client| client.kind == ASSISTANT_CLIENT)
-        .is_some_and(|client| client.rights.area(Area::Tools).allows(Access::Write) && client.rights.reaches_tool(tool))
+        .is_some_and(|client| client.rights.area(Area::Tools).allows(tool.access()) && client.rights.reaches_tool(tool))
 }
 
 /// "Letter", "Report", "Note": the template's name, told apart from the paper "US Letter" and a
@@ -2919,6 +3019,7 @@ mod tests {
     use torro_core::settings::ToolSwitch;
     use torro_ipc::api::{Level, Selection};
     use torro_ipc::extensions::{CatalogEntry, CrashReason, Prerequisite};
+    use torro_ipc::web::SearchProviderId;
 
     use super::super::launch;
     use super::*;
@@ -3101,6 +3202,17 @@ mod tests {
             Message::Choose(Chooser::Logo(PdfTemplateId::Letter)),
             Message::RemoveLogo(PdfTemplateId::Letter),
             Message::Back,
+            Message::Switch(ToolId::Web, true),
+            Message::SearchProviders,
+            Message::Web(web::Message::Switch(SearchProviderId::Brave, true)),
+            Message::Web(web::Message::TypeKey(SearchProviderId::Brave, Secret::new("key"))),
+            Message::Web(web::Message::SaveKey),
+            Message::Web(web::Message::RemoveKey(SearchProviderId::Brave)),
+            Message::Web(web::Message::TypeAddress("https://search.example.org".into())),
+            Message::Web(web::Message::CheckAddress),
+            Message::Web(web::Message::RemoveAddress),
+            Message::Web(web::Message::Terms(SearchProviderId::Duckduckgo)),
+            Message::Back,
             Message::Retry,
         ];
         for message in messages {
@@ -3108,11 +3220,71 @@ mod tests {
                 Action::Send(Request::OpenApp { app, target: None }) => {
                     assert_eq!(app, torro_core::AppId::ASSISTANT.binary, "{message:?}");
                 }
-                Action::Send(request) => assert_eq!(request.operation().area(), Area::Settings, "{message:?}"),
+                // A search provider's key goes to the keychain (`accounts`), never into the settings.
+                Action::Send(request @ Request::SetSearchKey { .. }) => {
+                    assert_eq!(request.operation().area(), Area::Accounts, "{message:?}");
+                }
+                Action::Send(request) | Action::CheckAddress(request) => {
+                    assert_eq!(request.operation().area(), Area::Settings, "{message:?}");
+                }
+                Action::OpenUrl(url) => assert!(url.starts_with("https://"), "{message:?}"),
                 Action::Pick(_) | Action::Reload | Action::None => {}
                 other => panic!("{message:?} did {other:?}"),
             }
         }
+    }
+
+    /// Issue #305 here since #302: the tool `web` has its switch, whether the assistant may use it and the row to
+    /// its search providers; their page shows the core's providers, Escape drops a key typed there first, leaving
+    /// the page drops it too, and SearXNG's check comes back here, a refusal at its field.
+    #[test]
+    fn the_web_has_its_providers_on_a_page_of_their_own() {
+        let mut data = data();
+        launch::demo_connections(&mut data);
+        assert!(data.tools.iter().any(|tool| tool.id == ToolId::Web && tool.enabled));
+        let mut state = State::default();
+        for class in [SizeClass::Wide, SizeClass::Narrow] {
+            let _ = view(&state, &data, class);
+        }
+        let _ = update(&mut state, Message::SearchProviders, &data);
+        assert_eq!(state.page, Page::SearchProviders);
+        assert_eq!(
+            header(&state, &data, SizeClass::Wide).sub_page.map(|(name, _)| name),
+            Some(tr("Search providers").into())
+        );
+        for class in [SizeClass::Wide, SizeClass::Narrow] {
+            let _ = view(&state, &data, class);
+        }
+        let typed = Message::Web(web::Message::TypeKey(SearchProviderId::Exa, Secret::new("key")));
+        let _ = update(&mut state, typed.clone(), &data);
+        assert_eq!(escape(&state), Some(Message::Web(web::Message::Discard)));
+        let _ = update(&mut state, Message::Back, &data);
+        assert_eq!((state.page.clone(), escape(&state)), (Page::List, None), "the key went with the page");
+
+        let _ = update(&mut state, Message::SearchProviders, &data);
+        let _ = update(&mut state, Message::Web(web::Message::TypeAddress("https://s.example.org".into())), &data);
+        let check = update(&mut state, Message::Web(web::Message::CheckAddress), &data);
+        let Action::CheckAddress(request) = check else { panic!("the check apart, got {check:?}") };
+        assert_eq!(request, web::address_request(Some("https://s.example.org")));
+        assert!(checked(&mut state, &Err("This SearXNG instance does not answer in JSON.".into())), "shown here");
+        assert!(!checked(&mut state, &Ok(Response::Ok)), "no check waits any more");
+    }
+
+    /// Task WEB.6: the tool `web` needs reading in `tools` and `web` ticked by name; "All" tools is not enough, as
+    /// it is for the PDF tool.
+    #[test]
+    fn the_assistant_may_use_the_web_only_when_it_is_ticked() {
+        let mut data = data();
+        let rights =
+            &mut data.clients.iter_mut().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant").rights;
+        rights.set_level(Area::Tools, Level::Read, Vec::new);
+        rights.tools = Selection::All;
+        assert!(!assistant_may_use(&data, ToolId::Web), "All tools does not include web");
+        let rights =
+            &mut data.clients.iter_mut().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant").rights;
+        rights.tools = Selection::Only(vec!["web".into()]);
+        assert!(assistant_may_use(&data, ToolId::Web), "reading is enough for web");
+        assert!(!assistant_may_use(&data, ToolId::Pdf), "PDF needs writing and its own tick");
     }
 
     /// The assistant may use a tool with write access to `tools` and the tool chosen; reading or a

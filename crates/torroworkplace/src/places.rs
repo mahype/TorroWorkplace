@@ -40,8 +40,9 @@ use torro_pim::model::Geo;
 use torro_pim::{Event, EventTime};
 
 /// The user agent both services see, as the OpenStreetMap Foundation's rules ask: who we are and
-/// where to find us.
-const USER_AGENT: &str =
+/// where to find us. The tool web sends the same (`tools::web`, Wikimedia asks for a contact too),
+/// never a browser's.
+pub(crate) const USER_AGENT: &str =
     concat!("TorroWorkplace/", env!("CARGO_PKG_VERSION"), " (+https://github.com/mahype/TorroWorkplace)");
 
 /// Least time between two searches of the whole suite (Nominatim's rule; Photon asks for

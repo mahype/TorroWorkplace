@@ -156,7 +156,7 @@ async fn ask(setup: &Setup, conversation: Option<&str>, text: &str, without: Vec
         mode: torro_ipc::assistant::Mode::Default,
         bot: None,
         on_behalf: None,
-        person: false,
+        from: Some(crate::assistant::TEST_CLIENT.into()),
     };
     match setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await {
         Response::Conversation { conversation, .. } => conversation.id,
@@ -470,6 +470,36 @@ async fn an_agent_gets_the_pdf_tool_only_with_write_access() {
     }
 }
 
+/// Issue #305 ("Werkzeug Web"): a lent key never gets the web. Switched on, selected and readable,
+/// engine B still denies the agent its tools and the prompt does not name it; the PDF tool next to it
+/// stays.
+#[tokio::test]
+async fn an_agent_never_gets_the_web() {
+    use torro_core::settings::ToolId;
+    use torro_ipc::api::{AreaRights, Level, Selection};
+    let setup = set_up(&[init(), says("Done."), done("Done.")], "", Duration::from_secs(10), true).await;
+    setup.host.tools_on.lock().expect("lock").extend([ToolId::Pdf, ToolId::Web]);
+    let client = setup.host.client().expect("the assistant's client");
+    let mut rights = client.rights.clone();
+    rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+    rights.tools = Selection::Only(vec!["pdf".into(), "web".into()]);
+    setup.host.clients.update(&client.id, rights).await.expect("rights");
+    let id = ask(&setup, None, "Search the web", Vec::new()).await;
+    finished(&setup.assistant, &id).await;
+    let arguments = setup.arguments();
+    let at = arguments.iter().position(|argument| argument == "--disallowedTools").expect("the flag");
+    let denied: Vec<&str> = arguments[at + 1].split(',').collect();
+    for tool in ["tools_web_search", "tools_fetch_page"] {
+        assert!(denied.iter().any(|denied| denied.ends_with(tool)), "{tool}: {denied:?}");
+    }
+    assert!(!denied.iter().any(|denied| denied.ends_with("tools_create_pdf")), "{denied:?}");
+    let all = setup.read("args");
+    let prompt = all.split_once("--append-system-prompt=").map(|(_, rest)| rest).expect("the prompt");
+    // The line of the tools it may use now; the skill's general text above it stays the same.
+    let own = prompt.lines().find(|line| line.starts_with("- Your own tools")).expect("the tools' line");
+    assert!(own.contains("tools_create_pdf") && !own.contains("tools_web_search"), "{own}");
+}
+
 /// Task C.17: once the person lets mail go to cloud models, the run's key is lent
 /// with mail, the agent's tools include it, and the prompt no longer says it is kept from it.
 #[tokio::test]
@@ -672,7 +702,7 @@ async fn the_model_and_the_effort_go_to_claude_code() {
         mode: torro_ipc::assistant::Mode::Default,
         bot: None,
         on_behalf: None,
-        person: false,
+        from: Some(crate::assistant::TEST_CLIENT.into()),
     };
     let Response::Conversation { conversation, .. } =
         setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await

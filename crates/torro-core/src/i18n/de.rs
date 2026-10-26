@@ -5261,8 +5261,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
     // The rights editor › the selection of tools (WZ.7, #225)
     (
-        "Includes tools added later. Each works only while it is on in the control centre under MCP servers.",
-        "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Server eingeschaltet ist.",
+        "Includes tools added later, but not web search: tick it by name. Each works only while it is on in the control centre under MCP servers.",
+        "Enthält später hinzugefügte Werkzeuge, aber nicht die Websuche: Sie wird einzeln angehakt. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Server eingeschaltet ist.",
     ),
     (
         "This agent can't use tools left off. Each works only while it is on in the control centre under MCP servers.",
@@ -5280,6 +5280,141 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Copy saved", "Kopie gespeichert"),
     ("Couldn't open a new mail with the file.", "Es konnte keine neue Mail mit der Datei geöffnet werden."),
     ("Save a copy of the PDF", "Kopie der PDF speichern"),
+    // The tool web (WEB.1, #305)
+    (
+        "Searches the web and reads web pages for the assistant, with the providers you switch on.",
+        "Sucht im Web und liest Webseiten für den Assistenten, mit den Anbietern, die du einschaltest.",
+    ),
+    ("Search the web", "Im Web suchen"),
+    ("Searched the web", "Im Web gesucht"),
+    ("Read web page", "Webseite gelesen"),
+    ("Listed search providers", "Suchanbieter aufgelistet"),
+    // Search providers of the tool web (WEB.2, #305)
+    (
+        "Asked in addition to the others. Its text is under CC BY-SA 4.0, named at every result.",
+        "Wird zusätzlich zu den anderen gefragt. Der Text steht unter CC BY-SA 4.0, genannt an jedem Treffer.",
+    ),
+    (
+        "Brave allows its results to be used for the answer only, not stored. Torro does not keep them.",
+        "Brave erlaubt, die Ergebnisse nur für die Antwort zu nutzen, nicht zu speichern. Torro behält sie nicht.",
+    ),
+    (
+        "DuckDuckGo offers no official interface for this. Torro reads the results page like a browser. \
+         DuckDuckGo may block this at any time.",
+        "DuckDuckGo bietet dafür keine offizielle Schnittstelle. Torro liest die Ergebnisseite wie ein Browser. \
+         DuckDuckGo kann das jederzeit sperren.",
+    ),
+    ("USA", "USA"),
+    ("United Kingdom", "Vereinigtes Königreich"),
+    (
+        "Your own SearXNG instance. Torro checks that it answers in JSON when you enter its address.",
+        "Deine eigene SearXNG-Instanz. Torro prüft beim Eintragen der Adresse, ob sie JSON liefert.",
+    ),
+    // Reading a web page, reasons of tools.fetch_page (WEB.3, #305)
+    ("The address is too long.", "Die Adresse ist zu lang."),
+    (
+        "Only web addresses starting with http or https can be read.",
+        "Gelesen werden nur Webadressen, die mit http oder https beginnen.",
+    ),
+    (
+        "Addresses with a user name or password are not read.",
+        "Adressen mit Benutzername oder Passwort werden nicht gelesen.",
+    ),
+    (
+        "Addresses with an IP address are not read, only those with a name.",
+        "Adressen mit IP-Adresse werden nicht gelesen, nur solche mit einem Namen.",
+    ),
+    ("The address names no host on the internet.", "Die Adresse nennt keinen Host im Internet."),
+    (
+        "Only addresses on the standard ports 80 and 443 are read.",
+        "Gelesen werden nur Adressen auf den Standard-Ports 80 und 443.",
+    ),
+    (
+        "The address leads into a local network, which is not read.",
+        "Die Adresse führt in ein lokales Netz, das wird nicht gelesen.",
+    ),
+    (
+        "The site's robots.txt does not allow Torro to read this page.",
+        "Die robots.txt der Website erlaubt Torro nicht, diese Seite zu lesen.",
+    ),
+    ("The page redirects more than five times.", "Die Seite leitet mehr als fünfmal weiter."),
+    ("The page is neither HTML nor text.", "Die Seite ist weder HTML noch Text."),
+    ("The page is larger than 2 MB.", "Die Seite ist größer als 2 MB."),
+    ("The site has no such page.", "Diese Seite gibt es auf der Website nicht."),
+    ("The site answered with an error.", "Die Website hat mit einem Fehler geantwortet."),
+    ("The site cannot be reached.", "Die Website ist nicht erreichbar."),
+    ("The page could not be read.", "Die Seite konnte nicht gelesen werden."),
+    // Commands of the tool web, search keys and the SearXNG check (WEB.4, #305)
+    ("Enter the search words.", "Gib die Suchwörter ein."),
+    (
+        "The search words are one line of at most 400 characters.",
+        "Die Suchwörter sind eine Zeile mit höchstens 400 Zeichen.",
+    ),
+    ("A web search gives at most 10 results.", "Eine Websuche liefert höchstens 10 Treffer."),
+    (
+        "The web cannot be searched: no connection to the internet could be set up.",
+        "Im Web kann nicht gesucht werden: Es ließ sich keine Verbindung ins Internet aufbauen.",
+    ),
+    (
+        "No web search provider is on. A person chooses one in Torro Workplace under MCP servers.",
+        "Kein Websuche-Anbieter ist eingeschaltet. Ein Mensch wählt einen in Torro Workplace unter MCP-Server.",
+    ),
+    (
+        "The web search providers that are on need a key, and none is stored. \
+         A person adds one in Torro Workplace under MCP servers.",
+        "Die eingeschalteten Websuche-Anbieter brauchen einen Schlüssel, und keiner ist gespeichert. \
+         Ein Mensch trägt ihn in Torro Workplace unter MCP-Server ein.",
+    ),
+    ("The search provider cannot be reached.", "Der Suchanbieter ist nicht erreichbar."),
+    ("The search provider gave no usable answer.", "Der Suchanbieter hat keine brauchbare Antwort gegeben."),
+    (
+        "The web search providers are busy. Try again in a few seconds.",
+        "Die Websuche-Anbieter sind ausgelastet. Versuch es in ein paar Sekunden noch einmal.",
+    ),
+    (
+        "The web search providers that are on rest after a block or a limit: {providers}. Try again after {time}.",
+        "Die eingeschalteten Websuche-Anbieter pausieren nach einer Sperre oder einem Limit: {providers}. \
+         Versuch es nach {time} Uhr noch einmal.",
+    ),
+    ("{provider} needs no key.", "{provider} braucht keinen Schlüssel."),
+    ("Paste the whole key.", "Füge den ganzen Schlüssel ein."),
+    (
+        "The system keychain did not take the key. Try again.",
+        "Der Schlüsselbund des Systems hat den Schlüssel nicht angenommen. Versuch es noch einmal.",
+    ),
+    (
+        "The SearXNG address cannot be checked: no connection could be set up.",
+        "Die SearXNG-Adresse kann nicht geprüft werden: Es ließ sich keine Verbindung aufbauen.",
+    ),
+    (
+        "This SearXNG instance cannot be reached. Check the address.",
+        "Diese SearXNG-Instanz ist nicht erreichbar. Prüf die Adresse.",
+    ),
+    (
+        "This SearXNG instance asks to wait. Try again later.",
+        "Diese SearXNG-Instanz bittet zu warten. Versuch es später noch einmal.",
+    ),
+    (
+        "This SearXNG instance does not answer in JSON. Turn on the json format in its settings.",
+        "Diese SearXNG-Instanz antwortet nicht in JSON. Schalte in ihren Einstellungen das Format json ein.",
+    ),
+    // The web's yes per conversation (WEB.5)
+    (
+        "Search the web and read web pages in \"{title}\"? Search words go to {providers}.",
+        "In „{title}“ im Web suchen und Webseiten lesen? Die Suchwörter gehen an {providers}.",
+    ),
+    (
+        "This conversation has read mail or other outside data. Search the web and read web pages in \"{title}\" anyway?",
+        "Diese Unterhaltung hat Mail oder andere Daten von außen gelesen. Trotzdem in „{title}“ im Web suchen und Webseiten lesen?",
+    ),
+    (
+        "Search the web and read web pages in \"{title}\"? No web search provider is on.",
+        "In „{title}“ im Web suchen und Webseiten lesen? Kein Anbieter für die Websuche ist an.",
+    ),
+    ("First: search for \"{query}\"", "Zuerst: nach „{query}“ suchen"),
+    ("First: read a page on {host}", "Zuerst: eine Seite auf {host} lesen"),
+    ("Search words go to {providers}.", "Die Suchwörter gehen an {providers}."),
+    ("{names} and {last}", "{names} und {last}"),
     ("Moved, changed, deleted or out of reach.", "Verschoben, geändert, gelöscht oder nicht mehr erreichbar."),
     ("Put them in a PDF for the team.", "Mach daraus eine PDF fürs Team."),
     (
@@ -5290,6 +5425,48 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "The new one with the due dates is on your desktop: Release checklist-2.pdf.",
         "Die neue mit den Fälligkeiten liegt auf deinem Schreibtisch: Release checklist-2.pdf.",
+    ),
+    // Assistant › Settings › Tools › Web and the rights editor (WEB.6, #305)
+    ("Asked in this order: {providers}.", "Gefragt in dieser Reihenfolge: {providers}."),
+    ("{provider} is asked.", "Gefragt wird {provider}."),
+    ("Wikipedia is asked as well.", "Wikipedia wird zusätzlich gefragt."),
+    ("Check and save", "Prüfen und speichern"),
+    ("For example {address}", "Zum Beispiel {address}"),
+    ("Key saved", "Schlüssel gespeichert"),
+    ("No provider is on, so the web search is off.", "Kein Anbieter ist eingeschaltet, die Websuche ist also aus."),
+    ("Only Wikipedia is asked.", "Nur Wikipedia wird gefragt."),
+    ("Paste the key", "Schlüssel einfügen"),
+    ("Paused until {time} after a block or a limit", "Pausiert bis {time} Uhr nach einer Sperre oder einem Limit"),
+    ("Remove key", "Schlüssel entfernen"),
+    ("Save key", "Schlüssel speichern"),
+    ("Search providers", "Suchanbieter"),
+    ("Search words go to your own server", "Die Suchwörter gehen an deinen eigenen Server"),
+    ("Search words go to {host}", "Die Suchwörter gehen an {host}"),
+    ("Search words go to {host} · {seat}", "Die Suchwörter gehen an {host} · {seat}"),
+    ("Skipped until a key is saved", "Übersprungen, bis ein Schlüssel gespeichert ist"),
+    ("Skipped until an address is saved", "Übersprungen, bis eine Adresse gespeichert ist"),
+    ("Terms", "Bedingungen"),
+    (
+        "The assistant asks once in each conversation before it searches.",
+        "Der Assistent fragt in jeder Unterhaltung einmal, bevor er sucht.",
+    ),
+    (
+        "This agent can then put text it read into search words and web addresses. Only the assistant asks first, once in each conversation.",
+        "Dieser Agent kann dann Gelesenes in Suchwörter und Webadressen schreiben. Nur der Assistent fragt vorher, einmal je Unterhaltung.",
+    ),
+    ("api key|No key", "Kein Schlüssel"),
+    // Setup › Web search (WEB.7, #305)
+    ("Web search", "Websuche"),
+    ("Web search is off", "Websuche ist aus"),
+    ("Web search off", "Websuche aus"),
+    ("Web search · {providers}", "Websuche · {providers}"),
+    ("1 provider on", "1 Anbieter an"),
+    ("{n} providers on", "{n} Anbieter an"),
+    ("Let the assistant use it", "Der Assistent darf sie nutzen"),
+    ("Read access to web search, given when you continue", "Leserecht für die Websuche, erteilt mit „Weiter“"),
+    (
+        "The assistant can search the web and read pages. Choose where your search words go; nothing is on until you switch it on.",
+        "Der Assistent kann im Web suchen und Seiten lesen. Wähle, wohin deine Suchwörter gehen; nichts ist an, bis du es einschaltest.",
     ),
     // Design review #231
     ("Command", "Befehl"),

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The trams of Lisbon | City News</title>
+  <meta property="og:title" content="The trams of Lisbon">
+  <link rel="stylesheet" href="/static/site.css">
+  <style>body { font-family: sans-serif; } .menu { display: flex; }</style>
+  <script>window.tracker = { id: "TRACKER-SECRET-123" }; console.log("analytics loaded");</script>
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="logo">City News</a>
+    <nav class="menu" id="main-navigation">
+      <ul>
+        <li><a href="/politics">Politics menu entry</a></li>
+        <li><a href="/sports">Sports menu entry</a></li>
+        <li><a href="/weather">Weather menu entry</a></li>
+        <li><a href="/login">Sign in to City News</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <div class="cookie-banner" id="cookie-consent">We use cookies. Accept all cookies or manage your cookie choices.</div>
+
+  <main>
+    <article class="post">
+      <h1>The trams of Lisbon</h1>
+      <p class="byline">By Ana Ferreira</p>
+      <p>Lisbon's yellow trams have climbed the steep streets of the old town for more than a century. The famous
+        line 28 winds from Martim Moniz through Graça and Alfama to Estrela, passing the cathedral and some of the
+        narrowest curves of any city tram network in Europe.</p>
+      <p>The first electric trams ran in 1901, replacing horse-drawn cars that had served the city since 1873. Today
+        the remodelled cars from the 1930s still run on the hilly lines, because modern vehicles are too long for
+        the tight bends. Read more in our <a href="/trams/history">history of the network</a>.</p>
+      <h2>Riding line 28</h2>
+      <p>Visitors are advised to board early in the morning, when the cars are less crowded. A single ticket bought
+        on board costs more than a day pass, which is also valid on buses, the funiculars and the Santa Justa lift.
+        Pickpockets are common on the busiest stretches, so keep your belongings close.</p>
+      <p>The city plans to renew part of the fleet in the coming years while keeping the historic cars on the
+        steepest lines, a balance between the needs of residents and the visitors who come for the ride itself.</p>
+      <p><img src="images/tram28.jpg" alt="Tram 28 in Alfama"></p>
+    </article>
+    <aside class="related sidebar">
+      <h3>Related stories</h3>
+      <ul>
+        <li><a href="/ferries">Ferries across the Tagus</a></li>
+        <li><a href="/metro">The new metro line</a></li>
+      </ul>
+    </aside>
+  </main>
+
+  <footer class="site-footer">
+    <p>Copyright City News. Imprint, privacy policy and terms of use.</p>
+  </footer>
+  <script src="/static/app.js"></script>
+  <script>document.querySelectorAll(".menu").forEach(function (m) { m.dataset.ready = "PAGE-SCRIPT-TEXT"; });</script>
+</body>
+</html>

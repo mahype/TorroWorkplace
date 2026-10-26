@@ -1,6 +1,8 @@
 //! The assistant's own tools on the wire (issue #225, `docs/assistent.md` "Eigene Werkzeuge"):
 //! what the `tools.*` requests and answers carry – a tool as `tools.list_tools` lists it
-//! ([`ToolInfo`]) and a file a tool made ([`FileInfo`]) – and the limits of `tools.create_pdf`.
+//! ([`ToolInfo`]) and a file a tool made ([`FileInfo`]) – the limits of `tools.create_pdf`, and the
+//! level each tool needs in the area `tools` ([`ToolAccess`]). The tool `web` has its types in
+//! [`crate::web`].
 //!
 //! A tool is a skill of the suite's own, made first for the assistant and its bots and granted like
 //! any area (the templates of the rights include it). Each has a switch, the setting `tool_enabled` (`torro_core::settings::Tools`), which only a person
@@ -21,6 +23,27 @@ use serde::{Deserialize, Serialize};
 /// the API's types.
 pub use torro_core::settings::{PdfTemplateId, ToolId};
 
+use crate::api::Access;
+
+/// The level a tool needs in the area `tools` before a client may use it (issue #305), as a method of
+/// [`ToolId`]: the tools live in `torro_core`, which does not know the access levels of the API.
+/// `use torro_ipc::tools::ToolAccess` and call `tool.access()`.
+pub trait ToolAccess {
+    /// The access a client needs in `tools` for this tool: [`Access::Write`] for `pdf` (its commands
+    /// make and open files), [`Access::Read`] for `web` (its commands only read). What
+    /// `tools.list_tools` (`ToolInfo::allowed`) and the tools offered to the assistant's model go by.
+    fn access(self) -> Access;
+}
+
+impl ToolAccess for ToolId {
+    fn access(self) -> Access {
+        match self {
+            ToolId::Pdf => Access::Write,
+            ToolId::Web => Access::Read,
+        }
+    }
+}
+
 /// At most this many characters in the title of a PDF (`tools.create_pdf`); it names the file too.
 pub const MAX_TITLE_CHARS: usize = 200;
 
@@ -30,17 +53,18 @@ pub const MAX_MARKDOWN_BYTES: usize = 200_000;
 /// One tool as `tools.list_tools` lists it for the key that asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolInfo {
-    /// The tool: `pdf`.
+    /// The tool: `pdf` or `web`.
     pub id: ToolId,
     /// What people call it ("PDF").
     pub name: String,
     /// What it does, one sentence in the suite's language, for people.
     pub description: String,
-    /// A person switched it on in the assistant's settings (`tool_enabled`).
+    /// A person switched it on in Torro Workplace under MCP servers (`tool_enabled`).
     pub enabled: bool,
-    /// The key that asked may use it: write access to `tools` (its commands make and open files) and
-    /// the tool in its selection. Always `true` for the app key. The tool works for the key only when
-    /// this and `enabled` are true.
+    /// The key that asked may use it: the tool's level in `tools` ([`ToolAccess::access`]: write for
+    /// `pdf`, whose commands make and open files; read for `web`) and the tool in its selection (`web`
+    /// only when named, `crate::api::Rights::reaches_tool`). Always `true` for the app key. The tool
+    /// works for the key only when this and `enabled` are true.
     pub allowed: bool,
 }
 
@@ -70,18 +94,32 @@ mod tests {
     use super::*;
     use crate::api::{Area, CATALOGUE};
 
-    /// Every command of the area `tools` but listing belongs to a tool, and no command of another
-    /// area does: the core checks switch and selection of exactly that tool.
+    /// Every command of the area `tools` but the two lists belongs to a tool, and no command of
+    /// another area does: the core checks switch and selection of exactly that tool. The web's
+    /// commands are the web tool's, the file commands the PDF tool's, and each needs no more access
+    /// than its tool's level.
     #[test]
     fn every_command_of_a_tool_is_in_the_area_tools() {
+        let mut seen = std::collections::BTreeSet::new();
         for command in CATALOGUE {
             let tool = ToolId::of_command(command.name);
             match command.area {
-                Area::Tools if command.name == "tools.list_tools" => assert_eq!(tool, None),
+                Area::Tools if matches!(command.name, "tools.list_tools" | "tools.list_search_providers") => {
+                    assert_eq!(tool, None, "{}", command.name)
+                }
+                Area::Tools if matches!(command.name, "tools.web_search" | "tools.fetch_page") => {
+                    assert_eq!(tool, Some(ToolId::Web), "{}", command.name)
+                }
                 Area::Tools => assert_eq!(tool, Some(ToolId::Pdf), "{}", command.name),
                 _ => assert_eq!(tool, None, "{}", command.name),
             }
+            if let Some(tool) = tool {
+                assert!(tool.access().covers(command.access), "{} needs more than its tool's level", command.name);
+                seen.insert(tool);
+            }
         }
+        assert_eq!(seen, ToolId::ALL.into_iter().collect(), "every tool has a command");
+        assert_eq!((ToolId::Pdf.access(), ToolId::Web.access()), (Access::Write, Access::Read));
     }
 
     #[test]

@@ -1,0 +1,39 @@
+{
+  "query": "Lisbon",
+  "number_of_results": 0,
+  "results": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Lisbon",
+      "title": "Lisbon - Wikipedia",
+      "content": "Lisbon is the capital and largest city of Portugal.",
+      "engine": "duckduckgo",
+      "parsed_url": ["https", "en.wikipedia.org", "/wiki/Lisbon", "", "", ""],
+      "template": "default.html",
+      "engines": ["duckduckgo", "wikipedia"],
+      "positions": [1, 1],
+      "score": 4.0,
+      "category": "general"
+    },
+    {
+      "url": "https://www.example.org/lisbon",
+      "title": "Lisbon travel guide",
+      "engine": "mojeek",
+      "engines": ["mojeek"],
+      "positions": [3],
+      "score": 0.33,
+      "category": "general"
+    },
+    {
+      "url": "magnet:?xt=urn:btih:0000",
+      "title": "Not a web address",
+      "content": "Left out.",
+      "engine": "torrent",
+      "category": "files"
+    }
+  ],
+  "answers": [],
+  "corrections": [],
+  "infoboxes": [],
+  "suggestions": ["lisbon portugal"],
+  "unresponsive_engines": []
+}

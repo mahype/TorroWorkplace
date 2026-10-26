@@ -551,6 +551,7 @@ mod tests {
                         effort: None,
                         without: Vec::new(),
                         mode: torro_ipc::assistant::Mode::Default,
+                        from: None,
                     };
                     Ok(Response::Conversation { conversation, entries: vec![entry(1, message)] })
                 }

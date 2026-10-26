@@ -226,7 +226,8 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EntryContent {
-    /// A message of the person (or of the client that sent `assistant.send_message`).
+    /// A message of the person, or of the client that sent `assistant.send_message` or
+    /// `bots.ask_bot` (then `from` names it).
     Message {
         text: String,
         /// The engine it was sent to.
@@ -242,6 +243,15 @@ pub enum EntryContent {
         /// The permission mode of its answer (issue #132); left out for [`Mode::Default`].
         #[serde(default, skip_serializing_if = "Mode::is_default")]
         mode: Mode,
+        /// Who sent it when it was not the person (issue #305): the id of the client (as
+        /// `clients.list_clients` lists it) that sent `assistant.send_message` or `bots.ask_bot`,
+        /// the assistant's own when it asks a bot. Set by the core, never by the sender. Such a
+        /// message is data from outside in every later answer as well: the web asks the person again
+        /// before it, a note waits for a person, and no address in it counts as one the person wrote.
+        /// Left out for the person's own message (the app sent it) and in entries from before the
+        /// field, which read as the person's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
     },
     /// The assistant's answer, with the engine and the model that wrote it. One answer can come in
     /// several entries, between the tools it used. While the model writes, the entry after
@@ -843,6 +853,7 @@ mod tests {
             effort: None,
             without: vec![Area::Mail],
             mode: Mode::Default,
+            from: None,
         };
         assert_eq!(
             serde_json::to_value(&message).expect("serializes"),
@@ -855,11 +866,21 @@ mod tests {
             effort: Some(torro_core::ai::Effort::High),
             without: Vec::new(),
             mode: Mode::Default,
+            from: Some("1f2e3d4c".into()),
         };
         assert_eq!(
             serde_json::to_value(&thought).expect("serializes"),
-            serde_json::json!({"kind": "message", "text": "Hi", "engine": "claude-code", "model": "opus", "effort": "high"})
+            serde_json::json!({
+                "kind": "message", "text": "Hi", "engine": "claude-code", "model": "opus", "effort": "high",
+                "from": "1f2e3d4c"
+            })
         );
+        // A line from before `from` (issue #305) reads as the person's message.
+        let before: Entry = serde_json::from_str(
+            r#"{"seq":1,"time":"2026-10-13T09:00:00Z","kind":"message","text":"Hi","engine":"test"}"#,
+        )
+        .expect("an old message line");
+        assert!(matches!(before.content, EntryContent::Message { from: None, .. }), "{before:?}");
 
         assert_eq!(serde_json::to_value(ChatWindow::New).expect("serializes"), serde_json::json!("new"));
         let window: ChatWindow = serde_json::from_value(serde_json::json!({"conversation": "c1"})).expect("reads");
