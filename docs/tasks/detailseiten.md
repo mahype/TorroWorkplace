@@ -194,7 +194,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   Sichtprüfung der vier Demo-Zustände in allen Größen und drei Designs (`torro-design-review`). Übersetzungen in `de.rs`.
 
 ### DS.7 Mail › Storage & index: nur Strategie und Wartung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** DS.2, DS.6 · **Dateien:** `crates/torro-settings-ui/src/mail.rs` (`storage`),
   `crates/torro-core/src/i18n/de.rs`
 - Die Gruppe „Local storage & index“ entfällt. An ihrer Stelle eine Zeile „Numbers of this account“ mit „Show

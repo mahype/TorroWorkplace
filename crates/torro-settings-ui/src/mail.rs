@@ -128,6 +128,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAct
         Message::Accounts(message) => accounts::update(&mut state.accounts, message, data),
         Message::Reading(message) => reading::update(message),
         Message::Categorization(message) => categorization::update(&mut state.categorization, message, data),
+        // "Show account" opens another section's page, so it is taken before the section sees it.
+        Message::Storage(storage::Message::ShowAccount(id)) => {
+            accounts::show(&mut state.accounts, &id, data);
+            Action::Open(ACCOUNTS_SECTION)
+        }
         Message::Storage(message) => storage::update(&mut state.storage, message, data),
     }
 }
@@ -507,6 +512,17 @@ pub mod accounts {
                 .draft
                 .as_ref()
                 .map_or(Action::None, |draft| backup::update(&mut state.backup, &draft.account, message)),
+        }
+    }
+
+    /// Opens `id`'s page at "Overview" ("Show account" in Storage & index, task DS.7); an account
+    /// that is open already keeps what is typed into it.
+    pub(super) fn show(state: &mut State, id: &str, data: &Data) {
+        if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
+            state.tab = Tab::Overview;
+            state.more = false;
+        } else {
+            let _: Action<()> = update(state, Message::Open(id.to_string()), data);
         }
     }
 
@@ -1508,6 +1524,31 @@ pub mod accounts {
             assert_eq!(server, Action::ControlCentre("accounts".into()));
         }
 
+        /// DS.7: "Show account" in Storage & index opens the account at "Overview"; an account
+        /// already open keeps what is typed and only goes back to "Overview".
+        #[test]
+        fn show_account_lands_on_the_accounts_overview() {
+            let mut data = data();
+            data.mail_stats = vec![stats(&[("INBOX", 30, 8, Some(4096))], None)];
+            let mut state = crate::mail::State::default();
+            let show = || {
+                crate::mail::Message::Storage(crate::mail::storage::Message::ShowAccount(
+                    "mail:anna@example.org".into(),
+                ))
+            };
+            let action = crate::mail::update(&mut state, show(), &data);
+            assert_eq!(action, Action::Open(crate::mail::ACCOUNTS_SECTION));
+            assert_eq!(page(&state.accounts, &data).sub_page.map(|(name, _)| name), Some("anna@example.org".into()));
+            assert_eq!(state.accounts.tab, Tab::Overview);
+
+            let _: Action<()> = update(&mut state.accounts, Message::Tab(Tab::Writing.index()), &data);
+            let _: Action<()> = update(&mut state.accounts, Message::SenderName("Anna B.".into()), &data);
+            let _ = crate::mail::update(&mut state, show(), &data);
+            assert_eq!(state.accounts.tab, Tab::Overview);
+            assert!(page(&state.accounts, &data).save_bar.is_some(), "the typed name stays");
+            let _ = crate::mail::page(&state, &data, "storage").body;
+        }
+
         /// Every role has its question, and every page builds – with and without an account.
         #[test]
         fn the_pages_build_with_their_questions() {
@@ -1644,7 +1685,6 @@ pub mod storage {
     use iced::Element;
     use iced::widget::{column, row, space as blank};
     use torro_core::i18n::{tr, trf};
-    use torro_gui::datetime::format_moment;
     use torro_gui::theme::space;
     use torro_gui::units::{format_bytes, format_count};
     use torro_gui::{layout, style, typo, widgets};
@@ -1676,6 +1716,9 @@ pub mod storage {
         Pause(String),
         Resume(String),
         Refresh,
+        /// "Show account": the account's page under Accounts, at its tab "Overview" (task DS.7);
+        /// [`super::update`] takes it, since it opens another section.
+        ShowAccount(String),
     }
 
     fn selected<'a>(state: &'a State, data: &'a Data) -> Option<&'a str> {
@@ -1770,6 +1813,7 @@ pub mod storage {
                 Action::send(Request::ControlMailCacheJob { account: account.to_string(), id, resume: true })
             }
             Message::Refresh => Action::Send(Vec::new()),
+            Message::ShowAccount(_) => Action::None,
         }
     }
 
@@ -1820,7 +1864,6 @@ pub mod storage {
             ));
         };
         let current = policy(data, account);
-        let stats = data.mail_stats.iter().find(|stats| stats.account == account);
         let mut account_rows = Vec::new();
         for stats in &data.mail_stats {
             let label = data
@@ -1840,6 +1883,15 @@ pub mod storage {
                 false,
             ));
         }
+        // The account's numbers stand once, on its own page (task DS.7): here only the way there.
+        account_rows.push(row_frame(
+            row![
+                typo::text(typo::body(), tr("Numbers of this account")),
+                blank::horizontal(),
+                button("Show account", Some(Message::ShowAccount(account.to_string())))
+            ],
+            false,
+        ));
         let mut page = column![widgets::group(tr("Mail account"), account_rows, None)].spacing(layout::section_gap());
         let mut policy_rows = vec![
             line(
@@ -1892,21 +1944,6 @@ pub mod storage {
         }
         page = page.push(widgets::group(tr("Offline strategy"), policy_rows, Some(tr("Estimates use the average size of local mail texts; actual downloads may differ. Search text remains independent of offline reading texts.").to_string())));
 
-        if let Some(stats) = stats {
-            page = page.push(widgets::group(tr("Local storage & index"), vec![
-                line("Mail texts on this device", format_count(stats.cached_bodies)),
-                line("Body cache", format_bytes(stats.body_cache_bytes)),
-                line("Search index", stats.search_index_bytes.map_or_else(|| tr("Not known").to_string(), format_bytes)),
-                line("Last index run", stats.last_index_run.map_or_else(|| tr("Not known").to_string(), |date| format_moment(date, chrono::Utc::now()))),
-                line("Oldest local mail text", stats.oldest_cached_body.map_or_else(|| tr("Not known").to_string(), |date| format_moment(date, chrono::Utc::now()))),
-                line("Fully indexed", format_count(stats.indexed_full)),
-                line("Partial or unverified index", format_count(stats.indexed_partial_or_unverified)),
-                line("Text unavailable", format_count(stats.text_unavailable)),
-                line("Awaiting indexing", format_count(stats.awaiting_index)),
-                line("Local database", format_bytes(stats.database_bytes)),
-                line("Cached attachments", format!("{} · {}", format_count(stats.cached_attachments), format_bytes(stats.attachment_cache_bytes.unwrap_or(0)))),
-            ], Some(tr("Local known counts. Fully indexed means searchable; only cached mail texts are readable without a connection.").to_string())));
-        }
         page = page.push(widgets::group(tr("Attachment cache"), vec![
             line("Keep downloaded attachments", trf("{days} days", &[("days", &current.attachment_retention_days)])),
             row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(space::s()), false),
