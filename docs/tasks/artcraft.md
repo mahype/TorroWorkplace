@@ -254,7 +254,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
     bearbeiten. Die freien ArtCraft-Apps erledigen das direkt auf deinem Rechner, und Torro schützt deine Originale:
     Jede Änderung wird als neue Datei gespeichert.“ (Nicht „ohne hochzuladen“: Was der Assistent liest, geht an das
     gewählte Modell, auch in die Cloud, `docs/api.md` „Datenregel“.)
-  - WordCraft: „Documents (.docx) · Summarise a contract, fix the wording of a letter, draft a reply from your notes“
+  - WordCraft: „Documents (.docx) · Summarize a contract, fix the wording of a letter, draft a reply from your notes“
     / „Dokumente (.docx) · Einen Vertrag zusammenfassen, einen Brief sprachlich glätten, aus Notizen eine Antwort
     entwerfen“
   - DeckCraft: „Presentations (.pptx) · Turn an outline into slides, add a chart, tidy up every slide's text“ /

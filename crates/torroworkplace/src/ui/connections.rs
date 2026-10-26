@@ -2080,15 +2080,19 @@ fn facts(entry: &CatalogEntry) -> String {
     }
 }
 
+/// That `app` keeps to no folder itself (GridCraft, [`FolderCheck::TorroOnly`]), as a sentence.
+fn unbounded_sentence(app: &str) -> String {
+    trf(
+        "{app} doesn't keep to a folder itself: Torro checks every path, and saving a file waits for your approval.",
+        &[("app", &app)],
+    )
+}
+
 /// That `app` keeps to no folder itself (GridCraft, [`FolderCheck::TorroOnly`]), with the info icon, in `level`:
 /// what its catalog row, its dialogs and its page say.
 fn unbounded<'a>(app: &str, level: typo::Level) -> Element<'a, Message> {
     let info = icon::icon(Icon::Info, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-    let sentence = trf(
-        "{app} doesn't keep to a folder itself: Torro checks every path, and saving a file waits for your approval.",
-        &[("app", &app)],
-    );
-    row![info, typo::text(level, sentence).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
+    row![info, typo::text(level, unbounded_sentence(app)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
         .spacing(space::s())
         .align_y(Alignment::Center)
         .into()
@@ -2252,8 +2256,9 @@ fn folder_check(data: &Data, server: &ExtensionInfo) -> Option<FolderCheck> {
 
 /// "Folder" (issue #303): the allowed folder the server works in, by its name with its path and access below, or
 /// "No folder chosen" with the attention dot; "Choose…" opens the menu of the allowed folders ([`folder_menu`]).
-/// Without any allowed folder, the way to them instead. Below: that it works only there and saves as new files, and
-/// for GridCraft that it keeps to no folder itself.
+/// Without any allowed folder, "Add folder…" as under "Organize files". Below: that it works only there and saves as
+/// new files, and for GridCraft that it keeps to no folder itself. The rows that tell what to do wrap
+/// ([`status_row`]), so a narrow window never cuts them.
 fn folder_group<'a>(
     page: &'a ServerState,
     data: &'a Data,
@@ -2264,19 +2269,21 @@ fn folder_group<'a>(
     let folders = &data.settings.tools.folders;
     let chosen = server.folder.as_deref();
     let allowed = chosen.and_then(|path| folders.iter().find(|folder| folder.path == path));
+    let attention = || widgets::status_dot(Dot::Attention);
     let row = if folders.is_empty() && chosen.is_none() {
-        let go = Message::Back;
+        // As under "Organize files": the system's folder chooser, the folder then allowed to read.
+        let add = Message::Choose(Chooser::AllowedFolder);
         let button = match words {
-            true => widgets::text_button(None, tr("Allowed folders"), style::button::secondary, Some(go)),
-            false => widgets::icon_button(Icon::Folder, tr("Allowed folders"), Some(go)),
+            true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, Some(add)),
+            false => widgets::icon_button(Icon::Plus, tr("Add folder…"), Some(add)),
         };
-        let detail = tr("Allow a folder under Allowed folders first; then choose it here.");
-        setting_row(Some(widgets::status_dot(Dot::Attention)), tr("No allowed folders"), Some(detail.into()), button)
+        let detail = tr("Allow a folder first; then choose it here.");
+        status_row(attention(), tr("No allowed folders").into(), Some(detail.into()), button)
     } else {
         let busy = page.waiting == Some(Waiting::Folder);
         let press = page.waiting.is_none().then_some(Message::ToggleFolders);
         let button = match (busy, words) {
-            (true, _) => widgets::busy_button(tr("Choosing…"), style::button::secondary),
+            (true, _) => widgets::busy_button(tr("Saving…"), style::button::secondary),
             (false, true) => widgets::text_button(None, tr("Choose…"), style::button::secondary, press),
             (false, false) => widgets::icon_button(Icon::Folder, tr("Choose…"), press),
         };
@@ -2288,24 +2295,24 @@ fn folder_group<'a>(
             }
             (Some(path), None) => {
                 let detail = trf("{path} · No longer allowed: choose another.", &[("path", &path)]);
-                setting_row(Some(widgets::status_dot(Dot::Attention)), file_name(path), Some(detail), button)
+                status_row(attention(), file_name(path), Some(detail), button)
             }
             (None, _) => {
                 let detail = tr("Every call is refused until you choose one.");
-                let mark = Some(widgets::status_dot(Dot::Attention));
-                setting_row(mark, tr("No folder chosen"), Some(detail.into()), button)
+                status_row(attention(), tr("No folder chosen").into(), Some(detail.into()), button)
             }
         }
     };
-    let mut rows = vec![row];
-    if check == FolderCheck::TorroOnly {
-        rows.push(row_frame(unbounded(&server.name, typo::body()), false));
-    }
-    let footer = trf(
-        "{app} works only in this folder. Torro saves its changes as new files, never over the original.",
+    // Sentences below the group, which wrap in every width: what the folder means, and for GridCraft that it keeps
+    // to none itself.
+    let mut footer = trf(
+        "{app} works only in the folder you choose. Torro saves its changes as new files, never over the original.",
         &[("app", &server.name)],
     );
-    widgets::group(tr("Folder"), rows, Some(footer))
+    if check == FolderCheck::TorroOnly {
+        footer = format!("{footer} {}", unbounded_sentence(&server.name));
+    }
+    widgets::group(tr("Folder"), vec![row], Some(footer))
 }
 
 /// The menu of "Choose…" in "Folder": each allowed folder by its name, with its path and access below and a dot at
@@ -2318,7 +2325,8 @@ fn folder_menu<'a>(data: &'a Data, server: &'a ExtensionInfo) -> Element<'a, Mes
         .folders
         .iter()
         .map(|folder| {
-            let detail = format!("{} · {}", folder.path, AccessChoice(folder.access));
+            // The access first: the path is what a narrow menu cuts.
+            let detail = format!("{} · {}", AccessChoice(folder.access), folder.path);
             let press = Message::SetFolder(server.id.clone(), Some(folder.path.clone()));
             MenuItem::new(Icon::Folder, file_name(&folder.path), press)
                 .detail(detail)

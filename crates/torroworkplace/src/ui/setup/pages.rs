@@ -738,7 +738,7 @@ pub(super) const APPS: [(&str, Icon, &str); 4] = [
     (
         "wordcraft",
         Icon::FileText,
-        "Documents (.docx) · Summarise a contract, fix the wording of a letter, draft a reply from your notes",
+        "Documents (.docx) · Summarize a contract, fix the wording of a letter, draft a reply from your notes",
     ),
     (
         "deckcraft",
@@ -829,17 +829,12 @@ fn app_row<'a>(data: &Data, entry: &'a CatalogEntry, symbol: Icon, what: &'a str
     }
     let lines =
         column![name, typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)].width(Fill);
-    let state = |word: &'a str| -> Element<'a, Message> {
-        row![widgets::status_dot(widgets::Status::Ok), typo::text(typo::meta(), word).style(theme::text_2)]
-            .spacing(space::s())
-            .align_y(Alignment::Center)
-            .into()
-    };
     let get = Message::GetApp(entry.url.clone());
     let label = trf("Get {app}", &[("app", &entry.name)]);
     let control: Element<'a, Message> = match (app_state(data, entry), words) {
-        (AppState::SetUp, _) => state(tr("Set up")),
-        (AppState::Installed, _) => state(tr("Installed")),
+        // Pills as the step Mail shows its accounts; only a set-up app has the check.
+        (AppState::SetUp, _) => widgets::state_pill(Icon::CircleCheck, tr("Set up")),
+        (AppState::Installed, _) => widgets::state_pill(Icon::Circle, tr("Installed")),
         (AppState::Missing, true) => {
             widgets::text_button(Some(Icon::ArrowUpRight), label, style::button::ghost, Some(get))
         }

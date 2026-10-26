@@ -6110,7 +6110,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not allowed yet", "Noch nicht erlaubt"),
     ("Not offered", "Nicht angeboten"),
     ("Blocked by Torro", "Von Torro gesperrt"),
-    ("Choosing…", "Wird gewählt…"),
     ("Documents", "Dokumente"),
     ("Work with your documents", "Mit deinen Dokumenten arbeiten"),
     (
@@ -6123,7 +6122,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("ArtCraft apps", "ArtCraft-Apps"),
     (
-        "Documents (.docx) · Summarise a contract, fix the wording of a letter, draft a reply from your notes",
+        "Documents (.docx) · Summarize a contract, fix the wording of a letter, draft a reply from your notes",
         "Dokumente (.docx) · Einen Vertrag zusammenfassen, einen Brief sprachlich glätten, aus Notizen eine Antwort \
          entwerfen",
     ),
@@ -6161,14 +6160,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Get {app}", "{app} holen"),
     ("No folder chosen", "Kein Ordner gewählt"),
     ("Every call is refused until you choose one.", "Jeder Aufruf wird abgelehnt, bis du einen wählst."),
-    (
-        "Allow a folder under Allowed folders first; then choose it here.",
-        "Gib zuerst unter „Freigegebene Ordner“ einen Ordner frei und wähle ihn dann hier.",
-    ),
+    ("Allow a folder first; then choose it here.", "Gib zuerst einen Ordner frei und wähle ihn dann hier."),
     ("{path} · No longer allowed: choose another.", "{path} · Nicht mehr freigegeben: Wähle einen anderen."),
     (
-        "{app} works only in this folder. Torro saves its changes as new files, never over the original.",
-        "{app} arbeitet nur in diesem Ordner. Torro speichert Änderungen als neue Dateien, nie über das Original.",
+        "{app} works only in the folder you choose. Torro saves its changes as new files, never over the original.",
+        "{app} arbeitet nur in dem Ordner, den du wählst. Torro speichert Änderungen als neue Dateien, nie über das \
+         Original.",
     ),
     (
         "{publisher} · {license} · tested with version {version}",
