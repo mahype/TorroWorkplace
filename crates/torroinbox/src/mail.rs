@@ -308,7 +308,6 @@ pub trait MailSource: Send + Sync {
     /// it from the other –, or takes them off with `None` (also the undo, with the pile each lay on
     /// before, [`MessageSummary::pile`]). Kept only in the core, nothing goes to the server.
     /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing changes then.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E19.4 on"))]
     fn set_mail_pile(
         &self,
         ids: Vec<String>,
@@ -320,13 +319,11 @@ pub trait MailSource: Send + Sync {
     /// `find.account`), whether snoozed or hidden or not, at most `find.limit` in `find.order` from
     /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields). Every
     /// message carries its pile. The page has no highlights.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E19.4 on"))]
     fn mail_in_pile(&self, find: MailInPile) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// How much mail lies on `pile` (task E19.3, [`InboxClient::count_in_pile`]), read and unread, for
     /// `account` (`mail:<address>`) or every account the window reaches: the number beside the pile
     /// in the sidebar. The core's `total_estimate`, 0 without one.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E19.4 on"))]
     fn count_in_pile(
         &self,
         pile: MailPile,
@@ -1677,6 +1674,15 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Hidden => (Icon::EyeOff, tr("No hidden mail."), tr("Mail you hide from the inbox shows up here.")),
             View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
+            // The piles (task E19.4).
+            View::ReplyLater => (
+                Icon::MessageSquareReply,
+                tr("Nothing to reply to later."),
+                tr("Mail you want to answer later waits here."),
+            ),
+            View::SetAside => {
+                (Icon::Bookmark, tr("Nothing set aside."), tr("Mail you set aside to look up again waits here."))
+            }
             _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
@@ -2565,7 +2571,9 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
     if let Some(entry) = entry {
-        body = body.push(widgets::prop_section(tr("Properties"), detail::properties(entry.item, reading.now)));
+        // "Follow up" in the mail window's words (task E19.4).
+        let properties = detail::properties(entry.item, reading.now, true);
+        body = body.push(widgets::prop_section(tr("Properties"), properties));
     }
     body.push(panel::bleed(line())).extend(panel_letter(reading)).spacing(space::l()).into()
 }
@@ -2872,13 +2880,15 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///
 /// 1. **Reply** (the main group: a red icon collapsed, Reply strong expanded – decision A): Reply
 ///    (`r`), Reply all, Forward (`f`) – [`Message::Mail`].
-/// 2. **File**: Archive (`e`, task E18.5: in the place of the entry's former Done – mail is
-///    archived, never done) where the account has the folder and the mail does not lie in it
-///    already, as in rows ([`filing_actions`]; an entry's mail lies in its account's inbox while it
-///    loads); for an `entry` then Later… (`s`, `AskSnooze`, not for a done entry) and "Move to Info"
-///    or "Move to For me" (`l`, `AskLane`); Delete (`#`) on the same rule as Archive; last "Save
-///    attachments (n)" for a loaded mail with attachments (task M12.6, `AskSaveAttachments`: the menu
-///    of "Save all").
+/// 2. **File** ([`file_items`], task E19.4): Archive (`e`, task E18.5: in the place of the entry's
+///    former Done – mail is archived, never done) where the account has the folder and the mail does
+///    not lie in it already, as in rows ([`filing_actions`]; an entry's mail lies in its account's
+///    inbox while it loads); Reply later (`w`) and Set aside (`b`, [`Message::Pile`]) – for a mail on
+///    one of them "Remove from Reply later" or "Remove from Set aside" in its place, with the same
+///    key; Follow up… (`s`, `AskSnooze`) for every mail – its entry's when it has an open one, else the
+///    mail's own id (decision 8 of E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
+///    `AskLane`); Delete (`#`) on the same rule as Archive; last "Save attachments (n)" for a loaded
+///    mail with attachments (task M12.6, `AskSaveAttachments`: the menu of "Save all").
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
 ///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
@@ -2897,7 +2907,7 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 /// check of File, Torro's task, Mark's flag – in the attention colour while the mail is flagged –,
 /// the bell and "…". A click on it sends its first item; Delete is marked `danger` and never that
 /// click – a File whose first item would be Delete opens its card instead. Each group registers its icon in `anchors.rail`, each item that opens a
-/// menu or dialog its row in the matching anchor of `anchors` (Later `snooze`, "Move to …" `lane`,
+/// menu or dialog its row in the matching anchor of `anchors` (Follow up… `snooze`, "Move to …" `lane`,
 /// Task `task`, Event `event`, Category… `category`, Mute… `hide`); pass the window's anchors made
 /// with [`detail::Anchors::with_rail`], so those menus hang at the group's icon while the row is not
 /// on screen. `folders` are every account's folders, for Archive and Delete. The same groups are the
@@ -2931,7 +2941,11 @@ pub fn action_groups<'a>(
     groups.into_iter().filter(|group| !group.items.is_empty()).collect()
 }
 
-/// The items of the rail's group "File" ([`action_groups`]).
+/// The items of the rail's group "File" ([`action_groups`]), in this order (task E19.4): Archive ·
+/// Reply later · Set aside · Follow up… · "Move to …" · Delete · Save attachments (n). The piles
+/// follow [`MessageSummary::pile`]: on one, its item is "Remove from …" with the same key, in every
+/// view; they wait for the mail's headers, which say its pile. Follow up… stands once the mail's
+/// account is known (its headers or its entry), as Archive and Delete.
 fn file_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
@@ -2950,11 +2964,20 @@ fn file_items<'a>(
     if filing.is_some_and(|filing| filing.archive) {
         items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "E", mail(MailAction::Archive)));
     }
+    if reading.summary().is_some() {
+        items.extend(pile_items(reading));
+    }
+    // Every mail can be followed up (decision 8 of E19): an open entry by its own id, any other mail –
+    // a folder's, a done entry's – by the mail's id, of which the core makes the entry.
+    if filing.is_some() {
+        let follow = match entry {
+            Some(ReaderEntry { item, .. }) if !matches!(item.state, State::Done { .. }) => item.id.clone(),
+            _ => reading.id.to_owned(),
+        };
+        let follow = RailItem::new(Icon::CalendarClock, tr("Follow up…"), "S", Some(Message::AskSnooze(follow)));
+        items.push(follow.at(&anchors.snooze));
+    }
     if let Some(ReaderEntry { item, .. }) = entry {
-        if !matches!(item.state, State::Done { .. }) {
-            let later = RailItem::new(Icon::Clock, tr("Later…"), "S", Some(Message::AskSnooze(item.id.clone())));
-            items.push(later.at(&anchors.snooze));
-        }
         let lane = crate::app::other_lane(item.lane);
         let move_to = Some(Message::AskLane(item.id.clone()));
         items.push(RailItem::new(crate::app::lane_icon(lane), lane_word(lane), "L", move_to).at(&anchors.lane));
@@ -2971,6 +2994,26 @@ fn file_items<'a>(
         items.push(RailItem::new(Icon::Download, words, "", save).at(&anchors.save_rail));
     }
     items
+}
+
+/// "Reply later" (`w`) and "Set aside" (`b`) for the mail in `reading` (task E19.4): each puts it on
+/// its pile ([`Message::Pile`]); for the pile it lies on "Remove from Reply later" or "Remove from Set
+/// aside" instead, which takes it off.
+fn pile_items<'a>(reading: &Reading<'_>) -> [RailItem<'a, Message>; 2] {
+    let on = reading.summary().and_then(|summary| summary.pile);
+    let pile = |pile: MailPile| Some(Message::Pile(reading.id.to_owned(), (on != Some(pile)).then_some(pile)));
+    let reply = match on {
+        Some(MailPile::ReplyLater) => tr("Remove from Reply later"),
+        _ => tr("Reply later"),
+    };
+    let aside = match on {
+        Some(MailPile::SetAside) => tr("Remove from Set aside"),
+        _ => tr("Set aside"),
+    };
+    [
+        RailItem::new(Icon::MessageSquareReply, reply, "W", pile(MailPile::ReplyLater)),
+        RailItem::new(Icon::Bookmark, aside, "B", pile(MailPile::SetAside)),
+    ]
 }
 
 /// The items of the rail's group "Torro" ([`action_groups`]): what Torro adds to the mail, as the
@@ -4125,7 +4168,8 @@ mod tests {
     /// Task E14.3: for a mail entry the rail holds Reply, File, Torro, Mark, Mute and More in this
     /// order, Mute and More at the foot, Reply in the accent; every item sends what its button or key
     /// sent before and shows its key; a click on a group's icon sends its first item. Task E18.5: File
-    /// has no Done – Archive (`e`) stands in its place.
+    /// has no Done – Archive (`e`) stands in its place. Task E19.4: Reply later (`w`), Set aside (`b`)
+    /// and Follow up… (`s`) after Archive, in the place of Later….
     #[test]
     fn an_entrys_rail_holds_every_group_with_the_messages_of_before() {
         let item = mail_entry();
@@ -4143,7 +4187,9 @@ mod tests {
                         tr("File").to_owned(),
                         vec![
                             trc("action", "Archive").to_owned(),
-                            tr("Later…").to_owned(),
+                            tr("Reply later").to_owned(),
+                            tr("Set aside").to_owned(),
+                            tr("Follow up…").to_owned(),
                             move_to.clone(),
                             tr("Delete").to_owned(),
                             // The budget's sheet (task M12.6).
@@ -4171,8 +4217,11 @@ mod tests {
                 Some(Message::AskHide(id)) => id == item.id,
                 _ => false,
             };
-            assert!(matches!(sends(&groups, file, tr("Later…")), Some(Message::AskSnooze(_))));
-            assert!(entry(sends(&groups, file, tr("Later…"))));
+            assert!(matches!(sends(&groups, file, tr("Follow up…")), Some(Message::AskSnooze(_))));
+            assert!(entry(sends(&groups, file, tr("Follow up…"))), "the entry's follow-up");
+            let pile = |sent: Option<Message>, wanted| matches!(sent, Some(Message::Pile(id, pile)) if id == "m:w1" && pile == wanted);
+            assert!(pile(sends(&groups, file, tr("Reply later")), Some(MailPile::ReplyLater)));
+            assert!(pile(sends(&groups, file, tr("Set aside")), Some(MailPile::SetAside)));
             assert!(
                 matches!(sends(&groups, file, &move_to), Some(Message::AskLane(_)))
                     && entry(sends(&groups, file, &move_to))
@@ -4198,7 +4247,7 @@ mod tests {
                 keys,
                 [
                     vec!["R", "", "F"],
-                    vec!["E", "S", "L", "#", ""],
+                    vec!["E", "W", "B", "S", "L", "#", ""],
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
@@ -4226,7 +4275,7 @@ mod tests {
             assert_eq!(
                 anchored,
                 [
-                    tr("Later…").to_owned(),
+                    tr("Follow up…").to_owned(),
                     move_to,
                     trf("Save attachments ({n})", &[("n", &1)]),
                     tr("Task").to_owned(),
@@ -4247,7 +4296,7 @@ mod tests {
 
     /// Task E14.3: a done entry is not put off – and, mail being archived (task E18.5), neither done nor
     /// opened again from the rail; "Re-categorize" only with a decision model; an entry that cannot be
-    /// muted has no group "Mute".
+    /// muted has no group "Mute". Task E19.4: its mail is followed up by the mail's own id.
     #[test]
     fn a_done_entry_reopens_and_the_model_adds_recategorize() {
         let item = Item { state: State::Done { at: now() }, ..mail_entry() };
@@ -4259,9 +4308,22 @@ mod tests {
             let file = &group(&groups, tr("File")).items;
             let words: Vec<&str> = file.iter().map(|i| i.label.as_ref()).collect();
             let save = trf("Save attachments ({n})", &[("n", &1)]);
-            assert_eq!(words, [trc("action", "Archive"), lane_word(Lane::Info).as_str(), tr("Delete"), save.as_str()]);
+            let lane = lane_word(Lane::Info);
+            assert_eq!(
+                words,
+                [
+                    trc("action", "Archive"),
+                    tr("Reply later"),
+                    tr("Set aside"),
+                    tr("Follow up…"),
+                    lane.as_str(),
+                    tr("Delete"),
+                    save.as_str()
+                ]
+            );
             assert!(file.iter().all(|i| i.label != tr("Reopen") && i.label != tr("Done")), "no Done, no Reopen");
-            assert!(file.iter().all(|i| i.label != tr("Later…")), "a done entry is not put off");
+            let follow = sends(&groups, tr("File"), tr("Follow up…"));
+            assert!(matches!(follow, Some(Message::AskSnooze(id)) if id == "m:w1"), "the mail, not the done entry");
             assert!(groups.iter().all(|g| g.label != tr("Mute")), "nothing to mute: no group");
             let more = &group(&groups, tr("More")).items;
             assert!(more.iter().all(|i| i.label != tr("Close")), "the panel has its ✕");
@@ -4275,9 +4337,10 @@ mod tests {
         });
     }
 
-    /// Task E14.3: a folder's message has no Done, Later, "Move to …", Event or Category – Task makes
-    /// a task of the message, the bell mutes its own traits, `e` archives it; in the trash it has no
-    /// Delete, in an account without an archive folder no Archive.
+    /// Task E14.3: a folder's message has no Done, "Move to …", Event or Category – Task makes a task
+    /// of the message, the bell mutes its own traits, `e` archives it; in the trash it has no Delete, in
+    /// an account without an archive folder no Archive. Task E19.4: it goes on the piles and is followed
+    /// up by its own id.
     #[test]
     fn a_folders_message_files_as_its_account_allows() {
         let folders = folders();
@@ -4289,10 +4352,19 @@ mod tests {
             let save = trf("Save attachments ({n})", &[("n", &1)]);
             assert_eq!(
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
-                strings(&[trc("action", "Archive"), tr("Delete"), &save])
+                strings(&[
+                    trc("action", "Archive"),
+                    tr("Reply later"),
+                    tr("Set aside"),
+                    tr("Follow up…"),
+                    tr("Delete"),
+                    &save
+                ])
             );
-            assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder (task E18.5)");
-            assert!(matches!(file[2].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
+            let keys: Vec<&str> = file.iter().map(|i| i.key).collect();
+            assert_eq!(keys, ["E", "W", "B", "S", "#", ""], "`e` archives in a folder (task E18.5)");
+            assert!(matches!(file[3].press(), Some(Message::AskSnooze(id)) if id == "m:w1"), "by the mail's id");
+            assert!(matches!(file[5].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
@@ -4304,15 +4376,53 @@ mod tests {
             let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
             let groups = action_groups(reading, None, &no_archive, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            assert_eq!(file, strings(&[tr("Delete"), &save]));
-            assert!(group(&groups, tr("File")).first_press().is_none(), "Delete first: a click opens the card");
+            assert_eq!(file, strings(&[tr("Reply later"), tr("Set aside"), tr("Follow up…"), tr("Delete"), &save]));
+            assert!(group(&groups, tr("File")).first_press().is_some(), "Reply later first, never Delete");
+        });
+        // Without the archive and the piles' items the click never deletes (finding 8).
+        reading_of("m:w1", MailFormat::Html, false, |reading| {
+            let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
+            let loading = Reading { summary: None, ..*reading };
+            let item = mail_entry();
+            let entry = Some(ReaderEntry { item: &item, hide: true });
+            let groups = action_groups(&loading, entry, &no_archive, true, false, &detail::Anchors::default());
+            let file = group(&groups, tr("File"));
+            assert!(file.items.iter().all(|i| i.label != tr("Reply later")), "the piles wait for the headers");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
             let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            assert_eq!(file, strings(&[trc("action", "Archive")]));
+            assert_eq!(
+                file,
+                strings(&[trc("action", "Archive"), tr("Reply later"), tr("Set aside"), tr("Follow up…")])
+            );
         });
+    }
+
+    /// Task E19.4 (decision 4 of E19): a mail on a pile says so in File – "Remove from Reply later"
+    /// (the demo's `m:p7`) or "Remove from Set aside" (`m:w5`) with the same key takes it off; the
+    /// other pile's item moves it there.
+    #[test]
+    fn a_mail_on_a_pile_is_taken_off_with_its_key() {
+        let folders = folders();
+        for (id, on, off, other, moved) in [
+            ("m:p7", tr("Remove from Reply later"), "W", tr("Set aside"), MailPile::SetAside),
+            ("m:w5", tr("Remove from Set aside"), "B", tr("Reply later"), MailPile::ReplyLater),
+        ] {
+            reading_of(id, MailFormat::Text, true, |reading| {
+                let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
+                let file = &group(&groups, tr("File")).items;
+                let item = file.iter().find(|i| i.label == on).expect("Remove from …");
+                assert_eq!(item.key, off, "{id}: the pile's own key");
+                assert!(matches!(item.press(), Some(Message::Pile(sent, None)) if sent == id), "{id}: off the pile");
+                let move_to = sends(&groups, tr("File"), other);
+                assert!(
+                    matches!(move_to, Some(Message::Pile(sent, Some(pile))) if sent == id && pile == moved),
+                    "{id}"
+                );
+            });
+        }
     }
 
     /// Task E14.3: "More" offers the other view of a mail with HTML (`v`), the other colours while the

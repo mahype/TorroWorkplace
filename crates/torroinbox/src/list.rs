@@ -562,9 +562,14 @@ fn rows_span(items: &[Item], index: usize, height: impl Fn(&Item) -> f32, head: 
     Some((if first { top - head } else { top }, top + height(item) + strip))
 }
 
-/// The list, scrolling; the empty state of the view when there are no entries.
+/// The list, scrolling; the empty state of the view when there are no entries – "Follow up" of the
+/// mail window (its rows are bare, [`Rows::bare`]) has its own ([`follow_up_empty`], task E19.4).
 pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     if data.items.is_empty() {
+        if data.rows.bare && *data.rows.view == View::Snoozed {
+            let (title, hint) = follow_up_empty();
+            return empty_state(Icon::CalendarClock, title, hint);
+        }
         let (title, hint) = empty_text(data.rows.view);
         return empty_state(data.rows.view.icon(), title, hint);
     }
@@ -1849,6 +1854,19 @@ pub fn wake_text(until: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// When the mail window follows a conversation up (task E19.4), for its hint and its panel: "Follow
+/// up 18:30" today, else with the short date ([`wake_text`]); with `unless_reply` ", only if no
+/// reply" after it. The hub and the App Feed say "Later until …".
+pub fn follow_up_text(until: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) -> String {
+    let text = trf("Follow up {time}", &[("time", &wake_text(until, now))]);
+    if unless_reply { format!("{text}, {}", tr("only if no reply")) } else { text }
+}
+
+/// What the empty state of the mail window's "Follow up" says (task E19.4).
+pub fn follow_up_empty() -> (&'static str, &'static str) {
+    (tr("No follow-ups."), tr("Conversations you follow up on wait here until their day."))
+}
+
 /// What the empty state of `view` says: what shows up here, and when.
 pub fn empty_text(view: &View) -> (&'static str, &'static str) {
     match view {
@@ -1869,7 +1887,9 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::Search(_)
         | View::All
         | View::Hidden
-        | View::Archive => (tr("No messages here."), tr("Mail in this folder shows up here.")),
+        | View::Archive
+        | View::ReplyLater
+        | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),
         // Task E12.8: a category the person filtered by holds nothing at the moment.
         View::Category(_) => (tr("No mail of this kind."), tr("Mail sorted into it shows up here.")),
     }

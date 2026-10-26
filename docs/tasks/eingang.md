@@ -4509,7 +4509,7 @@ parallel.
   `send_reply`.
 
 ### E19.4 Mail-Fenster: Aktionen, Seitenleiste, Ansichten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E19.3 · **Dateien:** `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/mail.rs`,
   `crates/torroinbox/src/keys.rs`, `crates/torroinbox/src/list.rs`, `crates/torroinbox/src/detail.rs`,
   `crates/torro-gui/src/icon.rs`, `crates/torro-gui/assets/icons/message-square-reply.svg`,

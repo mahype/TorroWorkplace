@@ -13,8 +13,9 @@
 //! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
-//! Its sidebar lists All (the mail of every inbox, with the unread mail it holds), Later and Hidden
-//! (task E18.4, [`App::nav_entries`]), the groups "Categories", "Smart views" with "With
+//! Its sidebar lists All (the mail of every inbox, with the unread mail it holds), Reply later and Set
+//! aside (the piles, with the mail they hold), Follow up and Hidden (tasks E18.4 and E19.4,
+//! [`App::nav_entries`]), the groups "Categories", "Smart views" with "With
 //! attachments" ([`View::Attachments`]) and "Folders" with Archive, pinned folders and an on-demand
 //! folder browser grouped by account ([`App::folder_entries`]); no sources. The mail header filters combined views by account. In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
@@ -22,8 +23,17 @@
 //! ([`App::wide_reader`], `mail::reader`) instead of in the panel; every action on it stands in the
 //! mail's action rail at its right (task E14.3, [`App::rail_groups`]), collapsed or expanded as the
 //! window remembers ([`App::actions`], `]`). The narrow layout opens the same grouped folder
-//! browser on demand. Nothing is dismissed in the mail window: mail is archived, snoozed or hidden,
-//! and "Show again" takes a hidden mail back into "All" ([`App::show_mail`]).
+//! browser on demand. Nothing is dismissed in the mail window: mail is archived, followed up, put on
+//! a pile or hidden, and "Show again" takes a hidden mail back into "All" ([`App::show_mail`]).
+//!
+//! Reply later, Set aside and Follow up (task E19.4, `docs/tasks/eingang.md` E19): the mail window
+//! has no "Later". `w` and `b` – and the rail's File and the row's context menu – put a mail on "Reply
+//! later" or "Set aside", or take it off ([`App::pile_mail`], `inbox.set_mail_pile`); it leaves the
+//! lists that leave mail on a pile out ([`View::leaves_out_piles`]) with a hint and its undo. The
+//! piles are views of their own ([`View::ReplyLater`], [`View::SetAside`], `mail_in_pile`).
+//! "Follow up…" (`s`) is the snooze menu in the mail window's words, on any mail – one without an entry
+//! by its own id ([`App::mail_subject`]) – with "Only if no reply" ([`App::unless_reply`]) and
+//! "Cancel follow-up"; the hub and the App Feed keep "Later".
 //!
 //! The notifications window (task E8.4, `notifications.rs`) shows what the apps report: its sidebar
 //! lists New (its overview, both lanes), Later and Done, and under "This window shows" the sources
@@ -78,7 +88,7 @@
 //! the entries get the demo's tasks ([`demo_task`]).
 //!
 //! The mail window starts on "All" (task E18.4, [`View::All`]): the mail of every inbox, with
-//! "Later" and "Hidden" under it and "Folders" (Archive, pinned folders, "Open folders") after the
+//! the piles, "Follow up" and "Hidden" under it and "Folders" (Archive, pinned folders, "Open folders") after the
 //! categories and smart views. The other windows start on the overview (task E3.9,
 //! [`View::Overview`]): the open entries in the column "Mail" and "Notifications". The app keeps
 //! which column has the
@@ -179,7 +189,7 @@ use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_e
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::design::Density;
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{MailAppearance, MailFormat};
 use torro_core::shortcuts;
 use torro_core::timing;
@@ -208,12 +218,12 @@ use torro_inbox::{
     StateFilter, rules,
 };
 use torro_ipc::inbox::{
-    CalendarEvent, CategoryInfo, EventFields, MailByRole, MailFound, SaveTargets, SavedAttachments,
+    CalendarEvent, CategoryInfo, EventFields, MailByRole, MailFound, MailInPile, SaveTargets, SavedAttachments,
 };
-use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, SaveTo};
+use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, PileFilter, SaveTo};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
-use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
+use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, MailPile, Message as Mail, MessageSummary, Role};
 use torro_settings_ui::{
     Backend as SettingsBackend, Host, Outcome, Page, Section, host, inbox as settings_inbox, mail as settings_mail,
 };
@@ -550,8 +560,11 @@ pub enum Suggesting {
 pub enum Edit {
     /// Mark done (`true`) or open again (`false`).
     Done { id: String, done: bool },
-    /// Put off until `until`; `None` takes a snoozed entry back.
-    Snooze { id: String, until: Option<DateTime<Utc>> },
+    /// Put off until `until`; `None` takes a snoozed entry back. In the mail window it is "Follow up"
+    /// (task E19.4): `id` may be a mail's own id (`m:…`, decision 8 of E19), and with `unless_reply`
+    /// the conversation comes back only if nobody replied by then; the hub and the App Feed always
+    /// send `false`.
+    Snooze { id: String, until: Option<DateTime<Utc>>, unless_reply: bool },
     /// Move to `lane`; with `remember` also later entries of the same source (a rule in the core).
     Lane { id: String, lane: Lane, remember: bool },
     /// Dismiss a notification (task E8.4, the ✕, `x`): done like [`Edit::Done`], but sent as
@@ -582,7 +595,9 @@ impl Edit {
                     State::Snoozed { until } => Some(until),
                     State::New | State::Seen | State::Done { .. } => None,
                 };
-                Edit::Snooze { id, until }
+                // The condition it had (task E19.4), so "Undo" puts the follow-up back as it was.
+                let unless_reply = until.is_some() && before.follow_up.is_some_and(|follow| follow.unless_reply);
+                Edit::Snooze { id, until, unless_reply }
             }
             Edit::Lane { .. } => Edit::Lane { id, lane: before.lane, remember: false },
         }
@@ -614,7 +629,7 @@ impl Edit {
     pub async fn apply<S: InboxSource>(self, inbox: Arc<S>) -> Result<Item, String> {
         let result = match self {
             Edit::Done { id, done } => inbox.set_item_done(id, done).await,
-            Edit::Snooze { id, until } => inbox.snooze_item(id, until, false).await,
+            Edit::Snooze { id, until, unless_reply } => inbox.snooze_item(id, until, unless_reply).await,
             Edit::Lane { id, lane, remember } => inbox.set_item_lane(id, lane, remember).await,
             Edit::Dismiss { id } => inbox.dismiss_item(id).await,
         };
@@ -646,6 +661,9 @@ pub enum Undo {
     /// Takes "Show again" back (task E18.4): `inbox.set_mail_shown` with `shown: false` for these
     /// mails, which go back into "Hidden" – the rule that hid them still holds.
     Shown(Vec<String>),
+    /// Takes a change of pile back (task E19.4): `inbox.set_mail_pile` for these mails with the pile
+    /// they lay on before ([`MessageSummary::pile`]; `None`: on none).
+    Pile(Vec<String>, Option<MailPile>),
     /// Takes muting back (task E8.6b), exactly as `inbox.mute_item` answered ([`Muted`]): removes
     /// the rule `rule` – only one the call made –, opens the entries `reopen` again and moves the
     /// entries `moved` back to "For me" (`inbox.set_item_lane` without `remember`).
@@ -1013,6 +1031,9 @@ pub enum Sent {
     /// `inbox.set_mail_shown` (task E18.4, "Show again" and its undo): the mails, `shown` and the
     /// hint that follows the answer (`None` after an undo).
     Shown(Vec<String>, bool, Option<Hint>),
+    /// `inbox.set_mail_pile` (task E19.4, `w`, `b`, the rail's items and their undo): the mails, the
+    /// pile (`None`: off it) and the hint that follows the answer (`None` after an undo).
+    Pile(Vec<String>, Option<MailPile>, Option<Hint>),
     /// The calendars were asked for (the dialog of "Make event" opened, task E8.5b).
     Calendars,
     /// `inbox.create_event_from_item`: entry, calendar, title (`None`: the entry's), start and end,
@@ -1091,6 +1112,12 @@ pub enum View {
     /// "Archive" under "Folders" of the mail window (task E18.4): the mail in the archive folders
     /// of every account shown ([`Role::Archive`]). `mail.*` only.
     Archive,
+    /// The pile "Reply later" of the mail window (task E19.4, decisions 1 and 3 of E19): the mail put
+    /// there, from every folder but the trash and spam of every account shown, newest first, a page
+    /// at a time (`MailSource::mail_in_pile`). `mail.*` only.
+    ReplyLater,
+    /// The pile "Set aside" of the mail window (task E19.4), as [`View::ReplyLater`]. `mail.*` only.
+    SetAside,
 }
 
 impl View {
@@ -1112,7 +1139,9 @@ impl View {
             | View::Search(_)
             | View::All
             | View::Hidden
-            | View::Archive => return None,
+            | View::Archive
+            | View::ReplyLater
+            | View::SetAside => return None,
         };
         // "Done" shows what was done for real: a dismissed entry is simply gone (issue #117), its
         // toast's undo the only way back.
@@ -1139,6 +1168,9 @@ impl View {
             View::Hidden => tr("Hidden").into(),
             // The word of the folder (`mail::folder_name`), not the button's (`trc("action", …)`).
             View::Archive => tr("Archive").into(),
+            View::ReplyLater => tr("Reply later").into(),
+            // The pile, not the action (decision 11 of E19): "Beiseitegelegt", not "Beiseitelegen".
+            View::SetAside => trc("pile", "Set aside").into(),
         }
     }
 
@@ -1159,6 +1191,8 @@ impl View {
             View::All => Icon::Mail,
             View::Hidden => Icon::EyeOff,
             View::Archive => Icon::Archive,
+            View::ReplyLater => Icon::MessageSquareReply,
+            View::SetAside => Icon::Bookmark,
         }
     }
 
@@ -1170,8 +1204,8 @@ impl View {
         }
     }
 
-    /// A view of mail: a folder, a smart view, a search, "All", "Hidden", "Archive", or a window of
-    /// mail waiting for its folders.
+    /// A view of mail: a folder, a smart view, a search, "All", "Hidden", "Archive", a pile, or a
+    /// window of mail waiting for its folders.
     pub fn is_mail(&self) -> bool {
         matches!(
             self,
@@ -1184,6 +1218,27 @@ impl View {
                 | View::All
                 | View::Hidden
                 | View::Archive
+                | View::ReplyLater
+                | View::SetAside
+        )
+    }
+
+    /// The pile this view lists (task E19.4); `None` for every other view.
+    pub fn pile(&self) -> Option<MailPile> {
+        match self {
+            View::ReplyLater => Some(MailPile::ReplyLater),
+            View::SetAside => Some(MailPile::SetAside),
+            _ => None,
+        }
+    }
+
+    /// Whether a mail leaves this view when it goes on a pile or off one (decision 4 of E19): "All",
+    /// the categories and the smart views leave mail on a pile out, a pile lists only its own. A
+    /// folder, a search, "Hidden" and "Archive" keep listing it, with its new pile.
+    pub fn leaves_out_piles(&self) -> bool {
+        matches!(
+            self,
+            View::All | View::Category(_) | View::Attachments | View::Invitations | View::ReplyLater | View::SetAside
         )
     }
 
@@ -1209,6 +1264,8 @@ impl View {
             View::All => Some("all".to_owned()),
             View::Hidden => Some("hidden".to_owned()),
             View::Archive => Some("archive".to_owned()),
+            View::ReplyLater => Some("reply-later".to_owned()),
+            View::SetAside => Some("set-aside".to_owned()),
             _ => None,
         }
     }
@@ -1445,10 +1502,14 @@ pub enum Open {
     /// The mail window's "Hidden" (task E18.4) with its first mail in the reader (or the panel), so
     /// "Show again" stands in the rail and its context menu.
     Hidden,
+    /// The mail window's pile "Reply later" (task E19.4).
+    ReplyLater,
+    /// The mail window's pile "Set aside" (task E19.4).
+    SetAside,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 62] = [
+    const ALL: [(&'static str, Open); 64] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1511,6 +1572,8 @@ impl Open {
         ("category-menu", Open::CategoryMenu),
         ("archive", Open::Archive),
         ("hidden", Open::Hidden),
+        ("reply-later", Open::ReplyLater),
+        ("set-aside", Open::SetAside),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -1721,14 +1784,17 @@ impl Kind {
     /// The name of `view` in this window: in the mail window (task E8.3) the overview is "For me" –
     /// its one column is the mail for the user –, in the notifications window (task E8.4) "New", in
     /// the hub (task E8.5) "Act now", and the hub's "Done" is "Done today" (it lists what was done
-    /// today, `App::take`); in all three "Snoozed" is "Later", as the buttons say; elsewhere the
-    /// view's own name ([`View::name`]).
+    /// today, `App::take`); "Snoozed" is "Follow up" in the mail window (task E19.4, decision 11 of
+    /// E19: `trc("snooze", …)`, as the hub's "Follow up" on a finished task is another word in
+    /// German) and "Later" in the other two, as their buttons say; elsewhere the view's own name
+    /// ([`View::name`]).
     pub fn view_name(self, view: &View) -> String {
         match (self, view) {
             (Kind::Mail, View::Overview) => tr("For me").into(),
             (Kind::Notifications, View::Overview) => tr("New").into(),
             (Kind::Hub, View::Overview) => tr("Act now").into(),
             (Kind::Hub, View::Done) => tr("Done today").into(),
+            (Kind::Mail, View::Snoozed) => trc("snooze", "Follow up").into(),
             (_, View::Snoozed) => tr("Later").into(),
             _ => view.name(),
         }
@@ -1736,11 +1802,13 @@ impl Kind {
 
     /// The icon of `view` in this window: "For me" of the mail window is `UserCheck` – never the
     /// inbox tray, which is the mail folder "Inbox" there and so must not stand for the window's first
-    /// view (issue #127) –, "New" of the notifications window the bell.
+    /// view (issue #127) –, "New" of the notifications window the bell, "Follow up" of the mail window
+    /// the calendar with the clock (task E19.4).
     pub fn view_icon(self, view: &View) -> Icon {
         match (self, view) {
             (Kind::Mail, View::Overview) => Icon::UserCheck,
             (Kind::Notifications, View::Overview) => Icon::Bell,
+            (Kind::Mail, View::Snoozed) => Icon::CalendarClock,
             _ => view.icon(),
         }
     }
@@ -2054,6 +2122,12 @@ pub struct Loaded {
     /// `MailSource::unread_in_all` counts, summed over the accounts shown. `None` in the other
     /// windows, without a mail account, and when one count failed – the list still shows then.
     pub unread_all: Option<u64>,
+    /// How much mail lies on "Reply later" in the mail window (task E19.4, `MailSource::count_in_pile`),
+    /// summed over the accounts shown; `None` in the other windows, without a mail account and when a
+    /// count failed – the sidebar then shows no number.
+    pub reply_later: Option<u64>,
+    /// The same for "Set aside".
+    pub set_aside: Option<u64>,
     pub sources: Vec<SourceInfo>,
     /// The folders of the mail accounts, for the on-demand browser (task E4.2); empty without mail, and
     /// when they could not be read – the entries still show then.
@@ -2355,6 +2429,10 @@ pub struct App<S> {
     /// The unread mail of "All" (task E18.4, [`Loaded::unread_all`]): the number on its row; `None`
     /// outside the mail window and when the core could not count.
     unread_all: Option<u64>,
+    /// How much mail lies on "Reply later" and "Set aside" (task E19.4, [`Loaded::reply_later`]): the
+    /// numbers on their rows; `None` outside the mail window and when the core could not count.
+    reply_later: Option<u64>,
+    set_aside: Option<u64>,
     sources: Vec<SourceInfo>,
     /// Whether entries have been loaded once; until then the list shows loading (or the error).
     loaded: bool,
@@ -2388,8 +2466,13 @@ pub struct App<S> {
     /// A link of a fraudulent mail, held back until the person confirms (task E12.9); `None`
     /// when no such question stands.
     held_link: Option<String>,
-    /// The message "Move to folder" or the question "Delete permanently?" is for (task E10.1).
+    /// The message "Move to folder" or the question "Delete permanently?" is for (task E10.1), and
+    /// the mail without an entry the menu "Follow up" is for (task E19.4, decision 8 of E19): it is
+    /// sent by its own id (`m:…`), the core makes its entry.
     mail_subject: Option<String>,
+    /// "Only if no reply" of the mail window's "Follow up" (task E19.4): its line in the menu and its
+    /// chip in the picker switch it, and the menu stays open. Off each time the menu opens.
+    unless_reply: bool,
     /// The day and time in the picker of "Pick…".
     pick: Pick,
     /// The dialog of "Make task" while [`Menu::Task`] is open.
@@ -2882,6 +2965,15 @@ pub enum Message {
     ShowMail(String),
     /// The core's answer to `inbox.set_mail_shown`, with the hint to show (`None` after an undo).
     MailShown(Result<(), String>, Option<Hint>),
+    /// "Reply later", "Set aside" and their "Remove from …" (task E19.4, `w`, `b`, the rail's File and
+    /// the row's context menu): the mail with this id on that pile, or off it with `None`
+    /// ([`App::pile_mail`]).
+    Pile(String, Option<MailPile>),
+    /// The core's answer to `inbox.set_mail_pile`, with the hint to show (`None` after an undo).
+    Piled(Result<(), String>, Option<Hint>),
+    /// "Only if no reply" in the mail window's "Follow up" and its picker (task E19.4): on or off,
+    /// the menu stays open.
+    ToggleUnlessReply,
     /// The source's answer to a [`MailEdit`] of these messages, with the hint to show (`None`:
     /// none, or an undo).
     MailEdited(Result<(), String>, Vec<String>, Option<Hint>),
@@ -3089,6 +3181,8 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
             for_me: Vec::new(),
             info: Vec::new(),
             unread_all: None,
+            reply_later: None,
+            set_aside: None,
             sources: Vec::new(),
             folders: Vec::new(),
             categories: Vec::new(),
@@ -3178,6 +3272,16 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
     } else {
         None
     };
+    // The numbers on the piles (task E19.4): the mail window's alone, as "All".
+    let (reply_later, set_aside) = if kind == Kind::Mail && !folders.is_empty() {
+        let accounts = mail_accounts.as_deref();
+        (
+            count_piled(&*inbox, MailPile::ReplyLater, accounts).await,
+            count_piled(&*inbox, MailPile::SetAside, accounts).await,
+        )
+    } else {
+        (None, None)
+    };
     let mut found = None;
     let mail = match &view {
         View::Folder(folder) => {
@@ -3213,15 +3317,16 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
             found = Some(Box::new(Found { complete: page.complete, total: page.total, index }));
             Some(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
         }
+        // The smart views leave mail on a pile out (task E19.4, decision 3 of E19): each account's
+        // inbox through `mail_by_role`, which can say so, instead of the folder's own search.
         View::Attachments => {
             let mut pages = Vec::new();
             for inbox_folder in folders.iter().filter(|folder| {
                 folder.role == Some(Role::Inbox)
                     && mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&folder.account))
             }) {
-                let page =
-                    inbox.search_mail(inbox_folder.id.clone(), None, limit, None, order).await.map_err(failed)?;
-                pages.push(page.messages);
+                let find = smart_find(&inbox_folder.account, limit, order);
+                pages.push(inbox.mail_by_role(find).await.map_err(failed)?.messages);
             }
             Some(MailPage::of(mail::attachments(pages, order), None))
         }
@@ -3233,10 +3338,8 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
                     && mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&folder.account))
             }) {
                 // The soonest event first: the order of arrival does not apply.
-                let newest = Order::NewestFirst;
-                let page =
-                    inbox.search_mail(inbox_folder.id.clone(), None, limit, None, newest).await.map_err(failed)?;
-                pages.push(page.messages);
+                let find = smart_find(&inbox_folder.account, limit, Order::NewestFirst);
+                pages.push(inbox.mail_by_role(find).await.map_err(failed)?.messages);
             }
             Some(MailPage::of(mail::invitations(pages, demo.unwrap_or_else(Utc::now)), None))
         }
@@ -3251,6 +3354,10 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         // shown, as the core leaves out what is snoozed or hidden.
         View::All | View::Hidden | View::Archive => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
+        }
+        // A pile (task E19.4): its mail from every folder of the accounts shown.
+        View::ReplyLater | View::SetAside => {
+            Some(pile_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         _ => None,
     };
@@ -3269,6 +3376,8 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         for_me,
         info,
         unread_all,
+        reply_later,
+        set_aside,
         sources,
         folders,
         categories,
@@ -3279,6 +3388,22 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         quiet,
         found,
     })
+}
+
+/// What the smart views "With attachments" and "Invitations" ask of the inbox of `account` (task
+/// E19.4): its first `limit` mails in `order`, snoozed and hidden ones too as before, but none on a
+/// pile ([`PileFilter::Without`], decision 3 of E19).
+fn smart_find(account: &str, limit: u32, order: Order) -> MailByRole {
+    MailByRole {
+        role: Role::Inbox,
+        account: Some(account.to_owned()),
+        snoozed: None,
+        hidden: None,
+        pile: Some(PileFilter::Without),
+        order,
+        limit,
+        cursor: None,
+    }
 }
 
 /// Walk global category pages until the requested number of messages from the selected accounts
@@ -3332,10 +3457,50 @@ async fn role_selected<S: MailSource>(
     accounts: Option<&[String]>,
 ) -> Result<MailPage, String> {
     let Some((role, snoozed, hidden)) = view.by_role() else { return Ok(MailPage::of(Vec::new(), None)) };
+    // "All" leaves the mail on a pile out (task E19.4, decision 3 of E19); "Hidden" and "Archive" are
+    // where it lies as well.
+    let pile = (*view == View::All).then_some(PileFilter::Without);
     let ask = |account: Option<String>, limit: u32, cursor: Option<String>| async move {
-        let find = MailByRole { role, account, snoozed, hidden, pile: None, order, limit, cursor };
+        let find = MailByRole { role, account, snoozed, hidden, pile, order, limit, cursor };
         inbox.mail_by_role(find).await.map_err(|err| err.to_string())
     };
+    walk_selected(ask, limit, cursor, accounts).await
+}
+
+/// The page of the pile `view` lists ("Reply later" or "Set aside", task E19.4) from `cursor` on:
+/// `MailSource::mail_in_pile` for every account (`accounts` `None`), the one chosen, or the core's
+/// pages walked for several as [`role_selected`] does. Empty for any other view and for no account
+/// chosen.
+async fn pile_selected<S: MailSource>(
+    inbox: &S,
+    view: &View,
+    limit: u32,
+    cursor: Option<String>,
+    order: Order,
+    accounts: Option<&[String]>,
+) -> Result<MailPage, String> {
+    let Some(pile) = view.pile() else { return Ok(MailPage::of(Vec::new(), None)) };
+    let ask = |account: Option<String>, limit: u32, cursor: Option<String>| async move {
+        let find = MailInPile { pile, account, order, limit, cursor };
+        inbox.mail_in_pile(find).await.map_err(|err| err.to_string())
+    };
+    walk_selected(ask, limit, cursor, accounts).await
+}
+
+/// One page of `limit` mails from `cursor` on, asked with `ask(account, limit, cursor)`: once for every
+/// account (`accounts` `None`) or the one chosen; with several chosen, the core's pages walked as
+/// [`category_selected`] does, keeping the chosen accounts' mail, so the cursor stays the core's and
+/// "Load more" skips nothing. Empty for no account chosen.
+async fn walk_selected<F, Fut>(
+    ask: F,
+    limit: u32,
+    cursor: Option<String>,
+    accounts: Option<&[String]>,
+) -> Result<MailPage, String>
+where
+    F: Fn(Option<String>, u32, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<MailPage, String>>,
+{
     let accounts = match accounts {
         None => return ask(None, limit, cursor).await,
         Some([]) => return Ok(MailPage::of(Vec::new(), None)),
@@ -3352,6 +3517,18 @@ async fn role_selected<S: MailSource>(
         }
         next = page.next;
     }
+}
+
+/// The number on the pile `pile` (task E19.4): `MailSource::count_in_pile` once for every account
+/// (`accounts` `None`), else for each account chosen, summed. `None` when one count failed, so the
+/// row shows no number rather than a wrong one.
+async fn count_piled<S: MailSource>(inbox: &S, pile: MailPile, accounts: Option<&[String]>) -> Option<u64> {
+    let Some(accounts) = accounts else { return inbox.count_in_pile(pile, None).await.ok() };
+    let mut total = 0_u64;
+    for account in accounts {
+        total = total.saturating_add(inbox.count_in_pile(pile, Some(account.clone())).await.ok()?);
+    }
+    Some(total)
 }
 
 /// The number on "All" (task E18.4): `MailSource::unread_in_all` once for every account
@@ -3451,6 +3628,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::Done) => View::Done,
                 Some(Open::Archive) => View::Archive,
                 Some(Open::Hidden) => View::Hidden,
+                Some(Open::ReplyLater) => View::ReplyLater,
+                Some(Open::SetAside) => View::SetAside,
                 // The first inbox, once the folders are in.
                 // The search starts there too, so the bar offers the folder and its account.
                 Some(Open::Folder | Open::Mail | Open::Search | Open::MuteMail | Open::MoveMail | Open::DeleteMail) => {
@@ -3479,6 +3658,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             for_me: Vec::new(),
             info: Vec::new(),
             unread_all: None,
+            reply_later: None,
+            set_aside: None,
             sources: Vec::new(),
             loaded: false,
             error: None,
@@ -3496,6 +3677,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             column_scroll: [None; 2],
             subject: None,
             mail_subject: None,
+            unless_reply: false,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
             lists: None,
@@ -4091,8 +4273,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::PickHour(hour) => self.pick.hour = hour.min(PICK_HOURS.len() - 1),
             Message::PickConfirm => {
                 let at = self.pick.at();
-                if let Some(subject) = self.subject.as_ref().filter(|_| at > self.now) {
-                    let edit = Edit::Snooze { id: subject.id.clone(), until: Some(at) };
+                if let Some(id) = self.snooze_id().filter(|_| at > self.now) {
+                    let edit =
+                        Edit::Snooze { id, until: Some(at), unless_reply: self.follows_up() && self.unless_reply };
                     return self.edit(edit);
                 }
             }
@@ -4467,6 +4650,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
             Message::ShowMail(id) => return self.show_mail(id),
+            Message::Pile(id, pile) => return self.pile_mail(id, pile),
+            Message::Piled(Ok(()), hint) => {
+                if let Some(hint) = hint {
+                    self.hint = Some(Hint { shown: Instant::now(), ..hint });
+                }
+                return self.load();
+            }
+            // Not changed: the load brings the row and the numbers back, and the error line says why.
+            Message::Piled(Err(err), _) => {
+                self.error = Some(Failure::new(tr("Couldn't change the pile."), err));
+                return self.load();
+            }
+            Message::ToggleUnlessReply => self.unless_reply = !self.unless_reply,
             Message::MailShown(Ok(()), hint) => {
                 if let Some(hint) = hint {
                     self.hint = Some(Hint { shown: Instant::now(), ..hint });
@@ -5312,6 +5508,90 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         )
     }
 
+    /// "Reply later", "Set aside" and "Remove from …" on the mail `id` (task E19.4, decisions 3 and 4
+    /// of E19): `MailSource::set_mail_pile` with `pile` (`None`: off its pile). The row leaves a list
+    /// that leaves mail on a pile out ([`View::leaves_out_piles`]: "All", a category, a smart view, a
+    /// pile), as when it is archived ([`App::take_out`]); in a folder, a search, "Hidden" and "Archive"
+    /// it stays with its new pile. The numbers on the piles follow at once. The hint ("On Reply
+    /// later.", "Set aside.", "Off the pile.") offers to undo it with the pile the mail lay on before
+    /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
+    /// ([`Message::Piled`]). Nothing for the pile the mail lies on already.
+    fn pile_mail(&mut self, id: String, pile: Option<MailPile>) -> Task<Message> {
+        self.close_menus();
+        let before = self.mail_pile(&id);
+        if before == pile {
+            return Task::none();
+        }
+        let text = match pile {
+            Some(MailPile::ReplyLater) => tr("On Reply later."),
+            Some(MailPile::SetAside) => tr("Set aside."),
+            None => tr("Off the pile."),
+        };
+        let ids = vec![id.clone()];
+        let hint = Hint {
+            text: text.to_owned(),
+            undo: Some(Undo::Pile(ids.clone(), before)),
+            shown: Instant::now(),
+            folder: None,
+        };
+        self.count_pile(before, false);
+        self.count_pile(pile, true);
+        self.set_row_pile(&id, pile);
+        if self.view.leaves_out_piles() {
+            self.take_out(&id);
+        }
+        self.set_mail_pile(ids, pile, Some(hint))
+    }
+
+    /// Sends `inbox.set_mail_pile` for `ids`; the answer comes as [`Message::Piled`] with `hint`.
+    fn set_mail_pile(&mut self, ids: Vec<String>, pile: Option<MailPile>, hint: Option<Hint>) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::Pile(ids.clone(), pile, hint.clone()));
+        let inbox = self.inbox.clone();
+        Task::perform(
+            async move { inbox.set_mail_pile(ids, pile).await.map_err(|err| err.to_string()) },
+            move |result| Message::Piled(result, hint.clone()),
+        )
+    }
+
+    /// The pile the mail `id` lies on, as listed or loaded ([`MessageSummary::pile`]); `None` for a
+    /// mail on none and one the window holds neither way.
+    fn mail_pile(&self, id: &str) -> Option<MailPile> {
+        if let Some(message) = self.messages.iter().find(|message| message.id == id) {
+            return message.pile;
+        }
+        match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => mail.summary.pile,
+            _ => None,
+        }
+    }
+
+    /// The mail `id` on `pile` where the window holds it, listed and loaded, so its rail and its row
+    /// say so before the answer.
+    fn set_row_pile(&mut self, id: &str, pile: Option<MailPile>) {
+        for message in self.messages.iter_mut().filter(|message| message.id == id) {
+            message.pile = pile;
+        }
+        if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut()
+            && mail.summary.id == id
+        {
+            mail.summary.pile = pile;
+        }
+    }
+
+    /// One more (`add`) or one less on the number of `pile` in the sidebar; nothing for no pile and a
+    /// number not known. The next load says the core's number.
+    fn count_pile(&mut self, pile: Option<MailPile>, add: bool) {
+        let count = match pile {
+            Some(MailPile::ReplyLater) => &mut self.reply_later,
+            Some(MailPile::SetAside) => &mut self.set_aside,
+            None => return,
+        };
+        if let Some(n) = count.as_mut() {
+            *n = if add { n.saturating_add(1) } else { n.saturating_sub(1) };
+        }
+    }
+
     /// Sends `edit` (nothing for `None`), changing the flags shown at once; the answer comes as
     /// [`Message::MailEdited`] with `hint`.
     fn mail_edit(&mut self, edit: Option<MailEdit>, hint: Option<Hint>) -> Task<Message> {
@@ -5998,6 +6278,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
                 })
             }
+            // A pile (task E19.4): the next page of the same pile.
+            View::ReplyLater | View::SetAside => {
+                let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
+                Box::pin(async move {
+                    pile_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
+                })
+            }
             _ => return Task::none(),
         };
         #[cfg(test)]
@@ -6265,6 +6552,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.for_me.sort_by_key(|item| !list::is_waiting(item));
         self.info = loaded.info;
         self.unread_all = loaded.unread_all;
+        self.reply_later = loaded.reply_later;
+        self.set_aside = loaded.set_aside;
         self.sources = loaded.sources;
         self.folders = loaded.folders;
         self.categories = loaded.categories;
@@ -6619,6 +6908,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 _ => Task::none(),
             },
             Command::Undo => self.undo(),
+            // `w` and `b` (task E19.4): the mail the keys act on onto its pile, or off it when it lies
+            // there – what the rail's item says; only the mail window has the piles.
+            Command::ReplyLater | Command::SetAside if self.launch.kind == Kind::Mail => {
+                let Some(id) = self.mail_target() else { return Task::none() };
+                let pile = if command == Command::ReplyLater { MailPile::ReplyLater } else { MailPile::SetAside };
+                let next = (self.mail_pile(&id) != Some(pile)).then_some(pile);
+                self.pile_mail(id, next)
+            }
+            Command::ReplyLater | Command::SetAside => Task::none(),
             // In the views of mail `s` and `m` act on the message's entry in "For me", as its card's
             // "Later" and "…" do (task E8.11).
             Command::Snooze | Command::Hide if self.view.is_mail() => match self.cursor_message_entry() {
@@ -6626,6 +6924,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 // A message without an entry is muted by its own traits (issue #123).
                 None if command == Command::Hide => {
                     self.cursor.clone().map_or_else(Task::none, |id| self.ask_mute_message(&id))
+                }
+                // The mail window follows up on any mail (task E19.4, decision 8 of E19): by its id.
+                None if self.launch.kind == Kind::Mail => {
+                    if let Some(id) = self.mail_target() {
+                        self.menu_at = MenuAt::Keys;
+                        self.ask_snooze(&id);
+                    }
+                    Task::none()
                 }
                 None => Task::none(),
             },
@@ -6804,7 +7110,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// Opens the snooze menu for the entry with `id`. Done entries are not snoozed, and an approval is
     /// never put off (task E8.5, "Knöpfe je Eintrag"): it waits for yes or no, a note says so.
+    ///
+    /// The mail window follows up on any mail (task E19.4, decision 8 of E19): for a mail's own id
+    /// (`m:…`) without an entry the menu opens for [`App::mail_subject`]. "Only if no reply" starts
+    /// off each time.
     fn ask_snooze(&mut self, id: &str) {
+        self.unless_reply = false;
+        if self.launch.kind == Kind::Mail && id.starts_with("m:") && self.find(id).is_none() {
+            self.drawer = false;
+            self.subject = None;
+            self.mail_subject = Some(id.to_owned());
+            self.menu = Some(Menu::Snooze);
+            return;
+        }
         let Some(item) = self.find(id).filter(|item| !matches!(item.state, State::Done { .. })).cloned() else {
             return;
         };
@@ -6813,6 +7131,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return;
         }
         self.drawer = false;
+        self.mail_subject = None;
         self.subject = Some(item);
         self.menu = Some(Menu::Snooze);
     }
@@ -7696,11 +8015,40 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// Sends `edit` with its hint and undo, worked out from the entry as it is now.
     fn edit(&mut self, edit: Edit) -> Task<Message> {
-        let Some(after) = self.find(edit.id()).map(|before| edit.after(before, self.now)) else {
-            return Task::none();
+        let mut after = match self.find(edit.id()) {
+            Some(before) => edit.after(before, self.now),
+            // A follow-up of a mail without an entry (task E19.4, decision 8 of E19): the core makes
+            // its entry, and "Undo" calls the follow-up off again.
+            None if matches!(edit, Edit::Snooze { .. }) && self.mail_subject.as_deref() == Some(edit.id()) => {
+                let undo = Edit::Snooze { id: edit.id().to_owned(), until: None, unless_reply: false };
+                After { text: tr("Brought back").to_owned(), undo: Some(undo) }
+            }
+            None => return Task::none(),
         };
+        // The mail window says "Follow up" (task E19.4), with its condition.
+        if let Edit::Snooze { until: Some(until), unless_reply, .. } = &edit
+            && self.follows_up()
+        {
+            after.text = list::follow_up_text(*until, *unless_reply, self.now);
+        }
         self.close_menus();
         self.send(edit, Some(after))
+    }
+
+    /// Whether this window's "Later" is "Follow up" (task E19.4): the mail window's, with "Only if no
+    /// reply" and "Cancel follow-up"; the hub and the App Feed keep "Later" (decision 12 of E19).
+    fn follows_up(&self) -> bool {
+        self.launch.kind == Kind::Mail
+    }
+
+    /// What the open snooze menu or picker puts off: the entry [`App::subject`], else the mail without
+    /// an entry of the mail window ([`App::mail_subject`], task E19.4).
+    fn snooze_id(&self) -> Option<String> {
+        match (&self.subject, &self.mail_subject) {
+            (Some(item), _) => Some(item.id.clone()),
+            (None, Some(id)) if self.follows_up() => Some(id.clone()),
+            (None, _) => None,
+        }
     }
 
     /// Whether the toast offers "Undo" now.
@@ -7735,6 +8083,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             // Back into "Hidden": the load after the answer shows the row there again.
             Undo::Shown(ids) => self.set_mail_shown(ids, false, None),
+            // Back on the pile it lay on, or off it: the load after the answer puts the row back.
+            Undo::Pile(ids, pile) => self.set_mail_pile(ids, pile, None),
             Undo::Muted { rule, reopen, moved } => {
                 #[cfg(test)]
                 self.sent.push(Sent::Unmute(rule.clone(), reopen.clone(), moved.clone()));
@@ -7809,36 +8159,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.menu == Some(Menu::Move) {
             return self.move_choices();
         }
+        if self.menu == Some(Menu::Snooze) {
+            return self.snooze_choices();
+        }
         let Some(item) = &self.subject else { return Vec::new() };
         let id = || item.id.clone();
         let choice = |icon, label: String, message| Choice::new(icon, label, message);
         match self.menu {
-            Some(Menu::Snooze) => {
-                let [later, tomorrow, next_week] = snooze_times(self.now);
-                let snooze = |icon, label: &str, until| Choice {
-                    when: Some(wake_short(until, self.now)),
-                    ..Choice::new(icon, label, Message::Edit(Edit::Snooze { id: id(), until: Some(until) }))
-                };
-                let mut choices = vec![
-                    snooze(Icon::Clock, tr("Later today"), later),
-                    snooze(Icon::Sun, tr("Tomorrow"), tomorrow),
-                    snooze(Icon::CalendarDays, tr("Next week"), next_week),
-                    choice(Icon::CalendarClock, tr("Pick…").to_owned(), Message::ShowPicker),
-                ];
-                // A reminder of an event comes back soon (task ER1.4): snoozing its entry snoozes
-                // the reminder, so the event is not missed.
-                if item.kind == torro_inbox::Kind::Reminder {
-                    choices.insert(
-                        0,
-                        snooze(Icon::Clock, tr("In 5 min"), self.now + TimeDelta::minutes(REMINDER_SNOOZE_MINUTES)),
-                    );
-                }
-                if matches!(item.state, State::Snoozed { .. }) {
-                    let wake = Message::Edit(Edit::Snooze { id: id(), until: None });
-                    choices.push(choice(Icon::Inbox, tr("Bring back now").to_owned(), wake));
-                }
-                choices
-            }
             Some(Menu::Lane) => {
                 let lane = other_lane(item.lane);
                 let edit = |remember| Message::Edit(Edit::Lane { id: id(), lane, remember });
@@ -7865,6 +8192,53 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Mute) => self.mute_choices(item),
             _ => Vec::new(),
         }
+    }
+
+    /// The entries of the snooze menu ([`App::choices`]): Later today, Tomorrow, Next week (a
+    /// reminder first "In 5 min"), Pick… and for a snoozed entry "Bring back now".
+    ///
+    /// In the mail window it is "Follow up" (task E19.4) for [`App::subject`] or a mail without an
+    /// entry ([`App::mail_subject`]): the same times, sent with "Only if no reply" as its line under
+    /// them says ([`App::unless_reply`], which the line switches – the menu stays open), and "Cancel
+    /// follow-up" for a snoozed entry and an open one that still has its date ([`Item::follow_up`],
+    /// decision 7 of E19).
+    fn snooze_choices(&self) -> Vec<Choice> {
+        let Some(id) = self.snooze_id() else { return Vec::new() };
+        let item = self.subject.as_ref();
+        let mail = self.follows_up();
+        let unless_reply = mail && self.unless_reply;
+        let [later, tomorrow, next_week] = snooze_times(self.now);
+        let snooze = |icon, label: &str, until| Choice {
+            when: Some(wake_short(until, self.now)),
+            ..Choice::new(icon, label, Message::Edit(Edit::Snooze { id: id.clone(), until: Some(until), unless_reply }))
+        };
+        let mut choices = vec![
+            snooze(Icon::Clock, tr("Later today"), later),
+            snooze(Icon::Sun, tr("Tomorrow"), tomorrow),
+            snooze(Icon::CalendarDays, tr("Next week"), next_week),
+            Choice::new(Icon::CalendarClock, tr("Pick…"), Message::ShowPicker),
+        ];
+        // A reminder of an event comes back soon (task ER1.4): snoozing its entry snoozes the
+        // reminder, so the event is not missed.
+        if item.is_some_and(|item| item.kind == torro_inbox::Kind::Reminder) {
+            choices
+                .insert(0, snooze(Icon::Clock, tr("In 5 min"), self.now + TimeDelta::minutes(REMINDER_SNOOZE_MINUTES)));
+        }
+        if mail {
+            let mark = if self.unless_reply { Icon::SquareCheck } else { Icon::Square };
+            choices
+                .push(Choice { line: true, ..Choice::new(mark, tr("Only if no reply"), Message::ToggleUnlessReply) });
+        }
+        let snoozed = item.is_some_and(|item| matches!(item.state, State::Snoozed { .. }));
+        let dated = mail && item.is_some_and(|item| item.follow_up.is_some());
+        if snoozed || dated {
+            let wake = Message::Edit(Edit::Snooze { id: id.clone(), until: None, unless_reply: false });
+            choices.push(match mail {
+                true => Choice::new(Icon::X, tr("Cancel follow-up"), wake),
+                false => Choice::new(Icon::Inbox, tr("Bring back now"), wake),
+            });
+        }
+        choices
     }
 
     /// The panel button and `[`: in the wide layout the other sidebar mode, remembered for the
@@ -8474,7 +8848,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Message::CloseMenu,
             )),
             Some(Menu::Snooze) => {
-                Some(widgets::floating(&snooze_at, below, self.choice_menu(tr("Later until")), Message::CloseMenu))
+                // "Follow up" in the mail window (task E19.4).
+                let title = if self.follows_up() { trc("snooze", "Follow up") } else { tr("Later until") };
+                Some(widgets::floating(&snooze_at, below, self.choice_menu(title), Message::CloseMenu))
             }
             Some(Menu::Lane) => {
                 let title = self.subject.as_ref().map_or_else(String::new, |item| {
@@ -9073,8 +9449,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// their lane, a source its open entries in both lanes – so the sources add up to "For me"
     /// plus "Info". "Snoozed" and "Done" are put away and have no number. No "0" anywhere.
     ///
-    /// The mail window (task E18.4) lists All – with the unread mail it holds –, Later and Hidden,
-    /// and no sources: they are all mail accounts, whose folders follow ([`App::folder_entries`]).
+    /// The mail window (task E18.4) lists All – with the unread mail it holds –, Reply later and Set
+    /// aside – with the mail they hold (task E19.4) –, Follow up and Hidden, and no sources: they are
+    /// all mail accounts, whose folders follow ([`App::folder_entries`]).
     fn nav_entries(&self) -> (Vec<NavEntry>, Vec<NavEntry>) {
         let kind = self.launch.kind;
         let entry = |view: View, count: Option<usize>| NavEntry {
@@ -9088,11 +9465,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
         let for_me = Some(self.for_me.len()).filter(|&n| n > 0);
         let views = match kind {
-            // What waits is the unread mail of "All" (decision 4 of E18); Later and Hidden are put
-            // away and have no number.
+            // What waits is the unread mail of "All" (decision 4 of E18) and the mail on each pile
+            // (task E19.4); Follow up and Hidden are put away and have no number.
             Kind::Mail => {
-                let unread = self.unread_all.filter(|&n| n > 0).map(|n| usize::try_from(n).unwrap_or(usize::MAX));
-                vec![entry(View::All, unread), entry(View::Snoozed, None), entry(View::Hidden, None)]
+                let number = |n: Option<u64>| n.filter(|&n| n > 0).map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+                vec![
+                    entry(View::All, number(self.unread_all)),
+                    entry(View::ReplyLater, number(self.reply_later)),
+                    entry(View::SetAside, number(self.set_aside)),
+                    entry(View::Snoozed, None),
+                    entry(View::Hidden, None),
+                ]
             }
             // New, Later, Done (task E8.4); "New" counts all it shows, both lanes. The sources are
             // the window's choice, not views ([`App::sidebar`]).
@@ -9828,6 +10211,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// the day with previous / next, the time of day as segments, and "Later" at the right (off
     /// for a time already past). Iced has no date picker and the suite none of its own yet, so it
     /// steps through days instead of showing a month; ←/→ and ↑/↓ do the same from the keyboard.
+    ///
+    /// In the mail window (task E19.4) it is "Follow up on" with the button "Follow up" and, at the
+    /// left of it, "Only if no reply" as a chip (`widgets::choice_chip`), switched as in the menu.
     fn picker(&self) -> Element<'_, Message> {
         let today = local_today(self.now);
         let (day, at) = (self.pick.day, self.pick.at());
@@ -9856,6 +10242,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         ];
         let snooze = (at > self.now).then_some(Message::PickConfirm);
         // At the right, where the action of a dialog is.
+        if self.follows_up() {
+            let unless_reply = Some(Message::ToggleUnlessReply);
+            let actions = vec![
+                widgets::choice_chip(tr("Only if no reply"), None, self.unless_reply, unless_reply),
+                iced::widget::space::horizontal().into(),
+                widgets::text_button(
+                    Some(Icon::CalendarClock),
+                    trc("snooze", "Follow up"),
+                    style::button::primary,
+                    snooze,
+                ),
+            ];
+            return widgets::popover(widgets::section_title(tr("Follow up on")), title, rows, actions);
+        }
         let actions = vec![
             iced::widget::space::horizontal().into(),
             widgets::text_button(Some(Icon::Clock), tr("Later"), style::button::primary, snooze),
@@ -10319,6 +10719,7 @@ fn closes_rail(message: &Message) -> bool {
     matches!(
         message,
         Message::Mail(..)
+            | Message::Pile(..)
             | Message::SetDone(..)
             | Message::AskSnooze(_)
             | Message::AskLane(_)
@@ -11751,7 +12152,8 @@ mod tests {
         }
         let choices = app.choices();
         assert_eq!(choices[0].label, tr("In 5 min"));
-        let soon = Edit::Snooze { id: "demo-2".into(), until: Some(app.now + TimeDelta::minutes(5)) };
+        let soon =
+            Edit::Snooze { id: "demo-2".into(), until: Some(app.now + TimeDelta::minutes(5)), unless_reply: false };
         assert!(matches!(&choices[0].message, Message::Edit(edit) if *edit == soon), "snoozes the entry for 5 min");
         assert_eq!(choices.len(), 5, "and the usual ones after it");
     }
@@ -11767,8 +12169,8 @@ mod tests {
         let _ = press(&mut app, Key::E);
         assert!(app.sent.is_empty(), "e does not reach the list behind the menu");
         let _ = press(&mut app, Key::Digit(2));
-        let snooze = Edit::Snooze { id: "demo-2".into(), until: Some(tomorrow) };
-        let back = Edit::Snooze { id: "demo-2".into(), until: None };
+        let snooze = Edit::Snooze { id: "demo-2".into(), until: Some(tomorrow), unless_reply: false };
+        let back = Edit::Snooze { id: "demo-2".into(), until: None, unless_reply: false };
         let text = trf("Later until {time}", &[("time", &list::wake_text(tomorrow, app.now))]);
         assert_eq!(app.sent.last(), Some(&Sent::Edit(snooze, Some(After { text, undo: Some(back.clone()) }))));
         assert!(app.menu.is_none(), "the menu closes");
@@ -11791,7 +12193,7 @@ mod tests {
         assert_eq!(app.choices().last().map(|c| c.label.clone()), Some(tr("Bring back now").to_owned()));
         let _ = press(&mut app, Key::Digit(1));
         let Some(Sent::Edit(_, Some(after))) = app.sent.last() else { panic!("an edit with a hint") };
-        assert_eq!(after.undo, Some(Edit::Snooze { id: "demo-10".into(), until: Some(old) }));
+        assert_eq!(after.undo, Some(Edit::Snooze { id: "demo-10".into(), until: Some(old), unless_reply: false }));
         let _ = press(&mut app, Key::S);
         let _ = press(&mut app, Key::Digit(5));
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Snooze { until: None, .. }, _))), "Unsnooze");
@@ -12070,7 +12472,7 @@ mod tests {
         let _ = press(&mut app, Key::Digit(1));
         deliver(&mut app);
         let hint = app.hint.clone().expect("a toast");
-        assert!(matches!(hint.undo, Some(Undo::Edit(Edit::Snooze { ref id, until: None })) if id == "demo-6"));
+        assert!(matches!(hint.undo, Some(Undo::Edit(Edit::Snooze { ref id, until: None, .. })) if id == "demo-6"));
         let _ = app.update(Message::Undo);
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Snooze { until: None, .. }, None))), "no longer later");
         deliver(&mut app);
@@ -14489,21 +14891,33 @@ mod tests {
     /// Task E18.4: All · Later · Hidden at the top – All with the unread mail of "All", the others
     /// without a number –, "Smart views", then "Folders" with Archive, the pinned folders and "Open
     /// folders" with its chevron; no sources, no "For me", "Info" or "Done". The menu has the same.
+    /// Task E19.4: All · Reply later · Set aside · Follow up · Hidden – the piles with the mail they
+    /// hold (`count_in_pile`), "Later" no more.
     #[test]
     fn the_mail_windows_sidebar_lists_its_views_smart_views_and_folders() {
         let mut app = mail_window(Density::Comfortable, &[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
-        assert_eq!(labels, [tr("All"), tr("Later"), tr("Hidden")]);
+        let pile = trc("pile", "Set aside");
+        let follow = trc("snooze", "Follow up");
+        assert_eq!(labels, [tr("All"), tr("Reply later"), pile, follow, tr("Hidden")]);
+        assert!(!labels.contains(&tr("Later").to_owned()), "Later is the hub's");
         assert_eq!(
             views.iter().map(|entry| entry.view.clone()).collect::<Vec<_>>(),
-            [View::All, View::Snoozed, View::Hidden]
+            [View::All, View::ReplyLater, View::SetAside, View::Snoozed, View::Hidden]
         );
+        let icons: Vec<Mark> = views.iter().map(|entry| entry.mark).collect();
+        let marks = [Icon::Mail, Icon::MessageSquareReply, Icon::Bookmark, Icon::CalendarClock, Icon::EyeOff];
+        assert_eq!(icons, marks.map(Mark::Icon));
         let unread = block_on(app.inbox.unread_in_all(None)).expect("the demo counts");
         assert!(unread > 0, "the demo has unread mail");
         assert_eq!(app.unread_all, Some(unread));
+        let piled = |pile| block_on(app.inbox.count_in_pile(pile, None)).expect("the demo counts");
+        let (reply, aside) = (piled(MailPile::ReplyLater), piled(MailPile::SetAside));
+        assert_eq!((reply, aside), (2, 1), "the demo's piles");
+        assert_eq!((app.reply_later, app.set_aside), (Some(reply), Some(aside)));
         let counts: Vec<Option<usize>> = views.iter().map(|entry| entry.count).collect();
-        assert_eq!(counts, [Some(unread as usize), None, None], "only All has a number");
+        assert_eq!(counts, [Some(unread as usize), Some(2), Some(1), None, None], "All and the piles have numbers");
         assert!(views[0].active, "All is the start view");
         assert!(sources.is_empty(), "every source is a mail account, listed by its folders");
         let smart: Vec<String> = app.smart_entries().into_iter().map(|entry| entry.label).collect();
@@ -14614,6 +15028,302 @@ mod tests {
         let one = &both[1..];
         let page = block_on(role_selected(&*app.inbox, &View::All, mail::PAGE, None, Order::NewestFirst, Some(one)));
         assert!(page.expect("a page").messages.iter().all(|message| message.account == both[1]));
+    }
+
+    /// Runs the last change of a pile the window started against the demo, hands the answer to
+    /// `update` as the task would, and loads the view again (task E19.4).
+    fn deliver_pile(app: &mut App<DemoSource>) {
+        let Some(Sent::Pile(ids, pile, hint)) = last_pile(app).cloned() else { panic!("no pile change to deliver") };
+        let result = block_on(MailSource::set_mail_pile(&*app.inbox, ids, pile)).map_err(|err| err.to_string());
+        let _ = app.update(Message::Piled(result, hint));
+        load(app);
+    }
+
+    /// Task E19.4: "Reply later" and "Set aside" are views of mail of their own – their names, icons,
+    /// listings and `--open` words –, list their pile through `mail_in_pile` from every folder and load
+    /// more from its cursor; "All", the categories and the smart views leave their mail out.
+    #[test]
+    fn the_piles_list_their_mail_and_load_more() {
+        for (view, word, name, icon) in [
+            (View::ReplyLater, "reply-later", tr("Reply later"), Icon::MessageSquareReply),
+            (View::SetAside, "set-aside", trc("pile", "Set aside"), Icon::Bookmark),
+        ] {
+            assert!(view.is_mail() && view.filter().is_none() && view.leaves_out_piles(), "{view:?}");
+            assert_eq!((view.name(), view.icon(), view.listing()), (name.to_owned(), icon, Some(word.to_owned())));
+            let app = mail_window(Density::Compact, &["--open", word]);
+            assert_eq!(app.view, view, "--open {word}");
+            assert_eq!(app.title(), trf("Mail · {view}", &[("view", &name)]));
+        }
+        assert!(!View::Folder(FolderView::of(&demo_folder())).leaves_out_piles(), "a folder keeps it");
+        let piled = ["m:p7", "m:w13", "m:w5"];
+        let mut app = mail_window(Density::Compact, &[]);
+        assert!(message_ids(&app).iter().all(|id| !piled.contains(id)), "All leaves the piles out");
+        let _ = app.update(Message::Show(View::ReplyLater));
+        load(&mut app);
+        let mut ids = message_ids(&app);
+        ids.sort_unstable();
+        assert_eq!(ids, ["m:p7", "m:w13"], "the demo's Reply later");
+        assert!(app.messages.iter().all(|message| message.pile == Some(MailPile::ReplyLater)));
+        let _ = app.update(Message::Show(View::SetAside));
+        load(&mut app);
+        assert_eq!(message_ids(&app), ["m:w5"], "the demo's Set aside");
+        for view in [View::Attachments, View::Invitations] {
+            let _ = app.update(Message::Show(view.clone()));
+            load(&mut app);
+            assert!(app.messages.iter().all(|message| message.pile.is_none()), "{view:?} leaves the piles out");
+        }
+
+        // "Load more": the next page of the same pile, from the cursor.
+        let first =
+            block_on(pile_selected(&*app.inbox, &View::ReplyLater, 1, None, Order::NewestFirst, None)).expect("a page");
+        let cursor = first.next.clone().expect("two on Reply later");
+        let _ = app.update(Message::Show(View::ReplyLater));
+        load(&mut app);
+        app.messages.truncate(1);
+        app.more = Some(cursor.clone());
+        let _ = app.update(Message::MoreMail);
+        assert_eq!(app.sent.last(), Some(&Sent::More(cursor.clone())));
+        let rest =
+            block_on(pile_selected(&*app.inbox, &View::ReplyLater, mail::PAGE, Some(cursor), Order::NewestFirst, None));
+        let accounts = app.mail_accounts.clone();
+        let _ = app.update(Message::MoreLoadedAccounts(View::ReplyLater, app.order, accounts, rest));
+        assert_eq!(app.messages.len(), 2, "the rest of the pile");
+    }
+
+    /// The first inbox folder of the demo.
+    fn demo_folder() -> Folder {
+        let demo = DemoSource::new(Utc::now());
+        let folders = block_on(MailSource::mail_folders(&demo)).expect("the demo's folders");
+        mail::first_inbox(&folders).expect("an inbox").clone()
+    }
+
+    /// Task E19.4 (decision 4 of E19): `w` puts the mail under the cursor on "Reply later", `b` on "Set
+    /// aside"; the row leaves "All" at once, the number follows, the hint says so and "Undo" puts the
+    /// mail back where it lay. On its pile the same key takes it off.
+    #[test]
+    fn w_and_b_put_mail_on_its_pile_and_undo_puts_it_back() {
+        let mut app = mail_window(Density::Compact, &[]);
+        for (key, pile, text, count) in [
+            (Key::W, MailPile::ReplyLater, tr("On Reply later."), 2),
+            (Key::B, MailPile::SetAside, tr("Set aside."), 1),
+        ] {
+            let id = app.messages.first().map(|message| message.id.clone()).expect("mail in All");
+            let _ = app.update(Message::SelectMail(id.clone()));
+            let _ = app.update(Message::Key(key));
+            let hint = Hint { text: text.to_owned(), undo: Some(Undo::Pile(vec![id.clone()], None)), ..hint_of(&app) };
+            assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![id.clone()], Some(pile), Some(hint))));
+            assert!(!message_ids(&app).contains(&id.as_str()), "{key:?}: out of All at once");
+            let counted = if pile == MailPile::ReplyLater { app.reply_later } else { app.set_aside };
+            assert_eq!(counted, Some(count + 1), "{key:?}: one more on the pile");
+            deliver_pile(&mut app);
+            assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(text), "{key:?}");
+            let _ = app.update(Message::Undo);
+            assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![id.clone()], None, None)), "{key:?}: undone");
+            deliver_pile(&mut app);
+            assert!(message_ids(&app).contains(&id.as_str()), "{key:?}: back in All");
+        }
+        // On its pile `w` takes it off; "Undo" lays it back.
+        let _ = app.update(Message::Show(View::ReplyLater));
+        load(&mut app);
+        let _ = app.update(Message::SelectMail("m:p7".into()));
+        let _ = app.update(Message::Key(Key::W));
+        match last_pile(&app) {
+            Some(Sent::Pile(ids, None, Some(hint))) => {
+                assert_eq!(ids, &["m:p7"]);
+                assert_eq!(hint.text, tr("Off the pile."));
+                assert_eq!(hint.undo, Some(Undo::Pile(vec!["m:p7".into()], Some(MailPile::ReplyLater))));
+            }
+            other => panic!("off the pile, not {other:?}"),
+        }
+        assert!(!message_ids(&app).contains(&"m:p7"), "out of Reply later");
+        assert_eq!(app.reply_later, Some(1));
+        // `b` moves it from one pile to the other.
+        let _ = app.update(Message::SelectMail("m:w13".into()));
+        let _ = app.update(Message::Key(Key::B));
+        assert!(matches!(last_pile(&app), Some(Sent::Pile(_, Some(MailPile::SetAside), _))));
+        assert_eq!((app.reply_later, app.set_aside), (Some(0), Some(2)), "from one pile to the other");
+        // An error brings the row back with the load and says so.
+        let _ = app.update(Message::Piled(Err("offline".into()), None));
+        assert!(app.error.is_some());
+        load(&mut app);
+        assert!(message_ids(&app).contains(&"m:w13"), "the demo kept it: back in the list");
+    }
+
+    /// The last change of a pile the window started (task E19.4): the reader's next mail, marked read
+    /// as the cursor moves on, may follow it.
+    fn last_pile<S>(app: &App<S>) -> Option<&Sent> {
+        app.sent.iter().rev().find(|sent| matches!(sent, Sent::Pile(..)))
+    }
+
+    /// The hint of the last change of a pile, for comparing a hint without its time.
+    fn hint_of(app: &App<DemoSource>) -> Hint {
+        match last_pile(app) {
+            Some(Sent::Pile(_, _, Some(hint))) => hint.clone(),
+            _ => Hint { text: String::new(), undo: None, shown: Instant::now(), folder: None },
+        }
+    }
+
+    /// Task E19.4 (decision 4 of E19): in a folder the mail stays where it is with its new pile, and its
+    /// rail then offers "Remove from …"; the rail's items send the same as the keys.
+    #[test]
+    fn in_a_folder_the_row_stays_with_its_new_pile() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::Show(View::Folder(FolderView::of(&demo_folder()))));
+        load(&mut app);
+        let id = app.messages.iter().find(|message| message.pile.is_none()).map(|m| m.id.clone()).expect("mail");
+        let _ = app.update(Message::SelectMail(id.clone()));
+        let _ = app.update(Message::Pile(id.clone(), Some(MailPile::SetAside)));
+        assert!(
+            matches!(last_pile(&app), Some(Sent::Pile(ids, Some(MailPile::SetAside), Some(_))) if ids.as_slice() == std::slice::from_ref(&id))
+        );
+        let row = app.messages.iter().find(|message| message.id == id).expect("still listed");
+        assert_eq!(row.pile, Some(MailPile::SetAside), "with its new pile");
+        let words: Vec<String> = app
+            .rail_groups(SizeClass::Wide, &detail::Anchors::default())
+            .expect("the rail")
+            .iter()
+            .flat_map(|group| group.items.iter().map(|item| item.label.to_string()))
+            .collect();
+        assert!(words.contains(&tr("Remove from Set aside").to_owned()), "{words:?}");
+        assert!(words.contains(&tr("Reply later").to_owned()), "{words:?}");
+        // The same pile again changes nothing.
+        let sent = app.sent.len();
+        let _ = app.update(Message::Pile(id, Some(MailPile::SetAside)));
+        assert_eq!(app.sent.len(), sent, "nothing to send");
+    }
+
+    /// Task E19.4 (decision 8 of E19): `s` on a mail without an entry opens "Follow up" for the mail's
+    /// own id; its times send `snooze_item` with that `m:` id, its hint says "Follow up …" and "Undo"
+    /// calls it off.
+    #[test]
+    fn s_follows_up_a_mail_without_an_entry_by_its_id() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let id = app
+            .messages
+            .iter()
+            .find(|message| mail::entry_of(&app.for_me, &message.id).is_none())
+            .map(|message| message.id.clone())
+            .expect("a mail without an entry");
+        let _ = app.update(Message::SelectMail(id.clone()));
+        let _ = app.update(Message::Key(Key::S));
+        assert_eq!(app.menu, Some(Menu::Snooze));
+        assert_eq!((app.subject.as_ref(), app.mail_subject.as_deref()), (None, Some(id.as_str())));
+        let labels: Vec<String> = app.choices().into_iter().map(|choice| choice.label).collect();
+        assert!(labels.contains(&tr("Only if no reply").to_owned()), "{labels:?}");
+        assert!(!labels.contains(&tr("Cancel follow-up").to_owned()), "nothing to cancel yet");
+        let [_, tomorrow, _] = snooze_times(app.now);
+        let _ = app.update(Message::Key(Key::Digit(2)));
+        match app.sent.last() {
+            Some(Sent::Edit(Edit::Snooze { id: sent, until, unless_reply }, Some(after))) => {
+                assert_eq!((sent, *until, *unless_reply), (&id, Some(tomorrow), false));
+                assert_eq!(after.text, list::follow_up_text(tomorrow, false, app.now));
+                assert_eq!(after.undo, Some(Edit::Snooze { id: id.clone(), until: None, unless_reply: false }));
+            }
+            other => panic!("a follow-up of the mail, not {other:?}"),
+        }
+        assert_eq!(app.menu, None);
+        // The rail's item does the same.
+        let groups = mail::action_groups(
+            &app.reading().expect("the mail"),
+            None,
+            &app.folders,
+            true,
+            false,
+            &detail::Anchors::default(),
+        );
+        let follow = groups.iter().flat_map(|group| &group.items).find(|item| item.label == tr("Follow up…"));
+        assert!(matches!(follow.and_then(|item| item.press()), Some(Message::AskSnooze(sent)) if sent == id));
+    }
+
+    /// Task E19.4: "Only if no reply" switches in the menu – which stays open – and in the picker, and
+    /// lands as `unless_reply: true`; the hint says so. It starts off each time the menu opens.
+    #[test]
+    fn only_if_no_reply_lands_as_unless_reply() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let id = app.messages.first().map(|message| message.id.clone()).expect("mail");
+        let _ = app.update(Message::AskSnooze(id.clone()));
+        let only = |app: &App<DemoSource>| {
+            app.choices().into_iter().find(|choice| choice.label == tr("Only if no reply")).expect("the line")
+        };
+        assert_eq!(only(&app).icon, Icon::Square);
+        assert!(only(&app).line, "under the times, apart");
+        let _ = app.update(only(&app).message);
+        assert!(app.unless_reply && app.menu == Some(Menu::Snooze), "on, and the menu stays");
+        assert_eq!(only(&app).icon, Icon::SquareCheck);
+        let [_, tomorrow, _] = snooze_times(app.now);
+        let _ = app.update(Message::Key(Key::Digit(2)));
+        let Some(Sent::Edit(Edit::Snooze { until, unless_reply: true, .. }, Some(after))) = app.sent.last() else {
+            panic!("only if no reply")
+        };
+        assert_eq!(*until, Some(tomorrow));
+        assert!(after.text.ends_with(tr("only if no reply")), "{}", after.text);
+        // The picker: its chip switches the same, "Follow up" sends it.
+        let _ = app.update(Message::AskSnooze(id));
+        assert!(!app.unless_reply, "off as the menu opens again");
+        let _ = app.update(Message::ShowPicker);
+        let _ = app.update(Message::ToggleUnlessReply);
+        let _ = app.view();
+        let _ = app.update(Message::PickConfirm);
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Snooze { unless_reply: true, .. }, _))));
+    }
+
+    /// Task E19.4 (decision 7 of E19): "Follow up" lists the snoozed mail entries – the demo's
+    /// `demo-follow-p4` only if no reply –; "Cancel follow-up" sends `until: None` and its undo puts the
+    /// follow-up back with its condition; an open entry that still has its date offers it too.
+    #[test]
+    fn cancel_follow_up_sends_until_none() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Show(View::Snoozed));
+        load(&mut app);
+        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &trc("snooze", "Follow up"))]));
+        let item = app.items.iter().find(|item| item.id == "demo-follow-p4").cloned().expect("the follow-up");
+        let follow = item.follow_up.expect("its date");
+        assert!(follow.unless_reply);
+        let _ = app.update(Message::AskSnooze(item.id.clone()));
+        let last = app.choices().pop().expect("choices");
+        assert_eq!(last.label, tr("Cancel follow-up"));
+        let _ = app.update(last.message);
+        match app.sent.last() {
+            Some(Sent::Edit(edit, Some(after))) => {
+                assert_eq!(edit, &Edit::Snooze { id: item.id.clone(), until: None, unless_reply: false });
+                let back = Edit::Snooze { id: item.id.clone(), until: Some(follow.at), unless_reply: true };
+                assert_eq!(after.undo, Some(back), "Undo with its condition");
+            }
+            other => panic!("cancelled, not {other:?}"),
+        }
+        // An open entry whose conversation came back after a reply keeps its date and its "Cancel".
+        let open = Item { state: State::New, ..item };
+        app.items.push(open.clone());
+        let _ = app.update(Message::AskSnooze(open.id.clone()));
+        assert!(app.choices().iter().any(|choice| choice.label == tr("Cancel follow-up")));
+        let properties = detail::properties(&open, app.now, true).len();
+        assert_eq!(properties, detail::properties(&open, app.now, false).len() + 1, "its date in the panel");
+    }
+
+    /// Task E19.4 (decision 12 of E19): the hub keeps "Later" – its sidebar, its menu without "Only if
+    /// no reply", "Bring back now" and its hint "Later until …"; `w` and `b` do nothing there.
+    #[test]
+    fn the_hub_keeps_later() {
+        let mut app = loaded(&["--view", "hub"]);
+        assert_eq!(Kind::Hub.view_name(&View::Snoozed), tr("Later"));
+        assert_eq!(Kind::Notifications.view_name(&View::Snoozed), tr("Later"));
+        assert_eq!(Kind::Hub.view_icon(&View::Snoozed), Icon::Clock);
+        let id =
+            app.for_me.iter().find(|item| !detail::is_approval(item)).map(|item| item.id.clone()).expect("an entry");
+        let _ = app.update(Message::AskSnooze(id.clone()));
+        let labels: Vec<String> = app.choices().into_iter().map(|choice| choice.label).collect();
+        assert!(!labels.contains(&tr("Only if no reply").to_owned()), "{labels:?}");
+        let [_, tomorrow, _] = snooze_times(app.now);
+        let _ = app.update(Message::Key(Key::Digit(2)));
+        let Some(Sent::Edit(Edit::Snooze { unless_reply: false, .. }, Some(after))) = app.sent.last() else {
+            panic!("a plain snooze")
+        };
+        assert_eq!(after.text, trf("Later until {time}", &[("time", &list::wake_text(tomorrow, app.now))]));
+        let sent = app.sent.len();
+        let _ = app.update(Message::Key(Key::W));
+        let _ = app.update(Message::Key(Key::B));
+        assert_eq!(app.sent.len(), sent, "no piles in the hub");
     }
 
     /// Task E18.4: the start states of the mail window – no `--open`, `overview`, `info`, `done` and
@@ -15573,7 +16283,7 @@ mod tests {
             assert!(app.wide_reader(class, &detail::Anchors::default()).is_none(), "{class:?}: the panel");
             let words = words(&app, class);
             assert!(!words.contains(&tr("Close").to_owned()), "{class:?}: the ✕ is in the panel's head");
-            assert!(words.contains(&tr("Later…").to_owned()), "{class:?}: the entry's own");
+            assert!(words.contains(&tr("Follow up…").to_owned()), "{class:?}: the entry's own (task E19.4)");
             assert!(!words.contains(&tr("Done").to_owned()), "{class:?}: mail is archived (task E18.5)");
             let _ = app.view();
         }

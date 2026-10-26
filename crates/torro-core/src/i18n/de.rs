@@ -6463,4 +6463,32 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} texts offline", "{n} Texte offline"),
     ("{n} unread", "{n} ungelesen"),
     ("{n} with full text", "{n} mit Volltext"),
+    // The mail window: Reply later, Set aside and Follow up instead of Later (E19.4, issue #315)
+    ("Reply later", "Später beantworten"),
+    ("Set aside", "Beiseitelegen"),
+    // The pile, not the action (`trc("pile", …)`).
+    ("pile|Set aside", "Beiseitegelegt"),
+    // The mail window's "Follow up" (`trc("snooze", …)`); the hub's "Follow up" on a task is "Nachfassen".
+    ("snooze|Follow up", "Wiedervorlage"),
+    ("Follow up…", "Wiedervorlage…"),
+    ("Follow up on", "Wiedervorlage am"),
+    ("Follow up {time}", "Wiedervorlage {time}"),
+    ("only if no reply", "nur ohne Antwort"),
+    ("Only if no reply", "Nur ohne Antwort"),
+    ("Cancel follow-up", "Wiedervorlage aufheben"),
+    ("Remove from Reply later", "Aus „Später beantworten“ nehmen"),
+    ("Remove from Set aside", "Zurück aus „Beiseitegelegt“"),
+    ("On Reply later.", "Auf „Später beantworten“."),
+    ("Set aside.", "Beiseitegelegt."),
+    ("Off the pile.", "Vom Stapel genommen."),
+    ("Couldn't change the pile.", "Der Stapel konnte nicht geändert werden."),
+    ("Nothing to reply to later.", "Nichts später zu beantworten."),
+    ("Mail you want to answer later waits here.", "Mails, die du später beantworten willst, warten hier."),
+    ("Nothing set aside.", "Nichts beiseitegelegt."),
+    ("Mail you set aside to look up again waits here.", "Mails, die du zum Nachschlagen beiseitelegst, warten hier."),
+    ("No follow-ups.", "Keine Wiedervorlagen."),
+    (
+        "Conversations you follow up on wait here until their day.",
+        "Unterhaltungen mit Wiedervorlage warten hier bis zu ihrem Tag.",
+    ),
 ];

@@ -12,7 +12,9 @@
 //!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
 //!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all in the list (archive in an opened mail), `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
-//!    reader between HTML and text (task M9.7; the app decides whether it has HTML); in a menu of choices the digits pick
+//!    reader between HTML and text (task M9.7; the app decides whether it has HTML); `w` puts the mail on
+//!    "Reply later" and `b` on "Set aside" (task E19.4; again on its pile, it takes it off – the app
+//!    decides); in a menu of choices the digits pick
 //!    its entries; `[` collapses the sidebar and `]` the mail's action rail (task E14.3); in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
@@ -102,6 +104,10 @@ pub enum Key {
     F,
     /// `v`.
     V,
+    /// `w` (task E19.4).
+    W,
+    /// `b` (task E19.4).
+    B,
     /// The hash sign (Shift + 3 on many keyboards: Shift does not stop it).
     Hash,
     /// Delete or Backspace (the key Mac keyboards call "delete", issue #118). A text field that has
@@ -211,6 +217,12 @@ pub enum Command {
     SwitchView,
     /// Take the first suggestion under the search field (issue #136).
     Complete,
+    /// Put the mail under the cursor on "Reply later", or take it off when it lies there (task E19.4,
+    /// `w`; the mail window only).
+    ReplyLater,
+    /// Put the mail under the cursor on "Set aside", or take it off when it lies there (task E19.4,
+    /// `b`; the mail window only).
+    SetAside,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
     /// The bell's menu: "For" one step longer (→, `true`) or shorter (←).
@@ -399,6 +411,8 @@ pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Opt
         Name::Character("a") => Key::A,
         Name::Character("f") => Key::F,
         Name::Character("v") => Key::V,
+        Name::Character("w") => Key::W,
+        Name::Character("b") => Key::B,
         Name::Character("#") => Key::Hash,
         Name::Named(named @ (Named::Delete | Named::Backspace)) => {
             let pressed = if named == Named::Delete { shortcuts::Key::Delete } else { shortcuts::Key::Backspace };
@@ -446,6 +460,8 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::Slash) => Some(Command::Search),
         (Focus::List, Key::Tab) => Some(Command::Complete),
         (Focus::List, Key::V) => Some(Command::SwitchView),
+        (Focus::List, Key::W) => Some(Command::ReplyLater),
+        (Focus::List, Key::B) => Some(Command::SetAside),
         (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
         (Focus::Mute, Key::Right) => Some(Command::MuteFor { longer: true }),
@@ -521,6 +537,8 @@ mod tests {
             (Name::Named(Named::Backspace), Command::Delete),
             (char("/"), Command::Search),
             (char("v"), Command::SwitchView),
+            (char("w"), Command::ReplyLater),
+            (char("b"), Command::SetAside),
             (char("["), Command::Sidebar),
         ] {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
@@ -528,6 +546,20 @@ mod tests {
         }
         assert_eq!(command(Focus::MailDetail, Key::A), Some(Command::Archive));
         assert_eq!(command(Focus::MailDetail, Key::R), Some(Command::Reply));
+    }
+
+    /// Task E19.4: `w` and `b` put the mail on its pile from the list and – through the fallback – from
+    /// the reader, never inside an open menu or dialog.
+    #[test]
+    fn w_and_b_put_mail_on_its_piles() {
+        for focus in [Focus::List, Focus::MailDetail, Focus::Overview] {
+            assert_eq!(command(focus, Key::W), Some(Command::ReplyLater), "{focus:?}");
+            assert_eq!(command(focus, Key::B), Some(Command::SetAside), "{focus:?}");
+        }
+        for focus in [Focus::Choices, Focus::Mute, Focus::Picker, Focus::Task, Focus::Elsewhere, Focus::Question] {
+            assert_eq!(command(focus, Key::W), None, "{focus:?}");
+            assert_eq!(command(focus, Key::B), None, "{focus:?}");
+        }
     }
 
     /// Task E14.3: `]` expands or collapses the mail's action rail – also typed with AltGr (Ctrl +
