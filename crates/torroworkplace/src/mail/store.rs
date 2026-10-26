@@ -39,6 +39,12 @@
 //! keeps its words in the index. A search ([`SearchQuery::query`], the language of `super::query`)
 //! becomes SQL here ([`compile`]).
 //!
+//! **Server figures** (DS.1, #314): the sync keeps each message's `RFC822.SIZE`
+//! ([`MailStore::set_size`], `NULL` for rows from before version 12 until a later sync fills them
+//! in, [`MailStore::uids_without_size`]) and the account's storage quota from `GETQUOTAROOT`
+//! ([`MailStore::set_quota`]). Both are what the server said at the last sync;
+//! [`MailStore::account_stats`] hands them out with the messages per month and the kept originals.
+//!
 //! Every message is data from outside: the summaries and messages this store builds are always
 //! `untrusted`, see `torro_mail::MessageSummary`.
 
@@ -49,7 +55,7 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
 use torro_ipc::inbox::{CategoryJobPreview, CategoryJobScope};
-use torro_ipc::mail::{MailAccountStats, MailFolderStats};
+use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount, MailQuota};
 use torro_ipc::mail::{MailCacheEstimate, MailCacheJob, MailCacheMode, MailCachePolicy};
 use torro_mail::{
     AttachmentInfo, Category, CategorySource, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory,
@@ -65,7 +71,7 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// Originals of mail that is no longer on the server (`originals.gone_at`) are deleted this many
 /// days after the sync noticed by [`MailStore::prune_gone_originals`]: long enough to still back up
@@ -105,6 +111,11 @@ const SCHEMA_V11_DELIMITER: &str = "ALTER TABLE folders ADD COLUMN delimiter TEX
 const SCHEMA_V11_INTERNAL_DATE: &str = "ALTER TABLE messages ADD COLUMN internal_date INTEGER;";
 const SCHEMA_V11_INDEX: &str =
     "CREATE INDEX IF NOT EXISTS originals_gone ON originals (gone_at) WHERE gone_at IS NOT NULL;";
+
+/// Version 12 (DS.1, #314): each message's size on the server (`RFC822.SIZE` in bytes), for the
+/// folder sizes of `mail.account_stats`. `NULL` for rows from before: the sync fills them in a
+/// bounded number at a time ([`MailStore::uids_without_size`]). Only added where it is missing.
+const SCHEMA_V12_SIZE: &str = "ALTER TABLE messages ADD COLUMN size INTEGER;";
 
 /// Before version 11 nothing marked an original whose message went: every original without a live
 /// header row at its place (folder path, the folder's current UIDVALIDITY, UID) is such one. An
@@ -857,6 +868,102 @@ impl MailStore {
         Ok(self.db.execute(sql, params![folder, uid, at.timestamp()])? > 0)
     }
 
+    /// Remembers the size the server reports for message `uid` of `folder` (`RFC822.SIZE`, bytes),
+    /// which the folder sizes of [`account_stats`](Self::account_stats) add up. `false`: no such
+    /// message.
+    pub fn set_size(&self, folder: &str, uid: u32, bytes: u64) -> Result<bool, MailStoreError> {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        let sql = "UPDATE messages SET size = ?3 WHERE folder_id = ?1 AND uid = ?2";
+        Ok(self.db.execute(sql, params![folder, uid, bytes])? > 0)
+    }
+
+    /// Up to `limit` UIDs of messages of `folder` whose size is not known yet (rows from before
+    /// version 12), highest UID first, for the sync to ask the server for.
+    pub fn uids_without_size(&self, folder: &str, limit: u32) -> Result<Vec<u32>, MailStoreError> {
+        let mut statement = self
+            .db
+            .prepare("SELECT uid FROM messages WHERE folder_id = ?1 AND size IS NULL ORDER BY uid DESC LIMIT ?2")?;
+        let rows = statement.query_map(params![folder, limit], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Forgets every message's size, as in a store from before version 12.
+    #[cfg(test)]
+    pub(crate) fn forget_sizes(&self) -> Result<(), MailStoreError> {
+        self.db.execute("UPDATE messages SET size = NULL", [])?;
+        Ok(())
+    }
+
+    /// Keeps the storage quota the sync read from the server; `None` removes a kept one (the
+    /// server no longer reports one). [`account_stats`](Self::account_stats) hands it out.
+    pub fn set_quota(&self, quota: Option<&MailQuota>) -> Result<(), MailStoreError> {
+        match quota {
+            Some(quota) => self.db.execute(
+                "INSERT INTO cache_control (key, value) VALUES ('quota', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [serde_json::to_string(quota)?],
+            )?,
+            None => self.db.execute("DELETE FROM cache_control WHERE key = 'quota'", [])?,
+        };
+        Ok(())
+    }
+
+    /// The kept storage quota ([`set_quota`](Self::set_quota)); `None` without one, or when the
+    /// kept value cannot be read (a later sync writes it again).
+    fn quota(&self) -> Result<Option<MailQuota>, MailStoreError> {
+        let json: Option<String> = self
+            .db
+            .query_row("SELECT value FROM cache_control WHERE key = 'quota'", [], |row| row.get(0))
+            .optional()?;
+        Ok(json.and_then(|json| serde_json::from_str(&json).ok()))
+    }
+
+    /// Stored messages per month of their date (UTC), oldest first, with how many have their text
+    /// kept to read.
+    fn month_counts(&self) -> Result<Vec<MailMonthCount>, MailStoreError> {
+        // A date outside SQLite's years 0000 to 9999 has no month (NULL): such a mail from outside
+        // is left out rather than failing the whole answer.
+        let mut statement = self.db.prepare(
+            "SELECT CAST(strftime('%Y', m.date, 'unixepoch') AS INTEGER) AS year,
+                    CAST(strftime('%m', m.date, 'unixepoch') AS INTEGER) AS month,
+                    count(*), count(b.seq)
+             FROM messages m LEFT JOIN bodies b ON b.seq = m.seq
+             GROUP BY year, month HAVING year IS NOT NULL AND month IS NOT NULL ORDER BY year, month",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(MailMonthCount {
+                year: row.get(0)?,
+                month: row.get(1)?,
+                messages: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                cached_bodies: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The sum of the sizes of the messages of `folder` (an id); `None` while any of them lacks
+    /// its size, because a partial sum would pass for the folder's size.
+    fn server_bytes(&self, folder: &str) -> Result<Option<u64>, MailStoreError> {
+        let (complete, bytes): (bool, i64) = self.db.query_row(
+            "SELECT count(*) = count(size), coalesce(sum(size), 0) FROM messages WHERE folder_id = ?1",
+            [folder],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(complete.then(|| u64::try_from(bytes).unwrap_or(0)))
+    }
+
+    /// How many originals at `path` (every path when `None`) are kept and still on the server, and
+    /// their bytes.
+    fn kept_originals(&self, path: Option<&str>) -> Result<(u64, u64), MailStoreError> {
+        let counts = |row: &Row<'_>| Ok((row.get(0)?, row.get(1)?));
+        let sql = "SELECT count(*), coalesce(sum(bytes), 0) FROM originals WHERE gone_at IS NULL";
+        // Per folder by the depot's unique index on the path, which an `OR` would leave unused.
+        let (count, bytes): (i64, i64) = match path {
+            Some(path) => self.db.query_row(&format!("{sql} AND folder_path = ?1"), [path], counts)?,
+            None => self.db.query_row(sql, [], counts)?,
+        };
+        Ok((u64::try_from(count).unwrap_or(0), u64::try_from(bytes).unwrap_or(0)))
+    }
+
     fn restrict_files(&self) -> Result<(), MailStoreError> {
         for file in [self.path.clone(), side_file(&self.path, "-wal"), side_file(&self.path, "-shm")] {
             if file.exists() {
@@ -955,6 +1062,8 @@ impl MailStore {
                 ))
             })?;
             let to_date = |seconds: Option<i64>| seconds.and_then(|value| DateTime::from_timestamp(value, 0));
+            let server_bytes = self.server_bytes(&folder.id)?;
+            let (originals, original_bytes) = self.kept_originals(Some(&folder.path))?;
             folders.push(MailFolderStats {
                 folder,
                 read: u64::try_from(read).unwrap_or(0),
@@ -965,6 +1074,9 @@ impl MailStore {
                 indexed_partial_or_unverified: u64::try_from(indexed_partial).unwrap_or(0),
                 text_unavailable: u64::try_from(unavailable).unwrap_or(0),
                 awaiting_index: u64::try_from(awaiting).unwrap_or(0),
+                server_bytes,
+                originals,
+                original_bytes,
             });
         }
         let messages = folders.iter().map(|stats| u64::from(stats.folder.total)).sum();
@@ -997,6 +1109,7 @@ impl MailStore {
             })
             .optional()?
             .and_then(|value| value.parse().ok());
+        let (originals, original_bytes) = self.kept_originals(None)?;
         Ok(MailAccountStats {
             account: self.account.clone(),
             messages,
@@ -1018,6 +1131,10 @@ impl MailStore {
             attachment_cache_bytes: None,
             last_sync: None,
             sync_problem: None,
+            quota: self.quota()?,
+            months: self.month_counts()?,
+            originals,
+            original_bytes,
             folders,
         })
     }
@@ -2349,6 +2466,9 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
         }
         tx.execute_batch(SCHEMA_V11_INDEX)?;
         tx.execute(SCHEMA_V11_MARK_GONE, [Utc::now().timestamp()])?;
+    }
+    if version < 12 && !has_column(&tx, "messages", "size")? {
+        tx.execute_batch(SCHEMA_V12_SIZE)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -3823,6 +3943,119 @@ mod tests {
         );
         let inbox = infos.iter().find(|info| info.path == "INBOX").expect("listed");
         assert_eq!(inbox.delimiter, None, "not listed with one yet");
+    }
+
+    // ----- server figures (DS.1, #314) -----
+
+    /// A store of version 11 gets `messages.size`, keeps its rows, and their sizes are not known.
+    #[test]
+    fn version_12_adds_the_size_and_keeps_the_rows() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let id = add(&store, &inbox, &message(1, "before"));
+        store
+            .db
+            .execute_batch("ALTER TABLE messages DROP COLUMN size; PRAGMA user_version = 11;")
+            .expect("a store of version 11");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.summary(&id).expect("read").map(|summary| summary.subject).as_deref(), Some("before"));
+        assert_eq!(store.uids_without_size(&inbox, 10).expect("asked"), [1], "size NULL");
+        assert_eq!(store.account_stats().expect("stats").folders[0].server_bytes, None);
+        assert!(store.set_size(&inbox, 1, 4096).expect("set"));
+        assert!(!store.set_size(&inbox, 2, 1).expect("asked"), "no such message");
+        assert!(store.uids_without_size(&inbox, 10).expect("asked").is_empty());
+    }
+
+    #[test]
+    fn folder_sizes_count_only_once_every_size_is_known() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let empty = folder(&store, "Empty", None);
+        for uid in 1..=3 {
+            add(&store, &inbox, &message(uid, "mail"));
+        }
+        store.set_size(&inbox, 1, 1000).expect("set");
+        store.set_size(&inbox, 3, 3000).expect("set");
+        assert_eq!(store.uids_without_size(&inbox, 10).expect("asked"), [2]);
+        assert_eq!(store.uids_without_size(&inbox, 0).expect("asked"), Vec::<u32>::new(), "bounded");
+        let sizes = |store: &MailStore| -> Vec<(String, Option<u64>)> {
+            let stats = store.account_stats().expect("stats");
+            stats.folders.into_iter().map(|folder| (folder.folder.path, folder.server_bytes)).collect()
+        };
+        assert_eq!(sizes(&store), [("INBOX".to_string(), None), ("Empty".to_string(), Some(0))]);
+        store.set_size(&inbox, 2, 2000).expect("set");
+        assert_eq!(sizes(&store)[0], ("INBOX".to_string(), Some(6000)));
+        assert_eq!(store.uids_without_size(&empty, 10).expect("asked"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn months_are_counted_by_date_in_utc_with_their_offline_texts() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let archive = folder(&store, "Archive", Some(Role::Archive));
+        let dated = |uid: u32, at: DateTime<Utc>| NewMessage { date: at, ..message(uid, "mail") };
+        let at = |y: i32, m: u32, d: u32, h: u32| Utc.with_ymd_and_hms(y, m, d, h, 0, 0).single().expect("date");
+        // 23:00 UTC on the last of October is November in Berlin: counted in October.
+        let late = add(&store, &inbox, &dated(1, at(2025, 10, 31, 23)));
+        add(&store, &inbox, &dated(2, at(2025, 12, 1, 0)));
+        add(&store, &archive, &dated(1, at(2025, 12, 24, 12)));
+        add(&store, &archive, &dated(2, at(2020, 1, 5, 8)));
+        let kept = Body { text: "kept".into(), from_html: false, html: None, attachments: vec![], invite: None };
+        store.set_body(&late, &kept).expect("text kept");
+        let months: Vec<(i32, u32, u64, u64)> = store
+            .account_stats()
+            .expect("stats")
+            .months
+            .into_iter()
+            .map(|month| (month.year, month.month, month.messages, month.cached_bodies))
+            .collect();
+        assert_eq!(
+            months,
+            [(2020, 1, 1, 0), (2025, 10, 1, 1), (2025, 12, 2, 0)],
+            "only months with mail, oldest first"
+        );
+        // A date past the year 9999 has no month: left out, and the answer still comes.
+        store.db.execute("UPDATE messages SET date = 400000000000 WHERE id = ?1", [&late]).expect("odd date");
+        assert_eq!(store.account_stats().expect("stats").months.len(), 2);
+    }
+
+    #[test]
+    fn originals_are_counted_per_folder_without_the_gone_ones() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let archive = folder(&store, "Archive", Some(Role::Archive));
+        for uid in 1..=3 {
+            add(&store, &inbox, &message(uid, "mail"));
+            store.save_original("INBOX", 7, uid, now_offset(), &[], b"12345").expect("saved");
+        }
+        add(&store, &archive, &message(1, "filed"));
+        store.save_original("Archive", 7, 1, now_offset(), &[], b"123").expect("saved");
+        // Of a folder the store does not list (renamed on the server): counts for the account.
+        store.save_original("Old", 7, 1, now_offset(), &[], b"1").expect("saved");
+        store.delete_uids(&inbox, &[3]).expect("expunged");
+        let stats = store.account_stats().expect("stats");
+        let of = |path: &str| {
+            let folder = stats.folders.iter().find(|folder| folder.folder.path == path).expect("listed");
+            (folder.originals, folder.original_bytes)
+        };
+        assert_eq!(of("INBOX"), (2, 10), "the expunged one is gone");
+        assert_eq!(of("Archive"), (1, 3));
+        assert_eq!((stats.originals, stats.original_bytes), (4, 14));
+    }
+
+    #[test]
+    fn the_quota_is_kept_until_the_server_names_none() {
+        let (_tmp, _dirs, store) = open();
+        assert_eq!(store.account_stats().expect("stats").quota, None);
+        let quota = MailQuota { used_bytes: 2475 * 1024, limit_bytes: 10_485_760 * 1024, checked: day(3) };
+        store.set_quota(Some(&quota)).expect("kept");
+        assert_eq!(store.account_stats().expect("stats").quota, Some(quota));
+        store.set_quota(None).expect("removed");
+        assert_eq!(store.account_stats().expect("stats").quota, None);
+        store.set_quota(None).expect("removing none is fine");
     }
 
     /// A store of version 10 gets the columns of version 11, and its originals without a live
