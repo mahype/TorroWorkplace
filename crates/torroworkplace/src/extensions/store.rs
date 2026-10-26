@@ -396,6 +396,47 @@ pub fn save_secrets(
     Ok(stored_form(new))
 }
 
+/// The keychain entries [`save_secrets`] may change when `new` replaces `old` for the server `id`: each secret
+/// name of either, with what is stored under it now (`None` for nothing). [`restore_secrets`] puts them back
+/// when the change fails after the secrets were saved. Never log or answer with the result.
+pub fn snapshot_secrets(
+    secrets: &dyn SecretStore,
+    id: &str,
+    old: &ServerSpec,
+    new: &ServerSpec,
+) -> Result<BTreeMap<String, Option<Secret>>, StoreError> {
+    check_id(id)?;
+    let names: BTreeSet<String> = secret_names(old).into_iter().chain(secret_names(new)).collect();
+    let mut snapshot = BTreeMap::new();
+    for name in names {
+        let secret = secrets.get(&secret_key(id, &name)).map_err(StoreError::Keychain)?;
+        snapshot.insert(name, secret);
+    }
+    Ok(snapshot)
+}
+
+/// Puts the entries of a [`snapshot_secrets`] back for the server `id`: a secret where there was one, none
+/// where there was none. Every entry is tried, also after one fails; the first error is the answer.
+pub fn restore_secrets(
+    secrets: &dyn SecretStore,
+    id: &str,
+    snapshot: &BTreeMap<String, Option<Secret>>,
+) -> Result<(), StoreError> {
+    check_id(id)?;
+    let mut first = Ok(());
+    for (name, secret) in snapshot {
+        let key = secret_key(id, name);
+        let done = match secret {
+            Some(secret) => secrets.set(&key, secret),
+            None => secrets.delete(&key),
+        };
+        if let Err(err) = done {
+            first = first.and(Err(StoreError::Keychain(err)));
+        }
+    }
+    first
+}
+
 /// The stored secrets of the server `id` for the secret names of `spec` ([`secret_names`]), by name: what
 /// `super::env::child_env` and `super::env::headers` take. A name without a stored secret is left out (those
 /// functions then fail with a missing secret). Never log or answer with the result.
@@ -762,6 +803,33 @@ mod tests {
         let replaced = remote("https://other.example.com/", secret("Bearer two"));
         save_secrets(&secrets, "team", Some(&first), &replaced).expect("replaced");
         assert_eq!(secrets.get("ext:team:Authorization").expect("get"), Some(Secret::new("Bearer two")));
+    }
+
+    /// Code review of #302: what an update saved goes back when it fails afterwards, a replaced secret as
+    /// well as a removed one and one that was not there before.
+    #[test]
+    fn a_snapshot_puts_the_secrets_back_as_they_were() {
+        let secrets = MemorySecrets::default();
+        let old = save_secrets(&secrets, "github", None, &github()).expect("stored");
+        let mut new = remote("https://mcp.example.com/", secret("Bearer new"));
+        let snapshot = snapshot_secrets(&secrets, "github", &old, &new).expect("snapshot");
+        assert_eq!(snapshot.keys().collect::<Vec<_>>(), ["Authorization", "GITHUB_PERSONAL_ACCESS_TOKEN"]);
+        save_secrets(&secrets, "github", Some(&old), &new).expect("updated");
+        assert_eq!(secrets.keys(), ["ext:github:Authorization"]);
+        restore_secrets(&secrets, "github", &snapshot).expect("restored");
+        assert_eq!(secrets.keys(), ["ext:github:GITHUB_PERSONAL_ACCESS_TOKEN"]);
+        assert_eq!(
+            secrets.get("ext:github:GITHUB_PERSONAL_ACCESS_TOKEN").expect("get"),
+            Some(Secret::new("ghp_topsecret"))
+        );
+
+        // A secret given anew over a stored one gets its old value back.
+        let first = save_secrets(&secrets, "team", None, &new).expect("stored");
+        new = remote("https://mcp.example.com/", secret("Bearer newer"));
+        let snapshot = snapshot_secrets(&secrets, "team", &first, &new).expect("snapshot");
+        save_secrets(&secrets, "team", Some(&first), &new).expect("updated");
+        restore_secrets(&secrets, "team", &snapshot).expect("restored");
+        assert_eq!(secrets.get("ext:team:Authorization").expect("get"), Some(Secret::new("Bearer new")));
     }
 
     #[test]

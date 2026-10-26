@@ -535,9 +535,22 @@ impl Extensions {
                 };
             }
         };
+        // What the keychain holds now, put back when saving fails: the file keeps the old spec then, and its
+        // secrets must stay those of the old spec.
+        let snapshot = {
+            let (owner, old, new) = (id.to_string(), moved.clone(), spec.clone());
+            match self.with_secrets(move |secrets| store::snapshot_secrets(secrets, &owner, &old, &new)).await {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    self.undo_update(&launch, reset).await;
+                    return store_error(&err);
+                }
+            }
+        };
         let server = match self.save_secrets(id, Some(&moved), &spec).await {
             Ok(server) => server,
             Err(err) => {
+                self.restore_secrets(id, snapshot).await;
                 self.undo_update(&launch, reset).await;
                 return store_error(&err);
             }
@@ -545,6 +558,7 @@ impl Extensions {
         let updated = StoredExtension { source, server, reported, ..old };
         all[index] = updated.clone();
         if let Err(err) = self.save(&all) {
+            self.restore_secrets(id, snapshot).await;
             self.undo_update(&launch, reset).await;
             return store_error(&err);
         }
@@ -560,6 +574,15 @@ impl Extensions {
     async fn undo_update(&self, launch: &Launch, reset: Reset<'_>) {
         self.supervisor.end(launch).await;
         drop(reset);
+    }
+
+    /// The keychain entries of the server `id` as `snapshot` held them, after a failed update saved its
+    /// secrets. A failure goes to the log; the answer is the update's failure.
+    async fn restore_secrets(&self, id: &str, snapshot: BTreeMap<String, Option<Secret>>) {
+        let owner = id.to_string();
+        if let Err(err) = self.with_secrets(move |secrets| store::restore_secrets(secrets, &owner, &snapshot)).await {
+            eprintln!("torroworkplace: MCP server {id}: {err}");
+        }
     }
 
     /// Claims `id` for an install or update; `None` while another one is under way for it. The id is free
@@ -1646,6 +1669,44 @@ mod tests {
             assert_eq!(updated.secrets, vec![SecretInfo { name: "FIXTURE_VALUE".into(), stored: true }]);
             let stored = secrets.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             assert_eq!(stored.get("ext:fixture:FIXTURE_VALUE").map(String::as_str), Some("second"));
+        }
+
+        /// A keychain that stores, then puts a folder in place of the file of the servers, so writing the file
+        /// fails after the secrets of an update are in.
+        struct Breaking {
+            secrets: MemorySecrets,
+            file: std::path::PathBuf,
+        }
+
+        impl SecretStore for Breaking {
+            fn get(&self, key: &str) -> Result<Option<Secret>, String> {
+                self.secrets.get(key)
+            }
+            fn set(&self, key: &str, secret: &Secret) -> Result<(), String> {
+                // A folder there already (a set before) cannot be removed as a file; that is fine.
+                let _ = std::fs::remove_file(&self.file);
+                std::fs::create_dir_all(&self.file).map_err(|err| err.to_string())?;
+                self.secrets.set(key, secret)
+            }
+            fn delete(&self, key: &str) -> Result<(), String> {
+                self.secrets.delete(key)
+            }
+        }
+
+        /// Code review of #302: an update whose file cannot be written after its secrets were saved puts the
+        /// old secrets back, so the old spec the file keeps never gets the new one's.
+        #[tokio::test]
+        async fn a_failed_update_puts_the_old_secrets_back() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            info(extensions.install(custom("fixture", "first")).await);
+            let file = dir.path().join("extensions/extensions.json");
+            let breaking = Breaking { secrets: secrets.clone(), file };
+            let extensions = extensions.with_store(Store::in_data(dir.path()), Arc::new(breaking));
+            let given = fixture_spec(Value::Secret(Secret::new("second")));
+            assert_eq!(code(&extensions.update("fixture", Some(given)).await), "error");
+            let stored = secrets.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            assert_eq!(stored.get("ext:fixture:FIXTURE_VALUE").map(String::as_str), Some("first"));
         }
 
         /// A program that never answers `initialize`: installing or updating to it waits for the start.
