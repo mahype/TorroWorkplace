@@ -19,6 +19,11 @@
 //!    someone opens them (task M3.1). Fetched with `BODY.PEEK[]`: syncing never marks mail read.
 //! 5. Only a folder synced to the end remembers its HIGHESTMODSEQ, so an interrupted sync starts
 //!    over where it matters next time.
+//! 6. Sizes the store lacks (rows from before it kept `RFC822.SIZE`, DS.1) are asked for, at most
+//!    [`SIZE_FILL_MAX`] per folder and run ([`fill_sizes`]), also for a folder that did not change.
+//!
+//! After the folders and the clean-up of texts and originals the account's storage quota is read once (`GETQUOTAROOT "INBOX"`, only from
+//! servers with `QUOTA`) and kept for `mail.account_stats`; a server without one clears it.
 //!
 //! Every step that found something sends a [`MailChange`].
 //!
@@ -34,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
-use torro_ipc::mail::MailCacheMode;
+use torro_ipc::mail::{MailCacheMode, MailQuota};
 use torro_mail::{Flag, Role};
 use torro_mail_imap::folders;
 use torro_mail_imap::imap::{BackupMessage, BodyChunks, FetchedHeader, ImapError, Search, Session};
@@ -58,6 +63,13 @@ pub(crate) const LARGE_ORIGINAL: u64 = 32 << 20;
 
 /// How many texts one step of [`backfill`] fetches before the indexer looks again.
 pub const BACKFILL_BATCH: u32 = 25;
+
+/// At most this many missing message sizes are filled in per folder and sync ([`fill_sizes`]):
+/// an old account gets its folder sizes over a few syncs instead of in one burst.
+pub const SIZE_FILL_MAX: u32 = 2000;
+
+/// How many sizes one `UID FETCH` of [`fill_sizes`] asks for.
+pub const SIZE_FILL_BATCH: usize = 500;
 
 /// A folder to sync: its id in the store, its path on the server and its role.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +170,36 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
             store.prune_gone_originals(Utc::now()).map(drop)
         })
         .await?;
+    // Last, so a connection lost here costs no clean-up; a lost connection or a refused sign-in is
+    // still the sync's error, so the account shows it and `refused` keeps the password from being
+    // tried again.
+    note_quota(mailbox, &store).await
+}
+
+/// Reads the account's storage quota (`GETQUOTAROOT "INBOX"`) and keeps it for
+/// `mail.account_stats`; a server without `QUOTA`, or without a limit on storage, clears a kept
+/// one. A server that refuses the command keeps the old value and the sync goes on; only a lost
+/// connection or account is an error.
+async fn note_quota(mailbox: &Mailbox, store: &SharedStore) -> Result<(), MailError> {
+    let mut command = mailbox.command().await?;
+    let quota = match command.session().quota_root("INBOX").await.map_err(MailError::from) {
+        Ok(quota) => {
+            command.release();
+            quota
+        }
+        Err(err) if connection_lost(&err) => return Err(err),
+        Err(_) => {
+            // The account and a fixed reason only, never the server's words.
+            eprintln!("torroworkplace: the storage quota of {} was not read: the server refused", mailbox.id());
+            return Ok(());
+        }
+    };
+    let quota = quota.map(|quota| MailQuota {
+        used_bytes: quota.used_kib.saturating_mul(1024),
+        limit_bytes: quota.limit_kib.saturating_mul(1024),
+        checked: Utc::now(),
+    });
+    store.run(move |store| store.set_quota(quota.as_ref())).await?;
     Ok(())
 }
 
@@ -471,7 +513,7 @@ async fn sync_folder(
         && selected.exists as usize == known.messages.len();
     if unchanged {
         lease.done();
-        return Ok(());
+        return fill_sizes(conn, store, target, uidvalidity).await;
     }
     let on_server: BTreeSet<u32> = lease.session().uid_search(&Search::All).await?.into_iter().collect();
     let states = match known.messages.is_empty() {
@@ -557,6 +599,7 @@ async fn sync_folder(
                     if let Some(at) = header.internal_date {
                         store.set_internal_date(&folder, header.uid, at)?;
                     }
+                    store.set_size(&folder, header.uid, u64::from(header.size))?;
                     stored.push((id, message.date, header));
                 }
                 Ok(stored)
@@ -618,6 +661,52 @@ async fn sync_folder(
 
     let (folder, modseq) = (target.id.clone(), selected.highest_modseq);
     store.run(move |store| store.set_highest_modseq(&folder, modseq)).await?;
+    fill_sizes(conn, store, target, uidvalidity).await
+}
+
+/// Asks the server for the sizes (`RFC822.SIZE`) of up to [`SIZE_FILL_MAX`] stored messages of the
+/// folder that lack one, highest UID first, [`SIZE_FILL_BATCH`] per `UID FETCH`. Sizes are an
+/// extra: a server that answers unexpectedly leaves them missing for the next sync and ends
+/// nothing; only a lost connection or account is an error.
+/// A message the answer names no size for, with or without a `FETCH` of its own, is kept with 0.
+async fn fill_sizes(
+    conn: &mut Conn<'_>,
+    store: &SharedStore,
+    target: &Target,
+    uidvalidity: u32,
+) -> Result<(), MailError> {
+    let folder = target.id.clone();
+    let missing = store.run(move |store| store.uids_without_size(&folder, SIZE_FILL_MAX)).await?;
+    for batch in missing.chunks(SIZE_FILL_BATCH) {
+        let mut lease = conn.lease().await?;
+        if !reselect(lease.session(), &target.path, uidvalidity).await? {
+            lease.done();
+            return Ok(());
+        }
+        let sizes = match lease.session().fetch_sizes(batch).await.map_err(MailError::from) {
+            Ok(sizes) => sizes,
+            Err(err) if connection_lost(&err) => return Err(err),
+            // Dropping the lease closes a connection that answered something unexpected.
+            Err(_) => return Ok(()),
+        };
+        lease.done();
+        // A message the answer names no size for (answered without one, or not at all) would never
+        // get one: it counts as 0, so its folder still gets its size and no sync asks for it again.
+        let named: BTreeSet<u32> = sizes.iter().map(|(uid, _)| *uid).collect();
+        let sizeless: Vec<u32> = batch.iter().copied().filter(|uid| !named.contains(uid)).collect();
+        let folder = target.id.clone();
+        store
+            .run(move |store| {
+                for (uid, bytes) in &sizes {
+                    store.set_size(&folder, *uid, *bytes)?;
+                }
+                for uid in &sizeless {
+                    store.set_size(&folder, *uid, 0)?;
+                }
+                Ok(())
+            })
+            .await?;
+    }
     Ok(())
 }
 
@@ -785,11 +874,23 @@ pub(crate) mod fake {
         gm_msgid: Option<u64>,
         /// `RFC822.SIZE` as the server claims it, when that is not the true length.
         reported_size: Option<usize>,
+        /// A fetch of the size alone answers without `RFC822.SIZE` (a server that never names it).
+        sizeless: bool,
     }
 
     impl Message {
         fn new(uid: u32, flags: BTreeSet<String>, modseq: u64, raw: Vec<u8>, received: DateTime<FixedOffset>) -> Self {
-            Message { uid, flags, modseq, raw, received, withheld: false, gm_msgid: None, reported_size: None }
+            Message {
+                uid,
+                flags,
+                modseq,
+                raw,
+                received,
+                withheld: false,
+                gm_msgid: None,
+                reported_size: None,
+                sizeless: false,
+            }
         }
     }
 
@@ -883,6 +984,8 @@ pub(crate) mod fake {
         gmail: Arc<AtomicBool>,
         /// While `true`, partial body fetches (`BODY.PEEK[]<…>`) wait for an answer.
         chunk_gate: watch::Sender<bool>,
+        /// Used and allowed KiB of the storage quota; while set, `QUOTA` is announced.
+        quota: Arc<Mutex<Option<(u64, u64)>>>,
     }
 
     impl FakeImap {
@@ -928,6 +1031,7 @@ pub(crate) mod fake {
                 mirror: Arc::new(Mutex::new(None)),
                 gmail: Arc::new(AtomicBool::new(false)),
                 chunk_gate: watch::Sender::new(false),
+                quota: Arc::new(Mutex::new(None)),
             };
             let accepting = server.clone();
             tokio::spawn(async move {
@@ -1003,6 +1107,15 @@ pub(crate) mod fake {
             message.reported_size = Some(size);
         }
 
+        /// From now on a fetch of the size alone answers for message `uid` of `folder` without
+        /// `RFC822.SIZE`.
+        pub(crate) fn withhold_size(&self, folder: &str, uid: u32) {
+            let mut world = self.world();
+            let message =
+                world.folder(folder).messages.iter_mut().find(|m| m.uid == uid).expect("a message of the fake");
+            message.sizeless = true;
+        }
+
         /// Applies `change` to `folder` just before the `nth` `EXAMINE` of it (counted from 1) is
         /// answered.
         pub(crate) fn on_examine(&self, folder: &str, nth: usize, change: Change) {
@@ -1014,9 +1127,27 @@ pub(crate) mod fake {
             self.chunk_gate.send_replace(held);
         }
 
+        /// From the next sign-in on, announces `QUOTA` and reports `used` of `limit` KiB of storage;
+        /// `None` takes the capability away again (sessions signed in before still ask and hear of
+        /// no limit).
+        pub(crate) fn set_quota(&self, quota: Option<(u64, u64)>) {
+            *self.quota.lock().expect("quota") = quota;
+        }
+
         /// The capabilities announced after the sign-in.
         fn capabilities(&self) -> String {
-            world_capabilities(self.gmail.load(Ordering::Acquire))
+            let capabilities = world_capabilities(self.gmail.load(Ordering::Acquire));
+            if self.quota.lock().expect("quota").is_some() { format!("{capabilities} QUOTA") } else { capabilities }
+        }
+
+        /// `GETQUOTAROOT`: the inbox's root `""` with the storage quota, or no root without one.
+        fn quota_root(&self, tag: &str) -> String {
+            match *self.quota.lock().expect("quota") {
+                Some((used, limit)) => format!(
+                    "* QUOTAROOT \"INBOX\" \"\"\r\n* QUOTA \"\" (STORAGE {used} {limit})\r\n{tag} OK Getquotaroot completed"
+                ),
+                None => format!("* QUOTAROOT \"INBOX\"\r\n{tag} OK Getquotaroot completed"),
+            }
         }
 
         /// Counts an `EXAMINE` of `path` and applies the changes waiting for it.
@@ -1235,6 +1366,7 @@ pub(crate) mod fake {
                         return;
                     }
                     "NAMESPACE" => format!("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n{tag} OK done").into(),
+                    "GETQUOTAROOT" => self.quota_root(&tag).into(),
                     "LIST" => self.list(&tag).into(),
                     "SELECT" | "EXAMINE" => {
                         let path = quoted(&rest[command.len() + 1..]);
@@ -1655,6 +1787,10 @@ pub(crate) mod fake {
                 message.uid
             )
             .into_bytes()
+        } else if items.contains("RFC822.SIZE") && message.sizeless {
+            format!("* {seq} FETCH (UID {})", message.uid).into_bytes()
+        } else if items.contains("RFC822.SIZE") {
+            format!("* {seq} FETCH (UID {} RFC822.SIZE {claimed})", message.uid).into_bytes()
         } else {
             format!("* {seq} FETCH (UID {} FLAGS ({flags}) MODSEQ ({}))", message.uid, message.modseq).into_bytes()
         }
@@ -2085,6 +2221,82 @@ mod tests {
             server.lines().iter().any(|line| line.contains("(CHANGEDSINCE ")),
             "only changed flags are asked for with CONDSTORE"
         );
+    }
+
+    /// DS.1 (#314): the sync keeps every message's size; sizes a store of before lacks are filled
+    /// in by the next sync, also of a folder that did not change, and then nothing is asked again.
+    #[tokio::test]
+    async fn sizes_are_kept_and_missing_ones_filled_in() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let (mut bytes, mut last) = (0, (0, 0));
+        for n in 1..=3 {
+            let raw = fake::mail(&format!("Sized {n}"), 200, None);
+            bytes += raw.len() as u64;
+            last = (server.add("INBOX", &raw, &[]), raw.len() as u64);
+        }
+        let mailbox = mailbox(dir.path(), &server).await;
+        let store = mailbox.store().expect("store");
+        let inbox_bytes = |store: &SharedStore| {
+            let store = store.clone();
+            async move {
+                let stats = store.run(|store| store.account_stats()).await.expect("stats");
+                stats.folders.into_iter().find(|folder| folder.folder.path == "INBOX").and_then(|f| f.server_bytes)
+            }
+        };
+
+        sync_account(&mailbox).await.expect("synced");
+        assert_eq!(inbox_bytes(&store).await, Some(bytes), "from the headers' RFC822.SIZE");
+        assert!(fetches(&server, "RFC822.SIZE)").is_empty(), "nothing to fill in");
+
+        store.run(|store| store.forget_sizes()).await.expect("a store of before");
+        assert_eq!(inbox_bytes(&store).await, None);
+        sync_account(&mailbox).await.expect("synced again");
+        assert_eq!(fetches(&server, "(UID RFC822.SIZE)").len(), 1, "one batch for the inbox");
+        assert_eq!(inbox_bytes(&store).await, Some(bytes), "filled in without a change in the folder");
+
+        let lines = server.lines().len();
+        sync_account(&mailbox).await.expect("synced a third time");
+        assert!(!server.lines()[lines..].iter().any(|line| line.contains("UID ")), "nothing asked again");
+
+        // A server that names no size for a message: it counts as 0 and is not asked for again.
+        server.withhold_size("INBOX", last.0);
+        store.run(|store| store.forget_sizes()).await.expect("a store of before");
+        sync_account(&mailbox).await.expect("synced without one size");
+        assert_eq!(inbox_bytes(&store).await, Some(bytes - last.1), "the sizeless message counts as 0");
+        let lines = server.lines().len();
+        sync_account(&mailbox).await.expect("synced once more");
+        assert!(
+            !server.lines()[lines..].iter().any(|line| line.contains("UID ")),
+            "the sizeless one is not asked again"
+        );
+    }
+
+    /// DS.1 (#314): the storage quota is kept from a server with `QUOTA` and cleared by one
+    /// without, which is not asked.
+    #[tokio::test]
+    async fn the_quota_is_kept_and_cleared_without_quota() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.set_quota(Some((2475, 10_485_760)));
+        let quota_of = |mailbox: &Mailbox| {
+            let store = mailbox.store().expect("store");
+            async move { store.run(|store| store.account_stats()).await.expect("stats").quota }
+        };
+        let first = mailbox(dir.path(), &server).await;
+        sync_account(&first).await.expect("synced");
+        let quota = quota_of(&first).await.expect("kept");
+        assert_eq!((quota.used_bytes, quota.limit_bytes), (2475 * 1024, 10_737_418_240));
+        assert_eq!(server.lines().iter().filter(|line| line.contains("GETQUOTAROOT \"INBOX\"")).count(), 1);
+        drop(first);
+
+        // A new sign-in, which no longer hears of QUOTA.
+        server.set_quota(None);
+        let second = mailbox(dir.path(), &server).await;
+        let lines = server.lines().len();
+        sync_account(&second).await.expect("synced without QUOTA");
+        assert!(!server.lines()[lines..].iter().any(|line| line.contains("GETQUOTAROOT")), "not asked");
+        assert_eq!(quota_of(&second).await, None, "the old quota is gone");
     }
 
     #[tokio::test]

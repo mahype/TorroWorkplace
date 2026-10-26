@@ -391,6 +391,42 @@ pub struct MailFolderStats {
     pub indexed_partial_or_unverified: u64,
     pub text_unavailable: u64,
     pub awaiting_index: u64,
+    /// Sum of the server's `RFC822.SIZE` over the folder's stored messages, as of the last sync.
+    /// `None` while any message of the folder still lacks its size (rows from before version 12 of
+    /// the store, filled in by the following syncs).
+    #[serde(default)]
+    pub server_bytes: Option<u64>,
+    /// Kept originals ([`MailAccountStats::originals`]) whose place is this folder's path and that
+    /// are still on the server.
+    #[serde(default)]
+    pub originals: u64,
+    /// Bytes of those originals.
+    #[serde(default)]
+    pub original_bytes: u64,
+}
+
+/// The account's storage quota as the server reported it (`GETQUOTAROOT "INBOX"`, resource
+/// `STORAGE`, RFC 9208) at the last sync. Not a live value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailQuota {
+    /// Bytes in use (the server counts in units of 1024 bytes).
+    pub used_bytes: u64,
+    /// Bytes allowed.
+    pub limit_bytes: u64,
+    /// When the sync asked the server.
+    pub checked: DateTime<Utc>,
+}
+
+/// How many stored messages of an account are dated in one month (UTC, by the message's date)
+/// and how many of them have their reading text kept on this device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailMonthCount {
+    pub year: i32,
+    /// 1 to 12.
+    pub month: u32,
+    pub messages: u64,
+    /// Of `messages`, those readable offline.
+    pub cached_bodies: u64,
 }
 
 /// A mail account's locally known inventory. Dates are deliberately only *known* dates:
@@ -427,6 +463,19 @@ pub struct MailAccountStats {
     pub attachment_cache_bytes: Option<u64>,
     pub last_sync: Option<DateTime<Utc>>,
     pub sync_problem: Option<String>,
+    /// The storage quota from the last sync; `None` when the server has no `QUOTA` capability,
+    /// names no `STORAGE` limit, or was not synced yet.
+    #[serde(default)]
+    pub quota: Option<MailQuota>,
+    /// Stored messages per month, oldest month first; only months with mail.
+    #[serde(default)]
+    pub months: Vec<MailMonthCount>,
+    /// Kept RFC-822 originals (all-offline mode) of mail still on the server.
+    #[serde(default)]
+    pub originals: u64,
+    /// Bytes of those originals.
+    #[serde(default)]
+    pub original_bytes: u64,
 }
 
 /// How many message bodies an account keeps for offline reading. Search text is independent.
@@ -819,6 +868,77 @@ mod tests {
         assert!(refused(&save(vec![long.clone()], SaveTo::Downloads)));
         assert!(refused(&save(Vec::new(), SaveTo::Target(long.clone()))));
         assert!(refused(&Request::RemoveSaveTarget { id: long }));
+    }
+
+    /// DS.1 (#314): an answer of a core from before (no quota, sizes, months or originals) reads
+    /// with the new parts empty, and the new parts read back as written.
+    #[test]
+    fn account_stats_of_an_older_core_read_without_the_new_parts() {
+        let folder = MailFolderStats {
+            folder: Folder {
+                id: "f:1".into(),
+                account: "mail:anna@example.org".into(),
+                name: "INBOX".into(),
+                path: "INBOX".into(),
+                role: Some(Role::Inbox),
+                unread: 1,
+                total: 2,
+            },
+            read: 1,
+            oldest_known: None,
+            newest_known: None,
+            cached_bodies: 1,
+            indexed_full: 2,
+            indexed_partial_or_unverified: 0,
+            text_unavailable: 0,
+            awaiting_index: 0,
+            server_bytes: Some(4096),
+            originals: 1,
+            original_bytes: 2048,
+        };
+        let checked = DateTime::from_timestamp(1_790_000_000, 0).expect("a date");
+        let stats = MailAccountStats {
+            account: "mail:anna@example.org".into(),
+            folders: vec![folder],
+            messages: 2,
+            read: 1,
+            unread: 1,
+            oldest_known: None,
+            newest_known: None,
+            cached_bodies: 1,
+            oldest_cached_body: None,
+            body_cache_bytes: 0,
+            search_index_bytes: None,
+            last_index_run: None,
+            indexed_full: 2,
+            indexed_partial_or_unverified: 0,
+            text_unavailable: 0,
+            awaiting_index: 0,
+            database_bytes: 0,
+            cached_attachments: 0,
+            attachment_cache_bytes: None,
+            last_sync: None,
+            sync_problem: None,
+            quota: Some(MailQuota { used_bytes: 2475 * 1024, limit_bytes: 10_485_760 * 1024, checked }),
+            months: vec![MailMonthCount { year: 2026, month: 10, messages: 2, cached_bodies: 1 }],
+            originals: 1,
+            original_bytes: 2048,
+        };
+        let json = serde_json::to_value(&stats).expect("writes");
+        assert_eq!(json["quota"]["limit_bytes"], 10_737_418_240_u64);
+        assert_eq!(serde_json::from_value::<MailAccountStats>(json.clone()).expect("reads"), stats);
+
+        let mut older = json;
+        for key in ["quota", "months", "originals", "original_bytes"] {
+            older.as_object_mut().expect("an object").remove(key);
+        }
+        for key in ["server_bytes", "originals", "original_bytes"] {
+            older["folders"][0].as_object_mut().expect("an object").remove(key);
+        }
+        let read = serde_json::from_value::<MailAccountStats>(older).expect("an older answer reads");
+        assert_eq!((read.quota, read.months.len(), read.originals, read.original_bytes), (None, 0, 0, 0));
+        let folder = &read.folders[0];
+        assert_eq!((folder.server_bytes, folder.originals, folder.original_bytes), (None, 0, 0));
     }
 
     #[test]

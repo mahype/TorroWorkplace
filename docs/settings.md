@@ -42,14 +42,31 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
   Dienst; der Dienst bleibt leicht. Geöffnet aus dem Tray („Settings…“), aus den Apps oder mit
   `torroworkplace ui --section accounts`.
 - **Links eine Seitenleiste** (220 px) mit Abschnitten als Symbol + Wort; unten leise
-  „Torro Workplace · Version x.y“. **Rechts die Seite** des Abschnitts. Keine Reiter.
+  „Torro Workplace · Version x.y“. **Rechts die Seite** des Abschnitts. Keine Reiter für die
+  Abschnitte; Reiter gibt es nur innerhalb einer Detailseite (siehe unten).
 - Jede Seite besteht aus **Gruppen**: Überschrift, Zeilen, darunter eine Fußzeile, die in einem
   ganzen Satz die Folgen erklärt („Applies to all apps of the suite.“).
 - **Schmale Kachel** (< 640 px): Die Seitenleiste wird zur Liste; ein Abschnitt öffnet sich als
   eigene Seite mit Zurück-Knopf. Mindestgröße 360×320 wie alle Apps.
 - **Speichern automatisch**, kurz verzögert (500 ms), kein Speichern-Knopf. Ausnahmen sind
   Vorgänge mit Prüfung (Konto einrichten, Schlüssel eintragen): erst nach erfolgreicher Prüfung
-  wird gespeichert.
+  wird gespeichert. Die zweite Ausnahme ist eine Seite, die nicht selbst speichert (Absendername
+  und Signatur eines Mail-Kontos): Sie zeigt die **Speicherleiste** (`widgets::save_bar` über
+  `Page::save_bar`) unten über der Seite, nur solange etwas geändert ist, mit „Discard“ und „Save“.
+- **Detailseiten** (dritte Ebene: ein Konto, ein Client, ein Server, #314) haben einen festen
+  Aufbau aus den Bausteinen in `torro_gui::widgets`: Kopf (`detail_head`: Kachel, Name, eine
+  Meta-Zeile, Status-Pille nur bei Aussagekraft, eine Aktion, der Rest im „…“-Menü) · Reiter
+  (`tabs`, nur ab mehr als drei Gruppen, „Overview“ zuerst; zu schmal werden sie eine
+  Auswahlliste) · Offene Fragen (`question_card`, nur wenn etwas wartet) · Kennzahlen
+  (`stat_grid`, 2–4 mit Bezug) · Anteile (`share_strip` mit Legende) · Tabellen (`data_table`, nur
+  für viele gleichartige Dinge) · Einstellungspaare (`setting_pairs`, links Titel und Warum-Satz,
+  rechts das Bedienelement) · Speicherleiste. Keine Statistik als Einstellungszeile, jede Zahl nur
+  einmal. In der linken Liste steht das offene Objekt als Kind seines Abschnitts
+  (`sidebar_branch_quiet`); ein Klick auf den Abschnitt führt zur Liste zurück. Größen,
+  Zeitpunkte und Zahlen kommen aus `torro_gui::units` (`format_bytes`, `format_count`) und
+  `torro_gui::datetime` (`format_moment`, den genauen Wert mit `format_exact` als Tooltip). Erste
+  Seite nach diesem Muster: Mail › Accounts › Konto (Overview · Writing · Folders · Backup); die
+  übrigen Seiten folgen in eigenen Issues.
 - **Destruktives wird bestätigt**, mit Frage als Titel, Folge als Satz und einem Knopf mit Verb
   („Remove account“), daneben „Cancel“. Der abgedunkelte Dialog aus `torro_gui::widgets::modal`.
 - **Leere Bereiche** sagen in einem Satz, was hier erscheinen wird und was zu tun ist.

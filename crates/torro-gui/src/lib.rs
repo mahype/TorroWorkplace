@@ -55,6 +55,7 @@ pub mod theme;
 mod themed;
 pub mod typo;
 pub mod ui_state;
+pub mod units;
 pub mod widgets;
 pub mod zoom;
 

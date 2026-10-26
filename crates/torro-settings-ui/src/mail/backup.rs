@@ -15,13 +15,13 @@ use iced::{Alignment, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{palette, space};
+use torro_gui::units::{format_bytes, format_count};
 use torro_gui::{style, theme, typo, widgets};
 use torro_ipc::mail::{
     BackupJob, BackupPhase, BackupScope, BackupVerification, RestoreFolderPlan, RestorePlan, RestoreResult,
 };
 use torro_ipc::{Request, Response};
 
-use super::accounts::byte_size;
 use crate::Action;
 use crate::parts::{choice, field, row_frame, setting_row};
 
@@ -614,12 +614,12 @@ fn job_rows<'a>(rows: &mut Vec<Element<'a, Message>>, state: &State, job: &'a Ba
     ]));
 }
 
-/// "Messages: 1324 · Folders: 12 · Size: 177.4 MiB": one sentence to translate, no plural to get
+/// "Messages: 1,324 · Folders: 12 · Size: 177 MB": one sentence to translate, no plural to get
 /// wrong.
 fn counts(messages: u64, folders: u64, bytes: u64) -> String {
     trf(
         "Messages: {messages} · Folders: {folders} · Size: {size}",
-        &[("messages", &messages), ("folders", &folders), ("size", &byte_size(bytes))],
+        &[("messages", &format_count(messages)), ("folders", &format_count(folders)), ("size", &format_bytes(bytes))],
     )
 }
 
@@ -679,7 +679,7 @@ fn plan_rows<'a>(rows: &mut Vec<Element<'a, Message>>, state: &State, plan: &'a 
             ("present", &plan.already_present),
             ("uncertain", &plan.uncertain),
             ("folders", &plan.folders_to_create),
-            ("size", &byte_size(plan.bytes_to_add)),
+            ("size", &format_bytes(plan.bytes_to_add)),
         ],
     );
     let title = trf("Restore test of {name}: nothing was changed", &[("name", &plan.archive)]);
