@@ -2202,6 +2202,7 @@ fn wrap_settings<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -
         body: page.body.map(into),
         sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
         actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
+        save_bar: page.save_bar.map(|bar| bar.map(into)),
     }
 }
 
@@ -6155,6 +6156,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             body: page.body.map(Message::SettingsPage),
             sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
             actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
+            save_bar: page.save_bar.map(|bar| bar.map(Message::SettingsPage)),
         };
         pane.host.view(class, page, Message::SettingsHost)
     }

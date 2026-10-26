@@ -135,12 +135,15 @@ pub struct Page<'a, M> {
     pub sub_page: Option<(String, M)>,
     /// The page's buttons at the right of the header bar, left to right; at most one primary.
     pub actions: Vec<Element<'a, M>>,
+    /// The bar that saves a page that does not save itself (`torro_gui::widgets::save_bar`), only
+    /// while something is changed; it floats over the bottom of the page.
+    pub save_bar: Option<Element<'a, M>>,
 }
 
 impl<'a, M> Page<'a, M> {
     /// The section's own page.
     pub fn new(body: impl Into<Element<'a, M>>) -> Self {
-        Page { body: body.into(), sub_page: None, actions: Vec::new() }
+        Page { body: body.into(), sub_page: None, actions: Vec::new(), save_bar: None }
     }
 
     /// A page below the section: `name` follows in the path, `back` leads up to the section.
@@ -152,6 +155,13 @@ impl<'a, M> Page<'a, M> {
     /// The buttons at the right of the header bar.
     pub fn actions(mut self, actions: Vec<Element<'a, M>>) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// The save bar over the bottom of the page (task DS.5): for a page that does not save itself,
+    /// and only while something is changed. The page scrolls far enough to come out from under it.
+    pub fn save_bar(mut self, bar: impl Into<Element<'a, M>>) -> Self {
+        self.save_bar = Some(bar.into());
         self
     }
 }
@@ -405,21 +415,29 @@ impl Host {
         // The menu button registers where it is, the layer floats there: both in this one frame.
         let anchor = Anchor::new();
         let on_list = form == Form::Steps && self.list;
-        let Page { body, sub_page, actions } = page;
+        let Page { body, sub_page, actions, save_bar } = page;
+        // The object open below the section, as the list and the menu show it: its name and the
+        // way back up.
+        let child = sub_page.clone();
         let header = self.header(form, on_list, sub_page, actions, &anchor, wrap);
         let body = match (form, on_list) {
-            (Form::Steps, true) => self.page_area(class, self.list_rows(false, wrap)),
-            (Form::Steps | Form::Menu, _) => self.page_area(class, body),
+            (Form::Steps, true) => self.page_area(class, self.list_rows(false, None, wrap), None),
+            (Form::Steps | Form::Menu, _) => self.page_area(class, body, save_bar),
             (Form::List, _) => {
-                let list = container(self.list_rows(true, wrap))
+                let list = container(self.list_rows(true, child.clone(), wrap))
                     .width(size::sidebar())
                     .height(Fill)
                     .padding(Padding::new(space::s()));
-                row![list, rule::vertical(LINE).style(style::rule), self.page_area(class, body)].into()
+                row![list, rule::vertical(LINE).style(style::rule), self.page_area(class, body, save_bar)].into()
             }
         };
         let overlay = (form == Form::Menu && self.menu).then(|| {
-            widgets::floating(&anchor, Placement::Below(Align::Start), self.menu_card(wrap), wrap(Message::Close))
+            widgets::floating(
+                &anchor,
+                Placement::Below(Align::Start),
+                self.menu_card(child, wrap),
+                wrap(Message::Close),
+            )
         });
         Frame { header, body, overlay }
     }
@@ -461,20 +479,38 @@ impl Host {
 
     /// The sections as rows, and under them the two ways into the control centre. `highlight`
     /// marks the open one – in the narrow list nothing is open yet.
-    fn list_rows<'a, M: Clone + 'a>(&'a self, highlight: bool, wrap: fn(Message) -> M) -> Element<'a, M> {
-        let row_of = |(at, section): (usize, &Section)| {
-            widgets::sidebar_item(
-                section.icon,
-                section.name(),
-                Trail::None,
-                highlight && at == self.current,
-                wrap(Message::Select(section.id)),
-            )
-        };
+    ///
+    /// With a `child` (a page below the open section, task DS.5) its name stands under the section
+    /// as the active row of a quiet branch, with the section's icon; the section itself is then not
+    /// active, and a click on it goes back up to its own page (the `back` of the page below).
+    fn list_rows<'a, M: Clone + 'a>(
+        &'a self,
+        highlight: bool,
+        child: Option<(String, M)>,
+        wrap: fn(Message) -> M,
+    ) -> Element<'a, M> {
+        let rows = self.section_rows(highlight, child.is_some()).into_iter().filter_map(|row| match row {
+            SectionRow::Section { at, active, back } => {
+                let section = self.sections.get(at).copied()?;
+                let press = match (&child, back) {
+                    (Some((_, up)), true) => up.clone(),
+                    _ => wrap(Message::Select(section.id)),
+                };
+                Some(widgets::sidebar_item(section.icon, section.name(), Trail::None, active, press))
+            }
+            SectionRow::Child => {
+                // The open page itself: a click on it stays where it is.
+                let (name, _) = child.clone()?;
+                let section = self.current();
+                let row =
+                    widgets::sidebar_child(section.icon, name, Trail::None, true, wrap(Message::Select(section.id)));
+                Some(widgets::sidebar_branch_quiet(vec![row]))
+            }
+        });
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
             widgets::sidebar_item(*icon, tr(label), Trail::Icon(Icon::ArrowUpRight), false, wrap(Message::Link(at)))
         };
-        let sections = column(self.sections.iter().enumerate().map(row_of)).spacing(space::xs());
+        let sections = column(rows).spacing(space::xs());
         let links = column(LINKS.iter().enumerate().map(link)).spacing(space::xs());
         column![
             sections,
@@ -486,38 +522,82 @@ impl Host {
         .into()
     }
 
+    /// The rows of the section list: one per section, the open one `active` while `highlight`; with
+    /// a `child` open below it (task DS.5) the section is not active but leads `back` up, and the
+    /// child follows it.
+    fn section_rows(&self, highlight: bool, child: bool) -> Vec<SectionRow> {
+        let mut rows = Vec::new();
+        for at in 0..self.sections.len() {
+            let open = highlight && at == self.current;
+            rows.push(SectionRow::Section { at, active: open && !child, back: open && child });
+            if open && child {
+                rows.push(SectionRow::Child);
+            }
+        }
+        rows
+    }
+
     /// The section menu of the medium form, with the two links in a part of their own – the same
-    /// rows as the list, as a menu.
-    fn menu_card<'a, M: Clone + 'a>(&'a self, wrap: fn(Message) -> M) -> Element<'a, M> {
-        let entry = |section: &Section| {
-            MenuItem::new(section.icon, section.name(), wrap(Message::Select(section.id)))
-                .current(section.id == self.current().id)
-        };
+    /// rows as the list, as a menu; a `child` open below the section follows it as a nested entry.
+    fn menu_card<'a, M: Clone + 'a>(&'a self, child: Option<(String, M)>, wrap: fn(Message) -> M) -> Element<'a, M> {
+        let current = self.current().id;
+        let mut entries = Vec::new();
+        for section in &self.sections {
+            let open = section.id == current;
+            match child.clone().filter(|_| open) {
+                Some((name, back)) => {
+                    entries.push(MenuItem::new(section.icon, section.name(), back));
+                    let stay = wrap(Message::Select(section.id));
+                    entries.push(MenuItem::new(section.icon, name, stay).current(true).nested());
+                }
+                None => entries
+                    .push(MenuItem::new(section.icon, section.name(), wrap(Message::Select(section.id))).current(open)),
+            }
+        }
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
             MenuItem::new(*icon, tr(label), wrap(Message::Link(at))).trail(Trail::Icon(Icon::ArrowUpRight))
         };
-        widgets::menu(vec![
-            MenuSection::new(self.sections.iter().map(entry).collect()),
-            MenuSection::new(LINKS.iter().enumerate().map(link).collect()),
-        ])
+        widgets::menu(vec![MenuSection::new(entries), MenuSection::new(LINKS.iter().enumerate().map(link).collect())])
     }
 
     /// The page in the content area: the loading state until the first answer, else the notices
-    /// over it, at most `content_max` wide, scrolling inside the margin of the size class.
-    fn page_area<'a, M: Clone + 'a>(&'a self, class: SizeClass, body: Element<'a, M>) -> Element<'a, M> {
+    /// over it, at most `content_max` wide, scrolling inside the margin of the size class. A
+    /// `save_bar` floats over its bottom, and the page gets the room to scroll out from under it.
+    fn page_area<'a, M: Clone + 'a>(
+        &'a self,
+        class: SizeClass,
+        body: Element<'a, M>,
+        save_bar: Option<Element<'a, M>>,
+    ) -> Element<'a, M> {
         if !self.loaded {
             return widgets::loading();
         }
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
         let page = column(notices).push(body).spacing(space::l());
-        let page = container(widgets::content(size::content_max(), page)).padding(page_margin(class));
-        scrollable(page)
+        let mut margin = page_margin(class);
+        if save_bar.is_some() {
+            margin.bottom = widgets::floating_bar_clearance(1);
+        }
+        let page = container(widgets::content(size::content_max(), page)).padding(margin);
+        let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .width(Fill)
-            .height(Fill)
-            .into()
+            .height(Fill);
+        match save_bar {
+            Some(bar) => widgets::over_bar(page, bar),
+            None => page.into(),
+        }
     }
+}
+
+/// A row of the section list ([`Host::section_rows`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionRow {
+    /// The section at `at`; `back` sends the open page below it back up instead of selecting it.
+    Section { at: usize, active: bool, back: bool },
+    /// The page open below the section above, as the active row of a quiet branch.
+    Child,
 }
 
 /// "Settings › Reminders › Work": what is open in `BODY_STRONG`, the way to it in `text_3`.
@@ -574,6 +654,39 @@ mod tests {
             style::button::secondary,
             Some(Message::Back),
         )])
+    }
+
+    /// DS.5: with a page open below the section, the list shows it as the section's child and the
+    /// section leads back up; without one the list is as before.
+    #[test]
+    fn a_page_below_a_section_stands_as_its_child() {
+        let mut host = host();
+        host.open("reminders");
+        let section = |at, active, back| SectionRow::Section { at, active, back };
+        assert_eq!(host.section_rows(true, false), vec![section(0, false, false), section(1, true, false)]);
+        assert_eq!(
+            host.section_rows(true, true),
+            vec![section(0, false, false), section(1, false, true), SectionRow::Child]
+        );
+        // The narrow list highlights nothing and so shows no child.
+        assert_eq!(host.section_rows(false, true), vec![section(0, false, false), section(1, false, false)]);
+        let below = page().sub_page("Work", Message::Back);
+        let _: Frame<'_, Message> = host.view(SizeClass::Wide, below, |m| m);
+        host.menu = true;
+        let below = page().sub_page("Work", Message::Back);
+        let frame = host.view(SizeClass::Medium, below, |m| m);
+        assert!(frame.overlay.is_some());
+    }
+
+    /// DS.5: a page with a save bar builds in every form.
+    #[test]
+    fn a_page_with_a_save_bar_builds_in_every_form() {
+        let host = host();
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            let bar = widgets::save_bar("Signature changed", Some(Message::Back), Some(Message::Back), false);
+            let page = page().sub_page("Work", Message::Back).save_bar(bar);
+            let _: Frame<'_, Message> = host.view(class, page, |m| m);
+        }
     }
 
     /// Every size class builds its form, in every state the host can be in: the list, a section,

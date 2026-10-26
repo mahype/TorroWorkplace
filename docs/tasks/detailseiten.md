@@ -143,7 +143,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   Übersetzungen („Free“, „Discard“, „Saving…“) in `de.rs`.
 
 ### DS.5 Einstellungs-Host: Objekt als Kind des Abschnitts, Platz für die Speicherleiste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** DS.3, DS.4 · **Dateien:** `crates/torro-settings-ui/src/host.rs`
 - `Host::list_rows`: Ist eine Unterseite offen (`Page::sub_page`), steht ihr Name als `sidebar_child` (mit dem Icon des
   Abschnitts, aktiv) in `sidebar_branch_quiet` unter dem aktiven Abschnitt; der Abschnitt selbst ist dann nicht
