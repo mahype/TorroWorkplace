@@ -213,7 +213,21 @@ assistant asks once in each conversation before it searches.“ Überspringen l�
 Mit dem Schritt steigt `Setup::VERSION` auf 2; wer die Einrichtung schon abgeschlossen hat, sieht in der Overview
 „New in setup“.
 
-### 10 Done
+### 10 Documents
+
+Seit Issue #303 (Konzept: „Dokumente mit ArtCraft“ in [erweiterungen.md](erweiterungen.md)). Nur, wenn die Komponente
+Assistent an ist. Titel „Work with your documents“, eine Einleitung, dann die Gruppe „ArtCraft apps“ mit je einer
+Zeile für WordCraft, DeckCraft, GridCraft und PdfCraft aus dem Katalog: Kachel mit Symbol, Name mit „Experimental“,
+darunter Art und Beispiele, rechts der Zustand – „Set up“ (als MCP-Server installiert), „Installed“ (Programm
+gefunden) oder „Get <App>“, das die Releases der App öffnet. Fußzeile: quelloffen und jung, je ein gewählter Ordner,
+Änderungen als neue Dateien, was eine Datei ersetzen könnte, fragt vorher, und was der Assistent liest, geht an das
+gewählte KI-Modell. Darunter: „Installed one? Set it up later in Settings › MCP servers › Catalog.“ Der Schritt stellt
+nur vor und speichert nichts; eingerichtet wird unter MCP servers (Ordner wählen geht nur mit freigegebenen Ordnern).
+Lädt der Katalog nicht, steht ein Satz da; „Continue“ geht immer.
+
+Mit dem Schritt steigt `Setup::VERSION` auf 3; wer die Einrichtung schon abgeschlossen hat, sieht „New in setup“.
+
+### 11 Done
 
 Eine Zeile je gewählter Komponente mit Zustand und Kurzinfo („Calendar · 3 calendars“,
 „Mail · Skipped“, „AI · Ollama, qwen3:8b“), daneben „Open“ für die App. Primär „Finish“ setzt den Stand
@@ -254,6 +268,7 @@ Befehle. Neu sind nur zwei Einstellungen und ein Feld.
 | Lokale KI finden, Modelle | Schritt 8 | `FindAiServers`, `AiModels` · Read | `ai_find_local_servers`, `ai_list_models` (gibt es) |
 | Modell des Assistenten | Schritt 8 | `SetSetting { key: AssistantDefault }` · Admin | `settings_set_setting` |
 | Websuche: Anbieter, Adresse, Schlüssel, Recht des Assistenten | Schritt 9 | `tools.list_search_providers` · Read; `SetSetting { key: SearchProvider \| SearxngAddress \| ToolEnabled }` · Admin, einschalten nur Menschen; `accounts.set_search_key` · Admin, nur App-Schlüssel; `clients.update_client` | `tools_list_search_providers`; `settings_set_setting` nur fürs Ausschalten; Schlüssel und Rechte **Never** (Punkte 2, 5) |
+| ArtCraft-Apps vorstellen | Schritt 10 | `extensions.list_catalog` · Read (gibt es); nichts Neues, der Schritt speichert nichts | `extensions_list_catalog` (gibt es) |
 | KI-Anbieter-Katalog | Schritt 8, Accounts › Add › AI | statisch in `torro_core::ai` (keine Daten, nur Beschreibung); Agenten brauchen ihn nicht, weil sie keine KI-Konten verbinden | – |
 
 ## Entscheidungen

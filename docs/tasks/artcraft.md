@@ -281,7 +281,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   (`torro-design-review`); Übersetzungen.
 
 ### AC.7 Doku
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** AC.1–AC.6 · **Dateien:** `docs/erweiterungen.md`, `docs/assistent.md`,
   `docs/settings.md`, `docs/api.md`, `docs/einrichtung.md`, `.claude/skills/torro-design/SKILL.md` (nur die Demo-Zustände)
 - `erweiterungen.md`: Abschnitt „Dokumente mit ArtCraft (#303)“ mit den Festlegungen dieser Datei (auch die offenen
