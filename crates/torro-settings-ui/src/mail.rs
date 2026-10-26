@@ -842,9 +842,10 @@ pub mod accounts {
         let others = &sized[shown..];
         if !others.is_empty() {
             let bytes = others.iter().map(|(_, bytes)| bytes).sum();
-            let label = match others.len() {
-                1 => tr("1 other folder").to_string(),
-                n => trf("{n} other folders", &[("n", &n)]),
+            // One folder left over keeps its own name; several are counted.
+            let label = match others {
+                [(name, _)] => (*name).to_string(),
+                _ => trf("{n} other folders", &[("n", &others.len())]),
             };
             parts.push(SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Other));
         }
@@ -908,7 +909,8 @@ pub mod accounts {
             style::button::ghost,
             Some(Message::OpenStorage),
         );
-        widgets::chart_card(tr("Storage"), "", body.push(manage))
+        // Every follow-up of a card stands at its bottom right, like "Change" and "All folders".
+        widgets::chart_card(tr("Storage"), "", body.push(row![blank::horizontal(), manage]))
     }
 
     /// "Mail over time": the mail per year – per month when it all lies within two years –, readable
@@ -1030,14 +1032,16 @@ pub mod accounts {
                 ]
             })
             .collect();
-        let head = [tr("Folder"), tr("Mail"), tr("Unread"), tr("Share"), tr("On server")].map(str::to_string).to_vec();
+        let head = [tr("Folder"), tr("Mail"), tr("Unread"), tr("Of all mail"), tr("On the server")]
+            .map(str::to_string)
+            .to_vec();
         let all = widgets::text_button(
             None,
             trf("All {n} folders", &[("n", &stats.folders.len())]),
             style::button::ghost,
             Some(Message::Tab(Tab::Folders.index())),
         );
-        let body = column![widgets::data_table(head, rows, None), all].spacing(space::s());
+        let body = column![widgets::data_table(head, rows, None), row![blank::horizontal(), all]].spacing(space::s());
         widgets::chart_card(tr("Largest folders"), "", body)
     }
 
@@ -1141,7 +1145,7 @@ pub mod accounts {
             tr("Unread"),
             tr("Offline texts"),
             tr("Indexed"),
-            tr("On server"),
+            tr("On the server"),
             tr("Originals"),
         ]
         .map(str::to_string)
@@ -1458,7 +1462,7 @@ pub mod accounts {
             four.push(("Junk", 1, 0, Some(10)));
             let (parts, _) = server_parts(&stats(&four, None));
             assert_eq!(parts.len(), 4);
-            assert_eq!((parts[3].label.as_str(), parts[3].value), (tr("1 other folder"), 10));
+            assert_eq!((parts[3].label.as_str(), parts[3].value), ("Junk", 10));
             assert_eq!(parts[3].color, ChartColor::Other);
             four.push(("Trash", 1, 0, Some(20)));
             let (parts, _) = server_parts(&stats(&four, None));
@@ -1889,7 +1893,8 @@ pub mod storage {
                 typo::text(typo::body(), tr("Numbers of this account")),
                 blank::horizontal(),
                 button("Show account", Some(Message::ShowAccount(account.to_string())))
-            ],
+            ]
+            .align_y(iced::Alignment::Center),
             false,
         ));
         let mut page = column![widgets::group(tr("Mail account"), account_rows, None)].spacing(layout::section_gap());
@@ -1945,7 +1950,7 @@ pub mod storage {
         page = page.push(widgets::group(tr("Offline strategy"), policy_rows, Some(tr("Estimates use the average size of local mail texts; actual downloads may differ. Search text remains independent of offline reading texts.").to_string())));
 
         page = page.push(widgets::group(tr("Attachment cache"), vec![
-            line("Keep downloaded attachments", trf("{days} days", &[("days", &current.attachment_retention_days)])),
+            line("Keep downloaded attachments", match current.attachment_retention_days { 1 => tr("1 day").to_string(), days => trf("{days} days", &[("days", &days)]) }),
             row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(space::s()), false),
             line("Prefetch attachments", if current.prefetch_attachments { tr("On") } else { tr("Off") }.to_string()),
             row_frame(row![button("Turn on", (!current.prefetch_attachments).then_some(Message::Prefetch(true))), button("Turn off", current.prefetch_attachments.then_some(Message::Prefetch(false)))].spacing(space::s()), false),

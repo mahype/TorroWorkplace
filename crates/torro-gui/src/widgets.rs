@@ -4157,6 +4157,20 @@ impl<M: Clone> PageAction<M> {
         text_button_width(self.icon.is_some(), &self.label)
     }
 
+    /// The button with only its icon (the label and the tip as tooltip), for a head too narrow for
+    /// the word; without an icon it keeps its word.
+    fn view_compact<'a>(self) -> Element<'a, M>
+    where
+        M: 'a,
+    {
+        let Some(which) = self.icon else { return self.view() };
+        let tip = match &self.tip {
+            Some(tip) => format!("{} · {tip}", self.label),
+            None => self.label.clone(),
+        };
+        icon_only(which, tip, style::button::boxed, self.on_press)
+    }
+
     fn view<'a>(self) -> Element<'a, M>
     where
         M: 'a,
@@ -4187,13 +4201,14 @@ impl<M> Default for HeadActions<M> {
 }
 
 impl<M: Clone> HeadActions<M> {
-    fn view<'a>(self) -> Vec<Element<'a, M>>
+    /// The buttons; `compact` shows the action by its icon only (a head in a mini tile).
+    fn view<'a>(self, compact: bool) -> Vec<Element<'a, M>>
     where
         M: 'a,
     {
         let mut out = Vec::new();
         if let Some(action) = self.action {
-            out.push(action.view());
+            out.push(if compact { action.view_compact() } else { action.view() });
         }
         if let Some((anchor, message)) = self.more {
             out.push(anchored(&anchor, icon_button(Icon::Ellipsis, tr("More"), Some(message))));
@@ -4235,7 +4250,8 @@ pub fn detail_head<'a, M: Clone + 'a>(
         if let Some((state, label)) = &status {
             side.push(status_pill(*state, label.clone()));
         }
-        side.extend(actions.clone().view());
+        // So narrow that the word would push "…" onto a line of its own: the action as an icon.
+        side.extend(actions.clone().view(room.width < size::panel()));
         if head_is_wide(room.width) {
             let mut head = row![tile, words.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
             if !side.is_empty() {
@@ -4346,8 +4362,8 @@ pub fn tabs<'a, M: Clone + 'a>(
     on_select: fn(usize) -> M,
 ) -> Element<'a, M> {
     responsive(move |room| {
-        let line = rule::horizontal(LINE).style(style::rule);
         if room.width >= tabs_width(&labels) {
+            let line = rule::horizontal(LINE).style(style::rule);
             let row = row(labels
                 .iter()
                 .enumerate()
@@ -4364,7 +4380,8 @@ pub fn tabs<'a, M: Clone + 'a>(
                 .font(typo::body().font)
                 .style(style::pick_list)
                 .menu_style(style::pick_list_menu);
-            column![pick, line].spacing(space::s()).into()
+            // A pick list needs no line under it; it would read as a row of tabs without tabs.
+            pick.into()
         }
     })
     .height(Length::Shrink)
@@ -4419,8 +4436,10 @@ pub fn question_card<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let (title, detail) = (title.into(), detail.into());
     let card = responsive(move |room| {
-        let mark: Element<'a, M> =
+        // The mark stands on the title line, wide or narrow, so it never jumps with the layout.
+        let glyph: Element<'a, M> =
             icon(mark, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).attention) }).into();
+        let mark: Element<'a, M> = container(glyph).center_y(typo::line_height(typo::body_strong())).into();
         let mut words = column![typo::text(typo::body_strong(), title.clone())].spacing(space::xs());
         if !detail.is_empty() {
             words = words.push(typo::text(typo::body(), detail.clone()).style(theme::text_2));
@@ -4429,7 +4448,7 @@ pub fn question_card<'a, M: Clone + 'a>(
         if actions.is_empty() {
             row![mark, words.width(Fill)].spacing(space::m()).into()
         } else if question_is_wide(room.width, &actions) {
-            row![mark, words.width(Fill), buttons].spacing(space::m()).align_y(Alignment::Center).into()
+            row![mark, words.width(Fill), buttons].spacing(space::m()).into()
         } else {
             row![mark, words.push(buttons.wrap()).width(Fill)].spacing(space::m()).into()
         }
@@ -4660,10 +4679,11 @@ fn share_entry<'a, M: 'a>(
 ) -> Element<'a, M> {
     let mark: Element<'a, M> = match colour {
         Some(colour) => swatch(colour),
+        // The track's colour is faint on the panel; its edge keeps the swatch visible.
         None => container(blank().width(SWATCH).height(SWATCH))
             .style(|t| container::Style {
                 background: Some(Background::Color(palette(t).line_strong)),
-                border: border::rounded(MARK_GAP),
+                border: border::rounded(MARK_GAP).color(palette(t).line_selected).width(LINE),
                 ..container::Style::default()
             })
             .into(),
@@ -5369,7 +5389,10 @@ pub fn column_chart<'a, M: 'a>(series: Vec<ChartSeries>, columns: Vec<ChartColum
     let ticks = axis_ticks(columns.iter().map(ChartColumn::total).max().unwrap_or(0));
     let top = ticks.last().copied().unwrap_or(1).max(1);
     let half = typo::line_height(axis) / 2.0;
-    let labels_width = ticks.iter().map(|tick| typo::text_width(&tick.to_string(), axis)).fold(0.0, f32::max);
+    let labels_width = ticks
+        .iter()
+        .map(|tick| typo::text_width(&crate::units::format_count(u64::from(*tick)), axis))
+        .fold(0.0, f32::max);
     let height = chart_height() + 2.0 * half + space::xs() + typo::line_height(axis);
     responsive(move |room| {
         let plot_width = (room.width - labels_width - space::s()).max(0.0);
@@ -5400,7 +5423,8 @@ fn y_labels<'a, M: 'a>(ticks: &[u32], top: u32, width: f32, half: f32) -> Elemen
     let axis = typo::micro().tabular();
     let layers = ticks.iter().map(|&tick| {
         let y = chart_height() * (1.0 - tick as f32 / top as f32);
-        let label = typo::text(axis, tick.to_string()).style(theme::text_3).wrapping(Wrapping::None);
+        let label =
+            typo::text(axis, crate::units::format_count(u64::from(tick))).style(theme::text_3).wrapping(Wrapping::None);
         pin(container(label).width(width).align_right(width)).y(y).into()
     });
     let base = blank().width(width).height(chart_height() + 2.0 * half);
@@ -5469,7 +5493,7 @@ fn bar_stack<'a, M: 'a>(series: &[ChartSeries], column: &ChartColumn, top: u32) 
 fn chart_tip<'a, M: 'a>(series: &[ChartSeries], column: &ChartColumn) -> Element<'a, M> {
     let head = row![
         typo::text(typo::body_strong(), column.title.clone()).width(Fill),
-        typo::text(typo::body_strong().tabular(), column.total().to_string()),
+        typo::text(typo::body_strong().tabular(), crate::units::format_count(u64::from(column.total()))),
     ]
     .spacing(space::s());
     let mut lines = column![head].spacing(space::xs());
