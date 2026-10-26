@@ -614,7 +614,7 @@ impl Edit {
     pub async fn apply<S: InboxSource>(self, inbox: Arc<S>) -> Result<Item, String> {
         let result = match self {
             Edit::Done { id, done } => inbox.set_item_done(id, done).await,
-            Edit::Snooze { id, until } => inbox.snooze_item(id, until).await,
+            Edit::Snooze { id, until } => inbox.snooze_item(id, until, false).await,
             Edit::Lane { id, lane, remember } => inbox.set_item_lane(id, lane, remember).await,
             Edit::Dismiss { id } => inbox.dismiss_item(id).await,
         };
@@ -3333,7 +3333,7 @@ async fn role_selected<S: MailSource>(
 ) -> Result<MailPage, String> {
     let Some((role, snoozed, hidden)) = view.by_role() else { return Ok(MailPage::of(Vec::new(), None)) };
     let ask = |account: Option<String>, limit: u32, cursor: Option<String>| async move {
-        let find = MailByRole { role, account, snoozed, hidden, order, limit, cursor };
+        let find = MailByRole { role, account, snoozed, hidden, pile: None, order, limit, cursor };
         inbox.mail_by_role(find).await.map_err(|err| err.to_string())
     };
     let accounts = match accounts {
@@ -11344,7 +11344,7 @@ mod tests {
         let app = loaded(&["--open", "approval"]);
         assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-3"));
         let app = loaded(&["--open", "snoozed"]);
-        assert_eq!((app.view.clone(), ids(&app)), (View::Snoozed, vec!["demo-10"]));
+        assert_eq!((app.view.clone(), ids(&app)), (View::Snoozed, vec!["demo-10", "demo-follow-p4"]));
         let app = loaded(&["--open", "empty"]);
         assert!(app.loaded && app.items.is_empty() && app.sources.is_empty());
         let mut app = demo(&["--demo", "--open", "loading"]);
@@ -14153,7 +14153,9 @@ mod tests {
         assert_eq!(rows[..4], ["demo-3", "demo-9", "demo-1", "demo-2"], "Decide, Follow up, then Agents …");
         // Everything for the user, and of Info only the question after a finished task (task E8.7b).
         assert_eq!(rows.len(), FOR_ME.len() + 1);
-        assert_eq!(app.snoozed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["demo-10"], "Coming back");
+        // The CI notice and the demo's follow-up on a sent mail (task E19.3), soonest first.
+        let coming_back: Vec<&str> = app.snoozed.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(coming_back, ["demo-10", "demo-follow-p4"], "Coming back");
     }
 
     /// Task E8.1: the notifications window shows the overview's other column alone, the mail window
@@ -16662,13 +16664,16 @@ mod tests {
     #[test]
     fn e_at_a_mail_entry_archives_its_mail_and_closes_the_entry() {
         let (archive, undo) = archived("m:w1", &["demo-mail-1"]);
+        // Found by kind, not by place: the window may load what it shows next after it (task E19.3).
         let filed = |app: &App<DemoSource>| {
-            let n = app.sent.len();
-            let Some(Sent::Mail(edit, Some(hint))) = app.sent.get(n.wrapping_sub(2)).cloned() else {
+            let at = app.sent.iter().rposition(|sent| matches!(sent, Sent::Mail(_, Some(_))));
+            let Some((at, Sent::Mail(edit, Some(hint)))) = at.and_then(|at| Some((at, app.sent.get(at)?.clone())))
+            else {
                 panic!("an archive with a hint: {:?}", app.sent)
             };
             assert_eq!((edit, hint.text.as_str(), hint.undo), (archive.clone(), tr("Archived"), undo.clone()));
-            assert_eq!(app.sent.last(), Some(&Sent::MailDone(vec!["demo-mail-1".into()])), "then its entry");
+            let done = Sent::MailDone(vec!["demo-mail-1".into()]);
+            assert_eq!(app.sent.get(at + 1), Some(&done), "then its entry: {:?}", app.sent);
         };
         // The hub's "For me": the key, and the button in the place of Done.
         let mut app = at("demo-mail-1");
@@ -16691,7 +16696,8 @@ mod tests {
 
         // The mail window's "Later": a snoozed mail entry.
         let mut app = mail_window(Density::Compact, &[]);
-        block_on(app.inbox.snooze_item("demo-mail-1".into(), Some(app.now + TimeDelta::days(1)))).expect("snoozed");
+        block_on(app.inbox.snooze_item("demo-mail-1".into(), Some(app.now + TimeDelta::days(1)), false))
+            .expect("snoozed");
         let _ = app.update(Message::Show(View::Snoozed));
         load(&mut app);
         let _ = app.update(Message::Select("demo-mail-1".into()));

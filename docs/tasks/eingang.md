@@ -4486,7 +4486,7 @@ parallel.
   Tabellentest und Vertragstest des Katalogs laufen mit.
 
 ### E19.3 Client, Quellen und Demo
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E19.2 · **Dateien:** `crates/torro-ipc/src/inbox.rs`, `crates/torroinbox/src/mail.rs`,
   `crates/torroinbox/src/empty.rs`, `crates/torroinbox/src/compose.rs` (nur Sichtbarkeit), `crates/torroinbox/src/app.rs`
   (nur Aufrufer von `snooze_item`), `crates/torro-inbox/src/demo.rs`

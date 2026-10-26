@@ -49,6 +49,10 @@
 //! - The mail window's views of every account (task E18.3): "All", "Hidden" and "Archive" list the
 //!   mail of one folder role ([`MailSource::mail_by_role`]), the number on "All" comes from
 //!   [`MailSource::unread_in_all`], and "Show again" is [`MailSource::set_mail_shown`].
+//! - The piles (task E19.3): [`MailSource::set_mail_pile`] puts mail on "Reply later" or "Set aside"
+//!   or takes it off, [`MailSource::mail_in_pile`] lists a pile and [`MailSource::count_in_pile`] counts
+//!   it; "All" asks [`MailSource::mail_by_role`] with `pile: without`. "Focus & reply" answers with
+//!   [`MailSource::send_reply`], built as the compose window builds a reply ([`send_reply_through`]).
 //!
 //! **Mail is foreign text** (`untrusted`). Its HTML comes cleaned by the core (no scripts, no
 //! forms, legacy attributes as CSS) and is drawn without JavaScript; a click on one of its links
@@ -83,19 +87,23 @@ use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
 use torro_ipc::inbox::CategoryInfo;
-use torro_ipc::inbox::{CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, SaveTargets, SavedAttachments};
+use torro_ipc::inbox::{
+    CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, MailInPile, SaveTargets, SavedAttachments,
+};
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
-    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget, PlannedPlace, SaveTo, SavedFile,
+    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget, PileFilter, PlannedPlace, SaveTo,
+    SavedFile,
 };
 use torro_ipc::{Request, Response};
 use torro_mail::{
-    AttachmentInfo, CategoryGroup, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, Message as Mail,
-    MessageSummary, Order, Role,
+    AttachmentInfo, CategoryGroup, Draft, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, MailPile,
+    Message as Mail, MessageSummary, Order, Role,
 };
 
 use crate::app::{INBOX, Message, View};
+use crate::compose::{self, ComposeError, ComposeSource};
 use crate::detail;
 use crate::keys::Command as Key;
 use crate::list::{self, Look};
@@ -273,14 +281,17 @@ pub trait MailSource: Send + Sync {
     /// `mail.search_messages` without a folder and with the query `in:<role>` (task E18.3,
     /// [`InboxClient::mail_by_role`]): the mail in the folders of `find.role` of every account the
     /// window reaches (or of `find.account`), leaving out or giving only snoozed and hidden mail as
-    /// `find.snoozed` and `find.hidden` say, at most `find.limit` in `find.order` from
-    /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields).
-    /// "All" is [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)`, "Hidden" [`Role::Inbox`]
-    /// with `hidden` `Some(true)`, "Archive" [`Role::Archive`]. The page has no highlights.
+    /// `find.snoozed` and `find.hidden` say and, by `find.pile` (task E19.3), leaving out or giving
+    /// only mail on a pile, at most `find.limit` in `find.order` from `find.cursor` on (the
+    /// [`MailPage::next`] of the page before, asked with the same fields). "All" is [`Role::Inbox`]
+    /// with `snoozed` and `hidden` `Some(false)` and `pile` `Some(PileFilter::Without)`, "Hidden"
+    /// [`Role::Inbox`] with `hidden` `Some(true)`, "Archive" [`Role::Archive`]. The page has no
+    /// highlights.
     fn mail_by_role(&self, find: MailByRole) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// The number on "All" (task E18.3, decision 4 of E18): `mail.search_messages` as "All" asks it
-    /// – [`Role::Inbox`], `snoozed` and `hidden` `Some(false)` – with `unread: Some(true)` and
+    /// – [`Role::Inbox`], `snoozed` and `hidden` `Some(false)`, no mail on a pile (task E19.3) – with
+    /// `unread: Some(true)` and
     /// `limit: 1`, for `account` (`mail:<address>`) or every account the window reaches
     /// ([`InboxClient::count_unread_in_all`]). Answers the core's `total_estimate`, 0 without one.
     fn unread_in_all(&self, account: Option<String>) -> impl Future<Output = Result<u64, InboxError>> + Send;
@@ -291,6 +302,117 @@ pub trait MailSource: Send + Sync {
     /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing is
     /// remembered then. `Ok` also when there was nothing to remember.
     fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `inbox.set_mail_pile` (task E19.3, [`InboxClient::set_mail_pile`]): puts the mail `ids` (`m:…`,
+    /// 1 to 100) on `pile` – "Reply later" or "Set aside"; a message lies on at most one, so this moves
+    /// it from the other –, or takes them off with `None` (also the undo, with the pile each lay on
+    /// before, [`MessageSummary::pile`]). Kept only in the core, nothing goes to the server.
+    /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing changes then.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E19.4 on"))]
+    fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+    ) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// One page of a pile (task E19.3, [`InboxClient::mail_in_pile`]): the mail on `find.pile` in
+    /// every folder but the trash and spam, of every account the window reaches (or of
+    /// `find.account`), whether snoozed or hidden or not, at most `find.limit` in `find.order` from
+    /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields). Every
+    /// message carries its pile. The page has no highlights.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E19.4 on"))]
+    fn mail_in_pile(&self, find: MailInPile) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
+
+    /// How much mail lies on `pile` (task E19.3, [`InboxClient::count_in_pile`]), read and unread, for
+    /// `account` (`mail:<address>`) or every account the window reaches: the number beside the pile
+    /// in the sidebar. The core's `total_estimate`, 0 without one.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the mail window calls it from task E19.4 on"))]
+    fn count_in_pile(
+        &self,
+        pile: MailPile,
+        account: Option<String>,
+    ) -> impl Future<Output = Result<u64, InboxError>> + Send;
+
+    /// Answers the message `id` with `text` ("Focus & reply", tasks E19.3 and E19.5), as the compose
+    /// window answers it ([`send_reply_through`]): to the sender (`Reply-To:` first), from the account
+    /// the mail came to, `Re:` before the subject, `text` above the quoted mail, formatted for an
+    /// account that writes HTML; `mail.save_draft`, then `mail.send_draft`. The pile is not touched:
+    /// the window takes the mail off "Reply later" afterwards (the core does too once the sent copy
+    /// turns up). Errors as the core maps them; [`InboxError::Other`] with the reason when there is
+    /// no account to write from, no one to answer, or the server refused (the saved draft stays in
+    /// the drafts folder then).
+    #[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
+    fn send_reply(&self, id: String, text: String) -> impl Future<Output = Result<(), InboxError>> + Send;
+}
+
+/// What "Focus & reply" sends for the message `id` (task E19.3, [`MailSource::send_reply`]): the
+/// reply the compose window opens with ([`compose::opening`] with [`compose::Kind::Reply`], the account
+/// of [`compose::pick_sender`]), `text` typed above the quote, saved and then sent through `source`.
+/// A send whose outcome is unknown ([`Delivery::Unknown`]) counts as sent, as in the compose window:
+/// it is never sent again by itself.
+#[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
+pub async fn send_reply_through<S: ComposeSource>(source: &S, id: String, text: &str) -> Result<(), InboxError> {
+    let senders = source.senders().await.map_err(inbox_error)?;
+    let message = source.get_mail(id.clone()).await.map_err(inbox_error)?;
+    let own: Vec<String> = senders.iter().map(|sender| sender.address.to_lowercase()).collect();
+    let opened = compose::opening(&compose::Kind::Reply(id), Some(&message), &own);
+    let sender = compose::pick_sender(&senders, None, Some(&message))
+        .and_then(|at| senders.get(at))
+        .ok_or_else(|| InboxError::Other(tr("No mail account yet.").to_owned()))?;
+    // Checked before saving, so a reply that cannot go leaves no draft behind.
+    if opened.to.is_empty() && opened.cc.is_empty() {
+        return Err(InboxError::Other(tr("Add at least one recipient.").to_owned()));
+    }
+    let saved = source.save_draft(reply_draft(sender, opened, text)).await.map_err(inbox_error)?;
+    let draft = saved.id.ok_or_else(|| InboxError::Other("the draft was saved without an id".into()))?;
+    source.send_draft(draft).await.map_err(inbox_error)?;
+    Ok(())
+}
+
+/// The draft of an answer as the compose window would save it: `text` above `opened`'s quoted mail,
+/// from `sender`; with the marks as HTML when the account writes formatted mail, the quote staying
+/// someone else's text ([`torro_mail::markup::to_html`]).
+#[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
+fn reply_draft(sender: &compose::Sender, opened: compose::Opening, text: &str) -> Draft {
+    let body = format!("{}{}", text.trim().replace("\r\n", "\n"), opened.body);
+    let html = sender
+        .html
+        .then(|| torro_mail::markup::to_html(&body, opened.history.as_deref()))
+        .filter(|markup| !markup.is_empty());
+    Draft {
+        id: None,
+        account: sender.account.clone(),
+        to: opened.to,
+        cc: opened.cc,
+        bcc: Vec::new(),
+        subject: opened.subject,
+        body: html.as_deref().map_or(body, torro_mail::html::to_text),
+        html,
+        in_reply_to: opened.in_reply_to,
+        attachments: Vec::new(),
+    }
+}
+
+/// A compose call's error as the mail window's calls report it.
+#[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
+fn inbox_error(err: ComposeError) -> InboxError {
+    match err {
+        ComposeError::Offline => InboxError::Offline,
+        ComposeError::NotFound => InboxError::NotFound,
+        ComposeError::Forbidden => InboxError::Forbidden,
+        ComposeError::Other(message) => InboxError::Other(message),
+    }
+}
+
+/// Whether a message on `pile` is one that `filter` asks for, as the core reads `mail.search_messages`'
+/// `pile` (task E19.2): `None` every message, `Without` none on a pile, a pile only its mail.
+fn pile_matches(filter: Option<PileFilter>, pile: Option<MailPile>) -> bool {
+    match filter {
+        None => true,
+        Some(PileFilter::Without) => pile.is_none(),
+        Some(PileFilter::ReplyLater) => pile == Some(MailPile::ReplyLater),
+        Some(PileFilter::SetAside) => pile == Some(MailPile::SetAside),
+    }
 }
 
 /// One page of a folder ([`MailSource::search_mail`]) or of a search ([`MailSource::find_mail`]).
@@ -379,6 +501,23 @@ impl MailSource for InboxClient {
 
     async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
         InboxClient::set_mail_shown(self, ids, shown).await
+    }
+
+    async fn set_mail_pile(&self, ids: Vec<String>, pile: Option<MailPile>) -> Result<(), InboxError> {
+        InboxClient::set_mail_pile(self, ids, pile).await
+    }
+
+    async fn mail_in_pile(&self, find: MailInPile) -> Result<MailPage, InboxError> {
+        let (messages, next) = InboxClient::mail_in_pile(self, find).await?;
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn count_in_pile(&self, pile: MailPile, account: Option<String>) -> Result<u64, InboxError> {
+        InboxClient::count_in_pile(self, pile, account).await
+    }
+
+    async fn send_reply(&self, id: String, text: String) -> Result<(), InboxError> {
+        send_reply_through(self, id, &text).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -524,11 +663,12 @@ impl MailSource for DemoSource {
         crate::search::demo_index(self)
     }
 
-    /// The demo's mail of the role ([`DemoSource::by_role`]) a page at a time; the cursor is the
-    /// place of the next page, as in the demo's folders.
+    /// The demo's mail of the role ([`DemoSource::by_role`]) with the piles `find.pile` asks for, a
+    /// page at a time; the cursor is the place of the next page, as in the demo's folders.
     async fn mail_by_role(&self, find: MailByRole) -> Result<MailPage, InboxError> {
-        let found =
+        let mut found =
             DemoSource::by_role(self, find.role, find.account.as_deref(), find.snoozed, find.hidden, find.order);
+        found.retain(|message| pile_matches(find.pile, message.pile));
         let mut page = demo_page(found, find.limit, find.cursor.as_deref())?;
         for message in &mut page.messages {
             message.invite = demo_invite(&message.id, message.date);
@@ -536,15 +676,41 @@ impl MailSource for DemoSource {
         Ok(page)
     }
 
-    /// The unread mail of what "All" lists, counted exactly.
+    /// The unread mail of what "All" lists, counted exactly: none on a pile.
     async fn unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
         let all =
             DemoSource::by_role(self, Role::Inbox, account.as_deref(), Some(false), Some(false), Order::NewestFirst);
-        Ok(all.iter().filter(|message| !message.flags.contains(&Flag::Seen)).count() as u64)
+        let unread = |message: &&MessageSummary| message.pile.is_none() && !message.flags.contains(&Flag::Seen);
+        Ok(all.iter().filter(unread).count() as u64)
     }
 
     async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
         DemoSource::set_mail_shown(self, &ids, shown)
+    }
+
+    async fn set_mail_pile(&self, ids: Vec<String>, pile: Option<MailPile>) -> Result<(), InboxError> {
+        DemoSource::set_mail_pile(self, &ids, pile)
+    }
+
+    /// The demo's pile ([`DemoSource::in_pile`]) a page at a time, as its roles.
+    async fn mail_in_pile(&self, find: MailInPile) -> Result<MailPage, InboxError> {
+        let found = DemoSource::in_pile(self, find.pile, find.account.as_deref(), find.order);
+        let mut page = demo_page(found, find.limit, find.cursor.as_deref())?;
+        for message in &mut page.messages {
+            message.invite = demo_invite(&message.id, message.date);
+        }
+        Ok(page)
+    }
+
+    /// The demo's pile counted exactly.
+    async fn count_in_pile(&self, pile: MailPile, account: Option<String>) -> Result<u64, InboxError> {
+        Ok(DemoSource::in_pile(self, pile, account.as_deref(), Order::NewestFirst).len() as u64)
+    }
+
+    /// Built and sent as for the core; the demo keeps the answer as sent and takes the conversation
+    /// off "Reply later", as the core does ([`DemoSource::send_draft`]).
+    async fn send_reply(&self, id: String, text: String) -> Result<(), InboxError> {
+        send_reply_through(self, id, &text).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -796,6 +962,24 @@ impl MailSource for crate::empty::EmptySource {
     /// No mail is hidden, so there is nothing to remember – as the core answers then.
     async fn set_mail_shown(&self, _ids: Vec<String>, _shown: bool) -> Result<(), InboxError> {
         Ok(())
+    }
+
+    /// There is no mail to put on a pile.
+    async fn set_mail_pile(&self, _ids: Vec<String>, _pile: Option<MailPile>) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn mail_in_pile(&self, _find: MailInPile) -> Result<MailPage, InboxError> {
+        Ok(MailPage::of(Vec::new(), None))
+    }
+
+    async fn count_in_pile(&self, _pile: MailPile, _account: Option<String>) -> Result<u64, InboxError> {
+        Ok(0)
+    }
+
+    /// There is no mail to answer.
+    async fn send_reply(&self, _id: String, _text: String) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
     }
 }
 
@@ -4838,6 +5022,7 @@ mod tests {
                 account: None,
                 snoozed: (role == Role::Inbox).then_some(false),
                 hidden,
+                pile: (role == Role::Inbox).then_some(PileFilter::Without),
                 order: Order::NewestFirst,
                 limit,
                 cursor,
@@ -4857,6 +5042,7 @@ mod tests {
             account: None,
             snoozed: None,
             hidden: None,
+            pile: None,
             order: Order::NewestFirst,
             limit: 1,
             cursor: Some("x".into()),
@@ -4883,6 +5069,88 @@ mod tests {
         assert_eq!(unread(None), unread_shown + 1, "the unread newsletter counts again");
         show(false).expect("undone");
         assert_eq!(by_role(Role::Inbox, Some(false), 50, None).messages, all);
+    }
+
+    /// Task E19.3: the demo's piles are listed a page at a time and counted, "All" and its number
+    /// leave them out, putting mail on the other pile moves it and taking it off brings it back.
+    #[test]
+    fn the_demo_lists_and_counts_its_piles_and_all_leaves_them_out() {
+        use iced::futures::executor::block_on;
+        let demo = DemoSource::new(now());
+        let pile = |pile, account: Option<&str>, limit, cursor: Option<String>| {
+            let find =
+                MailInPile { pile, account: account.map(str::to_owned), order: Order::NewestFirst, limit, cursor };
+            block_on(MailSource::mail_in_pile(&demo, find)).expect("a page")
+        };
+        let ids = |page: MailPage| page.messages.into_iter().map(|message| message.id).collect::<Vec<_>>();
+        let count = |which, account: Option<&str>| {
+            block_on(MailSource::count_in_pile(&demo, which, account.map(str::to_owned))).expect("a number")
+        };
+        let all = || {
+            let find = MailByRole {
+                role: Role::Inbox,
+                account: None,
+                snoozed: Some(false),
+                hidden: Some(false),
+                pile: Some(PileFilter::Without),
+                order: Order::NewestFirst,
+                limit: 50,
+                cursor: None,
+            };
+            ids(block_on(MailSource::mail_by_role(&demo, find)).expect("a page"))
+        };
+        let unread = || block_on(MailSource::unread_in_all(&demo, None)).expect("a number");
+
+        let first = pile(MailPile::ReplyLater, None, 1, None);
+        assert_eq!(first.next.as_deref(), Some("1"), "a page at a time");
+        assert!(first.messages.iter().all(|message| message.pile == Some(MailPile::ReplyLater)), "named");
+        assert_eq!(ids(first), ["m:w13"]);
+        assert_eq!(ids(pile(MailPile::ReplyLater, None, 1, Some("1".into()))), ["m:p7"]);
+        assert_eq!(ids(pile(MailPile::SetAside, Some(demo::MAIL_ACCOUNTS[0]), 50, None)), [demo::SET_ASIDE_MAIL]);
+        assert!(ids(pile(MailPile::SetAside, Some(demo::MAIL_ACCOUNTS[1]), 50, None)).is_empty(), "one account");
+        assert_eq!((count(MailPile::ReplyLater, None), count(MailPile::SetAside, None)), (2, 1));
+        assert_eq!(count(MailPile::ReplyLater, Some(demo::MAIL_ACCOUNTS[1])), 1);
+        let on_piles = [demo::REPLY_LATER_MAIL[0], demo::REPLY_LATER_MAIL[1], demo::SET_ASIDE_MAIL];
+        assert!(!all().iter().any(|id| on_piles.contains(&id.as_str())), "not in All");
+        let unread_before = unread();
+
+        // Moved to the other pile, taken off: back in "All", its unread mail counted again.
+        let put = |ids: &[&str], to| {
+            block_on(MailSource::set_mail_pile(&demo, ids.iter().map(|id| (*id).to_owned()).collect(), to))
+        };
+        put(&["m:p7"], Some(MailPile::SetAside)).expect("moved");
+        assert_eq!((count(MailPile::ReplyLater, None), count(MailPile::SetAside, None)), (1, 2));
+        put(&["m:p7"], None).expect("taken off");
+        assert!(all().iter().any(|id| id == "m:p7"), "in All again");
+        assert_eq!(unread(), unread_before + 1, "Clara's unread mail counts again");
+        put(&["m:w1"], Some(MailPile::ReplyLater)).expect("put on");
+        assert!(!all().iter().any(|id| id == "m:w1"));
+        assert_eq!(put(&["m:nope"], None), Err(InboxError::NotFound));
+    }
+
+    /// Task E19.3: "Focus & reply" sends what the compose window would – to the sender, from the
+    /// account the mail came to, `Re:`, the text above the quote, formatted for the demo's accounts –
+    /// and the demo takes the conversation off "Reply later" as the core does.
+    #[test]
+    fn the_demo_sends_a_reply_as_the_compose_window_builds_it() {
+        use iced::futures::executor::block_on;
+        let demo = DemoSource::new(now());
+        block_on(MailSource::send_reply(&demo, "m:p7".into(), "  Yes, book it!\n".into())).expect("sent");
+        let sent = demo.sent();
+        assert_eq!(sent.len(), 1, "saved and sent, no draft left: {:?}", demo.drafts());
+        let reply = &sent[0];
+        assert_eq!(reply.account, demo::MAIL_ACCOUNTS[1], "from the account it came to");
+        assert_eq!(reply.to.iter().map(|to| to.address.as_str()).collect::<Vec<_>>(), ["clara@example.org"]);
+        assert_eq!(
+            (reply.subject.as_str(), reply.in_reply_to.as_deref()),
+            ("Re: Birthday dinner on the 24th", Some("m:p7"))
+        );
+        assert!(reply.body.starts_with("Yes, book it!\n"), "the text first: {}", reply.body);
+        assert!(reply.body.contains("> Dinner for Mum’s birthday"), "then the quote: {}", reply.body);
+        assert!(reply.html.is_some(), "the demo writes formatted mail");
+        let left = block_on(MailSource::count_in_pile(&demo, MailPile::ReplyLater, None)).expect("a number");
+        assert_eq!(left, 1, "answered, off the pile");
+        assert_eq!(block_on(MailSource::send_reply(&demo, "m:nope".into(), "Hi".into())), Err(InboxError::NotFound));
     }
 
     /// Task E8.3b: the smart view keeps the invitations not over yet, the soonest first; the demo's

@@ -1908,13 +1908,15 @@ mod tests {
 
     #[test]
     fn coming_back_lists_the_snoozed_soonest_first() {
+        // The CI notice (20 h) and the demo's follow-up on a sent mail (two days, task E19.3).
         let mut snoozed = entries(StateFilter::Snoozed);
-        assert_eq!(coming_back(&snoozed).len(), 1);
+        let ids = |snoozed: &[Item]| coming_back(snoozed).iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&snoozed), ["demo-10", "demo-follow-p4"], "soonest first");
         let mut sooner = snoozed[0].clone();
         sooner.id = "sooner".into();
         sooner.state = State::Snoozed { until: now() + TimeDelta::hours(1) };
         snoozed.push(sooner);
-        assert_eq!(coming_back(&snoozed).first().map(|item| item.id.as_str()), Some("sooner"));
+        assert_eq!(ids(&snoozed), ["sooner", "demo-10", "demo-follow-p4"]);
         assert!(coming_back(&entries(StateFilter::Open)).is_empty());
     }
 }
