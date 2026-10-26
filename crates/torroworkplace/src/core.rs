@@ -5020,16 +5020,22 @@ impl Core {
     /// [`torro_ipc::api::Lack::Extension`] when its level for the server does not cover the tool's access or
     /// the tool is switched off for it ([`torro_ipc::api::Rights::allows_extension`]). Checked before an
     /// approval is asked for ([`Core::handle_client`]) and again when an approved one runs
-    /// ([`Core::run_approved`], with what both a bot and the assistant may).
+    /// ([`Core::run_approved`], with what both a bot and the assistant may). Last, for a server that works in a
+    /// folder (issue #303), its blocked tools and commands and the paths of the call
+    /// ([`crate::extensions::Extensions::files_refusal`]): after the rights, so a client without them learns
+    /// nothing of the server's folder.
     fn extension_refusal(&self, rights: &torro_ipc::api::Rights, request: &Request) -> Option<Response> {
         if let Some(unseen) = self.extension_unseen(rights, request) {
             return Some(unseen);
         }
-        let Request::CallExtensionTool { extension, tool, .. } = request else { return None };
+        let Request::CallExtensionTool { extension, tool, arguments } = request else { return None };
         let access = self.extensions.tool_access(extension, tool)?;
         let command = request.operation().name();
         let lack = torro_ipc::api::Lack::Extension;
-        (!rights.allows_extension(extension, tool, access)).then(|| Refused::Lacks { command, lack }.response())
+        if !rights.allows_extension(extension, tool, access) {
+            return Some(Refused::Lacks { command, lack }.response());
+        }
+        self.extensions.files_refusal(extension, tool, arguments)
     }
 
     /// `extensions.remove_extension` (issue #302): takes the server out of every client's rights (its level and
@@ -11543,6 +11549,50 @@ mod tests {
         assert_eq!(core.handle(Request::UpdateSettings { settings: whole }).await, Response::Ok);
         let Response::Extension { extension } = core.handle(choose()).await else { panic!("the server") };
         assert_eq!(extension.folder, Some(docs));
+    }
+
+    /// Issue #303: a call of a document server that names a path outside its folder or a blocked command is refused
+    /// before anyone is asked to approve it; a client without a level for the server hears only that there is none.
+    #[tokio::test]
+    async fn a_document_servers_call_is_checked_before_an_approval() {
+        use torro_core::settings::{AllowedFolder, FolderAccess};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _) = extensions_core(dir.path());
+        let resolved = std::fs::canonicalize(dir.path()).expect("resolved");
+        for folder in ["Docs", "Other"] {
+            std::fs::create_dir_all(resolved.join(folder)).expect("made");
+        }
+        let at = |relative: &str| resolved.join(relative).to_string_lossy().into_owned();
+        let mut whole = settings(&core).await;
+        whole.tools.folders = vec![
+            AllowedFolder { path: at("Docs"), access: FolderAccess::ReadWrite },
+            AllowedFolder { path: at("Other"), access: FolderAccess::ReadWrite },
+        ];
+        assert_eq!(core.handle(Request::UpdateSettings { settings: whole }).await, Response::Ok);
+        crate::extensions::testing::artcraft_installed(&core.extensions, Some(at("Docs")));
+        let call = |tool: &str, arguments: serde_json::Value| Request::CallExtensionTool {
+            extension: "wordcraft".into(),
+            tool: tool.into(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+        };
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.extensions.insert("wordcraft".into(), Level::Full);
+        rights.confirm = torro_ipc::api::Confirm::OnDelete;
+        let (_, key) = client(&core, rights).await;
+        let nothing_asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty() };
+        let outside = call("save_document", serde_json::json!({"path": at("Other/copy.docx")}));
+        assert_eq!(code(&ask(&core, Some(&key), outside.clone()).await), "not-found");
+        let blocked = call("execute", serde_json::json!({"command": "ui.click"}));
+        assert_eq!(code(&ask(&core, Some(&key), blocked).await), "forbidden");
+        assert!(nothing_asked().await, "nothing to approve");
+        // Allowed paths pass the check; the all-purpose tool then waits for the person.
+        let saving =
+            call("execute", serde_json::json!({"command": "file.saveAs", "params": {"path": at("Docs/copy.docx")}}));
+        let asked = waits(ask(&core, Some(&key), saving).await);
+        assert_eq!(asked.command, "extensions.call_tool");
+        let (_, stranger) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let unseen = ask(&core, Some(&stranger), outside).await;
+        assert_eq!(unseen, crate::extensions::no_server("wordcraft"));
     }
 
     /// The stand-in server `fixture` as a person installed it and allowed `echo` (read), `pwd` (write) and

@@ -6112,6 +6112,44 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Blocked by Torro", "Von Torro gesperrt"),
     ("This MCP server doesn't work in a folder.", "Dieser MCP-Server arbeitet nicht in einem Ordner."),
     (
+        "Torro blocks this command: it works the app's window, runs scripts or reaches keys.",
+        "Torro sperrt diesen Befehl: Er bedient das Fenster der App, führt Skripte aus oder greift auf Schlüssel zu.",
+    ),
+    (
+        "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
+        "Wähle zuerst in Torro Workplace unter „MCP-Server“ einen Ordner für {app}. Die App arbeitet nur dort.",
+    ),
+    (
+        "Give the new file's path in “{argument}”: without it {app} saves over the original, and Torro saves changes \
+         only as a new file.",
+        "Gib in „{argument}“ den Pfad der neuen Datei an: Ohne ihn speichert {app} über das Original, und Torro \
+         speichert Änderungen nur als neue Datei.",
+    ),
+    (
+        "There is a file of that name already. Torro saves changes only as a new file: choose a name that isn't taken.",
+        "Eine Datei mit diesem Namen gibt es schon. Torro speichert Änderungen nur als neue Datei: Wähle einen freien \
+         Namen.",
+    ),
+    (
+        "A path in this call isn't in the folder chosen for {app}, or Torro protects it.",
+        "Ein Pfad in diesem Aufruf liegt nicht im Ordner, der für {app} gewählt ist, oder Torro schützt ihn.",
+    ),
+    (
+        "Give every path in full, inside the folder chosen for {app}.",
+        "Gib jeden Pfad vollständig an, innerhalb des Ordners, der für {app} gewählt ist.",
+    ),
+    (
+        "The folder chosen for {app} may only be read. To save, allow reading and writing there.",
+        "Der Ordner, der für {app} gewählt ist, darf nur gelesen werden. Zum Speichern erlaube dort Lesen und \
+         Schreiben.",
+    ),
+    (
+        "Torro blocks these tools: {tools}. They work the app's window, run scripts or reach keys of your keychain, \
+         so no one may use them.",
+        "Torro sperrt diese Werkzeuge: {tools}. Sie bedienen das Fenster der App, führen Skripte aus oder greifen auf \
+         Schlüssel deines Schlüsselbunds zu, darum darf sie niemand nutzen.",
+    ),
+    (
         "This isn't an allowed folder. Allow it under Allowed folders first.",
         "Das ist kein freigegebener Ordner. Gib ihn zuerst unter „Freigegebene Ordner“ frei.",
     ),

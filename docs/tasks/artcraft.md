@@ -184,7 +184,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   `forbidden`.
 
 ### AC.4 Pfadprüfung, Speichern als Kopie, Sperrliste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** AC.3 · **Dateien:** `crates/torroworkplace/src/extensions/{files,mod,client}.rs`
   (`files.rs` neu), `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/tests/fixtures/extensions/artcraft.sh`,
   `crates/torro-core/src/i18n/de.rs`

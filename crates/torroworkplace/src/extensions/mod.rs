@@ -3,6 +3,7 @@
 //! rules for ids and names are `torro_ipc::extensions`; this module holds the logic.
 //!
 //! - `catalog`: the built-in catalog (`assets/extensions/catalog.toml`), read and checked (task MA.2).
+//! - `files`: Torro's own check of the paths in a call of a server that works in a folder (issue #303).
 //! - `prereq`: whether the programs a server needs (`npx`, `uvx`, `docker`) are on this computer (task MA.2).
 //! - `store`: `<data>/extensions/extensions.json` and the servers' secrets in the keychain (task MA.3).
 //! - `env`: the environment and headers a server gets, and which addresses may be used (task MA.3).
@@ -24,6 +25,7 @@
 pub mod catalog;
 pub mod client;
 pub mod env;
+pub mod files;
 pub mod prereq;
 #[allow(dead_code, reason = "`Store::dir` has no caller outside the tests yet")]
 pub mod store;
@@ -256,6 +258,10 @@ impl Extensions {
         if let Some(refused) = arguments_refusal(&arguments) {
             return refused;
         }
+        // For every key, the app key too: the paths and names of the call (issue #303).
+        if let Some(refused) = self.files_refusal(id, tool, &arguments) {
+            return refused;
+        }
         self.watch_tools();
         let (stored, launch) = match self.launch_for_call(id, tool).await {
             Ok(found) => found,
@@ -459,9 +465,10 @@ impl Extensions {
                 return error("conflict", message.into());
             }
             let entry = entry_of(&stored.source);
+            let blocked = |tool: &str| entry.is_some_and(|entry| entry.blocked.iter().any(|name| name == tool));
             stored.allowed = reported
                 .iter()
-                .filter(|tool| tool_name(&stored.id, &tool.name).is_some())
+                .filter(|tool| tool_name(&stored.id, &tool.name).is_some() && !blocked(&tool.name))
                 .map(|tool| client::allow(tool, access_in(entry, &tool.name)))
                 .collect();
             stored.reported = reported;
@@ -814,6 +821,22 @@ impl Extensions {
         folder_refusal(&allowed, &root, access).is_none().then_some((root, access))
     }
 
+    /// Why `tool` of the server `id` must not run with `arguments` now ([`files::refusal`], issue #303): for a
+    /// catalog server that works in a folder, its blocked tools and commands and the paths of the call. `None` for
+    /// every other server and an unknown one (whose call fails on its own). Checked by [`Extensions::call`] for
+    /// every key, and by the core for a client before an approval is asked for and when an approved one runs.
+    pub fn files_refusal(
+        &self,
+        id: &str,
+        tool: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Response> {
+        let stored = self.stored(id)?;
+        let entry = entry_of(&stored.source)?;
+        entry.info.folder?;
+        files::refusal(entry, self.usable_folder(&stored), &self.allowed_folders(), tool, arguments)
+    }
+
     /// The allowed folders of now ([`Extensions::with_allowed`]); none without them.
     pub fn allowed_folders(&self) -> Allowed {
         self.allowed.as_ref().map_or_else(Allowed::default, |allowed| allowed())
@@ -992,7 +1015,8 @@ impl Extensions {
             true => stored.allowed.iter().find(|allowed| allowed.name == tool).map_or(Access::Delete, |a| a.access),
             false => access_in(entry, tool),
         };
-        client::tool_states(&stored.id, &stored.name, reported, &stored.allowed, now)
+        let blocked = entry.map(|entry| entry.blocked.as_slice()).unwrap_or_default();
+        client::tool_states(&stored.id, &stored.name, reported, &stored.allowed, blocked, now)
     }
 
     /// The tool `tool` of `stored` when a person allowed it as the server reports it ([`Extensions::reported`])
@@ -1092,6 +1116,15 @@ impl Extensions {
             })
             .collect::<Vec<String>>();
         let mut notes = notes;
+        let blocked: Vec<&str> =
+            tools.iter().filter(|tool| tool.state == ToolState::Blocked).map(|tool| tool.name.as_str()).collect();
+        if !blocked.is_empty() {
+            notes.push(trf(
+                "Torro blocks these tools: {tools}. They work the app's window, run scripts or reach keys of your \
+                 keychain, so no one may use them.",
+                &[("tools", &blocked.join(", "))],
+            ));
+        }
         if let Some(note) = self.folder_note(&stored) {
             notes.push(note);
         }
@@ -1748,7 +1781,9 @@ mod tests {
 
         let unchosen = info(extensions.get("wordcraft", Reach::Suite).await);
         assert_eq!(unchosen.folder, None);
-        assert_eq!(unchosen.notes, [tr("No folder is chosen: every call is refused until you choose one.")]);
+        assert!(
+            unchosen.notes.contains(&tr("No folder is chosen: every call is refused until you choose one.").into())
+        );
         let choose = |id: &'static str, folder: Option<String>| extensions.set_folder(id, folder);
         assert_eq!(code(&choose("nope", Some(path("Plain"))).await), "not-found");
         assert_eq!(code(&choose("fixture", Some(path("Plain"))).await), "unsupported");
@@ -1765,9 +1800,23 @@ mod tests {
         }
         assert_eq!(stored_all(&extensions)[0].folder, None, "nothing kept");
 
+        // Chosen with "Read and write", then a folder inside it is allowed with "Read": no longer usable.
+        let mut plain = info(choose("wordcraft", Some(path("Plain"))).await);
+        assert_eq!(plain.folder, Some(path("Plain")));
+        folders
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(AllowedFolder { path: path("Plain/Inner"), access: FolderAccess::Read });
+        let stored = extensions.stored("wordcraft").expect("stored");
+        assert_eq!(extensions.usable_folder(&stored), None, "an inner read folder made later counts at once");
+        let refused = extensions.files_refusal("wordcraft", "get_text", &Default::default());
+        assert_eq!(refused.as_ref().map(code), Some("forbidden"));
+        plain = info(extensions.get("wordcraft", Reach::Suite).await);
+        assert_eq!(plain.notes.len(), 2, "blocked tools and the folder: {:?}", plain.notes);
+
         let chosen = info(choose("wordcraft", Some(path("Docs/Private"))).await);
         assert_eq!(chosen.folder, Some(path("Docs/Private")));
-        assert!(chosen.notes.is_empty(), "{:?}", chosen.notes);
+        assert_eq!(chosen.notes.len(), 1, "only the blocked tools: {:?}", chosen.notes);
         let stored = extensions.stored("wordcraft").expect("stored");
         assert_eq!(extensions.usable_folder(&stored), Some((home.join("Docs/Private"), FolderAccess::Read)));
         // No longer allowed: kept, but not usable, and the page says so.
@@ -1775,7 +1824,7 @@ mod tests {
         assert_eq!(extensions.usable_folder(&stored), None);
         let unusable = info(extensions.get("wordcraft", Reach::Suite).await);
         assert_eq!(unusable.folder, Some(path("Docs/Private")));
-        assert_eq!(unusable.notes.len(), 1);
+        assert_eq!(unusable.notes.len(), 2);
         assert_eq!(info(choose("wordcraft", None).await).folder, None);
         assert_eq!(stored_all(&extensions).iter().find(|s| s.id == "wordcraft").map(|s| s.folder.clone()), Some(None));
     }
@@ -2488,12 +2537,74 @@ mod tests {
             assert_eq!(started().await, both(&path("Docs"), &path("Docs")));
             info(extensions.set_folder("wordcraft", Some(path("Letters"))).await);
             assert_eq!(started().await, both(&path("Letters"), &work), "started again with the new bounds");
-            info(extensions.set_folder("wordcraft", None).await);
-            assert_eq!(started().await, both(&work, &work));
+            // Without a folder every call is refused (issue #303, AC.4); the bounds it would start with are its own
+            // folder.
+            let unchosen = info(extensions.set_folder("wordcraft", None).await);
+            assert_eq!(code(&extensions.call("wordcraft", "args", Default::default()).await), "forbidden");
+            let stored = extensions.stored("wordcraft").expect("stored");
+            let launch = extensions.launch(&stored).await.expect("a launch");
+            assert_eq!(launch.bounds.join(" "), both(&work, &work));
+            assert_eq!(unchosen.folder, None);
             // A folder set to "Read" meanwhile counts at the next start.
             info(extensions.set_folder("wordcraft", Some(path("Docs"))).await);
             folders.lock().unwrap_or_else(PoisonError::into_inner)[0].access = FolderAccess::Read;
             assert_eq!(started().await, both(&path("Docs"), &work));
+        }
+
+        /// Issue #303: a call Torro refuses never reaches the server, an allowed one does; the blocked tools show as
+        /// such, are never allowed by "Allow tools" and are named in the notes.
+        #[tokio::test]
+        async fn a_refused_call_never_reaches_the_server() {
+            use torro_core::settings::AllowedFolder;
+            let dir = tempfile::tempdir().expect("temp dir");
+            let resolved = std::fs::canonicalize(dir.path()).expect("resolved");
+            std::fs::create_dir_all(resolved.join("Docs")).expect("made");
+            std::fs::create_dir_all(resolved.join("Other")).expect("made");
+            std::fs::write(resolved.join("Docs/letter.docx"), b"x").expect("written");
+            std::fs::write(resolved.join("Other/secret.docx"), b"x").expect("written");
+            let path = |relative: &str| resolved.join(relative).to_string_lossy().into_owned();
+            let folders = Arc::new(Mutex::new(vec![
+                AllowedFolder { path: path("Docs"), access: FolderAccess::ReadWrite },
+                AllowedFolder { path: path("Other"), access: FolderAccess::ReadWrite },
+            ]));
+            // The program the catalog names is there, so the server is offered.
+            let bin = dir.path().join("bin");
+            std::fs::create_dir_all(&bin).expect("dir");
+            std::fs::write(bin.join("wordcraft-cli"), "#!/bin/sh\n").expect("write");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("wordcraft-cli"), std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            let mut with_cli = roots();
+            with_cli.fixed.push(bin);
+            let (extensions, _) = extensions_in(dir.path(), with_cli);
+            let extensions = extensions.with_allowed(allowed_in(&folders, Vec::new()));
+            artcraft_installed(&extensions, Some(path("Docs")));
+            let opening = |file: &str| serde_json::json!({"path": path(file)}).as_object().cloned().expect("an object");
+            let refused = extensions.call("wordcraft", "open_document", opening("Other/secret.docx")).await;
+            assert_eq!(code(&refused), "not-found");
+            assert_eq!(code(&extensions.call("wordcraft", "screenshot", Default::default()).await), "not-found");
+            let opened = extensions.call("wordcraft", "open_document", opening("Docs/letter.docx")).await;
+            assert!(matches!(opened, Response::ToolResult { .. }), "{opened:?}");
+            let work = extensions.store.as_ref().expect("a store").work_path("wordcraft").expect("its folder");
+            let log = std::fs::read_to_string(work.join("calls.log")).expect("the calls");
+            assert_eq!(log.lines().count(), 1, "{log}");
+            assert!(log.contains("letter.docx") && !log.contains("secret.docx"), "{log}");
+
+            let shown = info(extensions.get("wordcraft", Reach::Suite).await);
+            let state = |name: &str| shown.tools.iter().find(|tool| tool.name == name).map(|tool| tool.state);
+            for blocked in ["screenshot", "click", "key", "ui_inspect"] {
+                assert_eq!(state(blocked), Some(ToolState::Blocked), "{blocked}");
+            }
+            assert_eq!(state("open_document"), Some(ToolState::Allowed));
+            assert!(shown.notes.iter().any(|note| note.contains("ui_inspect")), "{:?}", shown.notes);
+            let offered: Vec<String> = extensions.offered(Reach::Suite).into_iter().map(|tool| tool.name).collect();
+            assert!(!offered.iter().any(|name| name == "screenshot") && offered.iter().any(|name| name == "args"));
+            let confirmed = info(extensions.confirm("wordcraft", &shown.fingerprint.expect("a fingerprint")).await);
+            assert_eq!(confirmed.tools.iter().filter(|tool| tool.state == ToolState::Blocked).count(), 4);
+            let allowed = extensions.stored("wordcraft").expect("stored").allowed;
+            assert!(
+                allowed.iter().all(|tool| !["screenshot", "click", "key", "ui_inspect"].contains(&tool.name.as_str()))
+            );
+            assert_eq!(allowed.len(), 7);
         }
 
         /// A catalog entry installs only with its programs: `unsupported` with what is missing, then with a
