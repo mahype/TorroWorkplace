@@ -334,7 +334,8 @@ tools = [
     { name = "content_copy", access = "write" },
     { name = "content_delete", access = "write" },
     { name = "link_list", access = "read" },
-    { name = "link_open", access = "read" },
+    # Opens the PDF a link names, also an absolute one, which Torro does not see: with approval.
+    { name = "link_open", access = "delete" },
     { name = "link_add", access = "write" },
     { name = "link_edit", access = "write" },
     { name = "link_delete", access = "write" },

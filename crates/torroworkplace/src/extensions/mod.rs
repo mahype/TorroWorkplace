@@ -258,15 +258,16 @@ impl Extensions {
         if let Some(refused) = arguments_refusal(&arguments) {
             return refused;
         }
-        // For every key, the app key too: the paths and names of the call (issue #303).
-        if let Some(refused) = self.files_refusal(id, tool, &arguments) {
-            return refused;
-        }
         self.watch_tools();
         let (stored, launch) = match self.launch_for_call(id, tool).await {
             Ok(found) => found,
             Err(refused) => return refused,
         };
+        // For every key, the app key too, before anything starts: the paths and names of the call (issue #303).
+        // After the server and the tool were found, so a server switched off says that first.
+        if let Some(refused) = self.files_refusal(id, tool, &arguments) {
+            return refused;
+        }
         // The server's list as it runs now: a tool it changed since a person allowed it is not called.
         let reported = match self.supervisor.tools(&launch, Purpose::Use).await {
             Ok(reported) => reported,
@@ -465,7 +466,7 @@ impl Extensions {
                 return error("conflict", message.into());
             }
             let entry = entry_of(&stored.source);
-            let blocked = |tool: &str| entry.is_some_and(|entry| entry.blocked.iter().any(|name| name == tool));
+            let blocked = |tool: &str| entry.is_some_and(|entry| entry.blocks(tool));
             stored.allowed = reported
                 .iter()
                 .filter(|tool| tool_name(&stored.id, &tool.name).is_some() && !blocked(&tool.name))
@@ -1015,8 +1016,12 @@ impl Extensions {
             true => stored.allowed.iter().find(|allowed| allowed.name == tool).map_or(Access::Delete, |a| a.access),
             false => access_in(entry, tool),
         };
-        let blocked = entry.map(|entry| entry.blocked.as_slice()).unwrap_or_default();
-        client::tool_states(&stored.id, &stored.name, reported, &stored.allowed, blocked, now)
+        let blocked: Vec<String> = reported
+            .iter()
+            .filter(|tool| entry.is_some_and(|entry| entry.blocks(&tool.name)))
+            .map(|tool| tool.name.clone())
+            .collect();
+        client::tool_states(&stored.id, &stored.name, reported, &stored.allowed, &blocked, now)
     }
 
     /// The tool `tool` of `stored` when a person allowed it as the server reports it ([`Extensions::reported`])

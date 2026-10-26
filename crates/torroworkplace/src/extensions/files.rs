@@ -4,7 +4,8 @@
 //! ArtCraft's own bounds (`--automation-read-root`, `--automation-write-root`) are one guard; this is the other, and
 //! for GridCraft, which has none, the only one. In this order:
 //!
-//! - A tool the catalog blocks is not there (`not-found`, as a tool not allowed).
+//! - A tool the catalog blocks is not there (`not-found`, as a tool not allowed); for GridCraft also every tool the
+//!   catalog does not name ([`Entry::blocks`]).
 //! - A blocked tool or command named under `name`, `id`, `command` or `method` anywhere in the arguments is
 //!   `forbidden`: the all-purpose tools (`execute`, `tool_call`, `command_run` …) reach every command by name.
 //! - Without a usable folder (none chosen, no longer allowed, or no longer one that may be chosen) every call is
@@ -32,8 +33,9 @@ use crate::tools::folders::{Allowed, FolderError};
 /// by. Numbers and other values under them (a bookmark's `path`, an image's number) are no paths.
 pub const PATH_KEYS: &[&str] = &["path", "paths", "out", "out_dir", "folder", "file", "image", "directories"];
 
-/// The keys whose texts name a tool or a command for the all-purpose tools.
-const NAME_KEYS: &[&str] = &["name", "id", "command", "method"];
+/// The keys whose texts name a tool or a command for the all-purpose tools; more than the ones ArtCraft uses today,
+/// since a name blocked in vain costs only a refused call.
+const NAME_KEYS: &[&str] = &["name", "id", "command", "commands", "method", "tool", "tools", "op", "action", "cmd"];
 
 /// Why `entry` must not run `tool` with `arguments` now, as the answer; `None` when it may. `folder` is the chosen
 /// folder as usable now (`super::Extensions::usable_folder`), `allowed` the allowed folders with their locks.
@@ -44,7 +46,7 @@ pub fn refusal(
     tool: &str,
     arguments: &Map<String, Value>,
 ) -> Option<Response> {
-    if entry.blocked.iter().any(|blocked| blocked == tool) {
+    if entry.blocks(tool) {
         return Some(super::no_tool(tool));
     }
     if arguments.iter().any(|(key, value)| names_a_blocked(entry, key, value)) {
@@ -103,7 +105,8 @@ fn names_a_blocked(entry: &Entry, key: &str, value: &Value) -> bool {
     }
     match value {
         Value::Object(map) => map.iter().any(|(key, value)| names_a_blocked(entry, key, value)),
-        Value::Array(items) => items.iter().any(|item| names_a_blocked(entry, "", item)),
+        // A list keeps the key it stands under: `"commands": ["ui.click"]`.
+        Value::Array(items) => items.iter().any(|item| names_a_blocked(entry, key, item)),
         _ => false,
     }
 }
@@ -137,14 +140,15 @@ fn collect_texts<'a>(value: &'a Value, found: &mut Vec<&'a str>) {
     }
 }
 
-/// Every text under a path key anywhere in `value` (`under`: `value` is one): under a key, a text or the texts of a
-/// list; objects are looked into at any depth (`commands[].params.path`).
+/// Every text under a path key anywhere in `value` (`under`: `value` is one, or is inside one): under a key, a text,
+/// the texts of a list and every text of an object below it; objects are looked into at any depth
+/// (`commands[].params.path`).
 fn path_texts<'a>(value: &'a Value, under: bool, found: &mut Vec<&'a str>) {
     match value {
         Value::String(text) if under => found.push(text),
         Value::Array(items) => items.iter().for_each(|item| path_texts(item, under, found)),
         Value::Object(map) => {
-            map.iter().for_each(|(key, value)| path_texts(value, PATH_KEYS.contains(&key.as_str()), found));
+            map.iter().for_each(|(key, value)| path_texts(value, under || PATH_KEYS.contains(&key.as_str()), found))
         }
         _ => {}
     }
@@ -321,6 +325,8 @@ mod tests {
             ("pdfcraft", "command_run", json!({"id": "tools.js_console"})),
             ("pdfcraft", "command_run", json!({"id": "sign.digital"})),
             ("pdfcraft", "command_batch", json!({"commands": [{"method": "Sign.Digital"}]})),
+            ("wordcraft", "batch", json!({"commands": ["file.save", "ui.click"]})),
+            ("pdfcraft", "doc_batch", json!({"steps": [{"tool": "sign_document"}]})),
         ] {
             assert_eq!(code(app, tool, arguments.clone()).as_deref(), Some("forbidden"), "{app} {tool} {arguments}");
         }
@@ -332,6 +338,16 @@ mod tests {
         ] {
             assert_eq!(code(app, tool, arguments.clone()), None, "{app} {tool} {arguments}");
         }
+    }
+
+    /// API review of #303: GridCraft has no bound of its own, so a tool the catalog does not name is not there.
+    #[test]
+    fn gridcraft_runs_only_the_tools_the_catalog_names() {
+        let home = Home::new();
+        let code = |tool: &str| refused(&home, "gridcraft", tool, json!({}));
+        assert_eq!(code("export_pdf").as_deref(), Some("not-found"));
+        assert_eq!(code("read_range"), None);
+        assert!(entry("gridcraft").blocks("export_pdf") && !entry("wordcraft").blocks("export_pdf"));
     }
 
     #[test]
@@ -425,6 +441,9 @@ mod tests {
         assert_eq!(refused(&home, "pdfcraft", "text_font_files", fonts).as_deref(), Some("not-found"));
         let deep = json!({"a": {"b": [{"c": {"file": home.path("Outside/c.docx")}}]}});
         assert_eq!(refused(&home, "pdfcraft", "doc_batch", deep).as_deref(), Some("not-found"));
+        // Below a path key every text counts, also inside an object.
+        let wrapped = json!({"doc": 1, "out_dir": {"to": home.path("Outside")}});
+        assert_eq!(refused(&home, "pdfcraft", "doc_split", wrapped).as_deref(), Some("not-found"));
         // Numbers under a path key are no paths.
         let image = json!({"doc": 1, "page": 1, "image": 2, "path": home.path("Docs/picture.png")});
         assert_eq!(refused(&home, "pdfcraft", "image_save", image), None);

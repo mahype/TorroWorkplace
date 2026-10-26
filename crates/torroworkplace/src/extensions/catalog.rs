@@ -95,6 +95,15 @@ pub struct ToolFiles {
 }
 
 impl Entry {
+    /// Whether the tool `tool` is never offered or allowed: the entry blocks it, or the server has no bound of its
+    /// own ([`FolderCheck::TorroOnly`], GridCraft) and the entry does not name it – there Torro's check of the paths
+    /// is the only bound, and it knows the arguments only of the tools it names (issue #303, API review).
+    pub fn blocks(&self, tool: &str) -> bool {
+        self.blocked.iter().any(|name| name == tool)
+            || (self.info.folder == Some(FolderCheck::TorroOnly)
+                && !self.info.tools.iter().any(|known| known.name == tool))
+    }
+
     /// [`Entry::look_in`] with `{ProgramFiles}` replaced by the variable `ProgramFiles` as `var` reads it; a
     /// folder whose variable is not set (every system but Windows) is left out.
     pub fn look_in_dirs(&self, var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
@@ -549,10 +558,11 @@ mod tests {
         for (id, tool) in [("wordcraft", "execute"), ("deckcraft", "run_command"), ("deckcraft", "export")] {
             assert_eq!(access(id, tool), Some(Access::Delete), "{id} {tool}");
         }
-        // PdfCraft without --compact: 181 tools = 50 read + 16 delete + 109 write + 6 blocked.
+        // PdfCraft without --compact: 181 tools = 49 read + 17 delete + 109 write + 6 blocked (`link_open`, planned
+        // read, waits for approval: it opens the file a link names, which Torro does not see).
         let pdf = entry("pdfcraft");
         let count = |wanted: Access| pdf.info.tools.iter().filter(|tool| tool.access == wanted).count();
-        assert_eq!((count(Access::Read), count(Access::Delete), count(Access::Write)), (50, 16, 109));
+        assert_eq!((count(Access::Read), count(Access::Delete), count(Access::Write)), (49, 17, 109));
         assert_eq!(pdf.info.tools.len() + pdf.blocked.len(), 181);
         for tool in ["doc_batch", "tool_call", "command_run", "doc_print", "doc_split", "page_extract"] {
             assert_eq!(access("pdfcraft", tool), Some(Access::Delete), "{tool}");

@@ -396,7 +396,7 @@ ArtCraft selbst nicht kennt.
 
 - **Vier Katalog-Einträge**, jede App ein eigener Server mit eigener Stufe: `wordcraft`, `deckcraft`, `gridcraft`,
   `pdfcraft`, „Experimental“, Link zu den Releases der App. PdfCraft ohne `--compact`: alle 181 Werkzeuge einzeln
-  eingestuft (50 Lesen, 109 Schreiben, 16 mit Freigabe, 6 gesperrt). Nie `--connect`, nie `--root`. `version` ist die
+  eingestuft (49 Lesen, 109 Schreiben, 17 mit Freigabe, 6 gesperrt). Nie `--connect`, nie `--root`. `version` ist die
   geprüfte Version („tested with“); die Regel „ein Argument nennt die Version“ gilt nur für `npx`, `uvx`, `docker`.
   `<app>-cli` liegt unter Linux in `/usr/bin`, unter macOS nur im eigenen Zip der Release (die Person legt es nach
   `/usr/local/bin` oder `~/.local/bin`), unter Windows in `%ProgramFiles%\<App>` (Katalogfeld `look_in`).
@@ -440,6 +440,12 @@ ArtCraft selbst nicht kennt.
   `file.saveAs`). Schutz ist dort allein die Freigabe, die ihre Argumente zeigt; mit „Freigabe vorher: Nie“ entfällt
   sie, bei PdfCraft auch fürs Drucken.
 - **Ziele ohne Endung:** PdfCraft `image_save` hängt eine fehlende Endung selbst an; Torro prüft das Ziel ohne sie.
+- **Strenger als geplant** (aus dem API-Review): Bei GridCraft sind Werkzeuge, die der Katalog nicht nennt, gesperrt
+  statt `delete`, denn dort ist Torros Pfadprüfung die einzige Grenze und kennt nur die Argumente der genannten.
+  PdfCraft `link_open` ist `delete` statt `read`: Es öffnet die Datei, die ein Link nennt, auch eine absolute.
+  Gesperrte Namen sucht Torro auch unter `tool`, `tools`, `op`, `action`, `cmd` und `commands`.
+- **Fehlalarme:** Gesperrte Namen gelten in den Argumenten jedes Werkzeugs, nicht nur der Allzweck-Befehle; ein
+  Formularfeld namens „key“ in WordCraft wird darum abgelehnt.
 - DeckCraft schreibt durch symbolische Links, und WordCraft v0.11.0 prüft den Verzeichniseintrag noch nicht; Torro
   deckt das nur für die Ziele ab, die es selbst prüft.
 - Die Werkzeugtabelle von PdfCraft steht in `crates/automation/src/tools.rs`, nicht in `crates/mcp`. GridCraft
