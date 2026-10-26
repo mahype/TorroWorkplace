@@ -82,7 +82,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   die neuen Felder liest sich weiter. `torro-api-review` gelaufen.
 
 ### DS.2 Formate: Größe, Zeitpunkt, Zahl
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/torro-gui/src/units.rs` (neu), `crates/torro-gui/src/lib.rs`,
   `crates/torro-gui/src/datetime.rs`, `crates/torro-settings-ui/src/mail.rs`, `crates/torro-settings-ui/src/mail/backup.rs`,
   `crates/torro-core/src/i18n/de.rs`

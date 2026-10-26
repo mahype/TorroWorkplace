@@ -432,6 +432,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{restored} windows in place, {failed} failed", "{restored} Fenster da, {failed} fehlgeschlagen"),
     // Dates (torro-gui::datetime)
     ("{day} {month}", "{day}. {month}"),
+    ("{date}, {time}", "{date}, {time}"),
+    ("Today {time}", "Heute {time}"),
     ("{weekday}, {day} {month} {year}", "{weekday}, {day}. {month} {year}"),
     ("Monday", "Montag"),
     ("Tuesday", "Dienstag"),

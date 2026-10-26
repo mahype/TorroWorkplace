@@ -244,7 +244,9 @@ pub mod accounts {
     use iced::widget::text::{IntoFragment, Wrapping};
     use iced::widget::{column, container, row, space as blank, text_editor};
     use iced::{Alignment, Fill};
+    use torro_gui::datetime::format_moment;
     use torro_gui::theme::space;
+    use torro_gui::units::{format_bytes, format_count};
     use torro_gui::{layout, style, typo, widgets};
     use torro_ipc::mail::MailAccountStats;
     use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request};
@@ -534,22 +536,22 @@ pub mod accounts {
             );
         };
         let mut rows = vec![
-            inventory_row(tr("Known mail"), stats.messages.to_string(), None),
-            inventory_row(tr("Read"), stats.read.to_string(), None),
-            inventory_row(tr("Unread"), stats.unread.to_string(), None),
-            inventory_row(tr("Folders"), stats.folders.len().to_string(), None),
+            inventory_row(tr("Known mail"), format_count(stats.messages), None),
+            inventory_row(tr("Read"), format_count(stats.read), None),
+            inventory_row(tr("Unread"), format_count(stats.unread), None),
+            inventory_row(tr("Folders"), format_count(stats.folders.len() as u64), None),
             inventory_row(tr("Oldest known mail"), format_date(stats.oldest_known), None),
             inventory_row(tr("Newest known mail"), format_date(stats.newest_known), None),
-            inventory_row(tr("Mail texts on this device"), stats.cached_bodies.to_string(), None),
-            inventory_row(tr("Fully indexed"), stats.indexed_full.to_string(), None),
-            inventory_row(tr("Partial or unverified index"), stats.indexed_partial_or_unverified.to_string(), None),
-            inventory_row(tr("Text unavailable"), stats.text_unavailable.to_string(), None),
-            inventory_row(tr("Awaiting indexing"), stats.awaiting_index.to_string(), None),
-            inventory_row(tr("Local database"), byte_size(stats.database_bytes), None),
+            inventory_row(tr("Mail texts on this device"), format_count(stats.cached_bodies), None),
+            inventory_row(tr("Fully indexed"), format_count(stats.indexed_full), None),
+            inventory_row(tr("Partial or unverified index"), format_count(stats.indexed_partial_or_unverified), None),
+            inventory_row(tr("Text unavailable"), format_count(stats.text_unavailable), None),
+            inventory_row(tr("Awaiting indexing"), format_count(stats.awaiting_index), None),
+            inventory_row(tr("Local database"), format_bytes(stats.database_bytes), None),
             inventory_row(
                 tr("Cached attachments"),
-                stats.cached_attachments.to_string(),
-                stats.attachment_cache_bytes.map(byte_size),
+                format_count(stats.cached_attachments),
+                stats.attachment_cache_bytes.map(format_bytes),
             ),
             inventory_row(tr("Last mail sync"), format_date(stats.last_sync), stats.sync_problem.clone()),
         ];
@@ -589,12 +591,7 @@ pub mod accounts {
     }
 
     fn format_date_value(date: chrono::DateTime<chrono::Utc>) -> String {
-        date.format("%Y-%m-%d %H:%M UTC").to_string()
-    }
-
-    /// A size in MiB with one decimal, as the inventory and the backup page show it.
-    pub(super) fn byte_size(bytes: u64) -> String {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+        format_moment(date, chrono::Utc::now())
     }
 
     /// Sender name and signature, and "Save" under them: it is on only while they differ from what
@@ -978,7 +975,9 @@ pub mod storage {
     use iced::Element;
     use iced::widget::{column, row, space as blank};
     use torro_core::i18n::{tr, trf};
+    use torro_gui::datetime::format_moment;
     use torro_gui::theme::space;
+    use torro_gui::units::{format_bytes, format_count};
     use torro_gui::{layout, style, typo, widgets};
     use torro_ipc::mail::{MailCacheAction, MailCacheEstimate, MailCacheJobState, MailCacheMode, MailCachePolicy};
     use torro_ipc::{Request, Response};
@@ -1190,11 +1189,19 @@ pub mod storage {
         if let Some(estimate) = state.estimate.as_ref().filter(|estimate| estimate.account == account) {
             policy_rows.push(line(
                 "To download (estimate)",
-                format!("{} · {} MiB", estimate.bodies_to_fetch, estimate.estimated_download_bytes / 1_048_576),
+                format!(
+                    "{} · {}",
+                    format_count(estimate.bodies_to_fetch),
+                    format_bytes(estimate.estimated_download_bytes)
+                ),
             ));
             policy_rows.push(line(
                 "To remove (estimate)",
-                format!("{} · {} MiB", estimate.bodies_to_remove, estimate.estimated_reclaim_bytes / 1_048_576),
+                format!(
+                    "{} · {}",
+                    format_count(estimate.bodies_to_remove),
+                    format_bytes(estimate.estimated_reclaim_bytes)
+                ),
             ));
             policy_rows.push(row_frame(
                 row![
@@ -1218,17 +1225,17 @@ pub mod storage {
 
         if let Some(stats) = stats {
             page = page.push(widgets::group(tr("Local storage & index"), vec![
-                line("Mail texts on this device", stats.cached_bodies.to_string()),
-                line("Body cache", format!("{} MiB", stats.body_cache_bytes / 1_048_576)),
-                line("Search index", stats.search_index_bytes.map_or_else(|| tr("Not known").to_string(), |bytes| format!("{} MiB", bytes / 1_048_576))),
-                line("Last index run", stats.last_index_run.map_or_else(|| tr("Not known").to_string(), |date| date.format("%Y-%m-%d %H:%M UTC").to_string())),
-                line("Oldest local mail text", stats.oldest_cached_body.map_or_else(|| tr("Not known").to_string(), |date| date.format("%Y-%m-%d %H:%M UTC").to_string())),
-                line("Fully indexed", stats.indexed_full.to_string()),
-                line("Partial or unverified index", stats.indexed_partial_or_unverified.to_string()),
-                line("Text unavailable", stats.text_unavailable.to_string()),
-                line("Awaiting indexing", stats.awaiting_index.to_string()),
-                line("Local database", format!("{} MiB", stats.database_bytes / 1_048_576)),
-                line("Cached attachments", format!("{} · {} MiB", stats.cached_attachments, stats.attachment_cache_bytes.unwrap_or(0) / 1_048_576)),
+                line("Mail texts on this device", format_count(stats.cached_bodies)),
+                line("Body cache", format_bytes(stats.body_cache_bytes)),
+                line("Search index", stats.search_index_bytes.map_or_else(|| tr("Not known").to_string(), format_bytes)),
+                line("Last index run", stats.last_index_run.map_or_else(|| tr("Not known").to_string(), |date| format_moment(date, chrono::Utc::now()))),
+                line("Oldest local mail text", stats.oldest_cached_body.map_or_else(|| tr("Not known").to_string(), |date| format_moment(date, chrono::Utc::now()))),
+                line("Fully indexed", format_count(stats.indexed_full)),
+                line("Partial or unverified index", format_count(stats.indexed_partial_or_unverified)),
+                line("Text unavailable", format_count(stats.text_unavailable)),
+                line("Awaiting indexing", format_count(stats.awaiting_index)),
+                line("Local database", format_bytes(stats.database_bytes)),
+                line("Cached attachments", format!("{} · {}", format_count(stats.cached_attachments), format_bytes(stats.attachment_cache_bytes.unwrap_or(0)))),
             ], Some(tr("Local known counts. Fully indexed means searchable; only cached mail texts are readable without a connection.").to_string())));
         }
         page = page.push(widgets::group(tr("Attachment cache"), vec![
@@ -1260,7 +1267,11 @@ pub mod storage {
         if let Some(estimate) = state.cleanup_preview.as_ref().filter(|estimate| estimate.account == account) {
             job_rows.push(line(
                 "To remove (estimate)",
-                format!("{} · {} MiB", estimate.bodies_to_remove, estimate.estimated_reclaim_bytes / 1_048_576),
+                format!(
+                    "{} · {}",
+                    format_count(estimate.bodies_to_remove),
+                    format_bytes(estimate.estimated_reclaim_bytes)
+                ),
             ));
             job_rows.push(row_frame(
                 button("Clean up cache", (!running).then_some(Message::Job(MailCacheAction::CleanCache))),
@@ -1274,7 +1285,10 @@ pub mod storage {
                 MailCacheJobState::Complete => tr("Complete"),
                 MailCacheJobState::Failed => tr("Failed"),
             };
-            job_rows.push(line("Current job", format!("{} · {} / {}", state_label, job.processed, job.total)));
+            job_rows.push(line(
+                "Current job",
+                format!("{} · {} / {}", state_label, format_count(job.processed), format_count(job.total)),
+            ));
             if let Some(error) = &job.error {
                 job_rows.push(row_frame(typo::text(typo::body(), error.clone()), false));
             }

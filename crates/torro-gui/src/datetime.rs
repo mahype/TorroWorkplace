@@ -6,6 +6,9 @@
 //! (`11.10.2026`) for the fields people type into. [`parse_date`] stays tolerant: it reads the
 //! field form, the short year, the day and month alone, and the keywords.
 //!
+//! [`format_moment`] names a past instant as people say it ("Today 15:39", "5 Oct 2020"), with
+//! [`format_exact`] for its tooltip (DS.2 in `docs/tasks/detailseiten.md`).
+//!
 //! Task K.1 in `docs/tasks/kalender-aufgaben.md`. All functions are pure and work on local
 //! dates/times (`chrono::NaiveDate`, `NaiveTime`); converting to and from UTC instants
 //! happens with [`to_utc`] and [`to_local`].
@@ -137,6 +140,32 @@ pub fn format_day_month(date: NaiveDate) -> String {
     trf("{day} {month}", &[("day", &date.day()), ("month", &month_name_short(date.month()))])
 }
 
+/// `Today 15:39`, `Yesterday 09:12`, `5 Oct` in the year of `now`, otherwise `5 Oct 2020`: when
+/// something happened, in local time. The exact value belongs in a tooltip ([`format_exact`]).
+pub fn format_moment(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let (at, now) = (to_local(at), to_local(now));
+    let (day, today) = (at.date(), now.date());
+    let time = format_time(at.time());
+    if day == today {
+        trf("Today {time}", &[("time", &time)])
+    } else if today.pred_opt() == Some(day) {
+        trf("Yesterday {time}", &[("time", &time)])
+    } else if day.year() == today.year() {
+        format_day_month(day)
+    } else {
+        trf(
+            "{day} {month} {year}",
+            &[("day", &day.day()), ("month", &month_name_short(day.month())), ("year", &day.year())],
+        )
+    }
+}
+
+/// `Monday, 5 October 2020, 15:39:12` in local time: the exact value behind [`format_moment`].
+pub fn format_exact(at: DateTime<Utc>) -> String {
+    let at = to_local(at);
+    trf("{date}, {time}", &[("date", &format_long_date(at.date())), ("time", &at.time().format("%H:%M:%S"))])
+}
+
 /// Weekday name, `Monday` … `Sunday`; short form `Mon` … `Sun` with `short` (translated).
 pub fn weekday_name(date: NaiveDate, short: bool) -> &'static str {
     let index = date.weekday().num_days_from_monday() as usize;
@@ -224,6 +253,35 @@ mod tests {
         for date in [d(2026, 10, 3), d(2027, 1, 2), d(2020, 2, 29)] {
             assert_eq!(parse_date(&format_date(date), today), Some(date));
         }
+    }
+
+    /// A local wall-clock time as the instant the functions get.
+    fn local(y: i32, m: u32, day: u32, h: u32, min: u32) -> DateTime<Utc> {
+        to_utc(d(y, m, day).and_hms_opt(h, min, 12).unwrap())
+    }
+
+    #[test]
+    fn a_moment_says_today_yesterday_or_the_date() {
+        let now = local(2026, 10, 26, 18, 0);
+        assert_eq!(format_moment(local(2026, 10, 26, 15, 39), now), trf("Today {time}", &[("time", &"15:39")]));
+        assert_eq!(format_moment(local(2026, 10, 25, 9, 12), now), trf("Yesterday {time}", &[("time", &"09:12")]));
+        assert_eq!(format_moment(local(2026, 10, 5, 9, 12), now), format_day_month(d(2026, 10, 5)));
+        let earlier = trf("{day} {month} {year}", &[("day", &5), ("month", &tr("Oct")), ("year", &2020)]);
+        assert_eq!(format_moment(local(2020, 10, 5, 9, 12), now), earlier);
+    }
+
+    #[test]
+    fn yesterday_crosses_the_year_end() {
+        let now = local(2027, 1, 1, 0, 30);
+        assert_eq!(format_moment(local(2026, 12, 31, 23, 0), now), trf("Yesterday {time}", &[("time", &"23:00")]));
+        let older = trf("{day} {month} {year}", &[("day", &30), ("month", &tr("Dec")), ("year", &2026)]);
+        assert_eq!(format_moment(local(2026, 12, 30, 23, 0), now), older);
+    }
+
+    #[test]
+    fn the_exact_moment_names_weekday_date_and_seconds() {
+        let expected = trf("{date}, {time}", &[("date", &format_long_date(d(2020, 10, 5))), ("time", &"15:39:12")]);
+        assert_eq!(format_exact(local(2020, 10, 5, 15, 39)), expected);
     }
 
     fn t(h: u32, m: u32) -> NaiveTime {
