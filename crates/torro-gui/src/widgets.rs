@@ -4099,6 +4099,353 @@ pub fn group_heading<'a, M: 'a>(title: impl IntoFragment<'a>, actions: Vec<Eleme
     row![container(title).width(Fill).clip(true), actions].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
+// ---------------------------------------------------------------------------------------------
+// Detail pages (tasks DS.3, DS.4): the third level of the settings, one object on its own page
+// ---------------------------------------------------------------------------------------------
+
+/// A button described as data, so a block can lay it out again when its width changes (the head of
+/// a detail page puts its buttons beside or under the name, a question card beside or under its
+/// sentence). [`PageAction::new`] makes a `secondary` one, as the design skill wants for the one
+/// visible action of a page.
+#[derive(Debug, Clone)]
+pub struct PageAction<M> {
+    icon: Option<Icon>,
+    label: String,
+    tip: Option<String>,
+    style: ButtonStyle,
+    on_press: Option<M>,
+}
+
+impl<M: Clone> PageAction<M> {
+    /// A `secondary` button with `label`; `None` for `on_press` shows it off.
+    pub fn new(label: impl Into<String>, on_press: Option<M>) -> Self {
+        Self { icon: None, label: label.into(), tip: None, style: style::button::secondary, on_press }
+    }
+
+    /// An icon (14) in front of the label.
+    pub fn icon(mut self, which: Icon) -> Self {
+        self.icon = Some(which);
+        self
+    }
+
+    /// A tooltip that says more than the label ("Syncs all accounts").
+    pub fn tip(mut self, tip: impl Into<String>) -> Self {
+        self.tip = Some(tip.into());
+        self
+    }
+
+    /// Another style of [`crate::style::button`] (`ghost` for an action that only lets go).
+    pub fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// The width the button takes ([`text_button_width`]).
+    pub fn width(&self) -> f32 {
+        text_button_width(self.icon.is_some(), &self.label)
+    }
+
+    fn view<'a>(self) -> Element<'a, M>
+    where
+        M: 'a,
+    {
+        let button = text_button(self.icon, self.label, self.style, self.on_press);
+        match self.tip {
+            Some(tip) => with_tooltip(button, tip),
+            None => button,
+        }
+    }
+}
+
+/// What the head of a detail page offers at its right: at most one visible action and the "…"
+/// button, whose menu the caller opens at the [`Anchor`] with [`floating`] (the rest of the
+/// object's actions, design skill: one visible action, the rest in "…").
+#[derive(Debug, Clone)]
+pub struct HeadActions<M> {
+    /// The one visible action ("Sync now").
+    pub action: Option<PageAction<M>>,
+    /// The "…" button: where its menu hangs and what a click on it sends.
+    pub more: Option<(Anchor, M)>,
+}
+
+impl<M> Default for HeadActions<M> {
+    fn default() -> Self {
+        Self { action: None, more: None }
+    }
+}
+
+impl<M: Clone> HeadActions<M> {
+    fn view<'a>(self) -> Vec<Element<'a, M>>
+    where
+        M: 'a,
+    {
+        let mut out = Vec::new();
+        if let Some(action) = self.action {
+            out.push(action.view());
+        }
+        if let Some((anchor, message)) = self.more {
+            out.push(anchored(&anchor, icon_button(Icon::Ellipsis, tr("More"), Some(message))));
+        }
+        out
+    }
+}
+
+/// The head of a detail page (task DS.3, block 1 of `docs/tasks/detailseiten.md`): a large
+/// [`source_tile`] with `lead`, the object's `title` in `TITLE`, under it one `meta` line ("Anna ·
+/// IMAP mail.example.org:993") in `META` and `text_3` – both on one line, cut with "…" and then
+/// whole as tooltip –, at the right a `status` pill (only where the state says something: "Synced
+/// today 15:39", a sync problem) and the [`HeadActions`]. It replaces a group "Status" and groups
+/// that only held "Open X".
+///
+/// Narrower than [`size::form_max()`] the pill and the buttons move under the meta line, so the
+/// name keeps its room.
+///
+/// ```ignore
+/// let more = Anchor::new();
+/// let actions = HeadActions { action: Some(PageAction::new(tr("Sync now"), Some(Message::Sync))), more: Some((more.clone(), Message::More)) };
+/// widgets::detail_head(TileFace::letter(&address), address, meta, Some((Status::Ok, synced)), actions)
+/// ```
+pub fn detail_head<'a, M: Clone + 'a>(
+    lead: TileFace,
+    title: impl Into<String>,
+    meta: impl Into<String>,
+    status: Option<(Status, String)>,
+    actions: HeadActions<M>,
+) -> Element<'a, M> {
+    let (title, meta) = (title.into(), meta.into());
+    responsive(move |room| {
+        let tile = source_tile(lead, TileSize::Large, None);
+        let mut words = column![one_line(typo::title(), title.clone(), theme::text)];
+        if !meta.is_empty() {
+            words = words.push(one_line(typo::meta(), meta.clone(), theme::text_3));
+        }
+        let mut side: Vec<Element<'a, M>> = Vec::new();
+        if let Some((state, label)) = &status {
+            side.push(status_pill(*state, label.clone()));
+        }
+        side.extend(actions.clone().view());
+        if head_is_wide(room.width) {
+            let mut head = row![tile, words.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+            if !side.is_empty() {
+                head = head.push(row(side).spacing(space::s()).align_y(Alignment::Center));
+            }
+            head.into()
+        } else {
+            if !side.is_empty() {
+                words = words.push(row(side).spacing(space::s()).align_y(Alignment::Center).wrap());
+                words = words.spacing(space::xs());
+            }
+            row![tile, words.width(Fill)].spacing(space::m()).align_y(Alignment::Start).into()
+        }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// Whether the head of a detail page has the room for its pill and buttons beside the name.
+fn head_is_wide(width: f32) -> bool {
+    width >= size::form_max()
+}
+
+/// A state in words with its dot in the colour of `status` (the pill of [`detail_head`]): as
+/// [`state_pill`], the colour only in the dot.
+fn status_pill<'a, M: 'a>(status: Status, label: String) -> Element<'a, M> {
+    let content = row![status_dot(status), typo::text(typo::caption(), label).wrapping(Wrapping::None)]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center);
+    container(content)
+        .center_y(STATE_PILL_HEIGHT)
+        .padding(Padding::new(0.0).left(space::s()).right(space::s()))
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                text_color: Some(p.text),
+                border: border::rounded(STATE_PILL_HEIGHT / 2.0).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The strip under the chosen tab.
+const TAB_MARK: f32 = 2.0;
+
+/// One tab as the pick list shows it when the tabs do not fit: its label and count, and its index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabChoice {
+    /// Where the tab stands in the row.
+    pub index: usize,
+    label: String,
+}
+
+impl std::fmt::Display for TabChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// The tabs as the choices of the pick list ("Folders 12").
+pub fn tab_choices(labels: &[(String, Option<u64>)]) -> Vec<TabChoice> {
+    labels
+        .iter()
+        .enumerate()
+        .map(|(index, (label, count))| {
+            let label = match count {
+                Some(n) => format!("{label} {}", crate::units::format_count(*n)),
+                None => label.clone(),
+            };
+            TabChoice { index, label }
+        })
+        .collect()
+}
+
+/// The width a row of [`tabs`] needs: each tab's padding, its word in `BODY_STRONG` (the chosen
+/// look, so choosing one never makes the row too wide) and its count in `META`, and the gaps.
+pub fn tabs_width(labels: &[(String, Option<u64>)]) -> f32 {
+    let tabs: f32 = labels
+        .iter()
+        .map(|(label, count)| {
+            let count = count.map_or(0.0, |n| {
+                space::xs() + typo::text_width(&crate::units::format_count(n), typo::meta().tabular())
+            });
+            2.0 * space::s() + typo::text_width(label, typo::body_strong()) + count
+        })
+        .sum();
+    tabs + space::xs() * labels.len().saturating_sub(1) as f32
+}
+
+/// Tabs of a detail page (task DS.3, block 2): the parts of one object ("Overview · Writing ·
+/// Folders · Backup"), only for a page with more than three groups, "Overview" first. Each tab is
+/// its `label` and an optional count at its right (`META`, `text_3`, tabular); the chosen one at
+/// `selected` is `TEXT` in `BODY_STRONG` with a 2-px strip in `TEXT` under it, the others `TEXT_2`.
+/// A `line` runs under the whole row. Never red, and no [`segmented`]: a segmented control changes
+/// the view of the same data, tabs change the part of an object.
+///
+/// When the row does not fit ([`tabs_width`]), the tabs become a pick list – never a row that
+/// scrolls sideways. `on_select` gets the index of the tab.
+///
+/// ```ignore
+/// let labels = vec![(tr("Overview").to_string(), None), (tr("Folders").to_string(), Some(12))];
+/// widgets::tabs(labels, state.tab, Message::Tab)
+/// ```
+pub fn tabs<'a, M: Clone + 'a>(
+    labels: Vec<(String, Option<u64>)>,
+    selected: usize,
+    on_select: fn(usize) -> M,
+) -> Element<'a, M> {
+    responsive(move |room| {
+        let line = rule::horizontal(LINE).style(style::rule);
+        if room.width >= tabs_width(&labels) {
+            let row = row(labels
+                .iter()
+                .enumerate()
+                .map(|(i, (label, count))| tab(label.clone(), *count, i == selected, on_select(i))))
+            .spacing(space::xs());
+            column![row, line].into()
+        } else {
+            let choices = tab_choices(&labels);
+            let chosen = choices.get(selected).cloned();
+            let pick = iced::widget::pick_list(choices, chosen, move |choice: TabChoice| on_select(choice.index))
+                .padding(style::pick_list_padding())
+                .text_size(typo::body().size)
+                .text_line_height(typo::body().line_height)
+                .font(typo::body().font)
+                .style(style::pick_list)
+                .menu_style(style::pick_list_menu);
+            column![pick, line].spacing(space::s()).into()
+        }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// One of the [`tabs`].
+fn tab<'a, M: Clone + 'a>(label: String, count: Option<u64>, on: bool, message: M) -> Element<'a, M> {
+    let level = if on { typo::body_strong() } else { typo::body() };
+    let mut words =
+        row![typo::text(level, label).wrapping(Wrapping::None)].spacing(space::xs()).align_y(Alignment::Center);
+    if let Some(n) = count {
+        let count = typo::text(typo::meta().tabular(), crate::units::format_count(n)).style(theme::text_3);
+        words = words.push(count.wrapping(Wrapping::None));
+    }
+    // The strip is a second layer of a stack: the first layer (the words) sets the tab's size, so
+    // a strip as wide as the tab does not stretch the tab to the row.
+    let strip = container(blank().height(TAB_MARK)).width(Fill).style(move |t: &Theme| container::Style {
+        background: on.then(|| Background::Color(palette(t).text)),
+        ..container::Style::default()
+    });
+    let face = stack![
+        container(words).center_y(size::control_lg()).padding([0.0, space::s()]),
+        container(strip).height(Fill).align_bottom(Fill),
+    ];
+    button(face)
+        .padding(0)
+        .style(move |t: &Theme, status| {
+            let p = palette(t);
+            let lit = on || matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style { text_color: if lit { p.text } else { p.text_2 }, ..button::Style::default() }
+        })
+        .on_press(message)
+        .into()
+}
+
+/// An open question on a detail page (task DS.3, block 6), right under the tabs and only while
+/// something waits for the person: open folder roles, tools waiting to be allowed, a missing
+/// secret, a sync problem. On `raised` with a `line_strong` frame and radius `sm`, the padding of
+/// a panel; `mark` in the attention colour, `title` in `BODY_STRONG`, the `detail` sentence in
+/// `text_2`, the `actions` at the right – or under the sentence, wrapping, where the card is too
+/// narrow for both. Several questions stand one under the other, [`size::card_gap()`] apart.
+///
+/// ```ignore
+/// widgets::question_card(Icon::Folder, tr("Which folder holds sent mail?"), detail, vec![PageAction::new(tr("Use Sent"), Some(Message::Pick(…)))])
+/// ```
+pub fn question_card<'a, M: Clone + 'a>(
+    mark: Icon,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    actions: Vec<PageAction<M>>,
+) -> Element<'a, M> {
+    let (title, detail) = (title.into(), detail.into());
+    let card = responsive(move |room| {
+        let mark: Element<'a, M> =
+            icon(mark, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).attention) }).into();
+        let mut words = column![typo::text(typo::body_strong(), title.clone())].spacing(space::xs());
+        if !detail.is_empty() {
+            words = words.push(typo::text(typo::body(), detail.clone()).style(theme::text_2));
+        }
+        let buttons = row(actions.iter().cloned().map(PageAction::view)).spacing(space::s()).align_y(Alignment::Center);
+        if actions.is_empty() {
+            row![mark, words.width(Fill)].spacing(space::m()).into()
+        } else if question_is_wide(room.width, &actions) {
+            row![mark, words.width(Fill), buttons].spacing(space::m()).align_y(Alignment::Center).into()
+        } else {
+            row![mark, words.push(buttons.wrap()).width(Fill)].spacing(space::m()).into()
+        }
+    })
+    .height(Length::Shrink);
+    container(card)
+        .width(Fill)
+        .padding(layout::panel_padding())
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                text_color: Some(p.text),
+                border: border::rounded(radius::sm()).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// Whether a question card of `width` keeps its buttons beside the sentence: the sentence keeps at
+/// least the width of the properties column.
+fn question_is_wide<M: Clone>(width: f32, actions: &[PageAction<M>]) -> bool {
+    let buttons: f32 =
+        actions.iter().map(PageAction::width).sum::<f32>() + space::s() * actions.len().saturating_sub(1) as f32;
+    width - buttons >= size::props()
+}
+
 /// How a [`preview_tile`] stands among the others of its grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewState {
@@ -5060,6 +5407,71 @@ mod badge {
 
 #[cfg(test)]
 mod tests {
+    /// DS.3: a longer word and a count make the row of tabs wider.
+    #[test]
+    fn tabs_grow_with_word_and_count() {
+        let one = |label: &str, count| vec![(label.to_string(), count)];
+        assert!(tabs_width(&one("Overview", None)) > tabs_width(&one("Mail", None)));
+        assert!(tabs_width(&one("Mail", Some(12))) > tabs_width(&one("Mail", None)));
+        assert!(tabs_width(&one("Mail", Some(1200))) > tabs_width(&one("Mail", Some(12))));
+        let two = vec![("Mail".to_string(), None), ("Mail".to_string(), None)];
+        assert!(tabs_width(&two) > 2.0 * tabs_width(&one("Mail", None)));
+        assert_eq!(tabs_width(&[]), 0.0);
+    }
+
+    /// DS.3: every tab reports its own index, also from the pick list of a narrow row.
+    #[test]
+    fn tabs_report_their_index() {
+        #[derive(Debug, Clone, PartialEq)]
+        enum Msg {
+            Tab(usize),
+        }
+        let labels = vec![("Overview".to_string(), None), ("Folders".to_string(), Some(4796))];
+        let choices = tab_choices(&labels);
+        assert_eq!(choices.iter().map(|c| c.index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(choices[1].to_string(), format!("Folders {}", crate::units::format_count(4796)));
+        let on_select: fn(usize) -> Msg = Msg::Tab;
+        assert_eq!(on_select(choices[1].index), Msg::Tab(1));
+        let _: Element<'_, Msg> = tabs(labels, 1, Msg::Tab);
+    }
+
+    /// DS.3: the head builds without pill and buttons, and with them; narrow it stacks them.
+    #[test]
+    fn a_detail_head_builds_with_and_without_its_side() {
+        #[derive(Debug, Clone)]
+        enum Msg {
+            Sync,
+            More,
+        }
+        let _: Element<'_, Msg> =
+            detail_head(TileFace::letter("anna"), "anna@example.org", "", None, HeadActions::default());
+        let actions = HeadActions {
+            action: Some(PageAction::new("Sync now", Some(Msg::Sync)).tip("Syncs all accounts")),
+            more: Some((Anchor::new(), Msg::More)),
+        };
+        let _: Element<'_, Msg> = detail_head(
+            TileFace::letter("anna"),
+            "anna@example.org",
+            "Anna",
+            Some((Status::Ok, "Synced".into())),
+            actions,
+        );
+        assert!(head_is_wide(size::form_max()));
+        assert!(!head_is_wide(size::form_max() - 1.0));
+    }
+
+    /// DS.3: a question card keeps its buttons beside the sentence only while the sentence keeps
+    /// its room.
+    #[test]
+    fn a_question_card_moves_its_buttons_under_the_sentence_when_narrow() {
+        let actions = vec![PageAction::new("Use Sent", Some(())), PageAction::new("Use Sent Items", Some(()))];
+        let buttons = actions[0].width() + actions[1].width() + space::s();
+        assert!(question_is_wide(buttons + size::props(), &actions));
+        assert!(!question_is_wide(buttons + size::props() - 1.0, &actions));
+        let _: Element<'_, ()> = question_card(Icon::Folder, "Which folder holds sent mail?", "", actions);
+        let _: Element<'_, ()> = question_card(Icon::Folder, "Sync problem", "Login failed.", Vec::new());
+    }
+
     /// Issue #299: a search that finds nothing says so; one that finds something shows its entries.
     #[test]
     fn a_search_menu_says_when_nothing_matches() {

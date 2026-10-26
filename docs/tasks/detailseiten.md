@@ -98,7 +98,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   `MiB` und kein `UTC` mehr in `torro-settings-ui/src/mail*` (grep). Übersetzungen („Today {time}“ …) in `de.rs`.
 
 ### DS.3 Bausteine: Kopf, Reiter, Offene Frage
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/widgets.rs`, `crates/torro-gui/examples/gallery.rs`,
   `crates/torro-core/src/i18n/de.rs`
 - `widgets::detail_head(lead, title, meta, status, actions)`: links eine Kachel (`source_tile`, `TileSize::Large`),

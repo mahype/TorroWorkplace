@@ -14,7 +14,8 @@
 //! the mail window's parts (task
 //! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips; task M12.5:
 //! the split chips with their menu, the attachment block with "Save all", a menu with details and tags),
-//! `-- --window` the example "Tasks" window (sample data from
+//! `-- --detail` the blocks of a detail page in the settings (tasks DS.3, DS.4: head, tabs, open
+//! question), `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
 //! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
@@ -78,6 +79,7 @@ fn main() -> iced::Result {
         Page::Parts => iced::Size::new(3200.0, 840.0),
         Page::Cards => iced::Size::new(1720.0, 1000.0),
         Page::Mailbar => iced::Size::new(2160.0, 1180.0),
+        Page::Detail => iced::Size::new(1760.0, 1100.0),
         _ => iced::Size::new(3700.0, 1060.0),
     };
     let shot = args.iter().position(|a| a == "--shot").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
@@ -115,6 +117,8 @@ enum Page {
     Mailbar,
     /// The pills that say what a mail is (task E12.7).
     Categories,
+    /// The blocks of a detail page in the settings (tasks DS.3, DS.4).
+    Detail,
     Window,
 }
 
@@ -151,6 +155,8 @@ impl Start {
             Page::Mailbar
         } else if has("--categories") {
             Page::Categories
+        } else if has("--detail") {
+            Page::Detail
         } else {
             Page::Styles
         };
@@ -200,6 +206,8 @@ struct Gallery {
     mode: usize,
     tile: usize,
     reasons: bool,
+    /// The detail page (tasks DS.3, DS.4): the chosen tab.
+    tab: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +241,7 @@ enum Msg {
     Mode(usize),
     Tile(usize),
     Reasons,
+    Tab(usize),
     /// `--shot`: take the picture now, then save it.
     Shoot,
     Shot(iced::window::Screenshot),
@@ -274,6 +283,7 @@ impl Gallery {
             mode: 0,
             tile: 0,
             reasons: true,
+            tab: 0,
         }
     }
 
@@ -367,6 +377,7 @@ impl Gallery {
                 self.reasons = false;
             }
             Msg::Reasons => self.reasons = !self.reasons,
+            Msg::Tab(i) => self.tab = i,
             // Handled in `step`.
             Msg::Shoot | Msg::Shot(_) => {}
         }
@@ -384,6 +395,7 @@ impl Gallery {
             Page::Cards => self.page_frame(self.cards()),
             Page::Mailbar => self.page_frame(mailbar()),
             Page::Categories => self.page_frame(categories()),
+            Page::Detail => self.page_frame(self.detail()),
             Page::Styles => self.page_frame(self.styles()),
         }
     }
@@ -445,7 +457,7 @@ impl Gallery {
             typo::text(typo::body(), design).style(theme::text_3),
         ]
         .spacing(space::s());
-        let pages = [Page::Styles, Page::Blocks, Page::Parts, Page::Cards, Page::Mailbar, Page::Window];
+        let pages = [Page::Styles, Page::Blocks, Page::Parts, Page::Cards, Page::Mailbar, Page::Detail, Page::Window];
         let active = pages.iter().position(|p| *p == self.page).unwrap_or(0);
         let pages = widgets::segmented(
             [
@@ -454,6 +466,7 @@ impl Gallery {
                 ("Parts", Msg::Page(Page::Parts)),
                 ("Cards", Msg::Page(Page::Cards)),
                 ("Mail", Msg::Page(Page::Mailbar)),
+                ("Detail", Msg::Page(Page::Detail)),
                 ("Window", Msg::Page(Page::Window)),
             ],
             active,
@@ -2486,6 +2499,81 @@ impl Gallery {
 /// column "Hover"), the command bar in three widths, the strip under a row with and without words,
 /// the pills, the attachment chips and the reader's foot with its view switches.
 /// Task E12.7: the category pill in all four groups, with and without the suggestion mark.
+impl Gallery {
+    /// The blocks of a detail page (tasks DS.3, DS.4), each wide and narrow: the head with and
+    /// without its pill, the tabs as a row and as a pick list, open questions.
+    fn detail(&self) -> Element<'_, Msg> {
+        let more = Anchor::new();
+        let actions = || widgets::HeadActions {
+            action: Some(widgets::PageAction::new("Sync now", Some(Msg::Noop)).tip("Syncs all accounts")),
+            more: Some((more.clone(), Msg::Noop)),
+        };
+        let head = |status: Option<(Status, String)>, width: f32| {
+            container(widgets::detail_head(
+                TileFace::letter("anna"),
+                "anna@example.org",
+                "Anna Example · IMAP mail.example.org:993 · SMTP mail.example.org:587",
+                status,
+                actions(),
+            ))
+            .width(width)
+        };
+        let synced = || Some((Status::Ok, "Synced today 15:39".to_string()));
+        let heads = column![
+            head(synced(), size::content_max()),
+            head(Some((Status::Error, "Login failed".to_string())), size::content_max()),
+            head(None, size::content_max()),
+            container(widgets::detail_head(
+                TileFace::Icon(Icon::Github),
+                "GitHub",
+                "",
+                None,
+                widgets::HeadActions::<Msg>::default()
+            ))
+            .width(size::content_max()),
+            head(synced(), size::panel()),
+        ]
+        .spacing(space::xl());
+        let labels = || {
+            vec![
+                ("Overview".to_string(), None),
+                ("Writing".to_string(), None),
+                ("Folders".to_string(), Some(12)),
+                ("Backup".to_string(), None),
+            ]
+        };
+        let tabs = column![
+            container(widgets::tabs(labels(), self.tab, Msg::Tab)).width(size::content_max()),
+            container(widgets::tabs(labels(), self.tab, Msg::Tab)).width(size::props()),
+        ]
+        .spacing(space::xl());
+        let question = |width: f32| {
+            container(widgets::question_card(
+                Icon::Folder,
+                "Which folder holds sent mail?",
+                "The server names no folder for sent mail. Choose one, so replies are kept.",
+                vec![
+                    widgets::PageAction::new("Use Sent", Some(Msg::Noop)),
+                    widgets::PageAction::new("Use Sent Items", Some(Msg::Noop)),
+                ],
+            ))
+            .width(width)
+        };
+        let problem = container(widgets::question_card(
+            Icon::CircleAlert,
+            "The last sync failed",
+            "Login failed: the server refused the password.",
+            vec![widgets::PageAction::new("Server settings", Some(Msg::Noop))],
+        ))
+        .width(size::content_max());
+        let questions =
+            column![question(size::content_max()), problem, question(size::panel())].spacing(size::card_gap());
+        let first = column![section("Head", heads.into()), section("Tabs", tabs.into())].spacing(space::xxl());
+        let second = column![section("Open questions", questions.into())].spacing(space::xxl());
+        row![first, second].spacing(space::xxl()).padding(space::xl()).into()
+    }
+}
+
 fn categories() -> Element<'static, Msg> {
     let groups: [(Icon, &str, &str); 4] = [
         (Icon::Inbox, "Waiting for me", "Request"),
