@@ -3312,7 +3312,7 @@ static SNOOZE_ITEM: Command = Command {
                   (`unsupported` when a rule hides the mail); new mail in the conversation brings it back early. \
                   A snoozed mail is left out of mail_search_messages with `snoozed: false`. For mail it is a \
                   follow-up: `unless_reply: true` waits only if nobody replies – a mail in the conversation not \
-                  sent from the account itself, dated after this call, in any folder, calls it off and the date \
+                  sent from the account itself, dated after this call, in any folder but drafts, calls it off and the date \
                   never comes; without it the date stays after a reply and brings the conversation on top once \
                   more while it is still open. `unless_reply` is for mail only, `unsupported` on any other entry.",
 };
@@ -3647,8 +3647,8 @@ static SET_MAIL_PILE: Command = Command {
                   lies on at most one pile, putting it on the other moves it. While it lies there \
                   mail_search_messages with `pile: without` (All) leaves it out and `pile: reply_later` or \
                   `set_aside` lists it; every message of a search names its `pile`. Reply later clears itself: \
-                  a mail from the account's own address in the conversation after it was put there takes it \
-                  off; Set aside stays until taken off. Kept by the core only, nothing changes on the server. \
+                  a mail from the account's own address in the conversation after it was put there (sent, not \
+                  a draft) takes it off; Set aside stays until taken off. Kept by the core only, nothing changes on the server. \
                   `error` for no ids or more than 100; `not-found` for the whole call when one message is in a \
                   mail account this key may not read or whose inbox entries it may not see; nothing is changed \
                   then.",
@@ -3850,7 +3850,7 @@ static SEARCH_MESSAGES: Command = Command {
                   false` with `incomplete_reason: indexing` while older texts are still being indexed (see \
                   mail_index_status). Pages go at most 10 000 matches deep. `snoozed: false` leaves out mail put \
                   off with inbox_snooze_item and puts mail back from it on top by the time it came back (`back`), \
-                  from any folder but trash and spam whatever `in:` says (a sent mail back from a follow-up stands \
+                  from any folder but archive, trash and spam whatever `in:` says (a sent mail back from a follow-up stands \
                   on top of in:inbox), though a `folder` given still holds; \
                   `snoozed: true` lists only the snoozed mail. `hidden: false` leaves out mail of the inbox folder \
                   the person hid (a sender or domain hidden with inbox_hide_sender, a conversation hidden, mail \

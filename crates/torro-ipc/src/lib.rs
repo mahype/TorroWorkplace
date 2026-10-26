@@ -1829,8 +1829,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         until: Option<DateTime<Utc>>,
         /// Follow up only if nobody replies by `until` (task E19.1): a reply – mail in the
-        /// conversation, not sent from the account itself, dated after this call, in any folder,
-        /// read or not – calls the follow-up off, and the conversation stays where the reply put it
+        /// conversation, not sent from the account itself, dated after this call, in any folder but
+        /// drafts, read or not – calls the follow-up off, and the conversation stays where the reply put it
         /// without coming back at `until`. Only for mail entries and mail ids (`m:…`); on any other
         /// entry `unsupported`, refused before an approval is asked for. Ignored without `until`,
         /// which calls any follow-up off.
@@ -2219,7 +2219,8 @@ pub enum Request {
     /// every message of a search names its pile ([`torro_mail::MessageSummary::pile`]). Kept only
     /// in the core: nothing goes to the server, the message and its inbox entry stay as they are.
     /// "Reply later" clears itself: once a mail from the account's own address turns up in the
-    /// message's conversation after it was put there (in any folder, sent by any program), the core
+    /// message's conversation after it was put there (in any folder, sent by any program; a draft is
+    /// not sent and never counts), the core
     /// takes it off. "Set aside" stays until taken off.
     ///
     /// Mail of several accounts may go in one call. Answered with [`Response::Ok`]; `not-found`

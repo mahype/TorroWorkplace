@@ -549,9 +549,15 @@ impl Feed {
         let ids = new.to_vec();
         let found = store
             .run(move |store| {
+                // A draft is neither sent nor a reply (review of #315): saved, or left by a sending
+                // that failed, it must not take mail off "Reply later" or end a follow-up.
+                let drafts = store.folder_by_role(Role::Drafts)?.map(|folder| folder.id);
                 let (mut replies, mut sent) = (Vec::new(), Vec::new());
                 for id in &ids {
                     let Some(summary) = store.summary(id)? else { continue };
+                    if drafts.as_ref() == Some(&summary.folder) {
+                        continue;
+                    }
                     let mine = summary.from.as_ref().is_some_and(|from| from.address.eq_ignore_ascii_case(&own));
                     match mine {
                         true => sent.push((summary.thread_id, summary.date)),
@@ -790,12 +796,13 @@ impl Feed {
     /// inbox folder at all (task E9.1): reading mail the person put off does not take it out of
     /// "Later".
     ///
-    /// A snoozed entry with a follow-up (task E19.1) waits while one of its messages lies in any
-    /// folder but the archive, the trash or spam (a folder without a role and the sent folder
+    /// An entry with a follow-up (task E19.1), snoozed or open, waits while one of its messages lies
+    /// in any folder but the archive, the trash or spam (a folder without a role and the sent folder
     /// count): "Follow up" goes on any mail, and the main case of "only if no reply" is a sent mail,
     /// which is never in the inbox folder – judged by it, the follow-up would end unseen at the next
-    /// catch-up. Archived, thrown away or marked as spam, the person dealt with it, and it ends as
-    /// decision 6 says.
+    /// catch-up. Open, it is one without the condition a reply opened (review of #315, decisions 6
+    /// and 7): reading the reply must not end it, it still comes back at its date. Archived, thrown
+    /// away or marked as spam, the person dealt with it, and it ends as decision 6 says.
     async fn settle(&self, store: &SharedStore, account: &str, touching: Option<&[String]>, now: DateTime<Utc>) {
         let entries = match self.inbox.open_mail_entries(account, touching) {
             Ok(entries) if !entries.is_empty() => entries,
@@ -820,10 +827,11 @@ impl Feed {
                 for entry in entries {
                     let mut waiting = false;
                     for message in &entry.messages {
-                        // Put off by the person (task E9.1), it waits as long as its mail is in the
-                        // inbox folder, read or not; with a follow-up anywhere it was not dealt with.
+                        // With a follow-up it waits anywhere its mail was not dealt with; put off by
+                        // the person (task E9.1) as long as its mail is in the inbox folder, read or
+                        // not; else while it is unread there.
                         waiting |= store.summary(message)?.is_some_and(|summary| match entry.snoozed {
-                            true if entry.follow_up => !dealt_with.contains(&summary.folder),
+                            _ if entry.follow_up => !dealt_with.contains(&summary.folder),
                             true => summary.folder == inbox.id,
                             false => summary.folder == inbox.id && !summary.flags.contains(&Flag::Seen),
                         });
@@ -1385,6 +1393,155 @@ pub(crate) mod tests {
         feed.take(change(&of("Re Trip mine"), Some(Role::Sent)), Utc::now()).await;
         feed.catch_up(Utc::now()).await;
         assert_eq!(pile_of("Trip"), Some(MailPile::ReplyLater), "answered before it was put there");
+    }
+
+    /// Review of #315: a draft in the conversation is no answer of one's own – saved or a sending
+    /// that failed – and no reply either, also one from another address (an alias); the mail
+    /// stays on "Reply later" and the follow-up stands, a catch-up too. A sent mail takes it off.
+    #[tokio::test]
+    async fn a_draft_is_no_answer_and_no_reply() {
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for subject in ["Offer", "Plan", "Trip"] {
+            server.add("INBOX", &bernd(subject, 5), &["\\Seen"]);
+        }
+        let reply = |subject: &str, from: &str, to: &str| letter(subject, from, 1, "", Some(to));
+        let own = "Anna <anna@example.org>";
+        server.add("Drafts", &reply("Re Offer draft", own, "Offer@example.org"), &["\\Seen", "\\Draft"]);
+        server.add("Drafts", &reply("Re Trip draft", own, "Trip@example.org"), &["\\Seen", "\\Draft"]);
+        let alias = "Anna <anna@alias.example>";
+        server.add("Drafts", &reply("Re Plan draft", alias, "Plan@example.org"), &["\\Seen", "\\Draft"]);
+        server.add("Sent", &reply("Re Offer mine", own, "Offer@example.org"), &["\\Seen"]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        assert_eq!(of("Re Offer draft").thread_id, of("Offer").thread_id, "one conversation");
+
+        let since = Utc::now() - TimeDelta::days(4);
+        let pair = |subject: &str| (ANNA.to_string(), of(subject).id);
+        inbox.set_mail_pile(&[pair("Offer"), pair("Trip")], Some(MailPile::ReplyLater), since).expect("put");
+        let found = mail_to_snooze(&mail, Reach::Suite, &of("Plan").id).await.expect("the mail");
+        let plan = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
+        let until = Utc::now() + TimeDelta::hours(1);
+        let request = Request::SnoozeItem { id: plan.clone(), until: Some(until), unless_reply: true };
+        assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
+        let pile_of =
+            |subject: &str| inbox.mail_piles(&[ANNA.to_string()]).expect("read").pile_of(ANNA, &of(subject).id);
+        let change = |message: &torro_mail::MessageSummary, role| MailChange {
+            account: ANNA.into(),
+            folder: message.folder.clone(),
+            role,
+            new: vec![message.id.clone()],
+            flags: Vec::new(),
+            removed: Vec::new(),
+            initial: false,
+        };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+
+        for draft in ["Re Offer draft", "Re Plan draft"] {
+            feed.take(change(&of(draft), Some(Role::Drafts)), Utc::now()).await;
+        }
+        assert_eq!(pile_of("Offer"), Some(MailPile::ReplyLater), "a draft is no answer");
+        assert_eq!(inbox.awaiting_reply(ANNA).expect("read").len(), 1, "a draft is no reply");
+        feed.take(change(&of("Re Offer mine"), Some(Role::Sent)), Utc::now()).await;
+        assert_eq!(pile_of("Offer"), None, "the sent mail is");
+        feed.catch_up(Utc::now()).await;
+        assert_eq!(pile_of("Trip"), Some(MailPile::ReplyLater), "nor in a catch-up");
+        assert_eq!(inbox.awaiting_reply(ANNA).expect("read").len(), 1, "nor a reply in a catch-up");
+    }
+
+    /// Review of #315, decisions 6 and 7: a follow-up without the condition stands after the reply
+    /// was read – the entry stays open while its mail is not archived – and brings the conversation
+    /// back at the date; archived before, it ends.
+    #[tokio::test]
+    async fn a_follow_up_without_condition_outlasts_reading_the_reply() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let reply = |subject: &str, to: &str| letter(subject, "Bernd <bernd@example.com>", 1, "", Some(to));
+        for subject in ["Offer", "Plan"] {
+            server.add("INBOX", &bernd(subject, 5), &["\\Seen"]);
+            server.add("INBOX", &reply(&format!("Re {subject}"), &format!("{subject}@example.org")), &[]);
+        }
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        let (since, until) = (Utc::now() - TimeDelta::days(4), Utc::now() + TimeDelta::hours(1));
+        let mut entries = BTreeMap::new();
+        for subject in ["Offer", "Plan"] {
+            let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
+            let entry = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
+            let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: false };
+            assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
+            // The reply comes and opens it, as the feed files it.
+            let reply = mail_to_snooze(&mail, Reach::Suite, &of(&format!("Re {subject}")).id).await.expect("reply");
+            assert_eq!(inbox.file_mail(&reply, Notify::All, Utc::now()).expect("filed"), Some(entry.clone()));
+            entries.insert(subject, entry);
+        }
+        let entry =
+            |subject: &str, now| match inbox.handle(Request::GetItem { id: entries[subject].clone() }, None, now) {
+                Response::Item { item } => item,
+                other => panic!("the entry, got {other:?}"),
+            };
+        assert_eq!(entry("Offer", Utc::now()).state, State::New, "the reply opened it");
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+
+        // Both replies read: the follow-ups stand.
+        let read: Vec<String> = ["Re Offer", "Re Plan"].iter().map(|subject| of(subject).id).collect();
+        let marked = read.clone();
+        store
+            .run(move |store| {
+                for id in &marked {
+                    store.set_flags(id, &[Flag::Seen])?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("read");
+        let flagged = MailChange {
+            account: ANNA.into(),
+            folder: of("Re Offer").folder,
+            role: Some(Role::Inbox),
+            new: Vec::new(),
+            flags: read,
+            removed: Vec::new(),
+            initial: false,
+        };
+        feed.take(flagged, Utc::now()).await;
+        assert!(entry("Offer", Utc::now()).state.is_open(), "read, the follow-up stands");
+        assert!(entry("Plan", Utc::now()).state.is_open());
+
+        // "Plan" archived: done, and it does not come back.
+        let archive = store.run(|store| store.folder_by_role(Role::Archive)).await.expect("read").expect("an archive");
+        let ids = [of("Plan").id, of("Re Plan").id];
+        store
+            .run(move |store| {
+                for (uid, id) in (1..).zip(ids.iter()) {
+                    store.relocate_message(id, &archive.id, 14, uid)?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("moved");
+        feed.settle(&store, ANNA, None, Utc::now()).await;
+        assert!(matches!(entry("Plan", Utc::now()).state, State::Done { .. }), "archived");
+
+        let at_the_date = until + TimeDelta::minutes(1);
+        let back = entry("Offer", at_the_date);
+        assert_eq!((back.state, back.updated, back.follow_up), (State::New, until, None), "back at the date");
+        let later = inbox.mail_later(&[ANNA.to_string()], at_the_date).expect("read");
+        assert_eq!(later.back_at(ANNA, &of("Offer").id), Some(until));
+        assert!(matches!(entry("Plan", at_the_date).state, State::Done { .. }), "archived does not come back");
     }
 
     /// Task E19.1: a follow-up waits while its mail lies anywhere but in the archive, the trash or

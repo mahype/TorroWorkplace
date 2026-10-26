@@ -2224,7 +2224,8 @@ impl MailStore {
 
     /// How many mails of the conversation `thread_id` are dated after `after` and not sent from
     /// `own` (the account's address, in any case): the replies that came since (task E8.7a). The
-    /// same mail in several folders counts once (by `Message-ID`; one without counts per copy).
+    /// same mail in several folders counts once (by `Message-ID`; one without counts per copy). A
+    /// draft is no mail sent: the drafts folder never counts (review of #315).
     pub fn replies_after(&self, thread_id: &str, after: DateTime<Utc>, own: &str) -> Result<u32, MailStoreError> {
         self.count_after(thread_id, after, own, false)
     }
@@ -2232,19 +2233,21 @@ impl MailStore {
     /// How many mails of the conversation `thread_id` are dated after `after` and sent from `own`
     /// (the account's address, in any case), in any folder: the person's own answers since (task
     /// E19.2, what takes a mail off "Reply later"). The counterpart of
-    /// [`replies_after`](Self::replies_after); the same mail in several folders counts once.
+    /// [`replies_after`](Self::replies_after); the same mail in several folders counts once. A draft,
+    /// saved or left by a sending that failed, is no answer: the drafts folder never counts.
     pub fn sent_after(&self, thread_id: &str, after: DateTime<Utc>, own: &str) -> Result<u32, MailStoreError> {
         self.count_after(thread_id, after, own, true)
     }
 
     /// The mails of `thread_id` dated after `after`, sent from `own` (`mine`) or not, each
-    /// `Message-ID` once.
+    /// `Message-ID` once, none of the drafts folder.
     fn count_after(&self, thread_id: &str, after: DateTime<Utc>, own: &str, mine: bool) -> Result<u32, MailStoreError> {
         let sql = format!(
-            "SELECT {SUMMARY_COLUMNS}, m.rfc_message_id FROM messages m WHERE m.thread_id = ?1 AND m.date > ?2"
+            "SELECT {SUMMARY_COLUMNS}, m.rfc_message_id FROM messages m WHERE m.thread_id = ?1 AND m.date > ?2
+             AND m.folder_id NOT IN (SELECT id FROM folders WHERE role = ?3)"
         );
         let mut statement = self.db.prepare(&sql)?;
-        let rows = statement.query_map(params![thread_id, after.timestamp()], |row| {
+        let rows = statement.query_map(params![thread_id, after.timestamp(), role_name(Role::Drafts)], |row| {
             Ok((summary_from_row(&self.account, row)?, row.get::<_, Option<String>>(SUMMARY_WIDTH)?))
         })?;
         let mut seen = std::collections::BTreeSet::new();

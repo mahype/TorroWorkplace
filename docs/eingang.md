@@ -643,11 +643,16 @@ und App Feed behalten „Later“ für alle Quellen, ohne „Only if no reply“
   ist. Mit **„Only if no reply“** (`inbox.snooze_item` mit `unless_reply`, `Item::follow_up`) entfällt das Datum, sobald
   eine Mail eines anderen in der Unterhaltung ankommt – auch eine schon gelesene oder in einem anderen Ordner; die
   Unterhaltung steht dann ohne „Back“ wieder in „All“.
-- **Wiedervorlage außerhalb des Posteingangs** (in der Umsetzung entschieden, Fix zu E19.1): Eine Wiedervorlage wartet,
-  solange eine Mail ihrer Unterhaltung irgendwo außer in Archiv, Papierkorb oder Spam liegt – auch die eigene gesendete
-  Mail, auf die keiner antwortet. Für zurückgestellte Mail ohne Wiedervorlage gilt weiter die Regel aus E9.1 (erledigt,
-  sobald keine Mail mehr im Posteingang liegt). Kommt sie zurück, steht sie oben in „All“, auch wenn sie nicht im
-  Posteingang liegt (Entscheidung 8).
+- **Wiedervorlage außerhalb des Posteingangs** (in der Umsetzung entschieden, Fix zu E19.1, im Review von #315 auf
+  offene Einträge ausgedehnt): Ein Eintrag mit stehender Wiedervorlage, zurückgestellt oder offen, wartet, solange eine
+  Mail seiner Unterhaltung irgendwo außer in Archiv, Papierkorb oder Spam liegt – auch die eigene gesendete Mail, auf
+  die keiner antwortet. Offen ist er, wenn eine Antwort eine Wiedervorlage ohne Bedingung geöffnet hat; liest der
+  Mensch die Antwort, bleibt das Datum darum stehen und holt die Unterhaltung zurück (Entscheidungen 6 und 7).
+  Archiviert, gelöscht oder als Spam markiert, ist sie erledigt und kommt nicht wieder. Für zurückgestellte Mail ohne
+  Wiedervorlage gilt weiter die Regel aus E9.1 (erledigt, sobald keine Mail mehr im Posteingang liegt). Kommt sie
+  zurück, steht sie oben in „All“, auch wenn sie nicht im Posteingang liegt (Entscheidung 8) – nur Mail aus Archiv,
+  Papierkorb und Spam nicht. Ein Entwurf zählt weder als eigene Antwort („Reply later“) noch als fremde Antwort
+  („Only if no reply“): gespeichert oder nach einem gescheiterten Senden ist er nicht gesendet.
 - **Ansicht „Follow up“ ohne Zahl** (Entscheidung 7) an der Stelle von „Later“: die zurückgestellten Mail-Einträge mit
   Datum und „Cancel follow-up“. Eine Wiedervorlage, deren Unterhaltung nach einer Antwort schon wieder in „All“ steht,
   zeigt ihr Datum dort in der Leiste der Mail und steht nicht zusätzlich in „Follow up“.

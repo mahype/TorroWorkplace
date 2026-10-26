@@ -19191,6 +19191,8 @@ mod tests {
         // An older mail of the conversation, thrown away: it never comes back on top.
         server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
         server.add("Trash", &fake::mail("Re Question", 4, Some("Question@example.org")), &["\\Seen"]);
+        // And one archived: dealt with, it is not back either.
+        server.add("Archive", &fake::mail("Re Question archived", 4, Some("Question@example.org")), &["\\Seen"]);
         let secrets = MemoryTokens::default();
         store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
         let mail = service_in(dir.path(), &secrets);
@@ -19225,6 +19227,8 @@ mod tests {
         let every = page(ask(&core, Some(&app_key), search(None)).await);
         let sent = every.iter().find(|message| message.subject == "Question").expect("synced").id.clone();
         let trashed = every.iter().find(|message| message.subject == "Re Question").expect("synced").id.clone();
+        let archived =
+            every.iter().find(|message| message.subject == "Re Question archived").expect("synced").id.clone();
 
         // Whole seconds: the inbox keeps times to the microsecond.
         let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
@@ -19237,15 +19241,17 @@ mod tests {
         let Response::Item { item } = ask(&core, Some(&app_key), follow_up(later)).await else { panic!("again") };
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &sent).as_deref(), Some(item.id.as_str()));
         assert!(matches!(item.follow_up, Some(FollowUp { unless_reply: true, at, .. }) if at == later));
-        // The thrown-away mail joins the entry, as filed with it.
-        let trash = Request::SnoozeItem { id: trashed.clone(), until: Some(later), unless_reply: true };
-        let Response::Item { item: joined } = ask(&core, Some(&app_key), trash).await else { panic!("joined") };
-        assert_eq!(joined.id, item.id, "one conversation");
+        // The thrown-away and the archived mail join the entry, as filed with it.
+        for id in [&trashed, &archived] {
+            let joining = Request::SnoozeItem { id: id.clone(), until: Some(later), unless_reply: true };
+            let Response::Item { item: joined } = ask(&core, Some(&app_key), joining).await else { panic!("joined") };
+            assert_eq!(joined.id, item.id, "one conversation");
+        }
         assert_eq!(subjects(&page(ask(&core, Some(&app_key), search(Some("in:inbox"))).await)), ["Mail 1"]);
 
         core.inbox.tend(later + chrono::TimeDelta::minutes(1), false).expect("woken");
         let all = page(ask(&core, Some(&app_key), search(Some("in:inbox"))).await);
-        assert_eq!(subjects(&all), ["Question", "Mail 1"], "the sent mail on top of All, not the trash");
+        assert_eq!(subjects(&all), ["Question", "Mail 1"], "the sent mail on top of All, not the trash or archive");
         assert_eq!(all[0].back, Some(later));
         // Other words of the search still hold for it.
         assert_eq!(subjects(&page(ask(&core, Some(&app_key), search(Some("in:inbox offer"))).await)).len(), 0);

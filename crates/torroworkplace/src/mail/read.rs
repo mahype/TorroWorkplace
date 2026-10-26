@@ -295,7 +295,8 @@ impl LaterView {
     /// there is none), so it is found whatever its date – and wherever it lies (task E19.1,
     /// decision 8): that query drops the `in:` of the search ([`query::Query::without_folders`]),
     /// so a sent mail back from a follow-up stands on top of "All" (`in:inbox`) as well. Mail in the
-    /// trash or in spam is left out there ([`anywhere_but_bin`]): thrown away, it is not back.
+    /// archive, the trash or spam is left out there ([`anywhere_not_dealt_with`]): archived or thrown
+    /// away, it is not back.
     ///
     /// The pile (task E19.2) narrows each of them alike ([`LaterView::piled`]).
     fn queries(&self, account: &str, query: &SearchQuery) -> Vec<SearchQuery> {
@@ -309,7 +310,7 @@ impl LaterView {
                 except.extend(back.iter().cloned());
                 let mut queries = vec![SearchQuery { except, ..query.clone() }];
                 if !back.is_empty() {
-                    let anywhere = anywhere_but_bin(&query.query);
+                    let anywhere = anywhere_not_dealt_with(&query.query);
                     queries.push(SearchQuery { only: Some(back), query: anywhere, ..query.clone() });
                 }
                 queries
@@ -380,11 +381,12 @@ impl LaterView {
     }
 }
 
-/// `query` without what it asks of folders ([`Query::without_folders`]), but never in the trash or in
-/// spam (task E19.1): where the mail back from Later is looked for with `snoozed: false`.
-fn anywhere_but_bin(query: &Query) -> Query {
+/// `query` without what it asks of folders ([`Query::without_folders`]), but never in the archive,
+/// the trash or spam (task E19.1, review of #315): where the mail back from Later is looked for with
+/// `snoozed: false`. Mail there was dealt with, as the mail feed's `settle` holds it too.
+fn anywhere_not_dealt_with(query: &Query) -> Query {
     let mut anywhere = query.without_folders();
-    for role in ["trash", "junk"] {
+    for role in ["archive", "trash", "junk"] {
         let term = query::Term { negated: true, test: query::Test::In(role.into()) };
         anywhere.clauses.push(query::Clause { any: vec![term] });
     }
