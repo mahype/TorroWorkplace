@@ -106,9 +106,17 @@ pub struct Demo {
     category_clear_job: Mutex<Option<CategoryClearJob>>,
     cache_policy: Mutex<Option<MailCachePolicy>>,
     cache_job: Mutex<Option<MailCacheJob>>,
+    /// Why the sample mail account does not sync ([`Demo::with_mail_problem`]); `None` normally.
+    mail_problem: Option<String>,
 }
 
 impl Demo {
+    /// The sample demo whose mail account does not sync, for `problem` (task DS.6: the open question
+    /// of a sync problem on the account's page, `torroinbox --open account-question`).
+    pub fn with_mail_problem(problem: impl Into<String>) -> Demo {
+        Demo { mail_problem: Some(problem.into()), ..Demo::new() }
+    }
+
     /// A demo with the sample settings: dark, so the first look shows the suite's own look.
     pub fn new() -> Demo {
         let mut reminders = Reminders::default();
@@ -139,6 +147,7 @@ impl Demo {
             category_clear_job: Mutex::new(None),
             cache_policy: Mutex::new(None),
             cache_job: Mutex::new(None),
+            mail_problem: None,
         }
     }
 
@@ -338,7 +347,7 @@ impl Demo {
                     role: Role::Archive,
                     candidates: vec![folder("Archive", "INBOX.Archive"), folder("All Mail", "INBOX.All")],
                 }],
-                mail: ServiceState::default(),
+                mail: ServiceState { last_sync: None, problem: self.mail_problem.clone() },
                 calendars: None,
                 trusted_certificates: Vec::new(),
             }),
@@ -452,7 +461,7 @@ impl Demo {
             cached_attachments: 42,
             attachment_cache_bytes: Some(260_000_000),
             last_sync: newest,
-            sync_problem: None,
+            sync_problem: self.mail_problem.clone(),
             // 2.36 GB of 10 GB, as a server counting in KiB reports them.
             quota: newest.map(|checked| MailQuota {
                 used_bytes: 2_534_000_000,

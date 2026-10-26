@@ -156,7 +156,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   bisher; eine Seite mit Speicherleiste baut in allen drei `Form`s. Bestehende Host-Tests grün.
 
 ### DS.6 Mail › Accounts › Konto: Kopf, Reiter Overview · Writing · Folders · Backup
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** DS.1, DS.2, DS.4, DS.5 · **Dateien:** `crates/torro-settings-ui/src/mail.rs`,
   `crates/torro-settings-ui/src/mail/backup.rs` (nur Formate, falls DS.2 etwas offen ließ), `crates/torroinbox/src/app.rs`
   (Demo-Zustände), `crates/torro-core/src/i18n/de.rs`

@@ -35,7 +35,7 @@ mod editor;
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
 pub const SECTIONS: [Section; 5] = [
     // Accounts is first: the gear lands on who the mail comes from.
-    Section { id: "accounts", icon: Icon::Mail, label: "Accounts" },
+    Section { id: ACCOUNTS_SECTION, icon: Icon::Mail, label: "Accounts" },
     Section { id: "reading", icon: Icon::MailOpen, label: "Reading" },
     // What a click on an attachment does and where it is saved (task M12.7, issue #290); "Manage
     // save targets…" in the menu of an attachment opens it ([`ATTACHMENTS_SECTION`]).
@@ -48,6 +48,9 @@ pub const SECTIONS: [Section; 5] = [
 /// The id of the section "Attachments": what `--settings attachments` takes and where "Manage save
 /// targets…" leads.
 pub const ATTACHMENTS_SECTION: &str = "attachments";
+
+/// The id of the section "Accounts", whose account page has a menu of its own (task DS.6).
+pub const ACCOUNTS_SECTION: &str = "accounts";
 
 /// What only the mail window can do with these sections ([`crate::Action::App`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +157,7 @@ pub fn overlay<'a>(
         ATTACHMENTS_SECTION => {
             attachments::overlay(&state.attachments, data, class).map(|dialog| dialog.map(Message::Attachments))
         }
+        ACCOUNTS_SECTION => accounts::overlay(&state.accounts).map(|menu| menu.map(Message::Accounts)),
         _ => None,
     }
 }
@@ -162,6 +166,12 @@ pub fn overlay<'a>(
 /// (task M12.7). `None` without a dialog, which lets the window close the settings.
 pub fn attachments_escape(state: &State) -> Option<Message> {
     attachments::escape(&state.attachments).map(Message::Attachments)
+}
+
+/// What Escape means while "Accounts" shows: close the "…" menu of an account's head (task DS.6).
+/// `None` without one, which lets the window close the settings.
+pub fn accounts_escape(state: &State) -> Option<Message> {
+    accounts::escape(&state.accounts).map(Message::Accounts)
 }
 
 /// What Escape means in these sections: a page of the categories' editor goes back to its list
@@ -242,19 +252,25 @@ fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Messag
 pub mod accounts {
     use std::collections::BTreeMap;
 
-    use iced::widget::text::{IntoFragment, Wrapping};
-    use iced::widget::{column, container, row, space as blank, text_editor};
-    use iced::{Alignment, Fill};
-    use torro_gui::datetime::format_moment;
-    use torro_gui::theme::space;
+    use chrono::{DateTime, Utc};
+    use iced::Alignment;
+    use iced::widget::text::Wrapping;
+    use iced::widget::{column, row, space as blank, text_editor};
+    use torro_core::i18n::trf;
+    use torro_gui::datetime::{format_exact, format_moment, month_name, month_name_short};
+    use torro_gui::theme::{self, ChartColor, size, space};
     use torro_gui::units::{format_bytes, format_count};
+    use torro_gui::widgets::{
+        Align, Anchor, ChartColumn, ChartSeries, HeadActions, MenuItem, MenuSection, PageAction, Placement, SharePart,
+        StatFigure, Status, TileFace, Trail,
+    };
     use torro_gui::{layout, style, typo, widgets};
-    use torro_ipc::mail::MailAccountStats;
+    use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount};
     use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request};
     use torro_mail::{MailFormat, Role};
 
     use super::*;
-    use crate::parts::{chevron, field, picker, pressable, row_frame, setting_row};
+    use crate::parts::{chevron, field, picker, pressable, setting_row};
 
     /// Section state: the open account's draft, which is also what says that its page is open –
     /// one holds the other, so the page never stands without something to type into.
@@ -263,10 +279,47 @@ pub mod accounts {
         /// What is typed into the open account's sender name and signature; `None` on the list of
         /// accounts.
         draft: Option<Draft>,
-        folders_expanded: bool,
+        /// The open tab of the account's page; every account opens on "Overview".
+        tab: Tab,
+        /// The head's "…" menu is open, and where its button is.
+        more: bool,
+        more_anchor: Anchor,
         backup: backup::State,
         backup_account: Option<String>,
         backup_others: BTreeMap<String, backup::State>,
+    }
+
+    /// The parts of an account's page (task DS.6), "Overview" first.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub enum Tab {
+        #[default]
+        Overview,
+        Writing,
+        Folders,
+        Backup,
+    }
+
+    impl Tab {
+        /// The tabs in their order.
+        pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Writing, Tab::Folders, Tab::Backup];
+
+        fn label(self) -> &'static str {
+            match self {
+                Tab::Overview => tr("Overview"),
+                Tab::Writing => tr("Writing"),
+                Tab::Folders => tr("Folders"),
+                Tab::Backup => tr("Backup"),
+            }
+        }
+
+        /// Where the tab stands in the row: what [`Message::Tab`] takes.
+        pub fn index(self) -> usize {
+            Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0)
+        }
+
+        fn at(index: usize) -> Tab {
+            Self::ALL.get(index).copied().unwrap_or_default()
+        }
     }
 
     /// What a row of this section reports.
@@ -276,13 +329,26 @@ pub mod accounts {
         Open(String),
         /// "‹ Back" from an account's page to the list.
         Back,
-        /// Expand or collapse the account's per-folder local inventory.
-        ToggleFolders,
+        /// A tab of the account's page, by its index ([`Tab::index`]).
+        Tab(usize),
+        /// "Sync now" in the head: every account syncs (`accounts.sync`).
+        Sync,
+        /// The head's "…": open or close its menu.
+        More,
+        /// A click beside the open "…" menu, or Escape.
+        CloseMore,
+        /// "Storage & index" from the "…" menu or a link of the overview.
+        OpenStorage,
+        /// "Server settings": the account in the control centre, where servers and passwords are.
+        ServerSettings,
+        /// "Discard" in the save bar: the draft holds what is stored again.
+        Discard,
         /// Typing in the sender name.
         SenderName(String),
         /// Typing in the signature.
         Signature(text_editor::Action),
-        /// "Save": the sender name and the signature, as far as they differ from the stored ones.
+        /// "Save" in the save bar: the sender name and the signature, as far as they differ from the
+        /// stored ones.
         Save,
         /// "Write new mail as" was set (issue #125).
         Format(MailFormat),
@@ -315,14 +381,31 @@ pub mod accounts {
             self.signature.text().replace("\r\n", "\n").trim_end().to_string()
         }
 
-        /// What changed against the stored account, as `accounts.update_mail_account` with only
-        /// those fields; `None` when nothing did (then "Save" is off).
-        fn changes(&self, mail: &MailView) -> Option<Request> {
+        /// The sender name and the signature as they would be sent, each only where it differs
+        /// from the stored account.
+        fn changed(&self, mail: &MailView) -> (Option<String>, Option<String>) {
             let sender_name = self.sender_name.trim();
             let signature = self.signature_text();
             let stored_signature = mail.settings.signature.as_deref().unwrap_or_default().trim_end();
             let changed_name = (sender_name != mail.sender_name.trim()).then(|| sender_name.to_string());
             let changed_signature = (signature != stored_signature).then_some(signature);
+            (changed_name, changed_signature)
+        }
+
+        /// What the save bar says changed; `None` when nothing did (then there is no save bar).
+        fn summary(&self, mail: &MailView) -> Option<&'static str> {
+            match self.changed(mail) {
+                (Some(_), Some(_)) => Some(tr("Sender name and signature changed")),
+                (Some(_), None) => Some(tr("Sender name changed")),
+                (None, Some(_)) => Some(tr("Signature changed")),
+                (None, None) => None,
+            }
+        }
+
+        /// What changed against the stored account, as `accounts.update_mail_account` with only
+        /// those fields; `None` when nothing did (then there is no save bar).
+        fn changes(&self, mail: &MailView) -> Option<Request> {
+            let (changed_name, changed_signature) = self.changed(mail);
             if changed_name.is_none() && changed_signature.is_none() {
                 return None;
             }
@@ -354,16 +437,48 @@ pub mod accounts {
                             .unwrap_or_else(|| backup::State::from_preferences(&mail.settings.backup));
                     }
                     state.draft = Some(Draft::new(&id, mail));
-                    state.folders_expanded = false;
+                    state.tab = Tab::Overview;
+                    state.more = false;
                 }
                 Action::None
             }
             Message::Back => {
                 state.draft = None;
+                state.more = false;
                 Action::None
             }
-            Message::ToggleFolders => {
-                state.folders_expanded = !state.folders_expanded;
+            // A tab only changes what the page shows; nothing goes to the daemon.
+            Message::Tab(index) => {
+                state.tab = Tab::at(index);
+                state.more = false;
+                Action::None
+            }
+            Message::Sync => {
+                state.more = false;
+                Action::send(Request::Sync)
+            }
+            Message::More => {
+                state.more = !state.more;
+                Action::None
+            }
+            Message::CloseMore => {
+                state.more = false;
+                Action::None
+            }
+            Message::OpenStorage => {
+                state.more = false;
+                Action::Open("storage")
+            }
+            Message::ServerSettings => {
+                state.more = false;
+                Action::ControlCentre("accounts".to_string())
+            }
+            Message::Discard => {
+                if let Some(draft) = &state.draft
+                    && let Some(mail) = mail_of(data, &draft.account)
+                {
+                    state.draft = Some(Draft::new(&draft.account, mail));
+                }
                 Action::None
             }
             Message::SenderName(name) => {
@@ -471,8 +586,15 @@ pub mod accounts {
             Some((draft, mail)) => {
                 let label = account_label(data, &draft.account);
                 let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
-                Page::new(account_page(draft, mail, stats, state.folders_expanded, &state.backup))
-                    .sub_page(label, Message::Back)
+                let page = Page::new(account_page(state, draft, mail, stats)).sub_page(label, Message::Back);
+                // A page that does not save itself: the bar stands while the name or the signature
+                // differs from what is stored, on every tab.
+                match draft.summary(mail) {
+                    Some(summary) => {
+                        page.save_bar(widgets::save_bar(summary, Some(Message::Discard), Some(Message::Save), false))
+                    }
+                    None => page,
+                }
             }
             None => Page::new(list(data)),
         }
@@ -507,127 +629,439 @@ pub mod accounts {
         widgets::group(tr("Accounts"), rows, Some(footer.to_string()))
     }
 
-    /// One account's page: sender name and signature with "Save", how new mail is written, and the
-    /// folder questions the server left open.
+    /// One account's page (task DS.6): the head with the address, how it syncs and "Sync now", the
+    /// tabs, and the tab that is open.
     fn account_page<'a>(
+        state: &'a State,
         draft: &'a Draft,
         mail: &'a MailView,
         stats: Option<&'a MailAccountStats>,
-        folders_expanded: bool,
-        backup_state: &'a backup::State,
     ) -> Element<'a, Message> {
-        let mut page =
-            column![inventory_group(stats, folders_expanded), sender_groups(draft, mail), writing_group(mail)]
-                .spacing(layout::section_gap());
-        if !mail.open_roles.is_empty() {
-            page = page.push(folders_group(&mail.open_roles));
-        }
-        page = page.push(backup::view(backup_state, &draft.account).map(Message::Backup));
-        page.into()
+        let now = Utc::now();
+        let labels = Tab::ALL
+            .iter()
+            .map(|tab| {
+                let count = (*tab == Tab::Folders).then(|| stats.map(|stats| stats.folders.len() as u64)).flatten();
+                (tab.label().to_string(), count)
+            })
+            .collect();
+        let body = match state.tab {
+            Tab::Overview => overview(mail, stats, now),
+            Tab::Writing => writing(draft, mail),
+            Tab::Folders => folders(mail, stats),
+            Tab::Backup => backup::view(&state.backup, &draft.account).map(Message::Backup),
+        };
+        column![head(state, mail, stats, now), widgets::tabs(labels, state.tab.index(), Message::Tab), body]
+            .spacing(layout::section_gap())
+            .into()
     }
 
-    /// The inventory comes entirely from the core; the sidebar's category badges count only
-    /// unread messages and are intentionally not reused as account totals here.
-    fn inventory_group(stats: Option<&MailAccountStats>, folders_expanded: bool) -> Element<'_, Message> {
-        let Some(stats) = stats else {
-            return widgets::group(
-                tr("Mailbox inventory"),
-                vec![row_frame(typo::text(typo::body(), tr("Statistics are not available yet.")), false)],
-                Some(tr("The mail service supplies these numbers from its local store.").to_string()),
-            );
-        };
-        let mut rows = vec![
-            inventory_row(tr("Known mail"), format_count(stats.messages), None),
-            inventory_row(tr("Read"), format_count(stats.read), None),
-            inventory_row(tr("Unread"), format_count(stats.unread), None),
-            inventory_row(tr("Folders"), format_count(stats.folders.len() as u64), None),
-            inventory_row(tr("Oldest known mail"), format_date(stats.oldest_known), None),
-            inventory_row(tr("Newest known mail"), format_date(stats.newest_known), None),
-            inventory_row(tr("Mail texts on this device"), format_count(stats.cached_bodies), None),
-            inventory_row(tr("Fully indexed"), format_count(stats.indexed_full), None),
-            inventory_row(tr("Partial or unverified index"), format_count(stats.indexed_partial_or_unverified), None),
-            inventory_row(tr("Text unavailable"), format_count(stats.text_unavailable), None),
-            inventory_row(tr("Awaiting indexing"), format_count(stats.awaiting_index), None),
-            inventory_row(tr("Local database"), format_bytes(stats.database_bytes), None),
-            inventory_row(
-                tr("Cached attachments"),
-                format_count(stats.cached_attachments),
-                stats.attachment_cache_bytes.map(format_bytes),
-            ),
-            inventory_row(tr("Last mail sync"), format_date(stats.last_sync), stats.sync_problem.clone()),
-        ];
-        let folder_button = widgets::text_button(
-            None,
-            if folders_expanded { tr("Hide folders") } else { tr("Show folders") },
-            style::button::secondary,
-            Some(Message::ToggleFolders),
-        );
-        rows.push(row_frame(row![blank::horizontal(), folder_button], false));
-        if folders_expanded {
-            for folder in &stats.folders {
-                let counts = torro_core::i18n::trf(
-                    "{unread} unread of {total}",
-                    &[("unread", &folder.folder.unread), ("total", &folder.folder.total)],
-                );
-                rows.push(inventory_row(
-                    folder.folder.name.as_str(),
-                    counts,
-                    folder.oldest_known.map(format_date_value),
-                ));
-            }
+    /// The sync problem of the account: what the account says, else what the statistics say.
+    fn sync_problem<'a>(mail: &'a MailView, stats: Option<&'a MailAccountStats>) -> Option<&'a str> {
+        mail.mail.problem.as_deref().or_else(|| stats.and_then(|stats| stats.sync_problem.as_deref()))
+    }
+
+    /// The head: letter tile, address, "Name · IMAP host:port · SMTP host:port", how the last sync
+    /// went, "Sync now" and the "…" with Storage & index and the server settings.
+    fn head<'a>(
+        state: &'a State,
+        mail: &'a MailView,
+        stats: Option<&'a MailAccountStats>,
+        now: DateTime<Utc>,
+    ) -> Element<'a, Message> {
+        let mut meta = Vec::new();
+        if !mail.sender_name.trim().is_empty() {
+            meta.push(mail.sender_name.trim().to_string());
         }
-        widgets::group(
-            tr("Mailbox inventory"),
-            rows,
-            Some(tr("Local known counts across all folders, including read mail. Server totals are not yet verified; dates are the oldest and newest known locally. Sidebar category badges count unread mail only.").to_string()),
+        let server = |host: &str, port: u16| format!("{host}:{port}");
+        meta.push(trf("IMAP {server}", &[("server", &server(&mail.imap.host, mail.imap.port))]));
+        meta.push(trf("SMTP {server}", &[("server", &server(&mail.smtp.host, mail.smtp.port))]));
+        let last_sync = mail.mail.last_sync.or_else(|| stats.and_then(|stats| stats.last_sync));
+        let status = match (sync_problem(mail, stats), last_sync) {
+            (Some(_), _) => Some((Status::Error, tr("Sync problem").to_string())),
+            (None, Some(at)) => Some((Status::Ok, trf("Synced {when}", &[("when", &format_moment(at, now))]))),
+            (None, None) => None,
+        };
+        let sync = PageAction::new(tr("Sync now"), Some(Message::Sync))
+            .icon(Icon::RefreshCw)
+            .tip(tr("Syncs all accounts, not only this one"));
+        let actions = HeadActions { action: Some(sync), more: Some((state.more_anchor.clone(), Message::More)) };
+        widgets::detail_head(TileFace::letter(&mail.address), mail.address.clone(), meta.join(" · "), status, actions)
+    }
+
+    /// The menu of the head's "…" while it is open.
+    pub(super) fn overlay(state: &State) -> Option<Element<'_, Message>> {
+        if !state.more || state.draft.is_none() {
+            return None;
+        }
+        let items = vec![
+            MenuItem::new(Icon::Archive, tr("Storage & index"), Message::OpenStorage),
+            MenuItem::new(Icon::Settings, tr("Server settings"), Message::ServerSettings)
+                .trail(Trail::Icon(Icon::ArrowUpRight)),
+        ];
+        let menu = widgets::menu(vec![MenuSection::new(items)]);
+        Some(widgets::floating(&state.more_anchor, Placement::Below(Align::End), menu, Message::CloseMore))
+    }
+
+    /// Escape closes the head's "…" menu while it is open.
+    pub(super) fn escape(state: &State) -> Option<Message> {
+        state.more.then_some(Message::CloseMore)
+    }
+
+    /// The tab "Overview": the open questions, the figures, storage, mail over time, the search
+    /// index and the largest folders.
+    fn overview<'a>(
+        mail: &'a MailView,
+        stats: Option<&'a MailAccountStats>,
+        now: DateTime<Utc>,
+    ) -> Element<'a, Message> {
+        let mut page = column![].spacing(layout::section_gap());
+        let mut questions: Vec<Element<'a, Message>> = mail
+            .open_roles
+            .iter()
+            .map(|open| {
+                let choose = PageAction::new(tr("Choose folders"), Some(Message::Tab(Tab::Folders.index())));
+                widgets::question_card(Icon::Folder, role_question(open.role), tr(ROLE_DETAIL), vec![choose])
+            })
+            .collect();
+        if let Some(problem) = sync_problem(mail, stats) {
+            let settings = PageAction::new(tr("Server settings"), Some(Message::ServerSettings));
+            questions.push(widgets::question_card(
+                Icon::CircleAlert,
+                tr("The last sync failed"),
+                problem.to_string(),
+                vec![settings],
+            ));
+        }
+        if !questions.is_empty() {
+            page = page.push(column(questions).spacing(size::card_gap()));
+        }
+        let Some(stats) = stats else { return page.push(no_statistics()).into() };
+        page.push(widgets::stat_grid(figures(stats)))
+            .push(storage_card(stats))
+            .push(time_card(stats, now))
+            .push(index_card(stats, now))
+            .push(largest_card(stats))
+            .into()
+    }
+
+    /// What stands where the numbers would before the mail service has them.
+    fn no_statistics<'a>() -> Element<'a, Message> {
+        widgets::empty_state(
+            tr("Statistics are not available yet."),
+            tr("The mail service supplies these numbers from its local store."),
         )
     }
 
-    fn inventory_row<'a>(label: impl IntoFragment<'a>, value: String, detail: Option<String>) -> Element<'a, Message> {
-        setting_row(None, label, detail, typo::text(typo::body_strong(), value))
-    }
+    /// The sentence under the question for a folder role.
+    const ROLE_DETAIL: &str = "The server has more than one folder that could hold it. Your choice is remembered.";
 
-    fn format_date(date: Option<chrono::DateTime<chrono::Utc>>) -> String {
-        date.map_or_else(|| tr("Not known").to_string(), format_date_value)
-    }
-
-    fn format_date_value(date: chrono::DateTime<chrono::Utc>) -> String {
-        format_moment(date, chrono::Utc::now())
-    }
-
-    /// Sender name and signature, and "Save" under them: it is on only while they differ from what
-    /// is stored, and Enter in the name works like it.
-    fn sender_groups<'a>(draft: &'a Draft, mail: &MailView) -> Element<'a, Message> {
-        let dirty = draft.changes(mail).is_some();
-        let name = field("Anna Example", &draft.sender_name)
-            .on_input(Message::SenderName)
-            .on_submit_maybe(dirty.then_some(Message::Save));
-        let signature = text_editor(&draft.signature)
-            .on_action(Message::Signature)
-            .font(typo::body().font)
-            .size(typo::body().size)
-            .line_height(typo::body().line_height)
-            .padding(style::INPUT_PADDING)
-            .wrapping(Wrapping::WordOrGlyph)
-            .height(signature_height())
-            .style(style::text_editor);
-        let save_style: widgets::ButtonStyle = if dirty { style::button::primary } else { style::button::secondary };
-        let save = widgets::text_button(None, tr("Save"), save_style, dirty.then_some(Message::Save));
-        let groups = column![
-            widgets::group(
-                tr("Sender name"),
-                vec![row_frame(name, false)],
-                Some(tr("Shown next to your address in the mail you send. Optional.").to_string()),
+    /// The four figures of the overview: mail, on the server, on this device, searchable.
+    pub(super) fn figures(stats: &MailAccountStats) -> Vec<StatFigure> {
+        vec![
+            StatFigure::new(
+                tr("Mail"),
+                format_count(stats.messages),
+                trf("{n} unread", &[("n", &format_count(stats.unread))]),
             ),
-            widgets::group(
-                tr("Signature"),
-                vec![container(signature).width(Fill).padding([space::s(), space::l()]).into()],
-                Some(tr("Added under new mail, replies and forwards.").to_string()),
+            server_figure(stats),
+            StatFigure::new(
+                tr("On this device"),
+                format_bytes(stats.database_bytes),
+                trf("{n} texts offline", &[("n", &format_count(stats.cached_bodies))]),
+            ),
+            StatFigure::new(
+                tr("Searchable"),
+                widgets::share_percent(stats.indexed_full, stats.messages),
+                trf("{n} with full text", &[("n", &format_count(stats.indexed_full))]),
             ),
         ]
-        .spacing(layout::section_gap());
-        // "Save" belongs to both groups, so it sits close under them.
-        column![groups, row![blank::horizontal(), save]].spacing(space::m()).into()
+    }
+
+    /// "On the server": the quota with its limit where the server tells it, else the sum of the
+    /// folders' sizes without "of …" (decided in the planning of #314).
+    pub(super) fn server_figure(stats: &MailAccountStats) -> StatFigure {
+        let label = tr("On the server");
+        if let Some(quota) = &stats.quota {
+            let note = trf(
+                "of {total} · {share}",
+                &[
+                    ("total", &format_bytes(quota.limit_bytes)),
+                    ("share", &widgets::share_percent(quota.used_bytes, quota.limit_bytes)),
+                ],
+            );
+            return StatFigure::new(label, format_bytes(quota.used_bytes), note);
+        }
+        let known: Vec<u64> = stats.folders.iter().filter_map(|folder| folder.server_bytes).collect();
+        if known.is_empty() {
+            return StatFigure::new(label, UNKNOWN, tr("Sizes come with the next sync"));
+        }
+        let note = if known.len() < stats.folders.len() {
+            tr("Some sizes come with the next sync").to_string()
+        } else {
+            trf("in {n} folders", &[("n", &known.len())])
+        };
+        StatFigure::new(label, format_bytes(known.iter().sum()), note)
+    }
+
+    /// What a cell shows for a value that is not known yet.
+    const UNKNOWN: &str = "–";
+
+    /// The server's strip: the three largest folders, then "{n} other folders", and the free room
+    /// of the quota. The three keep the first three colours in their order: what the strip shows
+    /// is which folders are largest.
+    pub(super) fn server_parts(stats: &MailAccountStats) -> (Vec<SharePart>, Option<(String, u64)>) {
+        let mut sized: Vec<(&str, u64)> = stats
+            .folders
+            .iter()
+            .filter_map(|folder| Some((folder.folder.name.as_str(), folder.server_bytes?)))
+            .collect();
+        sized.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
+        let shown = sized.len().min(LARGEST_IN_STRIP);
+        let mut parts: Vec<SharePart> = sized[..shown]
+            .iter()
+            .enumerate()
+            .map(|(slot, (name, bytes))| SharePart::new(*name, *bytes, format_bytes(*bytes), ChartColor::Series(slot)))
+            .collect();
+        let others = &sized[shown..];
+        if !others.is_empty() {
+            let bytes = others.iter().map(|(_, bytes)| bytes).sum();
+            let label = match others.len() {
+                1 => tr("1 other folder").to_string(),
+                n => trf("{n} other folders", &[("n", &n)]),
+            };
+            parts.push(SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Other));
+        }
+        let free = stats
+            .quota
+            .as_ref()
+            .map(|quota| (tr("Free").to_string(), quota.limit_bytes.saturating_sub(quota.used_bytes)));
+        (parts, free)
+    }
+
+    /// How many folders the server's strip names before the rest is "other folders".
+    const LARGEST_IN_STRIP: usize = 3;
+
+    /// The device's strip: search index, mail texts, originals and the rest of the database; never
+    /// below 0. Without the size of the index the rest says that it holds the index too.
+    pub(super) fn device_parts(stats: &MailAccountStats) -> Vec<SharePart> {
+        let part =
+            |label: &str, bytes: u64, slot| SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Series(slot));
+        let mut parts = Vec::new();
+        if let Some(index) = stats.search_index_bytes {
+            parts.push(part(tr("Search index"), index, 0));
+        }
+        parts.push(part(tr("Mail texts"), stats.body_cache_bytes, 1));
+        parts.push(part(tr("Originals"), stats.original_bytes, 2));
+        let counted = stats.search_index_bytes.unwrap_or(0) + stats.body_cache_bytes + stats.original_bytes;
+        let rest = stats.database_bytes.saturating_sub(counted);
+        let label =
+            if stats.search_index_bytes.is_some() { tr("Headers & folders") } else { tr("Index, headers & folders") };
+        parts.push(part(label, rest, 3));
+        parts
+    }
+
+    /// "Storage": the server and the device as strips, the attachments under them, and the way to
+    /// the page that manages them.
+    fn storage_card<'a>(stats: &MailAccountStats) -> Element<'a, Message> {
+        let caption = |text: &'static str| typo::text(typo::caption(), text).style(theme::text_3);
+        let (server, free) = server_parts(stats);
+        let server: Element<'a, Message> = if server.is_empty() && free.is_none() {
+            typo::text(typo::meta(), tr("Sizes on the server come with the next sync.")).style(theme::text_2).into()
+        } else {
+            widgets::share_strip(server, free)
+        };
+        let mut body = column![
+            column![caption(tr("On the server")), server].spacing(space::s()),
+            column![caption(tr("On this device")), widgets::share_strip(device_parts(stats), None)].spacing(space::s()),
+        ]
+        .spacing(space::l());
+        if stats.cached_attachments > 0 {
+            let attachments = trf(
+                "Attachments on this device: {n} · {size}",
+                &[
+                    ("n", &format_count(stats.cached_attachments)),
+                    ("size", &format_bytes(stats.attachment_cache_bytes.unwrap_or(0))),
+                ],
+            );
+            body = body.push(typo::text(typo::meta(), attachments).style(theme::text_2));
+        }
+        let manage = widgets::text_button(
+            None,
+            tr("Manage in Storage & index"),
+            style::button::ghost,
+            Some(Message::OpenStorage),
+        );
+        widgets::chart_card(tr("Storage"), "", body.push(manage))
+    }
+
+    /// "Mail over time": the mail per year – per month when it all lies within two years –, readable
+    /// offline or headers only, then the oldest and newest mail and the offline window.
+    fn time_card<'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Element<'a, Message> {
+        let mut body = column![].spacing(space::m());
+        let columns = time_columns(&stats.months);
+        if columns.is_empty() {
+            body = body.push(typo::text(typo::meta(), tr("No mail yet.")).style(theme::text_2));
+        } else {
+            let series = vec![
+                ChartSeries { name: tr("Readable offline").to_string(), color: ChartColor::Series(0) },
+                ChartSeries { name: tr("Headers only").to_string(), color: ChartColor::Series(1) },
+            ];
+            body = body.push(widgets::chart_legend(&series)).push(widgets::column_chart(series, columns));
+        }
+        let moment =
+            |at: Option<DateTime<Utc>>| at.map_or_else(|| tr("Not known").to_string(), |at| format_moment(at, now));
+        let range = trf(
+            "Oldest {oldest} · newest {newest}",
+            &[("oldest", &moment(stats.oldest_known)), ("newest", &moment(stats.newest_known))],
+        );
+        body = body.push(dated(typo::text(typo::meta(), range).style(theme::text_2), stats.oldest_known));
+        let window = match stats.oldest_cached_body {
+            Some(at) => trf("Readable offline from {moment}", &[("moment", &format_moment(at, now))]),
+            None => tr("No mail texts on this device yet.").to_string(),
+        };
+        let change = widgets::text_button(None, tr("Change"), style::button::ghost, Some(Message::OpenStorage));
+        let window = row![
+            dated(typo::text(typo::meta(), window).style(theme::text_2), stats.oldest_cached_body),
+            blank::horizontal(),
+            change
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        widgets::chart_card(tr("Mail over time"), "", body.push(window))
+    }
+
+    /// `content` with the exact moment `at` as its tooltip, when there is one.
+    fn dated<'a>(content: impl Into<Element<'a, Message>>, at: Option<DateTime<Utc>>) -> Element<'a, Message> {
+        match at {
+            Some(at) => widgets::with_tooltip(content, format_exact(at)),
+            None => content.into(),
+        }
+    }
+
+    /// The columns of "Mail over time": one per year from the first to the last with mail, or one per
+    /// month when they all lie within two years; gaps count as 0.
+    pub(super) fn time_columns(months: &[MailMonthCount]) -> Vec<ChartColumn> {
+        let (Some(first), Some(last)) =
+            (months.iter().min_by_key(|m| (m.year, m.month)), months.iter().max_by_key(|m| (m.year, m.month)))
+        else {
+            return Vec::new();
+        };
+        let values = |count: (u64, u64)| {
+            let offline = u32::try_from(count.1).unwrap_or(u32::MAX);
+            let headers = u32::try_from(count.0.saturating_sub(count.1)).unwrap_or(u32::MAX);
+            vec![offline, headers]
+        };
+        if last.year - first.year <= 1 {
+            let mut columns = Vec::new();
+            let (mut year, mut month) = (first.year, first.month);
+            while (year, month) <= (last.year, last.month) {
+                let count = months
+                    .iter()
+                    .filter(|m| m.year == year && m.month == month)
+                    .fold((0, 0), |sum, m| (sum.0 + m.messages, sum.1 + m.cached_bodies));
+                columns.push(ChartColumn {
+                    label: month_name_short(month).to_string(),
+                    title: trf("{month} {year}", &[("month", &month_name(month)), ("year", &year)]),
+                    values: values(count),
+                });
+                (year, month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+            }
+            return columns;
+        }
+        (first.year..=last.year)
+            .map(|year| {
+                let count = months
+                    .iter()
+                    .filter(|m| m.year == year)
+                    .fold((0, 0), |sum, m| (sum.0 + m.messages, sum.1 + m.cached_bodies));
+                ChartColumn { label: year.to_string(), title: year.to_string(), values: values(count) }
+            })
+            .collect()
+    }
+
+    /// "Search index": how far the mail is searchable, and when the index last ran.
+    fn index_card<'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Element<'a, Message> {
+        let part = |label: &str, count: u64, colour| SharePart::new(label, count, format_count(count), colour);
+        let parts = vec![
+            part(tr("Full text"), stats.indexed_full, ChartColor::Series(0)),
+            part(tr("Partial or unverified"), stats.indexed_partial_or_unverified, ChartColor::Series(1)),
+            part(tr("Awaiting"), stats.awaiting_index, ChartColor::Series(2)),
+            part(tr("Text unavailable"), stats.text_unavailable, ChartColor::Series(3)),
+        ];
+        let note = stats
+            .last_index_run
+            .map_or_else(String::new, |at| trf("Last run {moment}", &[("moment", &format_moment(at, now))]));
+        widgets::chart_card(tr("Search index"), note, widgets::share_strip(parts, None))
+    }
+
+    /// "Largest folders": the five largest as a table, and the way to all of them.
+    fn largest_card<'a>(stats: &MailAccountStats) -> Element<'a, Message> {
+        let mut folders: Vec<&MailFolderStats> = stats.folders.iter().collect();
+        folders.sort_by(|a, b| {
+            (b.server_bytes.unwrap_or(0), b.folder.total).cmp(&(a.server_bytes.unwrap_or(0), a.folder.total))
+        });
+        let rows = folders
+            .iter()
+            .take(LARGEST_IN_TABLE)
+            .map(|folder| {
+                vec![
+                    folder.folder.name.clone(),
+                    format_count(u64::from(folder.folder.total)),
+                    format_count(u64::from(folder.folder.unread)),
+                    widgets::share_percent(u64::from(folder.folder.total), stats.messages),
+                    folder.server_bytes.map_or_else(|| UNKNOWN.to_string(), format_bytes),
+                ]
+            })
+            .collect();
+        let head = [tr("Folder"), tr("Mail"), tr("Unread"), tr("Share"), tr("On server")].map(str::to_string).to_vec();
+        let all = widgets::text_button(
+            None,
+            trf("All {n} folders", &[("n", &stats.folders.len())]),
+            style::button::ghost,
+            Some(Message::Tab(Tab::Folders.index())),
+        );
+        let body = column![widgets::data_table(head, rows, None), all].spacing(space::s());
+        widgets::chart_card(tr("Largest folders"), "", body)
+    }
+
+    /// How many folders the overview's table shows.
+    const LARGEST_IN_TABLE: usize = 5;
+
+    /// The tab "Writing": sender name, signature and "Write new mail as" as pairs with what they are
+    /// for. Name and signature save through the save bar; the format is sent at once.
+    fn writing<'a>(draft: &'a Draft, mail: &'a MailView) -> Element<'a, Message> {
+        let dirty = draft.changes(mail).is_some();
+        let name = widgets::setting_pair(
+            tr("Sender name"),
+            tr("Shown next to your address in the mail you send. Optional."),
+            move || {
+                field("Anna Example", &draft.sender_name)
+                    .on_input(Message::SenderName)
+                    .on_submit_maybe(dirty.then_some(Message::Save))
+                    .into()
+            },
+        );
+        let signature =
+            widgets::setting_pair(tr("Signature"), tr("Added under new mail, replies and forwards."), move || {
+                text_editor(&draft.signature)
+                    .on_action(Message::Signature)
+                    .font(typo::body().font)
+                    .size(typo::body().size)
+                    .line_height(typo::body().line_height)
+                    .padding(style::INPUT_PADDING)
+                    .wrapping(Wrapping::WordOrGlyph)
+                    .height(signature_height())
+                    .style(style::text_editor)
+                    .into()
+            });
+        let format = mail.settings.format;
+        let format = widgets::setting_pair(
+            tr("Write new mail as"),
+            tr("Formatted mail can hold bold text, lists, links and quotes; a plain text copy goes along."),
+            move || picker(FORMAT_CHOICES, FormatChoice(format), |choice: FormatChoice| Message::Format(choice.0)),
+        );
+        widgets::setting_pairs(vec![name, signature, format])
     }
 
     /// The room of the signature field: four lines of text and the padding of a field.
@@ -637,42 +1071,93 @@ pub mod accounts {
         SIGNATURE_LINES * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
     }
 
-    /// "Write new mail as": formatted (HTML with a plain text copy) or plain text (issue #125).
-    fn writing_group(mail: &MailView) -> Element<'_, Message> {
-        let choice = picker(FORMAT_CHOICES, FormatChoice(mail.settings.format), |choice: FormatChoice| {
-            Message::Format(choice.0)
-        });
-        let row = setting_row(None, tr("Write new mail as"), None, choice);
-        let footer = tr("Formatted mail can hold bold text, lists, links and quotes; a plain text copy goes along.");
-        widgets::group(tr("Writing"), vec![row], Some(footer.to_string()))
+    /// The tab "Folders": the roles the server left open, one press picks (task M5.2), then every
+    /// folder with its numbers and a total.
+    fn folders<'a>(mail: &'a MailView, stats: Option<&'a MailAccountStats>) -> Element<'a, Message> {
+        let mut page = column![].spacing(layout::section_gap());
+        let questions: Vec<Element<'a, Message>> = mail.open_roles.iter().map(role_card).collect();
+        if !questions.is_empty() {
+            page = page.push(column(questions).spacing(size::card_gap()));
+        }
+        let Some(stats) = stats else { return page.push(no_statistics()).into() };
+        // Narrower than a form the seven columns would run into each other: then only the name,
+        // the counts and the size on the server.
+        let grid = iced::widget::responsive(move |room| {
+            let (head, rows, total) = folder_table(stats);
+            let keep = |cells: Vec<String>| -> Vec<String> {
+                if room.width >= size::form_max() {
+                    return cells;
+                }
+                cells.into_iter().enumerate().filter(|(i, _)| NARROW_COLUMNS.contains(i)).map(|(_, c)| c).collect()
+            };
+            widgets::data_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
+        })
+        .height(iced::Length::Shrink);
+        let mut table = column![grid].spacing(space::s());
+        if stats.folders.iter().any(|folder| folder.server_bytes.is_none()) {
+            let later = tr("Sizes on the server come with the next sync.");
+            table = table.push(typo::text(typo::meta(), later).style(theme::text_2));
+        }
+        page.push(table).into()
     }
 
-    /// The question for each role the server left open, with the folders it could be: one press
-    /// picks (task M5.2).
-    fn folders_group(roles: &[OpenRoleView]) -> Element<'_, Message> {
-        let mut rows = Vec::new();
-        for open in roles {
-            let question = typo::text(typo::body_strong(), role_question(open.role));
-            rows.push(container(question).width(Fill).padding([space::m(), space::l()]).into());
-            for folder in &open.candidates {
-                let pick = widgets::text_button(
-                    None,
-                    tr("Use this folder"),
-                    style::button::secondary,
-                    Some(Message::PickFolder { role: open.role, path: folder.path.clone() }),
-                );
-                let lines = column![
-                    widgets::ellipsized(typo::body(), folder.name.as_str(), torro_gui::theme::text),
-                    widgets::ellipsized(typo::meta(), folder.path.as_str(), torro_gui::theme::text_2),
-                ];
-                rows.push(row_frame(
-                    row![lines.width(Fill), pick].spacing(space::l()).align_y(Alignment::Center),
-                    true,
-                ));
-            }
-        }
-        let footer = tr("The server has more than one folder that could hold it. Your choice is remembered.");
-        widgets::group(tr("Folders"), rows, Some(footer.to_string()))
+    /// The question for a role the server left open, with one button per folder it could be.
+    fn role_card(open: &OpenRoleView) -> Element<'_, Message> {
+        let picks = open
+            .candidates
+            .iter()
+            .map(|folder| {
+                let pick = Message::PickFolder { role: open.role, path: folder.path.clone() };
+                PageAction::new(trf("Use {folder}", &[("folder", &folder.name)]), Some(pick)).tip(folder.path.clone())
+            })
+            .collect();
+        widgets::question_card(Icon::Folder, role_question(open.role), tr(ROLE_DETAIL), picks)
+    }
+
+    /// The columns of the folder table that a narrow page keeps: folder, mail, unread, on server.
+    const NARROW_COLUMNS: [usize; 4] = [0, 1, 2, 5];
+
+    /// The table of the tab "Folders": head, one row per folder, and the total.
+    pub(super) fn folder_table(stats: &MailAccountStats) -> (Vec<String>, Vec<Vec<String>>, Vec<String>) {
+        let head = [
+            tr("Folder"),
+            tr("Mail"),
+            tr("Unread"),
+            tr("Offline texts"),
+            tr("Indexed"),
+            tr("On server"),
+            tr("Originals"),
+        ]
+        .map(str::to_string)
+        .to_vec();
+        let size = |bytes: Option<u64>| bytes.map_or_else(|| UNKNOWN.to_string(), format_bytes);
+        let rows = stats
+            .folders
+            .iter()
+            .map(|folder| {
+                vec![
+                    folder.folder.name.clone(),
+                    format_count(u64::from(folder.folder.total)),
+                    format_count(u64::from(folder.folder.unread)),
+                    format_count(folder.cached_bodies),
+                    format_count(folder.indexed_full),
+                    size(folder.server_bytes),
+                    format_bytes(folder.original_bytes),
+                ]
+            })
+            .collect();
+        let server: Option<u64> = stats.folders.iter().map(|folder| folder.server_bytes).sum();
+        let sum = |value: fn(&MailFolderStats) -> u64| stats.folders.iter().map(value).sum::<u64>();
+        let total = vec![
+            tr("All folders").to_string(),
+            format_count(sum(|f| u64::from(f.folder.total))),
+            format_count(sum(|f| u64::from(f.folder.unread))),
+            format_count(sum(|f| f.cached_bodies)),
+            format_count(sum(|f| f.indexed_full)),
+            size(server),
+            format_bytes(sum(|f| f.original_bytes)),
+        ];
+        (head, rows, total)
     }
 
     /// The question that goes with a folder role the server left open.
@@ -838,6 +1323,189 @@ pub mod accounts {
             // An account the data does not hold opens no page and no draft.
             let _: Action<()> = update(&mut state, Message::Open("mail:gone@example.org".into()), &data);
             assert!(page(&state, &data).sub_page.is_none(), "back to the list");
+        }
+
+        /// The statistics of `anna@example.org` with one folder per `(name, total, unread, server
+        /// bytes)`, and a quota of `(used, limit)` when given.
+        pub(in crate::mail) fn stats(
+            folders: &[(&str, u32, u32, Option<u64>)],
+            quota: Option<(u64, u64)>,
+        ) -> MailAccountStats {
+            let folders: Vec<serde_json::Value> = folders
+                .iter()
+                .map(|(name, total, unread, server_bytes)| {
+                    serde_json::json!({
+                        "folder": {"id": format!("f:{name}"), "account": "mail:anna@example.org", "name": name,
+                                   "path": name, "unread": unread, "total": total},
+                        "read": total - unread, "oldest_known": null, "newest_known": null, "cached_bodies": 1,
+                        "indexed_full": 1, "indexed_partial_or_unverified": 0, "text_unavailable": 0,
+                        "awaiting_index": 0, "server_bytes": server_bytes
+                    })
+                })
+                .collect();
+            let quota = quota.map(|(used, limit)| {
+                serde_json::json!({"used_bytes": used, "limit_bytes": limit, "checked": "2026-10-26T12:00:00Z"})
+            });
+            serde_json::from_value(serde_json::json!({
+                "account": "mail:anna@example.org", "folders": folders, "messages": 40, "read": 30, "unread": 10,
+                "oldest_known": "2020-10-05T09:00:00Z", "newest_known": "2026-10-26T08:00:00Z",
+                "cached_bodies": 20, "indexed_full": 30, "indexed_partial_or_unverified": 4,
+                "text_unavailable": 1, "awaiting_index": 5, "database_bytes": 1_048_576,
+                "body_cache_bytes": 262_144, "search_index_bytes": 131_072, "cached_attachments": 2,
+                "attachment_cache_bytes": 4096, "last_sync": "2026-10-26T08:00:00Z", "sync_problem": null,
+                "quota": quota,
+                "months": [{"year": 2025, "month": 11, "messages": 10, "cached_bodies": 2},
+                           {"year": 2026, "month": 2, "messages": 30, "cached_bodies": 18}]
+            }))
+            .expect("statistics")
+        }
+
+        fn opened(data: &Data) -> State {
+            let mut state = State::default();
+            let _: Action<()> = update(&mut state, Message::Open("mail:anna@example.org".into()), data);
+            state
+        }
+
+        /// A tab only changes what the page shows: nothing goes to the daemon, and every tab builds
+        /// with and without statistics.
+        #[test]
+        fn a_tab_sends_nothing_and_every_tab_builds() {
+            let mut with = data();
+            with.mail_stats = vec![stats(&[("INBOX", 30, 8, Some(4096)), ("Sent", 10, 2, None)], None)];
+            for data in [data(), with] {
+                let mut state = opened(&data);
+                for tab in Tab::ALL {
+                    let action: Action<()> = update(&mut state, Message::Tab(tab.index()), &data);
+                    assert_eq!(action, Action::None, "{tab:?}");
+                    assert_eq!(state.tab, tab);
+                    let _ = page(&state, &data).body;
+                }
+            }
+        }
+
+        /// "Sync now" sends exactly `accounts.sync`.
+        #[test]
+        fn sync_now_sends_the_sync() {
+            let data = data();
+            let mut state = opened(&data);
+            let action: Action<()> = update(&mut state, Message::Sync, &data);
+            assert_eq!(action, Action::send(Request::Sync));
+        }
+
+        /// The save bar stands only while something is changed; "Discard" sends nothing and takes it
+        /// away.
+        #[test]
+        fn discard_sends_nothing_and_drops_the_change() {
+            let data = data();
+            let mut state = opened(&data);
+            assert!(page(&state, &data).save_bar.is_none(), "nothing changed");
+            let _: Action<()> = update(&mut state, Message::SenderName("Anna B.".into()), &data);
+            assert!(page(&state, &data).save_bar.is_some());
+            let action: Action<()> = update(&mut state, Message::Discard, &data);
+            assert_eq!(action, Action::None);
+            assert!(page(&state, &data).save_bar.is_none());
+            let nothing: Action<()> = update(&mut state, Message::Save, &data);
+            assert_eq!(nothing, Action::None, "the stored name is back");
+        }
+
+        /// "On the server" with a quota names its limit and share; without one it is the sum of the
+        /// folders, and without sizes it waits for the next sync.
+        #[test]
+        fn the_server_figure_with_and_without_a_quota() {
+            const GIB: u64 = 1024 * 1024 * 1024;
+            let quota = stats(&[("INBOX", 30, 8, Some(1024))], Some((GIB * 236 / 100, 10 * GIB)));
+            let figure = server_figure(&quota);
+            assert_eq!(figure.value, format_bytes(GIB * 236 / 100));
+            let share = widgets::share_percent(GIB * 236 / 100, 10 * GIB);
+            assert_eq!(
+                figure.note,
+                trf("of {total} · {share}", &[("total", &format_bytes(10 * GIB)), ("share", &share)])
+            );
+            let sum = server_figure(&stats(&[("INBOX", 30, 8, Some(3072)), ("Sent", 10, 2, Some(1024))], None));
+            assert_eq!((sum.value, sum.note), (format_bytes(4096), trf("in {n} folders", &[("n", &2)])));
+            let unknown = server_figure(&stats(&[("INBOX", 30, 8, None)], None));
+            assert_eq!(unknown.value, UNKNOWN);
+            let (parts, free) = server_parts(&quota);
+            assert_eq!(parts.len(), 1);
+            assert_eq!(free.map(|(_, bytes)| bytes), Some(10 * GIB - GIB * 236 / 100));
+            assert!(server_parts(&stats(&[("INBOX", 30, 8, Some(1))], None)).1.is_none(), "no quota, no free room");
+        }
+
+        /// The server's strip names the three largest folders and puts the rest together from the
+        /// fourth folder on.
+        #[test]
+        fn folders_past_the_third_become_other_folders() {
+            let folders = [("INBOX", 1, 0, Some(400)), ("Sent", 1, 0, Some(300)), ("Archive", 1, 0, Some(500))];
+            let (three, _) = server_parts(&stats(&folders, None));
+            assert_eq!(three.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["Archive", "INBOX", "Sent"]);
+            let mut four = folders.to_vec();
+            four.push(("Junk", 1, 0, Some(10)));
+            let (parts, _) = server_parts(&stats(&four, None));
+            assert_eq!(parts.len(), 4);
+            assert_eq!((parts[3].label.as_str(), parts[3].value), (tr("1 other folder"), 10));
+            assert_eq!(parts[3].color, ChartColor::Other);
+            four.push(("Trash", 1, 0, Some(20)));
+            let (parts, _) = server_parts(&stats(&four, None));
+            assert_eq!((parts[3].label.clone(), parts[3].value), (trf("{n} other folders", &[("n", &2)]), 30));
+        }
+
+        /// The device's strip never goes below 0 and names the rest by what it holds.
+        #[test]
+        fn the_device_strip_adds_up_to_the_database() {
+            let mut stats = stats(&[("INBOX", 30, 8, None)], None);
+            let parts = device_parts(&stats);
+            assert_eq!(parts.iter().map(|p| p.value).sum::<u64>(), stats.database_bytes);
+            assert_eq!(parts.last().map(|p| p.label.as_str()), Some(tr("Headers & folders")));
+            stats.search_index_bytes = None;
+            stats.database_bytes = 1;
+            let parts = device_parts(&stats);
+            assert_eq!(parts.last().map(|p| (p.label.as_str(), p.value)), Some((tr("Index, headers & folders"), 0)));
+        }
+
+        /// Mail over time is counted per month within two years, else per year, gaps as 0.
+        #[test]
+        fn mail_over_time_per_month_or_per_year() {
+            let month = |year, month, messages, cached_bodies| MailMonthCount { year, month, messages, cached_bodies };
+            let months = time_columns(&[month(2025, 11, 10, 2), month(2026, 2, 30, 18)]);
+            assert_eq!(months.len(), 4, "Nov, Dec, Jan, Feb");
+            assert_eq!(months[0].values, vec![2, 8]);
+            assert_eq!(months[1].values, vec![0, 0]);
+            let years = time_columns(&[month(2020, 3, 5, 0), month(2026, 2, 30, 18)]);
+            assert_eq!(
+                years.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+                ["2020", "2021", "2022", "2023", "2024", "2025", "2026"]
+            );
+            assert!(time_columns(&[]).is_empty());
+        }
+
+        /// The folder table has a total; a size the server has not told yet shows as unknown.
+        #[test]
+        fn the_folder_table_totals_its_columns() {
+            let (head, rows, total) =
+                folder_table(&stats(&[("INBOX", 30, 8, Some(4096)), ("Sent", 10, 2, None)], None));
+            assert_eq!(head.len(), 7);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[1][5], UNKNOWN);
+            assert_eq!(total[1], format_count(40));
+            assert_eq!(total[5], UNKNOWN, "not all sizes are known");
+            assert_eq!(figures(&stats(&[], None)).len(), 4);
+        }
+
+        /// The "…" menu opens and closes, and its entries lead to Storage & index and the control
+        /// centre.
+        #[test]
+        fn the_more_menu_leads_on() {
+            let data = data();
+            let mut state = opened(&data);
+            assert!(overlay(&state).is_none());
+            let _: Action<()> = update(&mut state, Message::More, &data);
+            assert!(overlay(&state).is_some());
+            assert!(matches!(escape(&state), Some(Message::CloseMore)));
+            let storage: Action<()> = update(&mut state, Message::OpenStorage, &data);
+            assert_eq!(storage, Action::Open("storage"));
+            assert!(overlay(&state).is_none());
+            let server: Action<()> = update(&mut state, Message::ServerSettings, &data);
+            assert_eq!(server, Action::ControlCentre("accounts".into()));
         }
 
         /// Every role has its question, and every page builds – with and without an account.

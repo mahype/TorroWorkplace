@@ -1415,6 +1415,15 @@ pub enum Open {
     BackupError,
     /// That page with a complete backup, its verified archive and a finished restore.
     BackupDone,
+    /// The mail window's settings at the first account's page, tab "Overview" (task DS.6); only with
+    /// `--view mail`.
+    Account,
+    /// That page at the tab "Folders": the open role and the whole table.
+    AccountFolders,
+    /// That page at the tab "Writing" with the sender name changed, so the save bar stands.
+    AccountWriting,
+    /// That page's overview with its open questions: the open folder role and the sync problem.
+    AccountQuestion,
     /// "With attachments" with the demo's invoice open (task M12.6) and the menu of its first
     /// attachment open at its triangle.
     AttachmentMenu,
@@ -1439,7 +1448,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 58] = [
+    const ALL: [(&'static str, Open); 62] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1490,6 +1499,10 @@ impl Open {
         ("backup-plan", Open::BackupPlan),
         ("backup-error", Open::BackupError),
         ("backup-done", Open::BackupDone),
+        ("account", Open::Account),
+        ("account-folders", Open::AccountFolders),
+        ("account-writing", Open::AccountWriting),
+        ("account-question", Open::AccountQuestion),
         ("attachment-menu", Open::AttachmentMenu),
         ("save-all-menu", Open::SaveAllMenu),
         ("attachment-saved", Open::AttachmentSaved),
@@ -1511,7 +1524,42 @@ impl Open {
             _ => None,
         }
     }
+
+    /// The tab of the account's page the account states open (task DS.6); `None` for every other
+    /// state.
+    fn account_scene(self) -> Option<AccountScene> {
+        match self {
+            Open::Account | Open::AccountQuestion => Some(AccountScene::Overview),
+            Open::AccountFolders => Some(AccountScene::Folders),
+            Open::AccountWriting => Some(AccountScene::Writing),
+            _ => None,
+        }
+    }
 }
+
+/// Where `--open account…` puts the first mail account's page (task DS.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountScene {
+    Overview,
+    Folders,
+    /// "Writing" with a changed sender name, so the save bar stands.
+    Writing,
+}
+
+impl AccountScene {
+    /// What the page is sent after it opened, as a person would click and type it.
+    fn messages(self) -> Vec<settings_mail::accounts::Message> {
+        use settings_mail::accounts::{Message as Account, Tab};
+        match self {
+            AccountScene::Overview => Vec::new(),
+            AccountScene::Folders => vec![Account::Tab(Tab::Folders.index())],
+            AccountScene::Writing => vec![Account::Tab(Tab::Writing.index()), Account::SenderName(DEMO_SENDER.into())],
+        }
+    }
+}
+
+/// The sender name `--open account-writing` types, which differs from the demo's stored one.
+const DEMO_SENDER: &str = "Anna B.";
 
 /// The start parameters of the window:
 ///
@@ -1860,6 +1908,9 @@ impl Launch {
         if open.and_then(Open::backup_scene).is_some() && kind != Kind::Mail {
             return Err(LaunchError::Conflict("--open backup…", "a --view other than mail"));
         }
+        if open.and_then(Open::account_scene).is_some() && kind != Kind::Mail {
+            return Err(LaunchError::Conflict("--open account…", "a --view other than mail"));
+        }
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         let settings = match flag_value(args, "--settings")? {
             None => None,
@@ -2171,6 +2222,7 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
     match pane.host.current().id {
         CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
         ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
+        settings_mail::ACCOUNTS_SECTION => settings_mail::accounts_escape(state).map(SettingsMessage::Mail),
         _ => None,
     }
 }
@@ -2278,6 +2330,9 @@ pub struct App<S> {
     /// The demo page of `--open backup…`, put on the first mail account once the settings have
     /// loaded the accounts.
     staged_backup: Option<settings_mail::BackupScene>,
+    /// The tab of `--open account…` (task DS.6), opened on the first mail account like a backup
+    /// state.
+    staged_account: Option<AccountScene>,
     /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
     launch: Launch,
     /// The one-time part of `launch.open` (opening a panel) has been done.
@@ -3377,6 +3432,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             settings: None,
             saved_mail_settings: None,
             staged_backup: open.and_then(Open::backup_scene),
+            staged_account: open.and_then(Open::account_scene),
             opened: false,
             categories: Vec::new(),
             open_groups: std::collections::BTreeSet::new(),
@@ -3565,7 +3621,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         ]);
         // `--settings <section>`: the window opens with the settings in its content area; the
         // backup states of `--open` at Accounts.
-        let section = app.launch.settings.clone().or_else(|| app.staged_backup.map(|_| "accounts".to_string()));
+        let staged = app.staged_backup.is_some() || app.staged_account.is_some();
+        let section =
+            app.launch.settings.clone().or_else(|| staged.then(|| settings_mail::ACCOUNTS_SECTION.to_string()));
         let task = match section {
             Some(section) => Task::batch([task, app.open_settings(Some(&section))]),
             None => task,
@@ -6022,6 +6080,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn settings_backend(&self) -> Arc<dyn SettingsBackend> {
         match &self.suite {
             Source::Core(client) => Arc::new(CoreSettings { socket: client.socket.clone() }),
+            // `--open account-question` (task DS.6): the account's page asks about a sync problem too.
+            Source::Demo(_) if self.launch.open == Some(Open::AccountQuestion) => {
+                let problem = trf("The {service} server refused the password.", &[("service", &"IMAP")]);
+                Arc::new(torro_settings_ui::demo::Demo::with_mail_problem(problem))
+            }
             Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
         }
     }
@@ -6054,18 +6117,25 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// `--open backup…`: once the settings have the accounts, the staged demo page goes on the first
     /// mail account and its page opens. Only once; going back to the list afterwards stays there.
+    /// The account states (`--open account…`, task DS.6) open the page the same way and then its tab.
     fn show_staged_backup(&mut self) {
-        let Some(scene) = self.staged_backup else { return };
+        if self.staged_backup.is_none() && self.staged_account.is_none() {
+            return;
+        }
         let Some(pane) = self.settings.as_mut() else { return };
         let SettingsState::Mail(state) = &mut pane.sections else { return };
         // A load without the accounts (the core still starting) leaves the page staged for the next.
         let first =
             settings_mail::accounts::mail_accounts(pane.host.data()).first().map(|(account, _)| account.id.clone());
         let Some(account) = first else { return };
-        self.staged_backup = None;
-        settings_mail::stage_backup(state, &account, scene);
+        if let Some(scene) = self.staged_backup.take() {
+            settings_mail::stage_backup(state, &account, scene);
+        }
         let open = settings_mail::Message::Accounts(settings_mail::accounts::Message::Open(account));
         let _ = settings_mail::update(state, open, pane.host.data());
+        for message in self.staged_account.take().map(AccountScene::messages).unwrap_or_default() {
+            let _ = settings_mail::update(state, settings_mail::Message::Accounts(message), pane.host.data());
+        }
     }
 
     /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or
@@ -16251,6 +16321,29 @@ mod tests {
         assert!(matches!(
             Launch::parse(&args(&["--demo", "--open", "backup"])),
             Err(LaunchError::Conflict("--open backup…", _))
+        ));
+    }
+
+    /// Task DS.6: `--demo --open account…` opens the first account's page at its tab, with the
+    /// changed name of `account-writing`; other windows refuse it.
+    #[test]
+    fn the_account_states_open_the_first_accounts_tab() {
+        let launch = Launch::parse(&args(&["--demo", "--view", "mail", "--open", "account-writing"])).expect("valid");
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let mut app = pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0);
+        assert!(app.settings.is_some(), "the settings open at once");
+        let data =
+            block_on(torro_settings_ui::load(Arc::new(torro_settings_ui::demo::Demo::new()), settings_mail::wanted()));
+        let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+        assert!(app.staged_account.is_none(), "the page is on the account");
+        let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = app.settings.as_ref() else {
+            panic!("mail settings");
+        };
+        let shown = format!("{:?}", state.accounts);
+        assert!(shown.contains("Writing") && shown.contains(DEMO_SENDER), "{shown}");
+        assert!(matches!(
+            Launch::parse(&args(&["--demo", "--open", "account"])),
+            Err(LaunchError::Conflict("--open account…", _))
         ));
     }
 
