@@ -174,7 +174,11 @@ pub fn valid_header_name(name: &str) -> bool {
 /// it talks Streamable HTTP to. The rules for the program's environment (empty, a few basics, the
 /// `PATH` the core sets, then `env`) and for the address (`https://`, `http://` only for
 /// `localhost`, `127.0.0.1`, `::1`, no redirects) are the core's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// `Debug` shows only what may go to a log: of the program its last part and how many arguments it
+/// has, of the address its origin, and the names of the variables or headers. Folders may name the
+/// person, and arguments and the rest of an address may carry a token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum ServerSpec {
     /// A program started without a shell: `command` with `args`, and the variables `env` besides
@@ -198,6 +202,42 @@ pub enum ServerSpec {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         headers: BTreeMap<String, Value>,
     },
+}
+
+impl fmt::Debug for ServerSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names = |values: &BTreeMap<String, Value>| values.keys().cloned().collect::<Vec<_>>();
+        match self {
+            ServerSpec::Stdio { command, args, env } => {
+                let program = match command.rsplit_once(['/', '\\']) {
+                    Some((_, name)) => format!("…/{name}"),
+                    None => command.clone(),
+                };
+                f.debug_struct("Stdio")
+                    .field("command", &program)
+                    .field("args", &args.len())
+                    .field("env", &names(env))
+                    .finish()
+            }
+            ServerSpec::Http { url, headers } => {
+                f.debug_struct("Http").field("url", &shown_origin(url)).field("headers", &names(headers)).finish()
+            }
+        }
+    }
+}
+
+/// `url` up to its host and port, without a user or password, followed by `/…` when it had more:
+/// what `Debug` of [`ServerSpec`] shows of an address.
+fn shown_origin(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let more = if end < rest.len() { "/…" } else { "" };
+    match scheme {
+        "" => format!("{host}{more}"),
+        scheme => format!("{scheme}://{host}{more}"),
+    }
 }
 
 impl ServerSpec {
@@ -609,6 +649,31 @@ mod tests {
 
     fn plain(value: &str) -> Value {
         Value::Plain(value.into())
+    }
+
+    /// Review of #302: `Debug` of a spec, and of every request and answer that holds one, shows no
+    /// folder, no argument and no part of an address after its origin.
+    #[test]
+    fn debug_of_a_spec_hides_folders_arguments_and_addresses() {
+        let program = ServerSpec::Stdio {
+            command: "/Users/someone/bin/server".into(),
+            args: vec!["--token=abc123".into()],
+            env: BTreeMap::from([("TOKEN".into(), Value::Secret(Secret::new("s3cret")))]),
+        };
+        let shown = format!("{program:?}");
+        assert_eq!(shown, r#"Stdio { command: "…/server", args: 1, env: ["TOKEN"] }"#);
+        let named = ServerSpec::Stdio { command: "npx".into(), args: Vec::new(), env: BTreeMap::new() };
+        assert_eq!(format!("{named:?}"), r#"Stdio { command: "npx", args: 0, env: [] }"#);
+
+        let address = ServerSpec::Http {
+            url: "https://user:pw@mcp.example.com:8443/v1?key=abc123".into(),
+            headers: BTreeMap::from([("Authorization".into(), plain("Bearer abc123"))]),
+        };
+        let shown = format!("{address:?}");
+        assert_eq!(shown, r#"Http { url: "https://mcp.example.com:8443/…", headers: ["Authorization"] }"#);
+        let bare = ServerSpec::Http { url: "http://localhost:3000".into(), headers: BTreeMap::new() };
+        assert_eq!(format!("{bare:?}"), r#"Http { url: "http://localhost:3000", headers: [] }"#);
+        assert_eq!(shown_origin("no address"), "no address");
     }
 
     #[test]
