@@ -389,6 +389,95 @@ des Assistenten (der Titel steht ohnehin in der Werkzeugzeile), öffnen, sichern
 
 Aufgaben: [tasks/assistent.md](tasks/assistent.md), WZ.1–WZ.8.
 
+### Werkzeug Web: im Web suchen und Webseiten lesen
+
+Stand: 2026-10-24, Issue #305. Das zweite eigene Werkzeug (`web`) hat zwei Befehle: **Websuche** und **Seite
+lesen**. Beide lesen nur, schicken aber etwas nach außen: Suchwörter an einen Suchdienst, eine Adresse an eine
+Website. Darum wählt die Person die Dienste selbst und gibt in jeder Unterhaltung einmal ihr Ja.
+
+**Anbieter.** Eine offizielle Websuche, die kostenlos ist und ohne Schlüssel geht, gibt es nicht (Recherche
+2026-10-24). Angeboten werden:
+
+| Anbieter | Weg | Schlüssel | Hinweis bei der Wahl |
+|---|---|---|---|
+| SearXNG | `<adresse>/search?format=json` der eigenen Instanz | – | Torro prüft beim Eintragen, ob die Instanz JSON liefert |
+| Brave | Search API | eigener | Ergebnisse dürfen nur für die Antwort benutzt, nicht gespeichert werden: Torro hält sie nicht im Zwischenspeicher |
+| Tavily, Exa, Mojeek | jeweilige Such-API | eigener | – |
+| DuckDuckGo | Ergebnisseite `html.duckduckgo.com` | – | „DuckDuckGo offers no official interface for this. Torro reads the results page like a browser. DuckDuckGo may block this at any time.“ |
+| Wikipedia | REST-Suche der Wikipedia in der Sprache der Suite | – | zusätzliche Quelle, Lizenz CC BY-SA steht an jedem Treffer |
+
+- **Mehrere, feste Reihenfolge** (in der Planung entschieden): Jeder Anbieter hat einen Schalter. Der Kern fragt
+  die eingeschalteten in der Reihenfolge der Tabelle; meldet einer Sperre, Limit oder fehlenden Schlüssel, kommt
+  der nächste. Suchwörter gehen **nur** an eingeschaltete Anbieter. Wikipedia ist kein Rückfall, sondern kommt
+  zusätzlich dazu. Ist keiner an, ist die Websuche aus.
+- **Nie umgehen:** Captchas, Sperren und Limits werden nie umgangen (kein anderer User-Agent, kein Proxy, kein
+  Wiederholen). Ein gesperrter Anbieter ruht eine Stunde (wie die Ortssuche, `places.rs`), dann der nächste oder
+  eine klare Meldung. Google- und Bing-Ergebnisseiten werden nie ausgelesen.
+- **Drosselung und Zwischenspeicher** je Anbieter; DuckDuckGo nur wenige Abfragen je Minute. Antworten bleiben
+  eine Stunde im Speicher (nie auf der Platte), Brave nie.
+- **Jeder Anbieter sagt, wohin die Wörter gehen** (Host und Sitz) und verlinkt seine Bedingungen, in der
+  Einrichtung und in den Einstellungen gleich. Die SearXNG-Adresse zeigt oft ins lokale Netz: Ein Client sieht
+  sie in `tools.list_search_providers` und `settings.get_settings` nur, wenn er `web` selbst erreicht.
+- **Wählen und Adressen setzen nur Menschen** (wie Karten, Punkt 6 in „Was nie nach außen geht“): einschalten
+  mit `settings.set_setting search_provider`, die Adresse mit `searxng_address`. Ausschalten darf jeder mit
+  Admin in `settings`. **Schlüssel** gehen nur über die Oberfläche (`accounts.set_search_key`, Punkt 5) in den
+  Schlüsselbund.
+
+**Seite lesen.** Der Kern ruft die Seite mit `reqwest` ab, löst den Hauptinhalt heraus und gibt ihn als Markdown.
+
+- Nur `http`/`https` mit Hostnamen auf Standard-Ports, keine IP-Adressen, keine Anmeldung in der Adresse; jeder
+  Name und jede Weiterleitung (höchstens 5) wird geprüft und nur ins öffentliche Internet verbunden (dieselben
+  Wächter wie die Suche nach Diensten, `torro_pim_caldav::discover`). Sonst könnte ein Modell das lokale Netz der
+  Person abtasten.
+- Größengrenze, kurze Zeitgrenzen, Drosselung je Host (auch für jeden Host, zu dem eine Weiterleitung führt);
+  nur HTML und Text.
+- `robots.txt` (RFC 9309, Kennung `TorroWorkplace`) gilt für jede Seite, die das Modell selbst wählt; eine
+  Adresse, die die Person in der Unterhaltung selbst geschrieben hat, liest der Kern wie ein Browser.
+- Treffer und Seiten sind **fremder Text** (`untrusted`): Danach braucht jede neue Notiz des Gedächtnisses eine
+  Freigabe wie nach Mail (C.11).
+
+**Freigabe einmal je Unterhaltung** (in der Planung entschieden). Zuerst gelten Schalter, Rechte und Auswahl wie
+immer (sonst `forbidden`); dann fragt die erste Websuche oder Seite einer Unterhaltung, auch wenn die Rechte für
+Lesen sonst nie fragen: „Search the web and read web pages in "Trip to Lisbon"? Search words go to DuckDuckGo and
+Wikipedia.“, darunter, was beim Ja zuerst läuft („First: search for "…"“ bzw. „read a page on example.com“). Ein Ja
+gilt für beide Befehle in dieser Unterhaltung. **Hat die Unterhaltung danach fremde Daten gelesen** (Mail, GitHub,
+Einträge des Eingangs und von Agenten, Antworten von Bots – was C.11 zählt, **ohne** die Websuche selbst), fragt die
+nächste Websuche oder Seite einmal neu: Sonst könnte ein Text aus einer Mail das Modell dazu bringen, Inhalte in
+einer Adresse nach draußen zu schicken. Treffer und Seiten zählen dafür nicht, sonst fragte jede zweite Suche; es
+bleibt die Restgefahr, dass eine gelesene Seite das Modell zu einer weiteren Abfrage bringt, mit dem, was die
+Unterhaltung bis dahin kannte. Das erteilte Ja liegt nur im Speicher des Dienstes, nach einem Neustart fragt die
+Unterhaltung wieder; die offene Frage steht wie jede Freigabe in `approvals.json` (0600, mit Suchwörtern bzw.
+Adresse). Bots fragen in ihrer Unterhaltung genauso; im Auftrag des Hauptbots gilt das Ja des Assistenten für die
+Unterhaltung des Hauptbots, fremde Daten aus beiden Läufen zählen. Geplante Läufe ohne
+Menschen gibt es noch nicht; kommen sie, bekommen sie die Websuche nicht, bis das entschieden ist.
+
+**Clients über API und MCP** haben keine Unterhaltung: Für sie gelten nur Schalter, Rechte und die Auswahl (`web`),
+wie bei jedem Lesebefehl, ohne Freigabe (in der Planung entschieden; „Ask first“ fragt bei Lesebefehlen nie).
+
+**`web` nur ausdrücklich** (in der Planung entschieden): Die Vorlagen geben im Bereich `tools` „alle Werkzeuge“
+(`Selection::All`). Das deckt `web` **nicht** ab; ein Client bekommt es nur, wenn ein Mensch `web` in seiner Auswahl
+ankreuzt. Sonst dürfte jeder vorhandene Agent mit *Read only* ab dem Einschalten still Daten nach draußen schicken.
+Das gilt auch in jeder Schnittmenge (eingeschaltete Werkzeuge, Bot im Auftrag des Hauptbots) und in
+`assistant.my_access`. Wer `web` für einen Client ankreuzt, der Mail lesen darf, sieht im Rechte-Editor eine Warnung
+wie bei „Send on my behalf“. Den Agenten-Antrieb (B) gibt
+es nicht mehr; ein geliehener Schlüssel bekommt die Websuche nicht.
+
+**Einrichtung:** neuer Schritt „Web search“ vor „Done“ ([einrichtung.md](einrichtung.md)), dieselbe Auswahl wie
+in Assistent › Einstellungen › Tools. Wer dort einen Anbieter einschaltet, schaltet das Werkzeug ein; mit dem
+vorbelegten Haken „Let the assistant use it“ bekommt der Assistent Lesen in `tools` mit `web` in der Auswahl (in der
+Planung entschieden).
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Im Web suchen | Chat: Werkzeugzeile | `tools.web_search` · Read, Freigabe einmal je Unterhaltung | `tools_web_search` |
+| Webseite lesen | Chat: Werkzeugzeile | `tools.fetch_page` · Read, Freigabe einmal je Unterhaltung | `tools_fetch_page` |
+| Anbieter anzeigen (wohin, Bedingungen, Schlüssel gespeichert/fehlt) | Einrichtung, Assistent › Einstellungen › Tools | `tools.list_search_providers` · Read | `tools_list_search_providers` |
+| Anbieter ein-/ausschalten, SearXNG-Adresse | ebenda | `settings.set_setting search_provider`, `searxng_address` · Admin | `settings_set_setting` nur fürs Ausschalten und Entfernen; einschalten und Adresse setzen nur Menschen (Punkt 6) |
+| Schlüssel eines Anbieters speichern oder entfernen | Assistent › Einstellungen › Tools | `accounts.set_search_key` · Admin, nur App-Schlüssel | **Never** (Punkt 5) |
+| Werkzeug `web` an-/abschalten, Auswahl | wie beim PDF | `settings.set_setting tool_enabled`, `clients.update_client` | wie beim PDF |
+
+Aufgaben: [tasks/assistent.md](tasks/assistent.md), WEB.1–WEB.7.
+
 ## Sprache: per Weckwort mit dem Assistenten reden
 
 Ziel: Man sagt ein **Weckwort** (zum Start fest „Hey Torro“, später frei wählbar) und spricht einfach los: „Was steht heute
@@ -520,3 +609,19 @@ Getroffen am 2026-10-19 (Abschnitt „Eigene Werkzeuge“, Issue #225).
 17. **Karten-Grundlage** kommt mit der Datei-Karte: `EntryContent::Card` und `assistant.get_cards`.
 18. **„Save as…“** nur durch Menschen (`tools.save_file_as`, Punkt 9 in [api.md](api.md)).
 19. **Clients dürfen PDFs aus dem Register** an Entwürfe hängen; Senden braucht wie immer die Freigabe.
+
+Getroffen am 2026-10-24 (Abschnitt „Werkzeug Web“, Issue #305).
+
+20. **Ein Werkzeug `web`** für Websuche und Seite lesen, beide `Read`; ein Schalter, eine Freigabe für beide.
+21. **Mehrere Anbieter mit Schalter, feste Reihenfolge mit Rückfall;** Wikipedia kommt zusätzlich dazu. Wörter gehen nur
+    an eingeschaltete Anbieter. Einschalten und Adressen setzen nur Menschen, Schlüssel nur über die Oberfläche.
+22. **Freigabe einmal je Unterhaltung,** neu, sobald die Unterhaltung nach dem Ja fremde Daten gelesen hat; im
+    Speicher des Dienstes. Clients über API und MCP: nur Schalter, Rechte und Auswahl.
+23. **Seite lesen** nur ins öffentliche Internet, `robots.txt` für Adressen des Modells, nicht für Adressen der
+    Person. Eigener `robots.txt`-Leser statt `texting_robots` (alte Abhängigkeiten); Hauptinhalt und Markdown mit
+    `dom_smoothie`, ohne `htmd` (bringt eine weitere `html5ever`-Fassung).
+24. **Brave ohne Zwischenspeicher;** alle anderen eine Stunde im Speicher, nie auf der Platte.
+25. **Einrichtungsschritt „Web search“** schaltet mit dem Anbieter das Werkzeug ein und gibt dem Assistenten mit
+    vorbelegtem Haken das Leserecht für `web`.
+26. **„Alle Werkzeuge“ deckt `web` nicht ab,** auch nicht in Schnittmengen; `web` braucht einen Haken eines Menschen
+    in der Auswahl des Clients.

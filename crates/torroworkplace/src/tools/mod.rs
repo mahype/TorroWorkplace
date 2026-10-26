@@ -4,6 +4,8 @@
 //! - `pdf`: sets a PDF from Markdown and one of the three page templates (task WZ.3).
 //! - `place`: where a new file goes and what it is called (task WZ.4).
 //! - `files`: the register of every file a tool made (task WZ.4).
+//! - `web`: web search with the providers a person switched on (task WEB.2), the page reader (WEB.3) and their
+//!   commands (WEB.4, [`web::Web`]).
 //!
 //! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: the tool's switch for every key
 //! (`Lack::ToolOff`), for a client its rights and selection (`Lack::Tool`) and that a file is its own; the handlers
@@ -13,6 +15,7 @@
 pub mod files;
 pub mod pdf;
 pub mod place;
+pub mod web;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,7 +26,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Settings, ToolId};
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area, Rights};
-use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolInfo};
+use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolAccess, ToolInfo};
 
 pub use files::{FileEntry, Maker, Register};
 
@@ -50,11 +53,14 @@ pub struct Tools {
     roots: Roots,
     register: Register,
     open: Opener,
+    /// The tool `web`: router, page reader and keys of the whole service (task WEB.4).
+    web: web::Web,
 }
 
 impl Tools {
     /// The person's: the register in the core's data folder, the system's desktop and home folder, the design
-    /// packs' folder, files opened with the system's program. In tests none of them: nothing of the person's.
+    /// packs' folder, files opened with the system's program, the web with the system keychain
+    /// ([`web::Web::system`]). In tests none of them: nothing of the person's.
     pub fn system() -> Tools {
         if cfg!(test) {
             return Tools::new(Roots::default());
@@ -63,13 +69,32 @@ impl Tools {
             torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE).map(|paths| paths.data.join("tools"));
         let roots =
             Roots { data, desktop: dirs::desktop_dir(), home: dirs::home_dir(), fonts: torro_core::design::font_dir() };
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open: Arc::new(system_open) }
+        Tools {
+            register: Register::in_dir(roots.data.clone()),
+            roots,
+            open: Arc::new(system_open),
+            web: web::Web::system(),
+        }
     }
 
-    /// The tools with `roots`; files are opened by nobody (tests set an [`Opener`] with [`Tools::with_opener`]).
+    /// The tools with `roots`; files are opened by nobody (tests set an [`Opener`] with [`Tools::with_opener`]), the
+    /// web is [`web::Web::system`] (in tests one that reaches nothing; set another with [`Tools::with_web`]).
     pub fn new(roots: Roots) -> Tools {
         let open: Opener = Arc::new(|_: &Path| Err("nothing is opened here".to_string()));
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open }
+        Tools { register: Register::in_dir(roots.data.clone()), roots, open, web: web::Web::system() }
+    }
+
+    /// `self` with `web` as the tool `web`, for tests.
+    #[cfg(test)]
+    pub fn with_web(mut self, web: web::Web) -> Tools {
+        self.web = web;
+        self
+    }
+
+    /// The tool `web`, for its commands (`tools.web_search`, `tools.fetch_page`, `tools.list_search_providers`,
+    /// `accounts.set_search_key`) and the check of a SearXNG address.
+    pub fn web(&self) -> &web::Web {
+        &self.web
     }
 
     /// `self` opening files with `open`, for tests.
@@ -193,7 +218,8 @@ impl Tools {
 }
 
 /// `tools.list_tools` for `reach`: every tool with whether a person switched it on (`settings`) and whether the
-/// key may use it: the app key always; a client with write access to `tools` and the tool in its selection.
+/// key may use it: the app key always; a client with the tool's level in `tools` ([`ToolAccess::access`]: write
+/// for `pdf`, read for `web`) and the tool in its selection (`web` only when named, `Rights::reaches_tool`).
 pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Response {
     let tools = ToolId::ALL
         .into_iter()
@@ -204,7 +230,7 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
             enabled: settings.is_on(id),
             allowed: match reach {
                 Reach::Suite => true,
-                Reach::Client(rights) => rights.area(Area::Tools).allows(Access::Write) && rights.reaches_tool(id),
+                Reach::Client(rights) => rights.area(Area::Tools).allows(id.access()) && rights.reaches_tool(id),
             },
         })
         .collect();
@@ -215,6 +241,7 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
 fn description(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Makes PDFs from the assistant's text, set after the templates in its settings."),
+        ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers you switch on."),
     }
 }
 
@@ -503,9 +530,10 @@ pub(crate) mod tests {
             other => panic!("expected tools, got {other:?}"),
         };
         let suite = listed(&settings, Reach::Suite);
-        assert_eq!(suite.len(), 1);
+        assert_eq!(suite.iter().map(|tool| tool.id).collect::<Vec<_>>(), ToolId::ALL);
         assert_eq!((suite[0].id, suite[0].enabled, suite[0].allowed), (ToolId::Pdf, false, true));
         assert_eq!(suite[0].description, tr(description(ToolId::Pdf)));
+        assert_eq!((suite[1].id, suite[1].name.as_str(), suite[1].allowed), (ToolId::Web, "Web", true));
         settings.set_on(ToolId::Pdf, true);
         let mut rights = RightsTemplate::ReadOnly.rights();
         assert!(!listed(&settings, Reach::Client(&rights))[0].allowed, "reading only");
@@ -515,6 +543,24 @@ pub(crate) mod tests {
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let client = listed(&settings, Reach::Client(&rights));
         assert!(client[0].allowed && client[0].enabled);
+    }
+
+    /// Issue #305: `web` needs only reading in `tools`, and its id in the selection; "all tools" does
+    /// not stand for it.
+    #[test]
+    fn the_list_allows_web_with_reading_and_its_name() {
+        let settings = torro_core::settings::Tools::default();
+        let allowed = |rights: &Rights| match list(&settings, Reach::Client(rights)) {
+            Response::Tools { tools } => tools.iter().map(|tool| (tool.id, tool.allowed)).collect::<Vec<_>>(),
+            other => panic!("expected tools, got {other:?}"),
+        };
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert_eq!(allowed(&rights), [(ToolId::Pdf, false), (ToolId::Web, false)], "All, reading only");
+        rights.tools = Selection::Only(vec!["web".into()]);
+        assert_eq!(allowed(&rights), [(ToolId::Pdf, false), (ToolId::Web, true)], "named, reading is enough");
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::All;
+        assert_eq!(allowed(&rights), [(ToolId::Pdf, true), (ToolId::Web, false)], "All is pdf, never web");
     }
 
     #[test]

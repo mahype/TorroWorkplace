@@ -1197,6 +1197,7 @@ impl PimService {
             | Request::ConnectNextcloud { .. }
             | Request::ConnectGithub
             | Request::SetGithubToken { .. }
+            | Request::SetSearchKey { .. }
             | Request::DiscoverServices { .. }
             | Request::ConnectCalDav { .. }
             | Request::Sync
@@ -1325,6 +1326,8 @@ impl PimService {
             Request::ListTools | Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. } => {
                 return None;
             }
+            // No collection either: the web is outside the suite (issue #305).
+            Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

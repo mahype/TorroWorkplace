@@ -593,6 +593,7 @@ mod tests {
                 effort: None,
                 without: Vec::new(),
                 mode: torro_ipc::assistant::Mode::Default,
+                from: None,
             },
         };
         let answer = |seq: u64| Entry {

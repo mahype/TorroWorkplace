@@ -336,7 +336,12 @@ pub(crate) mod tests {
         }
         assert!(!none.contains(&format!("{TOOL_PREFIX}tools_list_tools")), "listing stays");
         let pdf = denied_with(&[ToolId::Pdf]);
-        assert!(!pdf.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{pdf:?}");
+        let denied_tools: Vec<&String> =
+            pdf.iter().filter(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))).collect();
+        let web = [format!("{TOOL_PREFIX}tools_web_search"), format!("{TOOL_PREFIX}tools_fetch_page")];
+        assert_eq!(denied_tools, web.iter().collect::<Vec<_>>(), "only the web's, which is not usable");
+        let every = denied_with(&ToolId::ALL);
+        assert!(!every.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{every:?}");
     }
 
     /// Issue #131: every offered model is one `--model` takes, and only Haiku takes no effort.

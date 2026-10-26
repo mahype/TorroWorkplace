@@ -428,6 +428,9 @@ pub fn tool_title(name: &str) -> String {
         "tools.create_pdf" => tr("Created PDF"),
         "tools.list_tools" => tr("Listed tools"),
         "tools.open_file" => tr("Opened file"),
+        "tools.web_search" => tr("Searched the web"),
+        "tools.fetch_page" => tr("Read web page"),
+        "tools.list_search_providers" => tr("Listed search providers"),
         "find_tools" => tr("Looked for tools"),
         other => return other.to_owned(),
     };
@@ -649,6 +652,7 @@ mod tests {
                 effort: None,
                 without: Vec::new(),
                 mode: torro_ipc::assistant::Mode::Default,
+                from: None,
             },
         }
     }
@@ -906,6 +910,7 @@ mod tests {
                 effort: None,
                 without: Vec::new(),
                 mode: Mode::ReadOnly,
+                from: None,
             },
         };
         transcript.merge(summary("c1", 2, false), vec![asked]);
@@ -997,6 +1002,10 @@ mod tests {
         assert_eq!(tool_title("tools.create_pdf"), tr("Created PDF"));
         assert_eq!(tool_title("tools.list_tools"), tr("Listed tools"));
         assert_eq!(tool_title("tools.open_file"), tr("Opened file"));
+        // Issue #305: the web's lines name what happened, never the search words or the address.
+        assert_eq!(tool_title("tools.web_search"), tr("Searched the web"));
+        assert_eq!(tool_title("tools.fetch_page"), tr("Read web page"));
+        assert_eq!(tool_title("tools.list_search_providers"), tr("Listed search providers"));
         let file = FileInfo {
             id: "1a2b3c4d".into(),
             name: "Offer.pdf".into(),

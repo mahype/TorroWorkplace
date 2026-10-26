@@ -33,6 +33,7 @@ use torro_mail::{InvalidAddress, MailAccountConfig, MailSettings, Security};
 use crate::AppId;
 use crate::ai::AiProvider;
 use crate::paths::AppPaths;
+use crate::settings::SearchProviderId;
 
 pub mod vault;
 
@@ -61,10 +62,37 @@ pub const ACCOUNTS_FILE: &str = "accounts.json";
 /// or delete a client's key.
 pub const RESERVED_ID_PREFIX: &str = "client-";
 
-/// `id` is reserved for client keys ([`RESERVED_ID_PREFIX`]) or the keychain vault
-/// ([`vault::VAULT_ENTRY`]) and never names an account.
+/// The keychain entries of the web search providers' keys start with this (`websearch-<id>`, issue
+/// #305, [`search_key`]). No account id may start with it, or an account could overwrite, read out or
+/// delete a provider's key.
+pub const SEARCH_KEY_PREFIX: &str = "websearch-";
+
+/// `id` is reserved for client keys ([`RESERVED_ID_PREFIX`]), the keys of web search providers
+/// ([`SEARCH_KEY_PREFIX`]) or the keychain vault ([`vault::VAULT_ENTRY`]) and never names an account.
 pub fn is_reserved_id(id: &str) -> bool {
-    id.starts_with(RESERVED_ID_PREFIX) || id == vault::VAULT_ENTRY
+    id.starts_with(RESERVED_ID_PREFIX) || id.starts_with(SEARCH_KEY_PREFIX) || id == vault::VAULT_ENTRY
+}
+
+/// The keychain entry of the key of `provider`: `websearch-<id>` (`websearch-brave`).
+pub fn search_key_entry(provider: SearchProviderId) -> String {
+    format!("{SEARCH_KEY_PREFIX}{}", provider.name())
+}
+
+/// The stored key of the web search provider `provider` (issue #305), `None` when there is none. Kept
+/// with the account secrets ([`vault`], bundled on macOS), under [`search_key_entry`]. Blocks on the
+/// keychain: call it off the threads that serve requests.
+pub fn search_key(provider: SearchProviderId) -> Result<Option<String>, AccountError> {
+    with_secrets(|secrets| secrets.get(&search_key_entry(provider)))
+}
+
+/// Stores `key` as the key of `provider` ([`search_key`]), replacing what was there.
+pub fn set_search_key(provider: SearchProviderId, key: &str) -> Result<(), AccountError> {
+    with_secrets(|secrets| secrets.set(&search_key_entry(provider), key))
+}
+
+/// Removes the key of `provider` ([`search_key`]); a missing one is fine.
+pub fn delete_search_key(provider: SearchProviderId) -> Result<(), AccountError> {
+    with_secrets(|secrets| secrets.delete(&search_key_entry(provider)))
 }
 
 /// What kind of server an account talks to.
@@ -676,6 +704,11 @@ mod tests {
         assert!(matches!(intruder.set_secret("x"), Err(AccountError::ReservedId(_))));
         assert!(matches!(intruder.delete_secret(), Err(AccountError::ReservedId(_))));
         assert!(is_reserved_id("client-") && !is_reserved_id("nextcloud:client-x@cloud"));
+        // The keys of web search providers (issue #305) are no account's either.
+        assert_eq!(search_key_entry(SearchProviderId::Brave), "websearch-brave");
+        let provider = Account { id: search_key_entry(SearchProviderId::Brave), ..intruder.clone() };
+        assert!(is_reserved_id(&provider.id) && !is_reserved_id("caldav:websearch-x@cloud"));
+        assert!(matches!(provider.set_secret("x"), Err(AccountError::ReservedId(_))));
     }
 
     #[test]
