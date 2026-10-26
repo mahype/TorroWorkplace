@@ -26,7 +26,7 @@ pub mod store;
 #[allow(dead_code, reason = "`Supervisor::changes` waits for a live status in the control centre (task MA.8)")]
 pub mod supervisor;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -71,6 +71,9 @@ pub struct Extensions {
     under_way: Arc<Mutex<HashSet<String>>>,
     /// Set once the supervisor's changes are watched to keep the tool lists ([`Extensions::watch_tools`]).
     watching: Arc<AtomicBool>,
+    /// How often the secrets of each id changed (counted under `changing`): a call that read them without the
+    /// lock starts only when the count is still the one before its read ([`Extensions::launch_for_call`]).
+    secret_changes: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl fmt::Debug for Extensions {
@@ -94,6 +97,7 @@ impl Extensions {
             changing: Arc::default(),
             under_way: Arc::default(),
             watching: Arc::default(),
+            secret_changes: Arc::default(),
         }
     }
 
@@ -110,6 +114,7 @@ impl Extensions {
             changing: Arc::default(),
             under_way: Arc::default(),
             watching: Arc::default(),
+            secret_changes: Arc::default(),
         }
     }
 
@@ -393,6 +398,7 @@ impl Extensions {
     /// the supervisor, its folder and the secrets of `spec` in the keychain. A step that fails goes to the log;
     /// the answer is the install's failure.
     async fn undo_install(&self, store: &Store, id: &str, spec: &ServerSpec) {
+        self.secrets_change(id);
         self.supervisor.forget(id).await;
         if let Err(err) = store.remove_files(id) {
             eprintln!("torroworkplace: MCP server {id}: {err}");
@@ -579,6 +585,7 @@ impl Extensions {
     /// The keychain entries of the server `id` as `snapshot` held them, after a failed update saved its
     /// secrets. A failure goes to the log; the answer is the update's failure.
     async fn restore_secrets(&self, id: &str, snapshot: BTreeMap<String, Option<Secret>>) {
+        self.secrets_change(id);
         let owner = id.to_string();
         if let Err(err) = self.with_secrets(move |secrets| store::restore_secrets(secrets, &owner, &snapshot)).await {
             eprintln!("torroworkplace: MCP server {id}: {err}");
@@ -606,6 +613,7 @@ impl Extensions {
             return error("not-found", trf("“{name}” isn't a secret of this MCP server.", &[("name", &name)]));
         }
         let key = store::secret_key(id, name);
+        self.secrets_change(id);
         match self.with_secrets(move |secrets| secrets.set(&key, &value).map_err(StoreError::Keychain)).await {
             Ok(()) => Response::Ok,
             Err(err) => store_error(&err),
@@ -636,6 +644,7 @@ impl Extensions {
             Err(refused) => return refused,
         };
         let removed = all.remove(index);
+        self.secrets_change(id);
         self.supervisor.forget(id).await;
         if let Err(err) = self.save(&all) {
             return store_error(&err);
@@ -696,8 +705,19 @@ impl Extensions {
         old: Option<&ServerSpec>,
         new: &ServerSpec,
     ) -> Result<ServerSpec, StoreError> {
+        self.secrets_change(id);
         let (id, old, new) = (id.to_string(), old.cloned(), new.clone());
         self.with_secrets(move |secrets| store::save_secrets(secrets, &id, old.as_ref(), &new)).await
+    }
+
+    /// Counts a change of the secrets of `id`; called under `changing`, before the keychain is touched.
+    fn secrets_change(&self, id: &str) {
+        *self.secret_changes.lock().unwrap_or_else(PoisonError::into_inner).entry(id.to_string()).or_default() += 1;
+    }
+
+    /// How often the secrets of `id` changed so far ([`Extensions::secrets_change`]).
+    fn secrets_changed(&self, id: &str) -> u64 {
+        self.secret_changes.lock().unwrap_or_else(PoisonError::into_inner).get(id).copied().unwrap_or_default()
     }
 
     async fn read_secrets(&self, id: &str, spec: &ServerSpec) -> Result<BTreeMap<String, Secret>, StoreError> {
@@ -716,9 +736,11 @@ impl Extensions {
 
     /// The server `id` and what starts it, for a call of `tool` ([`Extensions::call`]). The secrets are read
     /// without the file's lock, since the keychain may wait for the person and switching off must not wait for
-    /// that; then the file is read again under the lock. An update changes the spec and the secrets together
-    /// under it, so when the spec is still the same the secrets are of this spec: one of an update to another
-    /// address never goes to the old one. Changed meanwhile, all is read again; `conflict` after three tries.
+    /// that; then the file is read again under the lock. Every change of the secrets is counted under it
+    /// ([`Extensions::secrets_change`]), so when the spec is still the same and no secret changed since before
+    /// the read, the secrets are of this spec: one of an update to another address never goes to the old one,
+    /// also when a second update went back to it meanwhile. Changed meanwhile, all is read again; `conflict`
+    /// after three tries.
     async fn launch_for_call(&self, id: &str, tool: &str) -> Result<(StoredExtension, Launch), Response> {
         for _ in 0..3 {
             let stored = match self.find(id) {
@@ -729,10 +751,13 @@ impl Extensions {
             if self.allowed_now(&stored, tool).is_none() {
                 return Err(no_tool(tool));
             }
+            let changes = self.secrets_changed(id);
             let launch = self.launch(&stored).await.map_err(|err| store_error(&err))?;
             let _changing = self.changing.lock().await;
             match self.find(id) {
-                Ok(now) if now.server == stored.server && now.enabled => return Ok((stored, launch)),
+                Ok(now) if now.server == stored.server && now.enabled && self.secrets_changed(id) == changes => {
+                    return Ok((stored, launch));
+                }
                 // Switched off meanwhile: its stop may still be on the way, so nothing must reach it.
                 Ok(now) if !now.enabled => return Err(no_server(id)),
                 Ok(_) => continue,
@@ -744,15 +769,30 @@ impl Extensions {
 
     /// Keeps the tool lists of the servers in the file once the supervisor announces a change, from the first
     /// call on (only a call starts a server for use): [`Extensions::keep_reported`]. Once per set of servers;
-    /// nothing without a store.
+    /// nothing without a store. The watcher holds the supervisor only while it keeps a list, so it ends with
+    /// the supervisor (the service's lives until the service ends, a test's with the test).
     fn watch_tools(&self) {
         if self.store.is_none() || self.watching.swap(true, Ordering::SeqCst) {
             return;
         }
-        let extensions = self.clone();
+        let supervisor = Arc::downgrade(&self.supervisor);
+        let rest = self.clone();
         let mut changes = self.supervisor.changes();
+        // The rest of the servers' state without the supervisor: a clone with a strong one would keep it.
+        let Extensions { roots, store, secrets, changing, under_way, watching, secret_changes, .. } = rest;
         tokio::spawn(async move {
             while changes.changed().await.is_ok() {
+                let Some(supervisor) = supervisor.upgrade() else { break };
+                let extensions = Extensions {
+                    roots: roots.clone(),
+                    supervisor,
+                    store: store.clone(),
+                    secrets: Arc::clone(&secrets),
+                    changing: Arc::clone(&changing),
+                    under_way: Arc::clone(&under_way),
+                    watching: Arc::clone(&watching),
+                    secret_changes: Arc::clone(&secret_changes),
+                };
                 extensions.keep_reported().await;
             }
         });
@@ -1586,6 +1626,17 @@ mod tests {
             let without_store = Extensions { store: None, ..without_store };
             without_store.watch_tools();
             assert!(!without_store.watching.load(Ordering::SeqCst), "nothing to keep");
+
+            // The watcher does not keep the supervisor: once the servers are gone, so is it, and the watcher ends.
+            let supervisor = Arc::downgrade(&extensions.supervisor);
+            drop((extensions, without_store));
+            for _ in 0..100 {
+                if supervisor.strong_count() == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(supervisor.strong_count(), 0, "the watcher let it go");
         }
 
         /// F1 of the API review: a call that read the store and holds its launch just before a person switched
@@ -1874,6 +1925,62 @@ mod tests {
             fn delete(&self, key: &str) -> Result<(), String> {
                 self.secrets.delete(key)
             }
+        }
+
+        /// A keychain whose first `get` reads, then waits until the test lets it go, so something can happen
+        /// after a call read its secrets and before it looks at the file again.
+        struct Paused {
+            secrets: MemorySecrets,
+            gate: std::sync::Mutex<Option<(tokio::sync::oneshot::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+        }
+
+        impl SecretStore for Paused {
+            fn get(&self, key: &str) -> Result<Option<Secret>, String> {
+                let read = self.secrets.get(key);
+                let gate = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                if let Some((entered, release)) = gate {
+                    let _ = entered.send(());
+                    let _ = release.recv();
+                }
+                read
+            }
+            fn set(&self, key: &str, secret: &Secret) -> Result<(), String> {
+                self.secrets.set(key, secret)
+            }
+            fn delete(&self, key: &str) -> Result<(), String> {
+                self.secrets.delete(key)
+            }
+        }
+
+        /// PR review of #302: a call that read the secrets of the spec A while two updates went to B and back
+        /// to A does not start with what it read (the count of changes, not only the spec): it reads again.
+        #[tokio::test]
+        async fn a_call_reads_again_after_an_update_to_another_spec_and_back() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (entered, entered_rx) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let memory = MemorySecrets::default();
+            let paused = Paused { secrets: memory.clone(), gate: std::sync::Mutex::new(Some((entered, release_rx))) };
+            let extensions = Extensions::with_roots(roots()).with_store(Store::in_data(dir.path()), Arc::new(paused));
+            installed(&extensions, &memory, "fixture", &[("echo", Access::Read)]);
+            let changes = extensions.secrets_changed("fixture");
+            let call = tokio::spawn({
+                let extensions = extensions.clone();
+                async move { extensions.launch_for_call("fixture", "echo").await }
+            });
+            entered_rx.await.expect("the call read its secrets");
+            let other = ServerSpec::Stdio {
+                command: "sh".into(),
+                args: vec![script()],
+                env: BTreeMap::from([("FIXTURE_VALUE".to_string(), Value::Secret(Secret::new("for-b")))]),
+            };
+            info(extensions.update("fixture", Some(other)).await);
+            info(extensions.update("fixture", Some(fixture_spec(Value::Secret(Secret::new("for-a"))))).await);
+            assert!(extensions.secrets_changed("fixture") > changes);
+            release.send(()).expect("let go");
+            let (stored, launch) = call.await.expect("joined").expect("a launch");
+            assert_eq!(stored.server, fixture_spec(Value::Stored { secret: true }));
+            assert_eq!(launch.secrets.get("FIXTURE_VALUE").map(Secret::expose), Some("for-a"), "read again");
         }
 
         /// Second review of #302: a removal while an update reads its secrets is not undone: no folder is
