@@ -1930,7 +1930,7 @@ impl Core {
         // Tests bring their own mail accounts (`Core::with_mail`); none may reach the user's.
         let mail = if cfg!(test) { MailService::without_home() } else { MailService::system() };
         let mail = Arc::new(mail.with_calendars(Arc::clone(&pim)));
-        Core {
+        let core = Core {
             backend,
             store,
             work: Mutex::new(()),
@@ -1980,7 +1980,16 @@ impl Core {
                 crate::extensions::Extensions::system()
             },
             web_consents: std::sync::Mutex::new(HashMap::new()),
-        }
+        };
+        let allowed = core.allowed_folders();
+        Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
+    }
+
+    /// The folders a person allowed, as the settings have them when asked, with what the tools never reach
+    /// ([`crate::tools::Tools::excluded`]): what the MCP servers that work in a folder may be given (issue #303).
+    fn allowed_folders(&self) -> crate::extensions::AllowedNow {
+        let (settings, excluded) = (self.settings.clone(), self.tools.excluded().to_vec());
+        Arc::new(move || crate::tools::folders::Allowed::of(&settings.current().tools.folders, &excluded))
     }
 
     /// Tells the core how the template keys stand (issue #243): `active` when the keys of every
@@ -2233,13 +2242,14 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_tools(mut self, tools: crate::tools::Tools) -> Core {
         self.tools = Arc::new(tools);
+        self.extensions = self.extensions.clone().with_allowed(self.allowed_folders());
         self
     }
 
     /// The core with `extensions` instead of the service's, for tests.
     #[cfg(test)]
     pub(crate) fn with_extensions(mut self, extensions: crate::extensions::Extensions) -> Core {
-        self.extensions = extensions;
+        self.extensions = extensions.with_allowed(self.allowed_folders());
         self
     }
 
@@ -4941,11 +4951,7 @@ impl Core {
             Request::ConfirmExtensionTools { id, fingerprint } => self.extensions.confirm(&id, &fingerprint).await,
             Request::UpdateExtension { id, server } => self.extensions.update(&id, server).await,
             Request::SetExtensionSecret { id, name, value } => self.extensions.set_secret(&id, &name, value).await,
-            // The folder of a catalog server (issue #303): its handler comes with task AC.3.
-            Request::SetExtensionFolder { .. } => Response::Error {
-                code: "unsupported".into(),
-                message: "choosing the folder of an mcp server is not supported yet".into(),
-            },
+            Request::SetExtensionFolder { id, folder } => self.extensions.set_folder(&id, folder).await,
             Request::ReadExtensionLogs { id } => self.extensions.logs(&id),
             Request::RemoveExtension { id } => self.remove_extension(&id).await,
             other => Response::Error {
@@ -11517,6 +11523,26 @@ mod tests {
         use crate::extensions::testing::{extensions_in, roots};
         let (extensions, secrets) = extensions_in(&dir.join("ext"), roots());
         (audited(dir).with_extensions(extensions), secrets)
+    }
+
+    /// Issue #303: the folders a person may choose for a document server are the allowed folders of the settings
+    /// as they are when asked.
+    #[tokio::test]
+    async fn a_document_server_works_in_an_allowed_folder_of_the_settings() {
+        use torro_core::settings::{AllowedFolder, FolderAccess};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _) = extensions_core(dir.path());
+        let docs = dir.path().join("Docs");
+        std::fs::create_dir_all(&docs).expect("made");
+        let docs = docs.to_string_lossy().into_owned();
+        crate::extensions::testing::artcraft_installed(&core.extensions, None);
+        let choose = || Request::SetExtensionFolder { id: "wordcraft".into(), folder: Some(docs.clone()) };
+        assert_eq!(code(&core.handle(choose()).await), "not-found", "not allowed yet");
+        let mut whole = settings(&core).await;
+        whole.tools.folders = vec![AllowedFolder { path: docs.clone(), access: FolderAccess::ReadWrite }];
+        assert_eq!(core.handle(Request::UpdateSettings { settings: whole }).await, Response::Ok);
+        let Response::Extension { extension } = core.handle(choose()).await else { panic!("the server") };
+        assert_eq!(extension.folder, Some(docs));
     }
 
     /// The stand-in server `fixture` as a person installed it and allowed `echo` (read), `pwd` (write) and

@@ -119,6 +119,11 @@ pub struct Launch {
     /// it starts the program, after it checked the server is not stopped on purpose, so a server removed
     /// meanwhile gets no folder again. Not used for an address.
     pub work_dir: PathBuf,
+    /// Arguments after the program's own that bound it to folders (issue #303, ArtCraft:
+    /// `--automation-read-root <folder> --automation-write-root <folder>`); empty for most servers. Not part of
+    /// `server`, so the tool lists a run reports are still kept for the stored spec ([`Supervisor::running`]),
+    /// but part of the launch: another folder ends the running server and starts it with the new bounds.
+    pub bounds: Vec<String>,
 }
 
 /// Why a server could not be started or called. `Display` says it for people in the suite's language (the
@@ -586,7 +591,8 @@ impl Supervisor {
                     .map_err(SupervisorError::Setup)?;
                 crate::clients::create_private_dir(&launch.work_dir)
                     .map_err(|_| SupervisorError::Failed(CrashReason::SpawnFailed))?;
-                let (process, stdout, stdin) = Process::spawn(&found.program, args, vars, &launch.work_dir, output)
+                let args: Vec<String> = args.iter().chain(&launch.bounds).cloned().collect();
+                let (process, stdout, stdin) = Process::spawn(&found.program, &args, vars, &launch.work_dir, output)
                     .map_err(|_| SupervisorError::Failed(CrashReason::SpawnFailed))?;
                 (client::connect((stdout, stdin)).await.map_err(failed)?, Some(process))
             }
@@ -1104,6 +1110,7 @@ mod tests {
                 },
                 secrets: BTreeMap::from([("FIXTURE_VALUE".to_string(), Secret::new("from-keychain"))]),
                 work_dir: work.to_path_buf(),
+                bounds: Vec::new(),
             }
         }
 

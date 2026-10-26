@@ -152,7 +152,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   `look_in` mit `{ProgramFiles}` in einem Temp-Ordner gefunden; Einträge ohne die neuen Felder lesen sich wie bisher.
 
 ### AC.3 Ordner je App und Grenzen beim Start
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** AC.2 · **Dateien:** `crates/torroworkplace/src/extensions/{mod,supervisor}.rs`,
   `crates/torroworkplace/src/tools/{folders,mod}.rs`, `crates/torroworkplace/src/core.rs`,
   `crates/torroworkplace/tests/fixtures/extensions/artcraft.sh` (neu), `crates/torro-core/src/i18n/de.rs`

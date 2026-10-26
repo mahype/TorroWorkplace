@@ -6110,6 +6110,30 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not allowed yet", "Noch nicht erlaubt"),
     ("Not offered", "Nicht angeboten"),
     ("Blocked by Torro", "Von Torro gesperrt"),
+    ("This MCP server doesn't work in a folder.", "Dieser MCP-Server arbeitet nicht in einem Ordner."),
+    (
+        "This isn't an allowed folder. Allow it under Allowed folders first.",
+        "Das ist kein freigegebener Ordner. Gib ihn zuerst unter „Freigegebene Ordner“ frei.",
+    ),
+    (
+        "This folder holds files Torro protects, such as keys. Choose a folder inside it that holds none.",
+        "Dieser Ordner enthält Dateien, die Torro schützt, etwa Schlüssel. Wähle einen Ordner darin, der keine enthält.",
+    ),
+    (
+        "This folder holds a folder that may only be read. Choose another one, or let the outer folder only be read.",
+        "Dieser Ordner enthält einen Ordner, der nur gelesen werden darf. Wähle einen anderen oder lass den äußeren \
+         Ordner nur lesen.",
+    ),
+    (
+        "No folder is chosen: every call is refused until you choose one.",
+        "Kein Ordner gewählt: Jeder Aufruf wird abgelehnt, bis du einen wählst.",
+    ),
+    (
+        "The chosen folder can't be used now: it isn't allowed any more, isn't there, or holds something Torro \
+         protects. Every call is refused until you choose another.",
+        "Der gewählte Ordner ist gerade nicht nutzbar: Er ist nicht mehr freigegeben, nicht da oder enthält etwas, \
+         das Torro schützt. Jeder Aufruf wird abgelehnt, bis du einen anderen wählst.",
+    ),
     ("Not offered until you allow them", "Nicht angeboten, bevor du sie erlaubst"),
     ("Output", "Ausgabe"),
     ("Program", "Programm"),

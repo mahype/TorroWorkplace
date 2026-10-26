@@ -153,6 +153,12 @@ impl Tools {
         self
     }
 
+    /// What the tools never reach, whatever allowed folder holds it ([`Roots::excluded`]): also locked for the
+    /// MCP servers that work in an allowed folder (#303, `crate::extensions::Extensions::with_allowed`).
+    pub fn excluded(&self) -> &[PathBuf] {
+        &self.roots.excluded
+    }
+
     /// The register, for the attachments of drafts (`crate::mail::write`).
     pub fn register(&self) -> &Register {
         &self.register

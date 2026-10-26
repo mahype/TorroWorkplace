@@ -329,6 +329,24 @@ impl Allowed {
         self.locked.iter().chain(&self.folded_roots).any(|inner| inner.starts_with(&parts))
     }
 
+    /// Whether the resolved folder `folder` is locked or holds something locked: one of the `excluded` paths is
+    /// in it, compared without regard to case. Not the allowed folders, and not the locks by name ([`BACKUP_SUFFIX`],
+    /// the trash folders), which no list names. For the document tools of #303, which may only work in a folder a
+    /// server reaches whole: ArtCraft does not know the locks.
+    pub fn holds_lock(&self, folder: &Path) -> bool {
+        let parts = folded(folder);
+        self.is_locked(folder) || self.locked.iter().any(|lock| lock.starts_with(&parts))
+    }
+
+    /// Whether an allowed folder with only `read` lies inside the resolved folder `folder` (not `folder` itself),
+    /// compared without regard to case: a server that may write in `folder` would write there too (#303).
+    pub fn holds_read_folder(&self, folder: &Path) -> bool {
+        let parts = folded(folder);
+        self.folded_roots.iter().zip(&self.roots).any(|(root, (_, access))| {
+            *access == FolderAccess::Read && root.len() > parts.len() && root.starts_with(&parts)
+        })
+    }
+
     /// The access of the innermost allowed folder that holds `path`, `None` outside them all. A path counts as inside
     /// only when it starts with a resolved folder as it is; which folder is the innermost is decided without regard
     /// to case, and of two the same `read` wins: a request in another case must not slip past an inner `read`
@@ -694,6 +712,30 @@ pub(crate) mod tests {
         assert!(allowed.existing(&place.path("home/Documents/Private"), FolderAccess::Read).is_ok(), "reading is fine");
         assert!(allowed.new_target(&place.path("home/Documents/Private/Open/new"), need).is_ok());
         assert_eq!(code(&FolderError::Forbidden(READ_ONLY)), "forbidden");
+    }
+
+    /// Issue #303: a folder a document server may work in holds nothing locked, and one it may write in no inner
+    /// `read` folder. The locks by name are not looked at.
+    #[test]
+    fn locks_and_inner_read_folders_inside_a_folder_are_found() {
+        let place = Place::new();
+        let home = fs::canonicalize(place.path("home")).expect("resolved");
+        fs::create_dir_all(home.join("Work/.ssh")).expect("made");
+        fs::create_dir_all(home.join("Work/Old.bak")).expect("made");
+        let mut folders = place.folders();
+        folders.push(AllowedFolder { path: place.path("home/Work"), access: FolderAccess::ReadWrite });
+        let allowed = Allowed::of(&folders, &[home.join("Work/.ssh")]);
+        let docs = home.join("Documents");
+        assert!(allowed.holds_lock(&home.join("Work")), "the key store is inside");
+        assert!(allowed.holds_lock(&home.join("Work/.ssh")), "and is locked itself");
+        assert!(allowed.holds_lock(&home), "further out too");
+        assert!(!allowed.holds_lock(&docs));
+        assert!(!allowed.holds_lock(&home.join("Work/Old.bak").with_file_name("Other")), "names are not looked at");
+        assert!(allowed.holds_read_folder(&docs), "Private is read only");
+        assert!(!allowed.holds_read_folder(&docs.join("Private")), "not the folder itself");
+        assert!(!allowed.holds_read_folder(&home.join("Work")));
+        let upper = PathBuf::from(docs.to_string_lossy().to_uppercase());
+        assert!(allowed.holds_read_folder(&upper), "in any case");
     }
 
     /// The same folder in another case is still the inner `read` one: on macOS and Windows it is the same folder.
