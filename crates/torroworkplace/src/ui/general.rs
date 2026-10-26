@@ -547,7 +547,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 return Action::None;
             }
             state.font_query.clear();
-            return Action::Focus(FONT_SEARCH);
+            return Action::Focus(FONT_SEARCH.into());
         }
         Message::CloseFonts => {
             state.fonts_open = false;
@@ -2550,7 +2550,7 @@ mod tests {
         let data = Data::default();
         let mut state = demo();
         let opened_it = update(&mut state, Message::ToggleFonts, &data);
-        assert!(matches!(opened_it, Action::Focus(FONT_SEARCH)), "{opened_it:?}");
+        assert!(matches!(&opened_it, Action::Focus(id) if *id == FONT_SEARCH.into()), "{opened_it:?}");
         assert!(overlay(&state, &data).is_some());
         assert!(matches!(escape(&state), Some(Message::CloseFonts)));
         let _ = update(&mut state, Message::CloseFonts, &data);

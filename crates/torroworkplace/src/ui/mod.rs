@@ -280,8 +280,9 @@ pub enum Action {
     /// zoom, so it applies at once and, with `--demo`, stays in the process.
     Zoom(zoom::Step),
     /// Give the keyboard focus to the text field with this id (the search field of the font's dropdown
-    /// as it opens, issue #299).
-    Focus(&'static str),
+    /// as it opens, issue #299; the first field marked wrong in the form of a server of one's own,
+    /// #302).
+    Focus(iced::widget::Id),
     /// Put this text on the clipboard (a new key, task A.6).
     Copy(String),
     /// Find, connect or disconnect a coding agent's MCP entry or hooks (task A.7), or read the

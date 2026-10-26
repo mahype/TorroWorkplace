@@ -113,6 +113,18 @@ const OUTPUT_LINES: f32 = 12.0;
 /// The arguments field of a server of one's own shows this many lines before it scrolls.
 const ARGUMENT_LINES: f32 = 3.0;
 
+/// The ids of the fields of the form of a server of one's own: a try with fields marked wrong puts the
+/// focus into the first of them ([`first_marked`]).
+const NAME_FIELD: &str = "custom-server-name";
+const ID_FIELD: &str = "custom-server-id";
+const COMMAND_FIELD: &str = "custom-server-command";
+const URL_FIELD: &str = "custom-server-url";
+
+/// The id of the name field of the variable or header in the row `at` of the form.
+fn value_field(at: usize) -> iced::widget::Id {
+    format!("custom-server-value-{at}").into()
+}
+
 /// The field a configuration is pasted into shows this many lines before it scrolls.
 const PASTE_LINES: f32 = 10.0;
 
@@ -1036,8 +1048,9 @@ fn submit_custom(state: &mut State, data: &Data) -> Action {
         return Action::None;
     };
     custom.tried = true;
-    if check(custom, data).any() {
-        return Action::None;
+    let checked = check(custom, data);
+    if checked.any() {
+        return first_marked(custom.kind, &checked).map_or(Action::None, Action::Focus);
     }
     (custom.busy, custom.problem) = (true, None);
     let server = spec(custom);
@@ -2290,8 +2303,8 @@ fn custom_dialog<'a>(custom: &'a Custom, data: &'a Data, class: SizeClass) -> El
 /// The form: "Paste configuration" (only when adding), that it runs as the person, what it is and
 /// how it is reached, and its variables or headers, stacked narrower than [`SizeClass::Medium`].
 /// After the first try each field says what is wrong with it, and the foot names those fields
-/// ([`check_sentence`]) – the dialog cannot scroll to them itself; what the core refused shows in
-/// the foot instead.
+/// ([`check_sentence`]) – the dialog cannot scroll to them itself, but the first takes the focus
+/// ([`first_marked`]); what the core refused shows in the foot instead.
 fn custom_form<'a>(custom: &'a Custom, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let checked = if custom.tried { check(custom, data) } else { Checked::default() };
     let title = match &custom.updating {
@@ -2344,6 +2357,21 @@ fn marked_fields(kind: Kind, checked: &Checked) -> Vec<&'static str> {
     .collect()
 }
 
+/// The first field marked wrong, in the form's order (name, id, command or address, the rows of
+/// variables or headers), for the focus after a try: typing goes there at once. The dialog cannot
+/// scroll to it, so the foot names the fields too ([`check_sentence`]).
+fn first_marked(kind: Kind, checked: &Checked) -> Option<iced::widget::Id> {
+    let target = match kind {
+        Kind::Command => COMMAND_FIELD,
+        Kind::Address => URL_FIELD,
+    };
+    let fixed = [(checked.name, NAME_FIELD), (checked.id, ID_FIELD), (checked.target, target)];
+    match fixed.into_iter().find(|(wrong, _)| wrong.is_some()) {
+        Some((_, field)) => Some(field.into()),
+        None => checked.values.iter().position(Option::is_some).map(value_field),
+    }
+}
+
 /// The foot's sentence after a try with fields marked wrong, naming them – "Check Name and
 /// Command." –, so the person knows where to look in a form taller than the window. `None` while
 /// nothing is marked.
@@ -2390,21 +2418,28 @@ fn server_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Messag
         }
         None => {
             // A product's name, the same in every language, so the id below matches it.
-            let name =
-                field("Home Assistant", &custom.name).on_input(Message::CustomName).on_submit(Message::SubmitCustom);
+            let name = field("Home Assistant", &custom.name)
+                .id(NAME_FIELD)
+                .on_input(Message::CustomName)
+                .on_submit(Message::SubmitCustom);
             rows.push(form_field(tr("Name"), None, name.into(), checked.name));
             let hint = match custom.id.is_empty() {
                 true => tr("Lowercase letters, digits and hyphens. Its tools are offered under it.").to_string(),
                 false => trf("Its tools are offered as ext_{id}_…", &[("id", &custom.id)]),
             };
-            let id = field("home-assistant", &custom.id).on_input(Message::CustomId).on_submit(Message::SubmitCustom);
+            let id = field("home-assistant", &custom.id)
+                .id(ID_FIELD)
+                .on_input(Message::CustomId)
+                .on_submit(Message::SubmitCustom);
             rows.push(form_field(tr("Id"), Some(hint), id.into(), checked.id));
         }
     }
     match custom.kind {
         Kind::Command => {
-            let command =
-                field("uvx", &custom.command).on_input(Message::CustomCommand).on_submit(Message::SubmitCustom);
+            let command = field("uvx", &custom.command)
+                .id(COMMAND_FIELD)
+                .on_input(Message::CustomCommand)
+                .on_submit(Message::SubmitCustom);
             let hint = tr("A program such as npx, uvx or docker, or its full path. No shell runs it.");
             rows.push(form_field(tr("Command"), Some(hint.to_string()), command.into(), checked.target));
             let args = text_editor(&custom.args)
@@ -2421,6 +2456,7 @@ fn server_group<'a>(custom: &'a Custom, checked: &Checked) -> Element<'a, Messag
         }
         Kind::Address => {
             let url = field("https://", &custom.url)
+                .id(URL_FIELD)
                 .on_input(|url| Message::CustomUrl(Secret::new(url)))
                 .on_submit(Message::SubmitCustom);
             let hint = tr("An address that speaks Streamable HTTP: https://, or http:// on this computer only.");
@@ -2465,6 +2501,7 @@ fn entry_row<'a>(
         Kind::Address => tr("Header name"),
     };
     let name = field(placeholder, &entry.name)
+        .id(value_field(at))
         .on_input(move |name| Message::ValueName(at, name))
         .on_submit(Message::SubmitCustom);
     let hint = if entry.secret && entry.stored { tr("Stored – type to replace") } else { tr("Value") };
@@ -3622,7 +3659,8 @@ mod tests {
         let _ = update(&mut state, Message::ValueName(at, "ld_preload".into()), &data);
         let _ = update(&mut state, Message::ValueText(at, Secret::new("/tmp/hook.so")), &data);
         assert!(!form(&state).tried, "nothing is said before the first try");
-        assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::None), "nothing goes out");
+        let tried = update(&mut state, Message::SubmitCustom, &data);
+        assert!(matches!(&tried, Action::Focus(id) if *id == value_field(at)), "nothing goes out: {tried:?}");
         let custom = form(&state);
         assert!(custom.tried && !custom.busy);
         let checked = check(custom, &data);
@@ -3730,7 +3768,7 @@ mod tests {
         let data = launch::demo_data();
         let mut state = State::default();
         let _ = update(&mut state, Message::AddServer, &data);
-        assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::None));
+        assert!(matches!(update(&mut state, Message::SubmitCustom, &data), Action::Focus(_)), "nothing goes out");
         let checked = check(form(&state), &data);
         assert_eq!(checked.name, Some(tr("Enter a name.")));
         assert!(checked.id.is_some());
@@ -3777,7 +3815,11 @@ mod tests {
         let data = launch::demo_data();
         let mut state = State::default();
         let _ = update(&mut state, Message::AddServer, &data);
-        let _ = update(&mut state, Message::SubmitCustom, &data);
+        let tried = update(&mut state, Message::SubmitCustom, &data);
+        assert!(
+            matches!(&tried, Action::Focus(id) if *id == NAME_FIELD.into()),
+            "the first takes the focus: {tried:?}"
+        );
         let fields = marked_fields(Kind::Command, &check(form(&state), &data));
         assert_eq!(fields, vec![tr("Name"), tr("Id"), tr("Command")]);
         let sentence = trf(
@@ -3790,6 +3832,11 @@ mod tests {
         let fields = marked_fields(Kind::Address, &check(form(&state), &data));
         assert_eq!(check_sentence(&fields), Some(trf("Check {field}.", &[("field", &tr("Address"))])));
         assert_eq!(check_sentence(&[]), None);
+        let checked = check(form(&state), &data);
+        assert_eq!(first_marked(Kind::Address, &checked), Some(URL_FIELD.into()));
+        let only_a_row = Checked { values: vec![None, Some("wrong")], ..Checked::default() };
+        assert_eq!(first_marked(Kind::Command, &only_a_row), Some(value_field(1)));
+        assert_eq!(first_marked(Kind::Command, &Checked::default()), None);
     }
 
     /// The id proposed from the name, and which names start as secrets.
