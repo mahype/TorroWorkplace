@@ -668,6 +668,7 @@ async fn sync_folder(
 /// folder that lack one, highest UID first, [`SIZE_FILL_BATCH`] per `UID FETCH`. Sizes are an
 /// extra: a server that answers unexpectedly leaves them missing for the next sync and ends
 /// nothing; only a lost connection or account is an error.
+/// A message the server answers for without a size is kept with 0.
 async fn fill_sizes(
     conn: &mut Conn<'_>,
     store: &SharedStore,
@@ -689,11 +690,18 @@ async fn fill_sizes(
             Err(_) => return Ok(()),
         };
         lease.done();
+        // A message the server answered for without a size never gets one: it counts as 0, so
+        // its folder still gets its size and the next sync does not ask for it again.
+        let named: BTreeSet<u32> = sizes.iter().map(|(uid, _)| *uid).collect();
+        let sizeless: Vec<u32> = batch.iter().copied().filter(|uid| !named.contains(uid)).collect();
         let folder = target.id.clone();
         store
             .run(move |store| {
                 for (uid, bytes) in &sizes {
                     store.set_size(&folder, *uid, *bytes)?;
+                }
+                for uid in &sizeless {
+                    store.set_size(&folder, *uid, 0)?;
                 }
                 Ok(())
             })
@@ -866,11 +874,23 @@ pub(crate) mod fake {
         gm_msgid: Option<u64>,
         /// `RFC822.SIZE` as the server claims it, when that is not the true length.
         reported_size: Option<usize>,
+        /// A fetch of the size alone answers without `RFC822.SIZE` (a server that never names it).
+        sizeless: bool,
     }
 
     impl Message {
         fn new(uid: u32, flags: BTreeSet<String>, modseq: u64, raw: Vec<u8>, received: DateTime<FixedOffset>) -> Self {
-            Message { uid, flags, modseq, raw, received, withheld: false, gm_msgid: None, reported_size: None }
+            Message {
+                uid,
+                flags,
+                modseq,
+                raw,
+                received,
+                withheld: false,
+                gm_msgid: None,
+                reported_size: None,
+                sizeless: false,
+            }
         }
     }
 
@@ -1085,6 +1105,15 @@ pub(crate) mod fake {
             let message =
                 world.folder(folder).messages.iter_mut().find(|m| m.uid == uid).expect("a message of the fake");
             message.reported_size = Some(size);
+        }
+
+        /// From now on a fetch of the size alone answers for message `uid` of `folder` without
+        /// `RFC822.SIZE`.
+        pub(crate) fn withhold_size(&self, folder: &str, uid: u32) {
+            let mut world = self.world();
+            let message =
+                world.folder(folder).messages.iter_mut().find(|m| m.uid == uid).expect("a message of the fake");
+            message.sizeless = true;
         }
 
         /// Applies `change` to `folder` just before the `nth` `EXAMINE` of it (counted from 1) is
@@ -1758,6 +1787,8 @@ pub(crate) mod fake {
                 message.uid
             )
             .into_bytes()
+        } else if items.contains("RFC822.SIZE") && message.sizeless {
+            format!("* {seq} FETCH (UID {})", message.uid).into_bytes()
         } else if items.contains("RFC822.SIZE") {
             format!("* {seq} FETCH (UID {} RFC822.SIZE {claimed})", message.uid).into_bytes()
         } else {
@@ -2198,11 +2229,11 @@ mod tests {
     async fn sizes_are_kept_and_missing_ones_filled_in() {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
-        let mut bytes = 0;
+        let (mut bytes, mut last) = (0, (0, 0));
         for n in 1..=3 {
             let raw = fake::mail(&format!("Sized {n}"), 200, None);
             bytes += raw.len() as u64;
-            server.add("INBOX", &raw, &[]);
+            last = (server.add("INBOX", &raw, &[]), raw.len() as u64);
         }
         let mailbox = mailbox(dir.path(), &server).await;
         let store = mailbox.store().expect("store");
@@ -2227,6 +2258,18 @@ mod tests {
         let lines = server.lines().len();
         sync_account(&mailbox).await.expect("synced a third time");
         assert!(!server.lines()[lines..].iter().any(|line| line.contains("UID ")), "nothing asked again");
+
+        // A server that names no size for a message: it counts as 0 and is not asked for again.
+        server.withhold_size("INBOX", last.0);
+        store.run(|store| store.forget_sizes()).await.expect("a store of before");
+        sync_account(&mailbox).await.expect("synced without one size");
+        assert_eq!(inbox_bytes(&store).await, Some(bytes - last.1), "the sizeless message counts as 0");
+        let lines = server.lines().len();
+        sync_account(&mailbox).await.expect("synced once more");
+        assert!(
+            !server.lines()[lines..].iter().any(|line| line.contains("UID ")),
+            "the sizeless one is not asked again"
+        );
     }
 
     /// DS.1 (#314): the storage quota is kept from a server with `QUOTA` and cleared by one

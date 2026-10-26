@@ -188,7 +188,8 @@ Benachrichtigung über den Kern (`notify-rust` ist da).
 Größen füllt er je Lauf und Ordner nach, höchstens 2000 in Stapeln zu 500, auch für einen Ordner,
 der sich nicht geändert hat; so bekommen alte Konten ihre Größen über einige Läufe ohne
 Lastspitze. Ein Ordner nennt seine Größe auf dem Server (`server_bytes` in `mail.account_stats`)
-erst, wenn alle seine Mails eine haben. Einmal je Sync fragt der Dienst das Kontingent
+erst, wenn alle seine Mails eine haben; nennt der Server für eine Mail auf Nachfrage keine Größe, zählt
+sie mit 0 und wird nicht wieder gefragt. Einmal je Sync fragt der Dienst das Kontingent
 (`GETQUOTAROOT "INBOX"`, RFC 9208, Ressource `STORAGE` in Einheiten zu 1024 Byte), nur bei Servern
 mit `QUOTA`, und speichert es unter `cache_control.key = 'quota'`; ein Server ohne `QUOTA` löscht
 ein altes. Die Statistik fragt den Server also nie selbst und geht auch offline. Dazu kommen

@@ -298,6 +298,9 @@ pub mod accounts {
         backup: backup::State,
         backup_account: Option<String>,
         backup_others: BTreeMap<String, backup::State>,
+        /// What is typed into accounts that are not open, kept while it differs from what is stored:
+        /// "Back" or another account loses nothing, and the save bar is there again on return.
+        drafts_others: BTreeMap<String, Draft>,
         /// "Save" sent the name and the signature and the answer has not come yet: the save bar
         /// says "Saving…" and takes no second click.
         saving: bool,
@@ -450,14 +453,16 @@ pub mod accounts {
                             .remove(&id)
                             .unwrap_or_else(|| backup::State::from_preferences(&mail.settings.backup));
                     }
-                    state.draft = Some(Draft::new(&id, mail));
+                    keep_draft(state, data);
+                    let draft = state.drafts_others.remove(&id).unwrap_or_else(|| Draft::new(&id, mail));
+                    state.draft = Some(draft);
                     state.tab = Tab::Overview;
                     state.more = false;
                 }
                 Action::None
             }
             Message::Back => {
-                state.draft = None;
+                keep_draft(state, data);
                 state.more = false;
                 Action::None
             }
@@ -525,6 +530,14 @@ pub mod accounts {
                 .draft
                 .as_ref()
                 .map_or(Action::None, |draft| backup::update(&mut state.backup, &draft.account, message)),
+        }
+    }
+
+    /// Takes the open draft off the page, kept for its account while it holds something unsaved.
+    fn keep_draft(state: &mut State, data: &Data) {
+        let Some(draft) = state.draft.take() else { return };
+        if mail_of(data, &draft.account).is_some_and(|mail| draft.changes(mail).is_some()) {
+            state.drafts_others.insert(draft.account.clone(), draft);
         }
     }
 
@@ -1413,6 +1426,27 @@ pub mod accounts {
                     let _ = page(&state, &data).body;
                 }
             }
+        }
+
+        /// What is typed stays when the page is left: "Back" and another account keep it, and the
+        /// save bar is there again when the account is opened again; "Discard" lets it go.
+        #[test]
+        fn unsaved_typing_survives_leaving_the_page() {
+            let mut data = data();
+            data.accounts.push(account("ben@example.org", "Ben", None));
+            let mut state = opened(&data);
+            let _: Action<()> = update(&mut state, Message::SenderName("Anna B.".into()), &data);
+            let _: Action<()> = update(&mut state, Message::Back, &data);
+            assert!(page(&state, &data).sub_page.is_none(), "back on the list");
+            let _: Action<()> = update(&mut state, Message::Open("mail:anna@example.org".into()), &data);
+            assert!(page(&state, &data).save_bar.is_some(), "the name is still typed");
+            let _: Action<()> = update(&mut state, Message::Open("mail:ben@example.org".into()), &data);
+            assert!(page(&state, &data).save_bar.is_none(), "Ben has nothing typed");
+            let _: Action<()> = update(&mut state, Message::Open("mail:anna@example.org".into()), &data);
+            let _: Action<()> = update(&mut state, Message::Discard, &data);
+            let _: Action<()> = update(&mut state, Message::Back, &data);
+            let _: Action<()> = update(&mut state, Message::Open("mail:anna@example.org".into()), &data);
+            assert!(page(&state, &data).save_bar.is_none(), "discarded stays discarded");
         }
 
         /// "Save" makes the save bar busy until the host's answer is back; a second click sends
