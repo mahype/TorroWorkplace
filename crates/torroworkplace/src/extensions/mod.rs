@@ -2180,4 +2180,121 @@ mod tests {
             assert!(installed.tools.iter().all(|tool| tool.access == Access::Delete), "none of them in the catalog");
         }
     }
+
+    /// Real servers, for the checks by hand of #302 (the test plan of PR #309): the catalog's Time and
+    /// Sequential Thinking and a public address over Streamable HTTP. They need the network and the programs
+    /// (`uvx`, `npx` with Node.js 24 or later), so they run by hand:
+    /// `cargo test -p torroworkplace extensions::tests::live -- --ignored --nocapture`. The programs are looked
+    /// for as by the service its LaunchAgent starts, with launchd's short `PATH`; servers and secrets stay in a
+    /// temporary folder and a map, never the person's.
+    #[cfg(unix)]
+    mod live {
+        use super::*;
+        use crate::extensions::store::testing::MemorySecrets;
+        use torro_ipc::extensions::Content;
+
+        /// The roots of a service started by launchd: its `PATH` without the shell's additions, the home folder
+        /// and the usual folders.
+        fn as_launch_agent() -> Roots {
+            let path = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(Into::into).to_vec();
+            Roots { path, ..Roots::system() }
+        }
+
+        fn live_extensions(dir: &std::path::Path) -> Extensions {
+            let secrets = Arc::new(MemorySecrets::default());
+            Extensions::with_roots(as_launch_agent()).with_store(Store::in_data(dir), secrets)
+        }
+
+        /// Installs `from` and allows the tools it reported, as a person does with "Allow tools".
+        async fn installed_and_allowed(extensions: &Extensions, from: InstallFrom) -> ExtensionInfo {
+            let installed = info(extensions.install(from).await);
+            let fingerprint = installed.fingerprint.clone().expect("a fingerprint");
+            info(extensions.confirm(&installed.id, &fingerprint).await)
+        }
+
+        /// The text of a tool's answer, which must be marked as data from outside and no error.
+        fn text(response: Response) -> String {
+            let Response::ToolResult { output } = response else { panic!("an answer, got {response:?}") };
+            assert!(output.untrusted && !output.is_error, "{output:?}");
+            let texts: Vec<&str> = output
+                .content
+                .iter()
+                .filter_map(|content| match content {
+                    Content::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            texts.join("\n")
+        }
+
+        fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+            value.as_object().cloned().expect("an object")
+        }
+
+        /// "Time" from the catalog with `uvx`, found as a LaunchAgent's service finds it: its tools, then the
+        /// time in Tokyo.
+        #[tokio::test]
+        #[ignore = "starts uvx mcp-server-time from the network"]
+        async fn time_from_the_catalog_tells_the_time_in_tokyo() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let extensions = live_extensions(dir.path());
+            let catalog = extensions.catalog().expect("the catalog");
+            let time = catalog.iter().find(|entry| entry.id == "time").expect("Time in the catalog");
+            assert!(time.missing.is_empty(), "uvx is found: {:?}", time.missing);
+            let from = InstallFrom::Catalog { entry: "time".into(), secrets: BTreeMap::new() };
+            let allowed = installed_and_allowed(&extensions, from).await;
+            let names: Vec<&str> = allowed.tools.iter().map(|tool| tool.name.as_str()).collect();
+            assert!(names.contains(&"get_current_time") && names.contains(&"convert_time"), "{names:?}");
+            assert!(allowed.tools.iter().all(|tool| tool.access == Access::Read), "the catalog rates them read");
+            let answer = text(
+                extensions
+                    .call("time", "get_current_time", arguments(serde_json::json!({"timezone": "Asia/Tokyo"})))
+                    .await,
+            );
+            println!("Time: {answer}");
+            assert!(answer.contains("Asia/Tokyo"), "{answer}");
+        }
+
+        /// "Sequential Thinking" from the catalog with `npx` (2.0.0 needs Node.js 24 or later): one thought.
+        #[tokio::test]
+        #[ignore = "starts npx @modelcontextprotocol/server-sequential-thinking from the network"]
+        async fn sequential_thinking_from_the_catalog_takes_a_thought() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let extensions = live_extensions(dir.path());
+            let from = InstallFrom::Catalog { entry: "sequential-thinking".into(), secrets: BTreeMap::new() };
+            let allowed = installed_and_allowed(&extensions, from).await;
+            assert!(allowed.tools.iter().any(|tool| tool.name == "sequentialthinking"), "{:?}", allowed.tools);
+            let thought = serde_json::json!({
+                "thought": "The question needs one step.",
+                "nextThoughtNeeded": false,
+                "thoughtNumber": 1,
+                "totalThoughts": 1,
+            });
+            let answer = text(extensions.call("sequential-thinking", "sequentialthinking", arguments(thought)).await);
+            println!("Sequential Thinking: {answer}");
+            assert!(answer.contains("thoughtNumber"), "{answer}");
+        }
+
+        /// A server of one's own at a public `https://` address with a secret header (DeepWiki's MCP server,
+        /// which needs no sign-in and ignores the header): installed, its tools listed and one called.
+        #[tokio::test]
+        #[ignore = "talks to https://mcp.deepwiki.com"]
+        async fn an_address_of_ones_own_with_a_header_answers() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let extensions = live_extensions(dir.path());
+            let server = ServerSpec::Http {
+                url: "https://mcp.deepwiki.com/mcp".into(),
+                headers: BTreeMap::from([("X-Torro-Check".into(), Value::Secret(Secret::new("not-a-real-token")))]),
+            };
+            let from = InstallFrom::Custom { id: "deepwiki".into(), name: "DeepWiki".into(), server };
+            let allowed = installed_and_allowed(&extensions, from).await;
+            let names: Vec<&str> = allowed.tools.iter().map(|tool| tool.name.as_str()).collect();
+            println!("DeepWiki tools: {names:?}");
+            assert!(names.contains(&"read_wiki_structure"), "{names:?}");
+            let repo = serde_json::json!({"repoName": "modelcontextprotocol/servers"});
+            let answer = text(extensions.call("deepwiki", "read_wiki_structure", arguments(repo)).await);
+            println!("DeepWiki: {}", answer.chars().take(300).collect::<String>());
+            assert!(!answer.is_empty());
+        }
+    }
 }
