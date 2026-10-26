@@ -6111,6 +6111,54 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not offered", "Nicht angeboten"),
     ("Blocked by Torro", "Von Torro gesperrt"),
     ("Choosing…", "Wird gewählt…"),
+    ("Documents", "Dokumente"),
+    ("Work with your documents", "Mit deinen Dokumenten arbeiten"),
+    (
+        "Let the assistant open, read and edit your documents, presentations, spreadsheets and PDFs. The free ArtCraft \
+         apps do the work right here on your computer, and Torro keeps your originals safe: every change is saved as a \
+         new file.",
+        "Lass den Assistenten deine Dokumente, Präsentationen, Tabellen und PDFs öffnen, lesen und bearbeiten. Die \
+         freien ArtCraft-Apps erledigen das direkt auf deinem Rechner, und Torro schützt deine Originale: Jede \
+         Änderung wird als neue Datei gespeichert.",
+    ),
+    ("ArtCraft apps", "ArtCraft-Apps"),
+    (
+        "Documents (.docx) · Summarise a contract, fix the wording of a letter, draft a reply from your notes",
+        "Dokumente (.docx) · Einen Vertrag zusammenfassen, einen Brief sprachlich glätten, aus Notizen eine Antwort \
+         entwerfen",
+    ),
+    (
+        "Presentations (.pptx) · Turn an outline into slides, add a chart, tidy up every slide's text",
+        "Präsentationen (.pptx) · Aus einer Gliederung Folien machen, ein Diagramm einfügen, die Texte aller Folien \
+         glätten",
+    ),
+    (
+        "Spreadsheets (.xlsx, .csv) · Read out figures, fill in a table, sort and chart your data",
+        "Tabellen (.xlsx, .csv) · Zahlen auslesen, eine Tabelle ausfüllen, Daten sortieren und als Diagramm zeigen",
+    ),
+    (
+        "PDF · Find a passage, fill in a form, comment, combine or split files",
+        "PDF · Eine Stelle finden, ein Formular ausfüllen, kommentieren, Dateien zusammenfügen oder teilen",
+    ),
+    (
+        "Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each one works only \
+         in a folder you choose; changes are saved as new files, and anything that could replace a file asks you \
+         first. What the assistant reads goes to the AI model you chose.",
+        "Quelloffen (MIT oder Apache 2.0) und noch jung: Die Apps nennen sich selbst experimentell. Jede arbeitet nur \
+         in einem Ordner, den du wählst; Änderungen werden als neue Dateien gespeichert, und was eine Datei ersetzen \
+         könnte, fragt dich vorher. Was der Assistent liest, geht an das KI-Modell, das du gewählt hast.",
+    ),
+    (
+        "Installed one? Set it up later in Settings › MCP servers › Catalog.",
+        "Eine installiert? Richte sie später unter Einstellungen › MCP-Server › Katalog ein.",
+    ),
+    (
+        "The apps can't be listed right now. You find them later under MCP servers.",
+        "Die Apps lassen sich gerade nicht auflisten. Du findest sie später unter MCP-Server.",
+    ),
+    ("Installed", "Installiert"),
+    ("Set up", "Eingerichtet"),
+    ("Get {app}", "{app} holen"),
     ("No folder chosen", "Kein Ordner gewählt"),
     ("Every call is refused until you choose one.", "Jeder Aufruf wird abgelehnt, bis du einen wählst."),
     (

@@ -208,7 +208,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 105] = [
+    pub const ALL: [(&'static str, Open); 106] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -313,6 +313,7 @@ impl Open {
         ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
         ("setup-ai", Open::SetupAi),
         ("setup-web", Open::Setup(super::setup::Step::Web)),
+        ("setup-documents", Open::Setup(super::setup::Step::Documents)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
@@ -1290,6 +1291,14 @@ pub fn demo_connections_empty(data: &mut Data) {
 pub fn demo_uninstalled(data: &mut Data) {
     if let super::connections::Listing::Entries(servers) = &mut data.extensions {
         servers.retain(|server| server.id != "github");
+    }
+}
+
+/// `--open setup-documents` (issue #303): the step Documents with one ArtCraft app of each state – WordCraft set
+/// up, GridCraft installed but not set up (its server taken out), DeckCraft and PdfCraft missing.
+pub fn demo_documents(data: &mut Data) {
+    if let super::connections::Listing::Entries(servers) = &mut data.extensions {
+        servers.retain(|server| server.id != "gridcraft");
     }
 }
 
@@ -2325,8 +2334,9 @@ mod tests {
         assert_eq!((app.section, app.setup, app.setup_if_open), (Section::Accounts, Some(Step::Calendar), true));
         let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
         assert!(
-            err.to_string()
-                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, web, done"),
+            err.to_string().ends_with(
+                "valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, web, documents, done"
+            ),
             "{err}"
         );
     }

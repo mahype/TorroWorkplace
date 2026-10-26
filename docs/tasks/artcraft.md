@@ -225,7 +225,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   Größenklassen und in Standard, Compact, Console (Agent `torro-design-review`); Übersetzungen.
 
 ### AC.6 Einrichtung: Schritt „Documents“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** AC.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/{mod,pages}.rs`,
   `crates/torroworkplace/src/ui/mod.rs` (Katalog in der Einrichtung laden, Demo), `crates/torro-core/src/settings.rs`
   (`Setup::VERSION`), `crates/torro-gui/src/icon.rs` und `crates/torro-gui/assets/icons/` (neue Icons),

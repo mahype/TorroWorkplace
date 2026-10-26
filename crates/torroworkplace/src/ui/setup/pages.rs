@@ -1,21 +1,23 @@
 //! The pages of the setup's steps (task W.4: Welcome, Components and Done; the steps of tasks
-//! W.5–W.8 and WEB.7 follow here): each with a headline, one sentence in `text_2` and settings groups, plus
+//! W.5–W.8, WEB.7 and #303 follow here): each with a headline, one sentence in `text_2` and settings groups, plus
 //! what the footer says and what its primary button is called.
 
-use iced::widget::{Space, checkbox, column, pick_list, toggler};
-use iced::{Element, Fill, Theme};
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, checkbox, column, container, pick_list, row, toggler};
+use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, Language};
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::theme::{self, Appearance, palette, space};
+use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
 use torro_gui::{style, typo};
 
 use torro_core::account::Secret;
 use torro_inbox::{SourceKind, SourceRef};
+use torro_ipc::extensions::CatalogEntry;
 use torro_ipc::{AccountInfo, ServerService};
 use torro_pim::{AccountState, Collection};
 use torro_settings_ui::assistant::web as web_view;
@@ -37,6 +39,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
         Step::Inbox => inbox(state, data),
         Step::Ai => ai(state, data),
         Step::Web => web(state, data, class),
+        Step::Documents => documents(data, class),
     }
 }
 
@@ -726,6 +729,127 @@ fn web<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Me
         allow,
         web_view::view(&state.web, providers, class).map(Message::Web),
     ])
+}
+
+// ----- Documents (issue #303) --------------------------------------------------------------------------
+
+/// The ArtCraft apps the step presents, by their catalog id, in this order, with their symbol and what each is for.
+pub(super) const APPS: [(&str, Icon, &str); 4] = [
+    (
+        "wordcraft",
+        Icon::FileText,
+        "Documents (.docx) · Summarise a contract, fix the wording of a letter, draft a reply from your notes",
+    ),
+    (
+        "deckcraft",
+        Icon::Presentation,
+        "Presentations (.pptx) · Turn an outline into slides, add a chart, tidy up every slide's text",
+    ),
+    (
+        "gridcraft",
+        Icon::Sheet,
+        "Spreadsheets (.xlsx, .csv) · Read out figures, fill in a table, sort and chart your data",
+    ),
+    ("pdfcraft", Icon::FileType, "PDF · Find a passage, fill in a form, comment, combine or split files"),
+];
+
+/// How an ArtCraft app stands on this computer, for the step Documents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AppState {
+    /// Installed as an MCP server.
+    SetUp,
+    /// Its program is there (nothing of the entry is missing), not set up yet.
+    Installed,
+    /// Its program is missing: "Get <App>".
+    Missing,
+}
+
+/// How the catalog entry `entry` stands: set up as a server, its program found, or missing.
+pub(super) fn app_state(data: &Data, entry: &CatalogEntry) -> AppState {
+    if crate::ui::connections::installed(data, &entry.id).is_some() {
+        AppState::SetUp
+    } else if entry.missing.is_empty() {
+        AppState::Installed
+    } else {
+        AppState::Missing
+    }
+}
+
+/// "Work with your documents": what the ArtCraft apps let the assistant do, one row each with its state, and where
+/// they are set up. Only a presentation: it stores nothing. While the catalog has not answered, "Loading …"; when it
+/// cannot be listed, a sentence; "Continue" goes on either way.
+fn documents(data: &Data, class: SizeClass) -> Element<'_, Message> {
+    let lead = tr(
+        "Let the assistant open, read and edit your documents, presentations, spreadsheets and PDFs. The free ArtCraft \
+         apps do the work right here on your computer, and Torro keeps your originals safe: every change is saved as a \
+         new file.",
+    );
+    let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
+    let apps: Element<'_, Message> = match &data.catalog {
+        crate::ui::connections::Listing::Failed(_) => {
+            let sentence = tr("The apps can't be listed right now. You find them later under MCP servers.");
+            typo::text(typo::body(), sentence).style(theme::text_2).into()
+        }
+        crate::ui::connections::Listing::Entries(entries) => {
+            let rows: Vec<Element<'_, Message>> = APPS
+                .iter()
+                .filter_map(|(id, symbol, what)| {
+                    let entry = entries.iter().find(|entry| entry.id == *id)?;
+                    Some(app_row(data, entry, *symbol, tr(what), words))
+                })
+                .collect();
+            match rows.is_empty() {
+                true => widgets::loading(),
+                false => {
+                    let footer = tr(
+                        "Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each \
+                         one works only in a folder you choose; changes are saved as new files, and anything that \
+                         could replace a file asks you first. What the assistant reads goes to the AI model you chose.",
+                    );
+                    widgets::group(tr("ArtCraft apps"), rows, Some(footer.to_string()))
+                }
+            }
+        }
+    };
+    let later = typo::text(typo::body(), tr("Installed one? Set it up later in Settings › MCP servers › Catalog."))
+        .style(theme::text_2)
+        .wrapping(Wrapping::WordOrGlyph);
+    page(vec![title(tr("Work with your documents"), lead), apps, later.into()])
+}
+
+/// One ArtCraft app: its tile, its name with "Experimental", what it is for below (wrapping), and at the end how it
+/// stands – "Set up" or "Installed" with a dot, or "Get <App>" to its releases.
+fn app_row<'a>(data: &Data, entry: &'a CatalogEntry, symbol: Icon, what: &'a str, words: bool) -> Element<'a, Message> {
+    let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
+    let mut name = row![widgets::ellipsized(typo::body(), entry.name.as_str(), theme::text)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    if entry.experimental {
+        name = name.push(widgets::pill(None, tr("Experimental")));
+    }
+    let lines =
+        column![name, typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)].width(Fill);
+    let state = |word: &'a str| -> Element<'a, Message> {
+        row![widgets::status_dot(widgets::Status::Ok), typo::text(typo::meta(), word).style(theme::text_2)]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into()
+    };
+    let get = Message::GetApp(entry.url.clone());
+    let label = trf("Get {app}", &[("app", &entry.name)]);
+    let control: Element<'a, Message> = match (app_state(data, entry), words) {
+        (AppState::SetUp, _) => state(tr("Set up")),
+        (AppState::Installed, _) => state(tr("Installed")),
+        (AppState::Missing, true) => {
+            widgets::text_button(Some(Icon::ArrowUpRight), label, style::button::ghost, Some(get))
+        }
+        (AppState::Missing, false) => widgets::icon_button(Icon::ArrowUpRight, label, Some(get)),
+    };
+    // As high as a settings row with a detail while the text takes one line; it grows with more.
+    let strut = Space::new().height(size::header() - space::m());
+    let text = row![strut, tile, lines].spacing(space::m()).width(Fill).align_y(Alignment::Center);
+    let content = row![text, control].spacing(space::l()).align_y(Alignment::Center);
+    container(content).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 /// What a component is for, one line on its card.
