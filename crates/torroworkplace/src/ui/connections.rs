@@ -3,7 +3,9 @@
 //! The assistant's settings only point here since this task (`torro_settings_ui::assistant::tools`).
 //!
 //! ```text
-//! Built-in tools     Make PDFs (switch) · whether the assistant may use it · Folder · Templates ›
+//! Allowed folders    a row per folder the tools that work with files may reach, Read or Read and write · Add folder…
+//! Built-in tools     Organize files (switch) · whether the assistant may use it · No allowed folders (while none)
+//!                    Make PDFs (switch) · whether the assistant may use it · Folder · Templates ›
 //!                    Search the web (switch) · whether the assistant may use it · Search providers ›
 //!   › PDF templates  Letter · Report · Note: paper, margins, font size, header, footer, page numbers, logo
 //!   › Search providers  a group per provider of the tool `web` (`torro_settings_ui::assistant::web`)
@@ -23,6 +25,11 @@
 //! pdf_template` with the **whole** template as loaded, the one field changed ([`template_request`]):
 //! the key replaces a template whole. Header and footer go out with Enter or "Save", when another
 //! line is started, or when the templates' page is left – never on every key.
+//!
+//! **Allowed folders** (issue #304, task WD.4, here since #302): the folders the tool `files` (and later ArtCraft)
+//! works in, each to read or to read and write (`settings.set_setting allowed_folder`, [`allowed_folder_request`]).
+//! Only a person adds, changes and removes one (point 9): "Add folder…" opens the system's folder chooser, which only
+//! the shell opens ([`Chooser::AllowedFolder`]), and a folder chosen comes back to read ([`added_folder_request`]).
 //!
 //! **Search providers** (issue #305, task WEB.6, here since #302): the view the setup's step "Web search"
 //! shows too ([`web`]), on a page below the tool `web`: a provider's switch, its key
@@ -89,7 +96,9 @@ use iced::widget::{Space, column, container, row, svg, text, text_editor, toggle
 use iced::{Alignment, Element, Fill, Length, Theme};
 
 use torro_core::i18n::{tr, trc, trf};
-use torro_core::settings::{Paper, PdfTemplate, PdfTemplateId, ToolId};
+use torro_core::settings::{
+    AllowedFolder, FolderAccess, MAX_ALLOWED_FOLDERS, Paper, PdfTemplate, PdfTemplateId, ToolId,
+};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
@@ -186,7 +195,7 @@ impl<T> Listing<T> {
 /// The page of the section that is shown.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Page {
-    /// The three parts: built-in tools, catalog, own servers.
+    /// The four parts: allowed folders, built-in tools, catalog, own servers.
     #[default]
     List,
     /// "PDF templates", below the PDF tool's row "Templates": Letter, Report and Note.
@@ -686,12 +695,18 @@ pub enum Chooser {
     Folder,
     /// The logo of a PDF template, a picture of [`LOGO_EXTENSIONS`].
     Logo(PdfTemplateId),
+    /// A folder the tools that work with files may reach (task WD.4).
+    AllowedFolder,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// The switch of a tool: on or off for every client (`tool_enabled`).
     Switch(ToolId, bool),
+    /// "Read" or "Read and write" of the allowed folder with this path (task WD.4).
+    SetFolderAccess(String, FolderAccess),
+    /// "Remove" at the allowed folder with this path.
+    RemoveFolder(String),
     /// "The assistant may not use it": the assistant's window, whose Access sets its rights.
     Access,
     /// "Choose…" at the folder or at a template's logo: the shell opens the system's chooser.
@@ -823,6 +838,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             let request = match chooser {
                 Chooser::Folder => folder_request(&path),
                 Chooser::Logo(id) => logo_request(data, id, &path),
+                Chooser::AllowedFolder => added_folder_request(data, &path),
             };
             match request {
                 Some(request) => Action::Send(request),
@@ -835,6 +851,14 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::UseDesktop => {
             Action::Send(Request::SetSetting { key: SettingKey::PdfFolder, value: serde_json::Value::Null })
         }
+        Message::SetFolderAccess(path, access) => {
+            let stored = data.settings.tools.folders.iter().find(|folder| folder.path == path);
+            match stored.is_some_and(|folder| folder.access == access) {
+                true => Action::None,
+                false => Action::Send(allowed_folder_request(&path, Some(access))),
+            }
+        }
+        Message::RemoveFolder(path) => Action::Send(allowed_folder_request(&path, None)),
         Message::Templates => {
             state.page = Page::PdfTemplates;
             Action::None
@@ -1456,6 +1480,7 @@ pub async fn pick(chooser: Chooser) -> Option<PathBuf> {
         Chooser::Logo(_) => {
             dialog.set_title(tr("Choose a logo")).add_filter(tr("Pictures"), &LOGO_EXTENSIONS).pick_file().await
         }
+        Chooser::AllowedFolder => dialog.set_title(tr("Choose a folder for the tools")).pick_folder().await,
     };
     chosen.map(|file| file.path().to_path_buf())
 }
@@ -1468,6 +1493,20 @@ pub fn switch_request(tool: ToolId, on: bool) -> Request {
         key: SettingKey::ToolEnabled,
         value: serde_json::json!({ "tool": tool.name(), "enabled": on }),
     }
+}
+
+/// `settings.set_setting allowed_folder` for the folder at `path` (task WD.4): with `access` it is allowed (or its
+/// access changed), without it removed. Only a person sends it (point 9).
+pub fn allowed_folder_request(path: &str, access: Option<FolderAccess>) -> Request {
+    Request::SetSetting { key: SettingKey::AllowedFolder, value: serde_json::json!({ "path": path, "access": access }) }
+}
+
+/// The request for a folder the person chose with "Add folder…": a new one to read, one allowed already as it is.
+/// `None` for a path that is not plain text.
+pub fn added_folder_request(data: &Data, folder: &Path) -> Option<Request> {
+    let path = folder.to_str()?;
+    let stored = data.settings.tools.folders.iter().find(|allowed| Path::new(&allowed.path) == folder);
+    Some(allowed_folder_request(path, Some(stored.map_or(FolderAccess::Read, |allowed| allowed.access))))
 }
 
 /// `settings.set_setting pdf_template` with the whole template `id`: what every change of a field
@@ -1520,15 +1559,17 @@ fn line_request(data: &Data, draft: &Draft) -> Option<Request> {
 
 // ----- Views -------------------------------------------------------------------------------------
 
-/// The page: why a chosen path was not taken, then the list's three parts or the templates. In a
+/// The page: why a chosen path was not taken, then the list's four parts or the templates. In a
 /// narrow window the buttons are icons with a tooltip, so the labels keep their room (design skill,
 /// section 6).
 pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
     let body: Element<'a, Message> = match &state.page {
-        Page::List => column![tools_group(data, words), catalog_group(data, words), own_group(data)]
-            .spacing(layout::section_gap())
-            .into(),
+        Page::List => {
+            column![folders_group(data, words), tools_group(data, words), catalog_group(data, words), own_group(data)]
+                .spacing(layout::section_gap())
+                .into()
+        }
         Page::PdfTemplates => templates_page(state, data, words),
         Page::SearchProviders => providers_page(state, data, class),
         Page::Server(id) => server_page(state, data, id, words),
@@ -1541,9 +1582,12 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
 /// its search providers.
 fn tools_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     let mut rows = Vec::new();
-    for info in &data.tools {
+    for info in page_order(&data.tools) {
         rows.push(switch_row(info));
         rows.push(access_row(data, info.id));
+        if info.id == ToolId::Files && data.settings.tools.folders.is_empty() {
+            rows.push(no_folder_row(assistant_may_use(data, ToolId::Files), words));
+        }
         if info.id == ToolId::Pdf {
             rows.push(folder_row(data, words));
             rows.push(templates_row());
@@ -1601,6 +1645,7 @@ fn switch_label(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Make PDFs"),
         ToolId::Web => tr("Search the web"),
+        ToolId::Files => tr("Organize files"),
     }
 }
 
@@ -1641,6 +1686,75 @@ fn templates_row<'a>() -> Element<'a, Message> {
     let names: Vec<&str> = PdfTemplateId::ALL.into_iter().map(template_name).collect();
     let row = setting_row(None, tr("Templates"), Some(names.join(", ")), chevron());
     pressable(row, Some(Message::Templates))
+}
+
+/// "Allowed folders" (task WD.4): a row per folder with its access and "Remove", and "Add folder…" while there is room
+/// for another ([`MAX_ALLOWED_FOLDERS`]).
+fn folders_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
+    let folders = &data.settings.tools.folders;
+    let mut rows: Vec<Element<'a, Message>> = folders.iter().map(|folder| allowed_folder_row(folder, words)).collect();
+    let room = folders.len() < MAX_ALLOWED_FOLDERS;
+    let plus = icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
+    let add = setting_row(Some(plus.into()), tr("Add folder…"), None, Space::new());
+    rows.push(pressable(add, room.then_some(Message::Choose(Chooser::AllowedFolder))));
+    widgets::group(tr("Allowed folders"), rows, Some(folders_footer(folders.len())))
+}
+
+/// One allowed folder: its name, its path below, the picker "Read" / "Read and write" and "Remove".
+fn allowed_folder_row<'a>(folder: &'a AllowedFolder, words: bool) -> Element<'a, Message> {
+    let path = folder.path.as_str();
+    let access = picker(AccessChoice::ALL.to_vec(), AccessChoice(folder.access), move |choice: AccessChoice| {
+        Message::SetFolderAccess(path.to_string(), choice.0)
+    });
+    let remove = Message::RemoveFolder(folder.path.clone());
+    let remove = match words {
+        true => widgets::text_button(None, tr("Remove"), style::button::ghost, Some(remove)),
+        false => widgets::icon_button(Icon::X, tr("Remove"), Some(remove)),
+    };
+    let control = row![access, remove].spacing(space::s()).align_y(Alignment::Center);
+    setting_row(Some(folder_mark()), file_name(path), Some(path.to_string()), control)
+}
+
+/// The mark of a folder row: the folder icon in `text_2`.
+fn folder_mark<'a>() -> Element<'a, Message> {
+    icon::icon(Icon::Folder, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) }).into()
+}
+
+/// Under the tool `files` while no folder is allowed: it works in none yet, with "Add folder…" right there; an orange
+/// dot when the assistant may use the tool (something to do), else the folder mark.
+fn no_folder_row<'a>(flagged: bool, words: bool) -> Element<'a, Message> {
+    let add = Message::Choose(Chooser::AllowedFolder);
+    let button = match words {
+        true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, Some(add)),
+        false => widgets::icon_button(Icon::Plus, tr("Add folder…"), Some(add)),
+    };
+    let detail = tr("The tool works only in allowed folders.");
+    let mark = match flagged {
+        true => widgets::status_dot(Dot::Attention),
+        false => folder_mark(),
+    };
+    setting_row(Some(mark), tr("No allowed folders"), Some(detail.to_string()), button)
+}
+
+/// What the allowed folders' group says below it, with the limit once it is reached.
+fn folders_footer(count: usize) -> String {
+    let footer =
+        tr("Tools like Files work only in these folders; ArtCraft will use them too. Only you can change this list.");
+    match count < MAX_ALLOWED_FOLDERS {
+        true => footer.to_string(),
+        false => {
+            let limit = trf("At most {n} folders. Remove one to add another.", &[("n", &MAX_ALLOWED_FOLDERS)]);
+            format!("{footer} {limit}")
+        }
+    }
+}
+
+/// The tools in the order of the group: those that work in the allowed folders first, next to them, then the others
+/// in the core's order.
+pub fn page_order(tools: &[ToolInfo]) -> Vec<&ToolInfo> {
+    let mut ordered: Vec<&ToolInfo> = tools.iter().collect();
+    ordered.sort_by_key(|info| info.id != ToolId::Files);
+    ordered
 }
 
 /// "Search providers": the providers switched on, in the order they are asked, and the page they are set on.
@@ -3007,6 +3121,23 @@ impl fmt::Display for PaperChoice {
     }
 }
 
+/// An allowed folder's access in the picker: "Read", "Read and write".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessChoice(pub FolderAccess);
+
+impl AccessChoice {
+    const ALL: [AccessChoice; 2] = [AccessChoice(FolderAccess::Read), AccessChoice(FolderAccess::ReadWrite)];
+}
+
+impl fmt::Display for AccessChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            FolderAccess::Read => tr("Read"),
+            FolderAccess::ReadWrite => tr("Read and write"),
+        })
+    }
+}
+
 /// Margins in the picker, top, right, bottom, left: "20 mm", or "20 · 25 · 20 · 25 mm" when they
 /// differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3221,6 +3352,11 @@ mod tests {
             Message::Choose(Chooser::Logo(PdfTemplateId::Letter)),
             Message::RemoveLogo(PdfTemplateId::Letter),
             Message::Back,
+            Message::Choose(Chooser::AllowedFolder),
+            Message::Picked(Chooser::AllowedFolder, Some(PathBuf::from("/home/anna/Invoices"))),
+            Message::SetFolderAccess("/home/anna/Documents".into(), FolderAccess::ReadWrite),
+            Message::RemoveFolder("/home/anna/Documents".into()),
+            Message::Switch(ToolId::Files, true),
             Message::Switch(ToolId::Web, true),
             Message::SearchProviders,
             Message::Web(web::Message::Switch(SearchProviderId::Brave, true)),
@@ -3287,6 +3423,39 @@ mod tests {
         assert_eq!(request, web::address_request(Some("https://s.example.org")));
         assert!(checked(&mut state, &Err("This SearXNG instance does not answer in JSON.".into())), "shown here");
         assert!(!checked(&mut state, &Ok(Response::Ok)), "no check waits any more");
+    }
+
+    /// Issue #304 here since #302: the allowed folders come first with their access and "Remove"; a folder chosen
+    /// with "Add folder…" goes out to read, one allowed already keeps its access, and an access as stored sends
+    /// nothing. The tool `files` comes first among the tools and says so while no folder is allowed.
+    #[test]
+    fn allowed_folders_are_set_here_and_the_files_tool_comes_first() {
+        let mut data = data();
+        launch::demo_connections(&mut data);
+        let folders = data.settings.tools.folders.clone();
+        assert!(!folders.is_empty(), "the demo allows folders");
+        let mut state = State::default();
+        let chosen = Message::Picked(Chooser::AllowedFolder, Some(PathBuf::from("/home/anna/Invoices")));
+        assert_eq!(
+            one(update(&mut state, chosen, &data)),
+            allowed_folder_request("/home/anna/Invoices", Some(FolderAccess::Read))
+        );
+        let again = Message::Picked(Chooser::AllowedFolder, Some(PathBuf::from(&folders[0].path)));
+        assert_eq!(
+            one(update(&mut state, again, &data)),
+            allowed_folder_request(&folders[0].path, Some(folders[0].access))
+        );
+        let same = Message::SetFolderAccess(folders[0].path.clone(), folders[0].access);
+        assert!(matches!(update(&mut state, same, &data), Action::None), "as stored");
+        let removed = one(update(&mut state, Message::RemoveFolder(folders[0].path.clone()), &data));
+        assert_eq!(removed, allowed_folder_request(&folders[0].path, None));
+        assert_eq!(page_order(&data.tools).first().map(|info| info.id), Some(ToolId::Files));
+        for class in [SizeClass::Wide, SizeClass::Narrow] {
+            let _ = view(&state, &data, class);
+            data.settings.tools.folders.clear();
+            let _ = view(&state, &data, class);
+            data.settings.tools.folders = folders.clone();
+        }
     }
 
     /// Task WEB.6: the tool `web` needs reading in `tools` and `web` ticked by name; "All" tools is not enough, as

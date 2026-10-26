@@ -448,6 +448,13 @@ pub fn ids(request: &Request) -> Vec<String> {
             checked("extension", extension, extensions::valid_id),
             checked("tool", tool, |tool| extensions::tool_name("x", tool).is_some()),
         ],
+        // The tool `files` (issue #304): nothing at all, every field is a path or a name searched for.
+        Request::ListFolder { .. }
+        | Request::FindFiles { .. }
+        | Request::CreateFolder { .. }
+        | Request::CopyFile { .. }
+        | Request::MoveFile { .. }
+        | Request::TrashFile { .. } => Vec::new(),
         // The web (issue #305): never the search words, the language asked for or the address of a page;
         // a key by its provider only, never the key.
         Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders => Vec::new(),
@@ -921,6 +928,18 @@ pub(crate) mod tests {
         };
         assert_eq!(super::ids(&secret), ["extension:github"]);
         assert!(super::ids(&Request::ListExtensionTools).is_empty());
+        // The tool `files` (issue #304): never a path or a name searched for.
+        let path = || "/Users/anna/Salary/2026.pdf".to_string();
+        for request in [
+            Request::ListFolder { path: Some(path()) },
+            Request::FindFiles { folder: path(), name: "salary".into() },
+            Request::CreateFolder { path: path() },
+            Request::CopyFile { from: path(), to: path() },
+            Request::MoveFile { from: path(), to: path() },
+            Request::TrashFile { path: path() },
+        ] {
+            assert!(super::ids(&request).is_empty(), "{request:?}");
+        }
     }
 
     /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they

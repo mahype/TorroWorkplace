@@ -162,6 +162,9 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2
 # backup writes (`disk`, #267).
 sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk"] }
 tempfile = "3.27.0"
+# The tool `files` of the assistant (torroworkplace, WD.3): moves an entry to the system's trash, never deletes it – the
+# Recycle Bin on Windows, the freedesktop trash on Linux, the Finder's trash on macOS (through NSFileManager). MIT.
+trash = "5.2.9"
 # Design packs (torro-core, L.1): `design.toml` is read with toml (parse and serde only, no writer); ttf-parser reads the
 # family names of a pack's fonts, the version Iced's font stack already brings.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }

@@ -378,9 +378,12 @@ Bis zur Nacharbeit von #302 hieß der Abschnitt „MCP“; `--section mcp` bleib
 ### MCP servers (#302)
 
 Die Seite „MCP servers“ (bis zur Nacharbeit von #302 „MCP connections“, `--section connections`, Aufgaben
-MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen Befehlen. Sie hat drei Teile:
+MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen Befehlen. Sie hat vier Teile:
 
-- **Built-in tools:** die eigenen Werkzeuge der Suite, heute PDF und Web. Schalter „Make PDFs“ (`tool_enabled`;
+- **Allowed folders** (#304): die Ordner, in denen Werkzeuge mit Dateien arbeiten, je „Read“ oder „Read and write“,
+  „Add folder…“ und „Remove“; nur ein Mensch ändert die Liste.
+- **Built-in tools:** die eigenen Werkzeuge der Suite, heute Files, PDF und Web; „Organize files“ zeigt, solange kein
+  Ordner freigegeben ist, „No allowed folders“ mit „Add folder…“. Schalter „Make PDFs“ (`tool_enabled`;
   einschalten nur ein Mensch), Ablage-Ordner und die Unterseite **„PDF templates“** mit den Vorlagen Letter, Report und
   Note; Schalter „Search the web“ und die Unterseite **„Search providers“** (#305): je Anbieter Schalter, Schlüssel und
   bei SearXNG die Adresse, dieselbe Ansicht wie im Einrichtungsschritt „Web search“.
@@ -472,6 +475,7 @@ Assistent-Fenster denselben nutzen.
 | Agents & API › Hooks | MCP clients › Seite des Agenten › Notification Hub |
 | Assistent › Tools (Schalter, Ablage, Vorlagen PDF) | MCP servers › Built-in tools, Vorlagen unter „PDF templates“ (#302) |
 | Assistent › Tools › Web (Anbieter der Websuche, #305) | MCP servers › Built-in tools › „Search providers“ (beim Merge von #302) |
+| Assistent › Tools › Allowed folders, Organize files (#304) | MCP servers › „Allowed folders“ und Built-in tools (beim Merge von #302) |
 | – (neu mit #302) | MCP servers › Catalog und Your own servers; `--section connections` |
 | Agents & API › Assistant, Bots | Assistent-Fenster › Access |
 | `--section agents` | `--section mcp` (`agents` bleibt als Wort dafür) |
@@ -694,8 +698,9 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | – (Sprachmodell, Stimme) | whisper- und Piper-Datei | keine Oberfläche, erste im Ordner | `voice.sttModel`, `voice.voice` | `set_setting stt_model`, `set_setting voice` | Assistent | bleibt ohne Oberfläche, bis es mehr als eine Datei gibt |
 | Test the microphone, Check again | Prüfen (Aktion) | Assistant › Voice, Programs | – | `settings.test_voice` (nie), `settings.voice_status` | – | bleibt als Aktion |
 | Keep conversations (30, 90 Tage, 1 Jahr, Forever) | wie lange Unterhaltungen bleiben | Assistant › Keep conversations | `assistantRetention` | `set_setting assistant_retention` | Assistent | bleibt, Assistent |
-| Make PDFs (Schalter je Werkzeug) | ob es ein eigenes Werkzeug auf diesem Rechner gibt, für jeden Client (#225) | MCP servers › Built-in tools (seit #302; vorher Assistent › Tools, WZ.6) | `tools.enabled` | `set_setting tool_enabled` (an nur Menschen, Punkt 9); Liste `tools.list_tools` | Assistent | Assistent |
+| Make PDFs, Organize files (Schalter je Werkzeug) | ob es ein eigenes Werkzeug auf diesem Rechner gibt, für jeden Client (#225, #304) | MCP servers › Built-in tools (seit #302; vorher Assistent › Tools, WZ.6) | `tools.enabled` | `set_setting tool_enabled` (an nur Menschen, Punkt 9); Liste `tools.list_tools` | Assistent | Assistent |
 | Folder (Choose…, Use desktop) | wohin neue PDFs gehen, sonst Schreibtisch | MCP servers › Built-in tools | `tools.pdf.folder` | `set_setting pdf_folder` (setzen nur Menschen, `null` jeder mit Admin) | Assistent | Assistent; Dialog des Systems in der App |
+| Allowed folders (Add folder…, Read / Read and write, Remove) | in welchen Ordnern Werkzeuge mit Dateien arbeiten dürfen (Files, später ArtCraft) und wie weit (#304) | MCP servers › Built-in tools (WD.4, seit #302 dort) | `tools.folders` | `set_setting allowed_folder` (`{"path", "access"}`, `null` entfernt; nur Menschen, auch das Entfernen, Punkt 9) | Werkzeuge mit Dateien | Assistent; Dialog des Systems in der App, neu zuerst „Read“ |
 | Vorlagen Letter, Report, Note: Paper, Margins, Font size, Header, Footer, Page numbers, Logo | wie eine PDF gesetzt wird | MCP servers › Built-in tools › PDF templates | `tools.pdf.letter`, `.report`, `.note` | `set_setting pdf_template` (ganze Vorlage; Logo setzen nur Menschen) | Assistent | Assistent; jede Änderung schickt die ganze Vorlage |
 | Welche Werkzeuge ein Client darf | Rechte, Bereich `tools` mit Auswahl | Agents & API (WZ.7) | `clients.json` | `clients.update_client`, MCP bewusst nie | alle Clients | Rechte-Editor (seit #231: Assistent › Access, API, MCP clients); Tools zeigt es nur an |
 | Websuche-Anbieter (Schalter je Anbieter: SearXNG, Brave, Tavily, Exa, Mojeek, DuckDuckGo, Wikipedia) | an welche Dienste die Suchwörter des Werkzeugs `web` gehen, in fester Reihenfolge (#305) | neu: MCP servers › Built-in tools › Web (WEB.6, seit #302 dort), Einrichtung „Web search“ (WEB.7) | `webSearch.providers` | `set_setting search_provider` (an nur Menschen, Punkt 6); Liste `tools.list_search_providers` | Assistent | Assistent |

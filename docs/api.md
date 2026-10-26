@@ -85,7 +85,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
-| `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²² | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten) | | |
+| `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
 | `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret` (die letzten vier **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
@@ -728,7 +728,17 @@ Jedes Werkzeug hat einen Schalter (Einstellung `tool_enabled`, einschalten nur M
 Auswahl in den Rechten (`Rights::tools`). Ein Befehl eines Werkzeugs läuft nur, wenn beides stimmt, sonst
 `forbidden` (`Lack::ToolOff` bzw. `Lack::Tool`), geprüft vor der Freigabe und bei ihrer Ausführung noch einmal.
 `open_file`, `save_file_as`, `apps.open_app` mit `file:` und Anhänge in `mail.save_draft` nehmen nur Dateien
-aus dem Register des Kerns; ein Client nur solche, die er selbst erzeugt hat.
+aus dem Register des Kerns; ein Client nur solche, die er selbst erzeugt hat. `allowed` in `list_tools` heißt für
+`pdf` Schreibrecht in `tools`, für `files` Leserecht (`torro_ipc::tools::access_to_use`).
+Das Werkzeug **`files`** (Issue #304, [assistent.md](assistent.md) „Werkzeug Dateien“) arbeitet nur in den
+**freigegebenen Ordnern** (Einstellung `allowed_folder`, je Ordner `read` oder `read_write`, der innerste gilt;
+verwalten nur Menschen, Punkt 9). Pfade sind absolut, ohne `.` und `..`; was draußen liegt oder immer gesperrt ist
+(Ordner der Suite, Dateien mit Client-Schlüsseln und Hooks, Schlüsselablagen des Systems), ist `not-found`, Schreiben
+in einen Ordner mit `read` `forbidden`. Ein belegtes Ziel wird nie überschrieben: der Kern wählt einen freien Namen
+und antwortet mit dem entstandenen Pfad (`file-path`). `list_folder` und `find_files` antworten mit
+`folder-entries` und `truncated` an ihren Grenzen (500 Einträge; 200 Treffer, 10 Ebenen, 50.000 angesehene
+Einträge). `trash_file` ist `Delete` und fragt **immer** einen Menschen, auch bei „Ask first: Never“. Protokoll und
+Log nennen weder Pfade noch Suchbegriffe.
 Das Werkzeug `web` (#305) braucht nur Lesen, muss aber in der Auswahl einzeln angehakt sein („All“ reicht nicht,
 `ToolId::needs_naming`): `web_search` und `fetch_page` schicken Suchwörter und Adressen aus dem Rechner, im
 Gespräch des Assistenten erst nach einem Ja je Unterhaltung. `list_search_providers` gehört zu keinem Werkzeug.
@@ -967,7 +977,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    und `Rights::allows_request` geben einem Client `forbidden`, auch mit Admin-Rechten (Skript-Schlüssel
    können Admin haben). Ohne `logs` ist der Befehl gewöhnliches Lesen im Bereich `system` (Version,
    System; Konten nur mit Leserecht in `accounts`).
-9. **Eine Datei an einen frei gewählten Ort sichern und ein eigenes Werkzeug des Assistenten einschalten**
+9. **Eine Datei an einen frei gewählten Ort sichern, ein eigenes Werkzeug des Assistenten einschalten und die
+   freigegebenen Ordner verwalten**
    ([assistent.md](assistent.md) „Eigene Werkzeuge“): `tools.save_file_as` („Save as…“ auf der Datei-Karte im
    Chat) nur mit dem App-Schlüssel, also nur durch einen Menschen, der das Ziel im Dialog des Systems wählt
    (`Mcp::Never`). Sonst gäbe ein Agent dem Kern einen Pfad, und „Dateien und Shell bleiben immer aus“
@@ -979,6 +990,12 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Vorlage (`pdf_template`): Beides sind Pfade, das Logo liest eine Datei in eine PDF, und ein Ordner in einem
    synchronisierten Verzeichnis brächte Inhalte ohne Sende-Freigabe vom Rechner. Der Dienst vergleicht mit dem
    gespeicherten Stand (wie beim Mikrofon über `settings.update_settings`); entfernen darf jeder mit Admin.
+   Die **freigegebenen Ordner** des Werkzeugs `files` (`settings.set_setting allowed_folder`, Issue #304) verwalten
+   nur Menschen, und zwar ganz: hinzufügen, die Stufe ändern **und entfernen**. Die Liste zu verwalten heißt Rechte
+   zu vergeben, ein Agent gäbe sich sonst selbst einen Ordner frei oder nähme einem anderen Werkzeug seinen. Jeder
+   Wert von `allowed_folder` und jedes `settings.update_settings`, das die Liste ändert, bekommt von jedem Client
+   `forbidden` (`Request::kept_for_people`, `Tools::needs_a_person`); ein Client, der die ganzen Einstellungen
+   schreibt, behält die gespeicherte Liste (`Tools::from_client`).
 10. **Einen MCP-Server installieren, einschalten, seinen Werkzeugen zustimmen, ihn aktualisieren, seine
    Geheimnisse setzen und seine Ausgaben lesen** (Issue #302, Fußnote ²⁵): `extensions.install_extension`,
    `extensions.confirm_tools`, `extensions.update_extension`, `extensions.set_secret` und `extensions.read_logs`

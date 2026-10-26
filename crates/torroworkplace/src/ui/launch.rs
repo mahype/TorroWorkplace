@@ -1180,13 +1180,19 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
 
 /// `--open connections` (task MA.7): the PDF tool on, a folder of its own and a logo in the report
 /// template, so every row of "Built-in tools" and the templates shows; the tool `web` on with DuckDuckGo
-/// and Wikipedia (task WEB.6). Paths only: the demo reads no file and stores no key.
+/// and Wikipedia (task WEB.6); the tool `files` on with two allowed folders, one to read and one to write
+/// (task WD.4). Paths only: the demo reads no file and stores no key.
 pub fn demo_connections(data: &mut Data) {
-    use torro_core::settings::{PdfTemplateId, ToolId};
+    use torro_core::settings::{AllowedFolder, FolderAccess, PdfTemplateId, ToolId};
     use torro_ipc::web::SearchProviderId;
     let tools = &mut data.settings.tools;
     tools.set_on(ToolId::Pdf, true);
     tools.set_on(ToolId::Web, true);
+    tools.set_on(ToolId::Files, true);
+    tools.folders = vec![
+        AllowedFolder { path: "/home/anna/Documents".into(), access: FolderAccess::Read },
+        AllowedFolder { path: "/home/anna/Projects/Invoices".into(), access: FolderAccess::ReadWrite },
+    ];
     tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
     tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
     data.tools = demo_tools(&data.settings.tools);

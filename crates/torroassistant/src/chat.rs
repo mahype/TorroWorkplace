@@ -432,6 +432,12 @@ pub fn tool_title(name: &str) -> String {
         "tools.web_search" => tr("Searched the web"),
         "tools.fetch_page" => tr("Read web page"),
         "tools.list_search_providers" => tr("Listed search providers"),
+        "tools.list_folder" => tr("Listed folder"),
+        "tools.find_files" => tr("Found files"),
+        "tools.create_folder" => tr("Made folder"),
+        "tools.copy_file" => tr("Copied file"),
+        "tools.move_file" => tr("Moved file"),
+        "tools.trash_file" => tr("Moved to trash"),
         "find_tools" => tr("Looked for tools"),
         other => return other.to_owned(),
     };
@@ -1014,6 +1020,17 @@ mod tests {
         assert_eq!(tool_title("tools.web_search"), tr("Searched the web"));
         assert_eq!(tool_title("tools.fetch_page"), tr("Read web page"));
         assert_eq!(tool_title("tools.list_search_providers"), tr("Listed search providers"));
+        // Issue #304: the tool `files`.
+        for (name, title) in [
+            ("tools.list_folder", "Listed folder"),
+            ("tools.find_files", "Found files"),
+            ("tools.create_folder", "Made folder"),
+            ("tools.copy_file", "Copied file"),
+            ("tools.move_file", "Moved file"),
+            ("tools.trash_file", "Moved to trash"),
+        ] {
+            assert_eq!(tool_title(name), tr(title), "{name}");
+        }
         let file = FileInfo {
             id: "1a2b3c4d".into(),
             name: "Offer.pdf".into(),

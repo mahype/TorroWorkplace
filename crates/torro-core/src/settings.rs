@@ -1318,37 +1318,53 @@ pub enum ToolId {
     /// (`tools.fetch_page`). Both only read, but send search words or an address out of the computer,
     /// so a client reaches it only when a person ticked it ([`ToolId::needs_naming`]).
     Web,
+    /// `files` (issue #304, "Werkzeug Dateien" in `docs/assistent.md`): organizes files in the folders a
+    /// person allowed ([`Tools::folders`]) – lists a folder, finds files by name, makes a folder, copies,
+    /// moves or renames and moves to the trash (`tools.list_folder`, `tools.find_files`,
+    /// `tools.create_folder`, `tools.copy_file`, `tools.move_file`, `tools.trash_file`). Never reads or
+    /// changes what a file holds.
+    Files,
 }
 
 impl ToolId {
     /// Every tool, in the order the settings and the control centre show them.
-    pub const ALL: [ToolId; 2] = [ToolId::Pdf, ToolId::Web];
+    pub const ALL: [ToolId; 3] = [ToolId::Pdf, ToolId::Web, ToolId::Files];
 
-    /// The id on the wire and in a selection of the rights: `pdf`, `web`.
+    /// The id on the wire and in a selection of the rights: `pdf`, `web`, `files`.
     pub fn name(self) -> &'static str {
         match self {
             ToolId::Pdf => "pdf",
             ToolId::Web => "web",
+            ToolId::Files => "files",
         }
     }
 
-    /// What people call it, the same in every language: `PDF`, `Web`.
+    /// What people call it, the same in every language: `PDF`, `Web`, `Files`.
     pub fn title(self) -> &'static str {
         match self {
             ToolId::Pdf => "PDF",
             ToolId::Web => "Web",
+            ToolId::Files => "Files",
         }
     }
 
     /// The tool the catalogue command `name` belongs to: `tools.create_pdf`, `tools.open_file` and
     /// `tools.save_file_as` to [`ToolId::Pdf`] (every file a tool makes is a PDF for now),
-    /// `tools.web_search` and `tools.fetch_page` to [`ToolId::Web`]. `None` for `tools.list_tools`
-    /// and `tools.list_search_providers`, which belong to no tool, and for every other name. The core
+    /// `tools.web_search` and `tools.fetch_page` to [`ToolId::Web`], `tools.list_folder`,
+    /// `tools.find_files`, `tools.create_folder`, `tools.copy_file`, `tools.move_file` and
+    /// `tools.trash_file` to [`ToolId::Files`]. `None` for `tools.list_tools` and
+    /// `tools.list_search_providers`, which belong to no tool, and for every other name. The core
     /// checks the switch and the selection of exactly this tool before such a command runs.
     pub fn of_command(name: &str) -> Option<ToolId> {
         match name {
             "tools.create_pdf" | "tools.open_file" | "tools.save_file_as" => Some(ToolId::Pdf),
             "tools.web_search" | "tools.fetch_page" => Some(ToolId::Web),
+            "tools.list_folder"
+            | "tools.find_files"
+            | "tools.create_folder"
+            | "tools.copy_file"
+            | "tools.move_file"
+            | "tools.trash_file" => Some(ToolId::Files),
             _ => None,
         }
     }
@@ -1367,7 +1383,7 @@ impl ToolId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSwitch {
-    /// The tool: `pdf` or `web`.
+    /// The tool: `pdf`, `web` or `files`.
     pub tool: ToolId,
     /// `true` switches it on, `false` off.
     pub enabled: bool,
@@ -1643,6 +1659,85 @@ pub struct Tools {
     /// The PDF tool. Boxed: three templates would make [`Settings`], which requests carry whole
     /// (`settings.update_settings`), much larger than every other request.
     pub pdf: Box<PdfSettings>,
+    /// The folders a person allowed the tools that work with files (issue #304, decision 27 in
+    /// `docs/assistent.md`): one list for all of them – the tool `files` now, ArtCraft later (#303) –
+    /// each with how far a tool may go there. Only a person manages it, removing included (point 9
+    /// of "Was nie nach außen geht"). At most [`MAX_ALLOWED_FOLDERS`], checked when it changes
+    /// ([`Tools::check_folders`]); an entry this version cannot read is dropped when the file is read.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "readable_entries")]
+    pub folders: Vec<AllowedFolder>,
+}
+
+/// At most this many allowed folders ([`Tools::folders`]).
+pub const MAX_ALLOWED_FOLDERS: usize = 50;
+
+/// How far a tool may go in an allowed folder ([`AllowedFolder`], issue #304). When folders lie one
+/// inside the other, the innermost one's counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderAccess {
+    /// `read`: list and find, and copy from it; nothing in it is made, changed, moved or trashed. What a
+    /// person adds starts so.
+    Read,
+    /// `read_write`: also make folders, copy and move into it, move and rename in it and move to the trash.
+    ReadWrite,
+}
+
+/// One folder a person allowed the tools that work with files ([`Tools::folders`], issue #304). A tool
+/// reaches what is in it, resolved (`canonicalize`), and nothing outside; the suite's own folders and the
+/// system's key stores stay out also inside it (decision 31).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AllowedFolder {
+    /// The folder, an absolute path as the person chose it (`/Users/anna/Documents`): one line of at most
+    /// 4096 bytes ([`AllowedFolder::check`]). Whether it exists is the tool's check when it runs: a drive
+    /// may not be mounted yet.
+    pub path: String,
+    /// How far a tool may go in it.
+    pub access: FolderAccess,
+}
+
+impl AllowedFolder {
+    /// Whether the path can be an allowed folder, else why not: absolute on this system, without control
+    /// characters, at most 4096 bytes. The message does not repeat the path.
+    pub fn check(&self) -> Result<(), String> {
+        match absolute_path(&self.path) {
+            true => Ok(()),
+            false => Err("an allowed folder is an absolute path of one line, at most 4096 bytes".into()),
+        }
+    }
+}
+
+/// One change of the allowed folders, the value of `settings.set_setting allowed_folder` (issue #304):
+/// `{"path": "/abs", "access": "read" | "read_write" | null}`. With an access the folder is added, or a
+/// folder of that path already there gets it; with `null` the folder of that path is removed (nothing
+/// happens when there is none). Applied with [`Tools::change_folder`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderChange {
+    /// The folder, an absolute path; compared with the stored ones as a path (`/a/b/` is `/a/b`).
+    pub path: String,
+    /// Its new access, `None` to remove it.
+    pub access: Option<FolderAccess>,
+}
+
+impl FolderChange {
+    /// The change in `value`, or why it does not read: an object with exactly `path` (a string) and
+    /// `access` (`"read"`, `"read_write"` or `null`, never left out, so a forgotten field removes nothing).
+    /// A path to add must pass [`AllowedFolder::check`]; one to remove only be a string. No message repeats
+    /// the path.
+    pub fn from_value(value: &serde_json::Value) -> Result<FolderChange, String> {
+        const FORM: &str = "send {\"path\": \"<absolute path>\", \"access\": \"read\" | \"read_write\" | null}";
+        let fields = value.as_object().filter(|fields| fields.len() == 2).ok_or_else(|| FORM.to_string())?;
+        let path = fields.get("path").and_then(serde_json::Value::as_str).ok_or_else(|| FORM.to_string())?;
+        let access = match fields.get("access") {
+            Some(serde_json::Value::Null) => None,
+            Some(access) => Some(serde_json::from_value(access.clone()).map_err(|_| FORM.to_string())?),
+            None => return Err(FORM.to_string()),
+        };
+        if let Some(access) = access {
+            AllowedFolder { path: path.to_string(), access }.check()?;
+        }
+        Ok(FolderChange { path: path.to_string(), access })
+    }
 }
 
 impl Tools {
@@ -1661,23 +1756,25 @@ impl Tools {
     }
 
     /// Whether going from these tools (as stored) to `new` does what only a person may (point 9 of
-    /// "Was nie nach außen geht"): switch a tool on, set a folder other than the stored one, or set
-    /// a logo other than the stored one. Removing a folder or a logo is no such change. The core
-    /// refuses a client's `settings.update_settings` with it.
+    /// "Was nie nach außen geht"): switch a tool on, set a folder other than the stored one, set
+    /// a logo other than the stored one, or change the allowed folders in any way (adding, removing, another
+    /// access, issue #304). Removing the PDF folder or a logo is no such change. The core refuses a client's
+    /// `settings.update_settings` with it.
     pub fn needs_a_person(&self, new: &Tools) -> bool {
         let switches_on = !new.enabled.is_subset(&self.enabled);
         let set_anew = |stored: &Option<String>, new: &Option<String>| new.is_some() && new != stored;
         let folder = set_anew(&self.pdf.folder, &new.pdf.folder);
         let logo =
             PdfTemplateId::ALL.into_iter().any(|id| set_anew(&self.pdf.template(id).logo, &new.pdf.template(id).logo));
-        switches_on || folder || logo
+        switches_on || folder || logo || new.folders != self.folders
     }
 
     /// `sent` as a client may store it over these tools (as stored), for `settings.update_settings`:
     /// a tool stays on only when it is on in both; the folder and each logo are removed when `sent`
     /// removes them and otherwise stay as stored; the other fields of the templates are taken from
-    /// `sent`. So a client removes a path like any admin change, and a person who switched a tool
-    /// off or removed a path between the core's check and the write is not undone.
+    /// `sent`; the allowed folders stay as stored, whatever `sent` says (issue #304). So a client removes a
+    /// PDF path like any admin change, and a person who switched a tool off or removed a path between the
+    /// core's check and the write is not undone.
     pub fn from_client(&self, sent: &Tools) -> Tools {
         let mut tools = sent.clone();
         tools.enabled = self.enabled.intersection(&sent.enabled).copied().collect();
@@ -1685,8 +1782,51 @@ impl Tools {
         for id in PdfTemplateId::ALL {
             tools.pdf.template_mut(id).logo = kept_or_removed(&self.pdf.template(id).logo, &sent.pdf.template(id).logo);
         }
+        tools.folders = self.folders.clone();
         tools
     }
+
+    /// Applies `change` to the allowed folders: a path already there (compared as a path) gets the new
+    /// access or is removed with `None`; a new one is added at the end with its access, a new one with
+    /// `None` changes nothing. The limits are [`Tools::check_folders`]'s, after it.
+    pub fn change_folder(&mut self, change: FolderChange) {
+        let at = self.folders.iter().position(|folder| Path::new(&folder.path) == Path::new(&change.path));
+        match (at, change.access) {
+            (Some(at), Some(access)) => self.folders[at].access = access,
+            (Some(at), None) => {
+                self.folders.remove(at);
+            }
+            (None, Some(access)) => self.folders.push(AllowedFolder { path: change.path, access }),
+            (None, None) => {}
+        }
+    }
+
+    /// Whether the allowed folders fit, else why not: at most [`MAX_ALLOWED_FOLDERS`], each as
+    /// [`AllowedFolder::check`] wants it, no path twice (compared as a path). For every write that changes
+    /// them (`set_setting allowed_folder`, `update_settings`); what is stored is not checked again, so a
+    /// hand-edited file does not block changing anything else. No message repeats a path.
+    pub fn check_folders(&self) -> Result<(), String> {
+        if self.folders.len() > MAX_ALLOWED_FOLDERS {
+            return Err(format!("at most {MAX_ALLOWED_FOLDERS} folders can be allowed"));
+        }
+        for (at, folder) in self.folders.iter().enumerate() {
+            folder.check()?;
+            if self.folders[..at].iter().any(|before| Path::new(&before.path) == Path::new(&folder.path)) {
+                return Err("a folder is allowed only once; change its access instead".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The entries of a list as written, without those this version cannot read (an access a newer one
+/// added): a damaged entry must not cost the other settings.
+fn readable_entries<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let entries = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok(entries.iter().filter_map(|entry| serde_json::from_value(entry.clone()).ok()).collect())
 }
 
 /// A path as a client may store it: `None` when it sends none (removing is an admin change), else
@@ -2701,6 +2841,7 @@ mod tests {
             tools: Tools {
                 enabled: BTreeSet::from([ToolId::Pdf]),
                 pdf: Box::new(PdfSettings { folder: Some("/Users/anna/PDFs".into()), ..PdfSettings::default() }),
+                folders: vec![AllowedFolder { path: "/Users/anna/Documents".into(), access: FolderAccess::Read }],
             },
             web_search: WebSearch {
                 providers: BTreeSet::from([SearchProviderId::Duckduckgo, SearchProviderId::Wikipedia]),
@@ -3168,14 +3309,140 @@ mod tests {
         for name in ["tools.create_pdf", "tools.open_file", "tools.save_file_as"] {
             assert_eq!(ToolId::of_command(name), Some(ToolId::Pdf), "{name}");
         }
+        for name in [
+            "tools.list_folder",
+            "tools.find_files",
+            "tools.create_folder",
+            "tools.copy_file",
+            "tools.move_file",
+            "tools.trash_file",
+        ] {
+            assert_eq!(ToolId::of_command(name), Some(ToolId::Files), "{name}");
+        }
         for name in ["tools.web_search", "tools.fetch_page"] {
             assert_eq!(ToolId::of_command(name), Some(ToolId::Web), "{name}");
         }
-        for name in ["tools.list_tools", "tools.list_search_providers", "settings.set_setting", "pdf", "web", ""] {
+        for name in
+            ["tools.list_tools", "tools.list_search_providers", "settings.set_setting", "pdf", "web", "files", ""]
+        {
             assert_eq!(ToolId::of_command(name), None, "{name}");
         }
         assert_eq!((ToolId::Web.name(), ToolId::Web.title()), ("web", "Web"));
         assert!(ToolId::Web.needs_naming() && !ToolId::Pdf.needs_naming(), "only web needs a person's tick");
+        assert!(!ToolId::Files.needs_naming(), "files stays on the computer, \"all tools\" covers it");
+        assert_eq!(ToolId::ALL, [ToolId::Pdf, ToolId::Web, ToolId::Files], "files last");
+        assert_eq!((ToolId::Files.name(), ToolId::Files.title()), ("files", "Files"));
+        assert_eq!(serde_json::to_value(ToolId::Files).expect("json"), "files");
+    }
+
+    /// Issue #304: the allowed folders start empty and stay out of the file then; each reads with its
+    /// access, an entry this version cannot read is dropped, never the other settings.
+    #[test]
+    fn allowed_folders_are_read_leniently() {
+        assert!(Settings::default().tools.folders.is_empty());
+        let empty = serde_json::to_value(Tools::default()).expect("json");
+        assert!(empty.get("folders").is_none(), "an empty list is not written: {empty}");
+        let docs = absolute("/Users/anna/Documents");
+        let text = serde_json::json!({
+            "language": "german",
+            "tools": {"folders": [
+                {"path": docs, "access": "read"},
+                {"path": absolute("/Users/anna/Out"), "access": "read_write"},
+                {"path": absolute("/Users/anna/New"), "access": "everything"},
+                "nonsense"
+            ]}
+        });
+        let read: Settings = serde_json::from_value(text).expect("reads");
+        assert_eq!(read.language, Language::German);
+        assert_eq!(
+            read.tools.folders,
+            vec![
+                AllowedFolder { path: docs, access: FolderAccess::Read },
+                AllowedFolder { path: absolute("/Users/anna/Out"), access: FolderAccess::ReadWrite },
+            ],
+            "the unreadable ones are dropped"
+        );
+        let written = serde_json::to_value(&read.tools).expect("json");
+        assert_eq!(written["folders"][1]["access"], "read_write");
+        assert_eq!(serde_json::from_value::<Tools>(written).expect("reads back"), read.tools);
+    }
+
+    /// Issue #304: `allowed_folder` takes a path and an access, `null` to remove; the list is checked when
+    /// it changes: absolute paths only, each once, at most 50. No message repeats the path.
+    #[test]
+    fn allowed_folders_are_changed_and_checked() {
+        let docs = absolute("/Users/anna/Documents");
+        let change = |value: serde_json::Value| FolderChange::from_value(&value);
+        let add = change(serde_json::json!({"path": docs, "access": "read"})).expect("added");
+        assert_eq!(add, FolderChange { path: docs.clone(), access: Some(FolderAccess::Read) });
+        let remove = change(serde_json::json!({"path": "relative/is/fine/to/remove", "access": null}));
+        assert_eq!(remove.expect("removed").access, None);
+        for wrong in [
+            serde_json::json!({"path": "Documents", "access": "read"}),
+            serde_json::json!({"path": "/a\nb", "access": "read"}),
+            serde_json::json!({"path": format!("/{}", "a".repeat(MAX_PATH_BYTES)), "access": "read"}),
+            serde_json::json!({"path": docs, "access": "write"}),
+            serde_json::json!({"path": docs}),
+            serde_json::json!({"path": docs, "access": "read", "why": "x"}),
+            serde_json::json!({"access": "read"}),
+            serde_json::json!(docs),
+            serde_json::json!(null),
+        ] {
+            let refused = change(wrong.clone()).expect_err("refused");
+            assert!(!refused.contains("Documents"), "{wrong}: {refused}");
+        }
+
+        let mut tools = Tools::default();
+        tools.change_folder(add);
+        tools.change_folder(FolderChange { path: format!("{docs}/"), access: Some(FolderAccess::ReadWrite) });
+        assert_eq!(tools.folders, vec![AllowedFolder { path: docs.clone(), access: FolderAccess::ReadWrite }]);
+        tools.change_folder(FolderChange { path: absolute("/elsewhere"), access: None });
+        assert_eq!(tools.folders.len(), 1, "removing one that is not there changes nothing");
+        assert_eq!(tools.check_folders(), Ok(()));
+        tools.change_folder(FolderChange { path: docs.clone(), access: None });
+        assert!(tools.folders.is_empty());
+
+        let relative = Tools {
+            folders: vec![AllowedFolder { path: "Documents".into(), access: FolderAccess::Read }],
+            ..Tools::default()
+        };
+        assert!(relative.check_folders().is_err_and(|why| why.contains("absolute") && !why.contains("Documents")));
+        let twice = Tools {
+            folders: vec![
+                AllowedFolder { path: docs.clone(), access: FolderAccess::Read },
+                AllowedFolder { path: format!("{docs}/"), access: FolderAccess::ReadWrite },
+            ],
+            ..Tools::default()
+        };
+        assert!(twice.check_folders().is_err_and(|why| why.contains("once")));
+        let mut many = Tools::default();
+        for at in 0..=MAX_ALLOWED_FOLDERS {
+            many.change_folder(FolderChange { path: absolute(&format!("/f{at}")), access: Some(FolderAccess::Read) });
+        }
+        assert!(many.check_folders().is_err_and(|why| why.contains("50")));
+        many.folders.pop();
+        assert_eq!(many.check_folders(), Ok(()), "50 fit");
+    }
+
+    /// Point 9 (issue #304): every change of the allowed folders is a person's, removing included; a
+    /// client's whole settings keep the stored ones.
+    #[test]
+    fn only_people_change_the_allowed_folders() {
+        let read = AllowedFolder { path: absolute("/Users/anna/Documents"), access: FolderAccess::Read };
+        let stored = Tools { folders: vec![read.clone()], ..Tools::default() };
+        assert!(!stored.needs_a_person(&stored));
+        let wider = Tools {
+            folders: vec![AllowedFolder { access: FolderAccess::ReadWrite, ..read.clone() }],
+            ..Tools::default()
+        };
+        let more = Tools {
+            folders: vec![read.clone(), AllowedFolder { path: absolute("/"), access: FolderAccess::Read }],
+            ..Tools::default()
+        };
+        for changed in [&wider, &more, &Tools::default()] {
+            assert!(stored.needs_a_person(changed), "{changed:?}");
+            assert_eq!(stored.from_client(changed).folders, stored.folders, "the stored ones stay");
+        }
     }
 
     /// A damaged tools entry costs the defaults (every tool off), never the other settings; a tool

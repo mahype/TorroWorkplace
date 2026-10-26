@@ -956,6 +956,13 @@ fn describe(request: &Request) -> String {
         Request::SetExtensionSecret { id, .. } => format!("secret of mcp server {id}"),
         Request::ReadExtensionLogs { id } => format!("output of mcp server {id}"),
         Request::RemoveExtension { id } => format!("remove mcp server {id}"),
+        // Never a path or a name searched for (issue #304).
+        Request::ListFolder { .. } => "list a folder".into(),
+        Request::FindFiles { .. } => "find files".into(),
+        Request::CreateFolder { .. } => "make a folder".into(),
+        Request::CopyFile { .. } => "copy a file".into(),
+        Request::MoveFile { .. } => "move a file".into(),
+        Request::TrashFile { .. } => "trash a file".into(),
         // Never the search words or the address (issue #305), never a key.
         Request::WebSearch { .. } => "search the web".into(),
         Request::FetchPage { .. } => "read a web page".into(),
@@ -1175,6 +1182,24 @@ mod tests {
 
     /// Task E8.7a: messages about these requests name the list and the app, never the mail
     /// account, the mail's id, its Message-ID or what an app was opened on.
+    /// Issue #304: the commands of the tool `files` are named by what they do, never with a path or the
+    /// name searched for.
+    #[test]
+    fn file_commands_name_no_path() {
+        let path = || "/Users/anna/Salary/2026.pdf".to_string();
+        let named = [
+            (Request::ListFolder { path: Some(path()) }, "list a folder"),
+            (Request::FindFiles { folder: path(), name: "salary".into() }, "find files"),
+            (Request::CreateFolder { path: path() }, "make a folder"),
+            (Request::CopyFile { from: path(), to: path() }, "copy a file"),
+            (Request::MoveFile { from: path(), to: path() }, "move a file"),
+            (Request::TrashFile { path: path() }, "trash a file"),
+        ];
+        for (request, words) in named {
+            assert_eq!(describe(&request), words);
+        }
+    }
+
     #[test]
     fn mail_and_targets_stay_out_of_messages() {
         let task = Request::CreateTodoFromMail {

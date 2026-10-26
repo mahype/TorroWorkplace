@@ -231,10 +231,10 @@ pub fn with_tools_on(rights: &Rights, on: &BTreeSet<ToolId>) -> Rights {
 }
 
 /// The assistant's own tools an answer may use (issue #225): each with its level in `tools`
-/// ([`ToolAccess::access`]: write for `pdf`, whose commands make and open files; read for `web`), the
-/// area among `areas` (not turned off for the conversation nor withheld) and the tool in the selection
-/// of `rights`, which come cut to the switched-on tools ([`with_tools_on`]). What the prompt names
-/// and what engine B leaves to the agent.
+/// ([`ToolAccess::access`]: write for `pdf`, whose commands make and open files; read for `web` and for
+/// `files`, issue #304), the area among `areas` (not turned off for the conversation nor withheld) and
+/// the tool in the selection of `rights`, which come cut to the switched-on tools ([`with_tools_on`]).
+/// What the prompt names and what engine B leaves to the agent.
 pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
     if !areas.contains(&Area::Tools) {
         return Vec::new();
@@ -643,8 +643,9 @@ pub fn is_small(id: &str, local: bool) -> bool {
 mod tests {
     use torro_ipc::api::{AreaRights, Level, RightsTemplate};
 
-    /// Issue #225: an own tool is usable only with write access to `tools`, the area in the answer
-    /// and the tool selected (and switched on, which the rights come cut to).
+    /// Issue #225: an own tool is usable only with the access it needs in `tools` (write for `pdf`, read
+    /// for `files`, issue #304), the area in the answer and the tool selected (and switched on, which the
+    /// rights come cut to).
     #[test]
     fn an_own_tool_is_usable_with_writing_the_area_and_the_selection() {
         let mut rights = Rights::assistant();
@@ -655,7 +656,11 @@ mod tests {
         assert!(usable_tools(&with_tools_on(&rights, &BTreeSet::new()), &[Area::Tools]).is_empty(), "off");
         let mut reading = rights.clone();
         reading.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
-        assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "listing only");
+        assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "listing only: not enough for pdf");
+        reading.tools = Selection::Only(vec!["pdf".into(), "files".into()]);
+        assert_eq!(usable_tools(&reading, &[Area::Tools]), vec![ToolId::Files], "reading is enough for files");
+        rights.tools = Selection::All;
+        assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Pdf, ToolId::Files], "writing: both");
         reading.areas.remove(&Area::Tools);
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "no access");
     }

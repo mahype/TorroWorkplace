@@ -1323,7 +1323,16 @@ impl PimService {
             | Request::ConfirmBot { .. } => return None,
             // No collection: the assistant's own tools have none; their files are the core's
             // register (issue #225).
-            Request::ListTools | Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. } => {
+            Request::ListTools
+            | Request::CreatePdf { .. }
+            | Request::OpenFile { .. }
+            | Request::SaveFileAs { .. }
+            | Request::ListFolder { .. }
+            | Request::FindFiles { .. }
+            | Request::CreateFolder { .. }
+            | Request::CopyFile { .. }
+            | Request::MoveFile { .. }
+            | Request::TrashFile { .. } => {
                 return None;
             }
             // No collection: MCP servers are the core's own (issue #302); their rights are per server.
