@@ -3649,8 +3649,9 @@ static SET_MAIL_PILE: Command = Command {
                   `set_aside` lists it; every message of a search names its `pile`. Reply later clears itself: \
                   a mail from the account's own address in the conversation after it was put there takes it \
                   off; Set aside stays until taken off. Kept by the core only, nothing changes on the server. \
-                  `not-found` for the whole call when one message is in a mail account this key may not read \
-                  or whose inbox entries it may not see; nothing is changed then.",
+                  `error` for no ids or more than 100; `not-found` for the whole call when one message is in a \
+                  mail account this key may not read or whose inbox entries it may not see; nothing is changed \
+                  then.",
 };
 
 static LIST_RULES: Command = Command {
@@ -3850,7 +3851,7 @@ static SEARCH_MESSAGES: Command = Command {
                   mail_index_status). Pages go at most 10 000 matches deep. `snoozed: false` leaves out mail put \
                   off with inbox_snooze_item and puts mail back from it on top by the time it came back (`back`), \
                   from any folder but trash and spam whatever `in:` says (a sent mail back from a follow-up stands \
-                  on top of in:inbox); \
+                  on top of in:inbox), though a `folder` given still holds; \
                   `snoozed: true` lists only the snoozed mail. `hidden: false` leaves out mail of the inbox folder \
                   the person hid (a sender or domain hidden with inbox_hide_sender, a conversation hidden, mail \
                   kept away by a trait muted with `hide` while that rule holds), except mail shown again with \

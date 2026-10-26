@@ -1014,18 +1014,15 @@ impl Inbox {
     pub fn mail_piles(&self, accounts: &[String]) -> Result<MailPiles, String> {
         let piles = self.work(false, |db| {
             let mut piles = MailPiles::default();
-            if accounts.is_empty() {
-                return Ok(piles);
-            }
-            let mut statement = db.prepare("SELECT account, message, pile FROM mail_piles")?;
-            let rows = statement.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-            })?;
-            for row in rows {
-                let (account, message, pile) = row?;
-                let Some(pile) = pile_of_column(&pile) else { continue };
-                if accounts.contains(&account) {
-                    piles.piles.entry(account).or_default().insert(message, pile);
+            // One query per account, so the rows of accounts the caller may not see are never read.
+            let mut statement = db.prepare("SELECT message, pile FROM mail_piles WHERE account = ?1")?;
+            for account in accounts {
+                let rows =
+                    statement.query_map([account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+                for row in rows {
+                    let (message, pile) = row?;
+                    let Some(pile) = pile_of_column(&pile) else { continue };
+                    piles.piles.entry(account.clone()).or_default().insert(message, pile);
                 }
             }
             Ok(piles)
