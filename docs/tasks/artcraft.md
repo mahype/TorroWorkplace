@@ -18,7 +18,9 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
 
 - **Vier Katalog-Einträge**, jede App ein eigener Server mit eigener Stufe je Server (`Rights::extensions`, gibt es
   seit #302): `wordcraft`, `deckcraft`, `gridcraft`, `pdfcraft`. Befehl `<app>-cli`, Argumente `["mcp"]`, bei PdfCraft
-  `["mcp", "--compact"]`. Nie `--connect` (steuert die laufende App ohne Grenzen), nie `--root` bei PdfCraft (ältere
+  ohne `--compact` (nach der Freigabe der ersten Fassung entschieden: alle Werkzeuge einzeln eingestuft, damit
+  Kommentare, Lesezeichen und Formularfelder ohne Freigabe gehen; `--compact` hätte alles außer 15 Werkzeugen über
+  `tool_call` geschickt, also mit Freigabe). Nie `--connect` (steuert die laufende App ohne Grenzen), nie `--root` bei PdfCraft (ältere
   Grenze; die Grenzen kommen über die beiden `--automation-*`-Optionen). Link: die Releases der App
   (`https://github.com/storytold/<app>/releases`), `experimental = true`.
 - **Ein Ordner je App** (in der Planung entschieden): WordCraft, DeckCraft und PdfCraft nehmen je
@@ -53,7 +55,9 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   Argumenten eines Allzweck-Befehls abgelehnt, ohne Rücksicht auf Groß- und Kleinschreibung): WordCraft `screenshot`,
   `click`, `key`, `ui_inspect`, Befehle `ui.*`; DeckCraft `screenshot`, `key`, `pointer`, `call_app`, Befehle `ui.*`;
   GridCraft `screenshot` (schreibt ein PNG an jeden Pfad), `execute_command`; PdfCraft `sign_trust`,
-  `sign_id_create`, `js_run` und der Befehl `tools.js_console` (dahin führt `command_run` für JavaScript). Werkzeuge,
+  `sign_id_create`, `js_run`, dazu `sign_document`, `sign_keychain_ids`, `sign_windows_ids` (sie greifen auf die
+  Schlüssel im Schlüsselbund bzw. Zertifikatsspeicher des Systems zu, Agenten verwalten nie Schlüssel) und die Befehle
+  `tools.js_console` und `sign.digital` (dahin führt `command_run`). Werkzeuge,
   die der Katalog nicht nennt, bleiben `delete` wie seit #302.
 - **Den Ordner sehen** der App-Schlüssel und jeder Client mit einer Stufe für diesen Server
   (`ExtensionInfo::folder`): Ein Agent braucht ihn, um absolute Pfade darin zu bilden; er ist eine Grenze, kein
@@ -115,10 +119,35 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
     `format_range`, `insert_chart`, `create_table`, `sort_range`, `filter`, `new_workbook`, `undo`, `redo`; `delete`:
     `save_workbook` (`target`, Pflicht: jedes Schreiben einer Datei mit Freigabe); gesperrt `screenshot`,
     `execute_command`.
-  - **PdfCraft** (`--compact`, 17 Werkzeuge): `read`: `doc_open` (`reads`), `doc_info`, `doc_close`, `page_render`,
-    `text_extract`, `text_find`, `command_list`, `doc_inspect`, `render_preview`, `tool_search`; `write`: `doc_save`
-    (`target`, Pflicht), `doc_combine` (`reads = ["paths"]`, `target = "out"`; ohne `out` schreibt es nichts),
-    `edit_undo`; `delete`: `doc_split`, `command_run`, `command_batch`, `tool_call`.
+  - **PdfCraft** (ohne `--compact`, 181 Werkzeuge in `crates/mcp/src/tools.rs` von v0.14.0; vor dem Eintragen dort
+    nachzählen). Regel: Änderungen am geöffneten Dokument sind `write`, auch löschende (`page_delete`,
+    `redact_apply`, `doc_flatten` …): Sie wirken erst mit dem Speichern, und das Original bleibt, weil Speichern nur
+    eine neue Datei anlegt. `delete` ist, was mehrere oder unbekannt benannte Dateien schreibt, druckt, Skripte in ein
+    Dokument legt oder alles erreicht.
+    - `read` (50): `doc_open`, `doc_list`, `doc_info`, `doc_close`, `page_render`, `object_list`, `text_word_count`,
+      `text_extract`, `text_find`, `bookmark_list`, `form_fields`, `doc_hidden_info`, `doc_audit_redactions`,
+      `printers`, `printer_options`, `content_list`, `link_list`, `link_open`, `measure_info`, `measure_list`,
+      `measure_snap`, `comment_list`, `sign_list`, `comment_image_preview`, `accessibility_autotag_preview`,
+      `accessibility_check`, `accessibility_find_untagged`, `accessibility_review_load`, `accessibility_figures`,
+      `accessibility_tags`, `accessibility_tag_content`, `js_document_scripts`, `pdfa_verify`, `print_readiness`,
+      `action_list`, `doc_compare`, `form_actions`, `ocr_status`, `doc_audit_space`, `text_lines`, `image_hit`,
+      `page_images`, `text_font_files`, `text_fonts`, `text_paragraphs`, `text_edit_layout`, `command_list`,
+      `doc_inspect`, `render_preview`, `tool_search` (`tool_search` und `tool_call` nur, falls gemeldet).
+    - `delete` (16): `doc_batch`, `page_extract` (schreibt mit `separate` einen Ordner), `doc_create_multiple`,
+      `doc_split`, `doc_export_images`, `doc_export_all_images`, `ocr_recognize_files` (ersetzt gleichnamige Dateien),
+      `action_run`, `doc_print` (echter Druckauftrag über `lp`), `js_set_document_script`, `form_set_script`,
+      `form_set_actions`, `js_enabled`, `command_run`, `command_batch`, `tool_call`.
+    - `write`: die übrigen 109 (181 = 50 + 16 + 109 + 6 gesperrte). Ziele (`target`): `doc_save`,
+      `doc_export_data`, `doc_export_office`, `doc_export_text`, `doc_reduce`, `doc_optimize`, `image_save`,
+      `doc_compare_report`, `accessibility_report`, `accessibility_review_record`, `accessibility_review_html`,
+      `accessibility_review_save`, `form_merge_data` je `path`; `measure_export` `out`; Pflicht überall außer bei
+      `doc_combine` und `comments_summarize` (`target = "out"`, ohne `out` schreiben sie nichts).
+    - `reads` nach der Spalte „R:“ der Quellen: `path` bei `doc_open`, `attachment_add`, `page_insert_file`,
+      `stamp_custom`, `form_set_image`, `doc_import_data`, `page_add_image`, `comment_add`, `page_replace`,
+      `accessibility_review_load`, `fill_sign_add`, `image_edit`, `text_font_import`; `paths` bei `doc_combine`,
+      `form_merge_data`, `doc_create` (dazu `path`); `file` bei `doc_watermark`, `doc_background`; `image` bei
+      `content_update`; `directories` bei `text_font_files`. Ziele und gelesene Pfade der `delete`-Werkzeuge deckt die
+      Prüfung der Pfad-Schlüssel in beliebiger Tiefe ab.
 - **Abnahme:** `the_built_in_catalog_is_valid` nennt sieben Einträge und prüft je ArtCraft-Eintrag Befehl, Argumente,
   `folder`, die Sperrliste und die Pflicht-Ziele; Tests für jede neue Regel (wie `broken_entries_are_refused`);
   `look_in` mit `{ProgramFiles}` in einem Temp-Ordner gefunden; Einträge ohne die neuen Felder lesen sich wie bisher.
@@ -175,7 +204,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
 - **Abnahme:** Einheitstests für jede Regel (Temp-Ordner, Link aus dem Ordner heraus, `..`, relativer Pfad, gesperrter
   Pfad innen, Ziel vorhanden, Ziel als Link, Pflicht-Ziel fehlt, Pfad in einem anderen freigegebenen Ordner,
   verschachteltes `commands[].params.path`, `tool_call` mit `name = "JS_RUN"`, `command_run` mit
-  `id = "tools.js_console"`, `execute` mit `command = "ui.click"`, innerer Lese-Ordner nach dem Wählen angelegt); Prozess-Test mit `artcraft.sh`:
+  `id = "tools.js_console"` und `id = "sign.digital"`, `execute` mit `command = "ui.click"`, innerer Lese-Ordner nach dem Wählen angelegt); Prozess-Test mit `artcraft.sh`:
   ein abgelehnter Aufruf steht nicht in `calls.log`, ein erlaubter schon; gesperrte Werkzeuge erscheinen als `blocked`
   und werden bei `confirm_tools` nicht zugestimmt.
 
