@@ -6277,6 +6277,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No archived mail.", "Keine archivierten Mails."),
     ("Mail you archive shows up here.", "Mails, die du archivierst, erscheinen hier."),
     // Mail settings: an account's detail page (DS.6, issue #314)
+    ("In use", "Belegt"),
     ("Not counted by folder", "Keinem Ordner zugeordnet"),
     ("Numbers of this account", "Zahlen dieses Kontos"),
     ("Show account", "Konto zeigen"),

@@ -2276,7 +2276,7 @@ fn rules_message(kind: Kind) -> Option<Message> {
 fn answered_settings(sections: &mut SettingsState) {
     match sections {
         SettingsState::Inbox(state) => settings_inbox::answered(state),
-        SettingsState::Mail(state) => settings_mail::sent(state),
+        SettingsState::Mail(_) => {}
     }
 }
 
@@ -4321,6 +4321,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let loaded = matches!(message, host::Message::Loaded(_));
                 if loaded || matches!(message, host::Message::Sent { .. }) {
                     answered_settings(&mut pane.sections);
+                }
+                // Only a send's answer ends a save; a load of the tick on its way is no answer to it.
+                if matches!(message, host::Message::Sent { .. })
+                    && let SettingsState::Mail(state) = &mut pane.sections
+                {
+                    settings_mail::sent(state);
                 }
                 let outcome = pane.host.update(message);
                 if loaded {

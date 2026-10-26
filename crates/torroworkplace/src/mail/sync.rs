@@ -22,7 +22,7 @@
 //! 6. Sizes the store lacks (rows from before it kept `RFC822.SIZE`, DS.1) are asked for, at most
 //!    [`SIZE_FILL_MAX`] per folder and run ([`fill_sizes`]), also for a folder that did not change.
 //!
-//! After the folders the account's storage quota is read once (`GETQUOTAROOT "INBOX"`, only from
+//! After the folders and the clean-up of texts and originals the account's storage quota is read once (`GETQUOTAROOT "INBOX"`, only from
 //! servers with `QUOTA`) and kept for `mail.account_stats`; a server without one clears it.
 //!
 //! Every step that found something sends a [`MailChange`].
@@ -170,12 +170,10 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
             store.prune_gone_originals(Utc::now()).map(drop)
         })
         .await?;
-    // The quota is an extra after a finished sync: losing the connection there makes no sync
-    // problem of the account; the next sync asks again.
-    if note_quota(mailbox, &store).await.is_err() {
-        eprintln!("torroworkplace: the storage quota of {} was not read: the connection ended", mailbox.id());
-    }
-    Ok(())
+    // Last, so a connection lost here costs no clean-up; a lost connection or a refused sign-in is
+    // still the sync's error, so the account shows it and `refused` keeps the password from being
+    // tried again.
+    note_quota(mailbox, &store).await
 }
 
 /// Reads the account's storage quota (`GETQUOTAROOT "INBOX"`) and keeps it for

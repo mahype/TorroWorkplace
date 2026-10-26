@@ -173,8 +173,8 @@ pub fn attachments_escape(state: &State) -> Option<Message> {
     attachments::escape(&state.attachments).map(Message::Attachments)
 }
 
-/// A change or a load of the host came back (the window calls it on every one): what was being
-/// saved is saved or failed, so the save bar of an account's page takes clicks again.
+/// A send of the host came back (the window calls it on every `Sent`, not on a load): what was
+/// being saved is saved or failed, so the save bar of an account's page takes clicks again.
 pub fn sent(state: &mut State) {
     accounts::sent(&mut state.accounts);
 }
@@ -539,7 +539,7 @@ pub mod accounts {
         }
     }
 
-    /// A change or a load came back: "Save" is done, the save bar shows what is still different.
+    /// A send came back: "Save" is done, the save bar shows what is still different.
     pub(super) fn sent(state: &mut State) {
         state.saving = false;
     }
@@ -874,13 +874,21 @@ pub mod accounts {
             };
             parts.push(SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Other));
         }
-        // With a quota the strip is the quota: what is used but no folder accounts for (sizes still
-        // coming, labels counted twice by Gmail) is a part of its own, so "Free" is the free share.
+        // With a quota the strip is the quota, so "Free" is the free share.
         if let Some(quota) = &stats.quota {
-            let counted: u64 = sized.iter().map(|(_, bytes)| bytes).sum();
-            let rest = quota.used_bytes.saturating_sub(counted);
-            if rest > 0 {
-                parts.push(SharePart::new(tr("Not counted by folder"), rest, format_bytes(rest), ChartColor::Other));
+            let (used, counted) = (quota.used_bytes, sized.iter().map(|(_, bytes)| bytes).sum::<u64>());
+            if counted > used {
+                // The folders count more than the server says is used (Gmail counts a mail in each of
+                // its labels): they are no parts of the quota, so the strip shows only the room used.
+                parts = vec![SharePart::new(tr("In use"), used, format_bytes(used), ChartColor::Series(0))];
+            } else {
+                // What no folder accounts for (sizes still coming) is a part of its own, in a colour
+                // of its own; below a hundredth of the used room it is rounding (KiB against bytes).
+                let rest = used - counted;
+                if rest > used / NOT_COUNTED_SHARE {
+                    let colour = ChartColor::Series(LARGEST_IN_STRIP);
+                    parts.push(SharePart::new(tr("Not counted by folder"), rest, format_bytes(rest), colour));
+                }
             }
         }
         let free = stats
@@ -892,6 +900,10 @@ pub mod accounts {
 
     /// How many folders the server's strip names before the rest is "other folders".
     const LARGEST_IN_STRIP: usize = 3;
+
+    /// What no folder accounts for becomes a part of the server's strip from a hundredth of the
+    /// used room on.
+    const NOT_COUNTED_SHARE: u64 = 100;
 
     /// The device's strip: search index, mail texts, originals and the rest of the database; never
     /// below 0. Without the size of the index the rest says that it holds the index too.
@@ -1501,6 +1513,13 @@ pub mod accounts {
             let whole: u64 = parts.iter().map(|part| part.value).sum::<u64>() + free.as_ref().map_or(0, |(_, b)| *b);
             assert_eq!(whole, 10 * GIB, "the strip is the quota");
             assert_eq!(free.map(|(_, bytes)| bytes), Some(10 * GIB - GIB * 236 / 100));
+            // A few KiB of rounding make no part; folders counting more than is used give way to
+            // the room used.
+            let close = stats(&[("INBOX", 30, 8, Some(GIB - 4096))], Some((GIB, 10 * GIB)));
+            assert_eq!(server_parts(&close).0.len(), 1);
+            let twice = stats(&[("INBOX", 30, 8, Some(GIB)), ("All Mail", 30, 8, Some(GIB))], Some((GIB, 10 * GIB)));
+            let (parts, _) = server_parts(&twice);
+            assert_eq!(parts.iter().map(|p| (p.label.as_str(), p.value)).collect::<Vec<_>>(), [(tr("In use"), GIB)]);
             assert!(server_parts(&stats(&[("INBOX", 30, 8, Some(1))], None)).1.is_none(), "no quota, no free room");
         }
 
@@ -1586,9 +1605,10 @@ pub mod accounts {
         #[test]
         fn storage_shows_none_of_the_accounts_numbers() {
             let source = include_str!("mail.rs");
-            let start = source.find("pub mod storage {").expect("the storage section");
+            // With the line break in front, so the words in this test are not taken for the module.
+            let start = source.find("\npub mod storage {").expect("the storage section");
             let page = &source[start..];
-            let page = &page[page.find("pub fn page<'a>").expect("its page")..];
+            let page = &page[page.find("\n    pub fn page<'a>").expect("its page")..];
             let page = &page[..page.find("\n    }\n").expect("the end of its page")];
             for field in [
                 "cached_bodies",
