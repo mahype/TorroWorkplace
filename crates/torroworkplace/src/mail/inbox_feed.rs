@@ -23,6 +23,11 @@
 //!   the store does not keep it, and every GitHub mail names its item in its own `Message-ID`.
 //!   Anything that does not agree is an ordinary mail. The inbox then files it with the item's
 //!   GitHub entry (`Inbox::file_mail`).
+//! - **Replies to a follow-up** (task E19.1, `Feed::note_replies`): new mail of **any** folder, read
+//!   or not, a first sync too, that lies in the conversation of a follow-up "only if no reply" and
+//!   is not from the account itself calls that follow-up off ([`Inbox::reply_came`]), before the
+//!   inbox folder's mail is filed. A catch-up asks the store for replies the feed missed
+//!   ([`MailStore::replies_after`]).
 //! - **Missed changes** (the feed fell behind the service, `RecvError::Lagged`): every account is
 //!   looked at anew ([`Feed::catch_up`]): unread mail of the last [`FIRST_SYNC_DAYS`] days is filed
 //!   (a message filed before is never filed twice) and every open entry is checked.
@@ -363,7 +368,7 @@ pub async fn linked_details(
 ) -> Option<torro_pim::model::MailDetails> {
     let found = linked_mail(mail, account, message_id).await?;
     let store = mail.store(account).await.ok()?;
-    let own = account.strip_prefix(torro_mail::ACCOUNT_PREFIX).unwrap_or(account).to_string();
+    let own = own_address(account);
     let (thread, date) = (found.thread_id.clone(), found.date);
     let new_replies = store.run(move |store| store.replies_after(&thread, date, &own)).await.unwrap_or_default();
     let sender = found.from.as_ref().map(|from| sender(from).name);
@@ -484,8 +489,9 @@ impl Feed {
         }
     }
 
-    /// One change of one folder at `now`: new mail of an inbox folder is filed, messages whose
-    /// flags changed or that went away may settle their entries.
+    /// One change of one folder at `now`: new mail of any folder may be a reply a follow-up waits
+    /// for ([`Feed::note_replies`]), new mail of an inbox folder is filed, messages whose flags
+    /// changed or that went away may settle their entries.
     async fn take(&self, change: MailChange, now: DateTime<Utc>) {
         let MailChange { account, folder, role, new, flags, removed, initial } = change;
         let store = match self.mail.store(&account).await {
@@ -495,6 +501,11 @@ impl Feed {
                 return;
             }
         };
+        // Before filing: a reply in the inbox folder then opens a conversation the follow-up let go,
+        // rather than bringing it back from "Later".
+        if !new.is_empty() {
+            self.note_replies(&store, &account, &new, now).await;
+        }
         if role == Some(Role::Inbox) && !new.is_empty() {
             let since = initial.then(|| now - TimeDelta::days(FIRST_SYNC_DAYS));
             self.file(&store, &account, folder, new, since, now).await;
@@ -505,13 +516,94 @@ impl Feed {
         }
     }
 
-    /// Looks at every mail account anew at `now`, after changes were missed: files the unread mail
-    /// of its inbox folder of the last [`FIRST_SYNC_DAYS`] days (none twice) and settles every open
-    /// entry.
+    /// The mails `new` of `account` (any folder, read or not, a first sync too) at `now` that
+    /// answer a follow-up "only if no reply" (task E19.1, decision 6): mail of its conversation not
+    /// sent from the account itself. Each calls the follow-up off ([`Inbox::reply_came`]). Nothing
+    /// is read from the store while no follow-up waits for a reply.
+    async fn note_replies(&self, store: &SharedStore, account: &str, new: &[String], now: DateTime<Utc>) {
+        let waiting = match self.inbox.awaiting_reply(account) {
+            Ok(waiting) if waiting.is_empty() => return,
+            Ok(waiting) => waiting,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the follow-ups of {account}: {err}");
+                return;
+            }
+        };
+        let threads: Vec<String> = waiting.into_iter().map(|(thread, _)| thread).collect();
+        let own = own_address(account);
+        let ids = new.to_vec();
+        let replies = store
+            .run(move |store| {
+                let mut replies = Vec::new();
+                for id in &ids {
+                    let Some(summary) = store.summary(id)? else { continue };
+                    let mine = summary.from.as_ref().is_some_and(|from| from.address.eq_ignore_ascii_case(&own));
+                    if !mine && threads.contains(&summary.thread_id) {
+                        replies.push((summary.thread_id, summary.date));
+                    }
+                }
+                Ok(replies)
+            })
+            .await;
+        let replies = match replies {
+            Ok(replies) => replies,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the new mail of {account}: {err}");
+                return;
+            }
+        };
+        for (thread, date) in replies {
+            if let Err(err) = self.inbox.reply_came(account, &thread, date, now) {
+                eprintln!("torroworkplace: inbox: cannot note a reply in {account}: {err}");
+            }
+        }
+    }
+
+    /// The follow-ups "only if no reply" of `account` checked anew at `now` against everything its
+    /// store holds (task E19.1), after changes were missed: a conversation with a reply since the
+    /// follow-up was set ([`MailStore::replies_after`]) calls it off. The reply's own date is not
+    /// needed: it came after `since`, which is all [`Inbox::reply_came`] asks, so `now` stands for it.
+    async fn catch_up_replies(&self, store: &SharedStore, account: &str, now: DateTime<Utc>) {
+        let waiting = match self.inbox.awaiting_reply(account) {
+            Ok(waiting) if waiting.is_empty() => return,
+            Ok(waiting) => waiting,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the follow-ups of {account}: {err}");
+                return;
+            }
+        };
+        let own = own_address(account);
+        let answered = store
+            .run(move |store| {
+                let mut answered = Vec::new();
+                for (thread, since) in waiting {
+                    if store.replies_after(&thread, since, &own)? > 0 {
+                        answered.push(thread);
+                    }
+                }
+                Ok(answered)
+            })
+            .await;
+        match answered {
+            Ok(answered) => {
+                for thread in answered {
+                    if let Err(err) = self.inbox.reply_came(account, &thread, now, now) {
+                        eprintln!("torroworkplace: inbox: cannot note a reply in {account}: {err}");
+                    }
+                }
+            }
+            Err(err) => eprintln!("torroworkplace: inbox: cannot read the replies of {account}: {err}"),
+        }
+    }
+
+    /// Looks at every mail account anew at `now`, after changes were missed: calls off follow-ups
+    /// that got a reply meanwhile ([`Feed::catch_up_replies`]), files the unread mail of its inbox
+    /// folder of the last [`FIRST_SYNC_DAYS`] days (none twice) and settles every open entry.
     async fn catch_up(&self, now: DateTime<Utc>) {
         for account in self.mail.infos(Reach::Suite).await.into_iter().map(|info| info.id) {
             // Mail switched off: nothing is synced, nothing to file.
             let Ok(store) = self.mail.store(&account).await else { continue };
+            self.catch_up_replies(&store, &account, now).await;
             let since = now - TimeDelta::days(FIRST_SYNC_DAYS);
             let unread = store
                 .run(move |store| {
@@ -748,6 +840,11 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
         auto_submitted: message.traits.auto_submitted.clone(),
         junk,
     })
+}
+
+/// The address of the mail account `account` (`mail:<address>`): its own mail is no reply.
+fn own_address(account: &str) -> String {
+    account.strip_prefix(torro_mail::ACCOUNT_PREFIX).unwrap_or(account).to_string()
 }
 
 /// The sender of a mail as an inbox entry names it: the display name, else the address.
@@ -1064,6 +1161,78 @@ pub(crate) mod tests {
         assert_eq!(message_stand_in(&mail, Reach::Suite, "m:nope").await, None);
     }
 
+    /// Task E19.1, decision 6: a reply calls off a follow-up "only if no reply" in whatever folder
+    /// it lands, read or not – the entry is open, not back, and does not come back at the date –;
+    /// mail of one's own does not, and a catch-up finds what the feed missed.
+    #[tokio::test]
+    async fn a_reply_anywhere_calls_off_a_follow_up_unless_reply() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for subject in ["Offer", "Plan", "Trip"] {
+            server.add("INBOX", &bernd(subject, 5), &["\\Seen"]);
+        }
+        let reply = |subject: &str, from: &str, to: &str| letter(subject, from, 1, "", Some(to));
+        server.add("Sent", &reply("Re Offer mine", "Anna <anna@example.org>", "Offer@example.org"), &["\\Seen"]);
+        server.add("Archive", &reply("Re Offer", "Bernd <bernd@example.com>", "Offer@example.org"), &[]);
+        server.add("INBOX", &reply("Re Plan", "Bernd <bernd@example.com>", "Plan@example.org"), &["\\Seen"]);
+        server.add("Archive", &reply("Re Trip", "Bernd <bernd@example.com>", "Trip@example.org"), &[]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        assert_eq!(of("Re Offer").thread_id, of("Offer").thread_id, "one conversation");
+
+        // Followed up four days ago, until in an hour.
+        let (since, until) = (Utc::now() - TimeDelta::days(4), Utc::now() + TimeDelta::hours(1));
+        let mut followed = BTreeMap::new();
+        for subject in ["Offer", "Plan", "Trip"] {
+            let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
+            let entry = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
+            let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true };
+            assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
+            followed.insert(subject, entry);
+        }
+        let state = |subject: &str, now| {
+            let request = Request::GetItem { id: followed[subject].clone() };
+            match inbox.handle(request, None, now) {
+                Response::Item { item } => (item.state, item.follow_up.is_some()),
+                other => panic!("the entry, got {other:?}"),
+            }
+        };
+        let change = |message: &torro_mail::MessageSummary, role| MailChange {
+            account: ANNA.into(),
+            folder: message.folder.clone(),
+            role,
+            new: vec![message.id.clone()],
+            flags: Vec::new(),
+            removed: Vec::new(),
+            initial: false,
+        };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+
+        feed.take(change(&of("Re Offer mine"), Some(Role::Sent)), Utc::now()).await;
+        assert_eq!(state("Offer", Utc::now()), (State::Snoozed { until }, true), "one's own mail is no reply");
+        feed.take(change(&of("Re Offer"), None), Utc::now()).await;
+        assert_eq!(state("Offer", Utc::now()), (State::Seen, false), "a reply in the archive");
+        feed.take(change(&of("Re Plan"), Some(Role::Inbox)), Utc::now()).await;
+        assert_eq!(state("Plan", Utc::now()), (State::Seen, false), "a reply read already");
+        let later = inbox.mail_later(&[ANNA.to_string()], Utc::now()).expect("read");
+        assert!(later.back_of(ANNA).is_empty(), "nothing is back");
+        assert_eq!(state("Trip", Utc::now()), (State::Snoozed { until }, true), "its reply was missed");
+
+        feed.catch_up(Utc::now()).await;
+        assert!(inbox.awaiting_reply(ANNA).expect("read").is_empty(), "the catch-up found the reply");
+        let at_the_date = until + TimeDelta::minutes(1);
+        for subject in ["Offer", "Plan", "Trip"] {
+            let (state, follow_up) = state(subject, at_the_date);
+            assert!(!follow_up && state != State::New, "{subject} does not come back: {state:?}");
+        }
+    }
+
     /// Task E9.1: a read mail goes to "Later" as the feed would file it, and stays there when the
     /// feed looks at the account's mail again – read mail of an entry not put off is done.
     #[tokio::test]
@@ -1112,7 +1281,11 @@ pub(crate) mod tests {
             filed.push(inbox.file_mail(&found, Notify::All, Utc::now()).expect("filed").expect("an entry"));
         }
         let until = Utc::now() + TimeDelta::hours(1);
-        inbox.handle(Request::SnoozeItem { id: filed[0].clone(), until: Some(until) }, None, Utc::now());
+        inbox.handle(
+            Request::SnoozeItem { id: filed[0].clone(), until: Some(until), unless_reply: false },
+            None,
+            Utc::now(),
+        );
 
         let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
         let store = mail.store(ANNA).await.expect("the store");

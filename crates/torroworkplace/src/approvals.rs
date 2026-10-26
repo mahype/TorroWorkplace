@@ -2432,6 +2432,11 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             with_settling(trf("Mark {entry} as done", &[("entry", &entry())]), facts.item.as_ref())
         }
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
+        // "Follow up" with its condition (task E19.1): the person sees that a reply calls it off.
+        Request::SnoozeItem { until: Some(until), unless_reply: true, .. } => trf(
+            "Follow up on {entry} {when} unless someone replies",
+            &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
+        ),
         Request::SnoozeItem { until: Some(until), .. } => trf(
             "Snooze {entry} until {when}",
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
@@ -4888,6 +4893,7 @@ pub(crate) mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
@@ -4925,8 +4931,24 @@ pub(crate) mod tests {
         let done = |done| inbox_summary(&Request::SetItemDone { id: "e1".into(), done, dismissed: false }, &known);
         assert_eq!(done(true), trf("Mark {entry} as done", &[("entry", &entry)]));
         assert_eq!(done(false), trf("Open {entry} again", &[("entry", &entry)]));
-        let snooze = inbox_summary(&Request::SnoozeItem { id: "e1".into(), until: None }, &InboxFacts::default());
-        assert_eq!(snooze, trf("Stop snoozing {entry}", &[("entry", &unknown)]));
+        let snooze = |until, unless_reply| Request::SnoozeItem { id: "e1".into(), until, unless_reply };
+        assert_eq!(
+            inbox_summary(&snooze(None, false), &InboxFacts::default()),
+            trf("Stop snoozing {entry}", &[("entry", &unknown)])
+        );
+        // Task E19.1: "only if no reply" says so; without `until` there is nothing to wait for.
+        let until = Utc::now() + chrono::TimeDelta::days(400);
+        let follow_up = inbox_summary(&snooze(Some(until), true), &known);
+        let today = Local::now().date_naive();
+        let at = when(&EventTime::DateTime(until), today);
+        assert_eq!(
+            follow_up,
+            trf("Follow up on {entry} {when} unless someone replies", &[("entry", &entry), ("when", &at)])
+        );
+        assert_eq!(
+            inbox_summary(&snooze(None, true), &InboxFacts::default()),
+            trf("Stop snoozing {entry}", &[("entry", &unknown)])
+        );
         // Task E18.2: "Show again" names the subjects the mail store holds.
         let stored = MailFacts { count: 2, subjects: vec!["Weekly \"deals\"".into()], ..MailFacts::default() };
         let mail = InboxFacts { mail: Some(stored), ..InboxFacts::default() };

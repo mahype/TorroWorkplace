@@ -3308,7 +3308,11 @@ static SNOOZE_ITEM: Command = Command {
                   person's and `not-found` for every key. `id` may also be a mail message's id (`m:…`): its \
                   entry is snoozed with its whole conversation, and a mail without an entry gets one first \
                   (`unsupported` when a rule hides the mail); new mail in the conversation brings it back early. \
-                  A snoozed mail is left out of mail_search_messages with `snoozed: false`.",
+                  A snoozed mail is left out of mail_search_messages with `snoozed: false`. For mail it is a \
+                  follow-up: `unless_reply: true` waits only if nobody replies – a mail in the conversation not \
+                  sent from the account itself, dated after this call, in any folder, calls it off and the date \
+                  never comes; without it the date stays after a reply and brings the conversation on top once \
+                  more while it is still open. `unless_reply` is for mail only, `unsupported` on any other entry.",
 };
 
 static SET_ITEM_LANE: Command = Command {
@@ -3825,7 +3829,9 @@ static SEARCH_MESSAGES: Command = Command {
                   `highlights` (where the words matched), `total_estimate` on the first page, and `complete: \
                   false` with `incomplete_reason: indexing` while older texts are still being indexed (see \
                   mail_index_status). Pages go at most 10 000 matches deep. `snoozed: false` leaves out mail put \
-                  off with inbox_snooze_item and puts mail back from it on top by the time it came back (`back`); \
+                  off with inbox_snooze_item and puts mail back from it on top by the time it came back (`back`), \
+                  from any folder but trash and spam whatever `in:` says (a sent mail back from a follow-up stands \
+                  on top of in:inbox); \
                   `snoozed: true` lists only the snoozed mail. `hidden: false` leaves out mail of the inbox folder \
                   the person hid (a sender or domain hidden with inbox_hide_sender, a conversation hidden, mail \
                   kept away by a trait muted with `hide` while that rule holds), except mail shown again with \
@@ -4914,7 +4920,7 @@ mod tests {
             },
             Request::ResolveItems { thread_key: "backup".into() },
             Request::SetItemDone { id: "i1".into(), done: true, dismissed: true },
-            Request::SnoozeItem { id: "i1".into(), until: Some(now) },
+            Request::SnoozeItem { id: "i1".into(), until: Some(now), unless_reply: true },
             Request::SetItemLane { id: "i1".into(), lane: Lane::Info, remember: false },
             Request::MuteSource { source: SourceRef::script("backup"), muted: true },
             Request::AiAssignments,
@@ -6555,6 +6561,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 

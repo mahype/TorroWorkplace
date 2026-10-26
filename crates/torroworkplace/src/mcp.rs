@@ -2215,7 +2215,14 @@ mod tests {
         let shown = call("inbox_set_mail_shown", json!({"ids": ["m:1"], "shown": true}));
         assert_eq!(shown, Ok(Request::SetMailShown { ids: vec!["m:1".into()], shown: true }));
         let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
-        assert!(matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_) }) if id == "m:1"), "{later:?}");
+        assert!(
+            matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_), unless_reply: false }) if id == "m:1"),
+            "{later:?}"
+        );
+        // Task E19.1: "Only if no reply" comes through the request's schema.
+        let follow_up = json!({"id": "m:1", "until": "2026-10-16T08:00:00Z", "unless_reply": true});
+        let follow_up = call("inbox_snooze_item", follow_up);
+        assert!(matches!(follow_up, Ok(Request::SnoozeItem { unless_reply: true, .. })), "{follow_up:?}");
         let get = call("mail_get_message", json!({"id": "m:1", "include_body": true}));
         assert_eq!(get, Ok(Request::GetMail { id: "m:1".into(), include_body: true, include_html: false }), "no HTML");
         let html = call("mail_get_message", json!({"id": "m:1", "include_body": true, "include_html": true}));
@@ -3369,6 +3376,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         };
         let listed = result_of(Response::Items { items: vec![entry("a", true), entry("b", false)] });
         let items = &listed.structured_content.expect("structured")["items"];

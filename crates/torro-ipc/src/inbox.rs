@@ -940,7 +940,7 @@ impl InboxSource for InboxClient {
     }
 
     async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
-        self.ask_item(Request::SnoozeItem { id, until }).await
+        self.ask_item(Request::SnoozeItem { id, until, unless_reply: false }).await
     }
 
     async fn set_item_lane(&self, id: String, lane: Lane, remember: bool) -> Result<Item, InboxError> {
@@ -1083,6 +1083,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
@@ -1122,7 +1123,7 @@ mod tests {
                 moved: vec![format!("{id}|{scope:?}|{}|{effect:?}", until.is_some())],
                 ..Muted::default()
             }),
-            Request::SnoozeItem { id, until } => Response::Item {
+            Request::SnoozeItem { id, until, .. } => Response::Item {
                 item: Item { state: until.map_or(State::Seen, |until| State::Snoozed { until }), ..item(&id) },
             },
             Request::SetItemLane { id, lane, remember } => {

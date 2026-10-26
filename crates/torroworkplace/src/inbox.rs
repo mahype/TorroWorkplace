@@ -187,7 +187,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -553,6 +553,15 @@ CREATE TABLE shown_mail (
 );
 ";
 
+/// From schema version 15 to 16 (task E19.1, "Follow up" in the mail window): `items` gets
+/// `follow_up`, the time of an entry's follow-up ([`torro_inbox::item::FollowUp::at`]) or `NULL`
+/// without one, so [`wake_due`] finds the open entries whose follow-up is due without reading every
+/// entry. The follow-up itself is in `data` with the entry. Rows of version 15 have none: mail put
+/// off before is a follow-up without a condition already (decision 9), with its time in `state_at`.
+const SCHEMA_V16: &str = "
+ALTER TABLE items ADD COLUMN follow_up TEXT;
+";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -734,6 +743,10 @@ impl Inbox {
             Request::SetItemLane { id, remember: true, .. } => {
                 remembered_sender(&changeable(db, id, Some(client))?.item).map(drop)
             }
+            // Nobody is asked to approve "only if no reply" on an entry that is no mail (task E19.1).
+            Request::SnoozeItem { id, until, unless_reply: true } => {
+                check_follow_up(&changeable(db, id, Some(client))?.item, *until, true)
+            }
             Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
                 changeable(db, id, Some(client)).map(drop)
             }
@@ -771,6 +784,50 @@ impl Inbox {
             eprintln!("torroworkplace: inbox: cannot look up the entry of a mail: {failure}");
             None
         })
+    }
+
+    /// A reply came at `at` into the conversation `thread` of the mail account `account`
+    /// (`mail:<address>`), seen by the mail feed at `now` (task E19.1): mail not from the account
+    /// itself, in any folder, read or not. The account's entry of that conversation calls a
+    /// follow-up "only if no reply" set before `at` off, and is open again if it was put off
+    /// ([`rules::reply_came`]): no "back", no coming back at its time. Due entries are woken first,
+    /// so a follow-up whose time had come before the feed got to the reply still comes back.
+    /// Returns whether the entry changed; any other entry, or none, is left alone. `Err` holds the
+    /// message for the log.
+    pub fn reply_came(
+        &self,
+        account: &str,
+        thread: &str,
+        at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, String> {
+        self.with(|db| {
+            wake_due(db, now)?;
+            let Some(mut item) = read_owned(db, account, thread)? else { return Ok(false) };
+            if item.source.kind != SourceKind::Mail || !rules::reply_came(&mut item, at) {
+                return Ok(false);
+            }
+            update_item(db, &item)?;
+            Ok(true)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// The follow-ups "only if no reply" of the mail account `account` (`mail:<address>`, task
+    /// E19.1): for each, the conversation (`thread_key`) and since when replies count
+    /// ([`torro_inbox::item::FollowUp::since`]). What the mail feed looks for in new mail
+    /// ([`Inbox::reply_came`]); usually empty, so most changes cost one query. `Err` holds the
+    /// message for the log.
+    pub fn awaiting_reply(&self, account: &str) -> Result<Vec<(String, DateTime<Utc>)>, String> {
+        let entries = self.work(false, |db| {
+            read_items(db, &Scope::All, "owner = ? AND follow_up IS NOT NULL", vec![text(account)], "")
+        });
+        let entries = entries.map_err(|failure| failure.to_string())?;
+        let waiting = entries.into_iter().filter_map(|Stored { item, .. }| {
+            let follow_up = item.follow_up.filter(|follow_up| follow_up.unless_reply)?;
+            Some((item.thread_key, follow_up.since))
+        });
+        Ok(waiting.collect())
     }
 
     /// "Later" for the mail of `accounts` (`mail:<address>`) at `now` (task E9.1): the messages
@@ -2185,9 +2242,16 @@ fn answer(
             let closed = if dismissed { Count::Dismissed } else { Count::Done };
             Ok(Response::Item { item: set_done(db, &id, done, closed, client, now)? })
         }
-        Request::SnoozeItem { id, until } => {
+        Request::SnoozeItem { id, until, unless_reply } => {
             let tx = db.transaction()?;
-            let stored = change(&tx, &id, client, |item| rules::snooze(item, until))?;
+            let mut stored = changeable(&tx, &id, client)?;
+            check_follow_up(&stored.item, until, unless_reply)?;
+            // A mail entry follows up (task E19.1); every other source is put off as before.
+            match stored.item.source.kind {
+                SourceKind::Mail => rules::follow_up(&mut stored.item, until, unless_reply, now),
+                _ => rules::snooze(&mut stored.item, until),
+            }
+            update_item(&tx, &stored.item)?;
             if until.is_some() {
                 count(&tx, &stored.item, Count::Snoozed, now)?;
             }
@@ -2847,6 +2911,7 @@ fn post(
         invite: None,
         reason: None,
         category: None,
+        follow_up: None,
     };
     // Security rule 6: only what is safe to open is kept (web pages, apps of the suite, the
     // window of a hook's agent); anything else is dropped, not refused.
@@ -3067,6 +3132,16 @@ fn change(
     apply(&mut stored.item);
     update_item(db, &stored.item)?;
     Ok(stored)
+}
+
+/// `unsupported` for "only if no reply" (`inbox.snooze_item` with `unless_reply`, task E19.1) on an
+/// entry that is no mail: only mail has replies. Without `until` the condition is ignored, as the
+/// follow-up is called off anyway.
+fn check_follow_up(item: &Item, until: Option<DateTime<Utc>>, unless_reply: bool) -> Result<(), Failure> {
+    if unless_reply && until.is_some() && item.source.kind != SourceKind::Mail {
+        return Err(Failure::Unsupported("only mail entries can wait for a reply (unless_reply)".into()));
+    }
+    Ok(())
 }
 
 /// `inbox.set_item_done` for `client` at `now`: the entry `id` done, or open again with `done:
@@ -3677,12 +3752,13 @@ fn read_owned(db: &Connection, owner: &str, thread_key: &str) -> Result<Option<I
 }
 
 /// Stores a new entry of `owner`, a GitHub entry with its repository in the column `repo`
-/// ([`SCHEMA_V8`]).
+/// ([`SCHEMA_V8`]), a follow-up in `follow_up` ([`SCHEMA_V16`]).
 fn insert_item(db: &Connection, owner: &str, item: &Item) -> Result<(), Failure> {
     let (state, state_at) = state_columns(&item.state);
     db.execute(
-        "INSERT INTO items (id, owner, thread_key, source, state, state_at, received, data, lane, urgent, updated, repo)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO items (id, owner, thread_key, source, state, state_at, received, data, lane, urgent, updated, repo,
+                            follow_up)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             item.id,
             owner,
@@ -3695,7 +3771,8 @@ fn insert_item(db: &Connection, owner: &str, item: &Item) -> Result<(), Failure>
             lane_column(item.lane),
             item.urgent,
             stamp(item.updated),
-            repo_column(item)
+            repo_column(item),
+            follow_up_column(item)
         ],
     )?;
     Ok(())
@@ -3729,9 +3806,17 @@ fn update_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The columns of version 2 and the JSON of `item` over its row: [`update_item`] without the mark
-/// `dismissed`, which [`backfill`] needs before [`SCHEMA_V4`] brings that column.
+/// The columns of `item` over its row, its follow-up ([`SCHEMA_V16`]) included: [`update_item`]
+/// without the mark `dismissed`.
 fn write_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
+    write_columns(db, item)?;
+    db.execute("UPDATE items SET follow_up = ?2 WHERE id = ?1", params![item.id, follow_up_column(item)])?;
+    Ok(())
+}
+
+/// The columns of version 2 and the JSON of `item` over its row: what [`backfill`] writes before
+/// [`SCHEMA_V4`] brings `dismissed` and [`SCHEMA_V16`] `follow_up`.
+fn write_columns(db: &Connection, item: &Item) -> Result<(), StoreError> {
     let (state, state_at) = state_columns(&item.state);
     db.execute(
         "UPDATE items SET state = ?2, state_at = ?3, data = ?4, lane = ?5, urgent = ?6, updated = ?7 WHERE id = ?1",
@@ -3748,9 +3833,16 @@ fn write_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Wakes every snoozed entry due at `now` ([`rules::wake`]); returns how many.
+/// The column `follow_up` of `item` ([`SCHEMA_V16`]): the time of its follow-up, or `NULL`.
+fn follow_up_column(item: &Item) -> Option<String> {
+    item.follow_up.map(|follow_up| stamp(follow_up.at))
+}
+
+/// Wakes every snoozed entry due at `now`, and every open one whose follow-up is due (task E19.1),
+/// ([`rules::wake`]); both are back from "Later" ([`came_back`]). Returns how many.
 fn wake_due(db: &mut Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
-    let due = read_items(db, &Scope::All, "state = 'snoozed' AND state_at <= ?", vec![text(stamp(now))], "")?;
+    let condition = "(state = 'snoozed' AND state_at <= ?) OR (state IN ('new', 'seen') AND follow_up <= ?)";
+    let due = read_items(db, &Scope::All, condition, vec![text(stamp(now)), text(stamp(now))], "")?;
     if due.is_empty() {
         return Ok(0);
     }
@@ -3901,6 +3993,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 15 {
         tx.execute_batch(SCHEMA_V15)?;
     }
+    if version < 16 {
+        tx.execute_batch(SCHEMA_V16)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -3912,7 +4007,7 @@ fn backfill(db: &Connection) -> Result<(), StoreError> {
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     for data in rows {
         let item: Item = serde_json::from_str(&data?)?;
-        write_item(db, &item)?;
+        write_columns(db, &item)?;
     }
     Ok(())
 }
@@ -4147,6 +4242,7 @@ fn finished_task_entry(
         invite: None,
         reason: None,
         category: None,
+        follow_up: None,
     }
 }
 
@@ -4191,6 +4287,7 @@ impl Matter {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 }
@@ -4728,6 +4825,7 @@ fn file_mail(
         invite: None,
         reason,
         category,
+        follow_up: None,
     };
     // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
     // and not kept as filed, like a hidden sender; "Info" files it there.
@@ -4937,6 +5035,7 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
         invite: None,
         reason: None,
         category: None,
+        follow_up: None,
     };
     // Security rule 6: only a web page.
     if !rules::may_open(&incoming, is_app_of_the_suite) {
@@ -5382,6 +5481,7 @@ fn newest_with(db: &Connection, scope: &Scope, prefix: &str, facet: &Facet) -> R
 pub(crate) mod tests {
     use chrono::TimeZone;
     use torro_core::i18n::tr;
+    use torro_inbox::item::FollowUp;
     use torro_inbox::{AgentKind, StateFilter};
     use torro_ipc::api::{AreaRights, Level, Rights, RightsTemplate};
 
@@ -5540,6 +5640,7 @@ pub(crate) mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
@@ -5664,8 +5765,11 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let id = posted(inbox.handle(notice("Nightly build is flaky", None), Some(&script()), at(8, 0)));
-        let snoozed =
-            item(inbox.handle(Request::SnoozeItem { id: id.clone(), until: Some(at(13, 0)) }, None, at(8, 1)));
+        let snoozed = item(inbox.handle(
+            Request::SnoozeItem { id: id.clone(), until: Some(at(13, 0)), unless_reply: false },
+            None,
+            at(8, 1),
+        ));
         assert_eq!(snoozed.state, State::Snoozed { until: at(13, 0) });
 
         assert_eq!(inbox.tend(at(12, 59), false), Ok((0, 0)));
@@ -5675,12 +5779,23 @@ pub(crate) mod tests {
         assert_eq!((woken.state, woken.updated), (State::New, at(13, 0)));
 
         // Listing wakes too, without waiting for the daemon.
-        inbox.handle(Request::SnoozeItem { id: id.clone(), until: Some(at(14, 0)) }, None, at(13, 2));
+        inbox.handle(
+            Request::SnoozeItem { id: id.clone(), until: Some(at(14, 0)), unless_reply: false },
+            None,
+            at(13, 2),
+        );
         let listed = items(inbox.handle(all(), None, at(14, 0)));
         assert_eq!(listed[0].state, State::New);
-        let back = item(inbox.handle(Request::SnoozeItem { id: id.clone(), until: Some(at(20, 0)) }, None, at(14, 1)));
+        let back = item(inbox.handle(
+            Request::SnoozeItem { id: id.clone(), until: Some(at(20, 0)), unless_reply: false },
+            None,
+            at(14, 1),
+        ));
         assert_eq!(back.state, State::Snoozed { until: at(20, 0) });
-        assert_eq!(item(inbox.handle(Request::SnoozeItem { id, until: None }, None, at(14, 2))).state, State::Seen);
+        assert_eq!(
+            item(inbox.handle(Request::SnoozeItem { id, until: None, unless_reply: false }, None, at(14, 2))).state,
+            State::Seen
+        );
     }
 
     #[test]
@@ -5818,7 +5933,7 @@ pub(crate) mod tests {
         for request in [
             Request::GetItem { id: id.clone() },
             Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
-            Request::SnoozeItem { id: id.clone(), until: None },
+            Request::SnoozeItem { id: id.clone(), until: None, unless_reply: false },
             Request::SetItemLane { id: id.clone(), lane: Lane::ForMe, remember: false },
             Request::MuteSource { source: source.clone(), muted: true },
         ] {
@@ -6048,7 +6163,7 @@ pub(crate) mod tests {
             );
             for request in [
                 Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
-                Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)) },
+                Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)), unless_reply: false },
                 Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: false },
                 mute.clone(),
             ] {
@@ -6761,7 +6876,7 @@ pub(crate) mod tests {
         };
         let done = Request::SetItemDone { id: id_of("a"), done: true, dismissed: true };
         assert!(matches!(inbox.handle(done, None, at(10, 0)), Response::Item { .. }));
-        let snooze = Request::SnoozeItem { id: id_of("b"), until: Some(at(10, 5)) };
+        let snooze = Request::SnoozeItem { id: id_of("b"), until: Some(at(10, 5)), unless_reply: false };
         assert!(matches!(inbox.handle(snooze, None, at(10, 0)), Response::Item { .. }));
         let mut answers = inbox.reminder_answers().expect("read");
         answers.sort_by(|x, y| x.0.cmp(&y.0));
@@ -6965,7 +7080,11 @@ pub(crate) mod tests {
         assert!(wrote(), "a post");
         for_me_notice(&inbox, "Build failed again", "build", at(8, 1));
         assert!(wrote(), "a merge");
-        inbox.handle(Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)) }, None, at(8, 2));
+        inbox.handle(
+            Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)), unless_reply: false },
+            None,
+            at(8, 2),
+        );
         assert!(wrote(), "a snooze");
         inbox.handle(all(), None, at(8, 30));
         assert!(!wrote(), "listing before the entry is due wakes nothing");
@@ -7028,7 +7147,7 @@ pub(crate) mod tests {
         }
         posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 10)));
         let snoozed = for_me_notice(&inbox, "Later", "later", at(8, 11));
-        inbox.handle(Request::SnoozeItem { id: snoozed, until: Some(at(12, 0)) }, None, at(8, 11));
+        inbox.handle(Request::SnoozeItem { id: snoozed, until: Some(at(12, 0)), unless_reply: false }, None, at(8, 11));
         let done = for_me_notice(&inbox, "Done", "done", at(8, 12));
         inbox.handle(Request::SetItemDone { id: done, done: true, dismissed: false }, None, at(8, 12));
 
@@ -7117,7 +7236,7 @@ pub(crate) mod tests {
                 db.execute_batch(
                     "DROP TABLE sort_rules; DROP TABLE custom_categories; DROP TABLE category_edits;
                      DROP TABLE category_jobs; DROP TABLE category_clear_jobs; ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; PRAGMA user_version = 10;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 10;",
                 )?;
                 insert_rule(db, kept("b", None, Some("shop.example"), Category::Promotion, 2))?;
                 insert_rule(db, kept("a", Some("billing@shop.example"), None, Category::Invoice, 1))?;
@@ -7181,7 +7300,7 @@ pub(crate) mod tests {
                          ALTER TABLE custom_categories DROP COLUMN icon;
                          DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                          ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                         DROP TABLE shown_mail; PRAGMA user_version = 11;",
+                         DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 11;",
                     )?;
                     Ok(())
                 })
@@ -7972,7 +8091,11 @@ pub(crate) mod tests {
         let cloud = SourceRef::nextcloud(CLOUD);
         let report = shared("files_sharing:file:7", &["n1", "n2"], at(8, 0));
         let id = filed_remote(&inbox, &report, at(8, 0));
-        inbox.handle(Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)) }, None, at(8, 1));
+        inbox.handle(
+            Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false },
+            None,
+            at(8, 1),
+        );
         assert_eq!(inbox.resolve_remote(&cloud, &["n1".into(), "unknown".into()], at(9, 0)), Ok(0));
         assert!(matches!(entry(&inbox, &id).state, State::Snoozed { .. }), "one id is left");
         assert_eq!(inbox.open_remote(&cloud), Ok(vec![RemoteEntry { id: id.clone(), ids: vec!["n2".into()] }]));
@@ -8146,7 +8269,7 @@ pub(crate) mod tests {
         assert_eq!(code(&inbox.handle(done(&id, false), Some(&reader), at(9, 0))), "forbidden", "when it runs");
         assert_eq!(code(&inbox.entry_for_task(&id, Some(&reader), at(9, 0)).expect_err("refused")), "forbidden");
         assert!(entry(&inbox, &id).state.is_open(), "nothing changed");
-        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)) };
+        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false };
         assert!(inbox.refusal(&snooze, Some(&reader)).is_none(), "the rest as for any entry");
         // Deleting a Nextcloud notification needs nothing beyond the inbox.
         assert!(inbox.refusal(&done(&cloud, false), Some(&reader)).is_none());
@@ -8301,7 +8424,7 @@ pub(crate) mod tests {
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                      ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; PRAGMA user_version = 8;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 8;",
                 )?;
                 Ok(())
             })
@@ -8332,7 +8455,7 @@ pub(crate) mod tests {
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                      ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; PRAGMA user_version = 7;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 7;",
                 )?;
                 Ok(())
             })
@@ -8467,7 +8590,7 @@ pub(crate) mod tests {
         let refused = inbox.entry_for_task(&id, Some(&reader), at(9, 1)).expect_err("refused");
         assert_eq!(code(&refused), "forbidden");
         assert_eq!(item(get(&inbox, &id, None)).state, State::New, "nothing changed");
-        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)) };
+        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false };
         assert!(inbox.refusal(&snooze, Some(&reader)).is_none(), "the rest as for any entry");
 
         let writer = with_mail(Some(Level::Write), Selection::Only(vec![ANNA.into()]));
@@ -8644,6 +8767,140 @@ pub(crate) mod tests {
         assert_eq!(inbox.mail_hidden(&accounts, after).expect("read").hidden_of(ANNA), ["m:1"]);
     }
 
+    /// `inbox.snooze_item` for `id` until `until`, with or without "only if no reply".
+    fn follow_up(id: &str, until: Option<DateTime<Utc>>, unless_reply: bool) -> Request {
+        Request::SnoozeItem { id: id.into(), until, unless_reply }
+    }
+
+    /// The entry `id` as the app key reads it at `now`.
+    fn entry_at(inbox: &Inbox, id: &str, now: DateTime<Utc>) -> Item {
+        item(inbox.handle(Request::GetItem { id: id.into() }, None, now))
+    }
+
+    /// Task E19.1: snoozing a mail entry follows up, with the condition and since when; any other
+    /// entry is put off as before and refuses the condition.
+    #[test]
+    fn snoozing_a_mail_entry_follows_up() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let followed = item(inbox.handle(follow_up(&id, Some(at(13, 0)), true), None, at(8, 2)));
+        assert_eq!(followed.state, State::Snoozed { until: at(13, 0) });
+        assert_eq!(followed.follow_up, Some(FollowUp { at: at(13, 0), unless_reply: true, since: at(8, 2) }));
+        assert_eq!(inbox.awaiting_reply(ANNA).expect("read"), [("t:1".to_string(), at(8, 2))]);
+        let back = item(inbox.handle(follow_up(&id, None, true), None, at(8, 3)));
+        assert_eq!((back.state, back.follow_up), (State::Seen, None), "called off, the condition ignored");
+        assert!(inbox.awaiting_reply(ANNA).expect("read").is_empty());
+
+        let notice = posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 4)));
+        let refused = inbox.handle(follow_up(&notice, Some(at(13, 0)), true), None, at(8, 5));
+        assert_eq!(code(&refused), "unsupported", "only mail has replies");
+        let refused = inbox.refusal(&follow_up(&notice, Some(at(13, 0)), true), Some(&script()));
+        assert_eq!(refused.as_ref().map(code), Some("unsupported"), "refused before an approval");
+        assert_eq!(entry_at(&inbox, &notice, at(8, 6)).state, State::New, "nothing changed");
+        let put_off = item(inbox.handle(follow_up(&notice, Some(at(13, 0)), false), None, at(8, 6)));
+        assert_eq!((put_off.state, put_off.follow_up), (State::Snoozed { until: at(13, 0) }, None));
+    }
+
+    /// Task E19.1, decision 6: a reply calls a follow-up "only if no reply" off – the entry is open,
+    /// not back, and does not come back at the date –, read or in another folder (only noted) as well
+    /// as in the inbox (filed after). A reply from before the follow-up counts for nothing.
+    #[test]
+    fn a_reply_calls_off_a_follow_up_unless_reply() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        item(inbox.handle(follow_up(&id, Some(at(13, 0)), true), None, at(8, 2)));
+        assert!(!inbox.reply_came(ANNA, "t:1", at(8, 1), at(9, 0)).expect("noted"), "from before");
+        assert!(!inbox.reply_came(ANNA, "t:9", at(9, 0), at(9, 0)).expect("noted"), "another conversation");
+        assert!(inbox.reply_came(ANNA, "t:1", at(9, 0), at(9, 1)).expect("noted"));
+        let open = entry_at(&inbox, &id, at(9, 2));
+        assert_eq!((open.state, open.follow_up, open.updated), (State::Seen, None, at(8, 0)));
+        let later = inbox.mail_later(&[ANNA.to_string()], at(13, 1)).expect("read");
+        assert!(later.back_of(ANNA).is_empty() && later.snoozed_of(ANNA).is_empty(), "not back");
+        assert_eq!(entry_at(&inbox, &id, at(13, 1)).state, State::Seen, "the date never comes");
+        // The reply filed after (it was unread in the inbox): new on top by its own date, not back.
+        filed(&inbox, &personal("m:2", "t:1", at(9, 0)), at(9, 3));
+        let filed_reply = entry_at(&inbox, &id, at(13, 2));
+        assert_eq!((filed_reply.state, filed_reply.updated), (State::New, at(9, 0)));
+        assert!(inbox.mail_later(&[ANNA.to_string()], at(13, 3)).expect("read").back_of(ANNA).is_empty());
+        // A follow-up whose date passed before the feed got to a reply comes back all the same.
+        let other = filed(&inbox, &personal("m:3", "t:2", at(8, 0)), at(8, 1));
+        item(inbox.handle(follow_up(&other, Some(at(10, 0)), true), None, at(8, 2)));
+        assert!(!inbox.reply_came(ANNA, "t:2", at(11, 0), at(11, 1)).expect("noted"), "woken first");
+        let woken = entry_at(&inbox, &other, at(11, 2));
+        assert_eq!((woken.state, woken.updated), (State::New, at(10, 0)));
+    }
+
+    /// Task E19.1, decisions 6 and 9: without the condition a reply opens the conversation, the date
+    /// stays and brings it on top once more while its entry is open; archived before, it does not.
+    #[test]
+    fn a_follow_up_without_condition_comes_back_after_a_reply() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let archived = filed(&inbox, &personal("m:3", "t:2", at(8, 0)), at(8, 1));
+        for entry in [&id, &archived] {
+            item(inbox.handle(follow_up(entry, Some(at(13, 0)), false), None, at(8, 2)));
+            assert!(
+                !inbox.reply_came(ANNA, if *entry == id { "t:1" } else { "t:2" }, at(9, 0), at(9, 1)).expect("noted")
+            );
+        }
+        filed(&inbox, &personal("m:2", "t:1", at(9, 0)), at(9, 2));
+        filed(&inbox, &personal("m:4", "t:2", at(9, 0)), at(9, 2));
+        let opened = entry_at(&inbox, &id, at(9, 3));
+        assert_eq!((opened.state, opened.follow_up.map(|held| held.at)), (State::New, Some(at(13, 0))));
+        assert_eq!(inbox.mail_later(&[ANNA.to_string()], at(9, 4)).expect("read").back_at(ANNA, "m:2"), Some(at(9, 0)));
+        inbox.mail_read(ANNA, "m:2", at(10, 0));
+        item(inbox.handle(
+            Request::SetItemDone { id: archived.clone(), done: true, dismissed: false },
+            None,
+            at(10, 1),
+        ));
+
+        let back = entry_at(&inbox, &id, at(13, 1));
+        assert_eq!((back.state, back.updated, back.follow_up), (State::New, at(13, 0), None), "on top again");
+        assert_eq!(
+            inbox.mail_later(&[ANNA.to_string()], at(13, 2)).expect("read").back_at(ANNA, "m:1"),
+            Some(at(13, 0))
+        );
+        assert!(matches!(entry_at(&inbox, &archived, at(13, 1)).state, State::Done { .. }), "archived stays");
+    }
+
+    /// Task E19.1: a file of schema 15 learns follow-ups. Mail put off before has none and wakes as
+    /// before (decision 9); a follow-up set now wakes its entry by the new column.
+    #[test]
+    fn a_file_of_schema_15_learns_follow_ups() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let before = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let after = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(8, 1));
+        // Put off before task E19.1: snoozed, without a follow-up.
+        item(inbox.handle(follow_up(&before, Some(at(13, 0)), false), None, at(8, 2)));
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "UPDATE items SET data = json_remove(data, '$.follow_up');
+                     ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 15;",
+                )?;
+                Ok(())
+            })
+            .expect("back to schema 15");
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        let kept = entry_at(&inbox, &before, at(9, 0));
+        assert_eq!((kept.state, kept.follow_up), (State::Snoozed { until: at(13, 0) }, None));
+        item(inbox.handle(follow_up(&after, Some(at(13, 0)), false), None, at(9, 1)));
+        // A reply opens it; its follow-up stays, and only the new column finds it due.
+        filed(&inbox, &personal("m:3", "t:2", at(9, 0)), at(9, 2));
+        assert_eq!(entry_at(&inbox, &after, at(9, 3)).state, State::New);
+        assert_eq!(inbox.tend(at(13, 1), false).expect("tended").0, 2, "the one put off before and the followed up");
+        assert_eq!(entry_at(&inbox, &after, at(13, 2)).updated, at(13, 0));
+        let db = Connection::open(file_in(dir.path())).expect("opens");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
     /// Task E18.1: a file of schema 14 learns what hides mail by its id, and keeps its entries; task
     /// E18.2: and which mail is shown again.
     #[test]
@@ -8655,7 +8912,7 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; PRAGMA user_version = 14;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 14;",
                 )?;
                 Ok(())
             })
@@ -8693,7 +8950,7 @@ pub(crate) mod tests {
         };
         let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
         filed(&inbox, &personal("m:2", "t:2", at(8, 30)), at(8, 31));
-        let snooze = |until| Request::SnoozeItem { id: id.clone(), until };
+        let snooze = |until| Request::SnoozeItem { id: id.clone(), until, unless_reply: false };
         item(inbox.handle(snooze(Some(at(18, 0))), None, at(9, 0)));
         let later = inbox.mail_later(&accounts, at(9, 1)).expect("read");
         assert_eq!((later.snoozed_of(ANNA), later.back_of(ANNA)), (vec!["m:1".to_string()], Vec::new()));
@@ -8764,7 +9021,7 @@ pub(crate) mod tests {
         let anna = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
         let bernd = NewMail { account: "mail:bernd@example.com".into(), ..personal("m:2", "t:2", at(8, 0)) };
         let bernd = filed(&inbox, &bernd, at(8, 2));
-        let snoozed = Request::SnoozeItem { id: bernd.clone(), until: Some(at(20, 0)) };
+        let snoozed = Request::SnoozeItem { id: bernd.clone(), until: Some(at(20, 0)), unless_reply: false };
         inbox.handle(snoozed, None, at(8, 3));
         let notice = posted(inbox.handle(notice("Backup done", None), Some(&script()), at(8, 4)));
 
@@ -8818,7 +9075,11 @@ pub(crate) mod tests {
         let inbox = inbox_in(dir.path());
         let news = filed(&inbox, &from("m:1", "News@Shop.example"), at(9, 0));
         let snoozed = filed(&inbox, &from("m:2", "news@shop.example"), at(9, 0));
-        inbox.handle(Request::SnoozeItem { id: snoozed.clone(), until: Some(at(20, 0)) }, None, at(9, 1));
+        inbox.handle(
+            Request::SnoozeItem { id: snoozed.clone(), until: Some(at(20, 0)), unless_reply: false },
+            None,
+            at(9, 1),
+        );
         let orders = filed(&inbox, &from("m:3", "orders@shop.example"), at(9, 0));
         let bernd = filed(&inbox, &personal("m:4", "t:4", at(8, 0)), at(9, 0));
 
@@ -9529,7 +9790,7 @@ pub(crate) mod tests {
 
         inbox.opened(&a, None, now);
         inbox.opened(&a, None, now);
-        inbox.handle(Request::SnoozeItem { id: b, until: Some(at(20, 0)) }, None, now);
+        inbox.handle(Request::SnoozeItem { id: b, until: Some(at(20, 0)), unless_reply: false }, None, now);
         inbox.handle(done(&c, false), None, at(10, 20));
         inbox.handle(done(&c, false), None, at(10, 21));
         inbox.handle(done(&d, true), None, now);
@@ -9821,6 +10082,7 @@ pub(crate) mod tests {
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                      ALTER TABLE items DROP COLUMN hidden; DROP TABLE shown_mail;
+                     ALTER TABLE items DROP COLUMN follow_up;
                      PRAGMA user_version = 5;",
                 )?;
                 Ok(())

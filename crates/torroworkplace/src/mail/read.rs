@@ -279,7 +279,10 @@ struct LaterView {
 impl LaterView {
     /// The queries for the store of `account`: the page is merged from all of them. One query
     /// except with `snoozed: false`, which fetches the mail back from Later apart (none when
-    /// there is none), so it is found whatever its date.
+    /// there is none), so it is found whatever its date – and wherever it lies (task E19.1,
+    /// decision 8): that query drops the `in:` of the search ([`query::Query::without_folders`]),
+    /// so a sent mail back from a follow-up stands on top of "All" (`in:inbox`) as well. Mail in the
+    /// trash or in spam is left out there ([`anywhere_but_bin`]): thrown away, it is not back.
     fn queries(&self, account: &str, query: &SearchQuery) -> Vec<SearchQuery> {
         let query = &SearchQuery { hidden: self.hiding(account), ..query.clone() };
         match self.snoozed {
@@ -291,7 +294,8 @@ impl LaterView {
                 except.extend(back.iter().cloned());
                 let mut queries = vec![SearchQuery { except, ..query.clone() }];
                 if !back.is_empty() {
-                    queries.push(SearchQuery { only: Some(back), ..query.clone() });
+                    let anywhere = anywhere_but_bin(&query.query);
+                    queries.push(SearchQuery { only: Some(back), query: anywhere, ..query.clone() });
                 }
                 queries
             }
@@ -335,6 +339,17 @@ impl LaterView {
             _ => summary.date,
         }
     }
+}
+
+/// `query` without what it asks of folders ([`Query::without_folders`]), but never in the trash or in
+/// spam (task E19.1): where the mail back from Later is looked for with `snoozed: false`.
+fn anywhere_but_bin(query: &Query) -> Query {
+    let mut anywhere = query.without_folders();
+    for role in ["trash", "junk"] {
+        let term = query::Term { negated: true, test: query::Test::In(role.into()) };
+        anywhere.clauses.push(query::Clause { any: vec![term] });
+    }
+    anywhere
 }
 
 /// Which of `messages` (pairs of account `mail:<address>` and message `m:…`) are hidden from their
@@ -1905,7 +1920,11 @@ pub(crate) mod tests {
         assert!(matches!(inbox.handle(mute(&entries["Talk"], MuteScope::Conversation), None, now), Response::Muted(_)));
         let sender = Request::HideSender { id: entries["News new"].clone(), scope: HideScope::Sender };
         assert!(matches!(inbox.handle(sender, None, now), Response::Hidden(_)));
-        let later = Request::SnoozeItem { id: entries["Plain 2"].clone(), until: Some(now + Duration::hours(1)) };
+        let later = Request::SnoozeItem {
+            id: entries["Plain 2"].clone(),
+            until: Some(now + Duration::hours(1)),
+            unless_reply: false,
+        };
         assert!(matches!(inbox.handle(later, None, now), Response::Item { .. }));
         let weekly = summary("Weekly").id;
         let stand_in = crate::mail::inbox_feed::message_stand_in(&service, Reach::Suite, &weekly).await.expect("mail");

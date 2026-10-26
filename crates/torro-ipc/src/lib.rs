@@ -1816,6 +1816,11 @@ pub enum Request {
     /// the mail from the inbox. Without `until` such a message stays without an entry and the
     /// answer is the entry it would be, not snoozed. A client needs read access to the message's
     /// account, else `not-found`.
+    ///
+    /// On a mail entry it is a follow-up (task E19.1, [`torro_inbox::rules::follow_up`],
+    /// [`torro_inbox::Item::follow_up`]): new mail in the conversation opens it early; without
+    /// `unless_reply` the date stays and brings the conversation on top once more if its entry is
+    /// still open then.
     #[serde(rename = "inbox.snooze_item")]
     SnoozeItem {
         /// The entry's id, or a mail message's id (`m:…`).
@@ -1823,6 +1828,14 @@ pub enum Request {
         /// When it comes back (RFC 3339); leave out to stop snoozing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         until: Option<DateTime<Utc>>,
+        /// Follow up only if nobody replies by `until` (task E19.1): a reply – mail in the
+        /// conversation, not sent from the account itself, dated after this call, in any folder,
+        /// read or not – calls the follow-up off, and the conversation stays where the reply put it
+        /// without coming back at `until`. Only for mail entries and mail ids (`m:…`); on any other
+        /// entry `unsupported`, refused before an approval is asked for. Ignored without `until`,
+        /// which calls any follow-up off.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unless_reply: bool,
     },
     /// Moves the entry to `lane` ([`torro_inbox::rules::set_lane`]). With `remember` the core also
     /// keeps the lane for later notices of the entry's source (a rule, `inbox.list_rules`); that

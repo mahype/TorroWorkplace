@@ -274,6 +274,7 @@ fn entry(now: DateTime<Utc>, n: u32, source: SourceRef, kind: Kind, title: Strin
         invite: None,
         reason: None,
         category: None,
+        follow_up: None,
     }
 }
 
@@ -1065,6 +1066,7 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 reason: m.traits.list_id.is_some().then_some(LaneReason::List),
                 // Demo mail gets its categories with E12.8, where the pill is built.
                 category: None,
+                follow_up: None,
             };
             // The traits the core gives new mail (task E8.6a), its list and bulk from the headers.
             let list = m.traits.list_id.as_deref();

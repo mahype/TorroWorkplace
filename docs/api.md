@@ -491,6 +491,14 @@ gespeichert; die Antwort ist der Eintrag, der es wäre. Rechte wie bei `mute_ite
 `mail.search_messages` mit dem optionalen Feld `snoozed`: `false` lässt zurückgestellte Mails weg und stellt
 zurückgekommene nach dem Zeitpunkt ihrer Rückkehr ein, `true` liefert nur die zurückgestellten; gefiltert wird vor dem
 Blättern. Jede Mail einer Suche trägt `back`, wenn sie aus „Später“ zurückkam (verträglich, kein `v: 2`).
+An Mail ist `snooze_item` eine Wiedervorlage (E19.1, „Follow up“ im Mail-Fenster): Das optionale Feld `unless_reply`
+(„Only if no reply“) lässt die Wiedervorlage entfallen, sobald eine Antwort kommt – eine Mail der Unterhaltung, nicht
+vom Konto selbst, datiert nach dem Aufruf, in jedem Ordner, gelesen oder nicht; die Unterhaltung steht dann ohne
+„back“ wieder in „All“ und kommt am Datum nicht wieder. Ohne `unless_reply` öffnet eine Antwort die Unterhaltung, das
+Datum bleibt und holt sie noch einmal nach oben, solange ihr Eintrag offen ist. `unless_reply` an einem Eintrag, der
+keine Mail ist, ist `unsupported`, geprüft vor der Freigabe; ohne `until` zählt es nicht. Mit `snoozed: false` kommt
+zurückgekehrte Mail aus jedem Ordner außer Papierkorb und Spam, unabhängig vom `in:` der Suche: Eine eigene gesendete
+Mail, auf die niemand antwortete, steht oben in „All“ (verträglich, kein `v: 2`).
 Ebenso `hidden` (E18.1, „Hidden“ im Mail-Fenster): `false` lässt Mails des Posteingangsordners weg, die der Mensch
 ausgeblendet hat – von einem Absender oder einer Domain (`hide_sender`, geprüft beim Lesen gegen den Absender, also
 auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr Eintrag erledigt ist, oder durch ein

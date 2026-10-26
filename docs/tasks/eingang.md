@@ -4356,7 +4356,7 @@ E19.1 und E19.2 ändern dasselbe Schema (`SCHEMA_V16`, noch nicht ausgeliefert) 
 parallel.
 
 ### E19.1 Kern: Wiedervorlage mit „Only if no reply“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-inbox/src/item.rs`, `crates/torro-inbox/src/rules.rs`,
   `crates/torroworkplace/src/inbox.rs`, `crates/torroworkplace/src/core.rs`,
   `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torroworkplace/src/mail/store.rs`,
