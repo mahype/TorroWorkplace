@@ -3,6 +3,7 @@
 //! missing sent folder, two candidates left open, MOVE without the MOVE capability, a changed
 //! UIDVALIDITY, and the fetch, store, append and IDLE commands of the sync. Since task M11.2 also
 //! certificates: an untrusted one ends the connection before the login, a pinned one signs in.
+//! Since DS.1 (#314) also the storage quota (`GETQUOTAROOT`), asked only of servers with `QUOTA`.
 
 mod imap_support;
 
@@ -15,7 +16,7 @@ use torro_core::account::Secret;
 use torro_mail::{Flag, Role, Security};
 use torro_mail_imap::folders::{self, FolderList, OpenRole};
 use torro_mail_imap::imap::{
-    AppendError, AppendUid, BodyChunks, BodyError, IdleEvent, ImapError, Search, Session, Trust,
+    AppendError, AppendUid, BodyChunks, BodyError, IdleEvent, ImapError, Quota, Search, Session, Trust,
     backup_flag_transferable, encode_mailbox,
 };
 use torro_mail_imap::tls::Fingerprint;
@@ -308,6 +309,43 @@ fn roles(list: &FolderList) -> Vec<(Role, &str, &str)> {
         list.folders.iter().filter_map(|f| Some((f.role?, f.path.as_str(), f.name.as_str()))).collect();
     roles.sort();
     roles
+}
+
+/// DS.1 (#314): the storage quota of the inbox's root, in KiB as the server counts, from the
+/// resource `STORAGE` among others.
+#[tokio::test]
+async fn the_quota_root_names_the_storage_used_and_allowed() {
+    let mut steps = signed_in("QUOTA");
+    steps.extend([
+        expect("a2 GETQUOTAROOT \"INBOX\""),
+        send("* QUOTAROOT \"INBOX\" \"\""),
+        send("* QUOTA \"\" (MESSAGE 12 1000 STORAGE 2475 10485760)"),
+        send("a2 OK Getquotaroot completed"),
+        expect("a3 GETQUOTAROOT \"INBOX\""),
+        send("* QUOTAROOT \"INBOX\" \"\""),
+        send("* QUOTA \"\" (MESSAGE 12 1000)"),
+        send("a3 OK Getquotaroot completed"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    let quota = session.quota_root("INBOX").await.expect("asked");
+    assert_eq!(quota, Some(Quota { used_kib: 2475, limit_kib: 10_485_760 }));
+    assert_eq!(session.quota_root("INBOX").await.expect("asked"), None, "no limit on storage");
+    server.received().await;
+}
+
+/// Without the capability `QUOTA` nothing is asked: the next command is the logout.
+#[tokio::test]
+async fn without_quota_the_quota_root_is_none_and_nothing_is_sent() {
+    let mut steps = signed_in("IDLE");
+    steps.extend([expect("a2 LOGOUT"), send("* BYE Logging out"), send("a2 OK Logout completed")]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    assert_eq!(session.quota_root("INBOX").await.expect("answered"), None);
+    session.logout().await.expect("logged out");
+    let mut lines = signed_in_lines();
+    lines.push("a2 LOGOUT".into());
+    assert_eq!(server.received().await, lines);
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 //! IMAP sessions (task M2.3): connecting with TLS or STARTTLS through rustls, signing in, and the
 //! commands the core's sync and handlers need (`LIST`, `STATUS`, `SELECT`, `UID SEARCH`,
-//! `UID FETCH`, `UID STORE`, `UID MOVE` or its fallback, `APPEND`, `IDLE`, `CONDSTORE`).
+//! `UID FETCH`, `UID STORE`, `UID MOVE` or its fallback, `APPEND`, `IDLE`, `CONDSTORE`,
+//! `GETQUOTAROOT`).
 //!
 //! The core (task M2.6) keeps two [`Session`]s per account on tokio: one waits in
 //! [`Session::idle`] on the inbox, the other runs commands. A session is `Send`, every method is
@@ -178,6 +179,16 @@ pub struct FolderStatus {
     pub uid_validity: Option<u32>,
     /// The folder's HIGHESTMODSEQ, when the server has CONDSTORE.
     pub highest_modseq: Option<u64>,
+}
+
+/// The storage quota of a quota root ([`Session::quota_root`], RFC 9208), in units of 1024 bytes
+/// as the server counts the resource `STORAGE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quota {
+    /// In use.
+    pub used_kib: u64,
+    /// Allowed.
+    pub limit_kib: u64,
 }
 
 /// The folder a session has open ([`Session::select`]).
@@ -669,6 +680,18 @@ impl Session {
             }
         }
         Ok(status)
+    }
+
+    /// The storage quota of the quota root `mailbox` belongs to (`GETQUOTAROOT`, RFC 9208): the
+    /// resource `STORAGE` of the first `* QUOTA` that names one. `Ok(None)` without sending
+    /// anything when the server does not announce `QUOTA`, and when no root limits storage.
+    /// `mailbox` goes out as given, like the path of [`Session::status`].
+    pub async fn quota_root(&mut self, mailbox: &str) -> Result<Option<Quota>, ImapError> {
+        if !self.capabilities.has("QUOTA") {
+            return Ok(None);
+        }
+        let data = self.run(&[Arg::Raw("GETQUOTAROOT"), Arg::Str(mailbox)], "GETQUOTAROOT").await?;
+        Ok(data.iter().filter_map(Response::data).filter(|tokens| first_is(tokens, "QUOTA")).find_map(storage_quota))
     }
 
     /// Makes the folder `path` (as the server will name it, prefix included). With a `role` and
@@ -1353,6 +1376,13 @@ fn personal_namespace(response: &Response) -> Option<Namespace> {
         prefix.push(delimiter);
     }
     Some(Namespace { prefix, delimiter })
+}
+
+/// The resource `STORAGE` of a `* QUOTA root (name usage limit …)` line.
+fn storage_quota(tokens: &[Token]) -> Option<Quota> {
+    let resources = tokens.get(2)?.list()?;
+    let storage = resources.chunks(3).find(|resource| resource[0].is("STORAGE"))?;
+    Some(Quota { used_kib: storage.get(1)?.number()?, limit_kib: storage.get(2)?.number()? })
 }
 
 fn first_is(tokens: &[Token], word: &str) -> bool {

@@ -42,7 +42,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
 ---
 
 ### DS.1 Mail-Daten im Dienst: Kontingent, Ordnergrößen, Mail je Monat, Originale je Ordner
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/mail.rs`, `crates/torro-ipc/src/api.rs`,
   `docs/api-reference.md`, `crates/torro-mail-imap/src/imap.rs`, `crates/torro-mail-imap/tests/imap.rs`,
   `crates/torroworkplace/src/mail/{store,sync,read}.rs`, `crates/torro-settings-ui/src/demo.rs`

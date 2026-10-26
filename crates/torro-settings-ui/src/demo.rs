@@ -29,7 +29,7 @@ use torro_ipc::inbox::{
 };
 use torro_ipc::mail::{
     MailAccountStats, MailCacheAction, MailCacheEstimate, MailCacheJob, MailCacheJobState, MailCacheMode,
-    MailCachePolicy, MailFolderStats,
+    MailCachePolicy, MailFolderStats, MailMonthCount, MailQuota,
 };
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{
@@ -52,6 +52,50 @@ const SHARED_CALENDAR: &str = "nextcloud:ben@cloud.example.org/shared";
 /// The sample mail account (task S.20), for the mail window's "Accounts" and the inbox's
 /// "Sources".
 const MAIL_ADDRESS: &str = "anna@mailbox.org";
+
+/// One folder of the sample mail account ([`Demo::mail_stats`]): `index` is full, partial or
+/// unverified, unavailable and awaiting; `originals` is count and bytes.
+struct DemoFolder {
+    id: &'static str,
+    name: &'static str,
+    role: Option<Role>,
+    total: u32,
+    unread: u32,
+    bodies: u64,
+    index: [u64; 4],
+    oldest: Option<chrono::DateTime<Utc>>,
+    server_bytes: u64,
+    originals: (u64, u64),
+}
+
+/// Six years of the sample account's mail, November 2020 to October 2026, a month at a time:
+/// together its 24,813 messages, of which the newest 11,000 are readable offline.
+fn demo_months() -> Vec<MailMonthCount> {
+    const MESSAGES: u64 = 24_813;
+    const OFFLINE: u64 = 11_000;
+    let mut months: Vec<MailMonthCount> = (0..72u32)
+        .map(|at| {
+            // Months counted from January 2020; November 2020 is the tenth.
+            let index = 10 + at;
+            MailMonthCount {
+                year: 2020 + (index / 12) as i32,
+                month: index % 12 + 1,
+                messages: 300 + u64::from(at * 37 % 90),
+                cached_bodies: 0,
+            }
+        })
+        .collect();
+    let counted: u64 = months.iter().map(|month| month.messages).sum();
+    if let Some(last) = months.last_mut() {
+        last.messages = (last.messages + MESSAGES).saturating_sub(counted);
+    }
+    let mut offline = OFFLINE;
+    for month in months.iter_mut().rev() {
+        month.cached_bodies = month.messages.min(offline);
+        offline -= month.cached_bodies;
+    }
+    months
+}
 
 /// Sample data for the sections, answered from memory.
 #[derive(Debug, Default)]
@@ -304,71 +348,99 @@ impl Demo {
     }
 
     /// Plausible sample numbers for the account inventory; no real mailbox is read in demo mode.
+    /// Four folders (DS.1), so the account page has a table and "other folders"; the folders, the
+    /// months and the originals add up to the account's numbers, the folder sizes to the quota.
     fn mail_stats(&self) -> Vec<MailAccountStats> {
         let account = format!("mail:{MAIL_ADDRESS}");
-        let oldest = Utc.with_ymd_and_hms(2010, 4, 18, 9, 14, 0).single();
+        let date = |year, month, day| Utc.with_ymd_and_hms(year, month, day, 9, 14, 0).single();
         let newest = Utc.with_ymd_and_hms(2026, 10, 21, 5, 57, 0).single();
-        let folder =
-            |id: &str, name: &str, role, total, unread, read, bodies, full, partial, unavailable, pending, first| {
-                MailFolderStats {
-                    folder: Folder {
-                        id: id.into(),
-                        account: account.clone(),
-                        name: name.into(),
-                        path: name.into(),
-                        role,
-                        unread,
-                        total,
-                    },
-                    read,
-                    oldest_known: first,
-                    newest_known: newest,
-                    cached_bodies: bodies,
-                    indexed_full: full,
-                    indexed_partial_or_unverified: partial,
-                    text_unavailable: unavailable,
-                    awaiting_index: pending,
-                }
-            };
+        let months = demo_months();
+        let oldest_cached_body = months
+            .iter()
+            .find(|month| month.cached_bodies > 0)
+            .and_then(|month| date(month.year, month.month, if month.cached_bodies < month.messages { 15 } else { 1 }));
+        let folder = |sample: DemoFolder| MailFolderStats {
+            folder: Folder {
+                id: sample.id.into(),
+                account: account.clone(),
+                name: sample.name.into(),
+                path: sample.name.into(),
+                role: sample.role,
+                unread: sample.unread,
+                total: sample.total,
+            },
+            read: u64::from(sample.total - sample.unread),
+            oldest_known: sample.oldest,
+            newest_known: newest,
+            cached_bodies: sample.bodies,
+            indexed_full: sample.index[0],
+            indexed_partial_or_unverified: sample.index[1],
+            text_unavailable: sample.index[2],
+            awaiting_index: sample.index[3],
+            server_bytes: Some(sample.server_bytes),
+            originals: sample.originals.0,
+            original_bytes: sample.originals.1,
+        };
+        let folders = vec![
+            folder(DemoFolder {
+                id: "f:demo-inbox",
+                name: "Inbox",
+                role: Some(Role::Inbox),
+                total: 12_000,
+                unread: 880,
+                bodies: 8_000,
+                index: [10_000, 1_500, 100, 400],
+                oldest: date(2023, 2, 1),
+                server_bytes: 1_524_000_000,
+                originals: (2_400, 300_000_000),
+            }),
+            folder(DemoFolder {
+                id: "f:demo-archive",
+                name: "Archive",
+                role: Some(Role::Archive),
+                total: 10_513,
+                unread: 348,
+                bodies: 2_400,
+                index: [9_000, 1_100, 150, 263],
+                oldest: date(2020, 11, 3),
+                server_bytes: 837_000_000,
+                originals: (600, 80_000_000),
+            }),
+            folder(DemoFolder {
+                id: "f:demo-sent",
+                name: "Sent",
+                role: Some(Role::Sent),
+                total: 2_100,
+                unread: 0,
+                bodies: 600,
+                index: [1_900, 150, 30, 20],
+                oldest: date(2021, 3, 9),
+                server_bytes: 150_000_000,
+                originals: (200, 30_000_000),
+            }),
+            folder(DemoFolder {
+                id: "f:demo-junk",
+                name: "Junk",
+                role: Some(Role::Junk),
+                total: 200,
+                unread: 20,
+                bodies: 0,
+                index: [100, 50, 20, 30],
+                oldest: date(2026, 9, 1),
+                server_bytes: 23_000_000,
+                originals: (0, 0),
+            }),
+        ];
         vec![MailAccountStats {
             account: account.clone(),
-            folders: vec![
-                folder(
-                    "f:demo-inbox",
-                    "Inbox",
-                    Some(Role::Inbox),
-                    12_000,
-                    900,
-                    11_100,
-                    8_000,
-                    10_000,
-                    1_500,
-                    100,
-                    400,
-                    Utc.with_ymd_and_hms(2018, 6, 1, 12, 0, 0).single(),
-                ),
-                folder(
-                    "f:demo-archive",
-                    "Archive",
-                    Some(Role::Archive),
-                    12_813,
-                    348,
-                    12_465,
-                    3_000,
-                    11_000,
-                    1_300,
-                    200,
-                    313,
-                    oldest,
-                ),
-            ],
+            folders,
             messages: 24_813,
             read: 23_565,
             unread: 1_248,
-            oldest_known: oldest,
+            oldest_known: date(2020, 11, 3),
             newest_known: newest,
             cached_bodies: 11_000,
-            oldest_cached_body: Utc.with_ymd_and_hms(2026, 7, 23, 8, 0, 0).single(),
+            oldest_cached_body,
             body_cache_bytes: 440_000_000,
             search_index_bytes: Some(140_000_000),
             last_index_run: newest,
@@ -381,6 +453,15 @@ impl Demo {
             attachment_cache_bytes: Some(260_000_000),
             last_sync: newest,
             sync_problem: None,
+            // 2.36 GB of 10 GB, as a server counting in KiB reports them.
+            quota: newest.map(|checked| MailQuota {
+                used_bytes: 2_534_000_000,
+                limit_bytes: 10_485_760 * 1024,
+                checked,
+            }),
+            months,
+            originals: 3_200,
+            original_bytes: 410_000_000,
         }]
     }
 
@@ -1031,6 +1112,28 @@ mod tests {
         let listed = crate::rights::server_tools(&known.extensions[0], &assistant.rights);
         assert_eq!(listed.len(), 2, "both read tools");
         assert_eq!(crate::rights::server_off_count(&known.extensions[0], &assistant.rights), 1);
+    }
+
+    /// DS.1 (#314): the sample account's folders, months and originals add up to its numbers, and
+    /// the folder sizes to the quota in use.
+    #[test]
+    fn the_sample_mail_numbers_add_up() {
+        let stats = Demo::new().mail_stats().remove(0);
+        let folders = &stats.folders;
+        assert_eq!(folders.len(), 4);
+        assert_eq!(folders.iter().map(|folder| u64::from(folder.folder.total)).sum::<u64>(), stats.messages);
+        assert_eq!(folders.iter().map(|folder| u64::from(folder.folder.unread)).sum::<u64>(), stats.unread);
+        assert_eq!(folders.iter().map(|folder| folder.cached_bodies).sum::<u64>(), stats.cached_bodies);
+        assert_eq!(folders.iter().map(|folder| folder.indexed_full).sum::<u64>(), stats.indexed_full);
+        assert_eq!(folders.iter().map(|folder| folder.awaiting_index).sum::<u64>(), stats.awaiting_index);
+        assert_eq!(folders.iter().map(|folder| folder.originals).sum::<u64>(), stats.originals);
+        assert_eq!(folders.iter().map(|folder| folder.original_bytes).sum::<u64>(), stats.original_bytes);
+        let on_server: u64 = folders.iter().filter_map(|folder| folder.server_bytes).sum();
+        assert_eq!(Some(on_server), stats.quota.map(|quota| quota.used_bytes));
+        assert_eq!(stats.months.len(), 72, "six years");
+        assert_eq!(stats.months.iter().map(|month| month.messages).sum::<u64>(), stats.messages);
+        assert_eq!(stats.months.iter().map(|month| month.cached_bodies).sum::<u64>(), stats.cached_bodies);
+        assert!(stats.months.iter().all(|month| month.cached_bodies <= month.messages && month.messages > 0));
     }
 
     /// A change is answered as done and remembered, but nothing is kept.
