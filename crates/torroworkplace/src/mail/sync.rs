@@ -668,7 +668,7 @@ async fn sync_folder(
 /// folder that lack one, highest UID first, [`SIZE_FILL_BATCH`] per `UID FETCH`. Sizes are an
 /// extra: a server that answers unexpectedly leaves them missing for the next sync and ends
 /// nothing; only a lost connection or account is an error.
-/// A message the server answers for without a size is kept with 0.
+/// A message the answer names no size for, with or without a `FETCH` of its own, is kept with 0.
 async fn fill_sizes(
     conn: &mut Conn<'_>,
     store: &SharedStore,
@@ -690,8 +690,8 @@ async fn fill_sizes(
             Err(_) => return Ok(()),
         };
         lease.done();
-        // A message the server answered for without a size never gets one: it counts as 0, so
-        // its folder still gets its size and the next sync does not ask for it again.
+        // A message the answer names no size for (answered without one, or not at all) would never
+        // get one: it counts as 0, so its folder still gets its size and no sync asks for it again.
         let named: BTreeSet<u32> = sizes.iter().map(|(uid, _)| *uid).collect();
         let sizeless: Vec<u32> = batch.iter().copied().filter(|uid| !named.contains(uid)).collect();
         let folder = target.id.clone();
