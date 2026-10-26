@@ -390,8 +390,12 @@ impl Running {
         let rights = mode.narrow(&client.rights);
         self.rights = Some(rights.clone());
         // The assistant's own tools (issue #225): only those switched on, in the selection and with
-        // write access to `tools` are named in the prompt and left to the agent.
-        let rights = tools::with_tools_on(&rights, &host.tools_on());
+        // write access to `tools` are named in the prompt and left to the agent. Never the web
+        // (issue #305, "Werkzeug Web"): a lent key does not get it, the core refuses its commands
+        // (`forbidden`), so the prompt does not name it and the agent is denied its tools.
+        let mut on = host.tools_on();
+        on.remove(&torro_core::settings::ToolId::Web);
+        let rights = tools::with_tools_on(&rights, &on);
         let areas = allowed_areas(actor.kind(), &rights, &without, mode);
         let usable = tools::usable_tools(&rights, &areas);
         // The personality and the memory (task C.10); the prompt keeps the notes marked

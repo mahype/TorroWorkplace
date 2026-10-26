@@ -340,7 +340,8 @@ impl State {
         }
         (conversation.summary.engine, conversation.summary.model, conversation.summary.effort) =
             (engine.clone(), model.clone(), effort);
-        let message = conversation.push(now, EntryContent::Message { text, engine, model, effort, without, mode });
+        let message =
+            conversation.push(now, EntryContent::Message { text, engine, model, effort, without, mode, from: None });
         conversation.summary.running = true;
         conversation.growing = Some(Growing { text: tr(reply).to_owned(), shown: 0, frozen: false });
         Response::Conversation { conversation: conversation.summary.clone(), entries: vec![message] }
@@ -491,6 +492,7 @@ fn message(text: &str) -> EntryContent {
         effort: None,
         without: Vec::new(),
         mode: torro_ipc::assistant::Mode::Default,
+        from: None,
     }
 }
 

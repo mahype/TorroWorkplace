@@ -6,6 +6,8 @@
 //! - `pdf`: sets a PDF from Markdown and one of the three page templates (task WZ.3).
 //! - `place`: where a new file goes and what it is called (task WZ.4).
 //! - `files`: the register of every file a tool made (task WZ.4).
+//! - `web`: web search with the providers a person switched on (task WEB.2), the page reader (WEB.3) and their
+//!   commands (WEB.4, [`web::Web`]).
 //! - `folders`: the bounds of the tool `files` – allowed folders, their access, what stays locked (task WD.2).
 //! - `organize`: the commands of the tool `files` – list, find, make a folder, copy, move (task WD.2), move to the
 //!   trash (task WD.3).
@@ -20,6 +22,7 @@ pub mod folders;
 pub mod organize;
 pub mod pdf;
 pub mod place;
+pub mod web;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,7 +33,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Settings, ToolId};
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area, Rights};
-use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolInfo, access_to_use};
+use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolAccess, ToolInfo};
 
 pub use files::{FileEntry, Maker, Register};
 
@@ -56,7 +59,7 @@ pub struct Roots {
     pub home: Option<PathBuf>,
     /// The fonts folder (`torro_core::design::font_dir`); `None` sets in the standard's.
     pub fonts: Option<PathBuf>,
-    /// What the tool `files` never reaches, whatever allowed folder holds it (decision 24, [`folders::Allowed`]):
+    /// What the tool `files` never reaches, whatever allowed folder holds it (decision 31, [`folders::Allowed`]):
     /// the suite's own folders, the files with client keys and hooks ([`crate::client_setup::protected_files`]) and
     /// the system's key stores ([`folders::key_stores`]). Each is locked with all it holds.
     pub excluded: Vec<PathBuf>,
@@ -71,13 +74,16 @@ pub struct Tools {
     /// Held by every command of `files` that changes something, from planning to its end (`Tools::organize`): one at
     /// a time, so two never both see the same target free.
     changes: Arc<Mutex<()>>,
+    /// The tool `web`: router, page reader and keys of the whole service (task WEB.4).
+    web: web::Web,
 }
 
 impl Tools {
     /// The person's: the register in the core's data folder, the system's desktop and home folder, the design
-    /// packs' folder, files opened with the system's program and moved to the system's trash, and locked for the tool
-    /// `files` the config, data and state folders of every app of the suite, the files with client keys and hooks and
-    /// the system's key stores. In tests none of them: nothing of the person's.
+    /// packs' folder, files opened with the system's program and moved to the system's trash, the web with the system
+    /// keychain ([`web::Web::system`]), and locked for the tool `files` the config, data and state folders of every app
+    /// of the suite, the files with client keys and hooks and the system's key stores. In tests none of them: nothing
+    /// of the person's.
     pub fn system() -> Tools {
         if cfg!(test) {
             return Tools::new(Roots::default());
@@ -94,15 +100,43 @@ impl Tools {
         excluded.extend(home.as_deref().map(folders::key_stores).unwrap_or_default());
         let roots = Roots { data, desktop: dirs::desktop_dir(), home, fonts: torro_core::design::font_dir(), excluded };
         let (open, trash): (Opener, Trasher) = (Arc::new(system_open), Arc::new(system_trash));
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash, changes: Arc::default() }
+        Tools {
+            register: Register::in_dir(roots.data.clone()),
+            roots,
+            open,
+            trash,
+            changes: Arc::default(),
+            web: web::Web::system(),
+        }
     }
 
     /// The tools with `roots`; files are opened by nobody and nothing goes to a trash (tests set an [`Opener`] with
-    /// [`Tools::with_opener`] and a [`Trasher`] with [`Tools::with_trasher`]).
+    /// [`Tools::with_opener`] and a [`Trasher`] with [`Tools::with_trasher`]), the web is [`web::Web::system`] (in
+    /// tests one that reaches nothing; set another with [`Tools::with_web`]).
     pub fn new(roots: Roots) -> Tools {
         let open: Opener = Arc::new(|_: &Path| Err("nothing is opened here".to_string()));
         let trash: Trasher = Arc::new(|_: &Path| Err(folders::Failure::TrashRefused));
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash, changes: Arc::default() }
+        Tools {
+            register: Register::in_dir(roots.data.clone()),
+            roots,
+            open,
+            trash,
+            changes: Arc::default(),
+            web: web::Web::system(),
+        }
+    }
+
+    /// `self` with `web` as the tool `web`, for tests.
+    #[cfg(test)]
+    pub fn with_web(mut self, web: web::Web) -> Tools {
+        self.web = web;
+        self
+    }
+
+    /// The tool `web`, for its commands (`tools.web_search`, `tools.fetch_page`, `tools.list_search_providers`,
+    /// `accounts.set_search_key`) and the check of a SearXNG address.
+    pub fn web(&self) -> &web::Web {
+        &self.web
     }
 
     /// `self` opening files with `open`, for tests.
@@ -261,8 +295,8 @@ fn client_files(current: Option<crate::client_setup::Env>, home: Option<&Path>) 
 }
 
 /// `tools.list_tools` for `reach`: every tool with whether a person switched it on (`settings`) and whether the
-/// key may use it: the app key always; a client with the access the tool needs in `tools` ([`access_to_use`]:
-/// write for `pdf`, read for `files`) and the tool in its selection.
+/// key may use it: the app key always; a client with the tool's level in `tools` ([`ToolAccess::access`]: write
+/// for `pdf`, read for `web` and `files`) and the tool in its selection (`web` only when named, `Rights::reaches_tool`).
 pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Response {
     let tools = ToolId::ALL
         .into_iter()
@@ -273,7 +307,7 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
             enabled: settings.is_on(id),
             allowed: match reach {
                 Reach::Suite => true,
-                Reach::Client(rights) => rights.area(Area::Tools).allows(access_to_use(id)) && rights.reaches_tool(id),
+                Reach::Client(rights) => rights.area(Area::Tools).allows(id.access()) && rights.reaches_tool(id),
             },
         })
         .collect();
@@ -284,6 +318,7 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
 fn description(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Makes PDFs from the assistant's text, set after the templates in its settings."),
+        ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers you switch on."),
         ToolId::Files => {
             tr("Lists, finds, copies and moves files in the allowed folders, without reading what they hold.")
         }
@@ -609,11 +644,12 @@ pub(crate) mod tests {
             other => panic!("expected tools, got {other:?}"),
         };
         let suite = listed(&settings, Reach::Suite);
-        assert_eq!(suite.len(), 2);
+        assert_eq!(suite.iter().map(|tool| tool.id).collect::<Vec<_>>(), ToolId::ALL);
         assert_eq!((suite[0].id, suite[0].enabled, suite[0].allowed), (ToolId::Pdf, false, true));
         assert_eq!(suite[0].description, tr(description(ToolId::Pdf)));
-        assert_eq!((suite[1].id, suite[1].enabled, suite[1].allowed), (ToolId::Files, false, true));
-        assert_eq!((suite[1].name.as_str(), suite[1].description.as_str()), ("Files", description(ToolId::Files)));
+        assert_eq!((suite[1].id, suite[1].name.as_str(), suite[1].allowed), (ToolId::Web, "Web", true));
+        assert_eq!((suite[2].id, suite[2].enabled, suite[2].allowed), (ToolId::Files, false, true));
+        assert_eq!((suite[2].name.as_str(), suite[2].description.as_str()), ("Files", description(ToolId::Files)));
         settings.set_on(ToolId::Pdf, true);
         let mut rights = RightsTemplate::ReadOnly.rights();
         assert!(!listed(&settings, Reach::Client(&rights))[0].allowed, "reading only");
@@ -623,7 +659,7 @@ pub(crate) mod tests {
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let client = listed(&settings, Reach::Client(&rights));
         assert!(client[0].allowed && client[0].enabled);
-        assert!(!client[1].allowed && !client[1].enabled, "files: neither selected nor switched on");
+        assert!(client[1..].iter().all(|tool| !tool.allowed && !tool.enabled), "the others: neither selected nor on");
     }
 
     /// Issue #304: `files` is allowed with read access to `tools` (listing and finding change nothing) and the
@@ -685,6 +721,36 @@ pub(crate) mod tests {
         assert_eq!(trash_error_kind(&refused).text(), tr("the trash refused it"));
         let none = Tools::new(Roots::default());
         assert!((none.trash)(Path::new("/tmp/x")).is_err(), "no trash without one set");
+    }
+
+    /// Issue #305: `web` needs only reading in `tools`, and its id in the selection; "all tools" does
+    /// not stand for it.
+    #[test]
+    fn the_list_allows_web_with_reading_and_its_name() {
+        let settings = torro_core::settings::Tools::default();
+        let allowed = |rights: &Rights| match list(&settings, Reach::Client(rights)) {
+            Response::Tools { tools } => tools.iter().map(|tool| (tool.id, tool.allowed)).collect::<Vec<_>>(),
+            other => panic!("expected tools, got {other:?}"),
+        };
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert_eq!(
+            allowed(&rights),
+            [(ToolId::Pdf, false), (ToolId::Web, false), (ToolId::Files, true)],
+            "All, reading only"
+        );
+        rights.tools = Selection::Only(vec!["web".into()]);
+        assert_eq!(
+            allowed(&rights),
+            [(ToolId::Pdf, false), (ToolId::Web, true), (ToolId::Files, false)],
+            "named, reading is enough"
+        );
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::All;
+        assert_eq!(
+            allowed(&rights),
+            [(ToolId::Pdf, true), (ToolId::Web, false), (ToolId::Files, true)],
+            "All is pdf and files, never web"
+        );
     }
 
     #[test]

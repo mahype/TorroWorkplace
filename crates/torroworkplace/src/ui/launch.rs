@@ -173,7 +173,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 91] = [
+    pub const ALL: [(&'static str, Open); 92] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -264,6 +264,7 @@ impl Open {
         ("setup-mail-add", Open::SetupMailAdd),
         ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
         ("setup-ai", Open::SetupAi),
+        ("setup-web", Open::Setup(super::setup::Step::Web)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
@@ -1016,8 +1017,19 @@ pub fn demo_data() -> Data {
         approvals: demo_approvals(now),
         engines: demo_engines(),
         screens: demo_screens(),
+        search_providers: demo_search_providers(),
         error: None,
     }
+}
+
+/// The web search providers as the core lists them for a first setup (task WEB.7): every one off, no key stored,
+/// no SearXNG address – what the setup's step "Web search" starts from.
+fn demo_search_providers() -> Vec<torro_ipc::web::SearchProviderInfo> {
+    let settings = torro_core::settings::WebSearch::default();
+    torro_ipc::web::SearchProviderId::ORDER
+        .into_iter()
+        .map(|id| crate::tools::web::catalogue::info(id, &settings, false, None))
+        .collect()
 }
 
 /// The demo's screens (task WS.6): the wide main screen the templates were saved on, and a
@@ -1857,7 +1869,7 @@ mod tests {
         let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
         assert!(
             err.to_string()
-                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, done"),
+                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, web, done"),
             "{err}"
         );
     }

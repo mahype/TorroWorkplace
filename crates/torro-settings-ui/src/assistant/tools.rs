@@ -8,6 +8,8 @@
 //! Letter           Paper · Margins · Font size · Header · Footer · Page numbers · Logo (Choose…, Remove)
 //! Report           the same
 //! Note             the same
+//! Web              Search the web (switch) · whether the assistant may use it; below it the order of the providers
+//! SearXNG … Wikipedia   a group per search provider ([`super::web`], task WEB.6)
 //! ```
 //!
 //! **Allowed folders** (task WD.4, issue #304, "Werkzeug Dateien" in `docs/assistent.md`) are one list
@@ -28,6 +30,11 @@
 //! come from the system's chooser, which only the app can open ([`super::AppAction::PickFolder`],
 //! [`super::AppAction::PickLogo`], [`super::AppAction::PickAllowedFolder`]); the app then sends
 //! [`folder_request`], [`logo_request`] or [`added_folder_request`].
+//!
+//! The search providers of the tool `web` are the view [`super::web`], which the setup shows too (task WEB.7): a
+//! provider's switch, its key (`accounts.set_search_key`, only from this window) and SearXNG's address. The tool
+//! `web` needs reading in `tools` and is never part of "All tools" (`ToolId::needs_naming`): the row "may use it"
+//! goes by each tool's own level ([`assistant_may_use`]).
 //!
 //! Every change of a template field sends `settings.set_setting pdf_template` with the **whole**
 //! template as loaded, the one field changed ([`template_request`]): the key replaces a template
@@ -51,10 +58,10 @@ use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
 use torro_ipc::api::Area;
-use torro_ipc::tools::{ToolInfo, access_to_use};
+use torro_ipc::tools::{ToolAccess, ToolInfo};
 use torro_ipc::{Request, SettingKey};
 
-use super::{Action, AppAction, access};
+use super::{Action, AppAction, access, web};
 use crate::Data;
 use crate::parts::{chevron, field, picker, pressable, setting_row, switch};
 
@@ -65,10 +72,12 @@ pub const LOGO_EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
 /// listed among them ([`margin_options`]).
 const EVEN_MARGINS: [u8; 8] = [5, 10, 15, 20, 25, 30, 40, 50];
 
-/// The section's own state: the header or footer line being typed, until it is saved.
+/// The section's own state: the header or footer line being typed, until it is saved, and what is typed into the
+/// search providers' fields ([`web::State`]).
 #[derive(Debug, Default)]
 pub struct State {
     draft: Option<Draft>,
+    web: web::State,
 }
 
 /// A header or footer line being typed.
@@ -104,7 +113,8 @@ impl Line {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Not `Eq`: a key typed for a search provider is a `Secret`, which only compares.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// The switch of a tool: on or off for every client (`tool_enabled`).
     Switch(ToolId, bool),
@@ -139,6 +149,8 @@ pub enum Message {
     SetFolderAccess(String, FolderAccess),
     /// "Remove" at the allowed folder with this path: tools no longer reach it; nothing in it is touched.
     RemoveFolder(String),
+    /// A control of the search providers ([`web`]).
+    Web(web::Message),
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
@@ -179,12 +191,23 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
         }
         Message::RemoveFolder(path) => Action::send(allowed_folder_request(&path, None)),
+        Message::Web(message) => web::update(&mut state.web, message, &data.search_providers),
     }
 }
 
-/// What Escape means here: drop the line being typed. `None` while nothing is typed.
+/// What Escape means here: drop the line being typed, else a key or address typed for a search provider. `None`
+/// while nothing is typed.
 pub fn escape(state: &State) -> Option<Message> {
-    state.draft.as_ref().map(|_| Message::DiscardLine)
+    state.draft.as_ref().map(|_| Message::DiscardLine).or_else(|| web::escape(&state.web).map(Message::Web))
+}
+
+/// A send of these settings came back (`host::Message::Sent`, through [`super::received`]): the search providers'
+/// address check ends with it ([`web::sent`]).
+pub fn sent(state: &mut State, result: &Result<Data, String>) {
+    web::sent(
+        &mut state.web,
+        result.as_ref().map(|data| web::stored_address(&data.search_providers)).map_err(String::as_str),
+    );
 }
 
 // ----- Requests (also the app's, after a chooser) -------------------------------------------
@@ -220,7 +243,7 @@ pub fn allowed_folder_request(path: &str, access: Option<FolderAccess>) -> Reque
 }
 
 /// `settings.set_setting allowed_folder` for the folder the person chose in the system's chooser, for
-/// the app after [`AppAction::PickAllowedFolder`]: added with "Read" (decision 20 in
+/// the app after [`AppAction::PickAllowedFolder`]: added with "Read" (decision 27 in
 /// `docs/assistent.md`), or with the access it has when `data` lists it already – choosing a folder
 /// again never lowers what it allows. `None` for a path that is not plain text (it could not be stored
 /// as the person sees it).
@@ -262,8 +285,9 @@ fn line_request(data: &Data, draft: &Draft) -> Option<Request> {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// The allowed folders, then a group per tool in [`page_order`], and for the PDF tool its three templates. In a
-/// narrow window the buttons are icons with a tooltip, so the labels keep their room (design skill, section 6).
+/// The allowed folders, then a group per tool in [`page_order`], for the PDF tool its three templates and for the
+/// tool `web` its search providers. In a narrow window the buttons are icons with a tooltip, so the labels keep their
+/// room (design skill, section 6).
 pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     if !super::is_on(data) {
         return super::off_group(tr("Tools"));
@@ -273,7 +297,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
         return widgets::group(tr("Tools"), vec![row], None);
     }
     let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
-    // The folders first: one list for every tool that works with files (decision 20).
+    // The folders first: one list for every tool that works with files (decision 27).
     let mut page = column![folders_group(data, words)].spacing(layout::section_gap());
     for info in page_order(&data.tools) {
         page = page.push(tool_group(info, data, words));
@@ -283,12 +307,16 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
                 page = page.push(template_group(state, data, id, words, at == last));
             }
         }
+        if info.id == ToolId::Web {
+            page = page.push(web::view(&state.web, &data.search_providers, class).map(Message::Web));
+        }
     }
     page.into()
 }
 
 /// One tool: its switch with what it does, whether the assistant may use it, for the PDF tool the
-/// folder its files go to, and for the files tool a hint while no folder is allowed.
+/// folder its files go to, and for the files tool a hint while no folder is allowed. Under the tool `web` the order
+/// its providers are asked in and the approval once per conversation ([`web::summary`]).
 fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a, Message> {
     let id = info.id;
     let on = wrapping_row(
@@ -303,6 +331,7 @@ fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a
             tr(
                 "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose the folder and the logos.",
             )
+            .to_string()
         }
         ToolId::Files => {
             if let Some(add) = files_add_folder(data) {
@@ -311,9 +340,11 @@ fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a
             tr(
                 "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose its folders.",
             )
+            .to_string()
         }
+        ToolId::Web => web::summary(&data.search_providers),
     };
-    widgets::group(info.name.as_str(), rows, Some(footer.to_string()))
+    widgets::group(info.name.as_str(), rows, Some(footer))
 }
 
 /// "Allowed folders": a row per folder and "Add folder…" last, which stands disabled once
@@ -389,6 +420,7 @@ fn wrapping_row<'a>(label: &'a str, detail: &'a str, control: impl Into<Element<
 fn switch_label(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Make PDFs"),
+        ToolId::Web => tr("Search the web"),
         ToolId::Files => tr("Organize files"),
     }
 }
@@ -528,7 +560,7 @@ pub fn page_order(tools: &[ToolInfo]) -> Vec<&ToolInfo> {
 fn works_in_allowed_folders(tool: ToolId) -> bool {
     match tool {
         ToolId::Files => true,
-        ToolId::Pdf => false,
+        ToolId::Pdf | ToolId::Web => false,
     }
 }
 
@@ -559,14 +591,13 @@ fn folders_footer(count: usize) -> String {
 }
 
 /// Whether the assistant may use `tool`, after its client's rights as `clients.list_clients` lists
-/// them: the access the tool needs in `tools` ([`access_to_use`]: write for `pdf`, read for `files`)
-/// and the tool in its selection – what `tools.list_tools` calls `allowed` for a client key (this
-/// window asks with the app key, which may use every tool). The switch is the other half. `false`
-/// while the assistant is off.
+/// them: the level the tool needs in `tools` (`ToolAccess::access`: writing for `pdf`, reading for `web` and
+/// `files`) and the tool in its selection – `web` only when it is ticked by name, never through "All"
+/// (`Rights::reaches_tool`) –, what `tools.list_tools` calls `allowed` for a client key (this window asks with the
+/// app key, which may use every tool). The switch is the other half. `false` while the assistant is off.
 pub fn assistant_may_use(data: &Data, tool: ToolId) -> bool {
-    super::client(data).is_some_and(|client| {
-        client.rights.area(Area::Tools).allows(access_to_use(tool)) && client.rights.reaches_tool(tool)
-    })
+    super::client(data)
+        .is_some_and(|client| client.rights.area(Area::Tools).allows(tool.access()) && client.rights.reaches_tool(tool))
 }
 
 /// "Letter", "Report", "Note": the template's name, told apart from the paper "US Letter" and a
@@ -659,8 +690,10 @@ impl fmt::Display for Points {
 mod tests {
     use std::path::PathBuf;
 
+    use torro_core::account::Secret;
     use torro_core::settings::{FolderChange, ToolSwitch};
     use torro_ipc::api::{Level, Selection};
+    use torro_ipc::web::SearchProviderId;
 
     use super::super::tests::{data, turned_off};
     use super::*;
@@ -858,7 +891,7 @@ mod tests {
         let listed: Vec<ToolId> = data.tools.iter().map(|info| info.id).collect();
         assert_eq!(listed, ToolId::ALL, "the core's order");
         let shown: Vec<ToolId> = page_order(&data.tools).iter().map(|info| info.id).collect();
-        assert_eq!(shown, [ToolId::Files, ToolId::Pdf]);
+        assert_eq!(shown, [ToolId::Files, ToolId::Pdf, ToolId::Web], "web keeps its place after pdf");
     }
 
     /// Sight check of WD.4: with as many folders as may be allowed, the sentence below the list says why "Add
@@ -940,19 +973,69 @@ mod tests {
             Message::PageNumbers(PdfTemplateId::Letter, true),
             Message::ChooseLogo(PdfTemplateId::Letter),
             Message::RemoveLogo(PdfTemplateId::Letter),
+            Message::Switch(ToolId::Web, true),
+            Message::Web(web::Message::Switch(SearchProviderId::Brave, true)),
+            Message::Web(web::Message::TypeKey(SearchProviderId::Brave, Secret::new("key"))),
+            Message::Web(web::Message::SaveKey),
+            Message::Web(web::Message::RemoveKey(SearchProviderId::Brave)),
+            Message::Web(web::Message::TypeAddress("https://search.example.org".into())),
+            Message::Web(web::Message::CheckAddress),
+            Message::Web(web::Message::RemoveAddress),
+            Message::Web(web::Message::Terms(SearchProviderId::Duckduckgo)),
         ];
         for message in messages {
             match update(&mut state, message.clone(), &data) {
                 Act::Send(requests) => {
+                    assert_eq!(requests.len(), 1, "{message:?}");
                     for request in requests {
-                        assert_ne!(request.operation().area(), Area::Clients, "{message:?}");
-                        assert_eq!(request.operation().area(), Area::Settings, "{message:?}");
+                        // A key goes to the keychain (`accounts`), never into the settings.
+                        let area = match request {
+                            Request::SetSearchKey { .. } => Area::Accounts,
+                            _ => Area::Settings,
+                        };
+                        assert_eq!(request.operation().area(), area, "{message:?}");
                     }
                 }
                 Act::Open(section) => assert_eq!(section, access::ID),
+                Act::OpenUrl(url) => assert!(url.starts_with("https://"), "{message:?}"),
                 Act::App(_) | Act::None => {}
                 other => panic!("{message:?} did {other:?}"),
             }
+        }
+    }
+
+    /// Task WEB.6: the tool web needs reading in `tools` and `web` ticked by name; "All" tools is not enough, as
+    /// it is for the PDF tool. The demo lists the providers in the core's order, one on and one resting.
+    #[tokio::test]
+    async fn the_assistant_may_use_the_web_only_when_it_is_ticked() {
+        let mut data = data().await;
+        assert!(!assistant_may_use(&data, ToolId::Web), "the area starts closed");
+        let rights = &mut data.clients[0].rights;
+        rights.set_level(Area::Tools, Level::Read, Vec::new);
+        rights.tools = Selection::All;
+        assert!(!assistant_may_use(&data, ToolId::Web), "All tools does not include web");
+        data.clients[0].rights.tools = Selection::Only(vec!["web".into()]);
+        assert!(assistant_may_use(&data, ToolId::Web), "reading is enough for web");
+        assert!(!assistant_may_use(&data, ToolId::Pdf), "PDF needs writing and its own tick");
+
+        let ids: Vec<SearchProviderId> = data.search_providers.iter().map(|info| info.id).collect();
+        assert_eq!(ids, SearchProviderId::ORDER, "the core's order");
+        assert!(data.search_providers.iter().any(|info| info.enabled && info.paused_until.is_none()));
+        assert!(data.search_providers.iter().any(|info| info.enabled && info.paused_until.is_some()));
+        assert!(
+            data.search_providers.iter().all(|info| !info.needs_key || info.key != torro_ipc::web::KeyState::NotNeeded)
+        );
+        // A key typed in Tools is dropped by Escape, before the host closes the settings.
+        let mut state = State::default();
+        let typed = Message::Web(web::Message::TypeKey(SearchProviderId::Exa, Secret::new("key")));
+        let _ = update(&mut state, typed, &data);
+        assert_eq!(escape(&state), Some(Message::Web(web::Message::Discard)));
+        // The address check ends with the answer of the send, a refusal stays at the field.
+        let _ = update(&mut state, Message::Web(web::Message::TypeAddress("https://s.example.org".into())), &data);
+        let _ = update(&mut state, Message::Web(web::Message::CheckAddress), &data);
+        sent(&mut state, &Err("This SearXNG instance does not answer in JSON.".into()));
+        for class in [SizeClass::Wide, SizeClass::Narrow] {
+            let _ = view(&state, &data, class);
         }
     }
 

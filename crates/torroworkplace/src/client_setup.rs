@@ -260,7 +260,7 @@ impl Target {
     }
 }
 
-/// The files that carry a client's key or Torro's hooks, which the tool `files` never reaches (decision 24 in
+/// The files that carry a client's key or Torro's hooks, which the tool `files` never reaches (decision 31 in
 /// `docs/assistent.md`, issue #304): for every [`Target`] the file of its file way ([`Target::locate`]) – also where
 /// its own command wins, and whether the file exists or not –, the hook file of every agent ([`hook_file`]) and the
 /// skill ([`skill_file`]), and the program the hooks and clients start ([`Env::program`]) when it is a full path:

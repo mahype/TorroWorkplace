@@ -337,21 +337,28 @@ pub(crate) mod tests {
         }
         assert!(!none.contains(&format!("{TOOL_PREFIX}tools_list_tools")), "listing stays");
         let pdf = denied_with(&[ToolId::Pdf]);
-        for command in ["tools_create_pdf", "tools_open_file", "tools_list_tools"] {
-            assert!(!pdf.contains(&format!("{TOOL_PREFIX}{command}")), "{command}");
-        }
-        for command in [
+        let denied_tools: Vec<&String> =
+            pdf.iter().filter(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))).collect();
+        let others: Vec<String> = [
+            "tools_web_search",
+            "tools_fetch_page",
             "tools_list_folder",
             "tools_find_files",
             "tools_create_folder",
             "tools_copy_file",
             "tools_move_file",
             "tools_trash_file",
-        ] {
-            assert!(pdf.contains(&format!("{TOOL_PREFIX}{command}")), "{command}");
-        }
-        let all = denied_with(&ToolId::ALL);
-        assert!(!all.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{all:?}");
+        ]
+        .iter()
+        .map(|command| format!("{TOOL_PREFIX}{command}"))
+        .collect();
+        assert_eq!(
+            denied_tools,
+            others.iter().collect::<Vec<_>>(),
+            "only those of web and files, which are not usable"
+        );
+        let every = denied_with(&ToolId::ALL);
+        assert!(!every.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{every:?}");
     }
 
     /// Issue #131: every offered model is one `--model` takes, and only Haiku takes no effort.

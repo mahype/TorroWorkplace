@@ -362,7 +362,7 @@ impl Allowed {
 }
 
 /// The system's key stores and other known stores of credentials below `home`, locked for the tool `files` whatever
-/// folder holds them (decision 24): `~/.ssh`, `~/.gnupg`, the system's own (`~/Library/Keychains` on macOS, the
+/// folder holds them (decision 31): `~/.ssh`, `~/.gnupg`, the system's own (`~/Library/Keychains` on macOS, the
 /// keyrings and KWallet on Linux, the credentials and the protected keys of Windows), the files of cloud, GitHub,
 /// container and package registry tools that hold tokens, the password store `pass`, the browsers' profiles
 /// (cookies and saved passwords) and the system's trash in the home (`~/.Trash` on macOS, `~/.local/share/Trash` on
@@ -677,7 +677,7 @@ pub(crate) mod tests {
         assert!(allowed.existing(&place.path("home/Documents"), FolderAccess::Read).is_ok());
     }
 
-    /// Decision 20: of folders one inside the other the innermost counts, `read` inside `read and write` and the
+    /// Decision 27: of folders one inside the other the innermost counts, `read` inside `read and write` and the
     /// other way round.
     #[test]
     fn the_innermost_folder_counts() {
@@ -728,7 +728,7 @@ pub(crate) mod tests {
         assert_eq!(link.file_name().and_then(|name| name.to_str()), Some("out"));
     }
 
-    /// Decision 24: the suite's folders are locked inside an allowed folder, also in another case, and so are the
+    /// Decision 31: the suite's folders are locked inside an allowed folder, also in another case, and so are the
     /// backups next to a client's file; the files with client keys and hooks too, and moving what holds one is
     /// `forbidden`.
     #[test]
@@ -768,7 +768,7 @@ pub(crate) mod tests {
         assert!(!allowed.holds_protected(&resolved.join("Documents")));
     }
 
-    /// Decision 24: with the whole home allowed, the files that carry client keys and hooks
+    /// Decision 31: with the whole home allowed, the files that carry client keys and hooks
     /// ([`crate::client_setup::protected_files`]) and their backups are not found, and listing leaves them out; the
     /// program the hooks start neither, and the folder that holds it is not moved (review of issue #304).
     #[test]

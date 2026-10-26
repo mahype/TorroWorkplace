@@ -1907,6 +1907,11 @@ pub struct Core {
     /// The place search and the map of the event editor (task TE.5): throttles, answers and the
     /// tile cache for the whole service ([`crate::places::Places::system`]; tests keep no tiles).
     places: crate::places::Places,
+    /// The person's yes to the tool `web` (issue #305, task WEB.5, decision 22) per client and
+    /// conversation: whether it was given after the conversation read data from outside the suite
+    /// ([`crate::approvals::WebConsent::outside`]). In memory only: after a restart every
+    /// conversation asks again ([`Core::web_consented`]).
+    web_consents: std::sync::Mutex<HashMap<(String, String), bool>>,
 }
 
 impl Core {
@@ -1963,6 +1968,7 @@ impl Core {
                 crate::workspace_keys::BoundKeys::system()
             },
             places: crate::places::Places::system(),
+            web_consents: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -2711,8 +2717,14 @@ impl Core {
         else {
             return Err(Refused::Unauthorized { command: request.operation().name() });
         };
-        let origin = crate::approvals::Origin { engine: Some(engine), without: without.clone(), behalf: None, mode };
-        let mut via = Via { origin, untrusted: true, asking: None };
+        let origin = crate::approvals::Origin {
+            engine: Some(engine),
+            without: without.clone(),
+            behalf: None,
+            mode,
+            consent: None,
+        };
+        let mut via = Via { origin, untrusted: true, asking: None, web: None };
         let mut rights = rights;
         match scope {
             Some(LentFor::Conversation(conversation)) => {
@@ -2858,6 +2870,11 @@ impl Core {
         }
         if let Some(refused) = self.tool_request_refusal(&request, Maker::Client(&id)).await {
             return Ok(refused);
+        }
+        // The tool `web` of an answer (issue #305, task WEB.5): after rights, switch and selection, the
+        // person's yes once per conversation, whatever the rights say about reading.
+        if let Some(answer) = self.web_gate(&id, &rights, &request, via).await {
+            return answer;
         }
         // The assistant asks a bot (task B.2): only from its conversation, where the person asked for
         // the bot ([`crate::assistant::Assistant::delegate`]); the bot then runs with what both
@@ -3017,7 +3034,7 @@ impl Core {
         }
         // A question of an agent (task E2.5) is nothing but an approval: it always asks.
         let question = matches!(request, Request::AskPermission { .. });
-        // Moving a file to the trash always asks too (issue #304, decision 23), also a client that is never asked
+        // Moving a file to the trash always asks too (issue #304, decision 30), also a client that is never asked
         // otherwise (`Confirm::Never`): the person sees which entry goes, resolved, before it goes.
         let trashes = matches!(request, Request::TrashFile { .. });
         // A note kept on this computer was written after the assistant read mail (task C.10), and
@@ -3066,7 +3083,8 @@ impl Core {
         // A file of a tool is its maker's (issue #225): the register remembers the client. So is a
         // file going along with a new mail (`file:<id>`, task WZ.8).
         if request.operation().area() == Area::Tools {
-            return Ok(self.tools_request(request, reach, Maker::Client(&id)).await);
+            let by_person = via.web.as_ref().is_some_and(|web| web.by_person);
+            return Ok(self.tools_request(request, reach, Maker::Client(&id), by_person).await);
         }
         if let Request::OpenApp { app, target } = &request {
             return Ok(self.open_app_request(app, target.as_deref(), reach, Maker::Client(&id)).await);
@@ -3111,7 +3129,7 @@ impl Core {
     /// (task C.11); `untrusted`: the conversation read data from outside the suite, so
     /// `assistant.remember` waits for a person ([`Via::untrusted`]).
     async fn handle_as_assistant(&self, request: Request, engine: &str, untrusted: bool) -> Response {
-        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own, Mode::Default).await
+        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own, Mode::Default, None).await
     }
 
     /// The client of the bot whose client id is `client` (kind `torro_ipc::api::BOT_CLIENT`) as
@@ -3137,7 +3155,11 @@ impl Core {
     /// for a `bots.ask_bot`, or a bot's run for the assistant (`client` then holds the narrowed
     /// rights, [`Core::delegated_client`]): its approvals keep the narrowing and its log line names
     /// the bot and the assistant's client. `mode` (issue #132): the permission mode of the answer,
-    /// which narrows the client's rights as well and is kept by the approvals it asks for.
+    /// which narrows the client's rights as well and is kept by the approvals it asks for. `web` (issue
+    /// #305, task WEB.5): a command of the tool `web` from the answer's conversation
+    /// ([`crate::assistant::Host::run_web`]); `None` on every other way, which refuses the assistant and
+    /// bots those commands ([`Core::web_gate`]).
+    #[expect(clippy::too_many_arguments, reason = "the ways of the assistant into the core, each a plain value")]
     async fn handle_as(
         &self,
         client: Option<torro_ipc::ClientInfo>,
@@ -3146,6 +3168,7 @@ impl Core {
         untrusted: bool,
         scope: Scope<'_>,
         mode: Mode,
+        web: Option<crate::approvals::WebConsent>,
     ) -> Response {
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.extend(self.holder_ids(&request));
@@ -3155,6 +3178,7 @@ impl Core {
             without: Vec::new(),
             behalf: None,
             mode: Mode::Default,
+            consent: None,
         };
         let mut asking = None;
         match scope {
@@ -3179,7 +3203,7 @@ impl Core {
                 if info.rights.allows_request(&request)
                     || torro_ipc::api::allowed_by_kind(&info.kind, request.operation()) =>
             {
-                let via = Via { origin, untrusted, asking };
+                let via = Via { origin, untrusted, asking, web };
                 self.handle_client(info.id.clone(), info.rights.clone(), request, &via).await
             }
             // Issue #133: the answer says what the rights lack.
@@ -3226,6 +3250,83 @@ impl Core {
             }
             _ => false,
         }
+    }
+
+    /// The rule of the tool `web` for `request` of the client `id`, admitted with `rights` (issue
+    /// #305, task WEB.5, decision 22), once its rights, the tool's switch and selection let it through
+    /// ([`Core::handle_client`]). `None` for every other request, and when the command may run now:
+    ///
+    /// - the assistant's and a bot's client get the web only from an answer in a conversation
+    ///   ([`Via::web`], [`crate::assistant::Host::run_web`]): on every other way (a lent key, a stored
+    ///   key, [`crate::assistant::Host::run`]) `forbidden`;
+    /// - a client over API and MCP has no conversation and needs no yes (decision 22);
+    /// - from an answer, what would be refused anyway is answered first ([`Core::web_refusal`]); then
+    ///   the yes for the client whose conversation it is (for a bot that runs for the assistant the
+    ///   assistant's, [`crate::approvals::Origin::behalf`]): without one that covers it
+    ///   ([`Core::web_consented`]), the person is asked, whatever the rights say about reading, and
+    ///   the approval keeps the conversation ([`crate::approvals::Origin::consent`]).
+    async fn web_gate(
+        &self,
+        id: &str,
+        rights: &torro_ipc::api::Rights,
+        request: &Request,
+        via: &Via,
+    ) -> Option<Result<Response, Refused>> {
+        let command = request.operation().name();
+        if torro_core::settings::ToolId::of_command(command) != Some(torro_core::settings::ToolId::Web) {
+            return None;
+        }
+        let Some(web) = &via.web else {
+            let own = self.client_kind(id).is_some_and(|kind| {
+                [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&kind.as_str())
+            });
+            return own.then_some(Err(Refused::Forbidden { command }));
+        };
+        if let Some(refused) = self.web_refusal(request) {
+            return Some(Ok(refused));
+        }
+        if self.web_consented(via.origin.behalf.as_deref().unwrap_or(id), web) {
+            return None;
+        }
+        let origin = crate::approvals::Origin { consent: Some(web.clone()), ..via.origin.clone() };
+        Some(self.ask_approval(id, request.clone(), rights, &origin).await)
+    }
+
+    /// What a command of the tool `web` from an answer would be refused with anyway, so nobody is
+    /// asked about it (task WEB.5): a search while no provider can be asked (`not-connected`, as the
+    /// search itself answers; [`torro_core::settings::WebSearch::askable`]: SearXNG only with an address), then search words or a count outside the limits (`error`,
+    /// [`crate::tools::web::query_refusal`]), an address the page reader refuses before it goes out
+    /// (`unsupported`, too long `error`: [`crate::tools::web::Web::address_refusal`]). The handlers check
+    /// all of it again, and more. Known exception: a search while only providers without their stored key
+    /// are on (`auth`) is found only by the search, as that needs the keychain.
+    fn web_refusal(&self, request: &Request) -> Option<Response> {
+        match request {
+            Request::WebSearch { .. } if self.settings.current().web_search.askable().is_empty() => {
+                Some(Response::Error {
+                    code: "not-connected".into(),
+                    message: tr("No web search provider is on. A person chooses one in the assistant's settings.")
+                        .into(),
+                })
+            }
+            Request::WebSearch { query, count, .. } => crate::tools::web::query_refusal(query, *count),
+            Request::FetchPage { url } => self.tools.web().address_refusal(url),
+            _ => None,
+        }
+    }
+
+    /// Whether the person said yes to the web for the client `client` in the conversation of `web`
+    /// (task WEB.5) and that yes covers it: given after data from outside, or none read since
+    /// ([`crate::approvals::WebConsent::outside`]).
+    fn web_consented(&self, client: &str, web: &crate::approvals::WebConsent) -> bool {
+        let consents = self.web_consents.lock().unwrap_or_else(PoisonError::into_inner);
+        consents.get(&(client.to_string(), web.conversation.clone())).is_some_and(|after| *after || !web.outside)
+    }
+
+    /// Keeps the person's yes to the web for `client` in the conversation of `web` (task WEB.5), in
+    /// memory only; one given after data from outside stays so.
+    fn keep_web_consent(&self, client: &str, web: &crate::approvals::WebConsent) {
+        let mut consents = self.web_consents.lock().unwrap_or_else(PoisonError::into_inner);
+        *consents.entry((client.to_string(), web.conversation.clone())).or_default() |= web.outside;
     }
 
     /// The client `id` as `clients.list_clients` shows it, with the `rights` it was admitted
@@ -3440,6 +3541,17 @@ impl Core {
                 let facts = self.facts(&request).await;
                 shown = crate::approvals::details(&request, &facts);
                 let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
+            // The web's yes per conversation (issue #305, task WEB.5): the conversation by the title the
+            // assistant keeps, the providers a search can ask now (SearXNG only with an address), and what
+            // runs first by the request's own words, as they will go out.
+            (Request::WebSearch { .. } | Request::FetchPage { .. }, _) => {
+                let consent = origin.consent.clone().unwrap_or_default();
+                let facts = Facts { name: self.assistant.title(&consent.conversation).await, ..Facts::default() };
+                let providers = self.settings.current().web_search.askable();
+                let (summary, details) = crate::approvals::web_question(&request, &facts, &consent, &providers);
+                shown = details;
                 (request, None, summary)
             }
             (_, Area::Inbox) => {
@@ -3775,6 +3887,14 @@ impl Core {
         if let Some(refused) = self.tool_off(&request).or_else(|| tool_unselected(rights, &request)) {
             return refused.response();
         }
+        // The person's yes to the web in the conversation (task WEB.5), kept once the rights, switch
+        // and selection still let the command through, before it runs: for the client whose
+        // conversation it is (the assistant's for a bot that ran for it).
+        if let Some(web) = &origin.consent
+            && torro_core::settings::ToolId::of_command(command) == Some(torro_core::settings::ToolId::Web)
+        {
+            self.keep_web_consent(origin.behalf.as_deref().unwrap_or(client), web);
+        }
         // An allowed question of an agent runs nothing: the answer is the approval's state, which
         // the agent's hook reads (task E2.5).
         if let Request::AskPermission { .. } = request {
@@ -3853,7 +3973,8 @@ impl Core {
             return self.tools.organize(request, &settings.tools.folders, approved).await;
         }
         if request.operation().area() == Area::Tools {
-            return self.tools_request(request, reach, Maker::Client(client)).await;
+            let by_person = origin.consent.as_ref().is_some_and(|web| web.by_person);
+            return self.tools_request(request, reach, Maker::Client(client), by_person).await;
         }
         if let Request::OpenApp { app, target } = &request {
             return self.open_app_request(app, target.as_deref(), reach, Maker::Client(client)).await;
@@ -4300,6 +4421,11 @@ impl Core {
                     // Nor of calendars outside its selection (task ER1.2).
                     let seen = |id: &String| rights.calendars.contains(id) && !hidden.contains(id);
                     settings.reminders.calendars.retain(|id, _| seen(id));
+                    // Nor the SearXNG address, which often points into the person's own network, unless
+                    // it reaches `web` (PR #311 review). What it sends back keeps the stored address.
+                    if !rights.reaches_tool(torro_core::settings::ToolId::Web) {
+                        settings.web_search.searxng = None;
+                    }
                 }
                 Response::Settings { settings }
             }
@@ -4320,6 +4446,12 @@ impl Core {
                 }
             }
             Request::SetSetting { key, value } => {
+                // A new SearXNG address answers in JSON before it is stored (issue #305).
+                if key == SettingKey::SearxngAddress
+                    && let Some(refused) = self.searxng_refusal(&value).await
+                {
+                    return refused;
+                }
                 // A client keeps or removes the PDF paths but never sets one (point 9, issue #225),
                 // judged again under the settings lock.
                 let set = match client {
@@ -4625,9 +4757,14 @@ impl Core {
             | Request::OpenChatWindow { .. }
             | Request::ConfirmBot { .. }
             | Request::AskBot { .. }) => {
-                // Only the person's own message can name a bot for the assistant (task B.2).
-                let person = matches!(reach, Reach::Suite);
-                Box::pin(self.assistant_request(request, person)).await
+                // Only the person's own message can name a bot for the assistant (task B.2); a
+                // client's message keeps who sent it (issue #305). The dispatch names a client's
+                // caller; should a path forget it, the message still counts as no person's.
+                let from = match reach {
+                    Reach::Suite => None,
+                    Reach::Client(_) => Some(caller.unwrap_or("unknown").to_string()),
+                };
+                Box::pin(self.assistant_request(request, from)).await
             }
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
@@ -4662,7 +4799,13 @@ impl Core {
             // The assistant's own tools (issue #225, task WZ.4). A client's commands come with its id
             // through `handle_client` and `run_approved`, which name it as the files' maker; without
             // that id no file of the register is reached.
-            request @ Request::ListTools => self.tools_request(request, reach, Maker::App).await,
+            request @ (Request::ListTools
+            | Request::WebSearch { .. }
+            | Request::FetchPage { .. }
+            | Request::ListSearchProviders) => self.tools_request(request, reach, Maker::App, false).await,
+            // The key of a web search provider (issue #305): the app key's only, kept back from every
+            // client by its rights; into the keychain, never into an answer.
+            Request::SetSearchKey { provider, key } => self.tools.web().set_key(provider, key).await,
             request @ (Request::CreatePdf { .. }
             | Request::OpenFile { .. }
             | Request::SaveFileAs { .. }
@@ -4673,7 +4816,7 @@ impl Core {
             | Request::MoveFile { .. }
             | Request::TrashFile { .. }) => {
                 match reach {
-                    Reach::Suite => self.tools_request(request, reach, Maker::App).await,
+                    Reach::Suite => self.tools_request(request, reach, Maker::App, false).await,
                     Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 }
             }
@@ -7089,7 +7232,9 @@ impl Core {
     /// of [`crate::tools`] with the settings of now. `tools.save_file_as` is the app key's only.
     /// The commands of the tool `files` (issue #304) run within the allowed folders of now
     /// ([`crate::tools::Tools::organize`]); `tools.trash_file` with the system's trash (task WD.3).
-    async fn tools_request(&self, request: Request, reach: Reach<'_>, maker: Maker<'_>) -> Response {
+    /// `by_person` (task WEB.5): the address of a `tools.fetch_page` is one the person wrote in the
+    /// conversation of the assistant's answer, so `robots.txt` does not hold; `false` for everyone else.
+    async fn tools_request(&self, request: Request, reach: Reach<'_>, maker: Maker<'_>, by_person: bool) -> Response {
         if let Some(refused) = self.tool_off(&request) {
             return refused.response();
         }
@@ -7103,6 +7248,22 @@ impl Core {
             (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
             (request, _) if is_files_command(&request) => {
                 self.tools.organize(request, &settings.tools.folders, None).await
+            }
+            // The tool `web` (issue #305, task WEB.4): switch and selection are checked like the PDF
+            // tool's, before; a client over API and MCP waits for no approval (they only read). Every
+            // client's address obeys `robots.txt`: only the assistant knows what the person wrote
+            // (task WEB.5, `by_person`).
+            (Request::WebSearch { query, count, language }, _) => {
+                self.tools.web().search(&settings.web_search, &query, count, language.as_deref()).await
+            }
+            (Request::FetchPage { url }, _) => self.tools.web().fetch(&url, by_person).await,
+            // A client sees the SearXNG address only when it reaches `web` itself (PR #311 review).
+            (Request::ListSearchProviders, _) => {
+                let with_address = match reach {
+                    Reach::Suite => true,
+                    Reach::Client(rights) => rights.reaches_tool(torro_core::settings::ToolId::Web),
+                };
+                self.tools.web().list(&settings.web_search, with_address).await
             }
             (other, _) => Refused::Forbidden { command: other.operation().name() }.response(),
         }
@@ -8100,12 +8261,13 @@ impl Core {
 
     /// The commands of the assistant and `bots.ask_bot` (task C.1), with the switches of the models
     /// (task S.24): `assistant.list_engines` lists only AI accounts with a model on, a message to one
-    /// without is `unsupported` ([`Core::models_off_refusal`]). `person`: the app key sent it.
-    async fn assistant_request(&self, request: Request, person: bool) -> Response {
+    /// without is `unsupported` ([`Core::models_off_refusal`]). `from`: the client that sent it,
+    /// `None` for the app key ([`crate::assistant::answer_from`]).
+    async fn assistant_request(&self, request: Request, from: Option<String>) -> Response {
         if let Some(refused) = self.models_off_refusal(&request).await {
             return refused;
         }
-        match crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await {
+        match crate::assistant::answer_from(&self.assistant, &self.ai, request, from).await {
             Response::Engines { engines } => {
                 let mut offered = Vec::with_capacity(engines.len());
                 for engine in engines {
@@ -8170,7 +8332,9 @@ impl Core {
     ///   or names another search or tile service than the stored one (task TE.1,
     ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay); or that
     ///   sets the Downloads folder of attachments to a path other than the stored one (issue #290,
-    ///   `torro_core::settings::MailAttachments::needs_a_person`),
+    ///   `torro_core::settings::MailAttachments::needs_a_person`); or that switches a web search provider
+    ///   on or sets another SearXNG address (issue #305, `torro_core::settings::WebSearch::needs_a_person`),
+    /// - `settings.set_setting searxng_address` with an address other than the stored one,
     /// - `settings.set_setting pdf_folder` or `mail_downloads_folder` with a folder other than the
     ///   stored one,
     /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template,
@@ -8193,6 +8357,12 @@ impl Core {
                     || now.maps.needs_a_person(&settings.maps)
                     // The folder of "Save to Downloads" (issue #290, point 9).
                     || now.mail_attachments.needs_a_person(&settings.mail_attachments)
+                    // A web search provider on, or another SearXNG address (issue #305).
+                    || now.web_search.needs_a_person(&settings.web_search)
+            }
+            Request::SetSetting { key: SettingKey::SearxngAddress, value } => {
+                let Ok(Some(address)) = torro_core::settings::WebSearch::address_from(value) else { return false };
+                self.settings.current().web_search.searxng.as_ref() != Some(&address)
             }
             Request::SetSetting { key: SettingKey::MailDownloadsFolder, value } => {
                 let Ok(Some(folder)) = torro_core::settings::MailAttachments::downloads_from(value) else {
@@ -8219,6 +8389,18 @@ impl Core {
             }
             _ => false,
         }
+    }
+
+    /// Why the SearXNG address in `value` (`settings.set_setting searxng_address`, issue #305) is not
+    /// stored: an address other than the stored one is asked once whether it answers in JSON
+    /// ([`crate::tools::web::Web::check_searxng`]). `None` for `null`, the stored address and a
+    /// value the settings refuse anyway (they say why).
+    async fn searxng_refusal(&self, value: &serde_json::Value) -> Option<Response> {
+        let Ok(Some(address)) = torro_core::settings::WebSearch::address_from(value) else { return None };
+        if self.settings.current().web_search.searxng.as_deref() == Some(address.as_str()) {
+            return None;
+        }
+        self.tools.web().check_searxng(&address).await.err()
     }
 
     /// `calendar.search_places` and `calendar.map_preview` (tasks TE.1, TE.5): `error` outside the
@@ -8541,7 +8723,26 @@ impl crate::assistant::Host for Core {
             crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
             _ => Scope::Own,
         };
-        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode))
+        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, None))
+    }
+
+    /// A command of the tool `web` from an answer (issue #305, task WEB.5): [`Core::handle_as`] with
+    /// the conversation known, so [`Core::web_gate`] asks the person once per conversation. Any
+    /// other request runs as after data from outside (an `assistant.remember` waits for a person).
+    fn run_web<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        request: Request,
+        engine: &'a str,
+        mode: Mode,
+        web: crate::approvals::WebConsent,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        let client = crate::assistant::Host::client_of(self, actor);
+        let scope = match actor {
+            crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
+            _ => Scope::Own,
+        };
+        Box::pin(self.handle_as(client, request, engine, true, scope, mode, Some(web)))
     }
 
     fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
@@ -8694,7 +8895,7 @@ impl crate::assistant::Host for Core {
         without: &'a [Area],
     ) -> torro_core::ai::BoxFuture<'a, Response> {
         let scope = Scope::Asking { conversation: main, without, read_mail };
-        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, Mode::Default))
+        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, Mode::Default, None))
     }
 
     /// `bots.ask_bot` in the permission mode of the answer (issue #132): the bot then runs in it as
@@ -8707,7 +8908,7 @@ impl crate::assistant::Host for Core {
         untrusted: bool,
     ) -> torro_core::ai::BoxFuture<'a, Response> {
         let scope = Scope::Asking { conversation: from.main, without: from.without, read_mail: from.read_mail };
-        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, from.mode))
+        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, from.mode, None))
     }
 }
 
@@ -8773,6 +8974,7 @@ fn delegation_origin(engine: Option<&str>, delegation: &crate::assistant::Delega
         without: delegation.without.clone(),
         behalf: Some(delegation.assistant.clone()),
         mode: delegation.mode,
+        consent: None,
     }
 }
 
@@ -8842,6 +9044,10 @@ struct Via {
     /// The assistant answers in a conversation (task B.2): a `bots.ask_bot` of its client runs only
     /// from there. `None` for every other request, so the assistant's key alone never asks a bot.
     asking: Option<AskedFrom>,
+    /// A command of the tool `web` from an answer of the assistant or a bot, with its conversation
+    /// (issue #305, task WEB.5, [`Core::web_gate`]). `None` for every other request: the assistant
+    /// and bots then get no web, a client over API and MCP needs no yes.
+    web: Option<crate::approvals::WebConsent>,
 }
 
 /// The ids of an approval's request for the log lines of a person's decision: as the request's own
@@ -8876,7 +9082,9 @@ fn my_access(
     let never: Vec<Area> = never_given.iter().filter(|area| origin.without.contains(area)).copied().collect();
     let never = never.as_slice();
     let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
-    let access = torro_ipc::assistant::MyAccess::of(rights.clone(), origin.engine.clone());
+    // "All tools" written out without `web` (issue #305, decision 26): `web` only when named.
+    let rights = torro_ipc::api::Rights { tools: rights.reached_tools(), ..rights.clone() };
+    let access = torro_ipc::assistant::MyAccess::of(rights, origin.engine.clone());
     // The tools a person switched on (issue #225), so an agent tells a switched-off tool from one
     // outside its selection.
     let access = access.with_tools_on(tools.enabled.iter().copied().collect());
@@ -11940,6 +12148,314 @@ mod tests {
         let allowed = approval(Box::pin(ask(&core, Some(&app_key), decide(&asked.id, true))).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(!settings(&core).await.maps.enabled, "off once the person allowed it");
+    }
+
+    /// Issue #305, point 6: no client switches a web search provider on or sets another SearXNG
+    /// address, not with every right, neither one setting at a time nor with the whole settings, and
+    /// nobody is asked to approve it. Switching off and removing the address are admin changes like
+    /// any other, after approval; whole settings keep the stored address. Only the app key switches on
+    /// and sets the address.
+    #[tokio::test]
+    async fn only_people_switch_search_providers_on_and_set_the_searxng_address() {
+        use serde_json::json;
+        use torro_core::settings::SearchProviderId;
+        use torro_ipc::SettingKey;
+        // The person's SearXNG, in the local network (task WEB.4 asks it before the address is stored).
+        let searx = httpmock::MockServer::start_async().await;
+        searx
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/search").query_param("format", "json");
+                then.status(200).header("content-type", "application/json").body(r#"{"results":[]}"#);
+            })
+            .await;
+        // One that answers its results page instead: JSON is off there.
+        searx
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/html/search");
+                then.status(200).header("content-type", "text/html").body("<html>SearXNG</html>");
+            })
+            .await;
+        let local = searx.base_url();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let http = crate::tools::web::providers::http_client().expect("a client");
+        let web = crate::tools::web::testing::offline().with_http(http);
+        let core = core(dir.path()).with_tools(crate::tools::Tools::new(crate::tools::Roots::default()).with_web(web));
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let switch = |provider: &str, on: bool| Request::SetSetting {
+            key: SettingKey::SearchProvider,
+            value: json!({"provider": provider, "enabled": on}),
+        };
+        let address = |value| Request::SetSetting { key: SettingKey::SearxngAddress, value };
+        let searxng = "https://search.example.org";
+
+        for refused in [switch("duckduckgo", true), address(json!(searxng))] {
+            assert_eq!(code(&ask(&core, Some(&key), refused.clone()).await), "forbidden", "{refused:?}");
+        }
+        let mut on = Box::new(settings(&core).await);
+        on.web_search.set_on(SearchProviderId::Duckduckgo, true);
+        let mut other = Box::new(settings(&core).await);
+        other.web_search.searxng = Some(searxng.into());
+        for whole in [on, other] {
+            let update = Request::UpdateSettings { settings: *whole };
+            assert_eq!(code(&Box::pin(ask(&core, Some(&key), update)).await), "forbidden");
+        }
+        assert_eq!(settings(&core).await.web_search, Default::default(), "nothing changed");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        // The person switches two on and sets the address; one in the local network is fine.
+        for request in [switch("duckduckgo", true), switch("wikipedia", true), address(json!(local))] {
+            assert_eq!(ask(&core, Some(&app_key), request).await, Response::Ok);
+        }
+        let refused = address(json!("https://search.example.org/?key=1"));
+        assert_eq!(code(&ask(&core, Some(&app_key), refused).await), "error", "a query is refused even then");
+        let no_json = ask(&core, Some(&app_key), address(json!(format!("{local}/html")))).await;
+        assert_eq!(code(&no_json), "unsupported");
+        assert_eq!(
+            message(&no_json),
+            tr("This SearXNG instance does not answer in JSON. Turn on the json format in its settings.")
+        );
+        let set = settings(&core).await.web_search;
+        let both = std::collections::BTreeSet::from([SearchProviderId::Duckduckgo, SearchProviderId::Wikipedia]);
+        assert_eq!(set.providers, both);
+        assert_eq!(set.searxng.as_deref(), Some(local.as_str()));
+
+        // The stored address again sets nothing anew: an admin change, which waits for the person.
+        let asked = waits(ask(&core, Some(&key), address(json!(local))).await);
+        assert_eq!(asked.command, "settings.set_setting");
+        // Off and removing, one at a time and in the whole settings: run once the person allows them.
+        let mut off = Box::new(settings(&core).await);
+        off.web_search.set_on(SearchProviderId::Wikipedia, false);
+        off.web_search.searxng = None;
+        for request in [Request::UpdateSettings { settings: *off }, switch("duckduckgo", false)] {
+            let asked = waits(Box::pin(ask(&core, Some(&key), request)).await);
+            let allowed = approval(Box::pin(ask(&core, Some(&app_key), decide(&asked.id, true))).await);
+            assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        }
+        let kept = settings(&core).await.web_search;
+        assert!(kept.providers.is_empty(), "off once the person allowed it");
+        assert_eq!(kept.searxng.as_deref(), Some(local.as_str()), "whole settings keep the address");
+        let asked = waits(ask(&core, Some(&key), address(json!(null))).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert_eq!(settings(&core).await.web_search.searxng, None, "removed once the person allowed it");
+    }
+
+    /// The core with the web `web` (task WEB.4) and an audit log in `dir`, nothing of the person's.
+    fn with_web(dir: &std::path::Path, web: crate::tools::web::Web) -> Core {
+        audited(dir).with_tools(crate::tools::Tools::new(crate::tools::Roots::default()).with_web(web))
+    }
+
+    /// Issue #305, decisions 20 and 26, task WEB.4: the web's commands are checked like the PDF
+    /// tool's – the switch for everyone, `web` only when a person named it in the client's
+    /// selection, reading in `tools` is enough – and then run without asking anyone, also for a
+    /// client asking before every change. No provider on is `not-connected`. The log names the
+    /// commands, never the words or the address. `tools.list_tools` and `assistant.my_access`
+    /// never let "all tools" stand for `web`.
+    #[tokio::test]
+    async fn the_web_is_checked_like_a_tool_and_reached_only_when_named() {
+        use torro_core::settings::{SearchProviderId, ToolId};
+        use torro_ipc::api::Confirm;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let duckduckgo = crate::tools::web::testing::FakeProvider::finding(SearchProviderId::Duckduckgo);
+        let web = crate::tools::web::testing::offline().with_providers(vec![duckduckgo.clone()]);
+        let core = with_web(dir.path(), web);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let search = || Request::WebSearch { query: "Lisbon trams".into(), count: None, language: None };
+        let fetch = || Request::FetchPage { url: "https://lisbon.example.org/trams".into() };
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        rights.confirm = Confirm::OnEveryChange;
+        // So it may ask its own access (issue #134).
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        let (id, key) = client(&core, rights.clone()).await;
+        let (core, key) = (&core, &key);
+        let refused_for = |request: Request, lack: Lack| async move {
+            let refused = ask(core, Some(key), request).await;
+            assert_eq!(code(&refused), "forbidden");
+            assert!(message(&refused).contains(&lack.message()), "{lack:?}: {refused:?}");
+        };
+
+        let off = Lack::ToolOff { tool: ToolId::Web };
+        refused_for(search(), off).await;
+        assert_eq!(code(&ask(core, Some(&app_key), search()).await), "forbidden", "off for the person too");
+        let value = serde_json::json!({"tool": "web", "enabled": true});
+        let on = Request::SetSetting { key: torro_ipc::SettingKey::ToolEnabled, value };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        refused_for(search(), Lack::Tool { tool: ToolId::Web }).await;
+        refused_for(fetch(), Lack::Tool { tool: ToolId::Web }).await;
+        let access = my_access_of(&ask(core, Some(key), Request::MyAccess).await);
+        assert!(!access.rights.reaches_tool(ToolId::Web) && access.rights.tools != Selection::All, "All is not web");
+        let Response::Tools { tools } = ask(core, Some(key), Request::ListTools).await else { panic!("the tools") };
+        let allowed = |tools: &[torro_ipc::tools::ToolInfo], tool| tools.iter().any(|t| t.id == tool && t.allowed);
+        assert!(!allowed(&tools, ToolId::Web) && !allowed(&tools, ToolId::Pdf), "reading only, web not named");
+
+        rights.tools = Selection::Only(vec!["web".into()]);
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        let none = ask(core, Some(key), search()).await;
+        assert_eq!(code(&none), "not-connected");
+        assert_eq!(
+            message(&none),
+            tr("No web search provider is on. A person chooses one in the assistant's settings.")
+        );
+        assert_eq!(duckduckgo.calls(), 0, "nothing goes out while no provider is on");
+        let switch = serde_json::json!({"provider": "duckduckgo", "enabled": true});
+        let switch = Request::SetSetting { key: SettingKey::SearchProvider, value: switch };
+        assert_eq!(ask(core, Some(&app_key), switch).await, Response::Ok);
+        let Response::SearchResults { results } = ask(core, Some(key), search()).await else { panic!("results") };
+        assert_eq!((results.asked, results.untrusted), (vec![SearchProviderId::Duckduckgo], true));
+        assert_eq!(duckduckgo.calls(), 1);
+        // The offline reader resolves no name: the site cannot be reached (not robots.txt's fault).
+        assert_eq!(code(&ask(core, Some(key), fetch()).await), "offline");
+        assert!(matches!(ask(core, Some(key), Request::ListSearchProviders).await, Response::SearchProviders { .. }));
+        let Response::Tools { tools } = ask(core, Some(key), Request::ListTools).await else { panic!("the tools") };
+        assert!(allowed(&tools, ToolId::Web) && !allowed(&tools, ToolId::Pdf), "reading is enough for web only");
+        let access = my_access_of(&ask(core, Some(key), Request::MyAccess).await);
+        assert!(access.rights.reaches_tool(ToolId::Web), "named, so reached");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(log.contains("tools.web_search") && log.contains("tools.fetch_page"), "{log}");
+        assert!(!log.contains("Lisbon") && !log.contains("lisbon.example.org"), "no words, no address: {log}");
+    }
+
+    /// PR #311 review: the SearXNG address often points into the person's own network, so
+    /// `tools.list_search_providers` and `settings.get_settings` name it (and its host) only to a
+    /// client that reaches `web` and to the app key; reading in `tools` or `settings` alone shows
+    /// SearXNG without them.
+    #[tokio::test]
+    async fn only_a_client_reaching_the_web_sees_the_searxng_address() {
+        use torro_core::settings::{SearchProviderId, ToolId};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = with_web(dir.path(), crate::tools::web::testing::offline());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut whole = Box::new(settings(&core).await);
+        whole.tools.set_on(ToolId::Web, true);
+        whole.web_search.searxng = Some("http://192.168.1.20:8888".into());
+        let update = Request::UpdateSettings { settings: *whole };
+        assert_eq!(Box::pin(ask(&core, Some(&app_key), update)).await, Response::Ok);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
+        let (id, key) = client(&core, rights.clone()).await;
+        let stored = |asker: &Key| {
+            let core = &core;
+            let asker = asker.clone();
+            async move {
+                let got = ask(core, Some(&asker), Request::Settings).await;
+                let Response::Settings { settings } = got else { panic!("the settings, got {got:?}") };
+                settings.web_search.searxng
+            }
+        };
+        let searxng = |asker: &Key| {
+            let core = &core;
+            let asker = asker.clone();
+            async move {
+                let listed = ask(core, Some(&asker), Request::ListSearchProviders).await;
+                let Response::SearchProviders { providers } = listed else { panic!("the providers, got {listed:?}") };
+                let info = providers.into_iter().find(|info| info.id == SearchProviderId::Searxng).expect("SearXNG");
+                (info.address, info.sends_to)
+            }
+        };
+
+        assert_eq!(searxng(&key).await, (None, String::new()), "all tools is not web");
+        assert_eq!(stored(&key).await, None, "nor in the settings");
+        rights.tools = Selection::Only(vec!["web".into()]);
+        core.clients.update(&id, rights).await.expect("updated");
+        let named = (Some("http://192.168.1.20:8888".to_string()), "192.168.1.20".to_string());
+        assert_eq!(searxng(&key).await, named, "named, so reached");
+        assert_eq!(searxng(&app_key).await, named, "the person's settings");
+        for asker in [&key, &app_key] {
+            assert_eq!(stored(asker).await.as_deref(), Some("http://192.168.1.20:8888"));
+        }
+    }
+
+    /// Issue #305, point 5, task WEB.4: the key of a search provider is the person's alone. A client
+    /// gets `forbidden` whatever its rights and is never asked about; the app key stores it in the
+    /// keychain and removes it with `null`. No answer and no list holds the key.
+    #[tokio::test]
+    async fn only_people_store_a_search_key_and_no_answer_holds_it() {
+        use torro_core::settings::SearchProviderId;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = Arc::new(crate::tools::web::testing::MemoryKeys::default());
+        let core = with_web(dir.path(), crate::tools::web::testing::offline_with(keys.clone()));
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let set = |key: Option<&str>| Request::SetSearchKey {
+            provider: SearchProviderId::Brave,
+            key: key.map(torro_ipc::Secret::new),
+        };
+
+        assert_eq!(code(&ask(&core, Some(&key), set(Some("BSA_secret"))).await), "forbidden", "a key is the person's");
+        assert_eq!(code(&ask(&core, Some(&key), set(None)).await), "forbidden", "removing one too");
+        assert_eq!(keys.stored(SearchProviderId::Brave), None);
+        assert_eq!(ask(&core, Some(&app_key), set(Some("BSA_secret"))).await, Response::Ok);
+        assert_eq!(keys.stored(SearchProviderId::Brave).as_deref(), Some("BSA_secret"), "in the keychain");
+        let wrong =
+            Request::SetSearchKey { provider: SearchProviderId::Wikipedia, key: Some(torro_ipc::Secret::new("x")) };
+        assert_eq!(code(&ask(&core, Some(&app_key), wrong).await), "error", "Wikipedia needs no key");
+
+        for asker in [&key, &app_key] {
+            let listed = ask(&core, Some(asker), Request::ListSearchProviders).await;
+            let Response::SearchProviders { providers } = &listed else { panic!("the providers, got {listed:?}") };
+            let brave = providers.iter().find(|info| info.id == SearchProviderId::Brave).expect("Brave");
+            assert_eq!(brave.key, torro_ipc::web::KeyState::Stored);
+            let json = serde_json::to_string(&listed).expect("json");
+            assert!(!json.contains("BSA_secret"), "{json}");
+        }
+        assert_eq!(ask(&core, Some(&app_key), set(None)).await, Response::Ok);
+        assert_eq!(keys.stored(SearchProviderId::Brave), None, "removed");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(log.contains("accounts.set_search_key") && !log.contains("BSA_secret"), "{log}");
+    }
+
+    /// Task WEB.4: a page a client picked obeys the site's `robots.txt`; one it allows comes as
+    /// Markdown marked as text from outside, without asking anyone.
+    #[tokio::test]
+    async fn a_client_reads_a_page_only_as_robots_txt_allows() {
+        use torro_core::settings::ToolId;
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/robots.txt");
+                then.status(200).body("User-agent: *\nDisallow: /private\n");
+            })
+            .await;
+        let page = "<html><head><title>Trams</title></head><body><p>Tram 28 runs to Prazeres.</p></body></html>";
+        for path in ["/trams", "/private"] {
+            server
+                .mock_async(|when, then| {
+                    when.method(httpmock::Method::GET).path(path);
+                    then.status(200).header("content-type", "text/html").body(page);
+                })
+                .await;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fetcher = crate::tools::web::testing::fetcher_on(server.port(), &["lisbon.example.org"]);
+        let core = with_web(dir.path(), crate::tools::web::testing::offline().with_fetcher(fetcher));
+        let mut on = settings(&core).await;
+        on.tools.set_on(ToolId::Web, true);
+        assert_eq!(core.handle(Request::UpdateSettings { settings: on }).await, Response::Ok);
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.tools = Selection::Only(vec!["web".into()]);
+        let (_, key) = client(&core, rights).await;
+        let at = |path: &str| Request::FetchPage { url: format!("http://lisbon.example.org:{}{path}", server.port()) };
+
+        let Response::WebPage { page } = ask(&core, Some(&key), at("/trams")).await else { panic!("the page") };
+        assert!(page.markdown.contains("Tram 28") && page.untrusted, "{page:?}");
+        let refused = ask(&core, Some(&key), at("/private")).await;
+        assert_eq!(code(&refused), "unsupported");
+        assert_eq!(message(&refused), tr(crate::tools::web::fetch::FetchError::Robots.reason()));
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
     }
 
     /// Tasks TE.1 and TE.5: the place search and the map check their limits first, then answer
@@ -19895,9 +20411,14 @@ mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
-        let Response::Conversation { conversation, .. } = ask(&core, Some(&app_key), send).await else {
+        let Response::Conversation { conversation, entries } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
         };
+        // Issue #305: the person's message names no sender.
+        assert!(
+            matches!(&entries[0].content, torro_ipc::assistant::EntryContent::Message { from: None, .. }),
+            "{entries:?}"
+        );
 
         let mut rights = Rights::assistant();
         rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: true });
@@ -19958,9 +20479,14 @@ mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
-        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), send).await else {
+        let Response::Conversation { conversation, entries } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
         };
+        // Issue #305: the message keeps who sent it, so no later answer takes it for the person's.
+        assert!(
+            matches!(&entries[0].content, torro_ipc::assistant::EntryContent::Message { from: Some(from), .. } if *from == id),
+            "{entries:?}"
+        );
         let unknown = Request::DeleteConversation { id: "fedcba9876543210".into() };
         assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
         // Asking before every change, still nobody is asked about what would fail anyway.
@@ -20734,6 +21260,19 @@ mod tests {
         ) -> torro_core::ai::BoxFuture<'a, Response> {
             Host::ask_bot_in(&*self.core, from, request, engine, untrusted)
         }
+
+        // The web's yes per conversation (issue #305, task WEB.5) as the core asks for it.
+
+        fn run_web<'a>(
+            &'a self,
+            actor: &'a crate::assistant::Actor,
+            request: Request,
+            engine: &'a str,
+            mode: Mode,
+            web: crate::approvals::WebConsent,
+        ) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::run_web(&*self.core, actor, request, engine, mode, web)
+        }
     }
 
     /// A core in `dir` with an Ollama account at `ollama`, an assistant client with `rights`, and
@@ -20745,10 +21284,25 @@ mod tests {
         rights: Rights,
         script: Arc<Script>,
     ) -> (Arc<Core>, Arc<ScriptedCore>, String, String) {
+        assistant_core_with(dir, ollama, rights, script, None).await
+    }
+
+    /// [`assistant_core`] with the assistant's own tools `tools` (task WEB.5: the web), when given.
+    async fn assistant_core_with(
+        dir: &std::path::Path,
+        ollama: &httpmock::MockServer,
+        rights: Rights,
+        script: Arc<Script>,
+        tools: Option<crate::tools::Tools>,
+    ) -> (Arc<Core>, Arc<ScriptedCore>, String, String) {
         let keys = MemoryTokens::default();
         let limits = Limits { max_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
         let assistant = crate::assistant::tests::assistant_in(dir, std::time::Duration::ZERO).with_limits(limits);
-        let core = Arc::new(core_with_ai(dir, &keys, Vec::new()).with_assistant(assistant));
+        let mut core = core_with_ai(dir, &keys, Vec::new()).with_assistant(assistant);
+        if let Some(tools) = tools {
+            core = core.with_tools(tools);
+        }
+        let core = Arc::new(core);
         let account = core
             .ai
             .connect(AiProvider::Ollama, Some(&ollama.url("/v1")), torro_core::account::Secret::default())
@@ -21171,6 +21725,413 @@ mod tests {
         assert_eq!(gone[0].card, Card::Unavailable, "the bot and its client are gone");
     }
 
+    // ----- The web's yes per conversation (issue #305, task WEB.5) -----
+
+    /// The pages of `lisbon.example.org` for the web's tests: `robots.txt` keeps `/private` from
+    /// Torro; `/trams` and `/private` are pages.
+    async fn lisbon_pages() -> httpmock::MockServer {
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/robots.txt");
+                then.status(200).body("User-agent: *\nDisallow: /private\n");
+            })
+            .await;
+        let page = "<html><head><title>Trams</title></head><body><p>Tram 28 runs to Prazeres.</p></body></html>";
+        for path in ["/trams", "/private"] {
+            server
+                .mock_async(|when, then| {
+                    when.method(httpmock::Method::GET).path(path);
+                    then.status(200).header("content-type", "text/html").body(page);
+                })
+                .await;
+        }
+        server
+    }
+
+    /// Rights to read mail and the tools with `web` named.
+    fn web_reader() -> Rights {
+        let mut rights = reading(&[Area::Mail, Area::Tools]);
+        rights.tools = Selection::Only(vec!["web".into()]);
+        rights
+    }
+
+    /// [`assistant_core`] for the web's tests: the assistant reads mail and the web ([`web_reader`]),
+    /// the tool `web` is on, and so is the search provider `provider` plays; pages come from `pages`.
+    async fn web_core(
+        dir: &std::path::Path,
+        ollama: &httpmock::MockServer,
+        pages: &httpmock::MockServer,
+        provider: &Arc<crate::tools::web::testing::FakeProvider>,
+        script: Arc<Script>,
+    ) -> (Arc<Core>, Arc<ScriptedCore>, String, String) {
+        let fetcher = crate::tools::web::testing::fetcher_on(pages.port(), &["lisbon.example.org"]);
+        let web = crate::tools::web::testing::offline().with_providers(vec![provider.clone()]).with_fetcher(fetcher);
+        let tools = crate::tools::Tools::new(crate::tools::Roots::default()).with_web(web);
+        let (core, host, engine, client) = assistant_core_with(dir, ollama, web_reader(), script, Some(tools)).await;
+        let on = Request::SetSetting {
+            key: SettingKey::ToolEnabled,
+            value: serde_json::json!({"tool": "web", "enabled": true}),
+        };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        let switch = serde_json::json!({"provider": provider.id.name(), "enabled": true});
+        assert_eq!(
+            core.handle(Request::SetSetting { key: SettingKey::SearchProvider, value: switch }).await,
+            Response::Ok
+        );
+        (core, host, engine, client)
+    }
+
+    /// The person writes `text` in the conversation `id` to `engine`.
+    async fn tell_in(core: &Core, engine: &str, id: &str, text: &str) {
+        let send = Request::SendMessage {
+            conversation: Some(id.into()),
+            engine: engine.into(),
+            model: Some("qwen3:8b".into()),
+            effort: None,
+            text: text.into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+        };
+        assert!(matches!(core.handle(send).await, Response::Conversation { .. }), "sent");
+    }
+
+    /// The approval that waits for the person now, once one does; at most twenty seconds.
+    async fn waiting_approval(core: &Core) -> torro_ipc::ApprovalInfo {
+        for _ in 0..4000 {
+            let open = core.approvals.list(None, Utc::now()).await.unwrap_or_default();
+            if let Some(found) = open.into_iter().find(|asked| matches!(asked.state, torro_ipc::ApprovalState::Pending))
+            {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("no approval came");
+    }
+
+    /// How many approvals were asked for so far.
+    async fn approvals_asked(core: &Core) -> usize {
+        core.approvals.list(None, Utc::now()).await.unwrap_or_default().len()
+    }
+
+    /// The search provider of the web's tests: Mojeek, which the router lets ask once a second
+    /// (DuckDuckGo only every ten seconds).
+    fn provider() -> Arc<crate::tools::web::testing::FakeProvider> {
+        crate::tools::web::testing::FakeProvider::finding(torro_core::settings::SearchProviderId::Mojeek)
+    }
+
+    /// The question of the web's yes, as `crate::approvals::web_question` words it, for `title` with
+    /// the provider of [`provider`] on.
+    fn web_asked(title: &str) -> String {
+        let providers = torro_core::settings::SearchProviderId::Mojeek.title();
+        trf(
+            "Search the web and read web pages in \"{title}\"? Search words go to {providers}.",
+            &[("title", &title), ("providers", &providers)],
+        )
+    }
+
+    /// Issue #305, task WEB.5, decision 22, end to end with a scripted model: the first search of a
+    /// conversation waits for the person, whatever the rights say about reading, and nothing goes out
+    /// before the yes; after it a second search and a page run without asking (the web's own results
+    /// never count as outside data). After a mail the next search asks once more, then no more. A new
+    /// conversation asks again; "Deny" sends nothing and keeps no yes. After a search a note waits for
+    /// the person (C.11). The question names the conversation, the provider and the search words; the
+    /// log names none of them. The assistant's other ways to the web (`Host::run`, a lent key) are
+    /// `forbidden`.
+    #[tokio::test]
+    async fn the_web_asks_once_per_conversation_and_again_after_outside_data() {
+        use torro_core::settings::SearchProviderId;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let search = |query: &str| calls("tools_web_search", serde_json::json!({"query": query}));
+        let trams = format!("http://lisbon.example.org:{}/trams", pages.port());
+        let script = Script::new(vec![
+            search("Lisbon trams"),
+            search("Tram 28"),
+            calls("tools_fetch_page", serde_json::json!({"url": trams})),
+            search("Tram 28 stops"),
+            says("Tram 28 runs to Prazeres."),
+            calls("mail_get_message", serde_json::json!({"id": "m:1", "include_body": true})),
+            search("Tram 15"),
+            search("Tram 12"),
+            says("Both run today."),
+            search("Porto trams"),
+            says("I may not search."),
+            search("Porto trams"),
+            says("I may still not search."),
+            calls("assistant_remember", serde_json::json!({"text": "Tram 28 runs to Prazeres."})),
+            says("Not kept."),
+        ]);
+        let (core, _host, engine, client) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+
+        let lisbon = tell(&core, &engine, "Find me something on Lisbon trams").await;
+        let asked = waiting_approval(&core).await;
+        let title = core.assistant.title(&lisbon).await.expect("a title");
+        assert_eq!((asked.command.as_str(), asked.summary.clone()), ("tools.web_search", web_asked(&title)));
+        assert_eq!(asked.details, [trf("First: search for \"{query}\"", &[("query", &"Lisbon trams")])]);
+        assert_eq!(mojeek.calls(), 0, "nothing goes out before the yes");
+        assert!(matches!(core.handle(decide(&asked.id, true)).await, Response::Approval { .. }));
+        let entries = conversation_until(&core, &lisbon, |running, _| !running).await;
+        let ran = ["tools.web_search", "tools.web_search", "tools.fetch_page", "tools.web_search"]
+            .map(|name| (name.to_string(), None));
+        assert_eq!(tool_lines(&entries), ran);
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (1, 3), "one yes for both, also after a page");
+        assert!(read_by_model(&script, "tools_fetch_page").contains("Tram 28"), "the page");
+
+        // After a mail (here one that is not there: the line counts), once more, then no more.
+        tell_in(&core, &engine, &lisbon, "Check my mail, then search tram 15 and 12").await;
+        let again = waiting_approval(&core).await;
+        let outside = trf(
+            "This conversation has read mail or other outside data. Search the web and read web pages in \"{title}\" \
+             anyway?",
+            &[("title", &title)],
+        );
+        assert_eq!(again.summary, outside);
+        let goes_to = trf("Search words go to {providers}.", &[("providers", &SearchProviderId::Mojeek.title())]);
+        assert_eq!(again.details, [trf("First: search for \"{query}\"", &[("query", &"Tram 15")]), goes_to]);
+        assert!(matches!(core.handle(decide(&again.id, true)).await, Response::Approval { .. }));
+        conversation_until(&core, &lisbon, |running, _| !running).await;
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (2, 5), "asked once after the mail");
+
+        // A new conversation asks again; "Deny" sends nothing and keeps no yes.
+        let porto = tell(&core, &engine, "Porto trams?").await;
+        for _ in 0..2 {
+            let asked = waiting_approval(&core).await;
+            assert!(asked.summary.contains("Porto trams"), "{asked:?}");
+            assert!(matches!(core.handle(decide(&asked.id, false)).await, Response::Approval { .. }));
+            conversation_until(&core, &porto, |running, _| !running).await;
+            if approvals_asked(&core).await == 3 {
+                tell_in(&core, &engine, &porto, "Try again").await;
+            }
+        }
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (4, 5), "denied twice, nothing sent");
+
+        // C.11: after the web's results a note waits for the person.
+        tell_in(&core, &engine, &lisbon, "Remember that").await;
+        let note = waiting_approval(&core).await;
+        assert_eq!(note.command, "assistant.remember");
+        assert!(matches!(core.handle(decide(&note.id, false)).await, Response::Approval { .. }));
+        conversation_until(&core, &lisbon, |running, _| !running).await;
+
+        // Only an answer with its conversation reaches the web.
+        let words = || Request::WebSearch { query: "Lisbon".into(), count: None, language: None };
+        assert_eq!(code(&Host::run(&*core, words(), &engine, false).await), "forbidden");
+        let lent = core.clients.lend(&client, "claude-code", &[]).expect("lent");
+        assert_eq!(code(&ask(&core, Some(lent.key()), words()).await), "forbidden", "a lent key gets no web");
+        assert_eq!(mojeek.calls(), 5);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(log.contains("tools.web_search") && log.contains("tools.fetch_page"), "{log}");
+        assert!(!log.contains("Lisbon") && !log.contains("Tram") && !log.contains("lisbon.example.org"), "{log}");
+    }
+
+    /// Issue #305, task WEB.5, decision 23: a page whose address the person wrote in the conversation
+    /// is read as a browser would, without `robots.txt`; one the model picks obeys it. The question
+    /// names the page's host.
+    #[tokio::test]
+    async fn a_page_the_person_named_is_read_without_robots_txt() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let page = |path: &str| format!("http://lisbon.example.org:{}{path}", pages.port());
+        let fetch = |url: String| calls("tools_fetch_page", serde_json::json!({"url": url}));
+        let script = Script::new(vec![
+            fetch(page("/private")),
+            fetch(page("/private/more")),
+            fetch(page("/trams")),
+            says("Tram 28 runs to Prazeres."),
+        ]);
+        let (core, _host, engine, _) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+
+        let id = tell(&core, &engine, &format!("Read {} please.", page("/private"))).await;
+        let asked = waiting_approval(&core).await;
+        assert_eq!(asked.command, "tools.fetch_page");
+        assert_eq!(asked.details, [trf("First: read a page on {host}", &[("host", &"lisbon.example.org")])]);
+        assert!(matches!(core.handle(decide(&asked.id, true)).await, Response::Approval { .. }));
+        let entries = conversation_until(&core, &id, |running, _| !running).await;
+        let lines = [None, Some("unsupported".to_string()), None].map(|error| ("tools.fetch_page".to_string(), error));
+        assert_eq!(tool_lines(&entries), lines, "the person's page, then the model's as robots.txt says");
+        assert!(read_by_model(&script, "tools_fetch_page").contains("Tram 28"), "the person's page");
+        assert_eq!(approvals_asked(&core).await, 1);
+    }
+
+    /// Issue #305, task WEB.5: search words or a count outside the limits are `error` before the
+    /// person is asked for the web's yes (rights, switch, selection, limits, then the yes): too long,
+    /// with a line break, blank, too many results; and so is an address the page reader refuses
+    /// before anything goes out (`unsupported`: a user name, an IP address, another port, a local
+    /// name). Nobody is asked and nothing goes out.
+    #[tokio::test]
+    async fn a_search_outside_the_limits_is_refused_before_anyone_is_asked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let search = |input: serde_json::Value| calls("tools_web_search", input);
+        let fetch = |url: &str| calls("tools_fetch_page", serde_json::json!({"url": url}));
+        let script = Script::new(vec![
+            search(serde_json::json!({"query": "tram ".repeat(81)})),
+            search(serde_json::json!({"query": "Lisbon\ntrams"})),
+            search(serde_json::json!({"query": "   "})),
+            search(serde_json::json!({"query": "Lisbon trams", "count": 11})),
+            says("I could not search."),
+            fetch("http://anna:secret@lisbon.example.org/trams"),
+            fetch("http://127.0.0.1/trams"),
+            fetch("http://lisbon.example.org:1/trams"),
+            fetch("http://localhost/trams"),
+            says("I could not read them."),
+        ]);
+        let (core, _host, engine, _) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+
+        let id = tell(&core, &engine, "Find me something on Lisbon trams").await;
+        conversation_until(&core, &id, |running, _| !running).await;
+        // A turn of its own: an answer of the tests takes at most six steps.
+        tell_in(&core, &engine, &id, "Read these pages").await;
+        let entries = conversation_until(&core, &id, |running, _| !running).await;
+        let refused = ("tools.web_search".to_string(), Some("error".to_string()));
+        let address = ("tools.fetch_page".to_string(), Some("unsupported".to_string()));
+        let mut lines = vec![refused; 4];
+        lines.extend(vec![address; 4]);
+        assert_eq!(tool_lines(&entries), lines);
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (0, 0), "nobody asked, nothing sent");
+        let first = read_by_model(&script, "tools_web_search");
+        assert!(first.contains(tr("The search words are one line of at most 400 characters.")), "{first}");
+    }
+
+    /// Issue #305, task WEB.5: a bot asks for the web in its own conversation as the assistant does,
+    /// with its own client. Without the tool's switch or outside the selection the model is not
+    /// offered the web, and a call is `forbidden` before anyone is asked.
+    #[tokio::test]
+    async fn a_bot_asks_for_the_web_and_nobody_is_asked_without_switch_or_selection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let search = |query: &str| calls("tools_web_search", serde_json::json!({"query": query}));
+        let script = Script::new(vec![
+            search("Lisbon trams"),
+            search("Tram 28"),
+            says("Found them."),
+            search("Lisbon trams"),
+            says("The web is off."),
+            search("Lisbon trams"),
+            says("I may not search."),
+        ]);
+        let (core, _host, engine, client) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+        let bot = bot_with(&core, "Travel planner", &engine, web_reader()).await;
+
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: engine.clone(),
+            model: Some("qwen3:8b".into()),
+            effort: None,
+            text: "Lisbon trams?".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: Some(bot.id.clone()),
+        };
+        let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
+        let asked = waiting_approval(&core).await;
+        assert_eq!((asked.client.as_str(), asked.command.as_str()), (bot.client.as_str(), "tools.web_search"));
+        let title = core.assistant.title(&conversation.id).await.expect("a title");
+        assert_eq!(asked.summary, web_asked(&title));
+        assert!(matches!(core.handle(decide(&asked.id, true)).await, Response::Approval { .. }));
+        conversation_until(&core, &conversation.id, |running, _| !running).await;
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (1, 2), "asked once in the bot's conversation");
+        let offered = |at: usize| script.asked()[at].tools.iter().any(|tool| tool.name == "tools_web_search");
+        assert!(offered(0), "switched on and selected");
+
+        // Switched off: not offered, and refused before anyone is asked.
+        let off = Request::SetSetting {
+            key: SettingKey::ToolEnabled,
+            value: serde_json::json!({"tool": "web", "enabled": false}),
+        };
+        assert_eq!(core.handle(off).await, Response::Ok);
+        let off_at = script.asked().len();
+        let id = tell(&core, &engine, "Search Lisbon trams").await;
+        let entries = conversation_until(&core, &id, |running, _| !running).await;
+        assert_eq!(tool_lines(&entries), [("tools.web_search".to_string(), Some("forbidden".to_string()))]);
+        assert!(!offered(off_at), "not offered while off");
+
+        // On again, but not in the assistant's selection: the same.
+        let on = Request::SetSetting {
+            key: SettingKey::ToolEnabled,
+            value: serde_json::json!({"tool": "web", "enabled": true}),
+        };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        core.clients.update(&client, reading(&[Area::Mail, Area::Tools])).await.expect("updated");
+        let unselected_at = script.asked().len();
+        tell_in(&core, &engine, &id, "Please search").await;
+        let entries = conversation_until(&core, &id, |running, _| !running).await;
+        assert_eq!(tool_lines(&entries)[1], ("tools.web_search".to_string(), Some("forbidden".to_string())));
+        assert!(!offered(unselected_at), "not offered outside the selection");
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (1, 2), "nobody asked, nothing sent");
+    }
+
+    /// Issue #305, task WEB.5: a bot that runs for the assistant goes by the yes of the assistant's
+    /// conversation. Its question is its own client's approval, and "Allow" keeps the yes for the
+    /// assistant there, so the assistant asks no more in that conversation, nor does the bot again.
+    #[tokio::test]
+    async fn a_bot_for_the_assistant_uses_the_yes_of_the_assistants_conversation() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let (core, _host, engine, client) =
+            web_core(dir.path(), &ollama, &pages, &mojeek, Script::new(Vec::new())).await;
+        let bot = bot_with(&core, "Travel planner", &engine, web_reader()).await;
+        let delegated = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
+            bot: bot.id.clone(),
+            client: bot.client.clone(),
+            assistant: client.clone(),
+            without: Vec::new(),
+            mode: Mode::Default,
+            conversation: "main".into(),
+        });
+        let web = crate::approvals::WebConsent { conversation: "main".into(), outside: false, by_person: false };
+        let search = || Request::WebSearch { query: "Lisbon trams".into(), count: None, language: None };
+        let run = |actor: crate::assistant::Actor| {
+            let (core, engine, web) = (Arc::clone(&core), engine.clone(), web.clone());
+            async move { Host::run_web(&*core, &actor, search(), &engine, Mode::Default, web).await }
+        };
+
+        let asked = waits(run(delegated.clone()).await);
+        assert_eq!(asked.client, bot.client, "the bot's own approval");
+        let allowed = approval(core.handle(decide(&asked.id, true)).await);
+        assert!(matches!(allowed.state, torro_ipc::ApprovalState::Done { .. }), "{allowed:?}");
+        assert!(matches!(run(crate::assistant::Actor::Assistant).await, Response::SearchResults { .. }));
+        assert!(matches!(run(delegated).await, Response::SearchResults { .. }));
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (1, 3), "one yes for the conversation");
+    }
+
+    /// Found in the review of #305: SearXNG without an address is never asked, so it counts for
+    /// neither the refusal nor the question. Alone it is `not-connected` without asking anyone; beside
+    /// another provider the question names only that one.
+    #[tokio::test]
+    async fn searxng_without_an_address_is_no_provider_to_ask_about() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let searxng =
+            crate::tools::web::testing::FakeProvider::finding(torro_core::settings::SearchProviderId::Searxng);
+        let (core, _host, engine, _) = web_core(dir.path(), &ollama, &pages, &searxng, Script::new(Vec::new())).await;
+        assert!(settings(&core).await.web_search.searxng.is_none(), "on, without an address");
+        let web = crate::approvals::WebConsent { conversation: "main".into(), outside: false, by_person: false };
+        let run = || {
+            let (core, engine, web) = (Arc::clone(&core), engine.clone(), web.clone());
+            let search = Request::WebSearch { query: "Lisbon trams".into(), count: None, language: None };
+            async move {
+                Host::run_web(&*core, &crate::assistant::Actor::Assistant, search, &engine, Mode::Default, web).await
+            }
+        };
+
+        let alone = run().await;
+        assert_eq!(code(&alone), "not-connected", "{alone:?}");
+        assert_eq!((approvals_asked(&core).await, searxng.calls()), (0, 0), "nobody asked, nothing sent");
+
+        let mojeek = serde_json::json!({"provider": "mojeek", "enabled": true});
+        let switch = Request::SetSetting { key: SettingKey::SearchProvider, value: mojeek };
+        assert_eq!(core.handle(switch).await, Response::Ok);
+        let asked = waits(run().await);
+        assert_eq!(asked.summary, web_asked("main"), "only Mojeek is named");
+    }
+
     /// Issue #134, end to end with a scripted model (engine A): every right switched on, mail with
     /// every account. The prompt sums up what the assistant may do, `assistant.my_access` answers
     /// what the person set (`clients.list_clients`) without what the conversation switched off, a
@@ -21233,6 +22194,8 @@ mod tests {
         let mut expected = set.clone();
         expected.areas.remove(&Area::Calendar);
         expected.calendars = Selection::Only(Vec::new());
+        // "All tools" written out without `web`, which only a person's tick grants (issue #305).
+        expected.tools = set.reached_tools();
         assert_eq!(access.rights, expected, "no calendar of the area switched off either");
         assert_eq!((access.engine.as_deref(), access.switched_off), (Some(engine.as_str()), vec![Area::Calendar]));
         assert!(access.withheld.is_empty(), "an AI account on this computer gets mail");
@@ -21400,6 +22363,7 @@ mod tests {
             without: vec![Area::Workspaces],
             mode: torro_ipc::assistant::Mode::Default,
             behalf: None,
+            consent: None,
         };
         let request = Request::DeleteTemplate { id: "dev".into() };
         let kept = (None, None, origin);
@@ -21710,6 +22674,7 @@ mod tests {
                 assistant: client.id.clone(),
                 without,
                 mode: torro_ipc::assistant::Mode::Default,
+                conversation: "main".into(),
             })
         };
         let actor = delegation(Vec::new());
@@ -22261,6 +23226,7 @@ mod tests {
             assistant: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
+            conversation: "main".into(),
         });
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let first = waits(Host::run_as(&core, &actor, delete("old"), "test", false).await);
@@ -22345,6 +23311,7 @@ mod tests {
             assistant: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
+            conversation: "main".into(),
         });
         assert!(Host::lend_as(&core, &actor, "claude-code", &[]).is_none(), "only with the narrowing remembered");
         // A bot's key the core lent without knowing its run does nothing; lent for the bot's own run
@@ -22403,6 +23370,7 @@ mod tests {
             assistant: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
+            conversation: "main".into(),
         });
         let lent = Host::lend_in(&core, &actor, &conversation.id, "claude-code", &[]).expect("lent");
 

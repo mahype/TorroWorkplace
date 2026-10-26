@@ -1,8 +1,9 @@
 //! The assistant's own tools on the wire (issue #225, `docs/assistent.md` "Eigene Werkzeuge"):
 //! what the `tools.*` requests and answers carry – a tool as `tools.list_tools` lists it
 //! ([`ToolInfo`]), a file a tool made ([`FileInfo`]) and an entry of a folder the tool `files` lists or
-//! finds ([`FolderEntry`], issue #304) – and the limits of `tools.create_pdf`, `tools.list_folder` and
-//! `tools.find_files`.
+//! finds ([`FolderEntry`], issue #304) – the limits of `tools.create_pdf`, `tools.list_folder` and
+//! `tools.find_files`, and the level each tool needs in the area `tools` ([`ToolAccess`]). The tool
+//! `web` has its types in [`crate::web`].
 //!
 //! A tool is a skill of the suite's own, made first for the assistant and its bots and granted like
 //! any area (the templates of the rights include it). Each has a switch, the setting `tool_enabled` (`torro_core::settings::Tools`), which only a person
@@ -25,6 +26,28 @@ pub use torro_core::settings::{AllowedFolder, FolderAccess, PdfTemplateId, ToolI
 
 use crate::api::Access;
 
+/// The level a tool needs in the area `tools` before a client may use it (issue #305), as a method of
+/// [`ToolId`]: the tools live in `torro_core`, which does not know the access levels of the API.
+/// `use torro_ipc::tools::ToolAccess` and call `tool.access()`.
+pub trait ToolAccess {
+    /// The access a client needs in `tools` for this tool: [`Access::Write`] for `pdf` (its commands
+    /// make and open files), [`Access::Read`] for `web` (its commands only read) and for `files` (issue
+    /// #304: listing and finding change nothing; each of its commands that changes something asks for
+    /// its own access in the catalogue). What `tools.list_tools` (`ToolInfo::allowed`) and the tools
+    /// offered to the assistant's model go by.
+    fn access(self) -> Access;
+}
+
+impl ToolAccess for ToolId {
+    fn access(self) -> Access {
+        match self {
+            ToolId::Pdf => Access::Write,
+            ToolId::Web => Access::Read,
+            ToolId::Files => Access::Read,
+        }
+    }
+}
+
 /// At most this many characters in the title of a PDF (`tools.create_pdf`); it names the file too.
 pub const MAX_TITLE_CHARS: usize = 200;
 
@@ -46,17 +69,6 @@ pub const MAX_VISITED: usize = 50_000;
 
 /// At most this many characters in the name `tools.find_files` looks for.
 pub const MAX_NAME_PATTERN_CHARS: usize = 200;
-
-/// The access in the area `tools` a client needs to use `tool` at all, what `tools.list_tools` calls
-/// `allowed` ([`ToolInfo::allowed`]): `Write` for `pdf` (each of its commands makes or opens a file),
-/// `Read` for `files` (listing and finding change nothing; each command that changes something asks for
-/// its own access in the catalogue).
-pub fn access_to_use(tool: ToolId) -> Access {
-    match tool {
-        ToolId::Pdf => Access::Write,
-        ToolId::Files => Access::Read,
-    }
-}
 
 /// What an entry of a folder is ([`FolderEntry::kind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -95,7 +107,7 @@ pub struct FolderEntry {
 /// One tool as `tools.list_tools` lists it for the key that asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolInfo {
-    /// The tool: `pdf` or `files`.
+    /// The tool: `pdf`, `web` or `files`.
     pub id: ToolId,
     /// What people call it ("PDF").
     pub name: String,
@@ -103,9 +115,10 @@ pub struct ToolInfo {
     pub description: String,
     /// A person switched it on in the assistant's settings (`tool_enabled`).
     pub enabled: bool,
-    /// The key that asked may use it: the access [`access_to_use`] names in `tools` – write access for
-    /// `pdf` (its commands make and open files), read access for `files` – and the tool in its selection.
-    /// Always `true` for the app key. The tool works for the key only when this and `enabled` are true.
+    /// The key that asked may use it: the tool's level in `tools` ([`ToolAccess::access`]: write for
+    /// `pdf`, whose commands make and open files; read for `web` and `files`) and the tool in its
+    /// selection (`web` only when named, `crate::api::Rights::reaches_tool`). Always `true` for the app
+    /// key. The tool works for the key only when this and `enabled` are true.
     pub allowed: bool,
 }
 
@@ -135,37 +148,50 @@ mod tests {
     use super::*;
     use crate::api::{Area, CATALOGUE};
 
-    /// Every command of the area `tools` but listing belongs to a tool, and no command of another
-    /// area does: the core checks switch and selection of exactly that tool. The PDF tool's commands
-    /// work with the register, those of `files` (issue #304) with the allowed folders.
+    /// Every command of the area `tools` but the two lists belongs to a tool, and no command of
+    /// another area does: the core checks switch and selection of exactly that tool. The web's
+    /// commands are the web tool's, those of the allowed folders the files tool's (issue #304), the
+    /// file commands the PDF tool's. A command of `pdf` or `web` needs no more access than its tool's
+    /// level; the files tool's level is what using it at all takes (listing and finding), and its
+    /// commands that change something ask for write or delete each.
     #[test]
     fn every_command_of_a_tool_is_in_the_area_tools() {
-        const PDF: [&str; 3] = ["tools.create_pdf", "tools.open_file", "tools.save_file_as"];
-        let mut files = Vec::new();
+        const FILES: [&str; 6] = [
+            "tools.list_folder",
+            "tools.find_files",
+            "tools.create_folder",
+            "tools.copy_file",
+            "tools.move_file",
+            "tools.trash_file",
+        ];
+        let mut seen = std::collections::BTreeSet::new();
         for command in CATALOGUE {
             let tool = ToolId::of_command(command.name);
             match command.area {
-                Area::Tools if command.name == "tools.list_tools" => assert_eq!(tool, None),
-                Area::Tools if PDF.contains(&command.name) => assert_eq!(tool, Some(ToolId::Pdf), "{}", command.name),
-                Area::Tools => {
-                    assert_eq!(tool, Some(ToolId::Files), "{}", command.name);
-                    files.push(command.name);
+                Area::Tools if matches!(command.name, "tools.list_tools" | "tools.list_search_providers") => {
+                    assert_eq!(tool, None, "{}", command.name)
                 }
+                Area::Tools if matches!(command.name, "tools.web_search" | "tools.fetch_page") => {
+                    assert_eq!(tool, Some(ToolId::Web), "{}", command.name)
+                }
+                Area::Tools if FILES.contains(&command.name) => {
+                    assert_eq!(tool, Some(ToolId::Files), "{}", command.name);
+                    assert!(command.access.covers(Access::Read), "{}", command.name);
+                }
+                Area::Tools => assert_eq!(tool, Some(ToolId::Pdf), "{}", command.name),
                 _ => assert_eq!(tool, None, "{}", command.name),
             }
+            if let Some(tool) = tool {
+                let within = tool == ToolId::Files || tool.access().covers(command.access);
+                assert!(within, "{} needs more than its tool's level", command.name);
+                seen.insert(tool);
+            }
         }
+        assert_eq!(seen, ToolId::ALL.into_iter().collect(), "every tool has a command");
         assert_eq!(
-            files,
-            [
-                "tools.list_folder",
-                "tools.find_files",
-                "tools.create_folder",
-                "tools.copy_file",
-                "tools.move_file",
-                "tools.trash_file"
-            ]
+            (ToolId::Pdf.access(), ToolId::Web.access(), ToolId::Files.access()),
+            (Access::Write, Access::Read, Access::Read)
         );
-        assert_eq!((access_to_use(ToolId::Pdf), access_to_use(ToolId::Files)), (Access::Write, Access::Read));
     }
 
     /// Issue #304: an entry says only what it has; the access only for an allowed folder.

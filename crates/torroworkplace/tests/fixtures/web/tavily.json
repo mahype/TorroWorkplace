@@ -1,0 +1,25 @@
+{
+  "query": "Lisbon",
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Lisbon | History, Culture, Geography, & Map | Britannica",
+      "url": "https://www.britannica.com/place/Lisbon",
+      "content": "Lisbon, city, port, capital of Portugal, and the centre of the Lisbon metropolitan area.",
+      "score": 0.81025416,
+      "raw_content": null,
+      "favicon": "https://www.britannica.com/favicon.png"
+    },
+    {
+      "title": "Lisbon - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Lisbon",
+      "content": "Lisbon is the capital and most populous city of Portugal.",
+      "score": 0.7412,
+      "raw_content": null
+    }
+  ],
+  "response_time": 1.67,
+  "usage": { "credits": 1 },
+  "request_id": "123e4567-e89b-12d3-a456-426614174111"
+}

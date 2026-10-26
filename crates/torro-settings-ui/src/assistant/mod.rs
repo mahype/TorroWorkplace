@@ -9,8 +9,8 @@
 //! Profile   who the assistant is, and what it keeps because it was asked to (two pages below)
 //! Bots      the bots, each with "Edit" in the assistant and "Access" here
 //! Tools     the folders tools that work with files may reach (task WD.4); the assistant's own
-//!           tools: each switched on or off, whether the assistant may use it, and the PDF tool's
-//!           folder and templates (task WZ.6)
+//!           tools: each switched on or off, whether the assistant may use it, the PDF tool's folder
+//!           and templates (task WZ.6), the web search providers (task WEB.6)
 //! Voice     talking by voice, speaking answers, the microphone, the programs on this computer
 //! History   how long conversations are kept
 //! ```
@@ -60,6 +60,8 @@ pub mod history;
 pub mod profile;
 pub mod tools;
 pub mod voice;
+/// Not a section: the search providers of the tool `web`, shown under Tools and in the setup (task WEB.6).
+pub mod web;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, container, svg};
@@ -134,7 +136,8 @@ pub type Action = crate::Action<AppAction>;
 /// `accounts.list_accounts` tells, while no AI account is an engine, whether there are AI accounts
 /// with no model on (task S.26), and names the mail accounts Access offers; the calendars, task
 /// lists, inbox sources and the tools (`tools.list_tools`) are the other things it offers to
-/// choose from (task S.34, [`crate::rights::Known`]). The models of an AI account follow in a
+/// choose from (task S.34, [`crate::rights::Known`]). Tools shows the web search providers
+/// (`tools.list_search_providers`, task WEB.6). The models of an AI account follow in a
 /// second round, because only the loaded settings name the account ([`models_request`],
 /// [`Data::follow_up`]).
 pub fn wanted() -> Vec<Request> {
@@ -145,6 +148,7 @@ pub fn wanted() -> Vec<Request> {
         Request::ListMemories,
         Request::ListBots,
         Request::ListTools,
+        Request::ListSearchProviders,
         Request::ListEngines,
         Request::VoiceStatus,
         Request::Accounts,
@@ -184,7 +188,7 @@ pub struct State {
     pub voice: voice::State,
     /// Access: whose rights are open, the first start's choice, the editor's draft.
     pub access: access::State,
-    /// Tools: the header or footer line being typed.
+    /// Tools: the header or footer line being typed, a search provider's key or address.
     pub tools: tools::State,
 }
 
@@ -272,10 +276,14 @@ pub fn save_now(state: &mut State) -> Action {
 /// (`assistant::received(&mut sections, &message); host.update(message)`): a send that came back
 /// and a load. The host gives a section neither the answers of its requests nor the fresh data;
 /// Access needs both to settle the editor's draft and to see its client appear ([`access::sent`],
-/// [`access::loaded`]). Every other message is left alone.
+/// [`access::loaded`]), Tools the answer of a SearXNG address it had checked ([`tools::sent`]). Every
+/// other message is left alone.
 pub fn received(state: &mut State, message: &crate::host::Message) {
     match message {
-        crate::host::Message::Sent { changed, result } => access::sent(&mut state.access, *changed, result),
+        crate::host::Message::Sent { changed, result } => {
+            access::sent(&mut state.access, *changed, result);
+            tools::sent(&mut state.tools, result);
+        }
         crate::host::Message::Loaded(data) => access::loaded(&mut state.access, data),
         _ => {}
     }
@@ -296,7 +304,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 }
 
 /// What Escape means in these sections: close the question, stop typing a note, drop a header or
-/// footer being typed. `None` leaves it to the host, which closes the settings.
+/// footer, a key or an address being typed. `None` leaves it to the host, which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
     profile::escape(&state.profile)
         .map(Message::Profile)
@@ -513,14 +521,15 @@ mod tests {
                 }
             }
         }
-        assert_eq!(files, SECTIONS.len() + 1, "one file per section and this one");
+        assert_eq!(files, SECTIONS.len() + 2, "one file per section, this one and the web view of Tools");
         assert!(found.is_empty(), "a section reaches into the rights: {found:?}");
     }
 
     /// What one load asks for, and the second round for an AI account's models.
     #[tokio::test]
     async fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted().len(), 12, "one request per thing the sections read");
+        assert_eq!(wanted().len(), 13, "one request per thing the sections read");
+        assert!(wanted().contains(&Request::ListSearchProviders), "Tools shows the web search providers");
         for offered in
             [Request::CalendarCollections, Request::TaskCollections, Request::ListSources, Request::ListTools]
         {

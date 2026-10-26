@@ -933,6 +933,11 @@ fn describe(request: &Request) -> String {
         Request::CopyFile { .. } => "copy a file".into(),
         Request::MoveFile { .. } => "move a file".into(),
         Request::TrashFile { .. } => "trash a file".into(),
+        // Never the search words or the address (issue #305), never a key.
+        Request::WebSearch { .. } => "search the web".into(),
+        Request::FetchPage { .. } => "read a web page".into(),
+        Request::ListSearchProviders => "search providers".into(),
+        Request::SetSearchKey { provider, .. } => format!("set the key of {}", provider.name()),
         Request::GetMailCachePolicy { account } => format!("cache policy of {account}"),
         Request::SetMailCachePolicy { policy } => format!("set cache policy of {}", policy.account),
         Request::PreviewMailCache { account, .. } => format!("cache estimate of {account}"),

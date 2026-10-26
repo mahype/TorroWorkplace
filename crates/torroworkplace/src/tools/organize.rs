@@ -11,15 +11,15 @@
 //!   the same name).
 //! - **One change at a time** ([`Tools::organize`]): planning, the comparison and the run of every command that
 //!   changes something hold one lock of the tools, so two at once never both see a target free.
-//! - **Never replace** (decision 21): a taken target gets a free name, `Report-2.pdf` up to `-999` as the PDF tool's
+//! - **Never replace** (decision 28): a taken target gets a free name, `Report-2.pdf` up to `-999` as the PDF tool's
 //!   files ([`super::place::MAX_NUMBER`]), a folder `Invoices-2`; the answer names the path that came to be. Files
 //!   are made with `create_new` and moved with `fs::hard_link`, which never replaces either; a rename (folders,
 //!   links, drives without hard links) looks at its target just before, since `fs::rename` replaces one. A rename of
 //!   only the spelling (`Report.pdf` to `report.pdf` on a drive that does not tell cases apart) renames the entry
 //!   itself ([`same_entry`]).
-//! - **Copy only files** (decision 22): a folder or a symbolic link is `unsupported`. Moving takes a link itself, not
+//! - **Copy only files** (decision 29): a folder or a symbolic link is `unsupported`. Moving takes a link itself, not
 //!   what it points to; a folder or a link only on the same drive.
-//! - **Trash, never delete** (decision 23, task WD.3): an entry goes to the system's trash through the tools'
+//! - **Trash, never delete** (decision 30, task WD.3): an entry goes to the system's trash through the tools'
 //!   [`super::Trasher`] ([`move_to_trash`]), the entry itself, also a link; the core always asks a person first.
 //! - **Limits** ([`torro_ipc::tools`]): listing one level of at most `MAX_LIST_ENTRIES`, finding at most
 //!   `MAX_FIND_DEPTH` levels, `MAX_FOUND` hits and `MAX_VISITED` entries, without following links; reaching one, or a
@@ -249,7 +249,7 @@ fn planned(allowed: &Allowed, request: &Request) -> Result<Option<Planned>, Fold
             }
             Planned::Move(from, to)
         }
-        // The entry itself, with the same locks as moving (decision 24): never an allowed folder or what holds one,
+        // The entry itself, with the same locks as moving (decision 31): never an allowed folder or what holds one,
         // else an agent would reach an inner "Read" folder through an outer one.
         Request::TrashFile { path } => {
             let entry = allowed.entry(path, FolderAccess::ReadWrite)?;

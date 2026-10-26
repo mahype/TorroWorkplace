@@ -1,0 +1,36 @@
+{
+  "type": "search",
+  "query": { "original": "Lisbon", "more_results_available": true },
+  "mixed": { "type": "mixed", "main": [{ "type": "web", "index": 0, "all": false }] },
+  "web": {
+    "type": "search",
+    "results": [
+      {
+        "title": "Lisbon - Wikipedia",
+        "url": "https://en.wikipedia.org/wiki/Lisbon",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "<strong>Lisbon</strong> is the capital &amp; largest city of Portugal.",
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "meta_url": { "scheme": "https", "netloc": "en.wikipedia.org", "hostname": "en.wikipedia.org", "path": "› wiki › Lisbon" }
+      },
+      {
+        "title": "Visit Lisboa | Official Tourism Website",
+        "url": "https://www.visitlisboa.com/en",
+        "description": "Discover <strong>Lisbon</strong>: what to see, where to stay and what to eat.",
+        "language": "en",
+        "type": "search_result"
+      },
+      {
+        "title": "A result without a web address",
+        "url": "ftp://files.example.org/lisbon",
+        "description": "Left out.",
+        "type": "search_result"
+      }
+    ],
+    "family_friendly": true
+  }
+}

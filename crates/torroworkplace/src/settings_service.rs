@@ -30,8 +30,8 @@ use std::sync::{Mutex, PoisonError};
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, FolderChange, Language, ListOrderEntry, MailAppearance,
-    MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings,
-    SetupState, ToolSwitch, Voice, WorkingHours, Zoom,
+    MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention,
+    SearchProviderSwitch, Settings, SetupState, ToolSwitch, Voice, WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -175,6 +175,9 @@ impl SettingsStore {
     /// Nor does a client set the folder of "Save to Downloads" (point 9, issue #290): it stays as
     /// stored unless `new` removes it; the click on an attachment comes from `new`
     /// (`torro_core::settings::MailAttachments::from_client`).
+    /// Nor does a client switch a web search provider on or set another SearXNG address (issue #305):
+    /// a provider stays on only when on as stored and in `new`, the address stays as stored
+    /// (`torro_core::settings::WebSearch::from_client`).
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
@@ -192,6 +195,7 @@ impl SettingsStore {
             let tools = settings.tools.from_client(&new.tools);
             let maps = settings.maps.from_client(&new.maps);
             let mail_attachments = settings.mail_attachments.from_client(&new.mail_attachments);
+            let web_search = settings.web_search.from_client(&new.web_search);
             *settings = Settings {
                 hidden_collections: hidden,
                 ai_assignments: assignments,
@@ -204,6 +208,7 @@ impl SettingsStore {
                 tools,
                 maps,
                 mail_attachments,
+                web_search,
                 ..new
             };
         })
@@ -433,6 +438,8 @@ impl SettingsStore {
         // The addresses of maps too (task TE.1): one with a key in its query must not get in through
         // `update_settings` either.
         new.maps.check_changes(&old.maps)?;
+        // And the SearXNG address (issue #305), on the same rule.
+        new.web_search.check_changes(&old.web_search)?;
         let file = self.file.as_deref().ok_or("no home directory, so no settings file")?;
         save_to(file, &new)?;
         if let Some(enabled) = self.login_item_change(&old, &new) {
@@ -612,6 +619,12 @@ enum Change {
     /// defaults when parsed and merged onto the stored ones when applied ([`Maps::merged`]). Who may
     /// turn them on or name a service is the core's check (`Request::kept_for_people`).
     Maps(serde_json::Value),
+    /// One web search provider on or off (issue #305). Who may switch one on is the core's check
+    /// (`Request::kept_for_people`).
+    SearchProvider(SearchProviderSwitch),
+    /// The SearXNG address; `None` for none. Who may set one is the core's check
+    /// (`Core::switches_on_for_people`).
+    SearxngAddress(Option<String>),
 }
 
 impl Change {
@@ -684,6 +697,10 @@ impl Change {
                 Maps::default().merged(value)?;
                 Change::Maps(value.clone())
             }
+            SettingKey::SearchProvider => {
+                Change::SearchProvider(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
+            SettingKey::SearxngAddress => Change::SearxngAddress(WebSearch::address_from(value)?),
         })
     }
 
@@ -699,6 +716,10 @@ impl Change {
             Change::PdfTemplate(id, mut template) => {
                 template.logo = kept_or_removed(&settings.tools.pdf.template(id).logo, &template.logo);
                 Change::PdfTemplate(id, template)
+            }
+            // The address as the folder: removed or kept, never set by a client (issue #305).
+            Change::SearxngAddress(address) => {
+                Change::SearxngAddress(kept_or_removed(&settings.web_search.searxng, &address))
             }
             other => other,
         }
@@ -754,6 +775,8 @@ impl Change {
                     settings.maps = merged;
                 }
             }
+            Change::SearchProvider(switch) => settings.web_search.set_on(switch.provider, switch.enabled),
+            Change::SearxngAddress(address) => settings.web_search.searxng = address,
         }
     }
 }
@@ -1672,6 +1695,7 @@ mod tests {
                 allow_api_keys: true,
                 allow_mcp: true,
                 tools: Default::default(),
+                web_search: Default::default(),
                 workspaces: torro_core::settings::WorkspaceSettings {
                     modifiers: torro_core::settings::ShortcutModifiers::CtrlShift,
                 },
@@ -1927,6 +1951,77 @@ mod tests {
         store.update_keeping_hidden(sent).expect("written");
         let removed = store.current().tools;
         assert_eq!((removed.pdf.folder, removed.pdf.note.logo), (None, None), "a client may remove the paths");
+    }
+
+    /// Issue #305: a provider is switched on and off one at a time, the SearXNG address set, removed
+    /// and checked; a value that does not fit changes nothing. One setting at a time a client removes
+    /// the address but never sets one.
+    #[test]
+    fn search_providers_are_switched_and_the_searxng_address_set_and_checked() {
+        use torro_core::settings::SearchProviderId;
+        let (_dir, store) = store();
+        store.set(SettingKey::SearchProvider, &json!({"provider": "duckduckgo", "enabled": true})).expect("on");
+        store.set(SettingKey::SearchProvider, &json!({"provider": "wikipedia", "enabled": true})).expect("on");
+        store.set(SettingKey::SearchProvider, &json!({"provider": "wikipedia", "enabled": false})).expect("off");
+        let web = store.current().web_search;
+        assert_eq!(web.providers, BTreeSet::from([SearchProviderId::Duckduckgo]));
+        store.set(SettingKey::SearxngAddress, &json!("http://192.168.1.20:8080")).expect("the local network");
+        assert_eq!(store.current().web_search.searxng.as_deref(), Some("http://192.168.1.20:8080"));
+        for refused in [
+            (SettingKey::SearchProvider, json!({"provider": "google", "enabled": true})),
+            (SettingKey::SearchProvider, json!({"provider": "brave", "enabled": true, "why": "x"})),
+            (SettingKey::SearchProvider, json!(true)),
+            (SettingKey::SearxngAddress, json!("https://search.example.org/?key=1")),
+            (SettingKey::SearxngAddress, json!("https://anna:secret@search.example.org")),
+            (SettingKey::SearxngAddress, json!("search.example.org")),
+            (SettingKey::SearxngAddress, json!(8080)),
+        ] {
+            assert!(store.set(refused.0, &refused.1).is_err(), "{refused:?}");
+        }
+        assert_eq!(store.current().web_search.searxng.as_deref(), Some("http://192.168.1.20:8080"), "unchanged");
+
+        store.set_by_client(SettingKey::SearxngAddress, &json!("https://other.example.org")).expect("written");
+        assert_eq!(store.current().web_search.searxng.as_deref(), Some("http://192.168.1.20:8080"), "kept");
+        store.set_by_client(SettingKey::SearxngAddress, &json!(null)).expect("removed");
+        assert_eq!(store.current().web_search.searxng, None, "a client may remove it");
+        store.set_by_client(SettingKey::SearxngAddress, &json!("https://other.example.org")).expect("written");
+        assert_eq!(store.current().web_search.searxng, None, "and never sets one");
+        store.set(SettingKey::SearxngAddress, &json!("")).expect("blank is none");
+    }
+
+    /// Issue #305: a client's whole settings never switch a provider on nor change the SearXNG
+    /// address; they may switch providers off, and the address a person set stays. Whole settings
+    /// with an address that does not fit are refused, as with `set_setting`.
+    #[test]
+    fn a_client_never_switches_a_search_provider_on_nor_sets_the_address() {
+        use torro_core::settings::SearchProviderId;
+        let (_dir, store) = store();
+        let mut sent = store.current();
+        sent.web_search.set_on(SearchProviderId::Brave, true);
+        sent.web_search.searxng = Some("https://search.example.org".into());
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let kept = store.current().web_search;
+        assert!(kept.providers.is_empty() && kept.searxng.is_none(), "off stays off, no address of a client");
+
+        store.set(SettingKey::SearchProvider, &json!({"provider": "brave", "enabled": true})).expect("the person");
+        store.set(SettingKey::SearchProvider, &json!({"provider": "exa", "enabled": true})).expect("the person");
+        store.set(SettingKey::SearxngAddress, &json!("https://anna.example.org")).expect("the person");
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let kept = store.current().web_search;
+        assert_eq!(kept.providers, BTreeSet::from([SearchProviderId::Brave]), "on in both stays on");
+        assert_eq!(kept.searxng.as_deref(), Some("https://anna.example.org"), "the person's address stays");
+        sent.web_search = torro_core::settings::WebSearch::default();
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let kept = store.current().web_search;
+        assert!(kept.providers.is_empty(), "a client may switch them off");
+        assert_eq!(kept.searxng.as_deref(), Some("https://anna.example.org"), "the address stays");
+
+        let mut person = store.current();
+        person.web_search.searxng = Some("https://search.example.org/?key=1".into());
+        assert!(store.update(person.clone()).is_err(), "an address with a query");
+        person.web_search.searxng = Some("http://10.0.0.5:8888".into());
+        store.update(person).expect("the person's whole settings");
+        assert_eq!(store.current().web_search.searxng.as_deref(), Some("http://10.0.0.5:8888"));
     }
 
     /// Issue #225: whole settings are checked like `set_setting`: a template out of bounds or a

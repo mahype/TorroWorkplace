@@ -16,7 +16,8 @@ use chrono::{TimeZone, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
 use torro_core::settings::{
-    AllowedFolder, AssistantDefault, CalendarReminders, FolderAccess, PdfTemplateId, Reminders, Settings, ToolId, Tools,
+    AllowedFolder, AssistantDefault, CalendarReminders, FolderAccess, PdfTemplateId, Reminders, Settings, ToolId,
+    Tools, WebSearch,
 };
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
@@ -33,6 +34,7 @@ use torro_ipc::mail::{
     MailCachePolicy, MailFolderStats,
 };
 use torro_ipc::tools::ToolInfo;
+use torro_ipc::web::{KeyState, SearchProviderId, SearchProviderInfo};
 use torro_ipc::{
     AccountInfo, ClientInfo, FolderChoice, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response,
     RuleHits, ServiceState, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
@@ -82,6 +84,12 @@ impl Demo {
             AllowedFolder { path: "/home/anna/Documents".into(), access: FolderAccess::Read },
             AllowedFolder { path: "/home/anna/Projects/Invoices".into(), access: FolderAccess::ReadWrite },
         ];
+        // The tool web on with DuckDuckGo and Wikipedia (task WEB.6); DuckDuckGo rests after a block
+        // ([`Demo::search_providers`]), so Tools shows a provider that is asked and one that is not.
+        tools.set_on(ToolId::Web, true);
+        let mut web_search = WebSearch::default();
+        web_search.set_on(SearchProviderId::Duckduckgo, true);
+        web_search.set_on(SearchProviderId::Wikipedia, true);
         reminders.calendars.insert(WORK_CALENDAR.into(), CalendarReminders::FullScreen);
         let settings = Settings {
             appearance: Appearance::Dark,
@@ -96,6 +104,7 @@ impl Demo {
             hidden_collections: vec![SHARED_CALENDAR.into()],
             reminders,
             tools,
+            web_search,
             ..Settings::default()
         };
         Demo {
@@ -514,9 +523,81 @@ impl Demo {
                         "Lists, finds, copies and moves files in the allowed folders, without reading what they hold.",
                     )
                     .to_string(),
+                    ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers \
+                                       you switch on.")
+                    .to_string(),
                 },
                 enabled: self.settings.tools.is_on(id),
                 allowed: true,
+            })
+            .collect()
+    }
+
+    /// The web search providers as `tools.list_search_providers` lists them, in the core's order: the facts of its
+    /// catalogue (`crates/torroworkplace/src/tools/web/catalogue.rs`), switched on as the sample settings say.
+    /// DuckDuckGo rests after a block until a fixed time, so the pictures of `--demo` stay the same; Brave has a
+    /// key stored, the other providers with a key have none.
+    fn search_providers(&self) -> Vec<SearchProviderInfo> {
+        let paused = Utc.with_ymd_and_hms(2026, 10, 24, 14, 30, 0).single();
+        SearchProviderId::ORDER
+            .into_iter()
+            .map(|id| {
+                let (sends_to, seat, terms, notice) = match id {
+                    SearchProviderId::Searxng => (
+                        "",
+                        "",
+                        "",
+                        Some("Your own SearXNG instance. Torro checks that it answers in JSON when you enter its address."),
+                    ),
+                    SearchProviderId::Brave => (
+                        "api.search.brave.com",
+                        "USA",
+                        "https://api-dashboard.search.brave.com/terms-of-service",
+                        Some("Brave allows its results to be used for the answer only, not stored. Torro does not keep them."),
+                    ),
+                    SearchProviderId::Tavily => ("api.tavily.com", "USA", "https://www.tavily.com/terms", None),
+                    SearchProviderId::Exa => ("api.exa.ai", "USA", "https://exa.ai/terms", None),
+                    SearchProviderId::Mojeek => {
+                        ("www.mojeek.com", "United Kingdom", "https://www.mojeek.com/about/terms.html", None)
+                    }
+                    SearchProviderId::Duckduckgo => (
+                        "html.duckduckgo.com",
+                        "USA",
+                        "https://duckduckgo.com/terms",
+                        Some(
+                            "DuckDuckGo offers no official interface for this. Torro reads the results page like a browser. \
+                             DuckDuckGo may block this at any time.",
+                        ),
+                    ),
+                    SearchProviderId::Wikipedia => (
+                        "wikipedia.org",
+                        "USA",
+                        "https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use",
+                        Some("Asked in addition to the others. Its text is under CC BY-SA 4.0, named at every result."),
+                    ),
+                };
+                let needs_key = matches!(
+                    id,
+                    SearchProviderId::Brave | SearchProviderId::Tavily | SearchProviderId::Exa | SearchProviderId::Mojeek
+                );
+                let key = match (needs_key, id == SearchProviderId::Brave) {
+                    (false, _) => KeyState::NotNeeded,
+                    (true, true) => KeyState::Stored,
+                    (true, false) => KeyState::Missing,
+                };
+                SearchProviderInfo {
+                    id,
+                    name: id.title().to_string(),
+                    sends_to: sends_to.into(),
+                    seat: if seat.is_empty() { String::new() } else { tr(seat).to_string() },
+                    terms: terms.into(),
+                    notice: notice.map(|text| tr(text).to_string()),
+                    needs_key,
+                    key,
+                    address: None,
+                    enabled: self.settings.web_search.is_on(id),
+                    paused_until: paused.filter(|_| id == SearchProviderId::Duckduckgo),
+                }
             })
             .collect()
     }
@@ -749,6 +830,7 @@ impl Backend for Demo {
             Request::ListMemories => Response::Memories { notes: self.memories() },
             Request::ListBots => Response::Bots { bots: self.bots() },
             Request::ListTools => Response::Tools { tools: self.tools() },
+            Request::ListSearchProviders => Response::SearchProviders { providers: self.search_providers() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },

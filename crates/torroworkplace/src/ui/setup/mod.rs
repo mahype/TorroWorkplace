@@ -1,6 +1,6 @@
 //! The first-run setup (task W.4, concept `docs/einrichtung.md`): a mode of the control centre
 //! that leads once through what the suite needs – Nextcloud first, then the components a person
-//! wants, then each chosen component on its own, AI last – and ends on a summary.
+//! wants, then each chosen component on its own, AI and the web search last – and ends on a summary.
 //!
 //! `torroworkplace ui --setup [--step <step>]` opens it; `--demo --open setup-<step>` shows a step
 //! with sample data. The setup is a guided way through the requests the control centre sends
@@ -23,6 +23,11 @@
 //! Which steps there are follows the components that are on (`Settings::components_off`): the
 //! step of a component turned off leaves the list. Steps whose pages come with later tasks
 //! (W.5–W.8) are not listed yet ([`Step::built`]).
+//!
+//! The step "Web search" (task WEB.7, `docs/einrichtung.md` step 9) shows the view of Assistant › Settings › Tools
+//! (`torro_settings_ui::assistant::web`): a provider's switch is saved at once, the first one switched on also
+//! switches the tool `web` on; "Let the assistant use it" gives the assistant's client read access to `web` with
+//! "Continue" ([`with_web`]). Only a person does this – the control centre holds the app key.
 
 mod pages;
 
@@ -37,14 +42,17 @@ use torro_core::AppId;
 use torro_core::account::Secret;
 use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState};
+use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState, ToolId};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, SidebarMode};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets::{self, Trail};
 use torro_gui::{style, typo};
-use torro_ipc::{AiServer, Request, Response, SettingKey};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Level, Rights, Selection};
+use torro_ipc::web::{SearchProviderId, SearchProviderInfo};
+use torro_ipc::{AiServer, ClientInfo, Request, Response, SettingKey};
+use torro_settings_ui::assistant::{tools as tool_settings, web};
 
 use super::connect::caldav::{self, CalDavSignIn};
 use super::connect::github::{self, GithubSignIn};
@@ -64,11 +72,12 @@ pub enum Step {
     Mail,
     Inbox,
     Ai,
+    Web,
     Done,
 }
 
 impl Step {
-    pub const ALL: [Step; 9] = [
+    pub const ALL: [Step; 10] = [
         Step::Welcome,
         Step::Nextcloud,
         Step::Components,
@@ -77,6 +86,7 @@ impl Step {
         Step::Mail,
         Step::Inbox,
         Step::Ai,
+        Step::Web,
         Step::Done,
     ];
 
@@ -91,6 +101,7 @@ impl Step {
             Step::Mail => "mail",
             Step::Inbox => "inbox",
             Step::Ai => "ai",
+            Step::Web => "web",
             Step::Done => "done",
         }
     }
@@ -115,6 +126,7 @@ impl Step {
             Step::Mail => tr("Mail"),
             Step::Inbox => tr("Notification Hub"),
             Step::Ai => tr("AI"),
+            Step::Web => tr("Web search"),
             Step::Done => tr("All set"),
         }
     }
@@ -130,6 +142,7 @@ impl Step {
             Step::Mail => Icon::Mail,
             Step::Inbox => Icon::Inbox,
             Step::Ai => Icon::Sparkles,
+            Step::Web => Icon::Globe,
             Step::Done => Icon::CircleCheck,
         }
     }
@@ -141,12 +154,14 @@ impl Step {
             Step::Tasks => Some(Component::Tasks),
             Step::Mail => Some(Component::Mail),
             Step::Inbox => Some(Component::Inbox),
+            // The web search is a tool of the assistant.
+            Step::Web => Some(Component::Assistant),
             _ => None,
         }
     }
 
     /// Whether the step's page exists yet: W.4 built Welcome, Components and Done, W.5 Nextcloud,
-    /// W.6 Calendar and Tasks, W.7 Mail and Inbox, W.8 the AI: all of them now. A step that is not
+    /// W.6 Calendar and Tasks, W.7 Mail and Inbox, W.8 the AI, WEB.7 the web search: all of them now. A step that is not
     /// built is not listed, so the setup never shows an empty page.
     fn built(self) -> bool {
         true
@@ -215,6 +230,18 @@ pub struct State {
     ai_connected: BTreeSet<String>,
     /// The engine chosen here for the assistant's new chats, by id.
     engine: Option<String>,
+    /// The web search step (task WEB.7): a key or SearXNG's address being typed, and the address check.
+    web: web::State,
+    /// Search providers switched in this setup and not yet in the core's list: shown at once, until the core's list
+    /// shows them (never in the demo) or a refusal comes back.
+    switched: BTreeMap<SearchProviderId, bool>,
+    /// The providers as the web step shows them: the core's list with [`State::switched`] laid over it, renewed with
+    /// every reload ([`observe`]) and switch. `None` before the first switch: the core's list as it is.
+    providers: Option<Vec<SearchProviderInfo>>,
+    /// "Let the assistant use it" (ticked at first): "Continue" gives the assistant read access to `web`.
+    web_allowed: bool,
+    /// The assistant's rights for `web` were sent in this setup: at most once.
+    web_granted: bool,
 }
 
 impl State {
@@ -246,6 +273,11 @@ impl State {
             ai_connecting: None,
             ai_connected: BTreeSet::new(),
             engine: None,
+            web: web::State::default(),
+            switched: BTreeMap::new(),
+            providers: None,
+            web_allowed: true,
+            web_granted: false,
         }
     }
 
@@ -259,7 +291,8 @@ impl State {
         }
     }
 
-    /// A sign-in runs; the shell reloads more often, so the end is seen soon.
+    /// A sign-in runs, or a provider's switch waits for the core's list; the shell reloads more often, so the end
+    /// is seen soon.
     pub fn busy(&self) -> bool {
         self.nextcloud.running()
             || self.github.checking()
@@ -267,6 +300,8 @@ impl State {
             || self.dialog.as_ref().is_some_and(wizard::State::busy)
             || self.ai_searching
             || self.ai_connecting.is_some()
+            || web::checking(&self.web)
+            || !self.switched.is_empty()
     }
 
     /// The add-account dialog lies over the setup; keys and the footer belong to it.
@@ -339,6 +374,8 @@ impl State {
         self.reached = self.reached.max(step);
         self.error = None;
         self.close_forms();
+        // A key typed and not saved goes with the step; it is never kept longer than its field shows it.
+        self.web = web::State::default();
     }
 
     /// Closes the forms of the calendar and tasks steps; a check that runs is no longer waited for.
@@ -433,6 +470,10 @@ pub enum Message {
     OtherAiServer,
     /// The AI account a new chat of the assistant starts with, by engine id.
     Engine(String),
+    /// The search providers of the web step (task WEB.7): the view of Assistant › Settings › Tools.
+    Web(web::Message),
+    /// "Let the assistant use it" on the web step.
+    AllowWeb(bool),
 }
 
 /// What the setup wants the shell to do.
@@ -478,6 +519,17 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
         Message::Next if state.step == Step::Nextcloud && state.nextcloud.running() => stay(Action::None),
         // On the calendar and tasks steps the primary button sends the open form.
         Message::Next if state.in_form() => stay(submit_form(state)),
+        // Leaving the web step forward gives the assistant its rights for `web`, if ticked; "Skip" does not. While
+        // that hangs on a switch the core has not confirmed, the click waits ([`web_waits`]).
+        Message::Next if state.step == Step::Web && web_waits(state, data) => stay(Action::None),
+        Message::Next if state.step == Step::Web => {
+            let grant = grant_web(state, data);
+            state.skipped.remove(&Step::Web);
+            if let Some(next) = state.neighbour(true) {
+                state.go(next);
+            }
+            stay(grant)
+        }
         Message::Next => match state.neighbour(true) {
             Some(next) => {
                 state.skipped.remove(&state.step);
@@ -612,6 +664,143 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             let default = torro_core::settings::AssistantDefault { engine, model: None, effort: None };
             stay(set(SettingKey::AssistantDefault, torro_core::settings::AssistantDefault::to_value(Some(&default))))
         }
+        Message::Web(web::Message::Switch(id, on)) => stay(switch_provider(state, data, id, on)),
+        // The check's answer comes back to the setup alone ([`checked`]).
+        Message::Web(web::Message::CheckAddress) => {
+            let shown = state.providers.as_deref().unwrap_or(&data.search_providers);
+            stay(match web::update(&mut state.web, web::Message::CheckAddress, shown) {
+                torro_settings_ui::Action::Send(mut requests) if requests.len() == 1 => {
+                    requests.pop().map_or(Action::None, Action::CheckAddress)
+                }
+                other => from_view(other),
+            })
+        }
+        Message::Web(message) => {
+            let shown = state.providers.as_deref().unwrap_or(&data.search_providers);
+            stay(from_view(web::update(&mut state.web, message, shown)))
+        }
+        Message::AllowWeb(allowed) => {
+            state.web_allowed = allowed;
+            stay(Action::None)
+        }
+    }
+}
+
+// ----- Web search (task WEB.7) ----------------------------------------------------------------------
+
+/// The search providers as the web step shows them: the core's list with the switches of this setup laid over it.
+pub(super) fn providers<'a>(state: &'a State, data: &'a Data) -> &'a [SearchProviderInfo] {
+    state.providers.as_deref().unwrap_or(&data.search_providers)
+}
+
+/// Lays the switches of this setup over the core's list of providers, so a switch shows at once – also in the
+/// demo, which stores nothing. Only until the core's list shows it: a switch the core lists as switched is
+/// dropped from [`State::switched`], and without any left the core's list is shown as it is.
+fn show_switched(state: &mut State, data: &Data) {
+    state.switched.retain(|id, on| {
+        data.search_providers.iter().find(|info| info.id == *id).is_none_or(|info| info.enabled != *on)
+    });
+    if state.switched.is_empty() {
+        state.providers = None;
+        return;
+    }
+    let mut shown = data.search_providers.clone();
+    for info in &mut shown {
+        if let Some(on) = state.switched.get(&info.id) {
+            info.enabled = *on;
+        }
+    }
+    state.providers = Some(shown);
+}
+
+/// Whether a search can ask the provider `info`: switched on, SearXNG only with an address – the rule of
+/// `WebSearch::askable` in the core. Its `enabled` alone is the switch as shown.
+pub(super) fn askable(info: &SearchProviderInfo) -> bool {
+    info.enabled && (info.id != SearchProviderId::Searxng || info.address.is_some())
+}
+
+/// A provider's switch: `settings.set_setting search_provider` at once. The first provider switched on also
+/// switches the tool `web` on (`tool_enabled`) – the first a search can ask ([`askable`]) –, unless the settings
+/// have it on already: whoever picks a provider wants the web search (`docs/einrichtung.md`, step 9). Never
+/// anything of `clients.*`.
+fn switch_provider(state: &mut State, data: &Data, id: SearchProviderId, on: bool) -> Action {
+    let first = on && !providers(state, data).iter().any(askable);
+    state.switched.insert(id, on);
+    show_switched(state, data);
+    let switch = web::switch_request(id, on);
+    match first && !data.settings.tools.is_on(ToolId::Web) {
+        true => Action::SendAll(vec![switch, tool_settings::switch_request(ToolId::Web, true)]),
+        false => Action::Send(switch),
+    }
+}
+
+/// The client of the assistant ([`ASSISTANT_CLIENT`]); `None` before the assistant first started.
+pub(super) fn assistant_client(data: &Data) -> Option<&ClientInfo> {
+    data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT)
+}
+
+/// What "Continue" on the web step sends: with "Let the assistant use it" ticked, a provider a search can ask as
+/// the core lists it ([`askable`]; not a switch on its way, which the core may refuse) and the assistant's client
+/// there, one `clients.update_client` with its rights and read access to `web` ([`with_web`]) – once in a setup,
+/// and only when that changes its rights. Otherwise nothing.
+fn grant_web(state: &mut State, data: &Data) -> Action {
+    let any_on = data.search_providers.iter().any(askable);
+    if !state.web_allowed || state.web_granted || !any_on {
+        return Action::None;
+    }
+    let Some(client) = assistant_client(data) else { return Action::None };
+    let rights = with_web(&client.rights);
+    if rights == client.rights {
+        return Action::None;
+    }
+    state.web_granted = true;
+    Action::Send(Request::UpdateClient { id: client.id.clone(), rights })
+}
+
+/// Whether "Continue" on the web step waits for the core: a switch of this setup is not in the core's list yet
+/// ([`State::switched`]) and "Continue" would give the assistant `web` – ticked, not given yet, and the assistant's
+/// client there without it. "Continue" goes by the core's list ([`grant_web`]), so a click before the reload would
+/// pass the step without the right; the button waits instead, and the shell reloads sooner ([`State::busy`]). A
+/// refusal ends the wait too ([`answered`]).
+pub(super) fn web_waits(state: &State, data: &Data) -> bool {
+    let grants = state.web_allowed
+        && !state.web_granted
+        && assistant_client(data).is_some_and(|client| with_web(&client.rights) != client.rights);
+    grants && !state.switched.is_empty()
+}
+
+/// `rights` with at least read access in the area `tools` and the tool `web` in its selection; everything else
+/// stays as it is (the level, the admin switch, every other tool and right). "All tools" does not include `web` –
+/// a person ticks it by name (`ToolId::needs_naming`) – so it becomes every tool by name, `web` among them, and PDF
+/// stays reachable: what the rights editor does when `web` is ticked under "All" (task WEB.6).
+pub(super) fn with_web(rights: &Rights) -> Rights {
+    let mut rights = rights.clone();
+    let held = rights.area(Area::Tools);
+    if held.level < Level::Read {
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: held.admin });
+    }
+    let web = ToolId::Web.name().to_string();
+    rights.tools = match std::mem::replace(&mut rights.tools, Selection::All) {
+        Selection::All => Selection::Only(ToolId::ALL.into_iter().map(|tool| tool.name().to_string()).collect()),
+        Selection::Only(mut ids) => {
+            if !ids.contains(&web) {
+                ids.push(web);
+            }
+            Selection::Only(ids)
+        }
+    };
+    rights
+}
+
+/// The view's action as the shell's: one request, several sent side by side, a page to open, or nothing.
+fn from_view(action: torro_settings_ui::Action<()>) -> Action {
+    match action {
+        torro_settings_ui::Action::Send(mut requests) if requests.len() == 1 => {
+            requests.pop().map_or(Action::None, Action::Send)
+        }
+        torro_settings_ui::Action::Send(requests) if !requests.is_empty() => Action::SendAll(requests),
+        torro_settings_ui::Action::OpenUrl(url) => Action::OpenUrl(url),
+        _ => Action::None,
     }
 }
 
@@ -728,6 +917,10 @@ pub fn observe(state: &mut State, data: &Data) {
     if let Some(dialog) = state.dialog.as_mut() {
         wizard::observe(dialog, data);
     }
+    // The web step's switches stay shown over the reloaded list until it shows them; SearXNG's check ends once its
+    // address is stored.
+    show_switched(state, data);
+    web::sent(&mut state.web, Ok(web::stored_address(&data.search_providers)));
     if !state.nextcloud.running() {
         return;
     }
@@ -773,6 +966,12 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     if let Some(taken) = ai_answered(state, result) {
         return taken;
     }
+    // A refusal may be a provider's switch (answers do not say which request they are for): the switches
+    // shown go back to what the core holds, and the next reload shows what it stored.
+    if result.is_err() {
+        state.switched.clear();
+        state.providers = None;
+    }
     match state.nextcloud.answered(result) {
         Some(Err(message)) => {
             state.error = Some(message);
@@ -781,6 +980,20 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         Some(Ok(())) => true,
         None => false,
     }
+}
+
+/// The answer to the check of a SearXNG address on the web step ([`Action::CheckAddress`]), which comes here
+/// alone: a refusal shows its reason under the field; a success ends the check with the next reload, once the
+/// address is stored. `true` when the setup shows it (the shell then shows no notice); `false` once no check waits
+/// (the step was left), so the shell says why.
+pub fn checked(state: &mut State, result: &Result<Response, String>) -> bool {
+    if !web::checking(&state.web) {
+        return false;
+    }
+    if let Err(problem) = result {
+        web::sent(&mut state.web, Err(problem));
+    }
+    true
 }
 
 /// The answers of the AI step: the servers found on this computer (without an answer every one
@@ -825,6 +1038,9 @@ pub fn escape(state: &State) -> Option<Message> {
     }
     if (state.step == Step::Nextcloud && (state.nextcloud.running() || state.adding)) || state.in_form() {
         return Some(Message::Cancel);
+    }
+    if let Some(message) = web::escape(&state.web).filter(|_| state.step == Step::Web) {
+        return Some(Message::Web(message));
     }
     state.neighbour(false).map(|_| Message::Back)
 }
@@ -927,7 +1143,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 
 /// The page of the current step over the fixed footer.
 pub fn body<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
-    let page = pages::view(state, data);
+    let page = pages::view(state, data, class);
     let page = container(container(page).width(Fill).max_width(size::form_max())).padding(page_margin(class));
     let page = scrollable(page)
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
@@ -1004,14 +1220,15 @@ mod tests {
             Step::Mail,
             Step::Inbox,
             Step::Ai,
+            Step::Web,
             Step::Done,
         ];
         assert_eq!(setup.steps(), walk);
         assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
-        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 9)));
+        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 10)));
         update(&mut setup, Message::Next, &data());
         assert_eq!(setup.step, Step::Components, "a Nextcloud is connected: the step goes on");
-        for _ in 0..6 {
+        for _ in 0..7 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -1034,7 +1251,7 @@ mod tests {
     #[test]
     fn passed_steps_are_checked_and_clicked_ones_can_be_gone_back_to() {
         let mut setup = state(Step::Welcome);
-        for _ in 0..8 {
+        for _ in 0..9 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -1362,6 +1579,287 @@ mod tests {
         assert!(matches!(sent(&engine), Some((SettingKey::AssistantDefault, _))));
     }
 
+    /// The requests of an outcome that stays, one or several.
+    fn requests(outcome: Outcome) -> Vec<Request> {
+        match outcome {
+            Outcome::Stay(Action::Send(request)) => vec![request],
+            Outcome::Stay(Action::SendAll(requests)) => requests,
+            Outcome::Stay(Action::None) => Vec::new(),
+            other => panic!("expected requests, got {other:?}"),
+        }
+    }
+
+    fn duckduckgo_on() -> Message {
+        Message::Web(web::Message::Switch(SearchProviderId::Duckduckgo, true))
+    }
+
+    /// The assistant's client of the demo: PDF with write access.
+    fn assistant(data: &Data) -> ClientInfo {
+        assistant_client(data).expect("the demo's assistant").clone()
+    }
+
+    /// Task WEB.7: the first provider switched on sends its switch and switches the tool `web` on; a second one only
+    /// its switch. Both show at once, also on the last step.
+    #[test]
+    fn the_first_provider_on_switches_the_tool_on_too() {
+        let data = data();
+        let mut setup = state(Step::Web);
+        let first = requests(update(&mut setup, duckduckgo_on(), &data));
+        assert_eq!(
+            first,
+            vec![
+                web::switch_request(SearchProviderId::Duckduckgo, true),
+                tool_settings::switch_request(ToolId::Web, true)
+            ]
+        );
+        assert!(first.iter().all(|request| request.operation().area() == Area::Settings), "nothing of clients.*");
+        let second =
+            requests(update(&mut setup, Message::Web(web::Message::Switch(SearchProviderId::Wikipedia, true)), &data));
+        assert_eq!(second, vec![web::switch_request(SearchProviderId::Wikipedia, true)]);
+        assert_eq!(pages::providers_on(&setup, &data), ["DuckDuckGo", "Wikipedia"], "shown at once");
+        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Saving…")), "until the core lists them");
+        let both = with_both(&data);
+        observe(&mut setup, &both);
+        assert_eq!(pages::status(&setup, &both), Some(trf("{n} providers on", &[("n", &2)])));
+        let mut on = data.clone();
+        on.settings.tools.set_on(ToolId::Web, true);
+        let mut again = state(Step::Web);
+        assert_eq!(requests(update(&mut again, duckduckgo_on(), &on)).len(), 1, "the tool is on already");
+    }
+
+    /// `data` as the core lists it once DuckDuckGo's and Wikipedia's switches are stored.
+    fn with_both(data: &Data) -> Data {
+        let mut stored = with_duckduckgo(data);
+        for info in &mut stored.search_providers {
+            info.enabled |= info.id == SearchProviderId::Wikipedia;
+        }
+        stored
+    }
+
+    /// `data` as the core lists it once DuckDuckGo's switch is stored.
+    fn with_duckduckgo(data: &Data) -> Data {
+        let mut stored = data.clone();
+        for info in &mut stored.search_providers {
+            info.enabled |= info.id == SearchProviderId::Duckduckgo;
+        }
+        stored
+    }
+
+    /// With "Let the assistant use it" ticked, "Continue" sends one `clients.update_client` that keeps the
+    /// assistant's tools and rights and adds read access to `web`; once, however often the step is passed.
+    #[test]
+    fn continue_gives_the_assistant_web_and_keeps_its_tools() {
+        let data = with_duckduckgo(&data());
+        let before = assistant(&data);
+        assert_eq!(before.rights.tools, Selection::Only(vec!["pdf".into()]));
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        let sent = requests(update(&mut setup, Message::Next, &data));
+        let [Request::UpdateClient { id, rights }] = sent.as_slice() else { panic!("one update_client, got {sent:?}") };
+        assert_eq!(*id, before.id);
+        assert_eq!(rights.tools, Selection::Only(vec!["pdf".into(), "web".into()]), "PDF stays");
+        assert_eq!(rights.area(Area::Tools), before.rights.area(Area::Tools), "write access stays write");
+        assert_eq!(Rights { tools: before.rights.tools.clone(), ..rights.clone() }, before.rights, "nothing else");
+        assert!(rights.reaches_tool(ToolId::Web) && rights.reaches_tool(ToolId::Pdf));
+        assert_eq!(setup.step, Step::Done);
+        update(&mut setup, Message::Back, &data);
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "at most once");
+    }
+
+    /// Unticked, or without the assistant's client, "Continue" sends nothing; without a provider on neither.
+    #[test]
+    fn without_the_tick_or_the_client_continue_sends_nothing() {
+        let mut none_on = state(Step::Web);
+        assert!(requests(update(&mut none_on, Message::Next, &data())).is_empty(), "no provider: nothing to use");
+
+        let data = with_duckduckgo(&data());
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        update(&mut setup, Message::AllowWeb(false), &data);
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty());
+
+        let mut without = data.clone();
+        without.clients.retain(|client| client.kind != ASSISTANT_CLIENT);
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &without);
+        assert!(requests(update(&mut setup, Message::Next, &without)).is_empty());
+        let _ = pages::view(&setup, &without, SizeClass::Wide);
+    }
+
+    /// Found in the review of #305: a switch shows at once, but only until the core answers. Refused, it goes
+    /// back to what the core holds; stored, the core's list shows it. "Continue" goes by the core's list, so it
+    /// never gives the assistant `web` while no provider is on.
+    #[test]
+    fn a_refused_switch_goes_back_and_continue_goes_by_the_core() {
+        let data = data();
+        let duckduckgo = |setup: &State, data: &Data| {
+            providers(setup, data).iter().any(|info| info.id == SearchProviderId::Duckduckgo && info.enabled)
+        };
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        assert!(duckduckgo(&setup, &data), "shown at once");
+        assert!(!answered(&mut setup, &Err("refused".into())), "the shell says why");
+        assert!(!duckduckgo(&setup, &data), "back to what the core holds");
+        observe(&mut setup, &data);
+        assert!(!duckduckgo(&setup, &data), "and the next reload does not bring it back");
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "no provider on: nothing given");
+
+        // Shown but not yet stored: "Continue" waits for the core's word ([`continue_waits_for_the_cores_word`]).
+        let mut early = state(Step::Web);
+        update(&mut early, duckduckgo_on(), &data);
+        assert!(requests(update(&mut early, Message::Next, &data)).is_empty());
+        assert_eq!(early.step, Step::Web, "the click waits, it does not pass the step");
+
+        // Stored: the core's list carries it, the overlay is done.
+        let stored = with_duckduckgo(&data);
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        observe(&mut setup, &stored);
+        assert!(setup.switched.is_empty() && setup.providers.is_none(), "confirmed");
+        assert!(duckduckgo(&setup, &stored));
+    }
+
+    /// Found in the second review of #305: a click on "Continue" before the core confirmed a switch is not lost.
+    /// While a switch waits and "Continue" would give the assistant `web`, the button waits (pressed, it stays on
+    /// the step and sends nothing); once the core lists the switch, "Continue" gives `web` and goes on. Unticked
+    /// nothing hangs on the core's word, so the button goes on at once.
+    #[test]
+    fn continue_waits_for_the_cores_word() {
+        let data = data();
+        let mut setup = state(Step::Web);
+        update(&mut setup, duckduckgo_on(), &data);
+        assert_eq!(pages::primary(&setup, &data), (tr("Continue"), false), "waits for the core");
+        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Saving…")));
+        assert!(setup.busy(), "the shell reloads sooner");
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty());
+        assert_eq!(setup.step, Step::Web, "Enter does not pass the waiting button by");
+
+        let stored = with_duckduckgo(&data);
+        observe(&mut setup, &stored);
+        assert_eq!(pages::primary(&setup, &stored), (tr("Continue"), true), "confirmed");
+        assert!(!setup.busy());
+        let sent = requests(update(&mut setup, Message::Next, &stored));
+        assert!(matches!(sent.as_slice(), [Request::UpdateClient { .. }]), "{sent:?}");
+        assert_eq!(setup.step, Step::Done);
+
+        let mut unticked = state(Step::Web);
+        update(&mut unticked, duckduckgo_on(), &data);
+        update(&mut unticked, Message::AllowWeb(false), &data);
+        assert_eq!(pages::primary(&unticked, &data), (tr("Continue"), true), "nothing to wait for");
+        update(&mut unticked, Message::Next, &data);
+        assert_eq!(unticked.step, Step::Done);
+    }
+
+    /// Found in the second review of #305: SearXNG without an address is switched on but cannot be asked
+    /// (`WebSearch::askable`), so it counts for neither "Continue" nor the first provider: alone it gives the
+    /// assistant nothing, and the next provider switched on still switches the tool on.
+    #[test]
+    fn searxng_without_an_address_counts_for_nothing() {
+        let mut data = data();
+        for info in &mut data.search_providers {
+            if info.id == SearchProviderId::Searxng {
+                (info.enabled, info.address) = (true, None);
+            }
+        }
+        let mut setup = state(Step::Web);
+        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "nothing can be asked");
+
+        let mut setup = state(Step::Web);
+        let sent = requests(update(&mut setup, duckduckgo_on(), &data));
+        assert!(sent.contains(&tool_settings::switch_request(ToolId::Web, true)), "the first askable: {sent:?}");
+
+        // With its address it counts.
+        for info in &mut data.search_providers {
+            if info.id == SearchProviderId::Searxng {
+                info.address = Some("https://search.example.org".into());
+            }
+        }
+        let mut setup = state(Step::Web);
+        let sent = requests(update(&mut setup, Message::Next, &data));
+        assert!(matches!(sent.as_slice(), [Request::UpdateClient { .. }]), "{sent:?}");
+        let mut setup = state(Step::Web);
+        assert_eq!(requests(update(&mut setup, duckduckgo_on(), &data)).len(), 1, "not the first");
+    }
+
+    /// Found in the review of #305: while SearXNG's address is checked, the refusal of another request is not
+    /// taken for the check's; only the check's own answer ends it ([`checked`]).
+    #[test]
+    fn only_the_checks_own_answer_ends_it() {
+        let data = data();
+        let mut setup = state(Step::Web);
+        update(&mut setup, Message::Web(web::Message::TypeAddress("https://search.example.org".into())), &data);
+        let check = update(&mut setup, Message::Web(web::Message::CheckAddress), &data);
+        let Outcome::Stay(Action::CheckAddress(request)) = check else { panic!("the check apart, got {check:?}") };
+        assert_eq!(request, web::address_request(Some("https://search.example.org")));
+        update(&mut setup, duckduckgo_on(), &data);
+        assert!(!answered(&mut setup, &Err("the switch was refused".into())), "the shell says it");
+        assert!(setup.busy(), "the check still waits");
+        assert!(checked(&mut setup, &Err("This SearXNG instance does not answer in JSON.".into())));
+        assert!(!setup.busy());
+        assert!(!checked(&mut setup, &Err("late".into())), "no check waits: the shell says it");
+    }
+
+    /// "Skip" leaves the web search off and sends nothing; Escape drops a key being typed first.
+    #[test]
+    fn skipping_the_web_step_sends_nothing() {
+        let data = data();
+        let mut setup = state(Step::Web);
+        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Web search is off")));
+        let key = web::Message::TypeKey(SearchProviderId::Brave, Secret::new("BSA-1"));
+        assert!(requests(update(&mut setup, Message::Web(key), &data)).is_empty());
+        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Web(Discard)".into()));
+        assert!(requests(update(&mut setup, Message::Skip, &data)).is_empty());
+        assert_eq!((setup.step, setup.mark(Step::Web)), (Step::Done, Mark::Skipped));
+        assert!(escape(&setup).is_some_and(|m| matches!(m, Message::Back)), "the typed key went with the step");
+    }
+
+    /// "All tools" does not include `web`: given it, the assistant gets every tool by name, PDF stays reachable.
+    /// An area without access gets read access; one with more keeps it.
+    #[test]
+    fn web_is_added_by_name_and_all_tools_stays_reachable() {
+        let mut all = Rights::assistant();
+        all.tools = Selection::All;
+        all.areas.insert(Area::Tools, AreaRights { level: Level::Full, admin: true });
+        let given = with_web(&all);
+        assert_eq!(given.tools, Selection::Only(ToolId::ALL.into_iter().map(|t| t.name().to_string()).collect()));
+        assert_eq!(given.area(Area::Tools), AreaRights { level: Level::Full, admin: true });
+        assert!(given.reaches_tool(ToolId::Pdf) && given.reaches_tool(ToolId::Web));
+
+        let mut closed = Rights::assistant();
+        closed.areas.remove(&Area::Tools);
+        closed.tools = Selection::Only(Vec::new());
+        let given = with_web(&closed);
+        assert_eq!(
+            (given.area(Area::Tools).level, given.tools.clone()),
+            (Level::Read, Selection::Only(vec!["web".into()]))
+        );
+        assert_eq!(with_web(&given), given, "already there: unchanged");
+    }
+
+    /// A refused SearXNG address shows under its field, not as the shell's notice; the last step names the
+    /// providers that are on.
+    #[test]
+    fn a_refused_address_stays_on_the_page() {
+        let data = data();
+        let mut setup = state(Step::Web);
+        update(&mut setup, Message::Web(web::Message::TypeAddress("https://search.example.org".into())), &data);
+        let check = update(&mut setup, Message::Web(web::Message::CheckAddress), &data);
+        assert!(matches!(check, Outcome::Stay(Action::CheckAddress(_))), "{check:?}");
+        assert!(setup.busy());
+        assert!(checked(&mut setup, &Err("This SearXNG instance does not answer in JSON.".into())));
+        assert!(!setup.busy());
+        assert!(!answered(&mut setup, &Err("another refusal".into())), "no check waits: the shell says it");
+
+        update(&mut setup, duckduckgo_on(), &data);
+        setup.go(Step::Done);
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            let _ = pages::view(&setup, &data, class);
+        }
+        assert_eq!(pages::providers_on(&setup, &data), ["DuckDuckGo"]);
+        assert_eq!(pages::web_detail(&setup, &data), trf("Web search · {providers}", &[("providers", &"DuckDuckGo")]));
+        assert_eq!(pages::web_detail(&state(Step::Done), &data), tr("Web search off"));
+    }
+
     #[test]
     fn steps_are_named_by_their_word() {
         for step in Step::ALL.into_iter().filter(|step| step.built()) {
@@ -1370,7 +1868,7 @@ mod tests {
         assert_eq!(Step::from_arg("later"), None, "no such step");
         assert_eq!(
             Step::args(),
-            ["welcome", "nextcloud", "components", "calendar", "tasks", "mail", "inbox", "ai", "done"]
+            ["welcome", "nextcloud", "components", "calendar", "tasks", "mail", "inbox", "ai", "web", "done"]
         );
     }
 }
