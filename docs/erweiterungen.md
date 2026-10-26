@@ -426,7 +426,8 @@ ArtCraft selbst nicht kennt.
   `tools.js_console` und `sign.digital`).
 - **Den Ordner sehen** der App-Schlüssel und jeder Client mit einer Stufe für den Server (`ExtensionInfo::folder`,
   dazu `folder_unusable`, solange er nicht nutzbar ist), damit ein Agent absolute Pfade darin bilden kann. Er ist
-  eine Grenze, kein Geheimnis.
+  eine Grenze, kein Geheimnis. Einen nicht nutzbaren Ordner sieht nur der App-Schlüssel; ein Client erfährt dann nur
+  `folder_unusable`.
 - **Oberfläche:** Seite des Servers unter MCP servers, Gruppe „Folder“ vor „Tools“ mit „Choose…“ (Menü der
   freigegebenen Ordner und „None“); GridCraft sagt in Katalog, Dialog und Seite, dass es sich an keinen Ordner hält.
   Die Einrichtung stellt die Apps im Schritt „Documents“ vor ([einrichtung.md](einrichtung.md)).

@@ -404,7 +404,8 @@ pub struct ExtensionInfo {
     pub folder: Option<String>,
     /// A folder is chosen ([`ExtensionInfo::folder`]) but cannot be used now: no longer allowed, not there (a drive
     /// not mounted), or no longer one that may be chosen (it holds something locked, or a folder that may only be
-    /// read). Every call is refused until a person chooses another. `false` (left out) otherwise.
+    /// read). Every call is refused until a person chooses another. `false` (left out) otherwise. A client then gets
+    /// no [`ExtensionInfo::folder`], only this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder_unusable: bool,
 }

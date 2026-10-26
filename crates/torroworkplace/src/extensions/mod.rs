@@ -1159,6 +1159,12 @@ impl Extensions {
             Reach::Suite => (shown, status),
             Reach::Client(_) => (store::redacted(&shown), redacted_status(status)),
         };
+        // A client gets the folder only while the server works in it: the path of one it can't use would only tell
+        // where the person's home is (review of PR #316).
+        let folder = match reach {
+            Reach::Suite => stored.folder,
+            Reach::Client(_) => stored.folder.filter(|_| !folder_unusable),
+        };
         ExtensionInfo {
             id: stored.id,
             name: stored.name,
@@ -1171,7 +1177,7 @@ impl Extensions {
             notes,
             fingerprint: Some(client::list_fingerprint(&reported)),
             folder_unusable,
-            folder: stored.folder,
+            folder,
         }
     }
 }
@@ -1832,6 +1838,10 @@ mod tests {
         assert_eq!(refused.as_ref().map(code), Some("forbidden"));
         plain = info(extensions.get("wordcraft", Reach::Suite).await);
         assert_eq!(plain.folder, Some(path("Plain")), "kept, for the person to see and change");
+        // A client with a level learns that it can't be used, not where it is.
+        let reader = reader_of("wordcraft");
+        let seen = info(extensions.get("wordcraft", Reach::Client(&reader)).await);
+        assert_eq!((seen.folder, seen.folder_unusable), (None, true));
 
         // Relative is never taken from the service's folder; a slash at the end is dropped, as the settings write it.
         assert_eq!(code(&choose("wordcraft", Some("Plain".into())).await), "not-found");
@@ -1840,6 +1850,9 @@ mod tests {
         assert_eq!(chosen.folder, Some(path("Docs/Private")));
         let stored = extensions.stored("wordcraft").expect("stored");
         assert_eq!(extensions.usable_folder(&stored), Some((home.join("Docs/Private"), FolderAccess::Read)));
+        let reader = reader_of("wordcraft");
+        let seen = info(extensions.get("wordcraft", Reach::Client(&reader)).await);
+        assert_eq!(seen.folder, Some(path("Docs/Private")), "a client with a level sees the folder it works in");
         // No longer allowed: kept, but not usable.
         folders.lock().unwrap_or_else(PoisonError::into_inner).retain(|folder| folder.path != path("Docs/Private"));
         assert_eq!(extensions.usable_folder(&stored), None);

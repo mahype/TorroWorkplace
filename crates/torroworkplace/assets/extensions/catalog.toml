@@ -338,8 +338,8 @@ tools = [
     { name = "link_list", access = "read" },
     # Opens the PDF a link names, also an absolute one, which Torro does not see: with approval.
     { name = "link_open", access = "delete" },
-    # Links and field actions take no app commands (only a page, an address, JavaScript or the menu entries Print and
-    # page turns, checked in v0.14.0): no `commands = true`.
+    # Links and field actions take no app commands (only a page, an address, JavaScript or the fixed menu entries Print,
+    # SaveAs and page turns, checked in v0.14.0): no `commands = true`.
     { name = "link_add", access = "write" },
     { name = "link_edit", access = "write" },
     { name = "link_delete", access = "write" },
