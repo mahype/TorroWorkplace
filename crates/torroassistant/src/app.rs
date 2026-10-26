@@ -442,6 +442,9 @@ pub enum Message {
     /// The system's logo chooser of Tools closed for this template: the picture chosen, `None`
     /// when it was cancelled.
     LogoPicked(PdfTemplateId, Option<PathBuf>),
+    /// The system's folder chooser of the allowed folders closed (Tools, task WD.4): the folder
+    /// chosen, `None` when it was cancelled.
+    AllowedFolderPicked(Option<PathBuf>),
     /// A link in an answer.
     OpenLink(String),
     /// "Retry" in the error state.
@@ -1065,6 +1068,12 @@ impl App {
             Message::LogoPicked(template, logo) => {
                 let data = self.settings.as_ref().map(|pane| pane.host.data());
                 let request = data.zip(logo).map(|(data, logo)| settings::tools::logo_request(data, template, &logo));
+                return self.settings_send(request);
+            }
+            Message::AllowedFolderPicked(folder) => {
+                let data = self.settings.as_ref().map(|pane| pane.host.data());
+                let request =
+                    data.zip(folder).map(|(data, folder)| settings::tools::added_folder_request(data, &folder));
                 return self.settings_send(request);
             }
             Message::OpenLink(url) => return open_link(url),
@@ -1950,10 +1959,16 @@ impl App {
                 Task::batch([save, self.edit_bot(id)])
             }
             // Tools (task WZ.6): only the app opens the system's choosers; a path chosen there by
-            // the person goes out as a setting ([`Message::FolderPicked`], [`Message::LogoPicked`]).
-            Outcome::App(AppAction::PickFolder) => Task::perform(pick_folder(), Message::FolderPicked),
+            // the person goes out as a setting ([`Message::FolderPicked`], [`Message::LogoPicked`],
+            // [`Message::AllowedFolderPicked`]).
+            Outcome::App(AppAction::PickFolder) => {
+                Task::perform(pick_folder(tr("Choose a folder for PDFs")), Message::FolderPicked)
+            }
             Outcome::App(AppAction::PickLogo(template)) => {
                 Task::perform(pick_logo(), move |logo| Message::LogoPicked(template, logo))
+            }
+            Outcome::App(AppAction::PickAllowedFolder) => {
+                Task::perform(pick_folder(tr("Choose a folder for the tools")), Message::AllowedFolderPicked)
             }
         }
     }
@@ -2150,10 +2165,10 @@ fn open_link(url: String) -> Task<Message> {
     .discard()
 }
 
-/// Asks for the folder new PDFs go to, with the system's chooser (Tools, task WZ.6); `None` when
-/// it is cancelled.
-async fn pick_folder() -> Option<PathBuf> {
-    let chosen = rfd::AsyncFileDialog::new().set_title(tr("Choose a folder for PDFs")).pick_folder().await;
+/// Asks for a folder with the system's chooser titled `title` (Tools: where new PDFs go, task WZ.6;
+/// a folder the tools may reach, task WD.4); `None` when it is cancelled.
+async fn pick_folder(title: &'static str) -> Option<PathBuf> {
+    let chosen = rfd::AsyncFileDialog::new().set_title(title).pick_folder().await;
     chosen.map(|folder| folder.path().to_path_buf())
 }
 

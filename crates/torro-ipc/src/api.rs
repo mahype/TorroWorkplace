@@ -356,13 +356,13 @@ pub struct Rights {
     /// Missing in rights from before mail: none, like an area added later.
     #[serde(default = "nothing_selected")]
     pub mail_accounts: Selection,
-    /// The assistant's own tools the client may use, by their id (`pdf`, `web`,
+    /// The assistant's own tools the client may use, by their id (`pdf`, `web`, `files`,
     /// [`Rights::reaches_tool`]), in the area `tools`. A command of a tool outside it is `forbidden`
     /// ([`Lack::Tool`]), checked before an approval is asked for; a file a tool made is reached only
     /// with the tool in it. [`Selection::All`] ("all tools", every template) covers every tool but
     /// those a person must tick by name ([`ToolId::needs_naming`]: `web`, decision 26 in
     /// `docs/assistent.md`), also in every intersection ([`Rights::reached_tools`]). Each tool needs its
-    /// own level in the area ([`crate::tools::ToolAccess::access`]: write for `pdf`, read for `web`).
+    /// own level in the area ([`crate::tools::ToolAccess::access`]: write for `pdf`, read for `web` and `files`).
     /// Missing in rights from before the tools: none, like an area added later.
     #[serde(default = "nothing_selected")]
     pub tools: Selection,
@@ -1074,10 +1074,11 @@ impl Request {
     /// `voice_enabled` (point 6, the microphone), `mail_to_cloud` (task C.17, mail to models
     /// outside the person's computers), `allow_api_keys` or `allow_mcp` (#231, a way a person
     /// closed) to anything but `false`, or `tool_enabled` (point 9, issue #225) or `search_provider`
-    /// (point 6, issue #305, a web search provider) with `enabled` anything but `false`, or `maps` (task TE.1, the place search and the map) with `enabled`
-    /// anything but `false` or with `geocoder` or `tiles` at all. A value that is no boolean, a tool
-    /// switch without `enabled`, or `maps` that is no object counts as switching on: it is refused,
-    /// not tried.
+    /// (point 6, issue #305, a web search provider) with `enabled` anything but `false`, or
+    /// `allowed_folder` (point 9, issue #304) with any value, or `maps` (task TE.1, the place search and
+    /// the map) with `enabled` anything but `false` or with `geocoder` or `tiles` at all. A value that is
+    /// no boolean, a tool switch without `enabled`, or `maps` that is no object counts as switching on:
+    /// it is refused, not tried.
     ///
     /// So is `mail.save_attachments` to a path (`to: file` or `folder`, issue #290, point 9): only a
     /// person chooses a place on the computer in the system's dialog; `downloads` and a save target
@@ -1101,6 +1102,8 @@ impl Request {
             Request::SetSetting { key: crate::SettingKey::ToolEnabled | crate::SettingKey::SearchProvider, value } => {
                 value.get("enabled").is_none_or(switches_on)
             }
+            // Managing the allowed folders is granting rights (point 9, issue #304): removing too.
+            Request::SetSetting { key: crate::SettingKey::AllowedFolder, .. } => true,
             // Turning maps on or naming a service sends what people type and where they meet to
             // others (task TE.1); a value that is no object is refused, not tried.
             Request::SetSetting { key: crate::SettingKey::Maps, value } => match value.as_object() {
@@ -1637,6 +1640,12 @@ impl Request {
             Request::WebSearch { .. } => &WEB_SEARCH,
             Request::FetchPage { .. } => &FETCH_PAGE,
             Request::ListSearchProviders => &LIST_SEARCH_PROVIDERS,
+            Request::ListFolder { .. } => &LIST_FOLDER,
+            Request::FindFiles { .. } => &FIND_FILES,
+            Request::CreateFolder { .. } => &CREATE_FOLDER,
+            Request::CopyFile { .. } => &COPY_FILE,
+            Request::MoveFile { .. } => &MOVE_FILE,
+            Request::TrashFile { .. } => &TRASH_FILE,
         };
         let access = match self {
             // Replacing closes the windows on the workspace: nothing brings them back.
@@ -1868,6 +1877,12 @@ pub static CATALOGUE: &[&Command] = &[
     &WEB_SEARCH,
     &FETCH_PAGE,
     &LIST_SEARCH_PROVIDERS,
+    &LIST_FOLDER,
+    &FIND_FILES,
+    &CREATE_FOLDER,
+    &COPY_FILE,
+    &MOVE_FILE,
+    &TRASH_FILE,
 ];
 
 /// The commands that send something out of the computer on the person's behalf
@@ -2739,7 +2754,8 @@ static SET_SETTING: Command = Command {
                   \"marginsMm\": [top, right, bottom, left] from 5 to 50, \"fontSizePt\": 8 to 16, \"header\": \
                   \"{title}\", \"footer\": \"\", \"pageNumbers\": true, \"logo\": null}; header and footer one line \
                   of at most 200 characters, `{title}` and `{date}` are filled in; a logo other than the stored one \
-                  is for a person, so send the stored one or null) or `workspace_shortcuts` (the modifiers held with \
+                  is for a person, so send the stored one or null) – `allowed_folder`, the folders the tool `files` \
+                  works in, is for a person only, adding and removing alike – or `workspace_shortcuts` (the modifiers held with \
                   a digit key to load the template that has it: \"super_alt\", \"super_ctrl\", \"ctrl_alt\" or \
                   \"ctrl_shift\"; on macOS Super is Command and Alt is Option; the keys are bound anew at once).",
 };
@@ -4160,11 +4176,12 @@ static LIST_TOOLS: Command = Command {
     area: Area::Tools,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the assistant's own tools (for now `pdf`, which makes PDF files from Markdown) with whether \
-                  the person switched each on in the assistant's settings (`enabled`) and whether this key may use \
-                  it (`allowed`: write access to `tools` for `pdf`, read access for `web`, and the tool in its \
-                  selection; `web` only when the person ticked it by name). A tool works only when both are true; \
-                  only the person switches a tool on and grants it.",
+    description: "Lists the assistant's own tools (`pdf`, which makes PDF files from Markdown, `web`, which searches \
+                  the web and reads pages, and `files`, which organizes files in the folders the person allowed) with \
+                  whether the person switched each on in the assistant's settings (`enabled`) and whether this key \
+                  may use it (`allowed`: write access to `tools` for `pdf`, read access for `web` and `files`, and \
+                  the tool in its selection; `web` only when the person ticked it by name). A tool works only when \
+                  both are true; only the person switches a tool on and grants it.",
 };
 
 static CREATE_PDF: Command = Command {
@@ -4240,6 +4257,73 @@ static LIST_SEARCH_PROVIDERS: Command = Command {
     description: "Lists the web search providers in the order tools_web_search asks them, each with the host its \
                   search words go to, whether the person switched it on, whether its key is stored (never the key) \
                   and until when it rests after a block. Only the person switches providers on.",
+};
+
+// The tool `files` (issue #304): only in the folders a person allowed, never a file's content, never
+// overwriting; the trash always asks a person.
+
+static LIST_FOLDER: Command = Command {
+    name: "tools.list_folder",
+    area: Area::Tools,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists one level of a folder: name, path, kind (file, folder, link), size and when it changed, \
+                  folders first, at most 500 entries (`truncated` beyond). Call it without `path` first: that lists \
+                  the folders the person allowed, each with its access (`read` or `read_write`); the tool works only \
+                  in them, anything else is `not-found`. Never shows what a file holds.",
+};
+
+static FIND_FILES: Command = Command {
+    name: "tools.find_files",
+    area: Area::Tools,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Finds files and folders by name in `folder` (in an allowed folder, see tools_list_folder) and below, \
+                  up to 10 levels deep, without following links: `name` is part of the name (`invoice`) or a \
+                  pattern with * and ? (`*.pdf`), any case. At most 200 hits (`truncated` beyond, or when a folder below did not open). Never searches \
+                  what a file holds.",
+};
+
+static CREATE_FOLDER: Command = Command {
+    name: "tools.create_folder",
+    area: Area::Tools,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Makes a folder at `path` inside an allowed folder with `read_write` access. When the name is taken, \
+                  a free name is chosen (`Invoices-2`), nothing is replaced; the answer holds the path that was \
+                  made: tell the person.",
+};
+
+static COPY_FILE: Command = Command {
+    name: "tools.copy_file",
+    area: Area::Tools,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Copies the file `from` (in an allowed folder) to `to`: an existing folder (the copy keeps its name) \
+                  or a new path, in a folder with `read_write` access. Only files, never folders or links. A file \
+                  there is never overwritten: a free name is chosen (`Report-2.pdf`); the answer holds the copy's \
+                  path: tell the person. Never changes what the file holds.",
+};
+
+static MOVE_FILE: Command = Command {
+    name: "tools.move_file",
+    area: Area::Tools,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Moves or renames the file or folder `from` to `to`: an existing folder (it keeps its name) or a new \
+                  path; both in folders with `read_write` access. A link is moved itself, a folder only on the same \
+                  drive; an allowed folder itself cannot be moved. Nothing is overwritten: a free name is chosen; \
+                  the answer holds the new path: tell the person.",
+};
+
+static TRASH_FILE: Command = Command {
+    name: "tools.trash_file",
+    area: Area::Tools,
+    access: Access::Delete,
+    mcp: Mcp::Tool,
+    description: "Moves the file or folder `path` (in a folder with `read_write` access) to the system's trash; \
+                  nothing is deleted for good. It always waits for the person's approval, whatever this key's \
+                  rights say. An allowed folder itself cannot be trashed.",
 };
 
 #[cfg(test)]
@@ -4829,6 +4913,19 @@ mod tests {
                 key: Some(crate::Secret::new("BSA_example")),
             },
             Request::SetSearchKey { provider: crate::web::SearchProviderId::Brave, key: None },
+            Request::ListFolder { path: None },
+            Request::ListFolder { path: Some("/Users/anna/Documents".into()) },
+            Request::FindFiles { folder: "/Users/anna/Documents".into(), name: "*.pdf".into() },
+            Request::CreateFolder { path: "/Users/anna/Documents/Invoices".into() },
+            Request::CopyFile {
+                from: "/Users/anna/Downloads/Invoice.pdf".into(),
+                to: "/Users/anna/Documents/Invoices".into(),
+            },
+            Request::MoveFile {
+                from: "/Users/anna/Documents/Invoice.pdf".into(),
+                to: "/Users/anna/Documents/Invoice 2026-10.pdf".into(),
+            },
+            Request::TrashFile { path: "/Users/anna/Downloads/Invoice.pdf".into() },
         ]
     }
 
@@ -5990,6 +6087,7 @@ mod tests {
                 "allow_mcp",
                 "tool_enabled",
                 "pdf_folder",
+                "allowed_folder",
                 "pdf_template",
                 "workspace_shortcuts",
                 "maps",
@@ -6802,6 +6900,73 @@ mod tests {
         assert_eq!(lack, Some(Lack::ForPeople));
     }
 
+    /// Issue #304, point 9: the allowed folders are a person's alone, whatever the value – removing
+    /// one and a value that does not read too – and whatever the client's rights.
+    #[test]
+    fn only_people_manage_the_allowed_folders() {
+        let folder = |value| Request::SetSetting { key: SettingKey::AllowedFolder, value };
+        let requests = [
+            folder(serde_json::json!({"path": "/Users/anna/Documents", "access": "read"})),
+            folder(serde_json::json!({"path": "/Users/anna/Documents", "access": "read_write"})),
+            folder(serde_json::json!({"path": "/Users/anna/Documents", "access": null})),
+            folder(serde_json::json!(null)),
+            folder(serde_json::json!(false)),
+        ];
+        for request in &requests {
+            assert!(request.kept_for_people(), "{request:?}");
+            for level in LEVELS {
+                for admin in [false, true] {
+                    let mut rights = RightsTemplate::FullAccess.rights();
+                    for area in Area::ALL {
+                        rights.areas.insert(area, AreaRights { level, admin });
+                    }
+                    assert!(!rights.allows_request(request), "{level:?} admin {admin}");
+                }
+            }
+        }
+        assert!(SET_SETTING.description.contains("`allowed_folder`"));
+        let read: SettingKey = serde_json::from_value(serde_json::json!("allowed_folder")).expect("a key");
+        assert_eq!(read, SettingKey::AllowedFolder);
+    }
+
+    /// Issue #304: listing and finding read, making, copying and moving write, the trash deletes. The
+    /// descriptions agents read say where the tool works, that nothing is overwritten, that the path of
+    /// the answer is told and that the trash always asks.
+    #[test]
+    fn the_file_commands_ask_for_what_they_do() {
+        let access = |request: Request| (request.operation().area(), request.operation().access);
+        let path = || "/Users/anna/Documents/a.pdf".to_string();
+        assert_eq!(access(Request::ListFolder { path: None }), (Area::Tools, Access::Read));
+        assert_eq!(access(Request::FindFiles { folder: path(), name: "a".into() }), (Area::Tools, Access::Read));
+        for write in [
+            Request::CreateFolder { path: path() },
+            Request::CopyFile { from: path(), to: path() },
+            Request::MoveFile { from: path(), to: path() },
+        ] {
+            assert_eq!(access(write), (Area::Tools, Access::Write));
+        }
+        assert_eq!(access(Request::TrashFile { path: path() }), (Area::Tools, Access::Delete));
+        for command in [&LIST_FOLDER, &FIND_FILES, &CREATE_FOLDER, &COPY_FILE, &MOVE_FILE, &TRASH_FILE] {
+            assert_eq!(command.mcp, Mcp::Tool, "{}", command.name);
+        }
+        assert!(
+            LIST_FOLDER.description.contains("without `path` first") && LIST_FOLDER.description.contains("allowed")
+        );
+        assert!(LIST_FOLDER.description.contains("Never shows what a file holds"));
+        for command in [&CREATE_FOLDER, &COPY_FILE, &MOVE_FILE] {
+            assert!(command.description.contains("free name"), "{}", command.name);
+            assert!(command.description.contains("tell the person"), "{}", command.name);
+        }
+        assert!(TRASH_FILE.description.contains("always waits for the person's approval"));
+        assert!(LIST_TOOLS.description.contains("read access for `web` and `files`"));
+        let read: Request = serde_json::from_str(r#"{"method":"tools.list_folder"}"#).expect("without a path");
+        assert_eq!(read, Request::ListFolder { path: None });
+        assert_eq!(
+            FIND_FILES.input_schema().expect("schema").get("required"),
+            Some(&serde_json::json!(["folder", "name"]))
+        );
+    }
+
     /// Issue #290, point 9 of "Was nie nach außen geht": no client names a path for attachments,
     /// not even with every right in `mail`; saving to Downloads or to a save target is ordinary
     /// writing. Only the app key adds a target (it always sets a folder); changing and removing one
@@ -6859,7 +7024,8 @@ mod tests {
         assert!(Area::Tools.grantable() && Area::Tools.in_templates());
         assert_eq!((Area::Tools.name(), Area::Tools.prefix()), ("tools", "tools"));
         assert_eq!(Area::ALL.len(), 16);
-        assert_eq!(levels(Area::Tools), [Level::NoAccess, Level::Read, Level::Write]);
+        // Moving to the trash deletes (issue #304), so `tools` has all four levels.
+        assert_eq!(levels(Area::Tools), [Level::NoAccess, Level::Read, Level::Write, Level::Full]);
         let access = |request: Request| (request.operation().area(), request.operation().access);
         assert_eq!(access(Request::ListTools), (Area::Tools, Access::Read));
         let create = Request::CreatePdf { title: "Offer".into(), markdown: "Hi".into(), template: None };
@@ -6905,15 +7071,16 @@ mod tests {
         );
     }
 
-    /// Issue #305, decision 26: "all tools" covers `pdf`, never `web`; only a selection that names
-    /// `web` reaches it, also in every intersection. Both commands of the web read.
+    /// Issue #305, decision 26: "all tools" covers `pdf` and `files`, never `web`; only a selection that
+    /// names `web` reaches it, also in every intersection. Both commands of the web read.
     #[test]
     fn web_is_reached_only_when_named() {
         for template in RightsTemplate::ALL {
             let rights = template.rights();
             assert_eq!(rights.tools, Selection::All, "{template:?}");
             assert!(rights.reaches_tool(ToolId::Pdf) && !rights.reaches_tool(ToolId::Web), "{template:?}");
-            assert_eq!(rights.reached_tools(), Selection::Only(vec!["pdf".into()]), "{template:?}");
+            assert!(rights.reaches_tool(ToolId::Files), "{template:?}: files stays on the computer");
+            assert_eq!(rights.reached_tools(), Selection::Only(vec!["pdf".into(), "files".into()]), "{template:?}");
         }
         let mut named = RightsTemplate::ReadOnly.rights();
         named.tools = Selection::Only(vec!["web".into()]);

@@ -1,0 +1,1119 @@
+//! The bounds of the tool `files` (issue #304, task WD.2, decisions 20 and 24 in `docs/assistent.md`): which paths
+//! its commands reach in the folders a person allowed ([`Allowed`]), how far they may go there, and what stays out
+//! whatever folder holds it.
+//!
+//! - A path from a request is absolute, at most [`MAX_PATH_BYTES`] bytes, of one line and without `.` or `..`
+//!   parts, else `error` ([`FolderError::Invalid`]).
+//! - It is resolved (`canonicalize`) and compared with the resolved allowed folders: a symbolic link that leads out
+//!   of them is outside. The innermost folder that holds a path counts. Outside, missing or locked is `not-found`,
+//!   so an agent cannot feel out what there is beyond the allowed folders; writing where only reading is allowed is
+//!   `forbidden`.
+//! - Locked are the paths of `excluded` (the suite's own folders, the files with client keys and hooks, the system's
+//!   key stores, other known stores of credentials, the browsers' profiles and the system's trash, [`key_stores`]),
+//!   every name ending in [`BACKUP_SUFFIX`] and the trash folders of every drive ([`TRASH_FOLDERS`], `.Trash-1000`),
+//!   also inside an allowed folder. Listing and finding leave them out. A locked path is `not-found` also when the
+//!   system refuses the core there.
+//! - Names count as the drive stores them. The system also finds an entry under another spelling (`.SSH`, `.ſsh`,
+//!   `Verträge` composed for one stored decomposed, a short name like `CLAUDE~1.JSO`, a dot at the end).
+//!   `canonicalize` gives the stored names on macOS and Windows; the last part of an entry, which is not resolved, is
+//!   looked up in its folder and taken as stored there ([`Allowed::entry`]), so `.ſsh` is `.ssh` and locked. A new
+//!   name is the request's, and the system may then find the new entry under a locked path (`mcp.jſon` as the
+//!   missing, locked `mcp.json`): after every entry made or moved the core looks whether it does
+//!   ([`Allowed::hits_a_lock`]) and takes it back. Locks and allowed folders are still compared without regard to
+//!   case, since a locked path is named as written (`~/Library/Keychains`).
+//! - Open: on Linux, a drive that does not tell cases apart (ext4 with casefold, exFAT, FAT) keeps the spelling of a
+//!   request in the folders above the last part – `canonicalize` there does not give the stored names – so a folder
+//!   named in another spelling than the folded one (`.ſsh`) is not taken as the locked one.
+//! - An entry that is or holds an allowed folder or something locked is not moved (and in WD.3 not trashed): else an
+//!   agent would reach what is in an inner "Read" folder through an outer one ([`Allowed::holds_protected`]).
+//!
+//! Every root comes in as a parameter, so tests never touch the person's files. Nothing here logs or answers a path
+//! from a request.
+
+use std::cmp::Reverse;
+use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+
+use torro_core::i18n::{tr, trf};
+use torro_core::settings::{AllowedFolder, FolderAccess};
+use torro_ipc::Response;
+
+use crate::client_setup::BACKUP_SUFFIX;
+
+/// A path in a request is at most this many bytes (as the setting `allowed_folder` takes it).
+pub const MAX_PATH_BYTES: usize = 4096;
+
+/// The name a new entry gets (the last part of a new path) is at most this many bytes, what Linux and APFS take.
+pub const MAX_NAME_BYTES: usize = 255;
+
+/// Why a command of the tool `files` cannot run; [`FolderError::response`] is its answer, for people and without a
+/// path or name from the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FolderError {
+    /// `error`: the request cannot work as given (a path that is not absolute, has `.` or `..` parts, a name too
+    /// long, a file where a folder is needed …); the English message.
+    Invalid(&'static str),
+    /// `not-found`: outside the allowed folders, missing, or locked.
+    NotFound,
+    /// `forbidden`: writing where only reading is allowed, or moving what is or holds an allowed folder or
+    /// something locked; the English message.
+    Forbidden(&'static str),
+    /// `unsupported`: copying a folder or a link, moving a folder or a link to another drive; the English message.
+    Unsupported(&'static str),
+    /// `error`: the system does not let the core in (`ErrorKind::PermissionDenied`), on macOS mostly until a person
+    /// allows it under Privacy & Security › Files and Folders.
+    Denied,
+    /// `error`: the system failed otherwise; what failed, from a fixed set ([`Failure`]), never a path or the
+    /// system's own text.
+    Failed(Failure),
+}
+
+impl FolderError {
+    /// The answer to the client: a fixed code and a message in the suite's language.
+    pub fn response(&self) -> Response {
+        let (code, message) = match self {
+            FolderError::Invalid(message) => ("error", tr(message).to_string()),
+            FolderError::NotFound => ("not-found", tr("No such file or folder in the allowed folders.").to_string()),
+            FolderError::Forbidden(message) => ("forbidden", tr(message).to_string()),
+            FolderError::Unsupported(message) => ("unsupported", tr(message).to_string()),
+            FolderError::Denied => ("error", tr(DENIED).to_string()),
+            FolderError::Failed(failure) => {
+                ("error", trf("The files cannot be changed: {reason}", &[("reason", &failure.text())]))
+            }
+        };
+        Response::Error { code: code.into(), message }
+    }
+
+    /// The error for `err` from the system: `not-found` for a path that is gone, [`FolderError::Denied`] when the
+    /// system does not let the core in, else its kind.
+    pub fn of_io(err: &io::Error) -> FolderError {
+        match err.kind() {
+            io::ErrorKind::NotFound => FolderError::NotFound,
+            io::ErrorKind::PermissionDenied => FolderError::Denied,
+            kind => FolderError::Failed(Failure::of_kind(kind)),
+        }
+    }
+}
+
+/// What failed when the system refused a change ([`FolderError::Failed`]): a small fixed set, so the answer says it
+/// in the suite's language ([`Failure::text`]) and never passes on the system's own text, which may name a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    /// The entry was gone.
+    NotFound,
+    /// The system did not allow it.
+    NoPermission,
+    /// The drive (or the quota on it) is full.
+    DriveFull,
+    /// The system's trash did not take the entry.
+    TrashRefused,
+    /// A root folder (`/`, a drive) cannot go to the trash.
+    RootFolder,
+    /// The entry could not be reached (resolved or opened) by the system's trash.
+    NotReachable,
+    /// Anything else.
+    Other,
+}
+
+impl Failure {
+    /// The failure for an error of the system of `kind`.
+    pub fn of_kind(kind: io::ErrorKind) -> Failure {
+        match kind {
+            io::ErrorKind::NotFound => Failure::NotFound,
+            io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => Failure::NoPermission,
+            io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => Failure::DriveFull,
+            _ => Failure::Other,
+        }
+    }
+
+    /// What failed, for people, in the suite's language: the `{reason}` of "The files cannot be changed: {reason}".
+    pub fn text(self) -> &'static str {
+        tr(match self {
+            Failure::NotFound => "not found",
+            Failure::NoPermission => "no permission",
+            Failure::DriveFull => "the drive is full",
+            Failure::TrashRefused => "the trash refused it",
+            Failure::RootFolder => "a root folder cannot go to the trash",
+            Failure::NotReachable => "not reachable",
+            Failure::Other => "another error",
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+const DENIED: &str = "The system does not let Torro Workplace in there. Allow it under System Settings › Privacy & \
+                      Security › Files and Folders.";
+#[cfg(not(target_os = "macos"))]
+const DENIED: &str = "The system does not let Torro Workplace in there.";
+
+const BAD_PATH: &str = "Give a full path of one line, without . or .. parts.";
+const NO_NAME: &str = "Give the new path with a name at its end.";
+const LONG_NAME: &str = "A name may be at most 255 bytes long.";
+/// A name with a colon on Windows, where it names a stream of an entry (`file.txt:hidden`), also of a locked one.
+#[cfg(windows)]
+const COLON: &str = "A name may not contain a colon.";
+
+/// The trash folders of the systems, locked by name wherever they are and in any case ([`Allowed::is_locked`]): at
+/// the top of a drive on Linux (`.Trash`, beside `.Trash-<user number>`), on macOS and on Windows. The `trash` crate
+/// puts there what is deleted on that drive.
+pub const TRASH_FOLDERS: [&str; 3] = [".Trash", ".Trashes", "$Recycle.Bin"];
+/// Writing in a folder with `read` access.
+pub const READ_ONLY: &str =
+    "The tools may only read in this folder; a person can allow more in the assistant's settings.";
+/// Moving (in WD.3 trashing) what is or holds an allowed folder or something locked.
+pub const PROTECTED: &str = "This is or holds an allowed folder or files the suite protects; it stays where it is.";
+
+/// The folders a person allowed, resolved as they are now, and what stays locked inside them. Made for each command
+/// from the settings of now ([`Allowed::of`]), so a folder added, removed or mounted counts at once.
+#[derive(Debug, Clone, Default)]
+pub struct Allowed {
+    /// The allowed folders that exist, resolved, with their access, in the order of the settings.
+    roots: Vec<(PathBuf, FolderAccess)>,
+    /// The parts of each of `roots`, in lower case, in the same order.
+    folded_roots: Vec<Vec<String>>,
+    /// The parts of each locked path in lower case: as given, with its folder resolved but its last part kept (a
+    /// locked file may be a symbolic link: the link itself stays locked, as [`Allowed::entry`] names it), and resolved
+    /// as far as it exists.
+    locked: Vec<Vec<String>>,
+    /// Each locked path with its folder resolved as far as it exists, its last part kept, and resolved as far as it
+    /// exists, as paths: what [`Allowed::hits_a_lock`] asks the system about.
+    lock_paths: Vec<PathBuf>,
+}
+
+impl Allowed {
+    /// The allowed `folders` resolved with `fs::canonicalize`: a folder that does not exist (a drive not mounted) or
+    /// is no folder falls away, and so does every path that is not absolute – checked before resolving, since the
+    /// settings file is not checked again when it is read, and a relative path would be resolved from the core's
+    /// working directory. `excluded` are the paths locked whatever folder holds them ([`super::Roots::excluded`]).
+    pub fn of(folders: &[AllowedFolder], excluded: &[PathBuf]) -> Allowed {
+        let roots: Vec<(PathBuf, FolderAccess)> = folders
+            .iter()
+            .filter(|folder| folder.check().is_ok())
+            .filter_map(|folder| Some((fs::canonicalize(&folder.path).ok()?, folder.access)))
+            .filter(|(root, _)| root.is_dir())
+            .collect();
+        let folded_roots = roots.iter().map(|(root, _)| folded(root)).collect();
+        let mut lock_paths: Vec<PathBuf> =
+            excluded.iter().flat_map(|path| [as_entry(path), resolved_far(path)]).collect();
+        lock_paths.dedup();
+        let locked =
+            excluded.iter().map(|path| folded(path)).chain(lock_paths.iter().map(|path| folded(path))).collect();
+        Allowed { roots, folded_roots, locked, lock_paths }
+    }
+
+    /// The allowed folders that exist, resolved, with their access, in the order of the settings (also for the
+    /// document tools of #303).
+    pub fn roots(&self) -> &[(PathBuf, FolderAccess)] {
+        &self.roots
+    }
+
+    /// `path` from a request resolved whole, following symbolic links, when it exists in an allowed folder whose
+    /// access covers `need` and is not locked: what listing, finding and an existing target folder take.
+    /// `error` for a path that is not absolute or has `.` or `..` parts, `not-found` outside, missing or locked,
+    /// `forbidden` for [`FolderAccess::ReadWrite`] in a `read` folder, [`FolderError::Denied`] when the system does
+    /// not let the core in.
+    pub fn existing(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
+        let given = checked(path)?;
+        let resolved = fs::canonicalize(&given).map_err(|err| self.missing(&given, &err))?;
+        self.within(&resolved, need)?;
+        Ok(resolved)
+    }
+
+    /// `path` from a request with only its folder resolved and its last part kept as it is: the entry itself, also
+    /// when it is a symbolic link (moving one moves the link, not what it points to; the source of a copy must be a
+    /// file, not a link). Its last part is taken as its folder stores it ([`stored_name`]): the system finds `.ssh`
+    /// also as `.ſsh` or `.SSH` on macOS and Windows, and a file stored decomposed (`Rechnung März.pdf` as macOS
+    /// often keeps it) under the composed name a client writes back. The answer has the stored name, and the locks,
+    /// the innermost folder and everything after go by it: `.ſsh` is `.ssh`, locked. The bounds are checked with the
+    /// name as given before the folder is read, so the core never reads a folder outside them or a locked one (on
+    /// macOS that could make the system ask the person), and again with the stored name. `not-found` when the folder
+    /// holds no such entry; on Windows `error` for a name with a colon. The other rules are those of
+    /// [`Allowed::existing`].
+    pub fn entry(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
+        let given = checked(path)?;
+        let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else { return Err(FolderError::NotFound) };
+        #[cfg(windows)]
+        if name.to_string_lossy().contains(':') {
+            return Err(FolderError::Invalid(COLON));
+        }
+        let parent = fs::canonicalize(parent).map_err(|err| self.missing(parent, &err))?;
+        let entry = parent.join(name);
+        self.within(&entry, need)?;
+        // An allowed folder is resolved and so already as stored; its own folder may be outside them all.
+        if self.roots.iter().any(|(root, _)| *root == entry) {
+            return Ok(entry);
+        }
+        let stored = match stored_name(&parent, name) {
+            Ok(Some(stored)) => stored,
+            Ok(None) => return Err(FolderError::NotFound),
+            Err(err) => return Err(self.missing(&entry, &err)),
+        };
+        let entry = parent.join(stored);
+        self.within(&entry, need)?;
+        Ok(entry)
+    }
+
+    /// `path` from a request as a new entry: its folder must exist and is resolved, its last part is a plain name of
+    /// at most [`MAX_NAME_BYTES`] bytes (`error` otherwise; on Windows also for a name with a colon, which would make
+    /// a stream of an existing entry). Whether something of that name is there already is the command's to see (it
+    /// then picks a free name), and so is whether the system finds what it made under a locked path
+    /// ([`Allowed::hits_a_lock`]). The other rules are those of [`Allowed::existing`].
+    pub fn new_target(&self, path: &str, need: FolderAccess) -> Result<PathBuf, FolderError> {
+        let given = checked(path)?;
+        let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else {
+            return Err(FolderError::Invalid(NO_NAME));
+        };
+        if name.len() > MAX_NAME_BYTES {
+            return Err(FolderError::Invalid(LONG_NAME));
+        }
+        #[cfg(windows)]
+        if name.to_string_lossy().contains(':') {
+            return Err(FolderError::Invalid(COLON));
+        }
+        let parent = fs::canonicalize(parent).map_err(|err| self.missing(parent, &err))?;
+        let target = parent.join(name);
+        self.within(&target, need)?;
+        Ok(target)
+    }
+
+    /// Whether the resolved path `resolved` may be reached with `need`: not locked ([`Allowed::is_locked`]) and in
+    /// an allowed folder (`not-found` otherwise), whose access – the innermost folder's – covers `need`
+    /// (`forbidden` otherwise). For paths the other methods resolved, joined with a name from the disk.
+    pub fn within(&self, resolved: &Path, need: FolderAccess) -> Result<(), FolderError> {
+        if self.is_locked(resolved) {
+            return Err(FolderError::NotFound);
+        }
+        let access = self.access_at(resolved).ok_or(FolderError::NotFound)?;
+        match (need, access) {
+            (FolderAccess::ReadWrite, FolderAccess::Read) => Err(FolderError::Forbidden(READ_ONLY)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether `path` is locked: in or one of the `excluded` paths, or with a part that ends in [`BACKUP_SUFFIX`] or is
+    /// a trash folder ([`is_trash_folder`]), compared without regard to case. Listing and finding leave such entries
+    /// out.
+    pub fn is_locked(&self, path: &Path) -> bool {
+        let parts = folded(path);
+        parts.iter().any(|part| part.ends_with(BACKUP_SUFFIX) || is_trash_folder(part))
+            || self.locked.iter().any(|lock| parts.starts_with(lock))
+    }
+
+    /// Whether the system now finds a locked path in `made`, an entry a command has just made or moved there under
+    /// a name of the request: on macOS and Windows `~/.cursor/mcp.jſon` is found as the locked `~/.cursor/mcp.json`
+    /// that was missing, and `~/.ſsh` as `~/.ssh`. True when a locked path (as [`Allowed::of`] resolved it, in every
+    /// form) not named below `made` is `made` itself – the same entry ([`identity`]) – or the longest part of it that
+    /// exists resolves to `made` or into it; and when its folder finds `made` under a trash folder's name. Then the
+    /// command takes the entry back and answers `not-found`. No table of spellings: the system decides. An entry that
+    /// becomes an allowed folder that was missing is harmless, so only the locks are looked at. On a system other than
+    /// Unix a link has no identity here, and a link made there is never found to hit a lock.
+    pub fn hits_a_lock(&self, made: &Path) -> bool {
+        let Some(id) = identity(made, false) else { return false };
+        let folded_made = folded(made);
+        // A lock named below `made` is locked by its name already, also in another case (`~/.cursor` made when
+        // `~/.cursor/mcp.json` is locked): such an entry is fine.
+        let by_path = self
+            .lock_paths
+            .iter()
+            .filter(|lock| !folded(lock).starts_with(&folded_made))
+            .any(|lock| identity(lock, false).as_ref() == Some(&id) || resolves_into(lock, &id));
+        by_path || found_as_trash(made, &id)
+    }
+
+    /// Whether moving (or trashing) the entry `entry` would take along an allowed folder or something locked: it is
+    /// one or holds one, compared without regard to case. Such a command is `forbidden` ([`PROTECTED`]).
+    pub fn holds_protected(&self, entry: &Path) -> bool {
+        let parts = folded(entry);
+        self.locked.iter().chain(&self.folded_roots).any(|inner| inner.starts_with(&parts))
+    }
+
+    /// The access of the innermost allowed folder that holds `path`, `None` outside them all. A path counts as inside
+    /// only when it starts with a resolved folder as it is; which folder is the innermost is decided without regard
+    /// to case, and of two the same `read` wins: a request in another case must not slip past an inner `read`
+    /// folder on a system that does not tell cases apart.
+    fn access_at(&self, path: &Path) -> Option<FolderAccess> {
+        if !self.roots.iter().any(|(root, _)| path.starts_with(root)) {
+            return None;
+        }
+        let parts = folded(path);
+        self.folded_roots
+            .iter()
+            .zip(&self.roots)
+            .filter(|(root, _)| parts.starts_with(root))
+            .max_by_key(|(root, (_, access))| (root.len(), Reverse(*access)))
+            .map(|(_, (_, access))| *access)
+    }
+
+    /// The error for `path` that the system could not resolve: [`FolderError::Denied`] when it refused the core a
+    /// path in an allowed folder, else `not-found` – also when it refused one outside, which is nobody's business, and
+    /// one that is locked: the lock is looked at first, so the answer never tells that a locked path is there.
+    fn missing(&self, path: &Path, err: &io::Error) -> FolderError {
+        let resolved = resolved_far(path);
+        if self.is_locked(path) || self.is_locked(&resolved) {
+            return FolderError::NotFound;
+        }
+        match err.kind() {
+            io::ErrorKind::PermissionDenied if self.access_at(&resolved).is_some() => FolderError::Denied,
+            _ => FolderError::NotFound,
+        }
+    }
+}
+
+/// The system's key stores and other known stores of credentials below `home`, locked for the tool `files` whatever
+/// folder holds them (decision 31): `~/.ssh`, `~/.gnupg`, the system's own (`~/Library/Keychains` on macOS, the
+/// keyrings and KWallet on Linux, the credentials and the protected keys of Windows), the files of cloud, GitHub,
+/// container and package registry tools that hold tokens, the password store `pass`, the browsers' profiles
+/// (cookies and saved passwords) and the system's trash in the home (`~/.Trash` on macOS, `~/.local/share/Trash` on
+/// Linux): the `trash` crate copies across drives following links, so a key could lie there whole, and an agent has
+/// no business looking through what a person threw away. Each is locked with all it holds. The trash folders on other
+/// drives are locked by their names ([`TRASH_FOLDERS`]).
+pub fn key_stores(home: &Path) -> Vec<PathBuf> {
+    let mut stores = vec![home.join(".ssh"), home.join(".gnupg")];
+    stores.extend(
+        [
+            ".aws",
+            ".azure",
+            ".config/gcloud",
+            ".config/gh",
+            ".kube",
+            ".docker/config.json",
+            ".netrc",
+            ".git-credentials",
+            ".password-store",
+            ".npmrc",
+            ".pypirc",
+            ".cargo/credentials.toml",
+            ".cargo/credentials",
+        ]
+        .iter()
+        .map(|store| in_home(home, store)),
+    );
+    #[cfg(target_os = "macos")]
+    {
+        stores.push(home.join("Library").join("Keychains"));
+        let support = home.join("Library").join("Application Support");
+        let browsers = ["Google/Chrome", "Chromium", "BraveSoftware", "Microsoft Edge", "Firefox"];
+        stores.extend(browsers.iter().map(|browser| in_home(&support, browser)));
+        stores.push(home.join("Library").join("Safari"));
+        stores.push(home.join("Library").join("Cookies"));
+        stores.push(home.join(".Trash"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        stores.push(home.join(".local").join("share").join("keyrings"));
+        stores.extend(dirs::data_dir().map(|data| data.join("keyrings")));
+        stores.push(home.join(".local").join("share").join("kwalletd"));
+        stores.push(home.join(".local").join("share").join("Trash"));
+        stores.extend(dirs::data_dir().map(|data| data.join("Trash")));
+        stores.push(home.join(".mozilla"));
+        let browsers = ["google-chrome", "chromium", "BraveSoftware", "microsoft-edge"];
+        stores.extend(browsers.iter().map(|browser| home.join(".config").join(browser)));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let roaming = dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming"));
+        let local = dirs::data_local_dir().unwrap_or_else(|| home.join("AppData").join("Local"));
+        stores.push(roaming.join("Microsoft").join("Credentials"));
+        stores.push(local.join("Microsoft").join("Credentials"));
+        stores.push(roaming.join("Microsoft").join("Protect"));
+        // GitHub CLI and gcloud keep their tokens in `%APPDATA%` there, not in `~/.config`.
+        stores.push(roaming.join("GitHub CLI"));
+        stores.push(roaming.join("gcloud"));
+        stores.push(local.join("Google").join("Chrome").join("User Data"));
+        stores.push(local.join("Microsoft").join("Edge").join("User Data"));
+        stores.push(local.join("BraveSoftware"));
+        stores.push(roaming.join("Mozilla").join("Firefox"));
+    }
+    stores
+}
+
+/// Whether `folder` holds an entry stored under exactly `name`, byte for byte (`OsStr` equality): not one the system
+/// would also find under `name` in another case, Unicode form or short name. For [`Allowed::entry`] and to tell a
+/// rename of only the spelling (`organize`).
+pub(super) fn holds_name(folder: &Path, name: &OsStr) -> io::Result<bool> {
+    for item in fs::read_dir(folder)? {
+        if item?.file_name() == name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The name `folder` stores the entry under that the system finds there as `name`: `name` itself when an entry is
+/// stored under exactly that ([`holds_name`]), else the entry that is the same ([`identity`]) – the system finds `.ssh`
+/// also as `.ſsh`, a name stored decomposed also composed. `None` when the folder holds no such entry, and on a system
+/// other than Unix when it is a link (a link has no identity there).
+fn stored_name(folder: &Path, name: &OsStr) -> io::Result<Option<OsString>> {
+    if holds_name(folder, name)? {
+        return Ok(Some(name.to_os_string()));
+    }
+    let Some(wanted) = identity(&folder.join(name), false) else { return Ok(None) };
+    for item in fs::read_dir(folder)? {
+        let item = item?;
+        if identity(&item.path(), false).as_ref() == Some(&wanted) {
+            return Ok(Some(item.file_name()));
+        }
+    }
+    Ok(None)
+}
+
+/// What tells two paths of one entry from two entries: on Unix its drive and number.
+#[cfg(unix)]
+pub(super) type Identity = (u64, u64);
+/// What tells two paths of one entry from two entries: elsewhere its resolved path, as stored (`canonicalize`).
+#[cfg(not(unix))]
+pub(super) type Identity = PathBuf;
+
+/// The identity of the entry at `path`; with `follow` of what a link at its end points to, else of the link itself.
+/// `None` when nothing is there, and on a system other than Unix for a link itself: its resolved path is where it
+/// points.
+pub(super) fn identity(path: &Path, follow: bool) -> Option<Identity> {
+    let meta = match follow {
+        true => fs::metadata(path),
+        false => fs::symlink_metadata(path),
+    }
+    .ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+        fs::canonicalize(path).ok()
+    }
+}
+
+/// Whether the longest part of `lock` that exists (following links, as the system does when it opens `lock`)
+/// resolves to the entry `id` or into it.
+fn resolves_into(lock: &Path, id: &Identity) -> bool {
+    let Some(resolved) = lock.ancestors().find_map(|part| fs::canonicalize(part).ok()) else { return false };
+    resolved.ancestors().any(|part| identity(part, true).as_ref() == Some(id))
+}
+
+/// Whether the folder of `made`, whose identity is `id`, finds it under the name of a trash folder it is not stored
+/// under (`.Traſhes` as `.Trashes`, `.Traſh-1000` as `.Trash-1000`): it would take what is deleted on that drive.
+fn found_as_trash(made: &Path, id: &Identity) -> bool {
+    let (Some(folder), Some(name)) = (made.parent(), made.file_name().and_then(OsStr::to_str)) else { return false };
+    let number = &name[name.trim_end_matches(|c: char| c.is_ascii_digit()).len()..];
+    let mut names: Vec<String> = TRASH_FOLDERS.iter().map(|trash| trash.to_string()).collect();
+    if !number.is_empty() {
+        names.push(format!(".Trash-{number}"));
+    }
+    names
+        .iter()
+        .filter(|trash| trash.as_str() != name)
+        .any(|trash| identity(&folder.join(trash), false).as_ref() == Some(id))
+}
+
+/// Whether `part`, in lower case, is the name of a trash folder: one of [`TRASH_FOLDERS`] or `.Trash-` with the
+/// number of a user (freedesktop, at the top of a drive).
+fn is_trash_folder(part: &str) -> bool {
+    TRASH_FOLDERS.iter().any(|trash| trash.eq_ignore_ascii_case(part))
+        || part
+            .strip_prefix(".trash-")
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `relative` (parts separated by `/`) below `base`, joined part by part so it has the system's separators.
+fn in_home(base: &Path, relative: &str) -> PathBuf {
+    relative.split('/').fold(base.to_path_buf(), |path, part| path.join(part))
+}
+
+/// `path` from a request as a path, when it is one the tool takes: absolute, at most [`MAX_PATH_BYTES`] bytes,
+/// without control characters and without `.` or `..` parts. `Path::components` drops a `.` inside a path, so the
+/// parts are read from the text as well.
+fn checked(path: &str) -> Result<PathBuf, FolderError> {
+    let dotted = path.split(std::path::is_separator).any(|part| part == "." || part == "..");
+    let given = PathBuf::from(path);
+    let parts_ok = given.components().all(|part| !matches!(part, Component::CurDir | Component::ParentDir));
+    match path.len() <= MAX_PATH_BYTES && !path.chars().any(char::is_control) && !dotted && parts_ok {
+        true if given.is_absolute() => Ok(given),
+        _ => Err(FolderError::Invalid(BAD_PATH)),
+    }
+}
+
+/// `path` resolved as far as it exists: the longest existing beginning resolved, the rest joined as it is. For locked
+/// paths that do not exist (yet), and to tell where a path the system refused would be.
+fn resolved_far(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut base = path;
+    loop {
+        if let Ok(resolved) = fs::canonicalize(base) {
+            return rest.iter().rev().fold(resolved, |joined, name| joined.join(name));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                base = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// `path` with its folder resolved as far as it exists and its last part kept: how [`Allowed::entry`] names a link.
+fn as_entry(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => resolved_far(parent).join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// The parts of `path` in lower case, for comparisons that do not regard case.
+fn folded(path: &Path) -> Vec<String> {
+    path.components().map(|part| part.as_os_str().to_string_lossy().to_lowercase()).collect()
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use torro_ipc::Request;
+
+    use super::*;
+
+    /// A temporary folder `home` with `Documents` (read and write) and in it `Documents/Private` (read only), and a
+    /// folder `outside` next to `home` that no allowed folder holds.
+    pub(crate) struct Place {
+        pub(crate) dir: tempfile::TempDir,
+    }
+
+    impl Place {
+        pub(crate) fn new() -> Place {
+            let dir = tempfile::tempdir().expect("temp dir");
+            for folder in ["home/Documents/Private", "outside"] {
+                fs::create_dir_all(dir.path().join(folder)).expect("made");
+            }
+            Place { dir }
+        }
+
+        /// `relative` below the temporary folder, as a string for a request.
+        pub(crate) fn path(&self, relative: &str) -> String {
+            self.dir.path().join(relative).to_string_lossy().into_owned()
+        }
+
+        pub(crate) fn folders(&self) -> Vec<AllowedFolder> {
+            vec![
+                AllowedFolder { path: self.path("home/Documents"), access: FolderAccess::ReadWrite },
+                AllowedFolder { path: self.path("home/Documents/Private"), access: FolderAccess::Read },
+            ]
+        }
+
+        pub(crate) fn allowed(&self) -> Allowed {
+            Allowed::of(&self.folders(), &[])
+        }
+    }
+
+    fn code(err: &FolderError) -> String {
+        match err.response() {
+            Response::Error { code, .. } => code,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dots_relative_paths_and_control_characters_are_errors() {
+        let place = Place::new();
+        let allowed = place.allowed();
+        let docs = place.path("home/Documents");
+        let sep = std::path::MAIN_SEPARATOR;
+        for path in [
+            format!("{docs}{sep}..{sep}Documents"),
+            format!("{docs}{sep}.{sep}Private"),
+            format!("{docs}{sep}."),
+            "Documents".to_string(),
+            "./Documents".to_string(),
+            String::new(),
+            format!("{docs}{sep}a\nb"),
+            format!("{docs}{sep}{}", "a".repeat(MAX_PATH_BYTES)),
+        ] {
+            for err in [
+                allowed.existing(&path, FolderAccess::Read).expect_err("refused"),
+                allowed.entry(&path, FolderAccess::Read).expect_err("refused"),
+                allowed.new_target(&path, FolderAccess::Read).expect_err("refused"),
+            ] {
+                assert_eq!(code(&err), "error", "{path:?}");
+            }
+        }
+        // A name that is too long for any system.
+        let long = format!("{docs}{sep}{}", "a".repeat(MAX_NAME_BYTES + 1));
+        assert_eq!(allowed.new_target(&long, FolderAccess::ReadWrite), Err(FolderError::Invalid(LONG_NAME)));
+        let fits = format!("{docs}{sep}{}", "a".repeat(MAX_NAME_BYTES));
+        assert!(allowed.new_target(&fits, FolderAccess::ReadWrite).is_ok());
+    }
+
+    /// The settings file is not checked again when read: a relative folder written there by hand falls away before
+    /// it is resolved, so it is never taken from the core's working directory (where `src` exists in tests).
+    #[test]
+    fn a_relative_folder_in_the_settings_falls_away_before_it_is_resolved() {
+        assert!(Path::new("src").is_dir(), "the crate's folder is the tests' working directory");
+        let relative = [AllowedFolder { path: "src".into(), access: FolderAccess::ReadWrite }];
+        assert!(Allowed::of(&relative, &[]).roots().is_empty());
+    }
+
+    #[test]
+    fn a_missing_folder_falls_away_and_outside_is_not_found() {
+        let place = Place::new();
+        let mut folders = place.folders();
+        folders.push(AllowedFolder { path: place.path("not mounted"), access: FolderAccess::ReadWrite });
+        fs::write(place.dir.path().join("home/file"), b"x").expect("written");
+        folders.push(AllowedFolder { path: place.path("home/file"), access: FolderAccess::ReadWrite });
+        let allowed = Allowed::of(&folders, &[]);
+        assert_eq!(allowed.roots().len(), 2, "only the folders that exist");
+        assert_eq!(allowed.roots()[0].0, fs::canonicalize(place.path("home/Documents")).expect("resolved"));
+        for path in [place.path("outside"), place.path("home"), place.path("home/Documents/missing")] {
+            assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+            assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+        }
+        assert_eq!(allowed.new_target(&place.path("outside/new"), FolderAccess::Read), Err(FolderError::NotFound));
+        assert_eq!(
+            allowed.new_target(&place.path("home/Documents/a/b"), FolderAccess::Read),
+            Err(FolderError::NotFound)
+        );
+        assert!(allowed.existing(&place.path("home/Documents"), FolderAccess::Read).is_ok());
+    }
+
+    /// Decision 27: of folders one inside the other the innermost counts, `read` inside `read and write` and the
+    /// other way round.
+    #[test]
+    fn the_innermost_folder_counts() {
+        let place = Place::new();
+        fs::create_dir(place.dir.path().join("home/Documents/Private/Open")).expect("made");
+        let mut folders = place.folders();
+        folders
+            .push(AllowedFolder { path: place.path("home/Documents/Private/Open"), access: FolderAccess::ReadWrite });
+        let allowed = Allowed::of(&folders, &[]);
+        let need = FolderAccess::ReadWrite;
+        assert!(allowed.new_target(&place.path("home/Documents/new"), need).is_ok());
+        let in_private = allowed.new_target(&place.path("home/Documents/Private/new"), need);
+        assert_eq!(in_private, Err(FolderError::Forbidden(READ_ONLY)));
+        assert!(allowed.existing(&place.path("home/Documents/Private"), FolderAccess::Read).is_ok(), "reading is fine");
+        assert!(allowed.new_target(&place.path("home/Documents/Private/Open/new"), need).is_ok());
+        assert_eq!(code(&FolderError::Forbidden(READ_ONLY)), "forbidden");
+    }
+
+    /// The same folder in another case is still the inner `read` one: on macOS and Windows it is the same folder.
+    #[test]
+    fn the_inner_read_folder_holds_in_any_case() {
+        let place = Place::new();
+        let allowed = place.allowed();
+        let private = allowed.roots()[1].0.clone();
+        let other_case = private.with_file_name("PRIVATE").join("new");
+        // Whatever the system makes of the case, the folder in it is never written in.
+        assert!(allowed.within(&other_case, FolderAccess::ReadWrite).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_folder_is_outside_and_one_within_is_reached() {
+        let place = Place::new();
+        let docs = place.dir.path().join("home/Documents");
+        std::os::unix::fs::symlink(place.dir.path().join("outside"), docs.join("out")).expect("linked");
+        std::os::unix::fs::symlink(docs.join("Private"), docs.join("private link")).expect("linked");
+        let allowed = place.allowed();
+        assert_eq!(allowed.existing(&place.path("home/Documents/out"), FolderAccess::Read), Err(FolderError::NotFound));
+        let through = allowed.new_target(&place.path("home/Documents/out/new"), FolderAccess::ReadWrite);
+        assert_eq!(through, Err(FolderError::NotFound));
+        let within = allowed.existing(&place.path("home/Documents/private link"), FolderAccess::Read).expect("reached");
+        assert_eq!(within, fs::canonicalize(docs.join("Private")).expect("resolved"));
+        // The link to the inner folder does not make it writable.
+        let into = allowed.new_target(&place.path("home/Documents/private link/new"), FolderAccess::ReadWrite);
+        assert_eq!(into, Err(FolderError::Forbidden(READ_ONLY)));
+        // The link itself is an entry in the folder, wherever it points.
+        let link = allowed.entry(&place.path("home/Documents/out"), FolderAccess::ReadWrite).expect("the link");
+        assert_eq!(link.file_name().and_then(|name| name.to_str()), Some("out"));
+    }
+
+    /// Decision 31: the suite's folders are locked inside an allowed folder, also in another case, and so are the
+    /// backups next to a client's file; the files with client keys and hooks too, and moving what holds one is
+    /// `forbidden`.
+    #[test]
+    fn the_suites_folders_and_backups_are_locked() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        let suite = home.join("Library/Application Support/torroworkplace");
+        fs::create_dir_all(&suite).expect("made");
+        fs::write(suite.join("clients.json"), b"{}").expect("written");
+        fs::write(home.join(".claude.json"), b"{}").expect("written");
+        fs::write(home.join(format!(".claude.json{BACKUP_SUFFIX}")), b"{}").expect("written");
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &[suite.clone(), home.join(".claude.json")]);
+        for path in [
+            "home/Library/Application Support/torroworkplace",
+            "home/Library/Application Support/torroworkplace/clients.json",
+            "home/.claude.json",
+            "home/.claude.json.torroworkplace-backup",
+        ] {
+            let path = place.path(path);
+            assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+            assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+        }
+        let new = place.path("home/Library/Application Support/torroworkplace/new.json");
+        assert_eq!(allowed.new_target(&new, FolderAccess::ReadWrite), Err(FolderError::NotFound));
+        let backup = place.path("home/x.TorroWorkplace-Backup");
+        assert_eq!(allowed.new_target(&backup, FolderAccess::ReadWrite), Err(FolderError::NotFound));
+        // In another case: the same folder on macOS and Windows.
+        let resolved = fs::canonicalize(&home).expect("resolved");
+        let shouted = resolved.join("LIBRARY/application support/TorroWorkplace/clients.json");
+        assert!(allowed.is_locked(&shouted));
+        assert_eq!(allowed.within(&shouted, FolderAccess::Read), Err(FolderError::NotFound));
+        // Moving what holds them: forbidden, and so the allowed folder itself.
+        assert!(allowed.holds_protected(&resolved.join("Library")));
+        assert!(allowed.holds_protected(&resolved.join("library")));
+        assert!(allowed.holds_protected(&resolved), "the allowed folder itself");
+        assert!(!allowed.holds_protected(&resolved.join("Documents")));
+    }
+
+    /// Decision 31: with the whole home allowed, the files that carry client keys and hooks
+    /// ([`crate::client_setup::protected_files`]) and their backups are not found, and listing leaves them out; the
+    /// program the hooks start neither, and the folder that holds it is not moved (review of issue #304).
+    #[test]
+    fn the_client_files_are_locked_in_an_allowed_home() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        let env = crate::client_setup::Env {
+            home: home.clone(),
+            app_config: home.join(".config"),
+            path: Vec::new(),
+            program: home.join(".local/bin/torroworkplace"),
+            config_dir: place.dir.path().join("config"),
+        };
+        fs::create_dir_all(home.join(".local/bin")).expect("made");
+        fs::write(&env.program, b"#!").expect("written");
+        fs::create_dir_all(home.join(".claude")).expect("made");
+        for file in
+            [".claude.json", ".claude/settings.json", ".claude/other.json", &format!(".claude.json{BACKUP_SUFFIX}")]
+        {
+            fs::write(home.join(file), b"{}").expect("written");
+        }
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &crate::client_setup::protected_files(&env));
+        for locked in [
+            "home/.claude.json",
+            "home/.claude/settings.json",
+            "home/.claude.json.torroworkplace-backup",
+            "home/.local/bin/torroworkplace",
+        ] {
+            assert_eq!(allowed.entry(&place.path(locked), FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+        }
+        assert!(allowed.existing(&place.path("home/.claude/other.json"), FolderAccess::Read).is_ok());
+        for holder in ["home/.claude", "home/.local/bin"] {
+            let moved = Request::MoveFile { from: place.path(holder), to: place.path("home/Documents") };
+            assert_eq!(
+                super::super::organize::plan(&allowed, &moved),
+                Err(FolderError::Forbidden(PROTECTED)),
+                "{holder}"
+            );
+        }
+        let list = Request::ListFolder { path: Some(place.path("home")) };
+        let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
+            panic!("listed")
+        };
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, [".claude", ".local", "Documents"], "the locked files left out");
+    }
+
+    /// Issue #304 (plan): a locked file that is a symbolic link stays locked as a link too, not only where it
+    /// points.
+    #[cfg(unix)]
+    #[test]
+    fn a_locked_link_is_locked_itself() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        fs::write(home.join("dotfile"), b"{}").expect("written");
+        std::os::unix::fs::symlink(home.join("dotfile"), home.join(".claude.json")).expect("linked");
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &[home.join(".claude.json")]);
+        let link = place.path("home/.claude.json");
+        assert_eq!(allowed.entry(&link, FolderAccess::ReadWrite), Err(FolderError::NotFound));
+        assert_eq!(allowed.existing(&place.path("home/dotfile"), FolderAccess::Read), Err(FolderError::NotFound));
+    }
+
+    #[test]
+    fn the_key_stores_are_below_home() {
+        let home = Path::new("/home/anna");
+        let stores = key_stores(home);
+        assert!(stores.contains(&home.join(".ssh")) && stores.contains(&home.join(".gnupg")));
+        #[cfg(target_os = "macos")]
+        assert!(stores.contains(&home.join("Library/Keychains")));
+        #[cfg(target_os = "linux")]
+        assert!(stores.contains(&home.join(".local/share/keyrings")));
+        for store in [".aws", ".config/gcloud", ".config/gh", ".kube", ".docker/config.json", ".git-credentials"] {
+            assert!(stores.contains(&home.join(store)), "{store}");
+        }
+        assert!(stores.contains(&home.join(".cargo").join("credentials.toml")));
+        #[cfg(target_os = "macos")]
+        for profile in
+            ["Library/Application Support/Google/Chrome", "Library/Application Support/Firefox", "Library/Safari"]
+        {
+            assert!(stores.contains(&home.join(profile)), "{profile}");
+        }
+        #[cfg(target_os = "linux")]
+        for profile in [".mozilla", ".config/google-chrome", ".local/share/kwalletd"] {
+            assert!(stores.contains(&home.join(profile)), "{profile}");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let roaming = dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming"));
+            for store in ["GitHub CLI", "gcloud"] {
+                assert!(stores.contains(&roaming.join(store)), "{store}");
+            }
+        }
+    }
+
+    /// API review of issue #304: with the whole home allowed, the stores of credentials beyond the system's key
+    /// stores (here `~/.aws`) are not found, what they hold neither, and listing leaves them out.
+    #[test]
+    fn more_credential_stores_are_locked_in_an_allowed_home() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        fs::create_dir_all(home.join(".aws")).expect("made");
+        fs::write(home.join(".aws/credentials"), b"[default]").expect("written");
+        fs::write(home.join(".netrc"), b"machine x").expect("written");
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &key_stores(&home));
+        for locked in ["home/.aws", "home/.aws/credentials", "home/.netrc"] {
+            let path = place.path(locked);
+            assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+            assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+            assert_eq!(code(&allowed.entry(&path, FolderAccess::Read).expect_err("locked")), "not-found");
+        }
+        let list = Request::ListFolder { path: Some(place.path("home")) };
+        let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
+            panic!("listed")
+        };
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["Documents"], "the stores left out");
+    }
+
+    /// API review of issue #304: a locked path the system does not let the core into answers `not-found` like any
+    /// locked path, never the `error` that would tell it is there; one that is not locked still says the system
+    /// refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_locked_path_the_system_refuses_is_not_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        for folder in ["Vault/inner", "Closed/inner"] {
+            fs::create_dir_all(home.join(folder)).expect("made");
+        }
+        let closed = |folder: &str, mode: u32| {
+            fs::set_permissions(home.join(folder), fs::Permissions::from_mode(mode)).expect("permissions set");
+        };
+        closed("Vault", 0o000);
+        closed("Closed", 0o000);
+        // Run as root, the system lets the core in anyway: nothing to see then.
+        let refused = fs::read_dir(home.join("Closed")).is_err();
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &[home.join("Vault")]);
+        let results = |folder: &str| {
+            let path = place.path(&format!("home/{folder}/inner"));
+            [
+                allowed.existing(&path, FolderAccess::Read),
+                allowed.entry(&path, FolderAccess::Read),
+                allowed.new_target(&format!("{path}/new"), FolderAccess::ReadWrite),
+            ]
+        };
+        let (vault, open) = (results("Vault"), results("Closed"));
+        closed("Vault", 0o755);
+        closed("Closed", 0o755);
+        for result in vault {
+            assert_eq!(result, Err(FolderError::NotFound));
+        }
+        if refused {
+            for result in open {
+                assert_eq!(result, Err(FolderError::Denied));
+            }
+        }
+    }
+
+    /// The name an entry is stored under: the one asked for when the folder holds exactly that, `None` when there is
+    /// no such entry.
+    #[test]
+    fn a_stored_name_is_the_one_asked_for() {
+        let place = Place::new();
+        let docs = fs::canonicalize(place.dir.path().join("home/Documents")).expect("resolved");
+        assert!(holds_name(&docs, OsStr::new("Private")).expect("listed"));
+        assert!(!holds_name(&docs, OsStr::new("private")).expect("listed"), "only byte for byte");
+        assert_eq!(stored_name(&docs, OsStr::new("Private")).expect("listed"), Some("Private".into()));
+        assert_eq!(stored_name(&docs, OsStr::new("missing")).expect("listed"), None);
+    }
+
+    /// Review of issue #304: the last part of an entry is taken as its folder stores it. APFS finds `.ssh` also as
+    /// `.ſsh` or `.SSH`, `.claude.json` as `.claude.jſon`, the inner "Read" folder `Verträge` decomposed and
+    /// `Documents` as `documents`: each resolves to the stored name, and so is locked, counts as "Read" or is found.
+    /// Taken as given, such a name would slip past the locks and the innermost folder.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_name_counts_as_stored() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        fs::create_dir_all(home.join(".ssh")).expect("made");
+        fs::write(home.join(".ssh/id_ed25519"), b"key").expect("written");
+        fs::write(home.join(".claude.json"), b"{}").expect("written");
+        fs::create_dir(home.join("Vertr\u{e4}ge")).expect("made");
+        if !home.join(".SSH").exists() {
+            return; // A drive that tells cases apart: no other spelling to find.
+        }
+        let folders = [
+            AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite },
+            AllowedFolder { path: place.path("home/Vertr\u{e4}ge"), access: FolderAccess::Read },
+        ];
+        let mut locked = key_stores(&home);
+        locked.push(home.join(".claude.json"));
+        let allowed = Allowed::of(&folders, &locked);
+        let resolved = fs::canonicalize(&home).expect("resolved");
+        assert_eq!(stored_name(&resolved, OsStr::new(".\u{17f}sh")).expect("listed"), Some(".ssh".into()));
+        let plan = |request: &Request| super::super::organize::plan(&allowed, request);
+        let to = place.path("home/Documents");
+        for spelling in [".\u{17f}sh", ".SSH", ".claude.j\u{17f}on"] {
+            let path = place.path(&format!("home/{spelling}"));
+            for need in [FolderAccess::Read, FolderAccess::ReadWrite] {
+                assert_eq!(allowed.entry(&path, need), Err(FolderError::NotFound), "{spelling:?}");
+            }
+            let moved = Request::MoveFile { from: path.clone(), to: to.clone() };
+            assert_eq!(plan(&moved), Err(FolderError::NotFound), "{spelling:?}");
+            let copied = Request::CopyFile { from: path.clone(), to: to.clone() };
+            assert_eq!(plan(&copied), Err(FolderError::NotFound), "{spelling:?}");
+            assert_eq!(plan(&Request::TrashFile { path }), Err(FolderError::NotFound), "{spelling:?}");
+        }
+        let decomposed = place.path("home/Vertra\u{308}ge");
+        let inner = allowed.entry(&decomposed, FolderAccess::Read);
+        assert_eq!(inner, Ok(resolved.join("Vertr\u{e4}ge")), "the inner folder as stored");
+        assert_eq!(allowed.entry(&decomposed, FolderAccess::ReadWrite), Err(FolderError::Forbidden(READ_ONLY)));
+        let moved = Request::MoveFile { from: decomposed.clone(), to: to.clone() };
+        assert_eq!(plan(&moved), Err(FolderError::Forbidden(READ_ONLY)), "counts as Read");
+        assert_eq!(plan(&Request::TrashFile { path: decomposed }), Err(FolderError::Forbidden(READ_ONLY)));
+        let docs = allowed.entry(&place.path("home/documents"), FolderAccess::ReadWrite);
+        assert_eq!(docs, Ok(resolved.join("Documents")), "found as stored");
+    }
+
+    /// Review of issue #304: the trash folders of other drives are locked by their names, anywhere and in any case;
+    /// listing and finding leave them out. A name only like one is not.
+    #[test]
+    fn the_trash_folders_of_every_drive_are_locked() {
+        let place = Place::new();
+        let docs = place.dir.path().join("home/Documents");
+        for trash in [".Trash-1000", ".Trashes", "$RECYCLE.BIN", ".trash"] {
+            fs::create_dir(docs.join(trash)).expect("made");
+            fs::write(docs.join(trash).join("id_ed25519"), b"key").expect("written");
+        }
+        for open in [".Trash-", ".Trash-10a", "Trash"] {
+            fs::create_dir(docs.join(open)).expect("made");
+        }
+        let allowed = place.allowed();
+        for trash in [".Trash-1000", ".Trashes", "$RECYCLE.BIN", ".trash"] {
+            for path in [format!("home/Documents/{trash}"), format!("home/Documents/{trash}/id_ed25519")] {
+                let path = place.path(&path);
+                assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+                assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{path}");
+            }
+            let new = place.path(&format!("home/Documents/{trash}/new"));
+            assert_eq!(allowed.new_target(&new, FolderAccess::ReadWrite), Err(FolderError::NotFound));
+        }
+        let list = Request::ListFolder { path: Some(place.path("home/Documents")) };
+        let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
+            panic!("listed")
+        };
+        let mut names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, [".Trash-", ".Trash-10a", "Private", "Trash"], "the trash folders left out");
+        let find = Request::FindFiles { folder: place.path("home/Documents"), name: "id_ed25519".into() };
+        let Ok(Some(Response::FolderEntries { entries, truncated })) = super::super::organize::run(&allowed, &find)
+        else {
+            panic!("found")
+        };
+        assert!(entries.is_empty() && !truncated, "{entries:?}");
+        // A folder the drive also finds as a trash folder is taken back (APFS finds `.Traſh-501` as `.Trash-501`).
+        #[cfg(target_os = "macos")]
+        if docs.join(".TRASH-1000").exists() {
+            let create = Request::CreateFolder { path: place.path("home/Documents/.Tra\u{17f}h-501") };
+            assert_eq!(super::super::organize::run(&allowed, &create).err(), Some(FolderError::NotFound));
+            assert!(fs::symlink_metadata(docs.join(".Trash-501")).is_err(), "no folder");
+        }
+    }
+
+    /// Review of issue #304: on Windows a colon in a name makes a stream of an existing entry, also of a locked one.
+    #[cfg(windows)]
+    #[test]
+    fn a_colon_in_a_name_is_an_error_on_windows() {
+        let place = Place::new();
+        let allowed = place.allowed();
+        fs::write(place.dir.path().join("home/Documents/a.txt"), b"a").expect("written");
+        let stream = place.path("home/Documents/a.txt:hidden");
+        assert_eq!(allowed.new_target(&stream, FolderAccess::ReadWrite), Err(FolderError::Invalid(COLON)));
+        assert_eq!(allowed.entry(&stream, FolderAccess::Read), Err(FolderError::Invalid(COLON)));
+        assert_eq!(code(&FolderError::Invalid(COLON)), "error");
+    }
+
+    /// Review of issue #304: with the whole home allowed, the system's trash is not found, what it holds neither, and
+    /// listing leaves it out: the `trash` crate copies across drives following links, so a key could lie there whole.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn the_trash_is_locked_in_an_allowed_home() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        #[cfg(target_os = "macos")]
+        let trash = ".Trash";
+        #[cfg(target_os = "linux")]
+        let trash = ".local/share/Trash";
+        fs::create_dir_all(home.join(trash).join("files")).expect("made");
+        fs::write(home.join(trash).join("files/id_ed25519"), b"key").expect("written");
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, &key_stores(&home));
+        for locked in [trash.to_string(), format!("{trash}/files/id_ed25519")] {
+            let path = place.path(&format!("home/{locked}"));
+            assert_eq!(allowed.existing(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+            assert_eq!(allowed.entry(&path, FolderAccess::Read), Err(FolderError::NotFound), "{locked}");
+        }
+        let list = Request::ListFolder { path: Some(place.path("home")) };
+        let Ok(Some(Response::FolderEntries { entries, .. })) = super::super::organize::run(&allowed, &list) else {
+            panic!("listed")
+        };
+        assert!(!entries.iter().any(|entry| entry.name == ".Trash"), "the trash left out");
+    }
+
+    /// Review of issue #304: what failed is one of a fixed set, said in the suite's language, never the system's text.
+    #[test]
+    fn a_failure_is_said_in_the_suites_language() {
+        let full = FolderError::of_io(&io::Error::from(io::ErrorKind::StorageFull));
+        assert_eq!(full, FolderError::Failed(Failure::DriveFull));
+        let Response::Error { message, .. } = full.response() else { panic!("an error") };
+        assert_eq!(message, trf("The files cannot be changed: {reason}", &[("reason", &tr("the drive is full"))]));
+        let other = FolderError::of_io(&io::Error::other("cannot write /Users/anna/Secret"));
+        assert_eq!(other, FolderError::Failed(Failure::Other));
+        let Response::Error { message, .. } = other.response() else { panic!("an error") };
+        assert!(message.contains(tr("another error")) && !message.contains("Secret"), "{message}");
+        assert_eq!(Failure::of_kind(io::ErrorKind::PermissionDenied).text(), tr("no permission"));
+        for (failure, english) in [
+            (Failure::NotFound, "not found"),
+            (Failure::TrashRefused, "the trash refused it"),
+            (Failure::RootFolder, "a root folder cannot go to the trash"),
+            (Failure::NotReachable, "not reachable"),
+        ] {
+            assert_eq!(failure.text(), tr(english));
+        }
+    }
+
+    #[test]
+    fn every_error_has_its_code_and_names_no_path() {
+        let cases = [
+            (FolderError::Invalid(BAD_PATH), "error"),
+            (FolderError::NotFound, "not-found"),
+            (FolderError::Forbidden(PROTECTED), "forbidden"),
+            (FolderError::Unsupported("Only files can be copied, not folders or links."), "unsupported"),
+            (FolderError::Denied, "error"),
+            (FolderError::of_io(&io::Error::from(io::ErrorKind::PermissionDenied)), "error"),
+            (FolderError::of_io(&io::Error::from(io::ErrorKind::NotFound)), "not-found"),
+            (FolderError::of_io(&io::Error::from(io::ErrorKind::StorageFull)), "error"),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(code(&err), expected, "{err:?}");
+        }
+    }
+}

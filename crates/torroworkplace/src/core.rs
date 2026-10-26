@@ -3034,6 +3034,9 @@ impl Core {
         }
         // A question of an agent (task E2.5) is nothing but an approval: it always asks.
         let question = matches!(request, Request::AskPermission { .. });
+        // Moving a file to the trash always asks too (issue #304, decision 30), also a client that is never asked
+        // otherwise (`Confirm::Never`): the person sees which entry goes, resolved, before it goes.
+        let trashes = matches!(request, Request::TrashFile { .. });
         // A note kept on this computer was written after the assistant read mail (task C.10), and
         // any note after the conversation read data from outside the suite (task C.11): what a
         // mail, an agent's entry or an issue says must never become a lasting part of the
@@ -3042,6 +3045,7 @@ impl Core {
             || (via.untrusted && matches!(request, Request::Remember { .. }));
         // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
         if question
+            || trashes
             || from_mail
             || rights.needs_approval_of(operation)
             || removal.is_some_and(|delete| rights.needs_approval_of(delete))
@@ -3510,6 +3514,28 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // A command of the tool `files` that changes something (issue #304; the trash: task WD.3): the paths as
+            // the core resolves them now, shown whole in the details, and the approval pinned to them; nothing to
+            // ask about when they do not resolve. Their facts are made only here, not in [`Core::facts`]: the
+            // refusal of a plan that does not resolve is the answer.
+            (
+                Request::CreateFolder { .. }
+                | Request::CopyFile { .. }
+                | Request::MoveFile { .. }
+                | Request::TrashFile { .. },
+                _,
+            ) => {
+                let folders = self.settings.current().tools.folders.clone();
+                let plan = match self.tools.plan(&request, &folders).await {
+                    Ok(plan) => plan.unwrap_or_default(),
+                    Err(refused) => return Ok(refused),
+                };
+                // Pinned to the paths and to what is at them, so another entry put under the same name is `conflict`.
+                let facts = Facts { paths: Some(plan.facts()), ..Facts::default() };
+                fingerprint = Some((plan.fingerprint(), crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             // A bot's texts go into its prompt (task B.1): the person sees every one of them whole.
             (Request::SaveBot { .. }, _) => {
                 let facts = self.facts(&request).await;
@@ -3930,6 +3956,21 @@ impl Core {
         if let Request::PreviewReminder { .. } = request {
             let name = self.client_name(client);
             return Box::pin(self.reminder_request(request, reach, Some((client, &name)))).await;
+        }
+        // A command of the tool `files` runs only on the paths the person was shown and the entries at them (issue
+        // #304): resolved again and compared with them on the thread that then runs it, so nothing changes in
+        // between; `conflict` without doing anything when they changed (a link exchanged, a folder moved, another
+        // entry put under the name). An approval without a fingerprint matches nothing. Its switch was checked
+        // above ([`Core::tool_off`]).
+        if matches!(
+            request,
+            Request::CreateFolder { .. }
+                | Request::CopyFile { .. }
+                | Request::MoveFile { .. }
+                | Request::TrashFile { .. }
+        ) {
+            let approved = Some(fingerprint.unwrap_or_default());
+            return self.tools.organize(request, &settings.tools.folders, approved).await;
         }
         if request.operation().area() == Area::Tools {
             let by_person = origin.consent.as_ref().is_some_and(|web| web.by_person);
@@ -4765,7 +4806,15 @@ impl Core {
             // The key of a web search provider (issue #305): the app key's only, kept back from every
             // client by its rights; into the keychain, never into an answer.
             Request::SetSearchKey { provider, key } => self.tools.web().set_key(provider, key).await,
-            request @ (Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. }) => {
+            request @ (Request::CreatePdf { .. }
+            | Request::OpenFile { .. }
+            | Request::SaveFileAs { .. }
+            | Request::ListFolder { .. }
+            | Request::FindFiles { .. }
+            | Request::CreateFolder { .. }
+            | Request::CopyFile { .. }
+            | Request::MoveFile { .. }
+            | Request::TrashFile { .. }) => {
                 match reach {
                     Reach::Suite => self.tools_request(request, reach, Maker::App, false).await,
                     Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -7161,7 +7210,9 @@ impl Core {
     /// What a tool's command of the client `maker` would be refused with anyway, before anyone is
     /// asked to approve it (issue #225): `tools.create_pdf` beyond its limits
     /// ([`crate::tools::limit_refusal`]), `tools.open_file` and `tools.save_file_as` for a file the
-    /// client did not make or that changed (`not-found`). The handlers check again when it runs.
+    /// client did not make or that changed (`not-found`); a command of the tool `files` (issue #304) whose paths do
+    /// not resolve within the allowed folders as it needs them (`not-found`, `forbidden`, `unsupported`, `error`,
+    /// [`crate::tools::organize::plan`]). The handlers check again when it runs.
     async fn tool_request_refusal(&self, request: &Request, maker: Maker<'_>) -> Option<Response> {
         match request {
             Request::CreatePdf { title, markdown, .. } => crate::tools::limit_refusal(title, markdown),
@@ -7169,6 +7220,9 @@ impl Core {
                 Some(_) => None,
                 None => Some(Response::Error { code: "not-found".into(), message: tr("No such file.").into() }),
             },
+            request if is_files_command(request) => {
+                self.tools.plan(request, &self.settings.current().tools.folders).await.err()
+            }
             _ => None,
         }
     }
@@ -7176,6 +7230,8 @@ impl Core {
     /// The `tools.*` requests (issue #225, task WZ.4) for `reach`, files made and reached as
     /// `maker`: the switch once more (for the app key too, [`Core::tool_off`]), then the handlers
     /// of [`crate::tools`] with the settings of now. `tools.save_file_as` is the app key's only.
+    /// The commands of the tool `files` (issue #304) run within the allowed folders of now
+    /// ([`crate::tools::Tools::organize`]); `tools.trash_file` with the system's trash (task WD.3).
     /// `by_person` (task WEB.5): the address of a `tools.fetch_page` is one the person wrote in the
     /// conversation of the assistant's answer, so `robots.txt` does not hold; `false` for everyone else.
     async fn tools_request(&self, request: Request, reach: Reach<'_>, maker: Maker<'_>, by_person: bool) -> Response {
@@ -7190,6 +7246,9 @@ impl Core {
             }
             (Request::OpenFile { file }, maker) => self.tools.open_file(&file, maker).await,
             (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
+            (request, _) if is_files_command(&request) => {
+                self.tools.organize(request, &settings.tools.folders, None).await
+            }
             // The tool `web` (issue #305, task WEB.4): switch and selection are checked like the PDF
             // tool's, before; a client over API and MCP waits for no approval (they only read). Every
             // client's address obeys `robots.txt`: only the assistant knows what the person wrote
@@ -9030,6 +9089,12 @@ fn my_access(
     // outside its selection.
     let access = access.with_tools_on(tools.enabled.iter().copied().collect());
     Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
+}
+
+/// Whether `request` is a command of the tool `files` (issue #304): `tools.list_folder`, `find_files`,
+/// `create_folder`, `copy_file`, `move_file`, `trash_file`.
+fn is_files_command(request: &Request) -> bool {
+    torro_core::settings::ToolId::of_command(request.operation().name()) == Some(torro_core::settings::ToolId::Files)
 }
 
 /// `forbidden` with [`torro_ipc::api::Lack::Tool`] for a command of one of the assistant's own
@@ -11264,6 +11329,291 @@ mod tests {
         let tools = settings(&core).await.tools;
         assert!(!tools.is_on(ToolId::Pdf), "off once the person allowed it");
         assert_eq!((tools.pdf.folder, tools.pdf.note.logo, tools.pdf.note.font_size_pt), (None, None, 9));
+    }
+
+    /// Issue #304, point 9: the allowed folders are a person's alone. A client with every right gets
+    /// `forbidden` for `set_setting allowed_folder` whatever the value – removing one with `access: null`
+    /// too – and for `update_settings` that changes them in any way; nobody is asked to approve it. The
+    /// app key adds and removes.
+    #[tokio::test]
+    async fn only_people_manage_the_allowed_folders() {
+        use serde_json::json;
+        use torro_core::settings::{AllowedFolder, FolderAccess};
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let docs = dir.path().join("Documents").to_string_lossy().into_owned();
+        let folder = |access: serde_json::Value| Request::SetSetting {
+            key: SettingKey::AllowedFolder,
+            value: json!({"path": docs, "access": access}),
+        };
+        let nothing_asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty() };
+
+        for refused in [folder(json!("read")), folder(json!("read_write")), folder(json!(null))] {
+            let answer = ask(&core, Some(&key), refused.clone()).await;
+            assert_eq!(code(&answer), "forbidden", "{refused:?}");
+            assert!(message(&answer).contains(&Lack::ForPeople.message()), "{answer:?}");
+        }
+        assert!(settings(&core).await.tools.folders.is_empty());
+        let mut with_folder = settings(&core).await;
+        with_folder.tools.folders = vec![AllowedFolder { path: docs.clone(), access: FolderAccess::Read }];
+        let update = Request::UpdateSettings { settings: with_folder.clone() };
+        assert_eq!(code(&ask(&core, Some(&key), update).await), "forbidden");
+        assert!(nothing_asked().await, "nothing to approve");
+
+        // The person adds it; a client can neither widen nor remove it.
+        assert_eq!(ask(&core, Some(&app_key), folder(json!("read"))).await, Response::Ok);
+        assert_eq!(settings(&core).await.tools.folders, with_folder.tools.folders);
+        let mut wider = with_folder.clone();
+        wider.tools.folders[0].access = FolderAccess::ReadWrite;
+        let mut removed = with_folder.clone();
+        removed.tools.folders.clear();
+        for whole in [wider, removed] {
+            assert_eq!(code(&ask(&core, Some(&key), Request::UpdateSettings { settings: whole }).await), "forbidden");
+        }
+        assert_eq!(code(&ask(&core, Some(&key), folder(json!(null))).await), "forbidden");
+        assert!(nothing_asked().await, "nothing to approve");
+        assert_eq!(settings(&core).await.tools.folders, with_folder.tools.folders, "still there");
+        // The stored ones sent back unchanged are an admin change like any other.
+        let same = waits(ask(&core, Some(&key), Request::UpdateSettings { settings: with_folder }).await);
+        assert_eq!(same.command, "settings.update_settings");
+        assert_eq!(ask(&core, Some(&app_key), folder(json!(null))).await, Response::Ok);
+        assert!(settings(&core).await.tools.folders.is_empty(), "the person removes it");
+    }
+
+    /// Issue #304, task WD.1: the commands of the tool `files` go by its switch and selection like the PDF
+    /// tool's. Listing and finding need read access to `tools` only; without an allowed folder there is
+    /// nothing to list and nothing to move to the trash.
+    #[tokio::test]
+    async fn the_files_tool_goes_by_its_switch_and_selection() {
+        use torro_core::settings::ToolId;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        let (id, key) = client(&core, rights.clone()).await;
+        let list = || Request::ListFolder { path: None };
+        let switch = |on: bool| Request::SetSetting {
+            key: torro_ipc::SettingKey::ToolEnabled,
+            value: serde_json::json!({"tool": "files", "enabled": on}),
+        };
+
+        let off = Lack::ToolOff { tool: ToolId::Files }.message();
+        for key in [&key, &app_key] {
+            let refused = ask(&core, Some(key), list()).await;
+            assert!(code(&refused) == "forbidden" && message(&refused).contains(&off), "{refused:?}");
+        }
+        assert_eq!(ask(&core, Some(&app_key), switch(true)).await, Response::Ok);
+        let refused = ask(&core, Some(&key), list()).await;
+        let not_granted = Lack::Tool { tool: ToolId::Files }.message();
+        assert!(code(&refused) == "forbidden" && message(&refused).contains(&not_granted), "{refused:?}");
+        let Response::Tools { tools } = ask(&core, Some(&key), Request::ListTools).await else { panic!("the tools") };
+        let files = tools.iter().find(|tool| tool.id == ToolId::Files).expect("listed");
+        assert_eq!((files.enabled, files.allowed), (true, false));
+
+        rights.tools = Selection::Only(vec!["files".into()]);
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        let Response::Tools { tools } = ask(&core, Some(&key), Request::ListTools).await else { panic!("the tools") };
+        assert!(tools.iter().any(|tool| tool.id == ToolId::Files && tool.allowed), "reading is enough");
+        let path = || dir.path().join("a.txt").to_string_lossy().into_owned();
+        let nothing = Response::FolderEntries { entries: Vec::new(), truncated: false };
+        assert_eq!(ask(&core, Some(&key), list()).await, nothing, "no folder allowed yet");
+        let find = Request::FindFiles { folder: path(), name: "a".into() };
+        assert_eq!(code(&ask(&core, Some(&key), find).await), "not-found");
+        let copy = Request::CopyFile { from: path(), to: path() };
+        let refused = ask(&core, Some(&key), copy.clone()).await;
+        assert_eq!(code(&refused), "forbidden", "copying writes");
+        assert_eq!(ask(&core, Some(&app_key), list()).await, nothing);
+        assert_eq!(code(&ask(&core, Some(&app_key), copy).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&app_key), Request::TrashFile { path: path() }).await), "not-found");
+    }
+
+    /// A core whose tool `files` is switched on with `folder` allowed for reading and writing, and a client of
+    /// `rights` (issue #304, task WD.2).
+    async fn files_core(dir: &std::path::Path, folder: &std::path::Path, rights: Rights) -> (Core, Key, Key) {
+        files_core_with(dir, folder, rights, crate::tools::tests::Room::new().tools()).await
+    }
+
+    /// [`files_core`] with `tools` of the test's own (task WD.3: a recording trash, locked paths).
+    async fn files_core_with(
+        dir: &std::path::Path,
+        folder: &std::path::Path,
+        rights: Rights,
+        tools: crate::tools::Tools,
+    ) -> (Core, Key, Key) {
+        let core = core(dir).with_tools(tools);
+        let app_key = crate::clients::tests::app_key(dir);
+        let folder = folder.to_string_lossy().into_owned();
+        for (key, value) in [
+            (torro_ipc::SettingKey::ToolEnabled, serde_json::json!({"tool": "files", "enabled": true})),
+            (torro_ipc::SettingKey::AllowedFolder, serde_json::json!({"path": folder, "access": "read_write"})),
+        ] {
+            assert_eq!(ask(&core, Some(&app_key), Request::SetSetting { key, value }).await, Response::Ok);
+        }
+        let (_, key) = client(&core, rights).await;
+        (core, key, app_key)
+    }
+
+    /// Issue #304, task WD.2: a path outside the allowed folders is `not-found` before anyone is asked; a client
+    /// that asks on every change gets `pending` with the paths as the core resolved them in the details, and the
+    /// command runs once allowed, never over a file that is there.
+    #[tokio::test]
+    async fn the_files_tool_asks_with_the_resolved_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let docs = dir.path().join("Documents");
+        std::fs::create_dir_all(docs.join("Archive")).expect("made");
+        std::fs::write(docs.join("a.txt"), b"a").expect("written");
+        std::fs::write(docs.join("Archive/a.txt"), b"there").expect("written");
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (core, key, app_key) = files_core(dir.path(), &docs, rights).await;
+        let nothing_asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty() };
+        let at = |relative: &str| docs.join(relative).to_string_lossy().into_owned();
+
+        let outside = dir.path().join("config").to_string_lossy().into_owned();
+        let refused = ask(&core, Some(&key), Request::CopyFile { from: at("a.txt"), to: outside }).await;
+        assert_eq!(code(&refused), "not-found");
+        let refused = ask(&core, Some(&key), Request::MoveFile { from: at("missing.txt"), to: at("b.txt") }).await;
+        assert_eq!(code(&refused), "not-found");
+        assert!(nothing_asked().await, "nothing to approve");
+        let Response::FolderEntries { entries, .. } = ask(&core, Some(&key), Request::ListFolder { path: None }).await
+        else {
+            panic!("the allowed folders")
+        };
+        assert_eq!(entries.len(), 1, "reading runs at once");
+
+        let resolved = std::fs::canonicalize(&docs).expect("resolved");
+        let asked = waits(ask(&core, Some(&key), Request::CopyFile { from: at("a.txt"), to: at("Archive") }).await);
+        let shown = |path: std::path::PathBuf| format!("\"{}\"", path.to_string_lossy());
+        assert_eq!(asked.details[0], trf("From: {path}", &[("path", &shown(resolved.join("a.txt")))]));
+        assert_eq!(asked.details[1], trf("To: {path}", &[("path", &shown(resolved.join("Archive/a.txt")))]));
+        assert!(asked.summary.contains("a.txt") && asked.summary.contains("Archive"), "{}", asked.summary);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        let made = resolved.join("Archive/a-2.txt").to_string_lossy().into_owned();
+        assert_eq!(*response, Response::FilePath { path: made });
+        assert_eq!(std::fs::read(docs.join("Archive/a.txt")).expect("read"), b"there", "never replaced");
+    }
+
+    /// Issue #304, task WD.3: moving to the trash always asks, also a client that is never asked otherwise, with the
+    /// entry as the core resolved it; once allowed the core hands the trash that entry – a link itself, not what it
+    /// points to. What would be refused anyway is refused before anyone is asked; the app key is not asked.
+    #[tokio::test]
+    async fn the_trash_always_asks_and_takes_the_resolved_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let docs = dir.path().join("Documents");
+        for folder in ["Private", "Suite"] {
+            std::fs::create_dir_all(docs.join(folder)).expect("made");
+        }
+        for file in ["a.txt", "b.txt", "Private/secret.txt", "Suite/clients.json"] {
+            std::fs::write(docs.join(file), b"x").expect("written");
+        }
+        let trashed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&trashed);
+        let roots = crate::tools::Roots { excluded: vec![docs.join("Suite")], ..crate::tools::Roots::default() };
+        let tools = crate::tools::Tools::new(roots).with_trasher(Arc::new(move |path: &std::path::Path| {
+            record.lock().expect("lock").push(path.to_path_buf());
+            Ok(())
+        }));
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (core, key, app_key) = files_core_with(dir.path(), &docs, rights, tools).await;
+        let private = docs.join("Private").to_string_lossy().into_owned();
+        let read = Request::SetSetting {
+            key: torro_ipc::SettingKey::AllowedFolder,
+            value: serde_json::json!({"path": private, "access": "read"}),
+        };
+        assert_eq!(ask(&core, Some(&app_key), read).await, Response::Ok);
+        let asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().len() };
+        let trash = |relative: &str| Request::TrashFile { path: docs.join(relative).to_string_lossy().into_owned() };
+        let taken = || trashed.lock().expect("lock").clone();
+
+        // Refused before anyone is asked: an allowed folder, the read folder and what is in it, the suite's data.
+        for (relative, expected) in [
+            ("", "forbidden"),
+            ("Private", "forbidden"),
+            ("Private/secret.txt", "forbidden"),
+            ("Suite", "not-found"),
+            ("Suite/clients.json", "not-found"),
+            ("missing.txt", "not-found"),
+        ] {
+            let request = match relative {
+                "" => Request::TrashFile { path: docs.to_string_lossy().into_owned() },
+                relative => trash(relative),
+            };
+            assert_eq!(code(&ask(&core, Some(&key), request).await), expected, "{relative:?}");
+        }
+        assert_eq!(asked().await, 0, "nothing to approve");
+
+        // Never asked otherwise, asked for the trash: the entry resolved in the details, nothing gone yet.
+        let resolved = std::fs::canonicalize(&docs).expect("resolved");
+        let pending = waits(ask(&core, Some(&key), trash("a.txt")).await);
+        assert_eq!(pending.command, "tools.trash_file");
+        let shown = format!("\"{}\"", resolved.join("a.txt").to_string_lossy());
+        assert_eq!(pending.details, [trf("From: {path}", &[("path", &shown)])]);
+        assert_eq!(pending.summary, trf("Move \"{name}\" to the trash", &[("name", &"a.txt")]));
+        assert!(taken().is_empty(), "nothing before the person allows it");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(*response, Response::Ok);
+        assert_eq!(taken(), [resolved.join("a.txt")]);
+
+        // A link goes itself, not what it points to.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(docs.join("b.txt"), docs.join("link")).expect("linked");
+            let pending = waits(ask(&core, Some(&key), trash("link")).await);
+            let allowed = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+            assert!(matches!(allowed.state, torro_ipc::ApprovalState::Done { .. }), "{allowed:?}");
+            assert_eq!(taken().last(), Some(&resolved.join("link")));
+        }
+
+        // The person's own app moves to the trash without an approval.
+        let before = asked().await;
+        assert_eq!(ask(&core, Some(&app_key), trash("b.txt")).await, Response::Ok);
+        assert_eq!(taken().last(), Some(&resolved.join("b.txt")));
+        assert_eq!(asked().await, before, "the app key is not asked");
+    }
+
+    /// Issue #304, task WD.2: an approved command runs only on the paths the person was shown – a link exchanged
+    /// after the ask is `conflict`, and nothing is done.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_files_tool_answers_conflict_when_a_link_changed_after_the_ask() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let docs = dir.path().join("Documents");
+        for folder in ["A", "B"] {
+            std::fs::create_dir_all(docs.join(folder)).expect("made");
+        }
+        std::fs::write(docs.join("a.txt"), b"a").expect("written");
+        std::os::unix::fs::symlink(docs.join("A"), docs.join("Target")).expect("linked");
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (core, key, app_key) = files_core(dir.path(), &docs, rights).await;
+        let at = |relative: &str| docs.join(relative).to_string_lossy().into_owned();
+
+        let asked = waits(ask(&core, Some(&key), Request::CopyFile { from: at("a.txt"), to: at("Target") }).await);
+        std::fs::remove_file(docs.join("Target")).expect("removed");
+        std::os::unix::fs::symlink(docs.join("B"), docs.join("Target")).expect("linked elsewhere");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(code(&response), "conflict");
+        for folder in ["A", "B"] {
+            assert_eq!(std::fs::read_dir(docs.join(folder)).expect("listed").count(), 0, "nothing copied");
+        }
+        // Asked again, it runs where the link points now.
+        let asked = waits(ask(&core, Some(&key), Request::MoveFile { from: at("a.txt"), to: at("Target") }).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert!(matches!(*response, Response::FilePath { .. }), "{response:?}");
+        assert!(docs.join("B/a.txt").is_file() && !docs.join("a.txt").exists());
     }
 
     /// Issue #290, point 9: no client sets the folder of "Save to Downloads", not with every right,

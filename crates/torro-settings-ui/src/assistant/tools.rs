@@ -2,13 +2,21 @@
 //! assistant's own tools, each with its switch, whether the assistant may use it, and its settings.
 //!
 //! ```text
-//! PDF       Make PDFs (switch) · whether the assistant may use it · Folder (Choose…, Use desktop)
-//! Letter    Paper · Margins · Font size · Header · Footer · Page numbers · Logo (Choose…, Remove)
-//! Report    the same
-//! Note      the same
-//! Web       Search the web (switch) · whether the assistant may use it; below it the order of the providers
+//! Allowed folders  one row per folder: name and path · Read / Read and write · Remove; Add folder…
+//! Files            Organize files (switch) · whether the assistant may use it · without a folder: Add folder…
+//! PDF              Make PDFs (switch) · whether the assistant may use it · Folder (Choose…, Use desktop)
+//! Letter           Paper · Margins · Font size · Header · Footer · Page numbers · Logo (Choose…, Remove)
+//! Report           the same
+//! Note             the same
+//! Web              Search the web (switch) · whether the assistant may use it; below it the order of the providers
 //! SearXNG … Wikipedia   a group per search provider ([`super::web`], task WEB.6)
 //! ```
+//!
+//! **Allowed folders** (task WD.4, issue #304, "Werkzeug Dateien" in `docs/assistent.md`) are one list
+//! for every tool that works with files – `files` now, ArtCraft later –, so they stand above the tools,
+//! and the tools that work in them come right below them ([`page_order`]).
+//! Each change is one `settings.set_setting allowed_folder` with the folder's path and its access, `null`
+//! to remove it ([`allowed_folder_request`]); a folder is added with "Read" ([`added_folder_request`]).
 //!
 //! **Switch and rights are two things** (`docs/assistent.md`): the switch (`settings.set_setting
 //! tool_enabled`) says whether the tool exists on this computer, for every client; what the
@@ -18,9 +26,10 @@
 //! assistant's own rights); nothing here writes a client.
 //!
 //! **Only a person switches a tool on and sets a path** (point 9 of "Was nie nach außen geht" in
-//! `docs/api.md`): this window runs with the app key, so it may. Folder and logo come from the
-//! system's chooser, which only the app can open ([`super::AppAction::PickFolder`],
-//! [`super::AppAction::PickLogo`]); the app then sends [`folder_request`] or [`logo_request`].
+//! `docs/api.md`): this window runs with the app key, so it may. Folder, logo and an allowed folder
+//! come from the system's chooser, which only the app can open ([`super::AppAction::PickFolder`],
+//! [`super::AppAction::PickLogo`], [`super::AppAction::PickAllowedFolder`]); the app then sends
+//! [`folder_request`], [`logo_request`] or [`added_folder_request`].
 //!
 //! The search providers of the tool `web` are the view [`super::web`], which the setup shows too (task WEB.7): a
 //! provider's switch, its key (`accounts.set_search_key`, only from this window) and SearXNG's address. The tool
@@ -36,14 +45,16 @@ use std::fmt;
 use std::path::Path;
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, row};
-use iced::{Alignment, Element, Fill};
+use iced::widget::{Space, column, container, row, svg};
+use iced::{Alignment, Element, Fill, Theme};
 
 use torro_core::i18n::{tr, trc, trf};
-use torro_core::settings::{Paper, PdfTemplate, PdfTemplateId, ToolId};
-use torro_gui::icon::Icon;
+use torro_core::settings::{
+    AllowedFolder, FolderAccess, MAX_ALLOWED_FOLDERS, Paper, PdfTemplate, PdfTemplateId, ToolId,
+};
+use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::theme::{self, size, space};
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
 use torro_ipc::api::Area;
@@ -132,6 +143,12 @@ pub enum Message {
     ChooseLogo(PdfTemplateId),
     /// "Remove" at a template's logo.
     RemoveLogo(PdfTemplateId),
+    /// "Add folder…" under the allowed folders: the system's folder chooser, in the app (task WD.4).
+    AddFolder,
+    /// An access chosen in the picker of the allowed folder with this path.
+    SetFolderAccess(String, FolderAccess),
+    /// "Remove" at the allowed folder with this path: tools no longer reach it; nothing in it is touched.
+    RemoveFolder(String),
     /// A control of the search providers ([`web`]).
     Web(web::Message),
 }
@@ -164,6 +181,16 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.draft = None;
             Action::None
         }
+        Message::AddFolder => Action::App(AppAction::PickAllowedFolder),
+        Message::SetFolderAccess(path, access) => {
+            // A pick list reports the step it shows too; that changes nothing, so nothing goes out.
+            let stored = data.settings.tools.folders.iter().find(|folder| folder.path == path);
+            match stored.is_some_and(|folder| folder.access == access) {
+                true => Action::None,
+                false => Action::send(allowed_folder_request(&path, Some(access))),
+            }
+        }
+        Message::RemoveFolder(path) => Action::send(allowed_folder_request(&path, None)),
         Message::Web(message) => web::update(&mut state.web, message, &data.search_providers),
     }
 }
@@ -207,6 +234,25 @@ pub fn folder_request(folder: &Path) -> Option<Request> {
     Some(Request::SetSetting { key: SettingKey::PdfFolder, value: serde_json::Value::String(path.to_string()) })
 }
 
+/// `settings.set_setting allowed_folder` for the folder `path`: `{"path": …, "access": "read" |
+/// "read_write"}` gives it that access (adding it when it is not allowed yet), `access` `None` sends
+/// `"access": null`, which removes it. Exactly one request per change; only a person sends it (point 9
+/// of "Was nie nach außen geht"), which this window may with the app key.
+pub fn allowed_folder_request(path: &str, access: Option<FolderAccess>) -> Request {
+    Request::SetSetting { key: SettingKey::AllowedFolder, value: serde_json::json!({ "path": path, "access": access }) }
+}
+
+/// `settings.set_setting allowed_folder` for the folder the person chose in the system's chooser, for
+/// the app after [`AppAction::PickAllowedFolder`]: added with "Read" (decision 27 in
+/// `docs/assistent.md`), or with the access it has when `data` lists it already – choosing a folder
+/// again never lowers what it allows. `None` for a path that is not plain text (it could not be stored
+/// as the person sees it).
+pub fn added_folder_request(data: &Data, folder: &Path) -> Option<Request> {
+    let path = folder.to_str()?;
+    let stored = data.settings.tools.folders.iter().find(|allowed| Path::new(&allowed.path) == folder);
+    Some(allowed_folder_request(path, Some(stored.map_or(FolderAccess::Read, |allowed| allowed.access))))
+}
+
 /// `settings.set_setting pdf_template` with the template `id` as `data` holds it now and `logo` as
 /// its logo, for the app after [`AppAction::PickLogo`]. `None` for a path that is not plain text.
 pub fn logo_request(data: &Data, id: PdfTemplateId, logo: &Path) -> Option<Request> {
@@ -239,8 +285,9 @@ fn line_request(data: &Data, draft: &Draft) -> Option<Request> {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// A group per tool, for the PDF tool its three templates and for the tool `web` its search providers. In a narrow
-/// window the buttons are icons with a tooltip, so the labels keep their room (design skill, section 6).
+/// The allowed folders, then a group per tool in [`page_order`], for the PDF tool its three templates and for the
+/// tool `web` its search providers. In a narrow window the buttons are icons with a tooltip, so the labels keep their
+/// room (design skill, section 6).
 pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     if !super::is_on(data) {
         return super::off_group(tr("Tools"));
@@ -250,8 +297,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
         return widgets::group(tr("Tools"), vec![row], None);
     }
     let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
-    let mut page = column![].spacing(layout::section_gap());
-    for info in &data.tools {
+    // The folders first: one list for every tool that works with files (decision 27).
+    let mut page = column![folders_group(data, words)].spacing(layout::section_gap());
+    for info in page_order(&data.tools) {
         page = page.push(tool_group(info, data, words));
         if info.id == ToolId::Pdf {
             let last = PdfTemplateId::ALL.len() - 1;
@@ -266,9 +314,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
     page.into()
 }
 
-/// One tool: its switch with what it does, whether the assistant may use it, and for the PDF tool
-/// the folder its files go to. Under the tool `web` the order its providers are asked in and the approval once per
-/// conversation ([`web::summary`]).
+/// One tool: its switch with what it does, whether the assistant may use it, for the PDF tool the
+/// folder its files go to, and for the files tool a hint while no folder is allowed. Under the tool `web` the order
+/// its providers are asked in and the approval once per conversation ([`web::summary`]).
 fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a, Message> {
     let id = info.id;
     let on = wrapping_row(
@@ -277,17 +325,78 @@ fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a
         switch(info.enabled, move |on| Message::Switch(id, on)),
     );
     let mut rows = vec![on, access_row(data, id)];
-    if id == ToolId::Pdf {
-        rows.push(folder_row(data, words));
-    }
     let footer = match id {
-        ToolId::Pdf => tr(
-            "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose the folder and the logos.",
-        )
-        .to_string(),
+        ToolId::Pdf => {
+            rows.push(folder_row(data, words));
+            tr(
+                "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose the folder and the logos.",
+            )
+            .to_string()
+        }
+        ToolId::Files => {
+            if let Some(add) = files_add_folder(data) {
+                rows.push(no_folder_row(add, no_folder_flagged(data), words));
+            }
+            tr(
+                "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose its folders.",
+            )
+            .to_string()
+        }
         ToolId::Web => web::summary(&data.search_providers),
     };
     widgets::group(info.name.as_str(), rows, Some(footer))
+}
+
+/// "Allowed folders": a row per folder and "Add folder…" last, which stands disabled once
+/// [`MAX_ALLOWED_FOLDERS`] are allowed. Without a folder the group holds only that row, so it keeps its
+/// frame and the sentence below it.
+fn folders_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
+    let folders = &data.settings.tools.folders;
+    let mut rows: Vec<Element<'a, Message>> = folders.iter().map(|folder| allowed_folder_row(folder, words)).collect();
+    let room = folders.len() < MAX_ALLOWED_FOLDERS;
+    // A row of its own, "+" on the axis of the folder icons and its word on that of the names, as the lists of
+    // Mail end with "+ New …".
+    let plus = icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
+    let add = setting_row(Some(plus.into()), tr("Add folder…"), None, Space::new());
+    rows.push(pressable(add, room.then_some(Message::AddFolder)));
+    widgets::group(tr("Allowed folders"), rows, Some(folders_footer(folders.len())))
+}
+
+/// One allowed folder: its name with the path below it (cut with "…", whole as tooltip), the picker of
+/// its access and "Remove".
+fn allowed_folder_row<'a>(folder: &'a AllowedFolder, words: bool) -> Element<'a, Message> {
+    let path = folder.path.as_str();
+    let access = picker(AccessChoice::ALL.to_vec(), AccessChoice(folder.access), move |choice: AccessChoice| {
+        Message::SetFolderAccess(path.to_string(), choice.0)
+    });
+    let remove = Message::RemoveFolder(folder.path.clone());
+    let remove = match words {
+        true => widgets::text_button(None, tr("Remove"), style::button::ghost, Some(remove)),
+        false => widgets::icon_button(Icon::X, tr("Remove"), Some(remove)),
+    };
+    let control = row![access, remove].spacing(space::s()).align_y(Alignment::Center);
+    setting_row(Some(folder_mark()), file_name(path), Some(path.to_string()), control)
+}
+
+/// The icon in front of a row that names a folder: an allowed one, the PDF folder, the empty list.
+fn folder_mark<'a>() -> Element<'a, Message> {
+    icon::icon(Icon::Folder, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) }).into()
+}
+
+/// The files tool without an allowed folder, with "Add folder…" to add one right there, so the row is no dead
+/// end; narrow the button is a "+" with its word as tooltip, as "Remove" is. `flagged` it has the orange dot –
+/// something to do –, else the folder icon: one orange dot per group is enough ([`no_folder_flagged`]).
+fn no_folder_row<'a>(add: Message, flagged: bool, words: bool) -> Element<'a, Message> {
+    let button = match words {
+        true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, Some(add)),
+        false => widgets::icon_button(Icon::Plus, tr("Add folder…"), Some(add)),
+    };
+    let detail = tr("The tool works only in allowed folders.");
+    let mark = match flagged {
+        true => widgets::status_dot(Status::Attention),
+        false => folder_mark(),
+    };
+    setting_row(Some(mark), tr("No allowed folders"), Some(detail.to_string()), button)
 }
 
 /// A row whose line below the label wraps instead of being cut: what a tool does is a sentence a
@@ -312,6 +421,7 @@ fn switch_label(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Make PDFs"),
         ToolId::Web => tr("Search the web"),
+        ToolId::Files => tr("Organize files"),
     }
 }
 
@@ -344,7 +454,7 @@ fn folder_row<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
             false => widgets::icon_button(Icon::History, tr("Use desktop"), Some(Message::UseDesktop)),
         });
     }
-    setting_row(None, tr("Folder"), Some(detail), buttons.align_y(Alignment::Center))
+    setting_row(Some(folder_mark()), tr("Folder"), Some(detail), buttons.align_y(Alignment::Center))
 }
 
 /// One template: paper, margins, font size, header, footer, page numbers and logo. The `last` one
@@ -431,11 +541,60 @@ fn choose_button<'a>(words: bool, message: Message) -> Element<'a, Message> {
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
 
+/// The sentence below the allowed folders whatever their number.
+const FOLDERS_FOOTER: &str =
+    "Tools like Files work only in these folders; ArtCraft will use them too. Only you can change this list.";
+
+/// The tools in the order the page shows them: those that work in the allowed folders first, right below that
+/// list, so a tool and its folders are read together; the others after them, each part in the order the core
+/// lists the tools (`ToolId::ALL`, which stays as the plan set it).
+pub fn page_order(tools: &[ToolInfo]) -> Vec<&ToolInfo> {
+    let mut ordered: Vec<&ToolInfo> = tools.iter().collect();
+    // Stable, so the core's order holds within each part.
+    ordered.sort_by_key(|info| !works_in_allowed_folders(info.id));
+    ordered
+}
+
+/// Whether `tool` works in the allowed folders. Every tool is named, so a new one is placed on purpose; the PDF
+/// tool's own folder is not an allowed folder.
+fn works_in_allowed_folders(tool: ToolId) -> bool {
+    match tool {
+        ToolId::Files => true,
+        ToolId::Pdf | ToolId::Web => false,
+    }
+}
+
+/// What the files tool's own "Add folder…" sends: the app's chooser while no folder is allowed – else nothing,
+/// the list above has its button.
+fn files_add_folder(data: &Data) -> Option<Message> {
+    data.settings.tools.folders.is_empty().then_some(Message::AddFolder)
+}
+
+/// Whether the files tool's row "No allowed folders" has the orange dot: only while the row above it has none,
+/// that is while the assistant may use the tool. Two orange dots on top of each other make the group restless,
+/// and the one above says what to do first.
+fn no_folder_flagged(data: &Data) -> bool {
+    assistant_may_use(data, ToolId::Files)
+}
+
+/// The sentence below the allowed folders; with `count` at [`MAX_ALLOWED_FOLDERS`] it also says why "Add
+/// folder…" stands disabled and what to do.
+fn folders_footer(count: usize) -> String {
+    let footer = tr(FOLDERS_FOOTER);
+    match count < MAX_ALLOWED_FOLDERS {
+        true => footer.to_string(),
+        false => {
+            let limit = trf("At most {n} folders. Remove one to add another.", &[("n", &MAX_ALLOWED_FOLDERS)]);
+            format!("{footer} {limit}")
+        }
+    }
+}
+
 /// Whether the assistant may use `tool`, after its client's rights as `clients.list_clients` lists
-/// them: the level the tool needs in `tools` (`ToolAccess::access`: writing for `pdf`, reading for `web`) and the
-/// tool in its selection – `web` only when it is ticked by name, never through "All" (`Rights::reaches_tool`) –,
-/// what `tools.list_tools` calls `allowed` for a client key (this window asks with the app key, which may use
-/// every tool). The switch is the other half. `false` while the assistant is off.
+/// them: the level the tool needs in `tools` (`ToolAccess::access`: writing for `pdf`, reading for `web` and
+/// `files`) and the tool in its selection – `web` only when it is ticked by name, never through "All"
+/// (`Rights::reaches_tool`) –, what `tools.list_tools` calls `allowed` for a client key (this window asks with the
+/// app key, which may use every tool). The switch is the other half. `false` while the assistant is off.
 pub fn assistant_may_use(data: &Data, tool: ToolId) -> bool {
     super::client(data)
         .is_some_and(|client| client.rights.area(Area::Tools).allows(tool.access()) && client.rights.reaches_tool(tool))
@@ -460,7 +619,7 @@ pub fn margin_options(current: [u8; 4]) -> Vec<Margins> {
     options
 }
 
-/// The last part of a path, for the logo row; the whole path when it has none.
+/// The last part of a path, for the logo row and an allowed folder; the whole path when it has none.
 fn file_name(path: &str) -> String {
     Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path).to_string()
 }
@@ -481,6 +640,23 @@ impl fmt::Display for PaperChoice {
             Paper::Letter => tr("US Letter"),
         };
         f.write_str(word)
+    }
+}
+
+/// How far the tools may go in an allowed folder, in its picker: "Read", "Read and write".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessChoice(pub FolderAccess);
+
+impl AccessChoice {
+    const ALL: [AccessChoice; 2] = [AccessChoice(FolderAccess::Read), AccessChoice(FolderAccess::ReadWrite)];
+}
+
+impl fmt::Display for AccessChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            FolderAccess::Read => tr("Read"),
+            FolderAccess::ReadWrite => tr("Read and write"),
+        })
     }
 }
 
@@ -515,7 +691,7 @@ mod tests {
     use std::path::PathBuf;
 
     use torro_core::account::Secret;
-    use torro_core::settings::ToolSwitch;
+    use torro_core::settings::{FolderChange, ToolSwitch};
     use torro_ipc::api::{Level, Selection};
     use torro_ipc::web::SearchProviderId;
 
@@ -644,13 +820,146 @@ mod tests {
         assert!(LOGO_EXTENSIONS.iter().all(|ext| logo_request(&data, id, &logo.with_extension(ext)).is_some()));
     }
 
+    /// The value an `allowed_folder` request carries, as the core reads it.
+    fn folder_change_of(request: &Request) -> FolderChange {
+        match request {
+            Request::SetSetting { key: SettingKey::AllowedFolder, value } => {
+                FolderChange::from_value(value).expect("a change the core takes")
+            }
+            other => panic!("expected allowed_folder, got {other:?}"),
+        }
+    }
+
+    /// Task WD.4: "Add folder…" is the app's chooser; what the app sends afterwards adds the folder
+    /// with "Read" – or, for a folder already allowed, keeps its access, so adding it again lowers
+    /// nothing. A path that is not plain text cannot be stored.
+    #[tokio::test]
+    async fn add_folder_is_the_app_s_chooser_and_starts_with_read() {
+        let data = data().await;
+        let mut state = State::default();
+        assert_eq!(update(&mut state, Message::AddFolder, &data), Act::App(AppAction::PickAllowedFolder));
+
+        let new = added_folder_request(&data, Path::new("/home/anna/Music")).expect("a plain path");
+        assert_eq!(
+            folder_change_of(&new),
+            FolderChange { path: "/home/anna/Music".into(), access: Some(FolderAccess::Read) }
+        );
+        let writable = data.settings.tools.folders.iter().find(|folder| folder.access == FolderAccess::ReadWrite);
+        let writable = writable.expect("the demo allows one folder to write");
+        let again = added_folder_request(&data, Path::new(&writable.path)).expect("a plain path");
+        assert_eq!(folder_change_of(&again).access, Some(FolderAccess::ReadWrite), "added again, kept as it was");
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let odd = Path::new(std::ffi::OsStr::from_bytes(b"/home/anna/\xff"));
+            assert_eq!(added_folder_request(&data, odd), None);
+        }
+    }
+
+    /// Sight check of WD.4: the files tool without an allowed folder offers "Add folder…" itself, which is the
+    /// app's chooser as the button under the list; with a folder it leaves that to the list.
+    #[tokio::test]
+    async fn the_files_tool_without_a_folder_offers_to_add_one() {
+        let data = data().await;
+        assert_eq!(files_add_folder(&data), None, "the demo allows folders");
+        let mut empty = data.clone();
+        empty.settings.tools.folders.clear();
+        let add = files_add_folder(&empty).expect("a way out of the empty list");
+        assert_eq!(update(&mut State::default(), add, &empty), Act::App(AppAction::PickAllowedFolder));
+    }
+
+    /// Sight check of WD.4: one orange dot in the files tool's group. While the assistant may not use the tool,
+    /// the row that leads to Access has it and "No allowed folders" shows the folder icon; once it may, the
+    /// missing folder is what is left to do.
+    #[tokio::test]
+    async fn the_files_tool_has_one_orange_dot_at_most() {
+        let mut empty = data().await;
+        empty.settings.tools.folders.clear();
+        assert!(!assistant_may_use(&empty, ToolId::Files), "the demo's assistant may not use it");
+        assert!(!no_folder_flagged(&empty), "the row to Access has the dot");
+        let rights = &mut empty.clients[0].rights;
+        rights.set_level(Area::Tools, Level::Read, Vec::new);
+        rights.tools = Selection::All;
+        assert!(no_folder_flagged(&empty), "allowed, the missing folder has it");
+    }
+
+    /// Sight check of WD.4: the tools that work in the allowed folders stand right below them, the files tool
+    /// before the PDF tool, though the core lists PDF first.
+    #[tokio::test]
+    async fn the_files_tool_stands_next_to_its_folders() {
+        let data = data().await;
+        let listed: Vec<ToolId> = data.tools.iter().map(|info| info.id).collect();
+        assert_eq!(listed, ToolId::ALL, "the core's order");
+        let shown: Vec<ToolId> = page_order(&data.tools).iter().map(|info| info.id).collect();
+        assert_eq!(shown, [ToolId::Files, ToolId::Pdf, ToolId::Web], "web keeps its place after pdf");
+    }
+
+    /// Sight check of WD.4: with as many folders as may be allowed, the sentence below the list says why "Add
+    /// folder…" stands disabled; below that it does not.
+    #[test]
+    fn a_full_list_names_the_limit() {
+        let limit = trf("At most {n} folders. Remove one to add another.", &[("n", &MAX_ALLOWED_FOLDERS)]);
+        assert!(folders_footer(MAX_ALLOWED_FOLDERS).ends_with(&limit));
+        assert!(!folders_footer(MAX_ALLOWED_FOLDERS - 1).contains(&limit));
+        assert_eq!(folders_footer(0), tr(FOLDERS_FOOTER));
+    }
+
+    /// Task WD.4: the choice of a folder's access sends exactly one `set_setting allowed_folder` with
+    /// that access, "Remove" one with `access: null`; choosing the access it has sends nothing.
+    #[tokio::test]
+    async fn access_and_remove_send_exactly_one_allowed_folder() {
+        let data = data().await;
+        let mut state = State::default();
+        let read = data.settings.tools.folders.iter().find(|folder| folder.access == FolderAccess::Read);
+        let path = read.expect("the demo allows one folder to read").path.clone();
+
+        let request = one(update(&mut state, Message::SetFolderAccess(path.clone(), FolderAccess::ReadWrite), &data));
+        assert_eq!(
+            request,
+            Request::SetSetting {
+                key: SettingKey::AllowedFolder,
+                value: serde_json::json!({ "path": path, "access": "read_write" })
+            }
+        );
+        assert_eq!(folder_change_of(&request).access, Some(FolderAccess::ReadWrite));
+        assert_eq!(
+            update(&mut state, Message::SetFolderAccess(path.clone(), FolderAccess::Read), &data),
+            Act::None,
+            "already so"
+        );
+
+        let request = one(update(&mut state, Message::RemoveFolder(path.clone()), &data));
+        assert_eq!(
+            request,
+            Request::SetSetting {
+                key: SettingKey::AllowedFolder,
+                value: serde_json::json!({ "path": path, "access": null })
+            }
+        );
+        assert_eq!(folder_change_of(&request), FolderChange { path, access: None });
+    }
+
+    /// The access picker says what each step allows, and a folder shows its name.
+    #[test]
+    fn a_folder_row_says_its_name_and_access() {
+        assert_eq!(AccessChoice(FolderAccess::Read).to_string(), tr("Read"));
+        assert_eq!(AccessChoice(FolderAccess::ReadWrite).to_string(), tr("Read and write"));
+        assert_eq!(file_name("/home/anna/Documents"), "Documents");
+        assert_eq!(file_name("/"), "/", "a folder without a name shows its path");
+    }
+
     /// Task WZ.6: nothing here reaches the clients – every action is a setting, Access (task S.34)
     /// or the app's chooser. The row "may use it" only reads the client and points away.
     #[tokio::test]
     async fn no_message_sends_a_clients_request() {
         let data = data().await;
         let mut state = State::default();
+        let folder = || "/home/anna/Documents".to_string();
         let messages = [
+            Message::AddFolder,
+            Message::SetFolderAccess(folder(), FolderAccess::ReadWrite),
+            Message::RemoveFolder(folder()),
+            Message::Switch(ToolId::Files, true),
             Message::Switch(ToolId::Pdf, true),
             Message::Access,
             Message::ChooseFolder,
@@ -746,6 +1055,9 @@ mod tests {
         rights(&mut data).tools = Selection::All;
         rights(&mut data).set_level(Area::Tools, Level::Read, Vec::new);
         assert!(!assistant_may_use(&data, ToolId::Pdf), "reading only");
+        assert!(assistant_may_use(&data, ToolId::Files), "reading is enough to organize files (issue #304)");
+        rights(&mut data).tools = Selection::Only(vec!["pdf".into()]);
+        assert!(!assistant_may_use(&data, ToolId::Files), "files not in the selection");
         assert!(!assistant_may_use(&turned_off(&data), ToolId::Pdf));
         let mut state = State::default();
         assert_eq!(update(&mut state, Message::Access, &data), Act::Open("access"));
@@ -774,15 +1086,29 @@ mod tests {
         assert!(pdf.enabled && data.settings.tools.is_on(ToolId::Pdf), "switched on in the demo");
         assert!(data.settings.tools.pdf.folder.is_some(), "a folder of its own");
         assert!(!assistant_may_use(&data, ToolId::Pdf), "so the row leads to Access");
+        // Task WD.4: the files tool on, with two folders, one to read and one to write.
+        assert!(data.settings.tools.is_on(ToolId::Files), "switched on in the demo");
+        let accesses: Vec<FolderAccess> = data.settings.tools.folders.iter().map(|folder| folder.access).collect();
+        assert_eq!(accesses, [FolderAccess::Read, FolderAccess::ReadWrite]);
         let mut typing = State::default();
         let _ = update(&mut typing, Message::Type(PdfTemplateId::Report, Line::Footer, "Draft".into()), &data);
         let no_tools = Data { tools: Vec::new(), ..data.clone() };
+        // No folder yet: the files tool offers "Add folder…" itself.
+        let mut no_folders = data.clone();
+        no_folders.settings.tools.folders.clear();
+        // As many folders as may be allowed: "Add folder…" stands disabled and the sentence below says why.
+        let mut full = data.clone();
+        full.settings.tools.folders = (0..MAX_ALLOWED_FOLDERS)
+            .map(|at| AllowedFolder { path: format!("/home/anna/{at}"), access: FolderAccess::Read })
+            .collect();
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
             for state in [&State::default(), &typing] {
                 let _ = view(state, &data, class);
             }
             let _ = view(&typing, &no_tools, class);
             let _ = view(&typing, &turned_off(&data), class);
+            let _ = view(&typing, &no_folders, class);
+            let _ = view(&typing, &full, class);
         }
     }
 }

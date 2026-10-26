@@ -225,32 +225,57 @@ impl Target {
     /// always set up through its file, found by its folder `~/.gemini` or its command `gemini`.
     pub fn locate(self, env: &Env) -> Option<Method> {
         let home = &env.home;
-        let folder = |dir: PathBuf, file: &str| dir.is_dir().then(|| dir.join(file));
+        let file = self.file(env);
+        let in_folder = file.parent().is_some_and(Path::is_dir);
         match self {
             Target::ClaudeCode => {
                 let extra = [home.join(".claude/local/claude"), home.join(".local/bin/claude")];
                 if let Some(executable) = env.find_command("claude", &extra) {
                     return Some(Method::Cli { tool: Tool::Claude, executable });
                 }
-                let file = home.join(".claude.json");
                 (file.is_file() || home.join(".claude").is_dir()).then_some(Method::Json { file, stdio_type: true })
             }
             Target::Codex => match env.find_command("codex", &[]) {
                 Some(executable) => Some(Method::Cli { tool: Tool::Codex, executable }),
-                None => folder(home.join(".codex"), "config.toml").map(|file| Method::Toml { file }),
+                None => in_folder.then_some(Method::Toml { file }),
             },
-            Target::Gemini => {
-                let dir = home.join(".gemini");
-                (dir.is_dir() || env.find_command("gemini", &[]).is_some())
-                    .then(|| Method::Json { file: dir.join("settings.json"), stdio_type: false })
-            }
-            Target::ClaudeDesktop => folder(env.app_config.join("Claude"), "claude_desktop_config.json")
-                .map(|file| Method::Json { file, stdio_type: false }),
-            Target::Cursor => {
-                folder(home.join(".cursor"), "mcp.json").map(|file| Method::Json { file, stdio_type: false })
-            }
+            Target::Gemini => (in_folder || env.find_command("gemini", &[]).is_some())
+                .then_some(Method::Json { file, stdio_type: false }),
+            Target::ClaudeDesktop | Target::Cursor => in_folder.then_some(Method::Json { file, stdio_type: false }),
         }
     }
+
+    /// The file this client keeps its MCP servers in, the one [`Target::locate`] writes when it goes by file:
+    /// `~/.claude.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, Claude Desktop's
+    /// `claude_desktop_config.json` in [`Env::app_config`], `~/.cursor/mcp.json`. Named whether it exists or not.
+    fn file(self, env: &Env) -> PathBuf {
+        let home = &env.home;
+        match self {
+            Target::ClaudeCode => home.join(".claude.json"),
+            Target::Codex => home.join(".codex").join("config.toml"),
+            Target::Gemini => home.join(".gemini").join("settings.json"),
+            Target::ClaudeDesktop => env.app_config.join("Claude").join("claude_desktop_config.json"),
+            Target::Cursor => home.join(".cursor").join("mcp.json"),
+        }
+    }
+}
+
+/// The files that carry a client's key or Torro's hooks, which the tool `files` never reaches (decision 31 in
+/// `docs/assistent.md`, issue #304): for every [`Target`] the file of its file way ([`Target::locate`]) – also where
+/// its own command wins, and whether the file exists or not –, the hook file of every agent ([`hook_file`]) and the
+/// skill ([`skill_file`]), and the program the hooks and clients start ([`Env::program`]) when it is a full path:
+/// moved away or replaced, every hook would run something else. Their backups ([`BACKUP_SUFFIX`]) are locked by their
+/// name. The record and the hooks' key files are in the core's config folder, which is locked as a whole.
+pub fn protected_files(env: &Env) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = Target::ALL.iter().map(|target| target.file(env)).collect();
+    files.extend(AgentKind::ALL.iter().map(|agent| hook_file(env, *agent)));
+    files.push(skill_file(env));
+    // A bare name (`Env::current` without its executable) or none names no file; a relative lock would match nothing
+    // or, empty, everything.
+    if env.program.is_absolute() {
+        files.push(env.program.clone());
+    }
+    files
 }
 
 /// A client's own command that registers MCP servers.
@@ -1389,6 +1414,56 @@ mod tests {
     fn nothing_is_found_in_an_empty_home() {
         let dir = TempDir::new().expect("tmp");
         assert!(detect(&env(&dir)).is_empty());
+    }
+
+    /// Issue #304 (WD.2): the files with client keys and hooks are named for the tool `files` to lock, whether they
+    /// exist or not and also where a client's own command wins: each the file the file way writes.
+    #[cfg(unix)]
+    #[test]
+    fn the_protected_files_are_those_the_file_way_writes() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let protected = protected_files(&env);
+        let home = &env.home;
+        for file in [
+            home.join(".claude.json"),
+            home.join(".codex/config.toml"),
+            home.join(".gemini/settings.json"),
+            env.app_config.join("Claude/claude_desktop_config.json"),
+            home.join(".cursor/mcp.json"),
+            home.join(".claude/settings.json"),
+            home.join(".codex/hooks.json"),
+            skill_file(&env),
+        ] {
+            assert!(protected.contains(&file), "{}", file.display());
+        }
+        // Where the files are there, the file way writes exactly those; with a command, they stay protected.
+        for folder in [".claude", ".codex", ".gemini", ".config/Claude", ".cursor"] {
+            fs::create_dir_all(home.join(folder)).expect("dir");
+        }
+        for target in Target::ALL {
+            match target.locate(&env) {
+                Some(Method::Json { file, .. } | Method::Toml { file }) => assert_eq!(file, target.file(&env)),
+                other => panic!("{target:?}: {other:?}"),
+            }
+        }
+        executable(&dir.path().join("bin/claude"));
+        assert!(matches!(Target::ClaudeCode.locate(&env), Some(Method::Cli { .. })));
+        assert_eq!(protected_files(&env), protected, "the file stays protected when the command wins");
+    }
+
+    /// Review of issue #304: the program the hooks start is protected, so a folder with "Read and write" that holds it
+    /// (`~/.local/bin`) does not let it be moved away; a bare name or none names nothing.
+    #[test]
+    fn the_program_the_hooks_start_is_protected() {
+        let dir = TempDir::new().expect("tmp");
+        let mut env = env(&dir);
+        env.program = dir.path().join(".local").join("bin").join("torroworkplace");
+        assert!(protected_files(&env).contains(&env.program));
+        for program in [PathBuf::new(), PathBuf::from("torroworkplace")] {
+            env.program = program;
+            assert!(!protected_files(&env).iter().any(|file| !file.is_absolute()), "{:?}", env.program);
+        }
     }
 
     #[cfg(unix)]

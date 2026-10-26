@@ -8,8 +8,9 @@
 //! Access    what the assistant and each bot may use; the assistant on and off (task S.34)
 //! Profile   who the assistant is, and what it keeps because it was asked to (two pages below)
 //! Bots      the bots, each with "Edit" in the assistant and "Access" here
-//! Tools     the assistant's own tools: each switched on or off, whether the assistant may use it,
-//!           the PDF tool's folder and templates (task WZ.6), the web search providers (task WEB.6)
+//! Tools     the folders tools that work with files may reach (task WD.4); the assistant's own
+//!           tools: each switched on or off, whether the assistant may use it, the PDF tool's folder
+//!           and templates (task WZ.6), the web search providers (task WEB.6)
 //! Voice     talking by voice, speaking answers, the microphone, the programs on this computer
 //! History   how long conversations are kept
 //! ```
@@ -117,6 +118,11 @@ pub enum AppAction {
     /// pictures ([`tools::LOGO_EXTENSIONS`]) and, once one is chosen, sends
     /// [`tools::logo_request`] with the template as the host holds it then; cancelled, nothing.
     PickLogo(PdfTemplateId),
+    /// "Add folder…" under the allowed folders (Tools, task WD.4): the app opens the system's folder
+    /// chooser and, once a folder is chosen, sends [`tools::added_folder_request`] with the data the
+    /// host holds then (`set_setting allowed_folder` with `access: "read"`) through the host;
+    /// cancelled, nothing. Only a person allows a folder (point 9 of "Was nie nach außen geht").
+    PickAllowedFolder,
 }
 
 /// What a section of the assistant returns.

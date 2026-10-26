@@ -322,7 +322,8 @@ pub(crate) mod tests {
     }
 
     /// Issue #225: the commands of an own tool that is switched off or not selected are denied, those
-    /// of a usable one and listing the tools are not.
+    /// of a usable one and listing the tools are not. With only `pdf` usable the six commands of `files`
+    /// are denied (issue #304); with every tool none.
     #[test]
     fn a_run_denies_the_tools_it_may_not_use() {
         let denied_with = |tools: &[ToolId]| {
@@ -338,8 +339,24 @@ pub(crate) mod tests {
         let pdf = denied_with(&[ToolId::Pdf]);
         let denied_tools: Vec<&String> =
             pdf.iter().filter(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))).collect();
-        let web = [format!("{TOOL_PREFIX}tools_web_search"), format!("{TOOL_PREFIX}tools_fetch_page")];
-        assert_eq!(denied_tools, web.iter().collect::<Vec<_>>(), "only the web's, which is not usable");
+        let others: Vec<String> = [
+            "tools_web_search",
+            "tools_fetch_page",
+            "tools_list_folder",
+            "tools_find_files",
+            "tools_create_folder",
+            "tools_copy_file",
+            "tools_move_file",
+            "tools_trash_file",
+        ]
+        .iter()
+        .map(|command| format!("{TOOL_PREFIX}{command}"))
+        .collect();
+        assert_eq!(
+            denied_tools,
+            others.iter().collect::<Vec<_>>(),
+            "only those of web and files, which are not usable"
+        );
         let every = denied_with(&ToolId::ALL);
         assert!(!every.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{every:?}");
     }

@@ -1,11 +1,16 @@
 //! The assistant's own tools (concept "Eigene Werkzeuge" in `docs/assistent.md`, issue #225): abilities only the
-//! assistant and the bots have, each with a switch and settings of its own. The first one makes PDFs.
+//! assistant and the bots have, each with a switch and settings of its own. The first one makes PDFs; the second,
+//! `files` (issue #304, "Werkzeug Dateien"), organizes files in the folders a person allowed and moves them to the
+//! system's trash, never deleting for good.
 //!
 //! - `pdf`: sets a PDF from Markdown and one of the three page templates (task WZ.3).
 //! - `place`: where a new file goes and what it is called (task WZ.4).
 //! - `files`: the register of every file a tool made (task WZ.4).
 //! - `web`: web search with the providers a person switched on (task WEB.2), the page reader (WEB.3) and their
 //!   commands (WEB.4, [`web::Web`]).
+//! - `folders`: the bounds of the tool `files` – allowed folders, their access, what stays locked (task WD.2).
+//! - `organize`: the commands of the tool `files` – list, find, make a folder, copy, move (task WD.2), move to the
+//!   trash (task WD.3).
 //!
 //! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: the tool's switch for every key
 //! (`Lack::ToolOff`), for a client its rights and selection (`Lack::Tool`) and that a file is its own; the handlers
@@ -13,13 +18,15 @@
 //! path or content: only the kind of an error.
 
 pub mod files;
+pub mod folders;
+pub mod organize;
 pub mod pdf;
 pub mod place;
 pub mod web;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::Local;
 use torro_core::i18n::{tr, trf};
@@ -35,6 +42,12 @@ use crate::pim::Reach;
 /// Opens a file with the system's program for it, without waiting ([`system_open`]); tests record instead.
 pub type Opener = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 
+/// Moves the entry at a path to the system's trash ([`system_trash`], task WD.3); tests record instead and never touch
+/// the person's trash. The path is the entry itself as [`folders::Allowed::entry`] resolves it: a symbolic link goes,
+/// not what it points to. `Err` is what failed, from a fixed set ([`folders::Failure`]), never a path or the system's
+/// own text.
+pub type Trasher = Arc<dyn Fn(&Path) -> Result<(), folders::Failure> + Send + Sync>;
+
 /// The folders the tools work with. Each is a parameter, so tests never touch the person's.
 #[derive(Debug, Clone, Default)]
 pub struct Roots {
@@ -46,6 +59,10 @@ pub struct Roots {
     pub home: Option<PathBuf>,
     /// The fonts folder (`torro_core::design::font_dir`); `None` sets in the standard's.
     pub fonts: Option<PathBuf>,
+    /// What the tool `files` never reaches, whatever allowed folder holds it (decision 31, [`folders::Allowed`]):
+    /// the suite's own folders, the files with client keys and hooks ([`crate::client_setup::protected_files`]) and
+    /// the system's key stores ([`folders::key_stores`]). Each is locked with all it holds.
+    pub excluded: Vec<PathBuf>,
 }
 
 /// The tools' handlers and their register.
@@ -53,35 +70,60 @@ pub struct Tools {
     roots: Roots,
     register: Register,
     open: Opener,
+    trash: Trasher,
+    /// Held by every command of `files` that changes something, from planning to its end (`Tools::organize`): one at
+    /// a time, so two never both see the same target free.
+    changes: Arc<Mutex<()>>,
     /// The tool `web`: router, page reader and keys of the whole service (task WEB.4).
     web: web::Web,
 }
 
 impl Tools {
     /// The person's: the register in the core's data folder, the system's desktop and home folder, the design
-    /// packs' folder, files opened with the system's program, the web with the system keychain
-    /// ([`web::Web::system`]). In tests none of them: nothing of the person's.
+    /// packs' folder, files opened with the system's program and moved to the system's trash, the web with the system
+    /// keychain ([`web::Web::system`]), and locked for the tool `files` the config, data and state folders of every app
+    /// of the suite, the files with client keys and hooks and the system's key stores. In tests none of them: nothing
+    /// of the person's.
     pub fn system() -> Tools {
         if cfg!(test) {
             return Tools::new(Roots::default());
         }
         let data =
             torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE).map(|paths| paths.data.join("tools"));
-        let roots =
-            Roots { data, desktop: dirs::desktop_dir(), home: dirs::home_dir(), fonts: torro_core::design::font_dir() };
+        let home = dirs::home_dir();
+        let mut excluded: Vec<PathBuf> = torro_core::AppId::ALL
+            .iter()
+            .filter_map(|app| torro_core::paths::AppPaths::for_app(*app))
+            .flat_map(|paths| [paths.config, paths.data, paths.state])
+            .collect();
+        excluded.extend(client_files(crate::client_setup::Env::current(), home.as_deref()));
+        excluded.extend(home.as_deref().map(folders::key_stores).unwrap_or_default());
+        let roots = Roots { data, desktop: dirs::desktop_dir(), home, fonts: torro_core::design::font_dir(), excluded };
+        let (open, trash): (Opener, Trasher) = (Arc::new(system_open), Arc::new(system_trash));
         Tools {
             register: Register::in_dir(roots.data.clone()),
             roots,
-            open: Arc::new(system_open),
+            open,
+            trash,
+            changes: Arc::default(),
             web: web::Web::system(),
         }
     }
 
-    /// The tools with `roots`; files are opened by nobody (tests set an [`Opener`] with [`Tools::with_opener`]), the
-    /// web is [`web::Web::system`] (in tests one that reaches nothing; set another with [`Tools::with_web`]).
+    /// The tools with `roots`; files are opened by nobody and nothing goes to a trash (tests set an [`Opener`] with
+    /// [`Tools::with_opener`] and a [`Trasher`] with [`Tools::with_trasher`]), the web is [`web::Web::system`] (in
+    /// tests one that reaches nothing; set another with [`Tools::with_web`]).
     pub fn new(roots: Roots) -> Tools {
         let open: Opener = Arc::new(|_: &Path| Err("nothing is opened here".to_string()));
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open, web: web::Web::system() }
+        let trash: Trasher = Arc::new(|_: &Path| Err(folders::Failure::TrashRefused));
+        Tools {
+            register: Register::in_dir(roots.data.clone()),
+            roots,
+            open,
+            trash,
+            changes: Arc::default(),
+            web: web::Web::system(),
+        }
     }
 
     /// `self` with `web` as the tool `web`, for tests.
@@ -101,6 +143,13 @@ impl Tools {
     #[cfg(test)]
     pub fn with_opener(mut self, open: Opener) -> Tools {
         self.open = open;
+        self
+    }
+
+    /// `self` moving entries to the trash with `trash`, for tests: one that records, never the person's trash.
+    #[cfg(test)]
+    pub fn with_trasher(mut self, trash: Trasher) -> Tools {
+        self.trash = trash;
         self
     }
 
@@ -217,9 +266,37 @@ impl Tools {
     }
 }
 
+/// The files with client keys and hooks ([`crate::client_setup::protected_files`]) for the tool `files` to lock:
+/// those of `current` (`Env::current`), or, when it has no view of this process (no `HOME`, no config folder), those
+/// below `home` as the system names it, so they are locked all the same. Without either a warning goes to the log.
+fn client_files(current: Option<crate::client_setup::Env>, home: Option<&Path>) -> Vec<PathBuf> {
+    let env = current.or_else(|| {
+        let home = home?.to_path_buf();
+        // Only `home`, `app_config` and `program` name protected files; the record and the hooks' keys are in the
+        // core's config folder, which is locked as a whole.
+        let config_dir = torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE)
+            .map_or_else(|| home.join(".config").join(torro_core::AppId::WORKPLACE.binary), |paths| paths.config);
+        Some(crate::client_setup::Env {
+            app_config: dirs::config_dir().unwrap_or_else(|| home.join(".config")),
+            path: Vec::new(),
+            // The program the hooks start, as `Env::current` names it; none (an empty path) locks nothing.
+            program: std::env::current_exe().unwrap_or_default(),
+            config_dir,
+            home,
+        })
+    });
+    match env {
+        Some(env) => crate::client_setup::protected_files(&env),
+        None => {
+            eprintln!("torroworkplace: no home folder, so the tool files cannot lock the files with client keys");
+            Vec::new()
+        }
+    }
+}
+
 /// `tools.list_tools` for `reach`: every tool with whether a person switched it on (`settings`) and whether the
 /// key may use it: the app key always; a client with the tool's level in `tools` ([`ToolAccess::access`]: write
-/// for `pdf`, read for `web`) and the tool in its selection (`web` only when named, `Rights::reaches_tool`).
+/// for `pdf`, read for `web` and `files`) and the tool in its selection (`web` only when named, `Rights::reaches_tool`).
 pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Response {
     let tools = ToolId::ALL
         .into_iter()
@@ -242,6 +319,9 @@ fn description(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Makes PDFs from the assistant's text, set after the templates in its settings."),
         ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers you switch on."),
+        ToolId::Files => {
+            tr("Lists, finds, copies and moves files in the allowed folders, without reading what they hold.")
+        }
     }
 }
 
@@ -340,6 +420,38 @@ fn system_open(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Moves `path` to the system's trash ([`Trasher`]): the Recycle Bin on Windows, the freedesktop trash on Linux, the
+/// Finder's trash on macOS. The entry itself, also a symbolic link (the `trash` crate resolves only its folder). On
+/// macOS through `NSFileManager` rather than the Finder: no Apple Events, so no permission to control the Finder and
+/// no Finder started; only "Put Back" is missing. The error is what failed ([`trash_error_kind`]), never a path.
+fn system_trash(path: &Path) -> Result<(), folders::Failure> {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut context = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        context.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    context.delete(path).map_err(|err| trash_error_kind(&err))
+}
+
+/// What failed when the system's trash refused, for the answer: the errors of the `trash` crate carry paths and the
+/// system's own text, which may name the path too, so neither is passed on – only one of the fixed
+/// [`folders::Failure`]s, which the answer says in the suite's language.
+fn trash_error_kind(err: &trash::Error) -> folders::Failure {
+    use folders::Failure;
+    match err {
+        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+        trash::Error::FileSystem { source, .. } => match Failure::of_kind(source.kind()) {
+            Failure::Other => Failure::TrashRefused,
+            failure => failure,
+        },
+        trash::Error::TargetedRoot => Failure::RootFolder,
+        trash::Error::CouldNotAccess { .. } | trash::Error::CanonicalizePath { .. } => Failure::NotReachable,
+        _ => Failure::TrashRefused,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Mutex;
@@ -378,6 +490,7 @@ pub(crate) mod tests {
                 desktop: Some(self.desktop()),
                 home: Some(self.home()),
                 fonts: None,
+                excluded: Vec::new(),
             };
             let opened = Arc::clone(&self.opened);
             Tools::new(roots).with_opener(Arc::new(move |path: &Path| {
@@ -451,6 +564,7 @@ pub(crate) mod tests {
             desktop: Some(room.desktop()),
             home: Some(room.home()),
             fonts: Some(repo_fonts),
+            excluded: Vec::new(),
         };
         let tools = Tools::new(roots);
         let contains = |bytes: &[u8], name: &[u8]| bytes.windows(name.len()).any(|window| window == name);
@@ -534,6 +648,8 @@ pub(crate) mod tests {
         assert_eq!((suite[0].id, suite[0].enabled, suite[0].allowed), (ToolId::Pdf, false, true));
         assert_eq!(suite[0].description, tr(description(ToolId::Pdf)));
         assert_eq!((suite[1].id, suite[1].name.as_str(), suite[1].allowed), (ToolId::Web, "Web", true));
+        assert_eq!((suite[2].id, suite[2].enabled, suite[2].allowed), (ToolId::Files, false, true));
+        assert_eq!((suite[2].name.as_str(), suite[2].description.as_str()), ("Files", description(ToolId::Files)));
         settings.set_on(ToolId::Pdf, true);
         let mut rights = RightsTemplate::ReadOnly.rights();
         assert!(!listed(&settings, Reach::Client(&rights))[0].allowed, "reading only");
@@ -543,6 +659,68 @@ pub(crate) mod tests {
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let client = listed(&settings, Reach::Client(&rights));
         assert!(client[0].allowed && client[0].enabled);
+        assert!(client[1..].iter().all(|tool| !tool.allowed && !tool.enabled), "the others: neither selected nor on");
+    }
+
+    /// Issue #304: `files` is allowed with read access to `tools` (listing and finding change nothing) and the
+    /// tool in the selection; its switch is its own.
+    #[test]
+    fn files_are_allowed_with_reading_and_the_selection() {
+        let mut settings = torro_core::settings::Tools::default();
+        settings.set_on(ToolId::Files, true);
+        let files =
+            |settings: &torro_core::settings::Tools, rights: &Rights| match list(settings, Reach::Client(rights)) {
+                Response::Tools { tools } => tools.into_iter().find(|tool| tool.id == ToolId::Files).expect("listed"),
+                other => panic!("expected tools, got {other:?}"),
+            };
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.tools = Selection::Only(vec!["files".into()]);
+        let read = files(&settings, &rights);
+        assert!(read.allowed && read.enabled, "reading is enough");
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        assert!(!files(&settings, &rights).allowed, "not in the selection");
+        rights.tools = Selection::All;
+        rights.areas.remove(&Area::Tools);
+        assert!(!files(&settings, &rights).allowed, "no access to tools");
+        settings.set_on(ToolId::Files, false);
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        let off = files(&settings, &rights);
+        assert!(off.allowed && !off.enabled, "allowed, but switched off");
+    }
+
+    /// API review of issue #304: without a view of this process (`Env::current` is `None`) the files with client
+    /// keys are still locked, found below the home the system names.
+    #[test]
+    fn the_client_files_are_locked_without_the_process_view() {
+        let home = Path::new("/home/anna");
+        let files = client_files(None, Some(home));
+        assert!(files.contains(&home.join(".claude.json")), "{files:?}");
+        assert!(files.contains(&home.join(".claude").join("settings.json")), "{files:?}");
+        assert!(client_files(None, None).is_empty(), "no home, nothing to name");
+    }
+
+    /// Task WD.3: the system trash's errors carry paths and the system's text; the answer takes only their kind.
+    #[test]
+    fn a_trash_error_names_no_path() {
+        let secret = "/Users/anna/Secret plans.pdf";
+        for err in [
+            trash::Error::CouldNotAccess { target: secret.into() },
+            trash::Error::CanonicalizePath { original: secret.into() },
+            trash::Error::Unknown { description: format!("cannot trash {secret}") },
+            trash::Error::Os { code: 13, description: secret.into() },
+            trash::Error::TargetedRoot,
+        ] {
+            let Response::Error { message, .. } = folders::FolderError::Failed(trash_error_kind(&err)).response()
+            else {
+                panic!("an error")
+            };
+            assert!(!message.contains("Secret") && !message.contains("13"), "{message}");
+        }
+        assert_eq!(trash_error_kind(&trash::Error::TargetedRoot).text(), tr("a root folder cannot go to the trash"));
+        let refused = trash::Error::Unknown { description: "cannot".into() };
+        assert_eq!(trash_error_kind(&refused).text(), tr("the trash refused it"));
+        let none = Tools::new(Roots::default());
+        assert!((none.trash)(Path::new("/tmp/x")).is_err(), "no trash without one set");
     }
 
     /// Issue #305: `web` needs only reading in `tools`, and its id in the selection; "all tools" does
@@ -555,12 +733,24 @@ pub(crate) mod tests {
             other => panic!("expected tools, got {other:?}"),
         };
         let mut rights = RightsTemplate::ReadOnly.rights();
-        assert_eq!(allowed(&rights), [(ToolId::Pdf, false), (ToolId::Web, false)], "All, reading only");
+        assert_eq!(
+            allowed(&rights),
+            [(ToolId::Pdf, false), (ToolId::Web, false), (ToolId::Files, true)],
+            "All, reading only"
+        );
         rights.tools = Selection::Only(vec!["web".into()]);
-        assert_eq!(allowed(&rights), [(ToolId::Pdf, false), (ToolId::Web, true)], "named, reading is enough");
+        assert_eq!(
+            allowed(&rights),
+            [(ToolId::Pdf, false), (ToolId::Web, true), (ToolId::Files, false)],
+            "named, reading is enough"
+        );
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::All;
-        assert_eq!(allowed(&rights), [(ToolId::Pdf, true), (ToolId::Web, false)], "All is pdf, never web");
+        assert_eq!(
+            allowed(&rights),
+            [(ToolId::Pdf, true), (ToolId::Web, false), (ToolId::Files, true)],
+            "All is pdf and files, never web"
+        );
     }
 
     #[test]

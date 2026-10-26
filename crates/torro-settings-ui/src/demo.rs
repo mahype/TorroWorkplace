@@ -16,7 +16,8 @@ use chrono::{TimeZone, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
 use torro_core::settings::{
-    AssistantDefault, CalendarReminders, PdfTemplateId, Reminders, Settings, ToolId, Tools, WebSearch,
+    AllowedFolder, AssistantDefault, CalendarReminders, FolderAccess, PdfTemplateId, Reminders, Settings, ToolId,
+    Tools, WebSearch,
 };
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
@@ -76,6 +77,13 @@ impl Demo {
         tools.set_on(ToolId::Pdf, true);
         tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
         tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
+        // The files tool on, with two allowed folders, one to read and one to write (task WD.4), so
+        // Tools shows both steps of the picker.
+        tools.set_on(ToolId::Files, true);
+        tools.folders = vec![
+            AllowedFolder { path: "/home/anna/Documents".into(), access: FolderAccess::Read },
+            AllowedFolder { path: "/home/anna/Projects/Invoices".into(), access: FolderAccess::ReadWrite },
+        ];
         // The tool web on with DuckDuckGo and Wikipedia (task WEB.6); DuckDuckGo rests after a block
         // ([`Demo::search_providers`]), so Tools shows a provider that is asked and one that is not.
         tools.set_on(ToolId::Web, true);
@@ -511,6 +519,10 @@ impl Demo {
                     ToolId::Pdf => {
                         tr("Makes PDFs from the assistant's text, set after the templates in its settings.").to_string()
                     }
+                    ToolId::Files => tr(
+                        "Lists, finds, copies and moves files in the allowed folders, without reading what they hold.",
+                    )
+                    .to_string(),
                     ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers \
                                        you switch on.")
                     .to_string(),

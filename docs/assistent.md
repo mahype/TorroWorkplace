@@ -477,6 +477,75 @@ Planung entschieden).
 | Werkzeug `web` an-/abschalten, Auswahl | wie beim PDF | `settings.set_setting tool_enabled`, `clients.update_client` | wie beim PDF |
 
 Aufgaben: [tasks/assistent.md](tasks/assistent.md), WEB.1–WEB.7.
+### Werkzeug Dateien
+
+Stand: 2026-10-24, Issue #304. Das zweite eigene Werkzeug (`files`, Schalter „Organize files“) ordnet Dateien auf dem
+Rechner: Ordner auflisten, nach Namen suchen, Ordner anlegen, kopieren, verschieben, umbenennen, in den Papierkorb
+legen. Den **Inhalt** einer Datei liest oder ändert es nicht; das machen Dokument-Werkzeuge wie ArtCraft (#303).
+Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalter, Ordnerliste und Freigabe-Karten.
+
+- **Freigegebene Ordner** (Assistent › Einstellungen › Tools, Gruppe „Allowed folders“, Einstellung
+  `allowed_folder`): eine gemeinsame Liste für alle Werkzeuge, die mit Dateien arbeiten; auch #303 begrenzt ArtCraft
+  damit. Je Ordner „Read“ oder „Read and write“, neu hinzugefügt zuerst „Read“. Die Liste verwalten heißt Rechte
+  vergeben: nur Menschen, auch das Entfernen (Punkt 9 in [api.md](api.md)). Liegen Ordner ineinander, gilt der
+  innerste.
+- **Pfade:** absolut, ohne `..` und `.`. Der Kern löst sie auf (`canonicalize`) und vergleicht mit den aufgelösten
+  Ordnern; ein symbolischer Link, der aus dem Ordner führt, ist damit draußen. Was draußen liegt, gibt es für das
+  Werkzeug nicht (`not-found`), damit ein Agent nicht abtasten kann, was es außerhalb gibt. Schreiben in einen
+  Ordner mit „Read“ ist `forbidden`.
+- **Immer gesperrt:** die Ordner der Suite selbst (Einstellungen, Daten und Zustand jeder App, auch wenn ein
+  freigegebener Ordner sie enthält), verglichen ohne Groß- und Kleinschreibung. Sonst könnte ein Agent mit dem
+  Home-Verzeichnis als freigegebenem Ordner die Rechte-Datei der Clients verschieben. Ebenso gesperrt: die Dateien,
+  in die Torro Client-Schlüssel und Hooks schreibt (`~/.claude.json`, `~/.claude/settings.json` … mit ihren
+  Sicherungen), das Programm, das die Hooks starten, die Schlüsselablagen des Systems (`~/.ssh`, `~/.gnupg`,
+  Schlüsselbund), weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub, Paketregister, Passwortspeicher), die
+  Browser-Profile und der Papierkorb des Systems (`~/.Trash`, `~/.local/share/Trash`), auch die Papierkörbe auf
+  anderen Laufwerken (`.Trash-1000`, `.Trash`, `.Trashes`, `$Recycle.Bin`, nach dem Namen, überall). Auch wenn das
+  System den Zugriff auf etwas Gesperrtes verweigert, heißt die Antwort `not-found`. Ein Name zählt so, wie das
+  Laufwerk ihn speichert: Findet das System einen Eintrag auch unter einer anderen Schreibweise (`.ſsh` für `.ssh`,
+  `Rechnung März.pdf` zusammengesetzt für die zerlegt gespeicherte Datei, ein Kurzname unter Windows), nimmt der Kern
+  den gespeicherten Namen, mit dessen Sperren und Rechten, und nennt ihn in der Antwort. Findet das System einen
+  eben angelegten, kopierten oder verschobenen Eintrag unter einem gesperrten Pfad (`~/.cursor/mcp.jſon` als das
+  fehlende `mcp.json`), nimmt der Kern das zurück und antwortet `not-found`. Offen: Linux-Laufwerke ohne Groß- und
+  Kleinschreibung (ext4 mit casefold, exFAT) bei den Ordnern über dem letzten Teil. Unter Windows darf ein Name
+  keinen Doppelpunkt enthalten (er legte einen Datenstrom an einen vorhandenen Eintrag). Ein Eintrag, der einen
+  freigegebenen Ordner oder etwas Gesperrtes ist oder enthält, lässt sich nicht verschieben, umbenennen oder in den
+  Papierkorb legen. Nach einer Freigabe läuft nur, was die Karte zeigte: Der Kern hält die aufgelösten Pfade und die
+  Einträge dort fest (Art, Erstellzeit, bei Dateien und Links Größe und Änderungszeit, unter Unix Laufwerk und
+  Inode), vergleicht sie unmittelbar vor dem Ausführen im selben Schritt und antwortet `conflict`, wenn sich etwas
+  geändert hat. Ändernde Befehle laufen nacheinander, damit zwei gleichzeitige nicht beide ein Ziel frei sehen.
+- **Nie überschreiben** (entschieden): Ist das Ziel belegt, wählt der Kern einen freien Namen wie das PDF-Werkzeug
+  (`Bericht-2.pdf`, `Rechnungen-2`), und die Antwort nennt den Pfad, der entstanden ist.
+- **Kopieren nur Dateien** (entschieden); verschieben und umbenennen auch Ordner, solange es auf demselben Laufwerk
+  bleibt. Symbolische Links werden nicht kopiert; verschoben wird der Link selbst, nicht sein Ziel.
+- **Papierkorb** über das System (Crate `trash`, auf macOS über `NSFileManager`, ohne Rückfrage nach der
+  Erlaubnis, den Finder zu steuern; entschieden). Endgültiges Löschen gibt es nicht. Der Papierkorb fragt **immer**
+  einen Menschen, auch bei einem Client, der bei „Ask first“ „Never“ gewählt hat.
+- **Grenzen:** Auflisten eine Ebene, höchstens 500 Einträge; Suchen höchstens 10 Ebenen tief, 200 Treffer und
+  50.000 angesehene Einträge, ohne symbolischen Links zu folgen. Wird eine Grenze erreicht oder geht beim Suchen
+  ein Ordner nicht auf, sagt die Antwort `truncated`.
+- **Rechte:** Bereich `tools` mit `files` in der Auswahl. Auflisten und Suchen sind `Read`, anlegen, kopieren und
+  verschieben `Write`, der Papierkorb `Delete`. `allowed` in `tools.list_tools` heißt für `files` Leserecht, für
+  `pdf` weiter Schreibrecht.
+- **Freigabe-Karten** zeigen Quelle und Ziel, so wie der Kern sie aufgelöst hat, nie den Text des Clients.
+  Protokoll und Log nennen keine Pfade und keine Suchbegriffe.
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Freigegebene Ordner auflisten, Ordner auflisten | – (die Person hat ihren Dateimanager) | `tools.list_folder` (ohne `path`: die freigegebenen Ordner) · Read | `tools_list_folder` |
+| Dateien nach Namen suchen | – | `tools.find_files` · Read | `tools_find_files` |
+| Ordner anlegen | Freigabe-Karte, wenn der Client fragen lässt | `tools.create_folder` · Write | `tools_create_folder` |
+| Kopieren | ebenso | `tools.copy_file` · Write | `tools_copy_file` |
+| Verschieben, umbenennen | ebenso | `tools.move_file` · Write | `tools_move_file` |
+| In den Papierkorb | Freigabe-Karte, immer | `tools.trash_file` · Delete | `tools_trash_file` |
+| Werkzeug an-/abschalten | Assistent › Einstellungen › Tools | `settings.set_setting tool_enabled` · Admin | wie beim PDF-Werkzeug |
+| Freigegebene Ordner verwalten | Assistent › Einstellungen › Tools, „Allowed folders“ | `settings.set_setting allowed_folder` · Admin, nur App-Schlüssel | **Never** (Punkt 9) |
+
+Die Entscheidung 6 („Dateien und Shell beim Agent-Antrieb immer aus“) bleibt: Sie meint die eingebauten Werkzeuge
+eines Agenten wie Claude Code. Das Werkzeug Dateien ist ein Befehl des Kerns mit Schalter, Rechten, Ordnergrenzen
+und Freigaben.
+
+Aufgaben: [tasks/assistent.md](tasks/assistent.md), WD.1–WD.4.
 
 ## Sprache: per Weckwort mit dem Assistenten reden
 
@@ -625,3 +694,15 @@ Getroffen am 2026-10-24 (Abschnitt „Werkzeug Web“, Issue #305).
     vorbelegtem Haken das Leserecht für `web`.
 26. **„Alle Werkzeuge“ deckt `web` nicht ab,** auch nicht in Schnittmengen; `web` braucht einen Haken eines Menschen
     in der Auswahl des Clients.
+Getroffen am 2026-10-24 (Abschnitt „Werkzeug Dateien“, Issue #304).
+
+27. **Freigegebene Ordner** sind eine gemeinsame Liste für alle Werkzeuge mit Dateien (auch ArtCraft, #303), je
+    Ordner „Read“ oder „Read and write“; verwalten nur Menschen, auch das Entfernen. Der innerste Ordner gilt.
+28. **Ziel belegt:** freier Name (`-2`, `-3` …) statt Abbruch; die Antwort nennt den entstandenen Pfad.
+29. **Kopieren nur Dateien;** Ordner verschieben nur auf demselben Laufwerk.
+30. **Papierkorb** über das Crate `trash`, auf macOS mit `NSFileManager` (keine Erlaubnis für den Finder nötig, dafür
+    fehlt „Zurücklegen“ manchmal); er fragt immer einen Menschen.
+31. **Gesperrt** sind immer die Ordner der Suite, die Dateien mit Client-Schlüsseln und Hooks, das Programm, das die
+    Hooks starten, die Schlüsselablagen des Systems, weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub,
+    Paketregister, Passwortspeicher), die Browser-Profile und der Papierkorb des Systems, auch innerhalb eines
+    freigegebenen Ordners.

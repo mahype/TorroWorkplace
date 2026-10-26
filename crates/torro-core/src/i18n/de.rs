@@ -5265,6 +5265,103 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose a logo", "Logo wählen"),
     ("Pictures", "Bilder"),
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
+    // The tool files (WD.1, #304): its switch, what it does, its tool lines in the chat
+    ("Organize files", "Dateien ordnen"),
+    (
+        "Lists, finds, copies and moves files in the allowed folders, without reading what they hold.",
+        "Listet, sucht, kopiert und verschiebt Dateien in den freigegebenen Ordnern, ohne ihren Inhalt zu lesen.",
+    ),
+    ("Listed folder", "Ordner aufgelistet"),
+    ("Found files", "Dateien gefunden"),
+    ("Made folder", "Ordner angelegt"),
+    ("Copied file", "Datei kopiert"),
+    ("Moved file", "Datei verschoben"),
+    ("Moved to trash", "In den Papierkorb gelegt"),
+    // The tool files (WD.4, #304): the allowed folders in the assistant's Tools settings
+    ("Allowed folders", "Freigegebene Ordner"),
+    ("Add folder…", "Ordner hinzufügen…"),
+    (
+        "Tools like Files work only in these folders; ArtCraft will use them too. Only you can change this list.",
+        "Werkzeuge wie Files arbeiten nur in diesen Ordnern; ArtCraft wird sie auch nutzen. Nur du kannst diese Liste ändern.",
+    ),
+    ("No allowed folders", "Keine freigegebenen Ordner"),
+    ("The tool works only in allowed folders.", "Das Werkzeug arbeitet nur in freigegebenen Ordnern."),
+    (
+        "At most {n} folders. Remove one to add another.",
+        "Höchstens {n} Ordner. Entferne einen, um einen weiteren hinzuzufügen.",
+    ),
+    (
+        "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose its folders.",
+        "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet und unter Zugriff erlaubt ist. Nur du kannst es einschalten und seine Ordner wählen.",
+    ),
+    ("Choose a folder for the tools", "Ordner für die Werkzeuge wählen"),
+    // The tool files (WD.2, #304): its bounds, its errors, its approvals
+    (
+        "No such file or folder in the allowed folders.",
+        "Keine solche Datei und kein solcher Ordner in den freigegebenen Ordnern.",
+    ),
+    ("The files cannot be changed: {reason}", "Die Dateien können nicht geändert werden: {reason}"),
+    ("not found", "nicht gefunden"),
+    ("no permission", "keine Berechtigung"),
+    ("the drive is full", "das Laufwerk ist voll"),
+    ("the trash refused it", "der Papierkorb hat es abgelehnt"),
+    ("a root folder cannot go to the trash", "ein Stammordner kann nicht in den Papierkorb"),
+    ("not reachable", "nicht erreichbar"),
+    ("another error", "ein anderer Fehler"),
+    (
+        "The system does not let Torro Workplace in there. Allow it under System Settings › Privacy & Security › Files and Folders.",
+        "Das System lässt Torro Workplace dort nicht hinein. Erlaube es unter Systemeinstellungen › Datenschutz & Sicherheit › Dateien und Ordner.",
+    ),
+    ("The system does not let Torro Workplace in there.", "Das System lässt Torro Workplace dort nicht hinein."),
+    (
+        "Give a full path of one line, without . or .. parts.",
+        "Gib einen vollständigen Pfad in einer Zeile an, ohne . oder .. darin.",
+    ),
+    ("Give the new path with a name at its end.", "Gib den neuen Pfad mit einem Namen am Ende an."),
+    ("A name may be at most 255 bytes long.", "Ein Name darf höchstens 255 Bytes lang sein."),
+    ("A name may not contain a colon.", "Ein Name darf keinen Doppelpunkt enthalten."),
+    (
+        "The tools may only read in this folder; a person can allow more in the assistant's settings.",
+        "Die Werkzeuge dürfen in diesem Ordner nur lesen; mehr kann ein Mensch in den Einstellungen des Assistenten erlauben.",
+    ),
+    (
+        "This is or holds an allowed folder or files the suite protects; it stays where it is.",
+        "Das ist oder enthält einen freigegebenen Ordner oder Dateien, die die Suite schützt; es bleibt, wo es ist.",
+    ),
+    ("Give a folder here, not a file.", "Gib hier einen Ordner an, keine Datei."),
+    (
+        "Give a name of 1 to 200 characters to look for, in one line.",
+        "Gib einen Namen mit 1 bis 200 Zeichen in einer Zeile an, nach dem gesucht wird.",
+    ),
+    ("Only files can be copied, not folders or links.", "Nur Dateien lassen sich kopieren, keine Ordner oder Links."),
+    (
+        "A folder or a link can only be moved on the same drive.",
+        "Ein Ordner oder Link lässt sich nur auf demselben Laufwerk verschieben.",
+    ),
+    ("A folder cannot be moved into itself.", "Ein Ordner lässt sich nicht in sich selbst verschieben."),
+    ("Every free name for it is taken.", "Alle freien Namen dafür sind vergeben."),
+    ("Make the folder \"{new}\" in \"{folder}\"", "Ordner „{new}“ in „{folder}“ anlegen"),
+    ("Make a folder in an unknown place", "Ordner an unbekannter Stelle anlegen"),
+    ("Copy \"{name}\" to \"{folder}\"", "„{name}“ nach „{folder}“ kopieren"),
+    ("Copy \"{name}\" to \"{folder}\" as \"{new}\"", "„{name}“ als „{new}“ nach „{folder}“ kopieren"),
+    ("Copy an unknown file", "Unbekannte Datei kopieren"),
+    ("Rename \"{name}\" to \"{new}\"", "„{name}“ in „{new}“ umbenennen"),
+    ("Move \"{name}\" to \"{folder}\"", "„{name}“ nach „{folder}“ verschieben"),
+    ("Move \"{name}\" to \"{folder}\" as \"{new}\"", "„{name}“ als „{new}“ nach „{folder}“ verschieben"),
+    ("Move an unknown file or folder", "Unbekannte Datei oder unbekannten Ordner verschieben"),
+    // The trash of the tool files (WD.3, #304): its approval
+    ("Move \"{name}\" to the trash", "„{name}“ in den Papierkorb legen"),
+    ("Move an unknown file or folder to the trash", "Unbekannte Datei oder unbekannten Ordner in den Papierkorb legen"),
+    ("From: {path}", "Von: {path}"),
+    ("To: {path}", "Nach: {path}"),
+    (
+        "A file there is never replaced; a free name is chosen.",
+        "Eine Datei dort wird nie ersetzt; es wird ein freier Name gewählt.",
+    ),
+    (
+        "The files changed after the approval was asked for; nothing was done.",
+        "Die Dateien haben sich nach der Anfrage zur Freigabe geändert; es wurde nichts getan.",
+    ),
     // The rights editor › the selection of tools (WZ.7, #225)
     (
         "Includes tools added later, but not web search: tick it by name. Each works only while it is on in the assistant's settings.",
