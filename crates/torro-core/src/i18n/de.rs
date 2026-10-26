@@ -1490,6 +1490,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Follow up on {entry} {when} unless someone replies", "Wiedervorlage für {entry} {when}, falls niemand antwortet"),
     ("Show {messages} in the inbox again", "{messages} wieder im Eingang anzeigen"),
     ("Hide {messages} from the inbox again", "{messages} wieder aus dem Eingang ausblenden"),
+    ("Put {messages} on Reply later", "{messages} auf „Später beantworten“ legen"),
+    ("Set {messages} aside", "{messages} beiseitelegen"),
+    ("Take {messages} off their pile", "{messages} von ihrem Stapel nehmen"),
     ("Move {entry} to {lane}", "{entry} nach „{lane}“ verschieben"),
     (
         "Move {entry} to {lane} and send later notices of {source} there too",

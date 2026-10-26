@@ -861,6 +861,7 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            pile: None,
             untrusted: true,
             category: None,
         };

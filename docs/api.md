@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
-| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_shown`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_shown`, `set_mail_pile`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -521,6 +521,19 @@ wieder aus. `not-found` für den ganzen Aufruf, sobald eine Mail in einem Konto 
 (`mail_accounts`) oder dessen Einträge er nicht sieht (`inbox_sources`) – geprüft, bevor jemand um Freigabe gebeten wird.
 Erledigte Einträge, deren Ausblendung noch gilt (diese Unterhaltung, oder eine Regel, die noch besteht), räumt der Kern
 nicht nach 30 Tagen auf, damit ihre Mail ausgeblendet bleibt.
+„Reply later“ und „Set aside“ (E19.2) sind `inbox.set_mail_pile` (Zugriff Write, MCP `inbox_set_mail_pile`): `pile:
+reply_later` bzw. `set_aside` legt 1 bis 100 Mails (`ids`, `m:…`, auch mehrerer Konten) auf diesen Stapel, ohne `pile`
+kommen sie herunter. Eine Mail liegt auf höchstens einem Stapel, erneut legen verlegt sie; derselbe Stapel noch einmal
+ändert nichts (auch nicht, seit wann sie dort liegt). Gemerkt wird nur im Kern, nichts geht an den Server, Mail und
+Eintrag bleiben, wie sie sind. „Reply later“ räumt sich selbst ab: Taucht nach dem Auflegen eine Mail von der Adresse des
+Kontos in der Unterhaltung auf (jeder Ordner, jedes Programm), nimmt der Kern die Mail herunter; „Set aside“ bleibt, bis
+man sie herunternimmt. Reichweite, Grenzen, Freigabe und Protokoll wie bei `set_mail_shown`: `not-found` für den ganzen
+Aufruf, sobald eine Mail außer Reichweite liegt, geprüft vor der Freigabe; die Freigabe nennt die Betreffe aus dem
+Mail-Speicher, das Protokoll nur gehashte Kennungen. Dazu `mail.search_messages` mit dem optionalen Feld `pile`:
+`without` lässt Mail auf einem Stapel weg („All“, Kategorien, Smart views), `reply_later` bzw. `set_aside` liefert nur
+diesen Stapel; gefiltert wird vor dem Blättern, mit `snoozed` und `hidden` gelten alle, und wie diese nur für Konten,
+deren Einträge der Schlüssel sieht. Jede Mail einer Suche trägt `pile`, wenn sie auf einem Stapel liegt (verträglich,
+kein `v: 2`).
 `set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
 Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
 

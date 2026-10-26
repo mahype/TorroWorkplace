@@ -2852,10 +2852,11 @@ impl Core {
         {
             return Ok(refused);
         }
-        // "Show again" (task E18.2): every mail in an account the client reads and whose entries it
-        // sees, as for the changing mail commands; so a foreign id opens no approval.
-        if let Request::SetMailShown { ids, .. } = &request
-            && let Err(refused) = self.shown_mail_of(ids, Reach::Client(&rights)).await
+        // "Show again" (task E18.2) and the piles (task E19.2): every mail in an account the client
+        // reads and whose entries it sees, as for the changing mail commands; so a foreign id opens
+        // no approval.
+        if let Request::SetMailShown { ids, .. } | Request::SetMailPile { ids, .. } = &request
+            && let Err(refused) = self.reachable_mail_of(ids, Reach::Client(&rights)).await
         {
             return Ok(refused);
         }
@@ -3629,8 +3630,9 @@ impl Core {
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
-                // "Show again" (task E18.2): the subjects as the mail store holds them.
-                if let Request::SetMailShown { .. } = &request {
+                // "Show again" (task E18.2) and the piles (task E19.2): the subjects as the mail
+                // store holds them.
+                if let Request::SetMailShown { .. } | Request::SetMailPile { .. } = &request {
                     facts.mail = crate::mail::write::facts(&self.mail, &request).await;
                 }
                 // The calendar of an event by the name the core caches (task E8.5b).
@@ -4648,6 +4650,7 @@ impl Core {
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
             | Request::SetMailShown { .. }
+            | Request::SetMailPile { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }
             | Request::ListCategories { .. }
@@ -6179,6 +6182,8 @@ impl Core {
             Request::ClassifyItem { id } => Box::pin(self.classify_item(&id, client)).await,
             // "Show again" names mail, not entries (task E18.2): the core looks it up in the stores.
             request @ Request::SetMailShown { .. } => Box::pin(self.set_mail_shown(request, reach)).await,
+            // The piles name mail too (task E19.2).
+            request @ Request::SetMailPile { .. } => Box::pin(self.set_mail_pile(request, reach)).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
                 if let Some(pin) = pin
@@ -7324,14 +7329,14 @@ impl Core {
         }
     }
 
-    /// The mail `ids` of `inbox.set_mail_shown` (task E18.2) as pairs of account (`mail:<address>`)
-    /// and message (`m:…`), in their order, looked up in the stores of the accounts `reach` reads
-    /// ([`crate::mail::write::locate`]). For a client each account must also be one whose inbox
-    /// entries it sees (the source among `inbox_sources`, [`torro_ipc::api::Rights::reaches_source`]),
-    /// as for `inbox.snooze_item` with a mail's id. Else `not-found` for the whole call, the same
-    /// answer as for a mail that does not exist. Checked before an approval is asked for and again
-    /// when the command runs.
-    async fn shown_mail_of(&self, ids: &[String], reach: Reach<'_>) -> Result<Vec<(String, String)>, Response> {
+    /// The mail `ids` of `inbox.set_mail_shown` (task E18.2) or `inbox.set_mail_pile` (task E19.2)
+    /// as pairs of account (`mail:<address>`) and message (`m:…`), in their order, looked up in the
+    /// stores of the accounts `reach` reads ([`crate::mail::write::locate`]). For a client each
+    /// account must also be one whose inbox entries it sees (the source among `inbox_sources`,
+    /// [`torro_ipc::api::Rights::reaches_source`]), as for `inbox.snooze_item` with a mail's id. Else
+    /// `not-found` for the whole call, the same answer as for a mail that does not exist. Checked
+    /// before an approval is asked for and again when the command runs.
+    async fn reachable_mail_of(&self, ids: &[String], reach: Reach<'_>) -> Result<Vec<(String, String)>, Response> {
         let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
         let found = crate::mail::write::locate(&self.mail, reach, &wanted).await.map_err(|err| err.response())?;
         let sees = |account: &str| match reach {
@@ -7348,7 +7353,7 @@ impl Core {
 
     /// `inbox.set_mail_shown` (task E18.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
     /// also for the app key, which comes here without the client's checks), the mail in reach
-    /// ([`Core::shown_mail_of`]), then with `shown` the exception for the mail that is hidden now
+    /// ([`Core::reachable_mail_of`]), then with `shown` the exception for the mail that is hidden now
     /// ([`crate::mail::read::hidden_now`]) – a mail that is not hidden gets none –, without it the
     /// exception taken back. Nothing else changes. `error` when the inbox cannot be read or written.
     async fn set_mail_shown(&self, request: Request, reach: Reach<'_>) -> Response {
@@ -7358,7 +7363,7 @@ impl Core {
         let Request::SetMailShown { ids, shown } = request else {
             return refusal("error", "only inbox.set_mail_shown is answered here".into());
         };
-        let mail = match self.shown_mail_of(&ids, reach).await {
+        let mail = match self.reachable_mail_of(&ids, reach).await {
             Ok(mail) => mail,
             Err(refused) => return refused,
         };
@@ -7377,6 +7382,31 @@ impl Core {
             Ok(()) => Response::Ok,
             Err(err) => {
                 eprintln!("torroworkplace: inbox: cannot keep the mail shown again: {err}");
+                refusal("error", "the inbox cannot be written".into())
+            }
+        }
+    }
+
+    /// `inbox.set_mail_pile` (task E19.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
+    /// also for the app key, which comes here without the client's checks), the mail in reach
+    /// ([`Core::reachable_mail_of`], `not-found` for the whole call), then the mail put on `pile` or
+    /// taken off ([`Inbox::set_mail_pile`]). Nothing else changes, nothing goes to the server.
+    /// `error` when the inbox cannot be written.
+    async fn set_mail_pile(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
+            return refused;
+        }
+        let Request::SetMailPile { ids, pile } = request else {
+            return refusal("error", "only inbox.set_mail_pile is answered here".into());
+        };
+        let mail = match self.reachable_mail_of(&ids, reach).await {
+            Ok(mail) => mail,
+            Err(refused) => return refused,
+        };
+        match self.inbox.set_mail_pile(&mail, pile, Utc::now()) {
+            Ok(()) => Response::Ok,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot keep the pile of mail: {err}");
                 refusal("error", "the inbox cannot be written".into())
             }
         }
@@ -18501,6 +18531,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -18595,6 +18626,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories,
+            pile: None,
         };
         let messages = |answer: Response| -> Vec<torro_mail::MessageSummary> {
             let Response::MailMessages { messages, .. } = answer else { panic!("a page, got {answer:?}") };
@@ -18766,6 +18798,7 @@ mod tests {
                 snoozed: None,
                 hidden: None,
                 categories: Vec::new(),
+                pile: None,
             };
             let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
             messages
@@ -18865,6 +18898,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -18943,6 +18977,7 @@ mod tests {
             snoozed,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let page = |response: Response| match response {
             Response::MailMessages { messages, cursor, total_estimate, .. } => (messages, cursor, total_estimate),
@@ -19065,6 +19100,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -19177,6 +19213,7 @@ mod tests {
             snoozed: Some(false),
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let page = |response: Response| match response {
             Response::MailMessages { messages, .. } => messages,
@@ -19245,6 +19282,7 @@ mod tests {
             snoozed: None,
             hidden: Some(hidden),
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(core, Some(key), search).await else { panic!("a page") };
         messages.into_iter().map(|message| message.subject).collect()
@@ -19267,6 +19305,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(core, Some(key), search).await else { panic!("a page") };
         messages.into_iter().map(|message| (message.subject.clone(), message)).collect()
@@ -19437,6 +19476,224 @@ mod tests {
         assert!(exceptions().is_empty());
     }
 
+    // ----- "Reply later" and "Set aside" (task E19.2) -----
+
+    /// A search of the inbox folder (`in:inbox`) as "All" and the piles ask for it.
+    fn pile_search(
+        pile: Option<torro_ipc::mail::PileFilter>,
+        snoozed: Option<bool>,
+        hidden: Option<bool>,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Request {
+        Request::SearchMail {
+            account: None,
+            folder: None,
+            query: Some("in:inbox".into()),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor,
+            order: None,
+            sort: None,
+            snoozed,
+            hidden,
+            categories: Vec::new(),
+            pile,
+        }
+    }
+
+    /// Every page of `search` (built with a cursor) as `key` sees it: the subjects in order, and
+    /// the `total_estimate` of the first page.
+    async fn every_page(
+        core: &Core,
+        key: &Key,
+        search: impl Fn(Option<String>) -> Request,
+    ) -> (Vec<String>, Option<u64>) {
+        let (mut subjects, mut cursor, mut total) = (Vec::new(), None, None);
+        loop {
+            let first = cursor.is_none();
+            let Response::MailMessages { messages, cursor: next, total_estimate, .. } =
+                ask(core, Some(key), search(cursor)).await
+            else {
+                panic!("a page")
+            };
+            if first {
+                total = total_estimate;
+            }
+            subjects.extend(messages.into_iter().map(|message| message.subject));
+            match next {
+                Some(next) => cursor = Some(next),
+                None => return (subjects, total),
+            }
+        }
+    }
+
+    /// Task E19.2, decisions 3 and 4: mail on a pile leaves "All" (`pile: without`) and stands on
+    /// its pile alone; every message of a search names its pile; the other pile moves it, the same
+    /// pile again keeps since when, without a pile it comes back. Pages and cursor hold with `pile`,
+    /// `snoozed` and `hidden` together.
+    #[tokio::test]
+    async fn mail_on_a_pile_leaves_all_and_stands_on_its_pile() {
+        use crate::mail::read::tests::{filing, mail_from};
+        use torro_inbox::item::HideScope;
+        use torro_ipc::mail::PileFilter;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        for (subject, days) in [("A", 1), ("B", 2), ("C", 3), ("D", 4), ("E", 5), ("G", 7), ("H", 8)] {
+            server.add("INBOX", &mail_from(subject, days, &format!("{subject}@example.org"), None), &[]);
+        }
+        server.add("INBOX", &mail_from("F", 6, "news@shop.example", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let id = |subject: &str| mail[subject].id.clone();
+        let pile = |subjects: &[&str], pile| Request::SetMailPile {
+            ids: subjects.iter().map(|subject| id(subject)).collect(),
+            pile,
+        };
+        let subjects = |response: Response| match response {
+            Response::MailMessages { messages, .. } => messages,
+            other => panic!("a page, got {other:?}"),
+        };
+        let one = |filter| pile_search(filter, None, None, 50, None);
+
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], Some(MailPile::ReplyLater))).await, Response::Ok);
+        let all: Vec<String> = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::Without))).await)
+            .into_iter()
+            .map(|m| m.subject)
+            .collect();
+        assert_eq!(all, ["B", "C", "D", "E", "F", "G", "H"], "A left All");
+        let reply_later = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::ReplyLater))).await);
+        assert_eq!(
+            reply_later.iter().map(|m| (m.subject.as_str(), m.pile)).collect::<Vec<_>>(),
+            [("A", Some(MailPile::ReplyLater))]
+        );
+        assert!(subjects(ask(&core, Some(&app_key), one(Some(PileFilter::SetAside))).await).is_empty());
+        // Every search names the pile, also one that does not ask for it.
+        let every = subjects(ask(&core, Some(&app_key), one(None)).await);
+        assert_eq!(every.len(), 8);
+        assert!(every.iter().all(|m| m.pile == (m.subject == "A").then_some(MailPile::ReplyLater)), "{every:?}");
+
+        // The same pile again keeps since when, so a reply of one's own still counts from then.
+        let since = core.inbox.reply_later_of(ANNA_MAIL).expect("read");
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], Some(MailPile::ReplyLater))).await, Response::Ok);
+        assert_eq!(core.inbox.reply_later_of(ANNA_MAIL).expect("read"), since);
+        // The other pile moves it.
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], Some(MailPile::SetAside))).await, Response::Ok);
+        assert!(subjects(ask(&core, Some(&app_key), one(Some(PileFilter::ReplyLater))).await).is_empty());
+        let set_aside = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::SetAside))).await);
+        assert_eq!(
+            set_aside.iter().map(|m| (m.subject.as_str(), m.pile)).collect::<Vec<_>>(),
+            [("A", Some(MailPile::SetAside))]
+        );
+        // Off: back in All.
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], None)).await, Response::Ok);
+        let back = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::Without))).await);
+        assert_eq!(back.first().map(|m| (m.subject.as_str(), m.pile)), Some(("A", None)));
+
+        // Pages and cursor with all three: B and D on Reply later, C set aside, B also snoozed, F
+        // hidden by its sender.
+        assert_eq!(ask(&core, Some(&app_key), pile(&["B", "D"], Some(MailPile::ReplyLater))).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), pile(&["C"], Some(MailPile::SetAside))).await, Response::Ok);
+        let until = Some(Utc::now() + chrono::TimeDelta::hours(1));
+        let snooze = Request::SnoozeItem { id: id("B"), until, unless_reply: false };
+        assert!(matches!(ask(&core, Some(&app_key), snooze).await, Response::Item { .. }));
+        let news = core.inbox.file_mail(&filing(&mail["F"]), torro_mail::Notify::All, Utc::now());
+        let hide = Request::HideSender { id: news.expect("filed").expect("an entry"), scope: HideScope::Sender };
+        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Hidden(_)));
+        let all = |cursor| pile_search(Some(PileFilter::Without), Some(false), Some(false), 2, cursor);
+        assert_eq!(every_page(&core, &app_key, all).await, (["A", "E", "G", "H"].map(String::from).to_vec(), Some(4)));
+        let replying = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(false), Some(false), 1, cursor);
+        assert_eq!(every_page(&core, &app_key, replying).await, (vec!["D".to_string()], Some(1)), "B is snoozed");
+        let snoozed = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(true), None, 1, cursor);
+        assert_eq!(every_page(&core, &app_key, snoozed).await, (vec!["B".to_string()], Some(1)));
+        let aside = |cursor| pile_search(Some(PileFilter::SetAside), None, Some(false), 1, cursor);
+        assert_eq!(every_page(&core, &app_key, aside).await, (vec!["C".to_string()], Some(1)));
+    }
+
+    /// Task E19.2: the piles keep to the accounts a key reads and whose entries it sees – checked
+    /// before anyone is asked –, to their limits, name the subjects in their approval and run once
+    /// allowed; a key that does not see the entries sees no pile in a search.
+    #[tokio::test]
+    async fn piles_keep_to_reach_limits_and_approvals() {
+        use crate::mail::read::tests::mail_from;
+        use torro_ipc::mail::PileFilter;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Quarterly offer", 2, "news@shop.example", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let id = ids_by_subject(&core, &app_key).await["Quarterly offer"].id.clone();
+        let pile = |ids: Vec<String>| Request::SetMailPile { ids, pile: Some(MailPile::ReplyLater) };
+        let piled = || core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL);
+
+        // An account outside `mail_accounts`, or whose entries the key does not see: `not-found`,
+        // nothing kept, nobody asked – also where every change waits for a person.
+        let mut stranger = RightsTemplate::FullAccess.rights();
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        stranger.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, stranger) = client(&core, stranger).await;
+        assert_eq!(code(&ask(&core, Some(&stranger), pile(vec![id.clone()])).await), "not-found");
+        let mut blind = RightsTemplate::FullAccess.rights();
+        blind.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        blind.inbox_sources = Selection::Only(Vec::new());
+        blind.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, blind) = client(&core, blind).await;
+        assert_eq!(code(&ask(&core, Some(&blind), pile(vec![id.clone()])).await), "not-found");
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, reader) = client(&core, reader).await;
+        let with_foreign = pile(vec![id.clone(), "m:unknown".into()]);
+        assert_eq!(code(&ask(&core, Some(&reader), with_foreign.clone()).await), "not-found", "the whole call");
+        assert_eq!(code(&ask(&core, Some(&app_key), with_foreign).await), "not-found");
+        assert!(piled().is_empty(), "nothing kept");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+
+        // The limits, for clients and the app key alike.
+        let many = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
+        for key in [&reader, &app_key] {
+            assert_eq!(code(&ask(&core, Some(key), pile(Vec::new())).await), "error");
+            assert_eq!(code(&ask(&core, Some(key), pile(many(torro_ipc::mail::MAX_IDS + 1))).await), "error");
+        }
+
+        // Waiting for a person: the summary names the subject from the store, and allowed it runs.
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+        let approval = waits(ask(&core, Some(&asking), pile(vec![id.clone()])).await);
+        assert!(approval.summary.contains("Quarterly offer"), "{}", approval.summary);
+        assert!(piled().is_empty(), "not before it is allowed");
+        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true };
+        assert!(!matches!(core.handle(decide).await, Response::Error { .. }));
+        crate::mail::service::tests::eventually("piled", || async { !piled().is_empty() }).await;
+        assert_eq!(piled(), std::slice::from_ref(&id));
+
+        // A key that reads the mail but does not see its entries sees no pile.
+        let mut unseeing = RightsTemplate::FullAccess.rights();
+        unseeing.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        unseeing.inbox_sources = Selection::Only(Vec::new());
+        let (_, unseeing) = client(&core, unseeing).await;
+        let core = &core;
+        let search = |key, filter| async move {
+            match ask(core, Some(key), pile_search(filter, None, None, 10, None)).await {
+                Response::MailMessages { messages, .. } => messages,
+                other => panic!("a page, got {other:?}"),
+            }
+        };
+        assert_eq!(search(&reader, None).await[0].pile, Some(MailPile::ReplyLater));
+        assert_eq!(search(&unseeing, None).await[0].pile, None);
+        assert_eq!(search(&unseeing, Some(PileFilter::Without)).await.len(), 1, "nothing lies on a pile for it");
+        assert!(search(&unseeing, Some(PileFilter::ReplyLater)).await.is_empty());
+        // A client may take it off.
+        let off = Request::SetMailPile { ids: vec![id], pile: None };
+        assert_eq!(ask(core, Some(&reader), off).await, Response::Ok);
+        assert!(piled().is_empty());
+    }
+
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
     /// hashed ids, never the words searched, a folder's name or an attachment's file name. Task
     /// M8.1: nor the HTML, a link or picture it names, or a part's content id.
@@ -19489,6 +19746,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
@@ -21730,6 +21988,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };
         let ids: Vec<String> = messages.iter().map(|message| message.id.clone()).collect();

@@ -4422,7 +4422,7 @@ parallel.
   `inbox_snooze_item` mit `"unless_reply": true` baut `Request::SnoozeItem { unless_reply: true, .. }`.
 
 ### E19.2 Kern: Stapel „Reply later“ und „Set aside“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E19.1 · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/mail.rs`,
   `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/inbox.rs`, `crates/torroworkplace/src/core.rs`,
   `crates/torroworkplace/src/mail/read.rs`, `crates/torroworkplace/src/mail/store.rs`,

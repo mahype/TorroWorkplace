@@ -1051,6 +1051,7 @@ pub(crate) mod tests {
             has_attachments: true,
             invite: None,
             back: None,
+            pile: None,
             category: None,
             untrusted: true,
         }

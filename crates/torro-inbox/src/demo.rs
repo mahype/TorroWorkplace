@@ -693,6 +693,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             has_attachments: files > 0,
             invite: None,
             back: None,
+            pile: None,
             category: letter.category,
             untrusted: true,
         },

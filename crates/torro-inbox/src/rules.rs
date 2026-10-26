@@ -1273,6 +1273,7 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            pile: None,
             category: None,
             untrusted: true,
         }

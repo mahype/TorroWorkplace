@@ -2210,6 +2210,32 @@ pub enum Request {
         /// `true` shows them in "All" again, `false` takes that back.
         shown: bool,
     },
+    /// Puts mail on a pile or takes it off (task E19.2, decisions 1 to 5 of E19 in
+    /// `docs/tasks/eingang.md`): `pile` puts the mail messages `ids` (`m:…`) on "Reply later" or
+    /// "Set aside", without `pile` they come off. A message lies on at most one pile: putting it on
+    /// the other moves it, putting it on the same again changes nothing (it keeps the time it was
+    /// put there). While it lies there `mail.search_messages` with `pile: without` leaves it out
+    /// ("All", the categories, the smart views) and `pile: reply_later` / `set_aside` lists it;
+    /// every message of a search names its pile ([`torro_mail::MessageSummary::pile`]). Kept only
+    /// in the core: nothing goes to the server, the message and its inbox entry stay as they are.
+    /// "Reply later" clears itself: once a mail from the account's own address turns up in the
+    /// message's conversation after it was put there (in any folder, sent by any program), the core
+    /// takes it off. "Set aside" stays until taken off.
+    ///
+    /// Mail of several accounts may go in one call. Answered with [`Response::Ok`]; `not-found`
+    /// for the whole call, with nothing changed, as soon as one id is in no account whose mail the
+    /// caller reads (`mail_accounts`) and whose inbox entries it sees (the account among
+    /// `inbox_sources`), checked before an approval is asked for; `error` for no id, more than
+    /// [`mail::MAX_IDS`] or an id over [`mail::MAX_ID_BYTES`] bytes. Write access to `inbox`: it
+    /// changes only where the inbox shows the mail.
+    #[serde(rename = "inbox.set_mail_pile")]
+    SetMailPile {
+        /// The mail messages' ids (`m:…`), 1 to 100.
+        ids: Vec<String>,
+        /// `reply_later` or `set_aside`; leave out to take the mail off its pile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pile: Option<torro_mail::MailPile>,
+    },
     /// The lasting rules: lanes remembered for sources, muted sources, hidden senders and domains
     /// and muted traits that have not ended ([`Response::Rules`]), only of sources the client may
     /// see. With each rule how many reports and entries it caught since it was made, as far as the
@@ -2465,6 +2491,14 @@ pub enum Request {
         /// `cursor` hold; a cursor belongs to this field as well.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         categories: Vec<torro_mail::Category>,
+        /// The piles (task E19.2, `inbox.set_mail_pile`): `without` leaves out mail on "Reply later"
+        /// or "Set aside" (what "All" lists), `reply_later` or `set_aside` gives only the mail on that
+        /// pile. Left out: every message, on a pile or not. Filtered before paging, so pages and
+        /// `cursor` hold; a cursor belongs to this field as well. With `snoozed` and `hidden` all
+        /// hold. Like `snoozed` only for accounts whose inbox entries the caller sees; for the others
+        /// nothing lies on a pile, so a pile gives none of their mail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pile: Option<mail::PileFilter>,
     },
     /// How far the core's search index of each mail account is ([`Response::MailIndexStatus`],
     /// issue #136): how many messages it keeps, how many of them have their text in the index,

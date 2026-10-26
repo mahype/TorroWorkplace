@@ -169,7 +169,7 @@ use torro_ipc::{
     ApprovalInfo, ClientInfo, InboxStats, Request, Response, RuleHits, SourceStats, StatsCounts, StatsDay, StatsRange,
     StatsSuggestion,
 };
-use torro_mail::{ACCOUNT_PREFIX, MailCategory, Notify, Order};
+use torro_mail::{ACCOUNT_PREFIX, MailCategory, MailPile, Notify, Order};
 use torro_pim_github::IssueRef;
 
 use crate::account::github::GithubAccounts;
@@ -553,13 +553,28 @@ CREATE TABLE shown_mail (
 );
 ";
 
-/// From schema version 15 to 16 (task E19.1, "Follow up" in the mail window): `items` gets
-/// `follow_up`, the time of an entry's follow-up ([`torro_inbox::item::FollowUp::at`]) or `NULL`
-/// without one, so [`wake_due`] finds the open entries whose follow-up is due without reading every
-/// entry. The follow-up itself is in `data` with the entry. Rows of version 15 have none: mail put
-/// off before is a follow-up without a condition already (decision 9), with its time in `state_at`.
+/// From schema version 15 to 16 (issue #315, the mail window's "Follow up", "Reply later" and
+/// "Set aside"):
+///
+/// - `items` gets `follow_up` (task E19.1), the time of an entry's follow-up
+///   ([`torro_inbox::item::FollowUp::at`]) or `NULL` without one, so [`wake_due`] finds the open
+///   entries whose follow-up is due without reading every entry. The follow-up itself is in `data`
+///   with the entry. Rows of version 15 have none: mail put off before is a follow-up without a
+///   condition already (decision 9), with its time in `state_at`.
+/// - `mail_piles` (task E19.2): the pile each message lies on (`reply_later` or `set_aside`,
+///   [`MailPile`]) and since when (`at`), one row per message ([`Inbox::set_mail_pile`]), apart from
+///   the entries: an entry is done and goes after 30 days, a mail set aside stays (decision 1).
+///   Taking it off removes the row, so do a reply of one's own for "Reply later"
+///   ([`Inbox::answered`]) and removing the account ([`Inbox::forget_source`]).
 const SCHEMA_V16: &str = "
 ALTER TABLE items ADD COLUMN follow_up TEXT;
+CREATE TABLE mail_piles (
+    account TEXT NOT NULL,
+    message TEXT NOT NULL,
+    pile TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (account, message)
+);
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -958,6 +973,107 @@ impl Inbox {
         .map_err(|failure| failure.to_string())
     }
 
+    /// `inbox.set_mail_pile` (task E19.2): puts the messages `mail` (pairs of account
+    /// `mail:<address>` and message `m:…`) on `pile` at `now`, or takes them off without one. A
+    /// message lies on at most one pile: one on the other pile moves with `at = now`, one on the same
+    /// pile keeps its `at`, so a repeated call never moves what counts as a reply of one's own
+    /// ([`Inbox::answered`]). The caller has checked that the caller may see each of them; nothing
+    /// else changes: no entry, no mail. `Err` holds the message for the log.
+    pub fn set_mail_pile(
+        &self,
+        mail: &[(String, String)],
+        pile: Option<MailPile>,
+        now: DateTime<Utc>,
+    ) -> Result<(), String> {
+        self.with(|db| {
+            let tx = db.transaction()?;
+            for (account, message) in mail {
+                match pile {
+                    Some(pile) => tx.execute(
+                        "INSERT INTO mail_piles (account, message, pile, at) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT (account, message) DO UPDATE SET pile = excluded.pile, at = excluded.at
+                         WHERE mail_piles.pile <> excluded.pile",
+                        params![account, message, pile_column(pile), stamp(now)],
+                    )?,
+                    None => tx.execute(
+                        "DELETE FROM mail_piles WHERE account = ?1 AND message = ?2",
+                        params![account, message],
+                    )?,
+                };
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// The piles of the mail of `accounts` (`mail:<address>`, task E19.2), for `mail.search_messages`,
+    /// which asks only for accounts whose entries the caller sees (as for [`Inbox::mail_later`]).
+    /// A row whose pile this version does not know is left out. Nothing is changed. `Err` holds the
+    /// message for the log.
+    pub fn mail_piles(&self, accounts: &[String]) -> Result<MailPiles, String> {
+        let piles = self.work(false, |db| {
+            let mut piles = MailPiles::default();
+            if accounts.is_empty() {
+                return Ok(piles);
+            }
+            let mut statement = db.prepare("SELECT account, message, pile FROM mail_piles")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })?;
+            for row in rows {
+                let (account, message, pile) = row?;
+                let Some(pile) = pile_of_column(&pile) else { continue };
+                if accounts.contains(&account) {
+                    piles.piles.entry(account).or_default().insert(message, pile);
+                }
+            }
+            Ok(piles)
+        });
+        piles.map_err(|failure| failure.to_string())
+    }
+
+    /// The messages of the mail account `account` (`mail:<address>`) on "Reply later" (task E19.2),
+    /// each with when it was put there: what the mail feed looks for a reply of one's own to
+    /// ([`Inbox::answered`]). Usually few, so most changes cost one query. `Err` holds the message
+    /// for the log.
+    pub fn reply_later_of(&self, account: &str) -> Result<Vec<(String, DateTime<Utc>)>, String> {
+        let rows = self.work(false, |db| {
+            let mut statement =
+                db.prepare("SELECT message, at FROM mail_piles WHERE account = ?1 AND pile = ?2 ORDER BY at")?;
+            let rows = statement.query_map(params![account, pile_column(MailPile::ReplyLater)], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        });
+        let rows = rows.map_err(|failure| failure.to_string())?;
+        let at = |(message, at): (String, String)| {
+            Some((message, DateTime::parse_from_rfc3339(&at).ok()?.with_timezone(&Utc)))
+        };
+        Ok(rows.into_iter().filter_map(at).collect())
+    }
+
+    /// A mail of the account's own address dated `sent` answered the messages `messages` of the mail
+    /// account `account` (task E19.2, decision 5): each that lies on "Reply later" since before
+    /// `sent` comes off. "Set aside", and a message put on "Reply later" after `sent`, stay; so does
+    /// a message moved to "Set aside" since the feed looked. Returns how many came off. `Err` holds
+    /// the message for the log.
+    pub fn answered(&self, account: &str, messages: &[String], sent: DateTime<Utc>) -> Result<usize, String> {
+        self.with(|db| {
+            let tx = db.transaction()?;
+            let mut off = 0;
+            for message in messages {
+                off += tx.execute(
+                    "DELETE FROM mail_piles WHERE account = ?1 AND message = ?2 AND pile = ?3 AND at < ?4",
+                    params![account, message, pile_column(MailPile::ReplyLater), stamp(sent)],
+                )?;
+            }
+            tx.commit()?;
+            Ok(off)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// What `inbox.list_mute_options` or `inbox.mute_item` with the id of a mail message without
     /// an entry (issue #123) would refuse `client`, before anyone is asked to approve it; `None`
     /// when it may run. `stand_in` is the message as an entry would hold it
@@ -1269,8 +1385,8 @@ impl Inbox {
     }
 
     /// Removes the statistics of the source `source` (task E8.8a), a [`SourceRef::key`]: its day
-    /// sums, its rows by trait, what rules caught in it, its counted mail and the mail shown again
-    /// (task E18.2). The core calls it when
+    /// sums, its rows by trait, what rules caught in it, its counted mail, the mail shown again
+    /// (task E18.2) and the piles of its mail (task E19.2). The core calls it when
     /// a mail account (`mail:<address>`) or a client whose source no other client shares is
     /// removed, and for a remote source (task E5.2) when its account is; then also where its module
     /// stopped reading ([`Inbox::cursor`]), its health and which ids of its server were filed, so
@@ -1282,8 +1398,9 @@ impl Inbox {
         self.work(false, |db| {
             db.execute("DELETE FROM stats WHERE source = ?1", params![source])?;
             db.execute("DELETE FROM muted_mail WHERE account = ?1", params![source])?;
-            // Mail shown again (task E18.2) goes with its account.
+            // Mail shown again (task E18.2) and mail on a pile (task E19.2) go with its account.
             db.execute("DELETE FROM shown_mail WHERE account = ?1", params![source])?;
+            db.execute("DELETE FROM mail_piles WHERE account = ?1", params![source])?;
             db.execute("DELETE FROM cursors WHERE source = ?1", params![source])?;
             db.execute("DELETE FROM remote_ids WHERE source = ?1", params![source])?;
             Ok(())
@@ -4663,6 +4780,50 @@ impl MailHidden {
     }
 }
 
+/// The piles of the mail of some accounts now ([`Inbox::mail_piles`], task E19.2), for
+/// `mail.search_messages`. Keyed by account (`mail:<address>`), then message (`m:…`); only for the
+/// accounts asked for, so for any other account nothing lies on a pile.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MailPiles {
+    /// The pile of each message on one.
+    pub piles: BTreeMap<String, BTreeMap<String, MailPile>>,
+}
+
+impl MailPiles {
+    /// The messages of `account` on `pile` (none for an account without).
+    pub fn of(&self, account: &str, pile: MailPile) -> Vec<String> {
+        let on = |(message, held): (&String, &MailPile)| (*held == pile).then(|| message.clone());
+        self.piles.get(account).map(|piles| piles.iter().filter_map(on).collect()).unwrap_or_default()
+    }
+
+    /// The messages of `account` on either pile (none for an account without).
+    pub fn all_of(&self, account: &str) -> Vec<String> {
+        self.piles.get(account).map(|piles| piles.keys().cloned().collect()).unwrap_or_default()
+    }
+
+    /// The pile the message `message` of `account` lies on, `None` when it lies on none.
+    pub fn pile_of(&self, account: &str, message: &str) -> Option<MailPile> {
+        self.piles.get(account)?.get(message).copied()
+    }
+}
+
+/// The column `pile` of `mail_piles` ([`SCHEMA_V16`]) for `pile`.
+fn pile_column(pile: MailPile) -> &'static str {
+    match pile {
+        MailPile::ReplyLater => "reply_later",
+        MailPile::SetAside => "set_aside",
+    }
+}
+
+/// The pile the column `pile` names, `None` for a word this version does not know.
+fn pile_of_column(pile: &str) -> Option<MailPile> {
+    match pile {
+        "reply_later" => Some(MailPile::ReplyLater),
+        "set_aside" => Some(MailPile::SetAside),
+        _ => None,
+    }
+}
+
 /// What the fixed rules make of `mail` for the sender `sender` (task E12.2): the category of the
 /// first sorting rule that holds (task E15.3; they hold for **every** mail account, like a hidden
 /// sender, task E3.11), else what the headers and the folder say ([`rules::mail_category`]).
@@ -7241,7 +7402,8 @@ pub(crate) mod tests {
                 db.execute_batch(
                     "DROP TABLE sort_rules; DROP TABLE custom_categories; DROP TABLE category_edits;
                      DROP TABLE category_jobs; DROP TABLE category_clear_jobs; ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 10;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up;
+                     DROP TABLE mail_piles; PRAGMA user_version = 10;",
                 )?;
                 insert_rule(db, kept("b", None, Some("shop.example"), Category::Promotion, 2))?;
                 insert_rule(db, kept("a", Some("billing@shop.example"), None, Category::Invoice, 1))?;
@@ -7305,7 +7467,8 @@ pub(crate) mod tests {
                          ALTER TABLE custom_categories DROP COLUMN icon;
                          DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                          ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                         DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 11;",
+                         DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up;
+                         DROP TABLE mail_piles; PRAGMA user_version = 11;",
                     )?;
                     Ok(())
                 })
@@ -8440,7 +8603,8 @@ pub(crate) mod tests {
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                      ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 8;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up;
+                     DROP TABLE mail_piles; PRAGMA user_version = 8;",
                 )?;
                 Ok(())
             })
@@ -8471,7 +8635,8 @@ pub(crate) mod tests {
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                      ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 7;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up;
+                     DROP TABLE mail_piles; PRAGMA user_version = 7;",
                 )?;
                 Ok(())
             })
@@ -8897,7 +9062,7 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "UPDATE items SET data = json_remove(data, '$.follow_up');
-                     ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 15;",
+                     ALTER TABLE items DROP COLUMN follow_up; DROP TABLE mail_piles; PRAGMA user_version = 15;",
                 )?;
                 Ok(())
             })
@@ -8912,9 +9077,72 @@ pub(crate) mod tests {
         assert_eq!(entry_at(&inbox, &after, at(9, 3)).state, State::New);
         assert_eq!(inbox.tend(at(13, 1), false).expect("tended").0, 2, "the one put off before and the followed up");
         assert_eq!(entry_at(&inbox, &after, at(13, 2)).updated, at(13, 0));
+        // Task E19.2: and keeps the piles of mail.
+        let pair = (ANNA.to_string(), "m:1".to_string());
+        inbox.set_mail_pile(std::slice::from_ref(&pair), Some(MailPile::SetAside), at(13, 3)).expect("put");
+        let piles = inbox.mail_piles(&[ANNA.to_string()]).expect("read");
+        assert_eq!(piles.of(ANNA, MailPile::SetAside), ["m:1"]);
         let db = Connection::open(file_in(dir.path())).expect("opens");
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    /// Task E19.2, decisions 1 and 4: a mail lies on at most one pile; putting it on the other
+    /// moves it, on the same again keeps since when; without a pile it comes off. Only the accounts
+    /// asked for are told; removing the account takes its rows along.
+    #[test]
+    fn mail_lies_on_one_pile_at_most() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let pair = |account: &str, message: &str| (account.to_string(), message.to_string());
+        let accounts = [ANNA.to_string(), WORK.to_string()];
+        let piles = || inbox.mail_piles(&accounts).expect("read");
+        let both = [pair(ANNA, "m:1"), pair(WORK, "m:2")];
+        inbox.set_mail_pile(&both, Some(MailPile::ReplyLater), at(8, 0)).expect("put");
+        assert_eq!(
+            (piles().of(ANNA, MailPile::ReplyLater), piles().of(WORK, MailPile::ReplyLater)),
+            (vec!["m:1".to_string()], vec!["m:2".to_string()])
+        );
+        assert_eq!(piles().pile_of(ANNA, "m:1"), Some(MailPile::ReplyLater));
+        assert_eq!(inbox.reply_later_of(ANNA).expect("read"), [("m:1".to_string(), at(8, 0))]);
+        // The same pile again keeps since when.
+        inbox.set_mail_pile(&both[..1], Some(MailPile::ReplyLater), at(9, 0)).expect("again");
+        assert_eq!(inbox.reply_later_of(ANNA).expect("read"), [("m:1".to_string(), at(8, 0))]);
+        // The other pile moves it.
+        inbox.set_mail_pile(&both[..1], Some(MailPile::SetAside), at(9, 1)).expect("moved");
+        assert_eq!(piles().of(ANNA, MailPile::SetAside), ["m:1"]);
+        assert!(
+            piles().of(ANNA, MailPile::ReplyLater).is_empty() && inbox.reply_later_of(ANNA).expect("read").is_empty()
+        );
+        assert_eq!(piles().all_of(ANNA), ["m:1"]);
+        // Only what was asked for.
+        let anna_only = inbox.mail_piles(&[ANNA.to_string()]).expect("read");
+        assert!(anna_only.all_of(WORK).is_empty());
+        assert!(inbox.mail_piles(&[]).expect("read").piles.is_empty());
+        // Off.
+        inbox.set_mail_pile(&both[..1], None, at(9, 2)).expect("off");
+        assert!(piles().all_of(ANNA).is_empty());
+        assert_eq!(piles().all_of(WORK), ["m:2"]);
+        inbox.forget_source(WORK).expect("forgotten");
+        assert!(piles().piles.is_empty(), "the account's rows went with it");
+    }
+
+    /// Task E19.2, decision 5: a mail of one's own takes off "Reply later" put there before it, not
+    /// one put there after it, and never "Set aside".
+    #[test]
+    fn a_mail_of_ones_own_takes_reply_later_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let pair = |message: &str| (ANNA.to_string(), message.to_string());
+        inbox.set_mail_pile(&[pair("m:1"), pair("m:2")], Some(MailPile::ReplyLater), at(8, 0)).expect("put");
+        inbox.set_mail_pile(&[pair("m:3")], Some(MailPile::SetAside), at(8, 0)).expect("put");
+        inbox.set_mail_pile(&[pair("m:4")], Some(MailPile::ReplyLater), at(10, 0)).expect("put");
+        let messages = ["m:1", "m:3", "m:4"].map(String::from);
+        assert_eq!(inbox.answered(ANNA, &messages, at(9, 0)), Ok(1));
+        let piles = inbox.mail_piles(&[ANNA.to_string()]).expect("read");
+        assert_eq!(piles.of(ANNA, MailPile::ReplyLater), ["m:2", "m:4"], "another conversation, and one put after");
+        assert_eq!(piles.of(ANNA, MailPile::SetAside), ["m:3"], "Set aside stays");
+        assert_eq!(inbox.answered(WORK, &messages, at(11, 0)), Ok(0), "another account");
     }
 
     /// Task E18.1: a file of schema 14 learns what hides mail by its id, and keeps its entries; task
@@ -8928,7 +9156,8 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "ALTER TABLE items DROP COLUMN hidden; ALTER TABLE muted_mail DROP COLUMN rule;
-                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up; PRAGMA user_version = 14;",
+                     DROP TABLE shown_mail; ALTER TABLE items DROP COLUMN follow_up;
+                     DROP TABLE mail_piles; PRAGMA user_version = 14;",
                 )?;
                 Ok(())
             })
@@ -9699,6 +9928,7 @@ pub(crate) mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            pile: None,
             untrusted: true,
             category: None,
         };
@@ -10103,7 +10333,7 @@ pub(crate) mod tests {
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
                      DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                      ALTER TABLE items DROP COLUMN hidden; DROP TABLE shown_mail;
-                     ALTER TABLE items DROP COLUMN follow_up;
+                     ALTER TABLE items DROP COLUMN follow_up; DROP TABLE mail_piles;
                      PRAGMA user_version = 5;",
                 )?;
                 Ok(())

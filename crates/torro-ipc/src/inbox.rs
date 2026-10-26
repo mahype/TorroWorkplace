@@ -294,6 +294,7 @@ impl InboxClient {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -324,6 +325,7 @@ impl InboxClient {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, complete, highlights, total_estimate, .. } => {
@@ -355,6 +357,7 @@ impl InboxClient {
             snoozed,
             hidden,
             categories: Vec::new(),
+            pile: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -382,6 +385,7 @@ impl InboxClient {
             snoozed: Some(false),
             hidden: Some(false),
             categories: Vec::new(),
+            pile: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { total_estimate, .. } => Ok(total_estimate.unwrap_or(0)),
@@ -786,6 +790,7 @@ impl InboxClient {
             snoozed: None,
             hidden: None,
             categories,
+            pile: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -1760,6 +1765,7 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            pile: None,
             category: None,
             untrusted: true,
         }
@@ -1940,6 +1946,7 @@ mod tests {
                 snoozed,
                 hidden,
                 categories,
+                pile: None,
             } if categories.is_empty() => {
                 let id = format!(
                     "{}|{}|{unread:?}|{snoozed:?}|{hidden:?}|{limit}|{}|{order:?}",

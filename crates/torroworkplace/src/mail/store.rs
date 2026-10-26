@@ -2226,6 +2226,20 @@ impl MailStore {
     /// `own` (the account's address, in any case): the replies that came since (task E8.7a). The
     /// same mail in several folders counts once (by `Message-ID`; one without counts per copy).
     pub fn replies_after(&self, thread_id: &str, after: DateTime<Utc>, own: &str) -> Result<u32, MailStoreError> {
+        self.count_after(thread_id, after, own, false)
+    }
+
+    /// How many mails of the conversation `thread_id` are dated after `after` and sent from `own`
+    /// (the account's address, in any case), in any folder: the person's own answers since (task
+    /// E19.2, what takes a mail off "Reply later"). The counterpart of
+    /// [`replies_after`](Self::replies_after); the same mail in several folders counts once.
+    pub fn sent_after(&self, thread_id: &str, after: DateTime<Utc>, own: &str) -> Result<u32, MailStoreError> {
+        self.count_after(thread_id, after, own, true)
+    }
+
+    /// The mails of `thread_id` dated after `after`, sent from `own` (`mine`) or not, each
+    /// `Message-ID` once.
+    fn count_after(&self, thread_id: &str, after: DateTime<Utc>, own: &str, mine: bool) -> Result<u32, MailStoreError> {
         let sql = format!(
             "SELECT {SUMMARY_COLUMNS}, m.rfc_message_id FROM messages m WHERE m.thread_id = ?1 AND m.date > ?2"
         );
@@ -2237,9 +2251,9 @@ impl MailStore {
         let mut count = 0u32;
         for row in rows {
             let (summary, rfc_message_id) = row?;
-            let mine = summary.from.as_ref().is_some_and(|from| from.address.eq_ignore_ascii_case(own));
+            let from_own = summary.from.as_ref().is_some_and(|from| from.address.eq_ignore_ascii_case(own));
             let again = rfc_message_id.is_some_and(|rfc| !seen.insert(rfc));
-            if !mine && !again {
+            if from_own == mine && !again {
                 count += 1;
             }
         }
@@ -2782,6 +2796,7 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         has_attachments: row.get(9)?,
         invite: invite_from_row(row)?,
         back: None,
+        pile: None,
         category: category_from_row(row)?,
         untrusted: true,
     })
@@ -2957,6 +2972,10 @@ mod tests {
         add(&store, &sent, &own);
         assert_eq!(store.replies_after("offer", day(3), "anna@example.org").expect("replies"), 1);
         assert_eq!(store.replies_after("offer", day(5), "anna@example.org").expect("replies"), 0);
+        // Task E19.2: the person's own answer counts the other way round.
+        assert_eq!(store.sent_after("offer", day(5), "anna@example.org").expect("sent"), 1);
+        assert_eq!(store.sent_after("offer", day(6), "anna@example.org").expect("sent"), 0);
+        assert_eq!(store.sent_after("other", day(1), "anna@example.org").expect("sent"), 0);
         assert_eq!(store.messages_by_rfc_id("<5@example.org>").expect("copies").len(), 2, "both copies");
     }
 

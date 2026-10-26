@@ -39,7 +39,7 @@ pub use account::{
 };
 pub use category::{Category, CategoryDef, CategoryGroup, CategoryIcon, CategorySource, CustomCategory, MailCategory};
 pub use message::{
-    AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message,
+    AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailPile, Message,
     MessageSummary, MessageTraits, Role,
 };
 pub use order::Order;

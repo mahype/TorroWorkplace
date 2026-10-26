@@ -747,6 +747,8 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.mute_item",
     // Showing the same mail again, or taking that back again, changes nothing more (task E18.2).
     "inbox.set_mail_shown",
+    // The same pile again keeps the mail where it is and since when (task E19.2).
+    "inbox.set_mail_pile",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
@@ -2214,6 +2216,12 @@ mod tests {
         // Task E18.2: "Show again" for one mail, onto its request.
         let shown = call("inbox_set_mail_shown", json!({"ids": ["m:1"], "shown": true}));
         assert_eq!(shown, Ok(Request::SetMailShown { ids: vec!["m:1".into()], shown: true }));
+        // Task E19.2: a pile by its word, off without one.
+        let pile = call("inbox_set_mail_pile", json!({"ids": ["m:1"], "pile": "reply_later"}));
+        let reply_later = Some(torro_mail::MailPile::ReplyLater);
+        assert_eq!(pile, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: reply_later }));
+        let off = call("inbox_set_mail_pile", json!({"ids": ["m:1"]}));
+        assert_eq!(off, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: None }));
         let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
         assert!(
             matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_), unless_reply: false }) if id == "m:1"),

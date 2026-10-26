@@ -2278,8 +2278,9 @@ pub struct InboxFacts {
     /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
     /// held across the awaits of asking for an approval, deep in the stack.
     pub sort_rule: Option<Box<torro_inbox::SortRule>>,
-    /// For `inbox.set_mail_shown` (task E18.2): the messages as the mail store holds them, looked
-    /// up by the ids the command runs with (`crate::mail::write::facts`), as for `mail.set_flags`.
+    /// For `inbox.set_mail_shown` (task E18.2) and `inbox.set_mail_pile` (task E19.2): the messages
+    /// as the mail store holds them, looked up by the ids the command runs with
+    /// (`crate::mail::write::facts`), as for `mail.set_flags`.
     pub mail: Option<MailFacts>,
 }
 
@@ -2448,6 +2449,16 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         }
         Request::SetMailShown { ids, shown: false } => {
             trf("Hide {messages} from the inbox again", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
+        // The piles (task E19.2): the subjects the mail store holds, as for "Show again".
+        Request::SetMailPile { ids, pile: Some(torro_mail::MailPile::ReplyLater) } => {
+            trf("Put {messages} on Reply later", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
+        Request::SetMailPile { ids, pile: Some(torro_mail::MailPile::SetAside) } => {
+            trf("Set {messages} aside", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
+        Request::SetMailPile { ids, pile: None } => {
+            trf("Take {messages} off their pile", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
         }
         // Filing a mail by hand and keeping that for its sender (task E12.4). The sender comes
         // from the stored entry (`InboxFacts`), never from the request.
@@ -4966,6 +4977,20 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&shown(true), &InboxFacts::default()),
             trf("Show {messages} in the inbox again", &[("messages", &unknown_mail)])
+        );
+        // Task E19.2: the piles alike, each with its own words.
+        let pile = |pile| Request::SetMailPile { ids: vec!["m:1".into(), "m:2".into()], pile };
+        assert_eq!(
+            inbox_summary(&pile(Some(torro_mail::MailPile::ReplyLater)), &mail),
+            trf("Put {messages} on Reply later", &[("messages", &messages)])
+        );
+        assert_eq!(
+            inbox_summary(&pile(Some(torro_mail::MailPile::SetAside)), &mail),
+            trf("Set {messages} aside", &[("messages", &messages)])
+        );
+        assert_eq!(
+            inbox_summary(&pile(None), &InboxFacts::default()),
+            trf("Take {messages} off their pile", &[("messages", &unknown_mail)])
         );
 
         let rule = |effect| InboxFacts {
