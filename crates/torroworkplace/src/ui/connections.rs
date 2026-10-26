@@ -2272,18 +2272,16 @@ fn folder_group<'a>(
     // As paths, so a slash at the end of one does not count (the core keeps the folder without it).
     let allowed = chosen.and_then(|path| folders.iter().find(|folder| Path::new(&folder.path) == Path::new(path)));
     let attention = || widgets::status_dot(Dot::Attention);
-    let row = if folders.is_empty() && chosen.is_none() {
-        // As under "Organize files": the system's folder chooser, the folder then allowed to read.
-        let add = Message::Choose(Chooser::AllowedFolder);
+    let press = folder_press(page, data, server);
+    let row = if adds_folder(data, server) {
         let button = match words {
-            true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, Some(add)),
-            false => widgets::icon_button(Icon::Plus, tr("Add folder…"), Some(add)),
+            true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, press),
+            false => widgets::icon_button(Icon::Plus, tr("Add folder…"), press),
         };
         let detail = tr("Allow a folder first; then choose it here.");
         status_row(attention(), tr("No allowed folders").into(), Some(detail.into()), button)
     } else {
         let busy = page.waiting == Some(Waiting::Folder);
-        let press = page.waiting.is_none().then_some(Message::ToggleFolders);
         let button = match (busy, words) {
             (true, _) => widgets::busy_button(tr("Saving…"), style::button::secondary),
             (false, true) => widgets::text_button(None, tr("Choose…"), style::button::secondary, press),
@@ -2315,6 +2313,20 @@ fn folder_group<'a>(
         footer = format!("{footer} {}", unbounded_sentence(&server.name));
     }
     widgets::group(tr("Folder"), vec![row], Some(footer))
+}
+
+/// Whether "Folder" offers "Add folder…" instead of "Choose…": no folder is allowed, and none is chosen.
+fn adds_folder(data: &Data, server: &ExtensionInfo) -> bool {
+    data.settings.tools.folders.is_empty() && server.folder.is_none()
+}
+
+/// What the button of "Folder" sends: "Add folder…" the system's folder chooser, as under "Organize files" (the folder
+/// then allowed to read); "Choose…" the menu of the allowed folders, not while a request of the page is on its way.
+fn folder_press(page: &ServerState, data: &Data, server: &ExtensionInfo) -> Option<Message> {
+    match adds_folder(data, server) {
+        true => Some(Message::Choose(Chooser::AllowedFolder)),
+        false => page.waiting.is_none().then_some(Message::ToggleFolders),
+    }
 }
 
 /// The menu of "Choose…" in "Folder": each allowed folder by its name, with its path and access below and a dot at
@@ -4686,7 +4698,8 @@ mod tests {
     }
 
     /// Issue #303: an ArtCraft app the person installs shows the version it was tested with, and GridCraft says in
-    /// its row that it keeps to no folder itself; a page without allowed folders leads to them.
+    /// its row that it keeps to no folder itself; on a page without allowed folders "Add folder…" opens the system's
+    /// folder chooser, and the folder chosen there is allowed to read. With folders the button opens the menu.
     #[test]
     fn the_catalog_says_what_an_artcraft_app_is() {
         let data = launch::demo_data();
@@ -4703,10 +4716,19 @@ mod tests {
         let server = server_of(&data, "gridcraft").expect("installed").clone();
         assert_eq!(folder_check(&data, &server), Some(FolderCheck::TorroOnly));
         assert!(data.settings.tools.folders.is_empty(), "the demo starts without allowed folders");
-        // "Allowed folders" there leads back to the list, where they are set.
         let mut state = State::default();
         let _ = update(&mut state, Message::Open("gridcraft".into()), &data);
-        let _ = update(&mut state, Message::Back, &data);
-        assert_eq!(state.page, Page::List);
+        let press = folder_press(&state.server, &data, &server);
+        assert_eq!(press, Some(Message::Choose(Chooser::AllowedFolder)), "Add folder…");
+        let picked = update(&mut state, press.expect("pressable"), &data);
+        assert!(matches!(picked, Action::Pick(Chooser::AllowedFolder)), "{picked:?}");
+        let folder = PathBuf::from("/home/anna/Sheets");
+        match update(&mut state, Message::Picked(Chooser::AllowedFolder, Some(folder.clone())), &data) {
+            Action::Send(request) => assert_eq!(Some(request), added_folder_request(&data, &folder)),
+            other => panic!("expected the folder allowed, got {other:?}"),
+        }
+        let mut with_folders = data.clone();
+        launch::demo_connections(&mut with_folders);
+        assert_eq!(folder_press(&state.server, &with_folders, &server), Some(Message::ToggleFolders), "Choose…");
     }
 }

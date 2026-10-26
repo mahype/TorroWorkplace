@@ -445,8 +445,9 @@ ArtCraft selbst nicht kennt.
   PdfCraft `link_open` ist `delete` statt `read`: Es öffnet die Datei, die ein Link nennt, auch eine absolute.
   Gesperrte Namen sucht Torro auch unter `tool`, `tools`, `op`, `action`, `cmd` und `commands`.
 - **Eintrag nicht mehr im Katalog:** Grenzen und Pfadprüfung hängen am Katalog-Eintrag. Nimmt ein späteres Update
-  einen ArtCraft-Eintrag heraus oder benennt ihn um, läuft eine gespeicherte Installation ohne beides weiter (die
-  Werkzeuge mit `delete`, also mit Freigabe). Wer den Katalog so ändert, muss die Installationen mitnehmen.
+  einen ArtCraft-Eintrag heraus oder benennt ihn um, wird eine gespeicherte Installation, die in einem Ordner
+  gearbeitet hat (gewählter Ordner oder eine Kennung aus `catalog::WORK_IN_A_FOLDER`), bei jedem Aufruf abgelehnt:
+  nie ohne Grenze. Die Person entfernt sie und installiert sie neu.
 - **Fehlalarme:** Gesperrte Namen gelten in den Argumenten jedes Werkzeugs, nicht nur der Allzweck-Befehle; ein
   Formularfeld namens „key“ in WordCraft wird darum abgelehnt.
 - DeckCraft schreibt durch symbolische Links, und WordCraft v0.11.0 prüft den Verzeichniseintrag noch nicht; Torro

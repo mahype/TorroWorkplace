@@ -57,7 +57,10 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   `sign_id_create`, `js_run`, dazu `sign_document`, `sign_keychain_ids`, `sign_windows_ids` (sie greifen auf die
   Schlüssel im Schlüsselbund bzw. Zertifikatsspeicher des Systems zu, Agenten verwalten nie Schlüssel) und die Befehle
   `tools.js_console` und `sign.digital` (dahin führt `command_run`). Werkzeuge,
-  die der Katalog nicht nennt, bleiben `delete` wie seit #302.
+  die der Katalog nicht nennt, bleiben `delete` wie seit #302; bei GridCraft (keine eigene Grenze) sind sie gesperrt
+  (nach dem API-Review geändert, `Entry::blocks`). Gesperrte Namen sucht Torro auch unter `tool`, `tools`, `op`,
+  `action`, `cmd` und `commands`. Ein gespeicherter Server, der in einem Ordner gearbeitet hat und dessen Eintrag
+  fehlt, wird nicht gestartet (`catalog::WORK_IN_A_FOLDER`, nach dem PR-Review).
 - **Den Ordner sehen** der App-Schlüssel und jeder Client mit einer Stufe für diesen Server
   (`ExtensionInfo::folder`): Ein Agent braucht ihn, um absolute Pfade darin zu bilden; er ist eine Grenze, kein
   Geheimnis. Clients ohne Stufe sehen den Server gar nicht (`extension_unseen`).
@@ -113,30 +116,31 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
     `open_presentation` (`reads`); `write`: `new_presentation`, `add_slide`, `add_shape`, `add_text_box`, `set_text`,
     `insert_picture` (`reads`), `insert_table`, `insert_chart`, `select`, `select_tool`, `type_text`,
     `save_presentation` (`target`, Pflicht); `delete`: `export` (mehrere Dateien bei `all`), `run_command`, `batch`.
-  - **GridCraft:** `read`: `list_windows`, `list_commands`, `inspect_workbook`, `read_range`, `get_cell`,
+  - **GridCraft:** `read`: `list_commands`, `inspect_workbook`, `read_range`, `get_cell`,
     `evaluate_formula`, `list_functions`, `open_workbook` (`reads`); `write`: `write_range`, `set_cell`, `select`,
     `format_range`, `insert_chart`, `create_table`, `sort_range`, `filter`, `new_workbook`, `undo`, `redo`; `delete`:
     `save_workbook` (`target`, Pflicht: jedes Schreiben einer Datei mit Freigabe); gesperrt `screenshot`,
-    `execute_command`.
-  - **PdfCraft** (ohne `--compact`, 181 Werkzeuge in `crates/mcp/src/tools.rs` von v0.14.0; vor dem Eintragen dort
-    nachzählen). Regel: Änderungen am geöffneten Dokument sind `write`, auch löschende (`page_delete`,
+    `execute_command`. (`list_windows` aus der ersten Fassung gibt es in v0.12.1 nicht.)
+  - **PdfCraft** (ohne `--compact`, 181 Werkzeuge in `crates/automation/src/tools.rs` von v0.14.0, nicht in
+    `crates/mcp`; vor dem Eintragen dort nachgezählt). Regel: Änderungen am geöffneten Dokument sind `write`, auch löschende (`page_delete`,
     `redact_apply`, `doc_flatten` …): Sie wirken erst mit dem Speichern, und das Original bleibt, weil Speichern nur
     eine neue Datei anlegt. `delete` ist, was mehrere oder unbekannt benannte Dateien schreibt, druckt, Skripte in ein
     Dokument legt oder alles erreicht.
-    - `read` (50): `doc_open`, `doc_list`, `doc_info`, `doc_close`, `page_render`, `object_list`, `text_word_count`,
+    - `read` (49): `doc_open`, `doc_list`, `doc_info`, `doc_close`, `page_render`, `object_list`, `text_word_count`,
       `text_extract`, `text_find`, `bookmark_list`, `form_fields`, `doc_hidden_info`, `doc_audit_redactions`,
-      `printers`, `printer_options`, `content_list`, `link_list`, `link_open`, `measure_info`, `measure_list`,
+      `printers`, `printer_options`, `content_list`, `link_list`, `measure_info`, `measure_list`,
       `measure_snap`, `comment_list`, `sign_list`, `comment_image_preview`, `accessibility_autotag_preview`,
       `accessibility_check`, `accessibility_find_untagged`, `accessibility_review_load`, `accessibility_figures`,
       `accessibility_tags`, `accessibility_tag_content`, `js_document_scripts`, `pdfa_verify`, `print_readiness`,
       `action_list`, `doc_compare`, `form_actions`, `ocr_status`, `doc_audit_space`, `text_lines`, `image_hit`,
       `page_images`, `text_font_files`, `text_fonts`, `text_paragraphs`, `text_edit_layout`, `command_list`,
       `doc_inspect`, `render_preview`, `tool_search` (`tool_search` und `tool_call` nur, falls gemeldet).
-    - `delete` (16): `doc_batch`, `page_extract` (schreibt mit `separate` einen Ordner), `doc_create_multiple`,
+    - `delete` (17): `link_open` (öffnet die Datei, die ein Link nennt, auch eine absolute; nach dem API-Review statt
+      `read`), `doc_batch`, `page_extract` (schreibt mit `separate` einen Ordner), `doc_create_multiple`,
       `doc_split`, `doc_export_images`, `doc_export_all_images`, `ocr_recognize_files` (ersetzt gleichnamige Dateien),
       `action_run`, `doc_print` (echter Druckauftrag über `lp`), `js_set_document_script`, `form_set_script`,
       `form_set_actions`, `js_enabled`, `command_run`, `command_batch`, `tool_call`.
-    - `write`: die übrigen 109 (181 = 50 + 16 + 109 + 6 gesperrte). Ziele (`target`): `doc_save`,
+    - `write`: die übrigen 109 (181 = 49 + 17 + 109 + 6 gesperrte). Ziele (`target`): `doc_save`,
       `doc_export_data`, `doc_export_office`, `doc_export_text`, `doc_reduce`, `doc_optimize`, `image_save`,
       `doc_compare_report`, `accessibility_report`, `accessibility_review_record`, `accessibility_review_html`,
       `accessibility_review_save`, `form_merge_data` je `path`; `measure_export` `out`; Pflicht überall außer bei

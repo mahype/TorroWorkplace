@@ -42,6 +42,11 @@ const VERSIONED: &[&str] = &["npx", "uvx", "docker"];
 /// its bounds, PdfCraft's `--root` is an older bound beside the two Torro sets ([`Bounds`]).
 const UNBOUNDED_ARGS: &[&str] = &["--connect", "--root"];
 
+/// The catalog servers that work in a folder (issue #303, [`Entry::bounds`]), by id: kept here as well, so a stored
+/// one whose entry a later catalog drops or renames never runs without its bounds (`super::Extensions::files_refusal`).
+/// A new entry with `[server.folder]` goes here too (`the_servers_that_work_in_a_folder_are_known`).
+pub const WORK_IN_A_FOLDER: &[&str] = &["wordcraft", "deckcraft", "gridcraft", "pdfcraft"];
+
 /// The only placeholder of [`Entry::look_in`]: Windows' folder for programs, where ArtCraft's installers put
 /// `<app>-cli.exe` without adding it to the `PATH`.
 const PROGRAM_FILES: &str = "{ProgramFiles}";
@@ -574,6 +579,18 @@ mod tests {
         assert_eq!((optional.target.as_deref(), optional.target_required), (Some("out"), false));
         assert_eq!(pdf.files["doc_combine"].reads, ["paths"]);
         assert_eq!(pdf.files["measure_export"].target.as_deref(), Some("out"));
+    }
+
+    /// Every built-in entry with a folder is in [`WORK_IN_A_FOLDER`], and only those.
+    #[test]
+    fn the_servers_that_work_in_a_folder_are_known() {
+        let with_folder: Vec<&str> = builtin()
+            .expect("valid")
+            .iter()
+            .filter(|entry| entry.info.folder.is_some())
+            .map(|entry| entry.info.id.as_str())
+            .collect();
+        assert_eq!(with_folder, WORK_IN_A_FOLDER);
     }
 
     /// Issue #303: `look_in` with `{ProgramFiles}` finds a program there, here in a temporary folder standing in

@@ -833,8 +833,15 @@ impl Extensions {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<Response> {
         let stored = self.stored(id)?;
-        let entry = entry_of(&stored.source)?;
-        entry.info.folder?;
+        let Some(entry) = entry_of(&stored.source).filter(|entry| entry.info.folder.is_some()) else {
+            return lost_bounds(&stored).then(|| {
+                let message = tr(
+                    "This MCP server worked in a folder, but the catalog no longer says how to keep it there. Remove \
+                     it and install it again.",
+                );
+                error("forbidden", message.into())
+            });
+        };
         let place = match self.usable_folder(&stored) {
             Some((root, access)) => files::Folder::Usable(root, access),
             None if stored.folder.is_some() => files::Folder::Unusable,
@@ -1164,6 +1171,15 @@ impl Extensions {
             folder: stored.folder,
         }
     }
+}
+
+/// Whether `stored` is a catalog server that worked in a folder but whose entry no longer bounds it (dropped,
+/// renamed or without `[server.folder]` in a later catalog): a folder chosen for it, or an id of
+/// [`catalog::WORK_IN_A_FOLDER`]. Such a server is refused every call – it would run without its bounds and without
+/// the check of its paths (decision 3 of #303: never without a bound).
+fn lost_bounds(stored: &StoredExtension) -> bool {
+    matches!(stored.source, Source::Catalog { .. })
+        && (stored.folder.is_some() || catalog::WORK_IN_A_FOLDER.contains(&stored.id.as_str()))
 }
 
 /// The allowed folder `path` names, resolved, with its access: `None` when it is not there or is no allowed folder
@@ -1822,6 +1838,36 @@ mod tests {
         assert_eq!(unusable.folder, Some(path("Docs/Private")));
         assert_eq!(info(choose("wordcraft", None).await).folder, None);
         assert_eq!(stored_all(&extensions).iter().find(|s| s.id == "wordcraft").map(|s| s.folder.clone()), Some(None));
+    }
+
+    /// Review of PR #316: a stored server that worked in a folder but whose catalog entry is gone (or no longer has a
+    /// folder) is refused every call, by its folder or by its id; another server whose entry is gone is not.
+    #[test]
+    fn a_folder_server_without_its_entry_never_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (extensions, _) = extensions_in(dir.path(), roots());
+        let gone = |id: &str, entry: &str, folder: Option<String>| StoredExtension {
+            id: id.into(),
+            name: id.into(),
+            source: Source::Catalog { entry: entry.into(), version: "1".into() },
+            server: ServerSpec::Stdio { command: "/bin/sh".into(), args: Vec::new(), env: BTreeMap::new() },
+            enabled: true,
+            allowed: Vec::new(),
+            reported: Vec::new(),
+            folder,
+        };
+        store_all(
+            &extensions,
+            &[
+                gone("old-craft", "old-craft", Some("/somewhere".into())),
+                gone("deckcraft", "deck-craft-renamed", None),
+                gone("weather", "weather", None),
+            ],
+        );
+        let refused = |id: &str| extensions.files_refusal(id, "anything", &Default::default());
+        assert_eq!(refused("old-craft").as_ref().map(code), Some("forbidden"), "a folder was chosen");
+        assert_eq!(refused("deckcraft").as_ref().map(code), Some("forbidden"), "its id works in a folder");
+        assert_eq!(refused("weather"), None, "never worked in a folder");
     }
 
     /// Issue #303: only catalog servers with bounds get them; Time, a person's own server and GridCraft none.

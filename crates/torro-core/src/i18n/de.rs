@@ -6178,6 +6178,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("This MCP server doesn't work in a folder.", "Dieser MCP-Server arbeitet nicht in einem Ordner."),
     (
+        "This MCP server worked in a folder, but the catalog no longer says how to keep it there. Remove it and \
+         install it again.",
+        "Dieser MCP-Server hat in einem Ordner gearbeitet, aber der Katalog sagt nicht mehr, wie er dort bleibt. \
+         Entferne ihn und installiere ihn neu.",
+    ),
+    (
         "Torro blocks this command: it works the app's window, runs scripts or reaches keys.",
         "Torro sperrt diesen Befehl: Er bedient das Fenster der App, führt Skripte aus oder greift auf Schlüssel zu.",
     ),
