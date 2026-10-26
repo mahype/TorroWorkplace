@@ -15,7 +15,7 @@
 //! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips; task M12.5:
 //! the split chips with their menu, the attachment block with "Save all", a menu with details and tags),
 //! `-- --detail` the blocks of a detail page in the settings (tasks DS.3, DS.4: head, tabs, open
-//! question), `-- --window` the example "Tasks" window (sample data from
+//! question, figures, shares with a legend, setting pairs, the save bar, the quiet branch), `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
 //! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
@@ -2568,8 +2568,93 @@ impl Gallery {
         .width(size::content_max());
         let questions =
             column![question(size::content_max()), problem, question(size::panel())].spacing(size::card_gap());
-        let first = column![section("Head", heads.into()), section("Tabs", tabs.into())].spacing(space::xxl());
-        let second = column![section("Open questions", questions.into())].spacing(space::xxl());
+        let figures = |width: f32| {
+            container(widgets::stat_grid(vec![
+                widgets::StatFigure::new("Mail", "4,796", "59 unread"),
+                widgets::StatFigure::new("On the server", "2.36 GB", "of 10 GB · 24%"),
+                widgets::StatFigure::new("On this device", "512 MB", "1,204 texts offline"),
+                widgets::StatFigure::new("Searchable", "92%", "4,412 with full text"),
+            ]))
+            .width(width)
+        };
+        let figures =
+            column![figures(size::content_max()), figures(size::panel()), figures(size::props())].spacing(space::xl());
+        let part = |label: &str, value: u64, shown: &str, slot: usize| {
+            widgets::SharePart::new(label, value, shown, theme::ChartColor::Series(slot))
+        };
+        let server = vec![
+            part("INBOX", 1_200, "1.2 GB", 0),
+            part("Archive", 700, "700 MB", 1),
+            part("Sent", 300, "300 MB", 2),
+            widgets::SharePart::new("9 other folders", 160, "160 MB", theme::ChartColor::Other),
+        ];
+        let device = vec![
+            part("Search index", 210, "210 MB", 0),
+            part("Mail texts", 240, "240 MB", 1),
+            part("Originals", 40, "40 MB", 2),
+            part("Headers & folders", 22, "22 MB", 3),
+            part("Fifth part", 5, "5 MB", 0),
+        ];
+        let strips = column![
+            container(widgets::share_strip(server.clone(), Some(("Free".to_string(), 7_880))))
+                .width(size::content_max()),
+            container(widgets::share_strip(server, None)).width(size::content_max()),
+            container(widgets::share_strip(device, None)).width(size::content_max()),
+            container(widgets::share_strip(Vec::new(), Some(("Free".to_string(), 0)))).width(size::props()),
+        ]
+        .spacing(space::xl());
+        let pairs = |width: f32| {
+            let name = widgets::setting_pair("Sender name", "Shown as the sender of mail from this account.", || {
+                text_input("Anna Example", "Anna Example").style(style::text_input).padding(style::INPUT_PADDING).into()
+            });
+            let format = widgets::setting_pair(
+                "Write new mail as",
+                "HTML keeps formatting; plain text reads everywhere.",
+                || widgets::segmented([("HTML", Msg::Noop), ("Plain text", Msg::Noop)], 0),
+            );
+            container(widgets::setting_pairs(vec![name, format])).width(width)
+        };
+        let pairs = column![pairs(size::content_max()), pairs(size::panel())].spacing(space::xxl());
+        let page = container(typo::text(typo::body(), "A page that does not save itself.").style(theme::text_2))
+            .width(Fill)
+            .height(size::row_message() + widgets::floating_bar_clearance(1))
+            .padding(space::l())
+            .style(style::container::panel);
+        let saving = container(widgets::over_bar(
+            page,
+            widgets::save_bar("Signature changed", Some(Msg::Noop), Some(Msg::Noop), false),
+        ))
+        .width(size::content_max())
+        .height(size::row_message() + widgets::floating_bar_clearance(1));
+        let busy = widgets::save_bar::<Msg>("Signature changed", None, None, true);
+        let branch = container(column![
+            widgets::sidebar_item(Icon::Users, "Accounts", widgets::Trail::None, false, Msg::Noop),
+            widgets::sidebar_branch_quiet(vec![widgets::sidebar_child(
+                Icon::Mail,
+                "anna@example.org",
+                widgets::Trail::None,
+                true,
+                Msg::Noop,
+            )]),
+            widgets::sidebar_item(Icon::Settings, "Storage & index", widgets::Trail::None, false, Msg::Noop),
+        ])
+        .width(size::sidebar())
+        .padding(space::s())
+        .style(style::container::sidebar);
+        let first = column![
+            section("Head", heads.into()),
+            section("Tabs", tabs.into()),
+            section("Figures", figures.into()),
+            section("Shares", strips.into()),
+        ]
+        .spacing(space::xxl());
+        let second = column![
+            section("Open questions", questions.into()),
+            section("Setting pairs", pairs.into()),
+            section("Save bar", column![saving, busy].spacing(space::l()).into()),
+            section("Quiet branch", branch.into()),
+        ]
+        .spacing(space::xxl());
         row![first, second].spacing(space::xxl()).padding(space::xl()).into()
     }
 }

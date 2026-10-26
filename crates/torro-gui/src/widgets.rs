@@ -1074,13 +1074,25 @@ pub fn sidebar_fold_in<'a, M: Clone + 'a>(
 /// items.push(widgets::sidebar_branch(colour, children));
 /// ```
 pub fn sidebar_branch<'a, M: 'a>(line: Color, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+    branch(rows, move |_| line)
+}
+
+/// A [`sidebar_branch`] whose line is `line_strong` from the theme (task DS.4): for an object open
+/// under its section (an account under "Accounts"), which has no colour of its own. In the
+/// settings' sidebar, whose colours a design may set apart (`palette(theme)` there).
+pub fn sidebar_branch_quiet<'a, M: 'a>(rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+    branch(rows, |t| palette(t).line_strong)
+}
+
+/// The rows of a branch with their line in the colour `line` picks from the theme.
+fn branch<'a, M: 'a>(rows: Vec<Element<'a, M>>, line: impl Fn(&Theme) -> Color + 'a) -> Element<'a, M> {
     let children = container(column(rows).spacing(crate::shell::SIDEBAR_GAP))
         .width(Fill)
         .padding(Padding::new(0.0).left(branch_indent()));
-    let stroke = container(blank())
-        .width(LINE)
-        .height(Fill)
-        .style(move |_| container::Style { background: Some(Background::Color(line)), ..container::Style::default() });
+    let stroke = container(blank()).width(LINE).height(Fill).style(move |t| container::Style {
+        background: Some(Background::Color(line(t))),
+        ..container::Style::default()
+    });
     let guide =
         container(stroke).width(Fill).height(Fill).padding(Padding::new(0.0).left(branch_line_x() - LINE / 2.0));
     // The children are the stack's first layer and so give it its height; the line fills it.
@@ -4446,6 +4458,316 @@ fn question_is_wide<M: Clone>(width: f32, actions: &[PageAction<M>]) -> bool {
     width - buttons >= size::props()
 }
 
+/// A figure for [`stat_grid`]: what [`stat_tile`] takes, as data, so the grid can lay its tiles out
+/// again when its width changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatFigure {
+    /// What is counted ("Mail").
+    pub label: String,
+    /// The figure ("4,796").
+    pub value: String,
+    /// What it means or is measured against ("59 unread", "of 10 GB · 24%").
+    pub note: String,
+}
+
+impl StatFigure {
+    /// A figure with its `label`, `value` and `note`.
+    pub fn new(label: impl Into<String>, value: impl Into<String>, note: impl Into<String>) -> Self {
+        Self { label: label.into(), value: value.into(), note: note.into() }
+    }
+}
+
+/// The narrowest a tile of [`stat_grid`] gets before the grid takes fewer per row: room for a figure
+/// in `DISPLAY` ("2.36 GB") and the tile's padding, so four fit the reading width of a page.
+fn stat_tile_min() -> f32 {
+    size::props() / 2.0
+}
+
+/// How many tiles of [`stat_grid`] stand in a row `width` wide: all of them while each keeps
+/// [`stat_tile_min`], else two, else one (the mini tile).
+pub fn stat_columns(count: usize, width: f32) -> usize {
+    let fits = |n: usize| n as f32 * stat_tile_min() + space::m() * n.saturating_sub(1) as f32 <= width;
+    if count == 0 {
+        1
+    } else if fits(count) {
+        count
+    } else if fits(2) {
+        2.min(count)
+    } else {
+        1
+    }
+}
+
+/// The figures at the top of a detail page (task DS.4, block 3): two to four [`stat_tile`]s with
+/// what they are measured against ("59 unread", "of 10 GB"). In one row where they fit, else two
+/// per row, in the mini tile one; the tiles of a row share its width ([`stat_columns`]).
+///
+/// ```ignore
+/// widgets::stat_grid(vec![StatFigure::new(tr("Mail"), format_count(stats.messages), unread), …])
+/// ```
+pub fn stat_grid<'a, M: 'a>(figures: Vec<StatFigure>) -> Element<'a, M> {
+    responsive(move |room| {
+        let per_row = stat_columns(figures.len(), room.width);
+        let rows = figures.chunks(per_row).map(|chunk| {
+            let mut line = row(chunk.iter().cloned().map(|f| stat_tile(f.label, f.value, f.note)));
+            // An unfinished last row keeps the width of the tiles above it.
+            for _ in chunk.len()..per_row {
+                line = line.push(blank().width(Fill));
+            }
+            line.spacing(space::m()).into()
+        });
+        column(rows).spacing(space::m()).into()
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// One part of a [`share_strip`]: what it is, how much, that amount in words ("1.2 GB") and its
+/// colour. The colour goes by what the part is, never by its rank.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharePart {
+    /// What the part is ("Search index", "INBOX").
+    pub label: String,
+    /// Its amount, in the unit all parts share.
+    pub value: u64,
+    /// The amount as people read it ("1.2 GB", "4,796").
+    pub shown: String,
+    /// Its colour; a fifth part and more are drawn as [`ChartColor::Other`].
+    pub color: ChartColor,
+}
+
+impl SharePart {
+    /// A part with its `label`, `value`, `shown` amount and `color`.
+    pub fn new(label: impl Into<String>, value: u64, shown: impl Into<String>, color: ChartColor) -> Self {
+        Self { label: label.into(), value, shown: shown.into(), color }
+    }
+}
+
+/// The 2-px gap of `panel` between the parts of a [`share_strip`].
+const SHARE_GAP: f32 = 2.0;
+/// The narrowest a part of a [`share_strip`] is drawn, so a small one stays visible.
+const SHARE_MIN: f32 = 2.0;
+
+/// The colour a part of a [`share_strip`] at `index` is drawn in: its own for the first four,
+/// [`ChartColor::Other`] for the rest (four series and "Other", as in the charts).
+pub fn share_color(index: usize, color: ChartColor) -> ChartColor {
+    if index < ChartColor::SLOTS { color } else { ChartColor::Other }
+}
+
+/// The widths of the segments of a [`share_strip`] `width` wide: one per value that is not 0, the
+/// rest last; with the gaps between them they fill the width exactly. A whole of 0 gives one
+/// segment, the empty track.
+pub fn share_widths(values: &[u64], rest: u64, width: f32) -> Vec<f32> {
+    let mut amounts: Vec<u64> = values.iter().copied().filter(|v| *v > 0).collect();
+    if rest > 0 {
+        amounts.push(rest);
+    }
+    let whole: u64 = amounts.iter().sum();
+    if whole == 0 {
+        return vec![width.max(0.0)];
+    }
+    let room = (width - SHARE_GAP * amounts.len().saturating_sub(1) as f32).max(0.0);
+    let mut widths: Vec<f32> =
+        amounts.iter().map(|v| (room * (*v as f32 / whole as f32)).max(SHARE_MIN.min(room))).collect();
+    // The last segment takes what rounding and the minimum left, so the strip ends at the edge.
+    let before: f32 = widths.iter().rev().skip(1).sum();
+    if let Some(last) = widths.last_mut() {
+        *last = (room - before).max(0.0);
+    }
+    widths
+}
+
+/// `part` of `whole` as a percentage people read: "24%", "<1%" for a small part that is not 0,
+/// "0%" for none.
+pub fn share_percent(part: u64, whole: u64) -> String {
+    if whole == 0 || part == 0 {
+        return torro_core::i18n::trf("{n}%", &[("n", &0)]);
+    }
+    let percent = part as f64 * 100.0 / whole as f64;
+    if percent < 1.0 {
+        torro_core::i18n::trf("{n}%", &[("n", &"<1")])
+    } else {
+        torro_core::i18n::trf("{n}%", &[("n", &(percent.round() as u64))])
+    }
+}
+
+/// Parts that make up a whole, as one bar with a legend (task DS.4, block 4): storage, the states
+/// of a search index, rights per area. The bar is [`space::s()`] high, each part in its
+/// [`ChartColor`] with 2 px of the surface between them, `rest` ("Free") as a track in
+/// `line_strong`; under it the legend – swatch, word, `shown`, share in percent – wrapping, so every
+/// value reads without its colour too. At most four series, a fifth part and more draw as
+/// [`ChartColor::Other`]; build the "Other" part yourself where several are left over. A whole of 0
+/// shows only the track. [`share_bar`] stays for a single neutral share.
+///
+/// ```ignore
+/// let parts = vec![SharePart::new(tr("Search index"), index, format_bytes(index), ChartColor::Series(0)), …];
+/// widgets::share_strip(parts, Some((tr("Free").to_string(), free)))
+/// ```
+pub fn share_strip<'a, M: 'a>(parts: Vec<SharePart>, rest: Option<(String, u64)>) -> Element<'a, M> {
+    let parts: Vec<SharePart> = parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, part)| SharePart { color: share_color(i, part.color), ..part })
+        .collect();
+    let rest_value = rest.as_ref().map_or(0, |(_, value)| *value);
+    let whole: u64 = parts.iter().map(|p| p.value).sum::<u64>() + rest_value;
+    let colours: Vec<Option<ChartColor>> = parts.iter().filter(|p| p.value > 0).map(|p| Some(p.color)).collect();
+    let values: Vec<u64> = parts.iter().map(|p| p.value).collect();
+    let bar = responsive(move |room| {
+        let widths = share_widths(&values, rest_value, room.width);
+        let last = widths.len().saturating_sub(1);
+        // A whole of 0 or the rest: the track.
+        let segments = widths.iter().enumerate().map(|(i, width)| {
+            let colour = colours.get(i).copied().flatten();
+            let corners = border::Radius {
+                top_left: if i == 0 { radius::xs() } else { 0.0 },
+                bottom_left: if i == 0 { radius::xs() } else { 0.0 },
+                top_right: if i == last { radius::xs() } else { 0.0 },
+                bottom_right: if i == last { radius::xs() } else { 0.0 },
+            };
+            container(blank().width(*width).height(space::s()))
+                .style(move |t: &Theme| {
+                    let p = palette(t);
+                    let fill = colour.map_or(p.line_strong, |c| p.chart_color(c));
+                    container::Style {
+                        background: Some(Background::Color(fill)),
+                        border: border::Border { radius: corners, ..border::Border::default() },
+                        ..container::Style::default()
+                    }
+                })
+                .into()
+        });
+        row(segments).spacing(SHARE_GAP).into()
+    })
+    .height(Length::Shrink);
+    let mut entries: Vec<Element<'a, M>> =
+        parts.iter().map(|part| share_entry(Some(part.color), &part.label, &part.shown, part.value, whole)).collect();
+    if let Some((label, value)) = &rest {
+        entries.push(share_entry(None, label, "", *value, whole));
+    }
+    let legend = row(entries).spacing(space::l()).wrap().vertical_spacing(space::xs());
+    column![bar, legend].spacing(space::s()).width(Fill).into()
+}
+
+/// One entry of the legend of a [`share_strip`]: swatch (or the track's colour for the rest), word
+/// in `text_2`, the amount in `text` and the share in `text_3`.
+fn share_entry<'a, M: 'a>(
+    colour: Option<ChartColor>,
+    label: &str,
+    shown: &str,
+    value: u64,
+    whole: u64,
+) -> Element<'a, M> {
+    let mark: Element<'a, M> = match colour {
+        Some(colour) => swatch(colour),
+        None => container(blank().width(SWATCH).height(SWATCH))
+            .style(|t| container::Style {
+                background: Some(Background::Color(palette(t).line_strong)),
+                border: border::rounded(MARK_GAP),
+                ..container::Style::default()
+            })
+            .into(),
+    };
+    let mut entry =
+        row![mark, typo::text(typo::meta(), label.to_string()).style(theme::text_2).wrapping(Wrapping::None)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
+    if !shown.is_empty() {
+        entry = entry.push(typo::text(typo::meta().tabular(), shown.to_string()).wrapping(Wrapping::None));
+    }
+    entry
+        .push(
+            typo::text(typo::meta().tabular(), share_percent(value, whole))
+                .style(theme::text_3)
+                .wrapping(Wrapping::None),
+        )
+        .into()
+}
+
+/// A setting with what it is for (task DS.4, block 7): at the left `title` in `BODY_STRONG` and the
+/// `why` sentence in `META` and `text_2`, at the right the `control` (a field, a picker, an editor),
+/// the columns 1 : 1.6, aligned at the top. Narrower than [`size::form_max()`] the control moves
+/// under the sentence. `control` builds the control each time the pair is laid out anew, so it is a
+/// closure. Put several pairs into [`setting_pairs`].
+///
+/// ```ignore
+/// widgets::setting_pair(tr("Sender name"), tr("Shown as the sender of mail from this account."), move || field("Anna", &draft.name).on_input(Message::Name).into())
+/// ```
+pub fn setting_pair<'a, M: 'a>(
+    title: impl Into<String>,
+    why: impl Into<String>,
+    control: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
+    let (title, why) = (title.into(), why.into());
+    responsive(move |room| {
+        let mut words = column![typo::text(typo::body_strong(), title.clone())].spacing(space::xs());
+        if !why.is_empty() {
+            words = words.push(typo::text(typo::meta(), why.clone()).style(theme::text_2));
+        }
+        if pair_is_wide(room.width) {
+            row![
+                container(words).width(Length::FillPortion(SETTING_WORDS)),
+                container(control()).width(Length::FillPortion(SETTING_CONTROL)),
+            ]
+            .spacing(space::xl())
+            .align_y(Alignment::Start)
+            .into()
+        } else {
+            column![words, control()].spacing(space::s()).into()
+        }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// The portions of the two columns of a [`setting_pair`]: 1 : 1.6.
+const SETTING_WORDS: u16 = 10;
+const SETTING_CONTROL: u16 = 16;
+
+/// Whether a [`setting_pair`] `width` wide keeps its two columns.
+fn pair_is_wide(width: f32) -> bool {
+    width >= size::form_max()
+}
+
+/// Several [`setting_pair`]s, a `line` between them and [`layout::section_gap()`] around it.
+pub fn setting_pairs<'a, M: 'a>(pairs: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let mut list = column![].spacing(layout::section_gap());
+    for (i, pair) in pairs.into_iter().enumerate() {
+        if i > 0 {
+            list = list.push(rule::horizontal(LINE).style(style::rule));
+        }
+        list = list.push(pair);
+    }
+    list.width(Fill).into()
+}
+
+/// The bar that saves a page that does not save itself (task DS.4, block 8), shown only while
+/// something is changed: a [`floating_bar`] with `summary` ("Signature changed") in `text_2`,
+/// "Discard" (`ghost`) and "Save" (`primary`; while it saves, `busy` shows "Saving…"). `None` for
+/// `discard` or `save` shows that button off. Lay it over the page with [`over_bar`] and give the
+/// page [`floating_bar_clearance`]`(1)` at its end.
+pub fn save_bar<'a, M: Clone + 'a>(
+    summary: impl IntoFragment<'a>,
+    discard: Option<M>,
+    save: Option<M>,
+    busy: bool,
+) -> Element<'a, M> {
+    let save = if busy {
+        busy_button(tr("Saving…"), style::button::primary)
+    } else {
+        text_button(None, tr("Save"), style::button::primary, save)
+    };
+    let content = row![
+        container(typo::text(typo::body(), summary).style(theme::text_2).wrapping(Wrapping::None))
+            .padding([0.0, space::s()]),
+        text_button(None, tr("Discard"), style::button::ghost, discard),
+        save,
+    ]
+    .spacing(floating_bar_gap())
+    .align_y(Alignment::Center);
+    floating_bar(content)
+}
+
 /// How a [`preview_tile`] stands among the others of its grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewState {
@@ -5407,6 +5729,75 @@ mod badge {
 
 #[cfg(test)]
 mod tests {
+    /// DS.4: the segments and their gaps fill the strip exactly, the rest comes last, a small part
+    /// stays visible.
+    #[test]
+    fn shares_add_up_to_the_width() {
+        let filled = |widths: &[f32]| widths.iter().sum::<f32>() + SHARE_GAP * widths.len().saturating_sub(1) as f32;
+        let widths = share_widths(&[600, 300, 1], 99, 500.0);
+        assert_eq!(widths.len(), 4);
+        assert!((filled(&widths) - 500.0).abs() < 0.01, "{widths:?}");
+        assert!(widths[2] >= SHARE_MIN);
+        assert!(widths[0] > widths[1] && widths[1] > widths[3]);
+        // Parts of 0 take no segment.
+        assert_eq!(share_widths(&[5, 0, 5], 0, 300.0).len(), 2);
+    }
+
+    /// DS.4: a whole of 0 draws only the track.
+    #[test]
+    fn an_empty_whole_draws_only_the_track() {
+        assert_eq!(share_widths(&[0, 0], 0, 320.0), vec![320.0]);
+        assert_eq!(share_widths(&[], 0, 320.0), vec![320.0]);
+        let _: Element<'_, ()> = share_strip(vec![SharePart::new("Index", 0, "0 B", ChartColor::Series(0))], None);
+    }
+
+    /// DS.4: four series, then "Other".
+    #[test]
+    fn a_fifth_part_is_drawn_as_other() {
+        assert_eq!(share_color(3, ChartColor::Series(3)), ChartColor::Series(3));
+        assert_eq!(share_color(4, ChartColor::Series(0)), ChartColor::Other);
+        assert_eq!(share_color(0, ChartColor::Other), ChartColor::Other);
+        let parts = (0..5).map(|i| SharePart::new(format!("Part {i}"), 10, "10", ChartColor::Series(i))).collect();
+        let _: Element<'_, ()> = share_strip(parts, Some(("Free".into(), 50)));
+    }
+
+    /// DS.4: shares are rounded, a small one says "<1%", none says "0%".
+    #[test]
+    fn shares_are_rounded_percentages() {
+        let percent = |n: &dyn std::fmt::Display| torro_core::i18n::trf("{n}%", &[("n", n)]);
+        assert_eq!(share_percent(236, 1000), percent(&24));
+        assert_eq!(share_percent(1, 1000), percent(&"<1"));
+        assert_eq!(share_percent(0, 1000), percent(&0));
+        assert_eq!(share_percent(5, 0), percent(&0));
+        assert_eq!(share_percent(1000, 1000), percent(&100));
+    }
+
+    /// DS.4: figures in one row while they fit, then two per row, then one.
+    #[test]
+    fn figures_take_fewer_columns_when_narrow() {
+        let row_of = |n: usize| n as f32 * stat_tile_min() + space::m() * (n - 1) as f32;
+        assert_eq!(stat_columns(4, row_of(4)), 4);
+        assert_eq!(stat_columns(4, row_of(4) - 1.0), 2);
+        assert_eq!(stat_columns(4, row_of(2) - 1.0), 1);
+        assert_eq!(stat_columns(3, row_of(3)), 3);
+        assert_eq!(stat_columns(0, 100.0), 1);
+        let figures = vec![StatFigure::new("Mail", "4,796", "59 unread"); 3];
+        let _: Element<'_, ()> = stat_grid(figures);
+    }
+
+    /// DS.4: a setting pair keeps two columns from the form width on; the save bar builds busy and
+    /// idle; the quiet branch builds.
+    #[test]
+    fn setting_pairs_save_bar_and_quiet_branch_build() {
+        assert!(pair_is_wide(size::form_max()));
+        assert!(!pair_is_wide(size::form_max() - 1.0));
+        let pair: Element<'_, ()> = setting_pair("Sender name", "Shown as the sender.", || blank().into());
+        let _: Element<'_, ()> = setting_pairs(vec![pair, setting_pair("Signature", "", || blank().into())]);
+        let _: Element<'_, ()> = save_bar("Signature changed", Some(()), Some(()), false);
+        let _: Element<'_, ()> = save_bar("Signature changed", None, None, true);
+        let _: Element<'_, ()> = sidebar_branch_quiet(vec![blank().into()]);
+    }
+
     /// DS.3: a longer word and a count make the row of tabs wider.
     #[test]
     fn tabs_grow_with_word_and_count() {

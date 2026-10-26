@@ -119,7 +119,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   ohne Knöpfe. Galerie in Standard, Compact und Console, hell und dunkel angesehen. Übersetzung „More“ prüfen.
 
 ### DS.4 Bausteine: Kennzahlen, Anteilsbalken, Einstellungspaar, Speicherleiste, ruhiger Zweig
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** DS.3 (Galerie-Seite) · **Dateien:** `crates/torro-gui/src/widgets.rs`,
   `crates/torro-gui/examples/gallery.rs`, `crates/torro-core/src/i18n/de.rs`
 - `widgets::stat_grid(tiles)`: 2–4 `stat_tile` in einer Reihe, darunter 2 Spalten, in Mini eine (`responsive`, wie
