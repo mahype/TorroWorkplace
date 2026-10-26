@@ -544,7 +544,23 @@ struct Checked {
     /// The command or the address.
     target: Option<&'static str>,
     /// Per row of [`Custom::values`].
-    values: Vec<Option<&'static str>>,
+    values: Vec<Option<RowProblem>>,
+}
+
+/// What is wrong with a row of variables or headers: the sentence for the person, and whether it is
+/// about the value (a secret not given) rather than the name, so the focus goes to the field that is
+/// wrong ([`first_marked`]) – whatever the sentence says in the suite's language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RowProblem {
+    text: &'static str,
+    at_value: bool,
+}
+
+impl RowProblem {
+    /// A problem with the row's name.
+    fn name(text: &'static str) -> RowProblem {
+        RowProblem { text, at_value: false }
+    }
 }
 
 impl Checked {
@@ -554,7 +570,7 @@ impl Checked {
 
     /// The sentence at the row `at`.
     fn value(&self, at: usize) -> Option<&'static str> {
-        self.values.get(at).copied().flatten()
+        self.values.get(at).copied().flatten().map(|problem| problem.text)
     }
 }
 
@@ -2474,7 +2490,7 @@ fn first_marked(kind: Kind, checked: &Checked) -> Option<iced::widget::Id> {
         Some((_, field)) => Some(field.into()),
         // A row whose name is fine but whose secret is missing: the value field, so typing fills it in.
         None => checked.values.iter().enumerate().find_map(|(at, problem)| match problem {
-            Some(problem) if *problem == tr("Enter its value.") => Some(value_text_field(at)),
+            Some(RowProblem { at_value: true, .. }) => Some(value_text_field(at)),
             Some(_) => Some(value_field(at)),
             None => None,
         }),
@@ -2853,7 +2869,7 @@ fn check(custom: &Custom, data: &Data) -> Checked {
 
 /// What is wrong with the row `entry` after the rows `before` it, for a command's variables or an
 /// address's headers.
-fn entry_problem(kind: Kind, before: &[Entry], entry: &Entry) -> Option<&'static str> {
+fn entry_problem(kind: Kind, before: &[Entry], entry: &Entry) -> Option<RowProblem> {
     if entry.is_empty() {
         return None;
     }
@@ -2863,15 +2879,18 @@ fn entry_problem(kind: Kind, before: &[Entry], entry: &Entry) -> Option<&'static
         // Header names are the same in any case.
         Kind::Address => other.name.trim().eq_ignore_ascii_case(name),
     };
-    match kind {
-        _ if name.is_empty() => Some(tr("Give it a name.")),
-        Kind::Command if !valid_env_name(name) => Some(tr("A variable's name has no spaces and no =.")),
-        Kind::Command if blocked_env(name) => Some(tr("Torro Workplace never passes this variable on to a server.")),
-        Kind::Address if !valid_header_name(name) => Some(tr("A header's name has no spaces and no colon.")),
-        _ if before.iter().any(twice) => Some(tr("This name is listed twice.")),
-        _ if entry.secret && entry.value.is_blank() && !entry.stored => Some(tr("Enter its value.")),
-        _ => None,
-    }
+    let problem = match kind {
+        _ if name.is_empty() => tr("Give it a name."),
+        Kind::Command if !valid_env_name(name) => tr("A variable's name has no spaces and no =."),
+        Kind::Command if blocked_env(name) => tr("Torro Workplace never passes this variable on to a server."),
+        Kind::Address if !valid_header_name(name) => tr("A header's name has no spaces and no colon."),
+        _ if before.iter().any(twice) => tr("This name is listed twice."),
+        _ if entry.secret && entry.value.is_blank() && !entry.stored => {
+            return Some(RowProblem { text: tr("Enter its value."), at_value: true });
+        }
+        _ => return None,
+    };
+    Some(RowProblem::name(problem))
 }
 
 /// Why a pasted block could not be read, as a sentence for the person in the suite's language. The
@@ -4017,10 +4036,17 @@ mod tests {
         assert_eq!(check_sentence(&[]), None);
         let checked = check(form(&state), &data);
         assert_eq!(first_marked(Kind::Address, &checked), Some(URL_FIELD.into()));
-        let only_a_row = Checked { values: vec![None, Some("wrong")], ..Checked::default() };
+        let only_a_row = Checked { values: vec![None, Some(RowProblem::name("wrong"))], ..Checked::default() };
         assert_eq!(first_marked(Kind::Command, &only_a_row), Some(value_field(1)));
-        let a_missing_value = Checked { values: vec![Some(tr("Enter its value."))], ..Checked::default() };
+        let a_missing_value =
+            Checked { values: vec![Some(RowProblem { text: "any words", at_value: true })], ..Checked::default() };
         assert_eq!(first_marked(Kind::Command, &a_missing_value), Some(value_text_field(0)), "where the value goes");
+        // The check marks a missing secret at its value and a wrong name at its name, by field, not by its words.
+        let row = |name: &str, secret| Entry { name: name.into(), secret, ..Entry::default() };
+        let missing = entry_problem(Kind::Command, &[], &row("API_KEY", true)).expect("a missing secret");
+        assert!(missing.at_value);
+        let blocked = entry_problem(Kind::Command, &[], &row("LD_PRELOAD", false)).expect("a blocked name");
+        assert!(!blocked.at_value);
         assert_eq!(first_marked(Kind::Command, &Checked::default()), None);
     }
 
