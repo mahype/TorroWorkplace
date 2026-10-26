@@ -717,6 +717,13 @@ impl Feed {
     /// read, moved or deleted elsewhere. A snoozed entry only once none of its messages is in the
     /// inbox folder at all (task E9.1): reading mail the person put off does not take it out of
     /// "Later".
+    ///
+    /// A snoozed entry with a follow-up (task E19.1) waits while one of its messages lies in any
+    /// folder but the archive, the trash or spam (a folder without a role and the sent folder
+    /// count): "Follow up" goes on any mail, and the main case of "only if no reply" is a sent mail,
+    /// which is never in the inbox folder – judged by it, the follow-up would end unseen at the next
+    /// catch-up. Archived, thrown away or marked as spam, the person dealt with it, and it ends as
+    /// decision 6 says.
     async fn settle(&self, store: &SharedStore, account: &str, touching: Option<&[String]>, now: DateTime<Utc>) {
         let entries = match self.inbox.open_mail_entries(account, touching) {
             Ok(entries) if !entries.is_empty() => entries,
@@ -730,14 +737,23 @@ impl Feed {
             .run(move |store| {
                 // Without an inbox folder nothing can be told; the entries stay.
                 let Some(inbox) = store.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+                // Where a follow-up ends (task E19.1): mail there was dealt with.
+                let dealt_with: Vec<String> = store
+                    .folders()?
+                    .into_iter()
+                    .filter(|folder| matches!(folder.role, Some(Role::Archive | Role::Trash | Role::Junk)))
+                    .map(|folder| folder.id)
+                    .collect();
                 let mut settled = Vec::new();
                 for entry in entries {
                     let mut waiting = false;
                     for message in &entry.messages {
                         // Put off by the person (task E9.1), it waits as long as its mail is in the
-                        // inbox folder, read or not.
-                        waiting |= store.summary(message)?.is_some_and(|summary| {
-                            summary.folder == inbox.id && (entry.snoozed || !summary.flags.contains(&Flag::Seen))
+                        // inbox folder, read or not; with a follow-up anywhere it was not dealt with.
+                        waiting |= store.summary(message)?.is_some_and(|summary| match entry.snoozed {
+                            true if entry.follow_up => !dealt_with.contains(&summary.folder),
+                            true => summary.folder == inbox.id,
+                            false => summary.folder == inbox.id && !summary.flags.contains(&Flag::Seen),
                         });
                     }
                     if !waiting {
@@ -1231,6 +1247,75 @@ pub(crate) mod tests {
             let (state, follow_up) = state(subject, at_the_date);
             assert!(!follow_up && state != State::New, "{subject} does not come back: {state:?}");
         }
+    }
+
+    /// Task E19.1: a follow-up waits while its mail lies anywhere but in the archive, the trash or
+    /// spam – a sent mail followed up by its id is never in the inbox folder –, and ends when the
+    /// mail is archived. Mail put off without a follow-up (before E19.1) still waits only in the
+    /// inbox folder.
+    #[tokio::test]
+    async fn a_follow_up_waits_outside_the_inbox_folder_until_archived() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("Sent", &letter("Question", "Anna <anna@example.org>", 2, "", None), &["\\Seen"]);
+        server.add("INBOX", &bernd("Put off before", 2), &["\\Seen"]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        let until = Utc::now() + TimeDelta::hours(1);
+        let mut entries = BTreeMap::new();
+        for subject in ["Question", "Put off before"] {
+            let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
+            let entry = inbox.file_mail(&found, Notify::All, Utc::now()).expect("filed").expect("an entry");
+            let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true };
+            assert!(matches!(inbox.handle(request, None, Utc::now()), Response::Item { .. }));
+            entries.insert(subject, entry);
+        }
+        crate::inbox::tests::without_follow_up(&inbox, &entries["Put off before"]);
+        let state =
+            |subject: &str| match inbox.handle(Request::GetItem { id: entries[subject].clone() }, None, Utc::now()) {
+                Response::Item { item } => item.state,
+                other => panic!("the entry, got {other:?}"),
+            };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+
+        // 1. In the sent folder it waits, after a catch-up and after a flag changed on it.
+        feed.catch_up(Utc::now()).await;
+        assert_eq!(state("Question"), State::Snoozed { until }, "a catch-up keeps it");
+        let flagged = MailChange {
+            account: ANNA.into(),
+            folder: of("Question").folder,
+            role: Some(Role::Sent),
+            new: Vec::new(),
+            flags: vec![of("Question").id],
+            removed: Vec::new(),
+            initial: false,
+        };
+        feed.take(flagged, Utc::now()).await;
+        assert_eq!(state("Question"), State::Snoozed { until }, "a flag changed on it keeps it");
+        assert_eq!(state("Put off before"), State::Snoozed { until }, "still in the inbox folder");
+
+        // 2. and 3. Archived, both end: the follow-up and the mail put off before.
+        let archive = store.run(|store| store.folder_by_role(Role::Archive)).await.expect("read").expect("an archive");
+        let archive_id = archive.id.clone();
+        let ids = [of("Question").id, of("Put off before").id];
+        store
+            .run(move |store| {
+                for (uid, id) in (1..).zip(ids.iter()) {
+                    store.relocate_message(id, &archive_id, 14, uid)?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("moved");
+        feed.settle(&store, ANNA, None, Utc::now()).await;
+        assert!(matches!(state("Question"), State::Done { .. }), "archived: no follow-up");
+        assert!(matches!(state("Put off before"), State::Done { .. }), "out of the inbox folder: done as before");
     }
 
     /// Task E9.1: a read mail goes to "Later" as the feed would file it, and stays there when the

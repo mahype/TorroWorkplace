@@ -1554,19 +1554,20 @@ impl Inbox {
     pub fn open_mail_entries(&self, account: &str, touching: Option<&[String]>) -> Result<Vec<MailEntry>, String> {
         let entries = self.with(|db| {
             let mut statement = db.prepare(
-                "SELECT m.item, m.message, i.state = 'snoozed' FROM mail_messages m JOIN items i ON i.id = m.item
+                "SELECT m.item, m.message, i.state = 'snoozed', i.follow_up IS NOT NULL
+                 FROM mail_messages m JOIN items i ON i.id = m.item
                  WHERE m.account = ?1 AND i.owner = ?1 AND i.state IN ('new', 'seen', 'snoozed')
                  ORDER BY i.received, m.item, m.message",
             )?;
             let rows = statement.query_map([account], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?, row.get::<_, bool>(3)?))
             })?;
             let mut entries: Vec<MailEntry> = Vec::new();
             for row in rows {
-                let (item, message, snoozed) = row?;
+                let (item, message, snoozed, follow_up) = row?;
                 match entries.last_mut() {
                     Some(entry) if entry.id == item => entry.messages.push(message),
-                    _ => entries.push(MailEntry { id: item, messages: vec![message], snoozed }),
+                    _ => entries.push(MailEntry { id: item, messages: vec![message], snoozed, follow_up }),
                 }
             }
             Ok(entries)
@@ -4578,6 +4579,10 @@ pub struct MailEntry {
     /// The person put it off ("Later", task E9.1): the feed settles it only once its mail left the
     /// inbox folder, not because it was read – mail the person put off may well be read already.
     pub snoozed: bool,
+    /// It has a follow-up ([`Item::follow_up`], task E19.1). Put off with one, it waits wherever its
+    /// mail lies but in the archive, the trash or spam: a sent mail followed up is never in the inbox
+    /// folder.
+    pub follow_up: bool,
 }
 
 /// What "Later" means for the mail of some accounts now ([`Inbox::mail_later`], task E9.1): which
@@ -7977,6 +7982,17 @@ pub(crate) mod tests {
         Remote { url: None, facets, ..remote(SourceRef::nextcloud(CLOUD), matter, ids, date) }
     }
 
+    /// The entry `id` as mail put off before task E19.1 left it: snoozed, without a follow-up.
+    pub(crate) fn without_follow_up(inbox: &Inbox, id: &str) {
+        inbox
+            .with(|db| {
+                let sql = "UPDATE items SET data = json_remove(data, '$.follow_up'), follow_up = NULL WHERE id = ?1";
+                db.execute(sql, [id])?;
+                Ok(())
+            })
+            .expect("written");
+    }
+
     pub(crate) fn filed_remote(inbox: &Inbox, report: &Remote, now: DateTime<Utc>) -> String {
         inbox.file_remote(report, now).expect("filed").expect("an entry")
     }
@@ -8992,8 +9008,13 @@ pub(crate) mod tests {
         assert_eq!(
             open,
             [
-                MailEntry { id: one.clone(), messages: vec!["m:1".into(), "m:3".into()], snoozed: false },
-                MailEntry { id: two.clone(), messages: vec!["m:2".into()], snoozed: false },
+                MailEntry {
+                    id: one.clone(),
+                    messages: vec!["m:1".into(), "m:3".into()],
+                    snoozed: false,
+                    follow_up: false
+                },
+                MailEntry { id: two.clone(), messages: vec!["m:2".into()], snoozed: false, follow_up: false },
             ]
         );
         let touching = inbox.open_mail_entries(ANNA, Some(&["m:3".to_string()])).expect("read");
