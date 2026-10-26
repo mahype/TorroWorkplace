@@ -178,6 +178,9 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   das Offline-Fenster ab `oldest_cached_body` mit „Change“ → Storage & index · „Search index“ als `share_strip` (Full
   text, Partial or unverified, Awaiting, Text unavailable), „Last run {moment}“ · „Largest folders“: `data_table` der
   fünf größten (Folder, Mail, Unread, Share, On server), „All {n} folders“ öffnet Folders.
+- **Nach der Umsetzung entschieden (Rückfrage zu #314):** Jede Zahl nur einmal. „Largest folders“ entfällt in der
+  Overview (die volle Tabelle steht unter Folders), „Search index“ zeigt nur, was nicht im Volltext liegt; der Volltext
+  steht in der Kachel Searchable und ist im Balken die Spur ohne Legende.
 - **Writing:** Sender name, Signature, Write new mail as als `setting_pair`; Name und Signatur speichern über die
   Speicherleiste (`Page::save_bar`, nur mit Änderung; Discard setzt den Entwurf zurück); das Format sendet sofort
   wie bisher. Der Inline-„Save“ entfällt.

@@ -4616,7 +4616,9 @@ pub fn share_percent(part: u64, whole: u64) -> String {
 /// `line_strong`; under it the legend – swatch, word, `shown`, share in percent – wrapping, so every
 /// value reads without its colour too. At most four series, a fifth part and more draw as
 /// [`ChartColor::Other`]; build the "Other" part yourself where several are left over. A whole of 0
-/// shows only the track. [`share_bar`] stays for a single neutral share.
+/// shows only the track. A `rest` with an empty word draws its track without a legend entry, for
+/// a rest whose number stands elsewhere on the page already. [`share_bar`] stays for a single
+/// neutral share.
 ///
 /// ```ignore
 /// let parts = vec![SharePart::new(tr("Search index"), index, format_bytes(index), ChartColor::Series(0)), …];
@@ -4661,7 +4663,7 @@ pub fn share_strip<'a, M: 'a>(parts: Vec<SharePart>, rest: Option<(String, u64)>
     .height(Length::Shrink);
     let mut entries: Vec<Element<'a, M>> =
         parts.iter().map(|part| share_entry(Some(part.color), &part.label, &part.shown, part.value, whole)).collect();
-    if let Some((label, value)) = &rest {
+    if let Some((label, value)) = rest.as_ref().filter(|(label, _)| !label.is_empty()) {
         entries.push(share_entry(None, label, "", *value, whole));
     }
     let legend = row(entries).spacing(space::l()).wrap().vertical_spacing(space::xs());

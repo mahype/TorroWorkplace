@@ -782,7 +782,6 @@ pub mod accounts {
             .push(storage_card(stats))
             .push(time_card(stats, now))
             .push(index_card(stats, now))
-            .push(largest_card(stats))
             .into()
     }
 
@@ -1047,52 +1046,19 @@ pub mod accounts {
     /// "Search index": how far the mail is searchable, and when the index last ran.
     fn index_card<'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Element<'a, Message> {
         let part = |label: &str, count: u64, colour| SharePart::new(label, count, format_count(count), colour);
+        // What is searchable in full stands in the figure "Searchable" already (each number once):
+        // here it is the quiet track, and the parts are what is not there yet.
         let parts = vec![
-            part(tr("Full text"), stats.indexed_full, ChartColor::Series(0)),
             part(tr("Partial or unverified"), stats.indexed_partial_or_unverified, ChartColor::Series(1)),
             part(tr("Awaiting"), stats.awaiting_index, ChartColor::Series(2)),
             part(tr("Text unavailable"), stats.text_unavailable, ChartColor::Series(3)),
         ];
+        let searchable = Some((String::new(), stats.indexed_full));
         let note = stats
             .last_index_run
             .map_or_else(String::new, |at| trf("Last run {moment}", &[("moment", &format_moment(at, now))]));
-        widgets::chart_card(tr("Search index"), note, widgets::share_strip(parts, None))
+        widgets::chart_card(tr("Search index"), note, widgets::share_strip(parts, searchable))
     }
-
-    /// "Largest folders": the five largest as a table, and the way to all of them.
-    fn largest_card<'a>(stats: &MailAccountStats) -> Element<'a, Message> {
-        let mut folders: Vec<&MailFolderStats> = stats.folders.iter().collect();
-        folders.sort_by(|a, b| {
-            (b.server_bytes.unwrap_or(0), b.folder.total).cmp(&(a.server_bytes.unwrap_or(0), a.folder.total))
-        });
-        let rows = folders
-            .iter()
-            .take(LARGEST_IN_TABLE)
-            .map(|folder| {
-                vec![
-                    folder.folder.name.clone(),
-                    format_count(u64::from(folder.folder.total)),
-                    format_count(u64::from(folder.folder.unread)),
-                    widgets::share_percent(u64::from(folder.folder.total), stats.messages),
-                    folder.server_bytes.map_or_else(|| UNKNOWN.to_string(), format_bytes),
-                ]
-            })
-            .collect();
-        let head = [tr("Folder"), tr("Mail"), tr("Unread"), tr("Of all mail"), tr("On the server")]
-            .map(str::to_string)
-            .to_vec();
-        let all = widgets::text_button(
-            None,
-            trf("All {n} folders", &[("n", &stats.folders.len())]),
-            style::button::ghost,
-            Some(Message::Tab(Tab::Folders.index())),
-        );
-        let body = column![widgets::data_table(head, rows, None), row![blank::horizontal(), all]].spacing(space::s());
-        widgets::chart_card(tr("Largest folders"), "", body)
-    }
-
-    /// How many folders the overview's table shows.
-    const LARGEST_IN_TABLE: usize = 5;
 
     /// The tab "Writing": sender name, signature and "Write new mail as" as pairs with what they are
     /// for. Name and signature save through the save bar; the format is sent at once.
