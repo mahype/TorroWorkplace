@@ -183,6 +183,19 @@ Vertrags-Fixtures als Testfälle.
 Erst Kopfzeilen, Inhalte der jüngsten Nachrichten im Voraus, der Rest beim Öffnen. Neue Mail →
 Benachrichtigung über den Kern (`notify-rust` ist da).
 
+**Kontingent und Größen (#314, DS.1):** Der Sync speichert mit den Kopfzeilen die Größe jeder Mail
+(`RFC822.SIZE`) in `messages.size` (Mail-Speicher Schema 12; Zeilen von vorher haben `NULL`). Fehlende
+Größen füllt er je Lauf und Ordner nach, höchstens 2000 in Stapeln zu 500, auch für einen Ordner,
+der sich nicht geändert hat; so bekommen alte Konten ihre Größen über einige Läufe ohne
+Lastspitze. Ein Ordner nennt seine Größe auf dem Server (`server_bytes` in `mail.account_stats`)
+erst, wenn alle seine Mails eine haben. Einmal je Sync fragt der Dienst das Kontingent
+(`GETQUOTAROOT "INBOX"`, RFC 9208, Ressource `STORAGE` in Einheiten zu 1024 Byte), nur bei Servern
+mit `QUOTA`, und speichert es unter `cache_control.key = 'quota'`; ein Server ohne `QUOTA` löscht
+ein altes. Die Statistik fragt den Server also nie selbst und geht auch offline. Dazu kommen
+Mail je Monat (nach Datum in UTC) und die behaltenen Originale je Ordner. Die Oberfläche zeigt das
+auf der Seite des Kontos (Mail › Accounts); ohne Kontingent steht dort die Summe der Ordner ohne
+„of …“.
+
 **GitHub-Mail (E5.6):** Der Mail-Speicher je Konto (Schema 4) hält neben `List-Id`,
 `List-Unsubscribe`, `Precedence` und `Auto-Submitted` auch `X-GitHub-Reason`
 (`MessageTraits.github`, nur Kleinbuchstaben und `_`). Eine Mail gilt als GitHub-Mail zu einem

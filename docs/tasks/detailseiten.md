@@ -206,7 +206,7 @@ Reihenfolge in einem Strang: DS.1, DS.2, DS.3, DS.4, DS.5, DS.6, DS.7, DS.8.
   account“ landet auf dem Konto. Sichtprüfung `--settings storage` in allen Größen.
 
 ### DS.8 Doku
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** DS.1–DS.7 · **Dateien:** `docs/settings.md`, `docs/mail.md`,
   `.claude/skills/torro-design/SKILL.md`, `docs/tasks/detailseiten.md`
 - `settings.md`: „Keine Reiter“ gilt für die Abschnitte; Detailseiten (dritte Ebene) folgen dem Aufbau oben, mit

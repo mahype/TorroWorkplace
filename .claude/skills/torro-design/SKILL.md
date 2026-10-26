@@ -470,9 +470,35 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Umriss mit Kreis; vergangene 55 % Deckkraft; freie Zeit als „2 h free“ in `TEXT_3`.
   **Heute** = roter Kreis mit weißer Zahl; **Jetzt** = rote Linie 1 px mit Punkt und Zeitlabel in
   der Achse.
-- **Einstellungsseiten:** nur `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit Untertitel, Trennlinien,
-  erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. Eine sichtbare Aktion je Zeile, der
-  Rest im „…“-Menü.
+- **Einstellungsseiten:** Abschnittsseiten aus `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit
+  Untertitel, Trennlinien, erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. Eine sichtbare Aktion je Zeile,
+  der Rest im „…“-Menü. **Detailseiten** (dritte Ebene, #314, `docs/settings.md`) folgen einem festen Aufbau aus
+  diesen Bausteinen (Anschauen: `cargo run -p torro-gui --example gallery -- --detail`, dazu `--light`,
+  `--design console`, `--design compact`):
+  - `detail_head(lead, title, meta, status, actions)`: Kachel `TileSize::Large`, Name `typo::title()`, Meta-Zeile
+    `typo::meta()`/`TEXT_3` mit „…“ und Tooltip, rechts eine Status-Pille (`Status`, Farbe nur im Punkt) und
+    `HeadActions` (eine `PageAction`, `secondary`, dann „…“, dessen Menü der Aufrufer mit `floating` öffnet). Unter
+    `size::form_max()` rutschen Pille und Knöpfe unter die Meta-Zeile.
+  - `tabs(labels, selected, on_select)`: Reiter mit Unterstrich, `size::control_lg()` hoch; gewählt `TEXT`,
+    `body_strong`, Strich 2 px in `TEXT`, sonst `TEXT_2`; Zahl in `meta`/`TEXT_3`; eine `LINE` unter der Reihe. Passt die
+    Reihe nicht (`tabs_width`), wird sie eine Auswahlliste, nie waagerecht scrollend. Nie Rot, nie `segmented`
+    (`segmented` wechselt die Ansicht derselben Daten, Reiter den Teil eines Objekts). Erst ab mehr als drei Gruppen.
+  - `question_card(mark, title, detail, actions)`: was auf eine Entscheidung wartet, direkt unter den Reitern;
+    `RAISED`, Rand `LINE_STRONG`, Radius `sm`, Icon in Attention, Knöpfe rechts oder darunter; mehrere mit
+    `size::card_gap()`.
+  - `stat_grid(Vec<StatFigure>)`: 2–4 `stat_tile` mit Bezug („59 unread“, „of 10 GB · 24%“) in einer Reihe, sonst zwei,
+    in Mini eine (`stat_columns`).
+  - `share_strip(parts, rest)` mit `SharePart`: Teile eines Ganzen (Speicher, Index-Zustände) als Balken `space::s()`
+    hoch, 2 px Fläche dazwischen, Rest („Free“) als Spur in `LINE_STRONG`, Legende mit Wort, Wert und Anteil
+    (`share_percent`: „24%“, „<1%“), höchstens vier Reihen und Other. `share_bar` bleibt für einen neutralen Anteil.
+  - `setting_pair(title, why, control)` in `setting_pairs`: links Titel `body_strong` und Warum-Satz `meta`/`TEXT_2`,
+    rechts das Bedienelement (1 : 1.6), unter `size::form_max()` untereinander; Paare mit `LINE` getrennt.
+  - `save_bar(summary, discard, save, busy)`: nur auf Seiten, die nicht selbst speichern, und nur solange etwas
+    geändert ist; im Einstellungs-Host über `Page::save_bar`.
+  - `sidebar_branch_quiet(rows)`: das offene Objekt als Kind seines Abschnitts, Linie `LINE_STRONG`.
+  - Formate: Größen `torro_gui::units::format_bytes` (Basis 1024, drei gültige Ziffern, „60.9 MB“, „10 GB“), Zahlen
+    `format_count` („4,796“ / „4.796“), Zeitpunkte `torro_gui::datetime::format_moment` („Today 15:39“, „5 Oct 2020“,
+    Ortszeit) mit dem genauen Wert `format_exact` als Tooltip. Keine eigenen `MiB`- oder `UTC`-Formate.
 - **Ansichten:** **leer** (`empty_state`: was hier erscheint und was zu tun ist), **lädt**
   (`loading()`, ruhiger Platzhalter, kein Springen), **Fehler** (`error_state`: was passiert ist +
   „Retry“), **voll** (lange Titel, viele Einträge, Überschneidungen).
