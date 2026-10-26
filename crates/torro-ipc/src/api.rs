@@ -3117,8 +3117,8 @@ static SET_ITEM_DONE: Command = Command {
                   deleted; ntfy is not told. `done: false`, snoozing, hiding and muting \
                   never reach the source. Approvals and account problems (the source `suite`) are the person's \
                   and `not-found` for every key. To archive a mail, use mail_move_messages with `{\"role\": \"archive\"}`; \
-                  that closes its entry once no unread mail of the conversation is left in the inbox. Archiving \
-                  from the entry itself, the app then also marks the entry done here.",
+                  that closes its entry once no unread mail of the conversation is left in the inbox. To close \
+                  the entry right away, call this tool with `done: true` after the move.",
 };
 
 static SNOOZE_ITEM: Command = Command {
