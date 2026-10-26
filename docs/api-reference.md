@@ -2235,7 +2235,7 @@ Stores a secret (`value`) for the variable or header `name` of the MCP server `i
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Chooses the allowed folder (`folder`, its path, or `null` for none) the MCP server `id` works in; the server is started with it as its bound. Only the app key may use it: choosing a folder grants rights.
+Chooses the allowed folder (`folder`, its path, or `null` for none) the MCP server `id` works in; the server is started with it as its bound. Only an allowed folder itself can be chosen, not one inside it; without a folder every call of the server is refused. Only the app key may use it: choosing a folder grants rights.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

@@ -4449,8 +4449,9 @@ static SET_EXTENSION_FOLDER: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Never,
     description: "Chooses the allowed folder (`folder`, its path, or `null` for none) the MCP server `id` works in; \
-                  the server is started with it as its bound. Only the app key may use it: choosing a folder grants \
-                  rights.",
+                  the server is started with it as its bound. Only an allowed folder itself can be chosen, not one \
+                  inside it; without a folder every call of the server is refused. Only the app key may use it: \
+                  choosing a folder grants rights.",
 };
 
 static READ_EXTENSION_LOGS: Command = Command {

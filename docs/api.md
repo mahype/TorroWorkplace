@@ -805,11 +805,11 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
 - **Server mit Ordner (#303, ArtCraft):** Den gewählten Ordner (`ExtensionInfo::folder`) sieht jeder Client mit einer
   Stufe für den Server ungeschwärzt, solange er nutzbar ist: Ein Agent braucht ihn, um Pfade darin zu bilden, er ist
   eine Grenze, kein Geheimnis. Ist er nicht nutzbar, sieht ihn nur der App-Schlüssel; ein Client erfährt dann nur
-  `folder_unusable`. Vor der Freigabe und beim Ausführen prüft der Dienst
-  die Pfade des Aufrufs: außerhalb des Ordners oder gesperrt `not-found`, ohne nutzbaren Ordner `forbidden`, ebenso
-  ein gesperrter Befehl in den Argumenten eines Allzweck-Befehls (`commands = true` im Katalog) oder eines Werkzeugs,
-  das der Katalog nicht nennt; ein Ziel, das es gibt, `conflict`, ein fehlendes Pflicht-Ziel oder ein relativer Pfad
-  `error`. Ein Werkzeug, das der Katalog sperrt, gibt es für niemanden (`not-found`, nicht `forbidden`). Details:
+  `folder_unusable`. Vor der Freigabe und beim Ausführen prüft der Dienst die Pfade des Aufrufs: außerhalb des Ordners
+  oder gesperrt `not-found`, ohne nutzbaren Ordner `forbidden`, ebenso ein gesperrter Befehl in den Argumenten eines
+  Allzweck-Befehls (`commands = true` im Katalog) oder eines Werkzeugs, das der Katalog nicht nennt; ein Ziel, das es
+  gibt, `conflict`, ein fehlendes Pflicht-Ziel oder ein relativer Pfad `error`. Ein Werkzeug, das der Katalog sperrt,
+  gibt es für niemanden (`not-found`, nicht `forbidden`). Details:
   [erweiterungen.md › Dokumente mit ArtCraft](erweiterungen.md#dokumente-mit-artcraft-303).
 - **Neu eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft, wartet wieder auf Zustimmung.
 - **Geheimnisse bei Update:** eigene Server behalten gespeicherte Geheimnisse nur bei gleichem Befehl und gleichen

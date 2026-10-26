@@ -238,6 +238,8 @@ tools = [
     { name = "get_cell", access = "read" },
     { name = "evaluate_formula", access = "read" },
     { name = "list_functions", access = "read" },
+    # Checked in v0.12.1: the tools named here take files only under `path` (open_workbook, save_workbook); with no
+    # bound of its own, Torro's check of the paths is GridCraft's only one, and tools not named here are blocked.
     { name = "open_workbook", access = "read", reads = ["path"] },
     { name = "write_range", access = "write" },
     { name = "set_cell", access = "write" },

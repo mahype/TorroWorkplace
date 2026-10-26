@@ -2289,7 +2289,10 @@ fn folder_group<'a>(
         let button = widgets::anchored(&page.anchor, button);
         match folder_state(data, server) {
             FolderState::Usable(path, access) => {
-                let detail = format!("{path} · {}", AccessChoice(access));
+                let detail = match access {
+                    Some(access) => format!("{path} · {}", AccessChoice(access)),
+                    None => path.to_string(),
+                };
                 status_row(mark_cell(folder_mark()), file_name(path), Some(detail), button)
             }
             FolderState::Unusable(path) => {
@@ -2321,26 +2324,28 @@ fn folder_group<'a>(
 /// How the folder of a server stands on its page (issue #303).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FolderState<'a> {
-    /// Chosen, allowed and usable, with its access.
-    Usable(&'a str, FolderAccess),
+    /// Chosen and usable, as the core says; with its access when the settings name it in the same spelling.
+    Usable(&'a str, Option<FolderAccess>),
     /// Chosen and allowed still, but the core can't use it now ([`ExtensionInfo::folder_unusable`]: not there, or it
     /// holds a folder that may only be read or something Torro protects).
     Unusable(&'a str),
-    /// Chosen, but no longer among the allowed folders.
+    /// Chosen, can't be used, and no longer among the allowed folders.
     NotAllowed(&'a str),
     /// None chosen.
     None,
 }
 
-/// How the folder of `server` stands: its path compared with the allowed folders as paths, so a slash at the end of
-/// one does not count (the core keeps the folder without it).
+/// How the folder of `server` stands. Whether it can be used is the core's word ([`ExtensionInfo::folder_unusable`]),
+/// which compares resolved paths; the settings, compared as paths (a slash at the end does not count), only give the
+/// access to show and tell "no longer allowed" from "can't be used now". A folder chosen in another spelling (a
+/// symbolic link, another case) is usable all the same, just without its access.
 fn folder_state<'a>(data: &Data, server: &'a ExtensionInfo) -> FolderState<'a> {
     let Some(path) = server.folder.as_deref() else { return FolderState::None };
     let allowed = data.settings.tools.folders.iter().find(|folder| Path::new(&folder.path) == Path::new(path));
-    match allowed {
-        None => FolderState::NotAllowed(path),
-        Some(_) if server.folder_unusable => FolderState::Unusable(path),
-        Some(folder) => FolderState::Usable(path, folder.access),
+    match (server.folder_unusable, allowed) {
+        (true, Some(_)) => FolderState::Unusable(path),
+        (true, None) => FolderState::NotAllowed(path),
+        (false, allowed) => FolderState::Usable(path, allowed.map(|folder| folder.access)),
     }
 }
 
@@ -4775,13 +4780,17 @@ mod tests {
         launch::demo_connections(&mut data);
         let word = server_of(&data, "wordcraft").expect("installed").clone();
         let invoices = "/home/anna/Projects/Invoices";
-        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, FolderAccess::ReadWrite));
+        let read_write = Some(FolderAccess::ReadWrite);
+        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, read_write));
         let unusable = ExtensionInfo { folder_unusable: true, ..word.clone() };
         assert_eq!(folder_state(&data, &unusable), FolderState::Unusable(invoices));
-        let gone = ExtensionInfo { folder: Some("/home/anna/Gone".into()), ..word.clone() };
+        let gone = ExtensionInfo { folder: Some("/home/anna/Gone".into()), folder_unusable: true, ..word.clone() };
         assert_eq!(folder_state(&data, &gone), FolderState::NotAllowed("/home/anna/Gone"));
+        // The core uses one the settings name in another spelling (a link): usable, without its access.
+        let linked = ExtensionInfo { folder: Some("/home/anna/Invoices".into()), ..word.clone() };
+        assert_eq!(folder_state(&data, &linked), FolderState::Usable("/home/anna/Invoices", None));
         assert_eq!(folder_state(&data, &ExtensionInfo { folder: None, ..word.clone() }), FolderState::None);
         data.settings.tools.folders[1].path = format!("{invoices}/");
-        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, FolderAccess::ReadWrite), "as paths");
+        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, read_write), "as paths");
     }
 }
