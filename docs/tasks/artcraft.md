@@ -1,17 +1,16 @@
-# Aufgaben: Dokumente mit ArtCraft (AC.1–AC.6)
+# Aufgaben: Dokumente mit ArtCraft (AC.1–AC.7)
 
-Konzept: [erweiterungen.md](../erweiterungen.md) (Abschnitt „MCP-Server (#302)“, ab AC.6 auch „Dokumente mit ArtCraft
+Konzept: [erweiterungen.md](../erweiterungen.md) (Abschnitt „MCP-Server (#302)“, ab AC.7 auch „Dokumente mit ArtCraft
 (#303)“), [api.md](../api.md) („Was nie nach außen geht“, Punkte 9 und 10), [assistent.md](../assistent.md)
 („Eigene Werkzeuge“, freigegebene Ordner #304). Issue #303, geplant am 2026-10-26. Regeln: [CLAUDE.md](../../CLAUDE.md),
 Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer einen Request anfasst, lädt `torro-api`;
 nach jeder Funktion prüft `torro-api-review`.
 
 ```
-AC.1 (Gerüst) ── AC.2 (Katalog: vier Einträge, Format) ── AC.3 (Ordner je App, Grenzen beim Start) ── AC.4 (Pfadprüfung, Speichern als Kopie, Sperrliste) ──┬── AC.5 (Oberfläche)
-                                                                                                                                                              └── AC.6 (Doku)
+AC.1 (Gerüst) ── AC.2 (Katalog: vier Einträge, Format) ── AC.3 (Ordner je App, Grenzen beim Start) ── AC.4 (Pfadprüfung, Speichern als Kopie, Sperrliste) ── AC.5 (Oberfläche) ── AC.6 (Einrichtung: Schritt „Documents“) ── AC.7 (Doku)
 ```
 
-Reihenfolge in einem Strang: AC.1, AC.2, AC.3, AC.4, AC.5, AC.6.
+Reihenfolge in einem Strang: AC.1, AC.2, AC.3, AC.4, AC.5, AC.6, AC.7.
 
 **Festlegungen für alle AC-Aufgaben** (Stand der Quellen am 2026-10-26: WordCraft v0.11.0, DeckCraft v0.11.1, GridCraft
 v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
@@ -221,17 +220,74 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
 - Katalogzeile und Dialoge: für Einträge mit einem `Program` als Voraussetzung „tested with version …“ statt
   „version …“; Werkzeugliste zeigt `blocked` als „Blocked by Torro“.
 - Demo: WordCraft (Ordner gewählt) und GridCraft im Katalog und als installierte Server; neue Zustände
-  `extension-folder` (WordCraft) und `extension-unbounded` (GridCraft) in `--open`, im Skill `torro-design` nachtragen.
+  `extension-folder` (WordCraft) und `extension-unbounded` (GridCraft) in `--open`, im Skill `torro-design` nachtragen (AC.7).
 - **Abnahme:** Test: „Choose…“ schickt den Request mit Pfad, „None“ mit `null`; Sichtprüfung beider Zustände in allen
   Größenklassen und in Standard, Compact, Console (Agent `torro-design-review`); Übersetzungen.
 
-### AC.6 Doku
+### AC.6 Einrichtung: Schritt „Documents“
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** AC.1–AC.5 · **Dateien:** `docs/erweiterungen.md`, `docs/assistent.md`,
-  `docs/settings.md`, `docs/api.md`, `.claude/skills/torro-design/SKILL.md` (nur die Demo-Zustände)
+- **Modell:** Opus · **Braucht:** AC.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/{mod,pages}.rs`,
+  `crates/torroworkplace/src/ui/mod.rs` (Katalog in der Einrichtung laden, Demo), `crates/torro-core/src/settings.rs`
+  (`Setup::VERSION`), `crates/torro-gui/src/icon.rs` und `crates/torro-gui/assets/icons/` (neue Icons),
+  `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Einrichtung, neuer Schritt nach „Web search“ · **API:** keine neue; der Schritt liest
+  `extensions.list_catalog` (gibt es, Read) · **MCP:** `extensions_list_catalog` (gibt es). Er stellt nur vor und
+  speichert nichts; eingerichtet wird unter MCP servers (in der Planung entschieden, Alternative „im Wizard
+  installieren“ verworfen: zweite Umsetzung des Installierens, und ohne freigegebenen Ordner ginge es nicht weiter).
+- `Step::Documents` zwischen `Step::Web` und `Step::Done`, `arg` `documents`, Name „Documents“, Icon `FileText`,
+  `component()` = `Component::Assistant` (die Werkzeuge sind die des Assistenten und der Agenten). `Setup::VERSION`
+  auf 3 mit Doc-Kommentar „3: the step Documents (#303)“; die Overview zeigt damit „New in setup“ (gibt es).
+- Beim Betreten des Schritts (auch mit `--step documents`) den Katalog laden wie MCP servers (`load_catalog`).
+- Seite: Titel und Einleitung, dann eine Gruppe „ArtCraft apps“ mit je einer Zeile für `wordcraft`, `deckcraft`,
+  `gridcraft`, `pdfcraft` aus dem Katalog: Kachel mit Icon (`FileText`, `Presentation`, `Sheet`, `FileType`; neu aus
+  Lucide 0.469.0 nach den Regeln in `icon.rs`), Name mit der Pille „Experimental“, darunter Art und Beispiele, rechts
+  der Zustand: als Server installiert → `ok`-Punkt „Set up“; gefunden (`missing` leer) → `ok`-Punkt „Installed“;
+  sonst ghost-Knopf „Get <App>“ mit `ArrowUpRight` (öffnet `url` des Eintrags, `Action::OpenUrl`). Fußzeile der
+  Gruppe und ein Satz darunter wie im Text unten. Lädt der Katalog nicht: `loading()` bzw. ein Satz ohne Zeilen,
+  „Continue“ geht immer. Kein Primärknopf außer „Continue“; „Skip“ wie bei jedem Schritt.
+- Text (englisch im Code mit `tr()`, die deutsche Fassung nach `de.rs`; Abweichungen im Wortlaut nur, wo die Breite
+  es verlangt):
+  - Titel: „Work with your documents“ / „Mit deinen Dokumenten arbeiten“
+  - Einleitung: „Let the assistant open, read and edit your documents, presentations, spreadsheets and PDFs. The free
+    ArtCraft apps do the work right here on your computer, and Torro keeps your originals safe: every change is saved
+    as a new file.“ / „Lass den Assistenten deine Dokumente, Präsentationen, Tabellen und PDFs öffnen, lesen und
+    bearbeiten. Die freien ArtCraft-Apps erledigen das direkt auf deinem Rechner, und Torro schützt deine Originale:
+    Jede Änderung wird als neue Datei gespeichert.“ (Nicht „ohne hochzuladen“: Was der Assistent liest, geht an das
+    gewählte Modell, auch in die Cloud, `docs/api.md` „Datenregel“.)
+  - WordCraft: „Documents (.docx) · Summarise a contract, fix the wording of a letter, draft a reply from your notes“
+    / „Dokumente (.docx) · Einen Vertrag zusammenfassen, einen Brief sprachlich glätten, aus Notizen eine Antwort
+    entwerfen“
+  - DeckCraft: „Presentations (.pptx) · Turn an outline into slides, add a chart, tidy up every slide's text“ /
+    „Präsentationen (.pptx) · Aus einer Gliederung Folien machen, ein Diagramm einfügen, die Texte aller Folien
+    glätten“
+  - GridCraft: „Spreadsheets (.xlsx, .csv) · Read out figures, fill in a table, sort and chart your data“ /
+    „Tabellen (.xlsx, .csv) · Zahlen auslesen, eine Tabelle ausfüllen, Daten sortieren und als Diagramm zeigen“
+  - PdfCraft: „PDF · Find a passage, fill in a form, comment, combine or split files“ / „PDF · Eine Stelle finden, ein
+    Formular ausfüllen, kommentieren, Dateien zusammenfügen oder teilen“
+  - Fußzeile der Gruppe: „Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each
+    one works only in a folder you choose; changes are saved as new files, and anything that could replace a file asks
+    you first. What the assistant reads goes to the AI model you chose.“ / „Quelloffen (MIT oder Apache 2.0) und noch
+    jung: Die Apps nennen sich selbst experimentell. Jede arbeitet nur in einem Ordner, den du wählst; Änderungen
+    werden als neue Dateien gespeichert, und was eine Datei ersetzen könnte, fragt dich vorher. Was der Assistent
+    liest, geht an das KI-Modell, das du gewählt hast.“
+  - Satz darunter: „Installed one? Set it up later in Settings › MCP servers › Catalog.“ / „Eine installiert? Richte
+    sie später unter Einstellungen › MCP-Server › Katalog ein.“
+  - Zustände: „Installed“ / „Installiert“, „Set up“ / „Eingerichtet“, „Get {app}“ / „{app} holen“.
+- Demo: `--open setup-documents` mit allen vier Einträgen, gemischt (einer eingerichtet, einer installiert, zwei
+  fehlen); im Skill `torro-design` nachtragen (AC.7).
+- **Abnahme:** Tests: Schritt nur bei eingeschaltetem Assistenten in `steps`; „Get <App>“ öffnet die `url` des
+  Eintrags; Zustand aus `missing` und installierten Servern; `Setup::VERSION` 3 und „New in setup“ für eine mit
+  Version 2 abgeschlossene Einrichtung; Sichtprüfung in allen Größenklassen und in Standard, Compact, Console
+  (`torro-design-review`); Übersetzungen.
+
+### AC.7 Doku
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** AC.1–AC.6 · **Dateien:** `docs/erweiterungen.md`, `docs/assistent.md`,
+  `docs/settings.md`, `docs/api.md`, `docs/einrichtung.md`, `.claude/skills/torro-design/SKILL.md` (nur die Demo-Zustände)
 - `erweiterungen.md`: Abschnitt „Dokumente mit ArtCraft (#303)“ mit den Festlegungen dieser Datei (auch die offenen
   Punkte: Sperren nach Namen, Allzweck-Befehle können überschreiben), unter „Abweichungen“ Startoptionen statt Roots,
   Neubewertung um
   2027-01-26 (Rechtliches, Rechte-Stufen und mehrere Ordner bei ArtCraft, Grenzen in GridCraft). `assistent.md` und
   `settings.md`: „ArtCraft später“ ersetzen, Zeile „Folder“ der Seite eines Servers mit `set_folder` (Never).
+  `einrichtung.md`: Schritt 10 „Documents“ (Done wird 11), Zeile in „API und MCP“ (`extensions.list_catalog`).
 - **Abnahme:** Verweise stimmen; nichts widerspricht dem Code.
