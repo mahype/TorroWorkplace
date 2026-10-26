@@ -576,12 +576,13 @@ design-schemes design-switched design-fonts design-fonts-search api-empty api-of
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
 connect-client-rights connect-client-done connect-client-other connections connections-empty search-providers catalog-install
 catalog-install-tools extension-detail extension-review extension-crashed extension-folder extension-unbounded
-custom-server custom-server-paste custom-server-choose setup-documents` (`connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302),
+extension-unusable custom-server custom-server-paste custom-server-choose setup-documents` (`connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302),
 `search-providers`: die Anbieter der Websuche unter dem Werkzeug „Web“ (#305),
 `catalog-install`/`catalog-install-tools`: Installieren aus dem Katalog vor und nach dem Lesen der Werkzeuge,
 `extension-review`: Seite eines Servers mit Werkzeugen, die auf „Allow tools“ warten, `extension-crashed`: dieselbe
 nach einem Absturz, `extension-folder`: Seite von WordCraft mit der Gruppe „Folder“ und gesperrten Werkzeugen (#303),
 `extension-unbounded`: Seite von GridCraft ohne gewählten Ordner, mit dem Hinweis, dass es sich an keinen Ordner hält,
+`extension-unusable`: Seite von WordCraft, deren Ordner freigegeben, aber gerade nicht nutzbar ist,
 `setup-documents`: Einrichtungsschritt „Documents“ mit je einer ArtCraft-App eingerichtet, installiert und fehlend, `custom-server-paste`: eigener Server mit eingefügtem `mcpServers`-Block,
 `custom-server-choose`: Auswahl, wenn der Block mehrere Server nennt; `wizard-mail-certificate`: Frage „Trust this certificate?“ zu einem Server im lokalen Netz,
 `wizard-mail-certificate-public`: dieselbe Frage mit Warnung für einen öffentlichen Host; `design`: Appearance › Design mit

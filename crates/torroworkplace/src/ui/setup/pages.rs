@@ -764,6 +764,36 @@ pub(super) enum AppState {
     Missing,
 }
 
+/// What the step Documents can show of the catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Listed<'a> {
+    /// Nothing listed yet: the catalog has not answered.
+    Loading,
+    /// It could not be listed.
+    Failed,
+    /// Listed, without any ArtCraft app: a service of another version.
+    NotInCatalog,
+    /// The apps the catalog has, in the order of [`APPS`], with their symbol and what each is for.
+    Apps(Vec<(&'a CatalogEntry, Icon, &'static str)>),
+}
+
+/// What the catalog in `data` lets the step show.
+pub(super) fn listed(data: &Data) -> Listed<'_> {
+    let entries = match &data.catalog {
+        crate::ui::connections::Listing::Failed(_) => return Listed::Failed,
+        crate::ui::connections::Listing::Entries(entries) => entries,
+    };
+    let apps: Vec<(&CatalogEntry, Icon, &'static str)> = APPS
+        .iter()
+        .filter_map(|(id, symbol, what)| Some((entries.iter().find(|entry| entry.id == *id)?, *symbol, *what)))
+        .collect();
+    match (apps.is_empty(), entries.is_empty()) {
+        (true, true) => Listed::Loading,
+        (true, false) => Listed::NotInCatalog,
+        (false, _) => Listed::Apps(apps),
+    }
+}
+
 /// How the catalog entry `entry` stands: set up as a server, its program found, or missing.
 pub(super) fn app_state(data: &Data, entry: &CatalogEntry) -> AppState {
     if crate::ui::connections::installed(data, &entry.id).is_some() {
@@ -785,36 +815,19 @@ fn documents(data: &Data, class: SizeClass) -> Element<'_, Message> {
          new file.",
     );
     let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
-    let apps: Element<'_, Message> = match &data.catalog {
-        crate::ui::connections::Listing::Failed(_) => {
-            let sentence = tr("The apps can't be listed right now. You find them later under MCP servers.");
-            typo::text(typo::body(), sentence).style(theme::text_2).into()
-        }
-        crate::ui::connections::Listing::Entries(entries) => {
-            let rows: Vec<Element<'_, Message>> = APPS
-                .iter()
-                .filter_map(|(id, symbol, what)| {
-                    let entry = entries.iter().find(|entry| entry.id == *id)?;
-                    Some(app_row(data, entry, *symbol, tr(what), words))
-                })
-                .collect();
-            match (rows.is_empty(), entries.is_empty()) {
-                // Nothing listed yet: the catalog has not answered.
-                (true, true) => widgets::loading(),
-                // Answered, without the apps: a service of another version.
-                (true, false) => {
-                    let sentence = tr("This version of Torro Workplace doesn't list the ArtCraft apps yet.");
-                    typo::text(typo::body(), sentence).style(theme::text_2).into()
-                }
-                (false, _) => {
-                    let footer = tr(
-                        "Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each \
-                         one works only in a folder you choose; changes are saved as new files, and anything that \
-                         could replace a file asks you first. What the assistant reads goes to the AI model you chose.",
-                    );
-                    widgets::group(tr("ArtCraft apps"), rows, Some(footer.to_string()))
-                }
-            }
+    let sentence =
+        |text: &'static str| -> Element<'_, Message> { typo::text(typo::body(), tr(text)).style(theme::text_2).into() };
+    let apps: Element<'_, Message> = match listed(data) {
+        Listed::Loading => widgets::loading(),
+        Listed::Failed => sentence("The apps can't be listed right now. You find them later under MCP servers."),
+        Listed::NotInCatalog => sentence("This version of Torro Workplace doesn't list the ArtCraft apps yet."),
+        Listed::Apps(apps) => {
+            let rows = apps.into_iter().map(|(entry, symbol, what)| app_row(data, entry, symbol, tr(what), words));
+            let footer =
+                tr("Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each one \
+                 works only in a folder you choose; changes are saved as new files, and anything that could replace a \
+                 file asks you first. What the assistant reads goes to the AI model you chose.");
+            widgets::group(tr("ArtCraft apps"), rows.collect(), Some(footer.to_string()))
         }
     };
     let later = typo::text(typo::body(), tr("Installed one? Set it up later in Settings › MCP servers › Catalog."))

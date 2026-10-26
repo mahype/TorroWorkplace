@@ -172,6 +172,8 @@ pub enum Open {
     ExtensionFolder,
     /// The page of "GridCraft" (issue #303): no folder chosen yet, and that it keeps to no folder itself.
     ExtensionUnbounded,
+    /// The page of "WordCraft" whose folder is allowed still but can't be used now (`folder_unusable`).
+    ExtensionUnusable,
     /// The form of a server of one's own (task MA.9), filled in from a pasted block
     /// ([`DEMO_PASTE_ONE`]): a command with arguments, its API key marked secret, a plain variable.
     CustomServer,
@@ -208,7 +210,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 106] = [
+    pub const ALL: [(&'static str, Open); 107] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -291,6 +293,7 @@ impl Open {
         ("extension-crashed", Open::ExtensionCrashed),
         ("extension-folder", Open::ExtensionFolder),
         ("extension-unbounded", Open::ExtensionUnbounded),
+        ("extension-unusable", Open::ExtensionUnusable),
         ("custom-server", Open::CustomServer),
         ("custom-server-paste", Open::CustomServerPaste),
         ("custom-server-choose", Open::CustomServerChoose),
@@ -1296,6 +1299,13 @@ pub fn demo_connections_empty(data: &mut Data) {
 pub fn demo_uninstalled(data: &mut Data) {
     if let super::connections::Listing::Entries(servers) = &mut data.extensions {
         servers.retain(|server| server.id != "github");
+    }
+}
+
+/// `--open extension-unusable` (issue #303): WordCraft's folder is allowed still, but the core can't use it now.
+pub fn demo_unusable(data: &mut Data) {
+    if let super::connections::Listing::Entries(servers) = &mut data.extensions {
+        servers.iter_mut().filter(|server| server.id == "wordcraft").for_each(|server| server.folder_unusable = true);
     }
 }
 

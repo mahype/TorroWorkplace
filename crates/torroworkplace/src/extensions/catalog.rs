@@ -583,6 +583,7 @@ mod tests {
         assert_eq!(commands("wordcraft"), ["execute", "batch"]);
         assert_eq!(commands("deckcraft"), ["run_command", "batch"]);
         assert!(commands("gridcraft").is_empty(), "its execute_command is blocked");
+        assert_eq!(commands("pdfcraft"), ["doc_batch", "action_run", "command_run", "command_batch", "tool_call"]);
         let pdf = entry("pdfcraft");
         let count = |wanted: Access| pdf.info.tools.iter().filter(|tool| tool.access == wanted).count();
         assert_eq!((count(Access::Read), count(Access::Delete), count(Access::Write)), (49, 17, 109));

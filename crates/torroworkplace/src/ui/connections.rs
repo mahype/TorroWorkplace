@@ -2269,10 +2269,6 @@ fn folder_group<'a>(
     check: FolderCheck,
     words: bool,
 ) -> Element<'a, Message> {
-    let folders = &data.settings.tools.folders;
-    let chosen = server.folder.as_deref();
-    // As paths, so a slash at the end of one does not count (the core keeps the folder without it).
-    let allowed = chosen.and_then(|path| folders.iter().find(|folder| Path::new(&folder.path) == Path::new(path)));
     // Every mark of the group in a cell as wide as an icon, so the dot and the folder line up, and so does the text.
     let attention = || mark_cell(widgets::status_dot(Dot::Attention));
     let press = folder_press(page, data, server);
@@ -2291,21 +2287,20 @@ fn folder_group<'a>(
             (false, false) => widgets::icon_button(Icon::Folder, tr("Choose…"), press),
         };
         let button = widgets::anchored(&page.anchor, button);
-        match (chosen, allowed) {
-            // Allowed still, but the core can't use it now (not there, or it holds what Torro protects).
-            (Some(path), Some(_)) if server.folder_unusable => {
+        match folder_state(data, server) {
+            FolderState::Usable(path, access) => {
+                let detail = format!("{path} · {}", AccessChoice(access));
+                status_row(mark_cell(folder_mark()), file_name(path), Some(detail), button)
+            }
+            FolderState::Unusable(path) => {
                 let detail = trf("{path} · Can't be used now: choose another.", &[("path", &path)]);
                 status_row(attention(), file_name(path), Some(detail), button)
             }
-            (Some(path), Some(folder)) => {
-                let detail = format!("{path} · {}", AccessChoice(folder.access));
-                status_row(mark_cell(folder_mark()), file_name(path), Some(detail), button)
-            }
-            (Some(path), None) => {
+            FolderState::NotAllowed(path) => {
                 let detail = trf("{path} · No longer allowed: choose another.", &[("path", &path)]);
                 status_row(attention(), file_name(path), Some(detail), button)
             }
-            (None, _) => {
+            FolderState::None => {
                 let detail = tr("Every call is refused until you choose one.");
                 status_row(attention(), tr("No folder chosen").into(), Some(detail.into()), button)
             }
@@ -2321,6 +2316,32 @@ fn folder_group<'a>(
         footer = format!("{footer} {}", unbounded_sentence(&server.name));
     }
     widgets::group(tr("Folder"), vec![row], Some(footer))
+}
+
+/// How the folder of a server stands on its page (issue #303).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FolderState<'a> {
+    /// Chosen, allowed and usable, with its access.
+    Usable(&'a str, FolderAccess),
+    /// Chosen and allowed still, but the core can't use it now ([`ExtensionInfo::folder_unusable`]: not there, or it
+    /// holds a folder that may only be read or something Torro protects).
+    Unusable(&'a str),
+    /// Chosen, but no longer among the allowed folders.
+    NotAllowed(&'a str),
+    /// None chosen.
+    None,
+}
+
+/// How the folder of `server` stands: its path compared with the allowed folders as paths, so a slash at the end of
+/// one does not count (the core keeps the folder without it).
+fn folder_state<'a>(data: &Data, server: &'a ExtensionInfo) -> FolderState<'a> {
+    let Some(path) = server.folder.as_deref() else { return FolderState::None };
+    let allowed = data.settings.tools.folders.iter().find(|folder| Path::new(&folder.path) == Path::new(path));
+    match allowed {
+        None => FolderState::NotAllowed(path),
+        Some(_) if server.folder_unusable => FolderState::Unusable(path),
+        Some(folder) => FolderState::Usable(path, folder.access),
+    }
 }
 
 /// `mark` (a dot, an icon) centred in a cell as wide as an icon ([`icon::SIZE`]), so the text after marks of either
@@ -4744,5 +4765,23 @@ mod tests {
         let mut with_folders = data.clone();
         launch::demo_connections(&mut with_folders);
         assert_eq!(folder_press(&state.server, &with_folders, &server), Some(Message::ToggleFolders), "Choose…");
+    }
+
+    /// Review of PR #316: the folder of a server stands as usable with its access, as usable no longer (the core's
+    /// `folder_unusable`), as no longer allowed, or as none; a slash at the end of the stored path does not count.
+    #[test]
+    fn the_folder_of_a_server_shows_how_it_stands() {
+        let mut data = launch::demo_data();
+        launch::demo_connections(&mut data);
+        let word = server_of(&data, "wordcraft").expect("installed").clone();
+        let invoices = "/home/anna/Projects/Invoices";
+        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, FolderAccess::ReadWrite));
+        let unusable = ExtensionInfo { folder_unusable: true, ..word.clone() };
+        assert_eq!(folder_state(&data, &unusable), FolderState::Unusable(invoices));
+        let gone = ExtensionInfo { folder: Some("/home/anna/Gone".into()), ..word.clone() };
+        assert_eq!(folder_state(&data, &gone), FolderState::NotAllowed("/home/anna/Gone"));
+        assert_eq!(folder_state(&data, &ExtensionInfo { folder: None, ..word.clone() }), FolderState::None);
+        data.settings.tools.folders[1].path = format!("{invoices}/");
+        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, FolderAccess::ReadWrite), "as paths");
     }
 }

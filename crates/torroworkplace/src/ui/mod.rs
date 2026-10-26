@@ -942,17 +942,21 @@ impl Ui {
             | Open::ExtensionReview
             | Open::ExtensionCrashed
             | Open::ExtensionFolder
-            | Open::ExtensionUnbounded => {
+            | Open::ExtensionUnbounded
+            | Open::ExtensionUnusable => {
                 if open == Open::ExtensionReview {
                     launch::demo_review(&mut self.data);
                 }
                 // The ArtCraft apps (issue #303) choose among the allowed folders of `connections`.
-                if matches!(open, Open::ExtensionFolder | Open::ExtensionUnbounded) {
+                if matches!(open, Open::ExtensionFolder | Open::ExtensionUnbounded | Open::ExtensionUnusable) {
                     launch::demo_connections(&mut self.data);
+                }
+                if open == Open::ExtensionUnusable {
+                    launch::demo_unusable(&mut self.data);
                 }
                 let id = match open {
                     Open::ExtensionCrashed => "github",
-                    Open::ExtensionFolder => "wordcraft",
+                    Open::ExtensionFolder | Open::ExtensionUnusable => "wordcraft",
                     Open::ExtensionUnbounded => "gridcraft",
                     _ => "time",
                 };
@@ -3032,11 +3036,15 @@ mod tests {
             ("extension-crashed", "github"),
             ("extension-folder", "wordcraft"),
             ("extension-unbounded", "gridcraft"),
+            ("extension-unusable", "wordcraft"),
         ] {
             let ui = started(&["--demo", "--open", name]);
             assert_eq!(ui.connections.page, connections::Page::Server(id.into()), "{name}");
             assert!(ui.page_header(SizeClass::Wide).sub_page.is_some() && ui.page_overlay().is_none(), "{name}");
         }
+        let unusable = started(&["--demo", "--open", "extension-unusable"]);
+        let word = connections::server_of(&unusable.data, "wordcraft").expect("WordCraft");
+        assert!(word.folder_unusable && word.folder.is_some(), "issue #303: chosen, but not usable now");
         let review = started(&["--demo", "--open", "extension-review"]);
         let time = connections::server_of(&review.data, "time").expect("Time");
         assert_eq!(time.status, torro_ipc::extensions::Status::Review);

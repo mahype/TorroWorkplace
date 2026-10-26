@@ -1939,4 +1939,23 @@ mod tests {
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)), "stores nothing");
         assert_eq!(setup.step, Step::Done);
     }
+
+    /// Review of PR #316: before the catalog answers the step shows "Loading …", a failed list a sentence, and a
+    /// catalog without the ArtCraft apps (a service of another version) another; otherwise the four apps in order.
+    #[test]
+    fn documents_say_how_the_catalog_answered() {
+        use super::super::connections::Listing;
+        use pages::Listed;
+        let mut data = data();
+        let Listed::Apps(apps) = pages::listed(&data) else { panic!("the demo lists the apps") };
+        let ids: Vec<&str> = apps.iter().map(|(entry, ..)| entry.id.as_str()).collect();
+        assert_eq!(ids, ["wordcraft", "deckcraft", "gridcraft", "pdfcraft"]);
+        let catalog = data.catalog.entries().to_vec();
+        data.catalog = Listing::Entries(Vec::new());
+        assert_eq!(pages::listed(&data), Listed::Loading);
+        data.catalog = Listing::Failed("unsupported".into());
+        assert_eq!(pages::listed(&data), Listed::Failed);
+        data.catalog = Listing::Entries(catalog.into_iter().filter(|entry| !entry.id.ends_with("craft")).collect());
+        assert_eq!(pages::listed(&data), Listed::NotInCatalog);
+    }
 }
