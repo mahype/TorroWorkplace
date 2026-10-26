@@ -36,6 +36,11 @@
 //! ([`Focus::List`]): `j`/`k` walk Decide, Agents and To sort, `l` moves an entry to the other lane.
 //! `s` on an approval opens no snooze menu – an approval waits for yes or no.
 //!
+//! "Focus & reply" (task E19.5, [`Focus::Replying`]) shows one mail of "Reply later" at a time with a
+//! field under it: while the field has the keyboard it takes every key (the shortcut "send" sends,
+//! Escape leaves the field); without it `j`/`k` (and ↓/↑) go to the next or previous mail, `u` undoes
+//! and `[` folds the sidebar – no key acts on the list hidden behind it.
+//!
 //! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
 //! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
 //!
@@ -152,14 +157,18 @@ pub enum Focus {
     /// A question waits for its answer (task E10.1: "Delete permanently?"): `Enter` confirms, Escape
     /// (the app's) cancels, nothing of the list.
     Question,
+    /// "Focus & reply" (task E19.5) stands in place of the list, its field without the keyboard:
+    /// `j`/`k` (↓/↑) go to the next or previous mail ([`Command::Next`], [`Command::Previous`]),
+    /// `u` undoes, `[` folds the sidebar; nothing of the list, which is hidden.
+    Replying,
 }
 
 /// What a key does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// Move the cursor to the next row.
+    /// Move the cursor to the next row; in "Focus & reply" the next mail (task E19.5).
     Next,
-    /// Move the cursor to the previous row.
+    /// Move the cursor to the previous row; in "Focus & reply" the previous mail.
     Previous,
     /// The overview: the cursor to the column at the left (`h`, ←).
     ColumnLeft,
@@ -439,7 +448,10 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::Overview, Key::Left | Key::H) => Some(Command::ColumnLeft),
         (Focus::Overview, Key::Right | Key::L) => Some(Command::ColumnRight),
         (Focus::Overview, key) => command(Focus::List, key),
-        (Focus::List | Focus::Elsewhere, Key::Sidebar) => Some(Command::Sidebar),
+        (Focus::List | Focus::Elsewhere | Focus::Replying, Key::Sidebar) => Some(Command::Sidebar),
+        (Focus::Replying, Key::Down) => Some(Command::Next),
+        (Focus::Replying, Key::Up) => Some(Command::Previous),
+        (Focus::Replying, Key::U) => Some(Command::Undo),
         (Focus::List | Focus::Elsewhere, Key::Actions) => Some(Command::Actions),
         (Focus::List, Key::Down) => Some(Command::Next),
         (Focus::List, Key::Up) => Some(Command::Previous),
@@ -559,6 +571,27 @@ mod tests {
         for focus in [Focus::Choices, Focus::Mute, Focus::Picker, Focus::Task, Focus::Elsewhere, Focus::Question] {
             assert_eq!(command(focus, Key::W), None, "{focus:?}");
             assert_eq!(command(focus, Key::B), None, "{focus:?}");
+        }
+    }
+
+    /// Task E19.5: in "Focus & reply" – its field without the keyboard – `j`/`k` and ↓/↑ go to the
+    /// next or previous mail, `u` undoes, `[` folds the sidebar; the keys of the hidden list do nothing.
+    #[test]
+    fn focus_and_reply_walks_with_j_and_k() {
+        let none = Modifiers::empty();
+        for (key, wanted) in [
+            (char("j"), Command::Next),
+            (Name::Named(Named::ArrowDown), Command::Next),
+            (char("k"), Command::Previous),
+            (Name::Named(Named::ArrowUp), Command::Previous),
+            (char("u"), Command::Undo),
+            (char("["), Command::Sidebar),
+        ] {
+            let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
+            assert_eq!(command(Focus::Replying, key), Some(wanted), "{key:?}");
+        }
+        for key in [Key::E, Key::W, Key::B, Key::S, Key::R, Key::Enter, Key::Delete, Key::Slash, Key::Digit(1)] {
+            assert_eq!(command(Focus::Replying, key), None, "{key:?}");
         }
     }
 

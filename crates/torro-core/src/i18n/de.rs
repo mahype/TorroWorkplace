@@ -6491,4 +6491,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Conversations you follow up on wait here until their day.",
         "Unterhaltungen mit Wiedervorlage warten hier bis zu ihrem Tag.",
     ),
+    // "Focus & reply" on the pile "Reply later" (E19.5, issue #315); "Skip", "Send" and "Sending…" stand above.
+    ("Focus & reply", "Fokus & Antworten"),
+    ("{n} of {total}", "{n} von {total}"),
+    ("Write a reply…", "Antwort schreiben…"),
+    ("Sent.", "Gesendet."),
+    ("Nothing left to reply to.", "Nichts mehr zu beantworten."),
+    ("Back to Reply later", "Zurück zu „Später beantworten“"),
+    ("Open in compose window", "Im Schreibfenster öffnen"),
 ];

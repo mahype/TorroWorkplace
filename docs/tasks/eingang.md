@@ -4558,7 +4558,7 @@ parallel.
   „Cancel follow-up“ schickt `until: None`; im Hub heißt es weiter `tr("Later")`. Vergleiche mit `tr(…)`.
 
 ### E19.5 „Focus & reply“, Doku, Sichtprüfung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E19.4 · **Dateien:** `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/mail.rs`,
   `crates/torroinbox/src/keys.rs`, `crates/torroinbox/src/compose.rs` (nur Sichtbarkeit der Sende-Taste),
   `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md`

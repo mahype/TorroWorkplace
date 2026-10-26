@@ -53,6 +53,10 @@
 //!   or takes it off, [`MailSource::mail_in_pile`] lists a pile and [`MailSource::count_in_pile`] counts
 //!   it; "All" asks [`MailSource::mail_by_role`] with `pile: without`. "Focus & reply" answers with
 //!   [`MailSource::send_reply`], built as the compose window builds a reply ([`send_reply_through`]).
+//! - "Focus & reply" (task E19.5, decision 10 of E19): [`FocusReply`] is the round through "Reply
+//!   later" – the pile's mail as listed when it started, the place, the reply typed –, [`focus_page`]
+//!   draws it in place of list and reader: the mail's head and text in the reading column, under a line
+//!   the field and Send · Skip · Remove from Reply later · Open in compose window.
 //!
 //! **Mail is foreign text** (`untrusted`). Its HTML comes cleaned by the core (no scripts, no
 //! forms, legacy attributes as CSS) and is drawn without JavaScript; a click on one of its links
@@ -67,11 +71,13 @@ use std::process::Command;
 use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
+use iced::keyboard;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, mouse_area, responsive, row, rule, scrollable, svg};
+use iced::widget::{center, column, container, mouse_area, responsive, row, rule, scrollable, svg, text_editor};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{AttachmentClick, MailAppearance, MailFormat};
+use torro_core::shortcuts::System;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::panel;
@@ -338,7 +344,6 @@ pub trait MailSource: Send + Sync {
     /// turns up). Errors as the core maps them; [`InboxError::Other`] with the reason when there is
     /// no account to write from, no one to answer, or the server refused (the saved draft stays in
     /// the drafts folder then).
-    #[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
     fn send_reply(&self, id: String, text: String) -> impl Future<Output = Result<(), InboxError>> + Send;
 }
 
@@ -347,7 +352,6 @@ pub trait MailSource: Send + Sync {
 /// of [`compose::pick_sender`]), `text` typed above the quote, saved and then sent through `source`.
 /// A send whose outcome is unknown ([`Delivery::Unknown`]) counts as sent, as in the compose window:
 /// it is never sent again by itself.
-#[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
 pub async fn send_reply_through<S: ComposeSource>(source: &S, id: String, text: &str) -> Result<(), InboxError> {
     let senders = source.senders().await.map_err(inbox_error)?;
     let message = source.get_mail(id.clone()).await.map_err(inbox_error)?;
@@ -369,7 +373,6 @@ pub async fn send_reply_through<S: ComposeSource>(source: &S, id: String, text: 
 /// The draft of an answer as the compose window would save it: `text` above `opened`'s quoted mail,
 /// from `sender`; with the marks as HTML when the account writes formatted mail, the quote staying
 /// someone else's text ([`torro_mail::markup::to_html`]).
-#[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
 fn reply_draft(sender: &compose::Sender, opened: compose::Opening, text: &str) -> Draft {
     let body = format!("{}{}", text.trim().replace("\r\n", "\n"), opened.body);
     let html = sender
@@ -391,7 +394,6 @@ fn reply_draft(sender: &compose::Sender, opened: compose::Opening, text: &str) -
 }
 
 /// A compose call's error as the mail window's calls report it.
-#[cfg_attr(not(test), expect(dead_code, reason = "\"Focus & reply\" calls it from task E19.5 on"))]
 fn inbox_error(err: ComposeError) -> InboxError {
     match err {
         ComposeError::Offline => InboxError::Offline,
@@ -3973,6 +3975,327 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+// ----- "Focus & reply" (task E19.5) -------------------------------------------------------------
+
+/// The id of the reply field of "Focus & reply" (task E19.5): the window puts the keyboard there
+/// when a round starts, so the first reply can be typed at once.
+pub const FOCUS_FIELD: &str = "focus-reply";
+
+/// The id of the scrolling mail of "Focus & reply": the window scrolls it back to the top when
+/// another mail shows.
+pub const FOCUS_MAIL: &str = "focus-mail";
+
+/// How many lines the reply field of "Focus & reply" shows empty, and how many it grows to before
+/// it scrolls: room for a short answer, and the mail above keeps most of the window.
+const FIELD_LINES: f32 = 4.0;
+const FIELD_MAX_LINES: f32 = 10.0;
+
+/// "Focus & reply" (task E19.5, decision 10 of E19): one round through the pile "Reply later", a
+/// mail at a time with a field to answer it under the mail.
+///
+/// [`FocusReply::ids`] are the pile's mail as the view listed it when the round started, in its
+/// order. A mail answered ([`FocusReply::answered`]) or taken off the pile
+/// ([`FocusReply::take_current`]) leaves the round, so [`FocusReply::at`] then already points at the
+/// next one; a skipped one stays on the pile and in the round ([`FocusReply::skip`]), the arrows go
+/// back to it. `at == ids.len()` is the end of the round: nothing left to reply to in it.
+///
+/// The reply belongs to the mail shown: another mail starts with an empty field and without the
+/// error of the last send. While a reply is on its way ([`FocusReply::sending`]) nothing moves, so
+/// the answer always belongs to the mail shown.
+#[derive(Debug, Clone, Default)]
+pub struct FocusReply {
+    /// The mail of the round (`m:…`), in the order of the pile when it started.
+    pub ids: Vec<String>,
+    /// The place of the mail shown in [`FocusReply::ids`]; `ids.len()` at the end.
+    pub at: usize,
+    /// What is typed into the field for the mail shown.
+    pub reply: text_editor::Content,
+    /// The reply is on its way (`MailSource::send_reply`): "Sending…", the field and the buttons
+    /// take nothing until the answer.
+    pub sending: bool,
+    /// Why the last send failed (the core's words); the text stays in the field to send again.
+    pub error: Option<String>,
+}
+
+impl FocusReply {
+    /// A round through `ids`, at the first, with an empty field.
+    pub fn new(ids: Vec<String>) -> FocusReply {
+        FocusReply { ids, ..FocusReply::default() }
+    }
+
+    /// The mail shown; `None` at the end of the round.
+    pub fn current(&self) -> Option<&str> {
+        self.ids.get(self.at).map(String::as_str)
+    }
+
+    /// "{n} of {total}" of the mail shown, from 1; `None` at the end.
+    pub fn position(&self) -> Option<(usize, usize)> {
+        self.current().map(|_| (self.at + 1, self.ids.len()))
+    }
+
+    /// Whether [`FocusReply::step`] can go that way: forward up to the last mail, back from any
+    /// place after the first – also from the end, to a mail skipped there. Never while sending.
+    pub fn can_step(&self, forward: bool) -> bool {
+        match (self.sending, forward) {
+            (true, _) => false,
+            (false, true) => self.at + 1 < self.ids.len(),
+            (false, false) => self.at > 0 && !self.ids.is_empty(),
+        }
+    }
+
+    /// The next (`forward`) or the previous mail; `false` when it could not go there
+    /// ([`FocusReply::can_step`]). The field starts empty for it.
+    pub fn step(&mut self, forward: bool) -> bool {
+        if !self.can_step(forward) {
+            return false;
+        }
+        self.at = if forward { self.at + 1 } else { (self.at - 1).min(self.ids.len() - 1) };
+        self.fresh();
+        true
+    }
+
+    /// "Skip": the next mail – after the last one the end –, the mail shown stays on the pile;
+    /// `false` at the end and while sending.
+    pub fn skip(&mut self) -> bool {
+        if self.sending || self.current().is_none() {
+            return false;
+        }
+        self.at += 1;
+        self.fresh();
+        true
+    }
+
+    /// "Remove from Reply later": the mail shown leaves the round, the next one shows; its id for
+    /// the window to take it off the pile. `None` at the end and while sending.
+    pub fn take_current(&mut self) -> Option<String> {
+        if self.sending || self.current().is_none() {
+            return None;
+        }
+        let id = self.ids.remove(self.at);
+        self.fresh();
+        Some(id)
+    }
+
+    /// The reply to `id` was sent: it leaves the round, and the mail after it shows with an empty
+    /// field when it was the one shown.
+    pub fn answered(&mut self, id: &str) {
+        self.sending = false;
+        let Some(place) = self.ids.iter().position(|held| held == id) else { return };
+        self.ids.remove(place);
+        if place < self.at {
+            self.at -= 1;
+        } else if place == self.at {
+            self.fresh();
+        }
+    }
+
+    /// The reply could not be sent, for `why`: it stays in the field, "Send" tries again.
+    pub fn failed(&mut self, why: String) {
+        self.sending = false;
+        self.error = Some(why);
+    }
+
+    /// Whether "Send" goes: a mail shown, something typed, nothing on its way.
+    pub fn can_send(&self) -> bool {
+        !self.sending && self.current().is_some() && !self.reply.text().trim().is_empty()
+    }
+
+    /// An empty field and no error, for another mail.
+    fn fresh(&mut self) {
+        self.reply = text_editor::Content::new();
+        self.error = None;
+    }
+}
+
+/// What [`focus_page`] draws.
+#[derive(Debug, Clone, Copy)]
+pub struct FocusPage<'a> {
+    /// The round.
+    pub focus: &'a FocusReply,
+    /// The mail shown, as the reader reads it (`App::reading`): its head while the whole of it loads,
+    /// then its text or HTML. `None` while the window holds none yet.
+    pub reading: Option<Reading<'a>>,
+    /// A narrow window: the page's padding at the sides instead of the reading padding, which would
+    /// leave the mail a strip there.
+    pub narrow: bool,
+}
+
+/// "Focus & reply" (task E19.5) in place of list and reader, in every layout from narrow to wide
+/// alike: in the reading column ([`size::reading_max`], at the left under the header as the reader's
+/// mail stands)
+///
+/// 1. scrolling, the mail as the reader shows it: its head ([`head`]: subject, sender, invitation,
+///    task), a line and its text or HTML ([`letter`]);
+/// 2. fixed under a line from edge to edge, so it is at hand however long the mail is: the field
+///    ("Write a reply…", the shortcut "send" of the compose window sends, Escape leaves the field),
+///    why the last send failed, and the row Send (primary; "Sending…" while on its way) · Skip
+///    (secondary) · Remove from Reply later (ghost; only its icon when the words do not fit) · at
+///    the right the compose window for this reply ("Open in compose window": Cc, attachments,
+///    format).
+///
+/// No action rail: the round does one thing. At the end of the round the page says "Nothing left
+/// to reply to." with the way back ([`focus_done`]).
+pub fn focus_page<'a>(page: FocusPage<'a>) -> Element<'a, Message> {
+    let Some(id) = page.focus.current() else { return focus_done() };
+    responsive(move |bounds| {
+        let pad = focus_padding(page.narrow);
+        let width = (bounds.width - pad.left - pad.right).max(0.0).min(size::reading_max());
+        let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
+        let mut mail = column![].spacing(layout::section_gap()).width(width);
+        if let Some(reading) = &page.reading {
+            mail = mail.push(head(reading, None, width)).push(line());
+        }
+        mail = mail.push(focus_letter(page.reading, width));
+        let mail = scrollable(container(mail).padding(Padding { bottom: layout::section_gap(), ..pad }))
+            .id(FOCUS_MAIL)
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill);
+        let reply = container(focus_reply(page.focus, id, width)).padding(Padding {
+            top: space::l(),
+            bottom: space::l(),
+            ..pad
+        });
+        column![mail, line(), reply].height(Fill).into()
+    })
+    .into()
+}
+
+/// The padding around the page of "Focus & reply": the page's above and below, at the sides the
+/// reading padding as in the reader – the page's in a narrow window.
+fn focus_padding(narrow: bool) -> Padding {
+    let sides = if narrow { layout::page_padding().left } else { layout::reading_padding().left };
+    Padding { left: sides, right: sides, ..layout::page_padding() }
+}
+
+/// The mail under its head in "Focus & reply", `width` wide: its text or HTML ([`letter`]); while
+/// it loads, or after an error, a quiet line says so, as in the reader.
+fn focus_letter<'a>(reading: Option<Reading<'a>>, width: f32) -> Element<'a, Message> {
+    let Some(reading) = reading else { return note(tr("Loading the message…")) };
+    match reading.loaded {
+        None => note(tr("Loading the message…")),
+        Some(Err(why)) => {
+            let what = typo::text(typo::body(), tr("Couldn't load the message.")).style(theme::text_2);
+            let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+            column![what, why].spacing(space::xs()).into()
+        }
+        Some(Ok(_)) => letter(&reading).width(width).into(),
+    }
+}
+
+/// The field, why the last send failed and the buttons of "Focus & reply" ([`focus_page`]) for the
+/// mail `id`, `width` wide. While sending the field takes no typing, so what goes is what shows.
+fn focus_reply<'a>(focus: &'a FocusReply, id: &'a str, width: f32) -> Element<'a, Message> {
+    let mut field = text_editor(&focus.reply)
+        .id(FOCUS_FIELD)
+        .placeholder(tr("Write a reply…"))
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
+        .padding(style::INPUT_PADDING)
+        .min_height(field_height(FIELD_LINES))
+        .max_height(field_height(FIELD_MAX_LINES))
+        .wrapping(Wrapping::WordOrGlyph)
+        .style(style::text_editor)
+        .key_binding(focus_binding);
+    if !focus.sending {
+        field = field.on_action(Message::FocusEdit);
+    }
+    let mut block = column![field].spacing(space::m()).width(width);
+    if let Some(why) = &focus.error {
+        block = block.push(send_failure(why));
+    }
+    block.push(focus_buttons(focus, id, width)).into()
+}
+
+/// The height of the reply field for `lines` lines of `typo::body()` inside its padding.
+fn field_height(lines: f32) -> f32 {
+    let body = typo::body();
+    lines * body.line_height.to_absolute(body.size).0 + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
+}
+
+/// The keys of the reply field: the shortcut "send" of the compose window sends
+/// (`compose::is_send`: Ctrl + Enter, on macOS also ⌘ + Enter and ⇧⌘D) instead of starting a new
+/// line. Escape leaves the field – captured, as a sequence is (Iced passes a lone `Unfocus` on), so
+/// the window's Escape does not also end the round with the text typed: a second Escape does, and
+/// `j`/`k` walk the round meanwhile. Everything else as in any field.
+fn focus_binding(press: text_editor::KeyPress) -> Option<text_editor::Binding<Message>> {
+    if !matches!(press.status, text_editor::Status::Focused { .. }) {
+        return text_editor::Binding::from_key_press(press);
+    }
+    if compose::is_send(System::current(), &press.key, press.physical_key, press.modifiers) {
+        return Some(text_editor::Binding::Custom(Message::FocusSend));
+    }
+    if matches!(press.key.as_ref(), keyboard::Key::Named(keyboard::key::Named::Escape)) {
+        return Some(text_editor::Binding::Sequence(vec![text_editor::Binding::Unfocus]));
+    }
+    text_editor::Binding::from_key_press(press)
+}
+
+/// Why the reply could not be sent, under the field: the alert in the error colour, what happened
+/// and the core's words, as the window's error line says it.
+fn send_failure<'a>(why: &'a str) -> Element<'a, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+    let what = typo::text(typo::meta(), tr("Couldn't send the message.")).style(theme::text_2);
+    let why = typo::text(typo::meta(), why).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+    row![alert, column![what, why].spacing(space::xs()).width(Fill)]
+        .spacing(space::s())
+        .align_y(Alignment::Start)
+        .into()
+}
+
+/// The row under the reply field: Send (primary, with the shortcut as tooltip; off while nothing is
+/// typed, "Sending…" while on its way), Skip (secondary), Remove from Reply later (ghost) and at the
+/// right "Open in compose window" (`SquarePen`) for the mail `id`. In a row narrower than all words,
+/// Remove shows its icon with the words as tooltip. Nothing takes a click while sending.
+fn focus_buttons<'a>(focus: &'a FocusReply, id: &'a str, width: f32) -> Element<'a, Message> {
+    let idle = !focus.sending;
+    let send = if focus.sending {
+        widgets::busy_button(tr("Sending…"), style::button::primary)
+    } else {
+        let send = focus.can_send().then_some(Message::FocusSend);
+        let button = widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, send);
+        widgets::with_tooltip(button, compose::send_keys())
+    };
+    let skip = widgets::text_button(None, tr("Skip"), style::button::secondary, idle.then_some(Message::FocusSkip));
+    let words = tr("Remove from Reply later");
+    let remove = idle.then_some(Message::FocusRemove);
+    let all = widgets::text_button_width(true, tr("Send"))
+        + widgets::text_button_width(false, tr("Skip"))
+        + widgets::text_button_width(true, words)
+        + size::control_sm()
+        + 3.0 * space::s();
+    let remove = if all <= width {
+        widgets::text_button(Some(Icon::X), words, style::button::ghost, remove)
+    } else {
+        widgets::compact_button(Icon::X, words, style::button::ghost, remove)
+    };
+    let compose = idle.then(|| Message::Mail(MailAction::Reply, id.to_owned()));
+    let compose = widgets::icon_button(Icon::SquarePen, tr("Open in compose window"), compose);
+    row![send, skip, remove, iced::widget::space::horizontal(), compose]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The end of a round of "Focus & reply": "Nothing left to reply to." and the way back to the pile
+/// ("Back to Reply later", as Escape and the header's "‹ Reply later"), centred like an empty state.
+fn focus_done<'a>() -> Element<'a, Message> {
+    let back = widgets::text_button(
+        Some(Icon::ChevronLeft),
+        tr("Back to Reply later"),
+        style::button::secondary,
+        Some(Message::FocusClose),
+    );
+    let content = column![typo::text(typo::body_strong(), tr("Nothing left to reply to.")), back]
+        .spacing(space::m())
+        .align_x(Alignment::Center)
+        .max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -3986,6 +4309,35 @@ mod tests {
 
     /// The click of a reading in the tests: open, the default.
     static OPEN: AttachmentClick = AttachmentClick::Open;
+
+    /// Task E19.5: a round of "Focus & reply" – skipping keeps a mail in the round, taking it off or
+    /// answering it drops it and shows the next with an empty field; an answer to a mail before the
+    /// one shown keeps the one shown; nothing moves while sending; ↑ comes back from the end.
+    #[test]
+    fn a_round_of_focus_and_reply() {
+        let ids = |focus: &FocusReply| focus.ids.join(" ");
+        let mut focus = FocusReply::new(["a", "b", "c", "d"].map(String::from).to_vec());
+        assert_eq!((focus.current(), focus.position()), (Some("a"), Some((1, 4))));
+        assert!(!focus.can_send(), "nothing typed");
+        focus.reply = text_editor::Content::with_text("Thanks!");
+        assert!(focus.can_send());
+        assert!(focus.skip());
+        assert_eq!((focus.current(), focus.reply.text().trim()), (Some("b"), ""), "an empty field for b");
+        assert_eq!(focus.take_current().as_deref(), Some("b"));
+        assert_eq!((focus.current(), ids(&focus)), (Some("c"), "a c d".to_owned()));
+        focus.answered("a");
+        assert_eq!((focus.current(), focus.position()), (Some("c"), Some((1, 2))), "still c");
+        focus.sending = true;
+        assert!(!focus.skip() && !focus.step(true) && focus.take_current().is_none(), "nothing moves");
+        focus.answered("c");
+        assert_eq!((focus.current(), focus.sending), (Some("d"), false));
+        focus.failed("offline".into());
+        assert_eq!(focus.error.as_deref(), Some("offline"));
+        assert!(focus.skip());
+        assert_eq!((focus.current(), focus.position(), focus.error.as_deref()), (None, None, None), "the end");
+        assert!(!focus.can_step(true) && focus.step(false));
+        assert_eq!(focus.current(), Some("d"), "back from the end");
+    }
 
     fn folders() -> Vec<Folder> {
         DemoSource::new(now()).mail_folders().expect("folders")
