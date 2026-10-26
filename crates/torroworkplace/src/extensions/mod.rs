@@ -835,7 +835,12 @@ impl Extensions {
         let stored = self.stored(id)?;
         let entry = entry_of(&stored.source)?;
         entry.info.folder?;
-        files::refusal(entry, self.usable_folder(&stored), &self.allowed_folders(), tool, arguments)
+        let place = match self.usable_folder(&stored) {
+            Some((root, access)) => files::Folder::Usable(root, access),
+            None if stored.folder.is_some() => files::Folder::Unusable,
+            None => files::Folder::None,
+        };
+        files::refusal(entry, place, &self.allowed_folders(), tool, arguments)
     }
 
     /// The allowed folders of now ([`Extensions::with_allowed`]); none without them.
@@ -859,6 +864,16 @@ impl Extensions {
             if entry_of(&stored.source).and_then(|entry| entry.info.folder).is_none() {
                 return error("unsupported", tr("This MCP server doesn't work in a folder.").into());
             }
+            // Kept as a plain absolute path, without a slash at its end or a doubled one, so it reads as the
+            // allowed folder the settings name; a relative one would be taken from the service's working folder.
+            let folder = match folder {
+                Some(path) if !Path::new(&path).is_absolute() => {
+                    let message = tr("This isn't an allowed folder. Allow it under Allowed folders first.");
+                    return error("not-found", message.into());
+                }
+                Some(path) => Some(Path::new(&path).components().collect::<PathBuf>().to_string_lossy().into_owned()),
+                None => None,
+            };
             if let Some(path) = &folder {
                 let allowed = self.allowed_folders();
                 let Some((root, access)) = allowed_folder(&allowed, path) else {
@@ -1125,8 +1140,8 @@ impl Extensions {
             tools.iter().filter(|tool| tool.state == ToolState::Blocked).map(|tool| tool.name.as_str()).collect();
         if !blocked.is_empty() {
             notes.push(trf(
-                "Torro blocks these tools: {tools}. They work the app's window, run scripts or reach keys of your \
-                 keychain, so no one may use them.",
+                "Torro blocks these tools: {tools}. No one may use them: they work the app's window, run scripts, reach \
+                 keys of your keychain, or take paths Torro can't check.",
                 &[("tools", &blocked.join(", "))],
             ));
         }
@@ -1793,7 +1808,10 @@ mod tests {
         plain = info(extensions.get("wordcraft", Reach::Suite).await);
         assert_eq!(plain.folder, Some(path("Plain")), "kept, for the person to see and change");
 
-        let chosen = info(choose("wordcraft", Some(path("Docs/Private"))).await);
+        // Relative is never taken from the service's folder; a slash at the end is dropped, as the settings write it.
+        assert_eq!(code(&choose("wordcraft", Some("Plain".into())).await), "not-found");
+        let sep = std::path::MAIN_SEPARATOR;
+        let chosen = info(choose("wordcraft", Some(format!("{}{sep}", path("Docs/Private")))).await);
         assert_eq!(chosen.folder, Some(path("Docs/Private")));
         let stored = extensions.stored("wordcraft").expect("stored");
         assert_eq!(extensions.usable_folder(&stored), Some((home.join("Docs/Private"), FolderAccess::Read)));

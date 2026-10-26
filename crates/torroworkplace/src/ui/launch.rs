@@ -1246,8 +1246,8 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
 /// The note the core gives a server with blocked tools (issue #303), for the demo's ArtCraft apps.
 fn demo_blocked_note(tools: &[&str]) -> String {
     trf(
-        "Torro blocks these tools: {tools}. They work the app's window, run scripts or reach keys of your \
-         keychain, so no one may use them.",
+        "Torro blocks these tools: {tools}. No one may use them: they work the app's window, run scripts, reach \
+         keys of your keychain, or take paths Torro can't check.",
         &[("tools", &tools.join(", "))],
     )
 }

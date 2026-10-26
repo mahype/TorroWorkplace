@@ -37,11 +37,22 @@ pub const PATH_KEYS: &[&str] = &["path", "paths", "out", "out_dir", "folder", "f
 /// since a name blocked in vain costs only a refused call.
 const NAME_KEYS: &[&str] = &["name", "id", "command", "commands", "method", "tool", "tools", "op", "action", "cmd"];
 
+/// The folder of a server as it stands for a call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Folder {
+    /// The chosen folder, resolved, with its access, usable now (`super::Extensions::usable_folder`).
+    Usable(PathBuf, FolderAccess),
+    /// One is chosen, but it cannot be used now: no longer allowed, not there, or no longer one that may be chosen.
+    Unusable,
+    /// None is chosen.
+    None,
+}
+
 /// Why `entry` must not run `tool` with `arguments` now, as the answer; `None` when it may. `folder` is the chosen
-/// folder as usable now (`super::Extensions::usable_folder`), `allowed` the allowed folders with their locks.
+/// folder as it stands now, `allowed` the allowed folders with their locks.
 pub fn refusal(
     entry: &Entry,
-    folder: Option<(PathBuf, FolderAccess)>,
+    folder: Folder,
     allowed: &Allowed,
     tool: &str,
     arguments: &Map<String, Value>,
@@ -54,12 +65,23 @@ pub fn refusal(
         return Some(error("forbidden", message.into()));
     }
     let app = entry.info.name.as_str();
-    let Some((root, access)) = folder else {
-        let message = trf(
-            "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
-            &[("app", &app)],
-        );
-        return Some(error("forbidden", message));
+    let (root, access) = match folder {
+        Folder::Usable(root, access) => (root, access),
+        Folder::Unusable => {
+            let message = trf(
+                "The folder chosen for {app} can't be used now: it isn't allowed any more, isn't there, or holds \
+                 something Torro protects. Choose another in Torro Workplace under MCP servers.",
+                &[("app", &app)],
+            );
+            return Some(error("forbidden", message));
+        }
+        Folder::None => {
+            let message = trf(
+                "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
+                &[("app", &app)],
+            );
+            return Some(error("forbidden", message));
+        }
     };
     let place = Place { allowed, root: &root, app };
     let files = entry.files.get(tool);
@@ -188,11 +210,13 @@ impl Place<'_> {
         }
     }
 
-    /// Any other path: a full path in the chosen folder, not locked, there or not.
+    /// Any other path: a full path in the chosen folder, not locked, there or not. Only a path that is not there at
+    /// all is taken as a new entry: one that is there and resolves outside (a symbolic link out of the folder) or to
+    /// something locked stays refused.
     fn inside(&self, path: &str) -> Result<(), Response> {
         let resolved = match self.allowed.existing(path, FolderAccess::Read) {
             Ok(resolved) => resolved,
-            Err(FolderError::NotFound) => {
+            Err(FolderError::NotFound) if std::fs::symlink_metadata(path).is_err() => {
                 self.allowed.new_target(path, FolderAccess::Read).map_err(|err| self.refused(&err))?
             }
             Err(err) => return Err(self.refused(&err)),
@@ -298,6 +322,10 @@ mod tests {
         tool: &str,
         arguments: Value,
     ) -> Option<String> {
+        let folder = match folder {
+            Some((root, access)) => Folder::Usable(root, access),
+            None => Folder::None,
+        };
         let refusal = refusal(entry(app), folder, &home.allowed(), tool, &args(arguments));
         refusal.map(|response| match response {
             Response::Error { code, message } => {
@@ -357,6 +385,15 @@ mod tests {
             let code = refused_in(&home, app, None, "list_commands", json!({}));
             assert_eq!(code.as_deref(), Some("forbidden"), "{app}");
         }
+        // A chosen folder that cannot be used says so, not "choose one".
+        let unusable = refusal(entry("wordcraft"), Folder::Unusable, &home.allowed(), "get_text", &Map::new());
+        let Some(Response::Error { code, message }) = unusable else { panic!("refused") };
+        assert_eq!(code, "forbidden");
+        let choose = trf(
+            "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
+            &[("app", &"WordCraft")],
+        );
+        assert_ne!(message, choose);
     }
 
     #[test]
@@ -390,6 +427,12 @@ mod tests {
         std::os::unix::fs::symlink(home.root.join("Docs/nothing"), home.root.join("Docs/dangling.docx")).expect("link");
         let save = json!({"path": home.path("Docs/dangling.docx")});
         assert_eq!(refused(&home, "wordcraft", "save_document", save).as_deref(), Some("conflict"));
+        // Under any path key too, a link out of the folder is outside, a file or a folder.
+        std::os::unix::fs::symlink(home.root.join("Outside"), home.root.join("Docs/out")).expect("link");
+        let batch = json!({"commands": [{"command": "file.open", "params": {"path": home.path("Docs/link.docx")}}]});
+        assert_eq!(refused(&home, "wordcraft", "batch", batch).as_deref(), Some("not-found"));
+        let exported = json!({"doc": 1, "folder": home.path("Docs/out")});
+        assert_eq!(refused(&home, "pdfcraft", "doc_export_images", exported).as_deref(), Some("not-found"));
     }
 
     #[test]

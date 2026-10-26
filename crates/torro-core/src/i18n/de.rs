@@ -6182,6 +6182,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Torro sperrt diesen Befehl: Er bedient das Fenster der App, führt Skripte aus oder greift auf Schlüssel zu.",
     ),
     (
+        "The folder chosen for {app} can't be used now: it isn't allowed any more, isn't there, or holds something \
+         Torro protects. Choose another in Torro Workplace under MCP servers.",
+        "Der Ordner, der für {app} gewählt ist, ist gerade nicht nutzbar: Er ist nicht mehr freigegeben, nicht da \
+         oder enthält etwas, das Torro schützt. Wähle in Torro Workplace unter „MCP-Server“ einen anderen.",
+    ),
+    (
         "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
         "Wähle zuerst in Torro Workplace unter „MCP-Server“ einen Ordner für {app}. Die App arbeitet nur dort.",
     ),
@@ -6210,10 +6216,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
          Schreiben.",
     ),
     (
-        "Torro blocks these tools: {tools}. They work the app's window, run scripts or reach keys of your keychain, \
-         so no one may use them.",
-        "Torro sperrt diese Werkzeuge: {tools}. Sie bedienen das Fenster der App, führen Skripte aus oder greifen auf \
-         Schlüssel deines Schlüsselbunds zu, darum darf sie niemand nutzen.",
+        "Torro blocks these tools: {tools}. No one may use them: they work the app's window, run scripts, reach keys \
+         of your keychain, or take paths Torro can't check.",
+        "Torro sperrt diese Werkzeuge: {tools}. Niemand darf sie nutzen: Sie bedienen das Fenster der App, führen \
+         Skripte aus, greifen auf Schlüssel deines Schlüsselbunds zu oder nehmen Pfade, die Torro nicht prüfen kann.",
     ),
     (
         "This isn't an allowed folder. Allow it under Allowed folders first.",
