@@ -1085,7 +1085,8 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::SetFolder(id, folder) => {
             state.server.folders_open = false;
             let chosen = server_of(data, &id).and_then(|server| server.folder.as_deref());
-            if chosen == folder.as_deref() {
+            // As paths: the core keeps the folder without a slash at its end, as a setting may have one.
+            if chosen.map(Path::new) == folder.as_deref().map(Path::new) {
                 return Action::None;
             }
             (state.server.waiting, state.server.problem) = (Some(Waiting::Folder), None);
@@ -2268,7 +2269,8 @@ fn folder_group<'a>(
 ) -> Element<'a, Message> {
     let folders = &data.settings.tools.folders;
     let chosen = server.folder.as_deref();
-    let allowed = chosen.and_then(|path| folders.iter().find(|folder| folder.path == path));
+    // As paths, so a slash at the end of one does not count (the core keeps the folder without it).
+    let allowed = chosen.and_then(|path| folders.iter().find(|folder| Path::new(&folder.path) == Path::new(path)));
     let attention = || widgets::status_dot(Dot::Attention);
     let row = if folders.is_empty() && chosen.is_none() {
         // As under "Organize files": the system's folder chooser, the folder then allowed to read.
@@ -2330,7 +2332,7 @@ fn folder_menu<'a>(data: &'a Data, server: &'a ExtensionInfo) -> Element<'a, Mes
             let press = Message::SetFolder(server.id.clone(), Some(folder.path.clone()));
             MenuItem::new(Icon::Folder, file_name(&folder.path), press)
                 .detail(detail)
-                .current(chosen == Some(folder.path.as_str()))
+                .current(chosen.is_some_and(|path| Path::new(path) == Path::new(&folder.path)))
         })
         .collect();
     let none =

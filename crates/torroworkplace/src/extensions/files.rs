@@ -216,7 +216,10 @@ impl Place<'_> {
     fn inside(&self, path: &str) -> Result<(), Response> {
         let resolved = match self.allowed.existing(path, FolderAccess::Read) {
             Ok(resolved) => resolved,
-            Err(FolderError::NotFound) if std::fs::symlink_metadata(path).is_err() => {
+            // Without a slash at its end, which makes the system follow a link that is the last part.
+            Err(FolderError::NotFound)
+                if std::fs::symlink_metadata(Path::new(path).components().collect::<PathBuf>()).is_err() =>
+            {
                 self.allowed.new_target(path, FolderAccess::Read).map_err(|err| self.refused(&err))?
             }
             Err(err) => return Err(self.refused(&err)),
@@ -433,6 +436,10 @@ mod tests {
         assert_eq!(refused(&home, "wordcraft", "batch", batch).as_deref(), Some("not-found"));
         let exported = json!({"doc": 1, "folder": home.path("Docs/out")});
         assert_eq!(refused(&home, "pdfcraft", "doc_export_images", exported).as_deref(), Some("not-found"));
+        // Also a link to what is not there yet, named with a slash at its end.
+        std::os::unix::fs::symlink(home.root.join("Outside/new"), home.root.join("Docs/later")).expect("link");
+        let split = json!({"doc": 1, "out_dir": format!("{}/", home.path("Docs/later"))});
+        assert_eq!(refused(&home, "pdfcraft", "doc_split", split).as_deref(), Some("not-found"));
     }
 
     #[test]
