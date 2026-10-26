@@ -1125,9 +1125,6 @@ impl Extensions {
                 &[("tools", &blocked.join(", "))],
             ));
         }
-        if let Some(note) = self.folder_note(&stored) {
-            notes.push(note);
-        }
         let status = self.status(&stored, &tools);
         let (server, status) = match reach {
             Reach::Suite => (shown, status),
@@ -1146,26 +1143,6 @@ impl Extensions {
             fingerprint: Some(client::list_fingerprint(&reported)),
             folder: stored.folder,
         }
-    }
-}
-
-impl Extensions {
-    /// What people should know of the folder of `stored` (issue #303): that none is chosen, or that the chosen one
-    /// cannot be used now; then every call is refused. `None` for a server that works in no folder and while the
-    /// chosen one is usable.
-    fn folder_note(&self, stored: &StoredExtension) -> Option<String> {
-        entry_of(&stored.source)?.info.folder?;
-        if self.usable_folder(stored).is_some() {
-            return None;
-        }
-        Some(match stored.folder {
-            None => tr("No folder is chosen: every call is refused until you choose one.").into(),
-            Some(_) => {
-                tr("The chosen folder can't be used now: it isn't allowed any more, isn't there, or holds something \
-                 Torro protects. Every call is refused until you choose another.")
-                .into()
-            }
-        })
     }
 }
 
@@ -1758,7 +1735,7 @@ mod tests {
     /// Issue #303: a person chooses one of the allowed folders for a server that works in one. A path that is no
     /// allowed folder (also one inside it) is `not-found`; a folder that holds something locked, or one that may be
     /// written and holds a folder that may only be read, is `forbidden`; a server that works in no folder is
-    /// `unsupported`. `None` takes the choice back. The chosen folder shows; a missing one adds a note.
+    /// `unsupported`. `None` takes the choice back. The chosen folder shows, also once it is no longer usable.
     #[tokio::test]
     async fn a_folder_is_chosen_among_the_allowed_folders() {
         use torro_core::settings::AllowedFolder;
@@ -1781,9 +1758,6 @@ mod tests {
 
         let unchosen = info(extensions.get("wordcraft", Reach::Suite).await);
         assert_eq!(unchosen.folder, None);
-        assert!(
-            unchosen.notes.contains(&tr("No folder is chosen: every call is refused until you choose one.").into())
-        );
         let choose = |id: &'static str, folder: Option<String>| extensions.set_folder(id, folder);
         assert_eq!(code(&choose("nope", Some(path("Plain"))).await), "not-found");
         assert_eq!(code(&choose("fixture", Some(path("Plain"))).await), "unsupported");
@@ -1812,19 +1786,17 @@ mod tests {
         let refused = extensions.files_refusal("wordcraft", "get_text", &Default::default());
         assert_eq!(refused.as_ref().map(code), Some("forbidden"));
         plain = info(extensions.get("wordcraft", Reach::Suite).await);
-        assert_eq!(plain.notes.len(), 2, "blocked tools and the folder: {:?}", plain.notes);
+        assert_eq!(plain.folder, Some(path("Plain")), "kept, for the person to see and change");
 
         let chosen = info(choose("wordcraft", Some(path("Docs/Private"))).await);
         assert_eq!(chosen.folder, Some(path("Docs/Private")));
-        assert_eq!(chosen.notes.len(), 1, "only the blocked tools: {:?}", chosen.notes);
         let stored = extensions.stored("wordcraft").expect("stored");
         assert_eq!(extensions.usable_folder(&stored), Some((home.join("Docs/Private"), FolderAccess::Read)));
-        // No longer allowed: kept, but not usable, and the page says so.
+        // No longer allowed: kept, but not usable.
         folders.lock().unwrap_or_else(PoisonError::into_inner).retain(|folder| folder.path != path("Docs/Private"));
         assert_eq!(extensions.usable_folder(&stored), None);
         let unusable = info(extensions.get("wordcraft", Reach::Suite).await);
         assert_eq!(unusable.folder, Some(path("Docs/Private")));
-        assert_eq!(unusable.notes.len(), 2);
         assert_eq!(info(choose("wordcraft", None).await).folder, None);
         assert_eq!(stored_all(&extensions).iter().find(|s| s.id == "wordcraft").map(|s| s.folder.clone()), Some(None));
     }

@@ -208,7 +208,7 @@ v0.12.1, PdfCraft v0.14.0, je `MIT OR Apache-2.0`, `unsafe_code = "forbid"`):
   und werden bei `confirm_tools` nicht zugestimmt.
 
 ### AC.5 Oberfläche: Ordner, Hinweise, Katalog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** AC.4 · **Dateien:** `crates/torroworkplace/src/ui/{connections,mod}.rs`,
   `crates/torro-core/src/i18n/de.rs`
 - Seite eines Servers mit `folder`: Gruppe „Folder“ vor „Tools“: gewählter Ordner (gekürzt mit Tooltip) oder „No folder

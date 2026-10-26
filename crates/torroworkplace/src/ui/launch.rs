@@ -167,6 +167,11 @@ pub enum Open {
     ExtensionReview,
     /// The page of "GitHub", stopped after errors, with its stored token and its output.
     ExtensionCrashed,
+    /// The page of "WordCraft" (issue #303): the group "Folder" with the allowed folder chosen for it, its blocked
+    /// tools.
+    ExtensionFolder,
+    /// The page of "GridCraft" (issue #303): no folder chosen yet, and that it keeps to no folder itself.
+    ExtensionUnbounded,
     /// The form of a server of one's own (task MA.9), filled in from a pasted block
     /// ([`DEMO_PASTE_ONE`]): a command with arguments, its API key marked secret, a plain variable.
     CustomServer,
@@ -203,7 +208,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 103] = [
+    pub const ALL: [(&'static str, Open); 105] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -284,6 +289,8 @@ impl Open {
         ("extension-detail", Open::ExtensionDetail),
         ("extension-review", Open::ExtensionReview),
         ("extension-crashed", Open::ExtensionCrashed),
+        ("extension-folder", Open::ExtensionFolder),
+        ("extension-unbounded", Open::ExtensionUnbounded),
         ("custom-server", Open::CustomServer),
         ("custom-server-paste", Open::CustomServerPaste),
         ("custom-server-choose", Open::CustomServerChoose),
@@ -1065,8 +1072,9 @@ pub fn demo_data() -> Data {
     }
 }
 
-/// The built-in catalog as the core lists it on a computer without Node.js: Sequential Thinking
-/// needs `npx` (task MA.8 shows it without "Install…"). The others need nothing the demo lacks.
+/// The built-in catalog as the core lists it on a computer without Node.js and with only two of the ArtCraft
+/// apps: Sequential Thinking needs `npx` (task MA.8 shows it without "Install…"), DeckCraft and PdfCraft their
+/// `<app>-cli` (issue #303). The others need nothing the demo lacks.
 fn demo_catalog() -> Vec<torro_ipc::extensions::CatalogEntry> {
     use torro_ipc::extensions::Prerequisite;
     let entries = crate::extensions::catalog::builtin().unwrap_or_default();
@@ -1074,8 +1082,8 @@ fn demo_catalog() -> Vec<torro_ipc::extensions::CatalogEntry> {
         .iter()
         .map(|entry| {
             let mut info = entry.info.clone();
-            if info.requires.contains(&Prerequisite::Npx) {
-                info.missing = vec![Prerequisite::Npx];
+            if info.requires.contains(&Prerequisite::Npx) || matches!(info.id.as_str(), "deckcraft" | "pdfcraft") {
+                info.missing = info.requires.clone();
             }
             info
         })
@@ -1178,7 +1186,69 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             fingerprint: Some("demo-notes".into()),
             folder: None,
         },
+        // Issue #303: WordCraft works in an allowed folder; GridCraft has none chosen yet.
+        ExtensionInfo {
+            id: "wordcraft".into(),
+            name: "WordCraft".into(),
+            source: Source::Catalog { entry: "wordcraft".into(), version: version("wordcraft").unwrap_or_default() },
+            server: program("wordcraft-cli", &["mcp"], BTreeMap::new()),
+            enabled: true,
+            status: Status::Stopped,
+            tools: vec![
+                tool(
+                    "wordcraft",
+                    "WordCraft",
+                    "get_text",
+                    "Read the text of the document",
+                    Access::Read,
+                    ToolState::Allowed,
+                ),
+                tool("wordcraft", "WordCraft", "open_document", "Open a .docx file", Access::Read, ToolState::Allowed),
+                tool("wordcraft", "WordCraft", "save_document", "Save the document", Access::Write, ToolState::Allowed),
+                tool("wordcraft", "WordCraft", "execute", "Run a command", Access::Delete, ToolState::Allowed),
+                tool("wordcraft", "WordCraft", "screenshot", "Take a screenshot", Access::Delete, ToolState::Blocked),
+                tool("wordcraft", "WordCraft", "click", "Click in the window", Access::Delete, ToolState::Blocked),
+            ],
+            secrets: Vec::new(),
+            notes: vec![demo_blocked_note(&["screenshot", "click"])],
+            fingerprint: Some("demo-wordcraft".into()),
+            folder: Some("/home/anna/Projects/Invoices".into()),
+        },
+        ExtensionInfo {
+            id: "gridcraft".into(),
+            name: "GridCraft".into(),
+            source: Source::Catalog { entry: "gridcraft".into(), version: version("gridcraft").unwrap_or_default() },
+            server: program("gridcraft-cli", &["mcp"], BTreeMap::new()),
+            enabled: true,
+            status: Status::Stopped,
+            tools: vec![
+                tool("gridcraft", "GridCraft", "read_range", "Read a range of cells", Access::Read, ToolState::Allowed),
+                tool(
+                    "gridcraft",
+                    "GridCraft",
+                    "save_workbook",
+                    "Save the workbook",
+                    Access::Delete,
+                    ToolState::Allowed,
+                ),
+                tool("gridcraft", "GridCraft", "screenshot", "Take a screenshot", Access::Delete, ToolState::Blocked),
+                tool("gridcraft", "GridCraft", "execute_command", "Run a command", Access::Delete, ToolState::Blocked),
+            ],
+            secrets: Vec::new(),
+            notes: vec![demo_blocked_note(&["screenshot", "execute_command"])],
+            fingerprint: Some("demo-gridcraft".into()),
+            folder: None,
+        },
     ]
+}
+
+/// The note the core gives a server with blocked tools (issue #303), for the demo's ArtCraft apps.
+fn demo_blocked_note(tools: &[&str]) -> String {
+    trf(
+        "Torro blocks these tools: {tools}. They work the app's window, run scripts or reach keys of your \
+         keychain, so no one may use them.",
+        &[("tools", &tools.join(", "))],
+    )
 }
 
 /// `--open connections` (task MA.7): the PDF tool on, a folder of its own and a logo in the report
@@ -1788,6 +1858,12 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         | Request::SetExtensionEnabled { id, .. }
         | Request::UpdateExtension { id, .. } => Some(Response::Extension { extension: demo_server(id, data)? }),
         Request::SetExtensionSecret { .. } | Request::RemoveExtension { .. } => Some(Response::Ok),
+        // As the core, without looking at the folder: the server with the folder chosen; nothing is kept.
+        Request::SetExtensionFolder { id, folder } => {
+            let mut server = demo_server(id, data)?;
+            server.folder = folder.clone();
+            Some(Response::Extension { extension: server })
+        }
         Request::ReadExtensionLogs { id } => Some(Response::Logs { lines: demo_logs(id) }),
         Request::ClientActivity { id } => {
             let client = client_of(id)?;

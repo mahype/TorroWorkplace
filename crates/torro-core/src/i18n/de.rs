@@ -6110,6 +6110,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not allowed yet", "Noch nicht erlaubt"),
     ("Not offered", "Nicht angeboten"),
     ("Blocked by Torro", "Von Torro gesperrt"),
+    ("Choosing…", "Wird gewählt…"),
+    ("No folder chosen", "Kein Ordner gewählt"),
+    ("Every call is refused until you choose one.", "Jeder Aufruf wird abgelehnt, bis du einen wählst."),
+    (
+        "Allow a folder under Allowed folders first; then choose it here.",
+        "Gib zuerst unter „Freigegebene Ordner“ einen Ordner frei und wähle ihn dann hier.",
+    ),
+    ("{path} · No longer allowed: choose another.", "{path} · Nicht mehr freigegeben: Wähle einen anderen."),
+    (
+        "{app} works only in this folder. Torro saves its changes as new files, never over the original.",
+        "{app} arbeitet nur in diesem Ordner. Torro speichert Änderungen als neue Dateien, nie über das Original.",
+    ),
+    (
+        "{publisher} · {license} · tested with version {version}",
+        "{publisher} · {license} · getestet mit Version {version}",
+    ),
+    (
+        "{app} doesn't keep to a folder itself: Torro checks every path, and saving a file waits for your approval.",
+        "{app} hält sich selbst an keinen Ordner: Torro prüft jeden Pfad, und das Speichern einer Datei wartet auf \
+         deine Freigabe.",
+    ),
     ("This MCP server doesn't work in a folder.", "Dieser MCP-Server arbeitet nicht in einem Ordner."),
     (
         "Torro blocks this command: it works the app's window, runs scripts or reaches keys.",
@@ -6161,16 +6182,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "This folder holds a folder that may only be read. Choose another one, or let the outer folder only be read.",
         "Dieser Ordner enthält einen Ordner, der nur gelesen werden darf. Wähle einen anderen oder lass den äußeren \
          Ordner nur lesen.",
-    ),
-    (
-        "No folder is chosen: every call is refused until you choose one.",
-        "Kein Ordner gewählt: Jeder Aufruf wird abgelehnt, bis du einen wählst.",
-    ),
-    (
-        "The chosen folder can't be used now: it isn't allowed any more, isn't there, or holds something Torro \
-         protects. Every call is refused until you choose another.",
-        "Der gewählte Ordner ist gerade nicht nutzbar: Er ist nicht mehr freigegeben, nicht da oder enthält etwas, \
-         das Torro schützt. Jeder Aufruf wird abgelehnt, bis du einen anderen wählst.",
     ),
     ("Not offered until you allow them", "Nicht angeboten, bevor du sie erlaubst"),
     ("Output", "Ausgabe"),

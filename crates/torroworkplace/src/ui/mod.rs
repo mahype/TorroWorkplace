@@ -938,11 +938,24 @@ impl Ui {
             }
             // A server's page (task MA.8): "Time" running or with a changed tool, "GitHub" stopped
             // after errors.
-            Open::ExtensionDetail | Open::ExtensionReview | Open::ExtensionCrashed => {
+            Open::ExtensionDetail
+            | Open::ExtensionReview
+            | Open::ExtensionCrashed
+            | Open::ExtensionFolder
+            | Open::ExtensionUnbounded => {
                 if open == Open::ExtensionReview {
                     launch::demo_review(&mut self.data);
                 }
-                let id = if open == Open::ExtensionCrashed { "github" } else { "time" };
+                // The ArtCraft apps (issue #303) choose among the allowed folders of `connections`.
+                if matches!(open, Open::ExtensionFolder | Open::ExtensionUnbounded) {
+                    launch::demo_connections(&mut self.data);
+                }
+                let id = match open {
+                    Open::ExtensionCrashed => "github",
+                    Open::ExtensionFolder => "wordcraft",
+                    Open::ExtensionUnbounded => "gridcraft",
+                    _ => "time",
+                };
                 vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Open(id.into()))]
             }
             // A server of one's own (task MA.9): the form filled in from a pasted block, the field
@@ -2995,8 +3008,13 @@ mod tests {
         assert!(form.page_overlay().is_some() && matches!(form.cover(), Cover::Dialog));
         let tools = started(&["--demo", "--open", "catalog-install-tools"]);
         assert!(tools.page_overlay().is_some(), "the dialog at the tools the demo reported");
-        for (name, id) in [("extension-detail", "time"), ("extension-review", "time"), ("extension-crashed", "github")]
-        {
+        for (name, id) in [
+            ("extension-detail", "time"),
+            ("extension-review", "time"),
+            ("extension-crashed", "github"),
+            ("extension-folder", "wordcraft"),
+            ("extension-unbounded", "gridcraft"),
+        ] {
             let ui = started(&["--demo", "--open", name]);
             assert_eq!(ui.connections.page, connections::Page::Server(id.into()), "{name}");
             assert!(ui.page_header(SizeClass::Wide).sub_page.is_some() && ui.page_overlay().is_none(), "{name}");
