@@ -282,7 +282,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 |---|---|---|---|
 | Mail-Konto einrichten | Steuerzentrale › Accounts › Add | `accounts.connect_mail` · Admin | `accounts_connect_mail`: nimmt nur die Adresse, öffnet die Einrichtung in der Steuerzentrale; das Passwort tippt der Mensch dort (wie bei `connect_nextcloud`, Geheimnisse nie über den Agenten) |
 | Ordner auflisten | Mail-Seitenleiste | `mail.list_folders` · Read | `mail_list_folders` |
-| Suchen / Liste | Mail-Liste, Suche | `mail.search_messages` · Read | `mail_search_messages` |
+| Suchen / Liste | Mail-Liste, Suche, Filter-Icon im Suchfeld (#336) | `mail.search_messages` · Read | `mail_search_messages` |
 | Stand des Suchindex (#136) | Suchfeld: Hinweis „12 400 von 18 000 indiziert“ (Schritt 5 von #136) | `mail.index_status` · Read | `mail_index_status` |
 | Bestand und lokaler Cache (#263) | Mail-Einstellungen › Accounts und Storage & index | `mail.account_stats`, `mail.get_cache_policy`, `mail.preview_cache` · Read; `mail.set_cache_policy` · Admin | entsprechende `mail_*`-Tools |
 | Cache und Index warten (#263) | Mail-Einstellungen › Storage & index | `mail.start_cache_job`, `mail.control_cache_job` · Write; `mail.cache_job_status` · Read | entsprechende `mail_*`-Tools |

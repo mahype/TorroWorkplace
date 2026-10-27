@@ -6518,4 +6518,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Noch keine Antwort – sieh in „Gesendet“ nach, bevor du nochmal sendest.",
     ),
     ("No longer on Reply later.", "Nicht mehr auf „Später beantworten“."),
+    // Quick filters at the end of the mail search field (issue #336).
+    ("Filters", "Filter"),
+    ("Filtered: {filters}", "Gefiltert: {filters}"),
+    ("Quick filters", "Schnellfilter"),
+    ("Clear filters", "Filter entfernen"),
+    ("filter|Read", "Gelesen"),
+    ("Not flagged", "Nicht markiert"),
+    ("Last 7 days", "Letzte 7 Tage"),
 ];

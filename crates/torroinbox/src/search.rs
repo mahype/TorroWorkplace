@@ -17,15 +17,17 @@
 
 use std::time::Duration;
 
+use chrono::{Days, NaiveDate};
+
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, rule, svg, text_input};
 use iced::{Alignment, Element, Fill, Padding, Theme};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::ui_state::SEARCHES_MAX;
-use torro_gui::widgets::{self, Mark};
+use torro_gui::widgets::{self, Anchor, Mark};
 use torro_gui::{style, typo};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
@@ -157,14 +159,176 @@ fn operators() -> [(&'static str, &'static str); 10] {
         ("from:", tr("Sender")),
         ("to:", tr("Recipient")),
         ("subject:", tr("Subject")),
-        ("has:attachment", tr("With attachments")),
+        ("has:attachment", QuickFilter::Attachments.label()),
         ("filename:", tr("Name of an attachment")),
         ("in:", tr("Folder")),
-        ("is:unread", tr("Unread")),
-        ("is:flagged", tr("Flagged")),
+        ("is:unread", QuickFilter::Unread.label()),
+        ("is:flagged", QuickFilter::Flagged.label()),
         ("before:", tr("Before a date, such as 2026-03")),
         ("after:", tr("From a date on, such as 2026-03")),
     ]
+}
+
+/// A quick filter of the filter menu on the search field (issue #336): one tick for an operator the
+/// search language knows. The menu writes the operator into the field and reads its ticks back from
+/// the text there, so a filter typed by hand shows as ticked and the field stays the one truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickFilter {
+    Unread,
+    Read,
+    Flagged,
+    Unflagged,
+    Attachments,
+    /// Mail from the last seven days: `after:` the day seven days ago.
+    Week,
+    /// Mail from the last thirty days.
+    Month,
+}
+
+/// Which filters exclude each other: "Read" cannot be ticked with "Unread", nor "Not flagged" with
+/// "Flagged", nor one period with the other – the pair would always find nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Seen,
+    Flag,
+    Attachment,
+    Period,
+}
+
+impl QuickFilter {
+    /// Every filter in the order of the menu; the groups follow each other.
+    pub const ALL: [QuickFilter; 7] = [
+        QuickFilter::Unread,
+        QuickFilter::Read,
+        QuickFilter::Flagged,
+        QuickFilter::Unflagged,
+        QuickFilter::Attachments,
+        QuickFilter::Week,
+        QuickFilter::Month,
+    ];
+
+    /// What the menu says.
+    pub fn label(self) -> &'static str {
+        match self {
+            QuickFilter::Unread => tr("Unread"),
+            QuickFilter::Read => trc("filter", "Read"),
+            QuickFilter::Flagged => tr("Flagged"),
+            QuickFilter::Unflagged => tr("Not flagged"),
+            QuickFilter::Attachments => tr("With attachments"),
+            QuickFilter::Week => tr("Last 7 days"),
+            QuickFilter::Month => tr("Last 30 days"),
+        }
+    }
+
+    fn group(self) -> Group {
+        match self {
+            QuickFilter::Unread | QuickFilter::Read => Group::Seen,
+            QuickFilter::Flagged | QuickFilter::Unflagged => Group::Flag,
+            QuickFilter::Attachments => Group::Attachment,
+            QuickFilter::Week | QuickFilter::Month => Group::Period,
+        }
+    }
+
+    /// Whether `self` and `other` exclude each other.
+    pub fn same_group(self, other: QuickFilter) -> bool {
+        self.group() == other.group()
+    }
+
+    /// How many days back a period reaches.
+    fn days(self) -> Option<u64> {
+        match self {
+            QuickFilter::Week => Some(7),
+            QuickFilter::Month => Some(30),
+            _ => None,
+        }
+    }
+
+    /// The operator the menu writes. A period writes a fixed date, because the search language has
+    /// no relative dates; `today` comes from the caller so tests can fix it.
+    pub fn token(self, today: NaiveDate) -> String {
+        match self {
+            QuickFilter::Unread => "is:unread".to_owned(),
+            QuickFilter::Read => "is:read".to_owned(),
+            QuickFilter::Flagged => "is:flagged".to_owned(),
+            QuickFilter::Unflagged => "is:unflagged".to_owned(),
+            QuickFilter::Attachments => "has:attachment".to_owned(),
+            QuickFilter::Week | QuickFilter::Month => {
+                let days = self.days().unwrap_or_default();
+                let from = today.checked_sub_days(Days::new(days)).unwrap_or(today);
+                format!("after:{}", from.format("%Y-%m-%d"))
+            }
+        }
+    }
+
+    /// Whether `word` (a whole word of the query) means this filter: the operator without a `-`
+    /// in front, in any case, and with the synonyms the core reads. A period counts only for
+    /// exactly its date, so an older `after:` from a remembered search shows no tick.
+    fn is_set(self, word: &str, today: NaiveDate) -> bool {
+        let word = word.to_lowercase();
+        match self {
+            QuickFilter::Attachments => word == "has:attachment" || word == "has:attachments",
+            QuickFilter::Flagged => word == "is:flagged" || word == "is:starred",
+            QuickFilter::Unflagged => word == "is:unflagged" || word == "is:unstarred",
+            _ => word == self.token(today),
+        }
+    }
+}
+
+/// The words of `query` apart at white space outside quotes, so a phrase stays one word.
+fn query_words(query: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let (mut start, mut quoted) = (None, false);
+    for (at, c) in query.char_indices() {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        match (c.is_whitespace() && !quoted, start) {
+            (true, Some(from)) => {
+                words.push(&query[from..at]);
+                start = None;
+            }
+            (false, None) => start = Some(at),
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        words.push(&query[from..]);
+    }
+    words
+}
+
+/// The quick filters set in `query`, in the order of the menu.
+pub fn active(query: &str, today: NaiveDate) -> Vec<QuickFilter> {
+    let words = query_words(query);
+    QuickFilter::ALL.into_iter().filter(|filter| words.iter().any(|word| filter.is_set(word, today))).collect()
+}
+
+/// `query` with `filter` ticked off if it was set, else ticked on: the filters of its group are
+/// taken out first (for a period every `after:` – it would only narrow the new one), then the
+/// operator is appended. The other words stay as typed, joined by one space.
+pub fn toggle(query: &str, filter: QuickFilter, today: NaiveDate) -> String {
+    let words = query_words(query);
+    if words.iter().any(|word| filter.is_set(word, today)) {
+        return join(words.into_iter().filter(|word| !filter.is_set(word, today)));
+    }
+    let same_group = |word: &str| match filter.group() {
+        Group::Period => word.to_lowercase().starts_with("after:"),
+        group => QuickFilter::ALL.into_iter().any(|other| other.group() == group && other.is_set(word, today)),
+    };
+    let mut kept: Vec<&str> = words.into_iter().filter(|word| !same_group(word)).collect();
+    let token = filter.token(today);
+    kept.push(&token);
+    join(kept.into_iter())
+}
+
+/// `query` without the operators of its active quick filters; an `after:` with another date stays.
+pub fn without_filters(query: &str, today: NaiveDate) -> String {
+    let set = active(query, today);
+    join(query_words(query).into_iter().filter(|word| !set.iter().any(|filter| filter.is_set(word, today))))
+}
+
+fn join<'a>(words: impl Iterator<Item = &'a str>) -> String {
+    words.collect::<Vec<_>>().join(" ")
 }
 
 /// The values `is:` takes.
@@ -334,6 +498,10 @@ pub struct Bar<'a> {
     /// (`style::text_input_flat`), [`size::header()`] high with a line below it and no margin at
     /// its sides; else framed inside the bar's margin, as in the hub.
     pub full: bool,
+    /// Where the menu of the quick filters hangs: at the filter icon at the end of the field.
+    pub filters: Anchor,
+    /// Today, for the dates of the period filters ([`QuickFilter::token`]).
+    pub today: NaiveDate,
 }
 
 /// The placeholder of the field: where it searches.
@@ -349,7 +517,8 @@ fn placeholder(search: Option<&SearchView>, scopes: Option<&ScopeChoice>) -> Str
 /// The bar over the list of every view of mail (issue #136): the field (`/`, the preset's
 /// shortcut for [`torro_core::shortcuts::Command::Search`] and the sidebar's search button focus
 /// it; typing searches, `Enter` at once) with "Clear search"
-/// while there is something to clear; the suggestions under it ([`suggestions`], `Tab` takes the
+/// while there is something to clear, then the filter icon with the menu of quick filters
+/// ([`QuickFilter`]; lit while one is set); the suggestions under it ([`suggestions`], `Tab` takes the
 /// first); while a search is shown, where it looks (all mail, this account, this folder) and the
 /// order (relevance or date), then the line on its results ([`status_line`]).
 ///
@@ -371,6 +540,16 @@ pub fn bar<'a>(bar: Bar<'a>) -> Element<'a, Message> {
     if bar.search.is_some() || !bar.input.is_empty() {
         top = top.push(widgets::icon_button(Icon::X, tr("Clear search"), Some(Message::ClearSearch)));
     }
+    // Always there, so the icon does not jump when "Clear search" comes and goes.
+    let set = active(bar.input, bar.today);
+    let tip = if set.is_empty() {
+        tr("Filters").to_owned()
+    } else {
+        let names: Vec<&str> = set.iter().map(|filter| filter.label()).collect();
+        trf("Filtered: {filters}", &[("filters", &names.join(", "))])
+    };
+    let toggle = widgets::icon_toggle(Icon::Filter, tip, !set.is_empty(), Some(Message::ToggleSearchFilters));
+    top = top.push(widgets::anchored(&bar.filters, toggle));
     let mut rest: Vec<Element<'a, Message>> = Vec::new();
     if !bar.suggestions.is_empty() {
         rest.push(suggestion_row(bar.suggestions, bar.input.trim().is_empty()));
@@ -594,7 +773,8 @@ fn passage(text: &str, words: &[String]) -> Option<String> {
 }
 
 /// A query as the demo reads it: the words to find, the words to leave out, and the operators it
-/// knows (`from:`, `to:`, `subject:`, `in:`, `has:attachment`, `is:unread|read|flagged|unflagged`).
+/// knows (`from:`, `to:`, `subject:`, `in:`, `has:attachment`, `is:unread|read|flagged|unflagged`,
+/// `after:YYYY-MM-DD` – the quick filters of the filter menu, so the demo can show them).
 #[derive(Debug, Default)]
 struct DemoQuery {
     words: Vec<String>,
@@ -605,6 +785,8 @@ struct DemoQuery {
     folder: Option<String>,
     attachment: bool,
     flags: Vec<(Flag, bool)>,
+    /// The days mail must be from, or later (`after:`); like the core, from midnight UTC.
+    after: Vec<NaiveDate>,
 }
 
 impl DemoQuery {
@@ -629,7 +811,8 @@ impl DemoQuery {
                 Some(("is", "read")) => parsed.flags.push((Flag::Seen, true)),
                 Some(("is", "flagged")) => parsed.flags.push((Flag::Flagged, true)),
                 Some(("is", "unflagged")) => parsed.flags.push((Flag::Flagged, false)),
-                // Dates and the rest the demo does not read: they find everything.
+                Some(("after", day)) => parsed.after.extend(NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()),
+                // Other date forms and the rest the demo does not read: they find everything.
                 Some(_) => {}
                 None => parsed.words.push(token),
             }
@@ -659,6 +842,7 @@ impl DemoQuery {
             })
             && (!self.attachment || summary.has_attachments)
             && self.flags.iter().all(|(flag, set)| summary.flags.contains(flag) == *set)
+            && self.after.iter().all(|day| summary.date.date_naive() >= *day)
     }
 
     /// How well `summary` and `text` match: words in the subject count three times.
@@ -965,5 +1149,112 @@ mod tests {
         assert!(demo_find(&source, find("budget -budget", None)).expect("found").messages.is_empty());
         let index = demo_index(&source).expect("the index");
         assert!(index.iter().any(|account| account.state == IndexState::Indexing));
+    }
+
+    fn day(text: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(text, "%Y-%m-%d").expect("a date")
+    }
+
+    /// The day the filter tests stand on: a Tuesday, so a week back is 2026-10-20.
+    fn today() -> NaiveDate {
+        day("2026-10-27")
+    }
+
+    #[test]
+    fn a_filter_writes_its_operator_at_the_end_and_takes_it_out_again() {
+        let on = toggle("", QuickFilter::Attachments, today());
+        assert_eq!(on, "has:attachment");
+        assert_eq!(toggle("budget", QuickFilter::Unread, today()), "budget is:unread");
+        assert_eq!(toggle("  budget   from:anna ", QuickFilter::Flagged, today()), "budget from:anna is:flagged");
+        assert_eq!(toggle("budget is:unread", QuickFilter::Unread, today()), "budget");
+        assert_eq!(toggle(&on, QuickFilter::Attachments, today()), "", "the last one leaves an empty field");
+        let both = toggle(&toggle("budget", QuickFilter::Unread, today()), QuickFilter::Attachments, today());
+        assert_eq!(both, "budget is:unread has:attachment");
+        assert_eq!(active(&both, today()), [QuickFilter::Unread, QuickFilter::Attachments]);
+        assert_eq!(toggle(&both, QuickFilter::Unread, today()), "budget has:attachment", "the other stays");
+    }
+
+    #[test]
+    fn a_filter_replaces_what_it_excludes() {
+        assert_eq!(toggle("is:unread rechnung", QuickFilter::Read, today()), "rechnung is:read");
+        assert_eq!(toggle("is:read", QuickFilter::Unread, today()), "is:unread");
+        assert_eq!(toggle("is:flagged", QuickFilter::Unflagged, today()), "is:unflagged");
+        assert_eq!(toggle("is:starred x", QuickFilter::Unflagged, today()), "x is:unflagged", "a synonym too");
+        let week = toggle("budget", QuickFilter::Week, today());
+        assert_eq!(week, "budget after:2026-10-20");
+        assert_eq!(toggle(&week, QuickFilter::Month, today()), "budget after:2026-09-27");
+        assert_eq!(toggle("after:2026-01 budget", QuickFilter::Week, today()), "budget after:2026-10-20");
+        assert_eq!(
+            toggle("before:2026-03 after:2026-01", QuickFilter::Month, today()),
+            "before:2026-03 after:2026-09-27"
+        );
+    }
+
+    #[test]
+    fn the_menu_reads_its_ticks_from_the_text_in_the_field() {
+        let today = today();
+        assert_eq!(active("budget is:UNREAD", today), [QuickFilter::Unread], "any case");
+        assert_eq!(active("has:attachments is:starred", today), [QuickFilter::Flagged, QuickFilter::Attachments]);
+        assert_eq!(active("is:unstarred is:read", today), [QuickFilter::Read, QuickFilter::Unflagged]);
+        assert_eq!(active("after:2026-10-20", today), [QuickFilter::Week]);
+        assert_eq!(active("after:2026-09-27", today), [QuickFilter::Month]);
+        assert!(active("-is:unread", today).is_empty(), "a negated word is not the filter");
+        assert!(active("is:unreadx has:attachment-x", today).is_empty(), "nor a longer one");
+        assert!(active("after:2026-10-19", today).is_empty(), "a date that is not today's week has no tick");
+        assert!(active("after:2026-10", today).is_empty());
+        assert!(active("subject:\"is:unread\" \"has:attachment now\"", today).is_empty(), "nor one in quotes");
+        assert_eq!(toggle("\"see is:unread now\"", QuickFilter::Unread, today), "\"see is:unread now\" is:unread");
+    }
+
+    #[test]
+    fn clearing_the_filters_keeps_the_words_and_a_foreign_date() {
+        let today = today();
+        assert_eq!(without_filters("budget is:unread has:attachment from:anna", today), "budget from:anna");
+        assert_eq!(without_filters("is:unread", today), "");
+        assert_eq!(without_filters("budget after:2026-01 after:2026-10-20", today), "budget after:2026-01");
+        assert_eq!(without_filters("budget -is:unread", today), "budget -is:unread");
+    }
+
+    #[test]
+    fn every_filter_has_a_label_and_a_group_that_holds_the_pairs() {
+        for filter in QuickFilter::ALL {
+            assert!(!filter.label().is_empty());
+        }
+        assert!(QuickFilter::Unread.same_group(QuickFilter::Read));
+        assert!(QuickFilter::Flagged.same_group(QuickFilter::Unflagged));
+        assert!(QuickFilter::Week.same_group(QuickFilter::Month));
+        assert!(!QuickFilter::Unread.same_group(QuickFilter::Flagged));
+        // The words of the operators list come from the labels, so they are said once.
+        let label =
+            |operator: &str| operators().into_iter().find(|(known, _)| *known == operator).map(|(_, hint)| hint);
+        assert_eq!(label("is:unread"), Some(QuickFilter::Unread.label()));
+        assert_eq!(label("has:attachment"), Some(QuickFilter::Attachments.label()));
+        assert_eq!(label("is:flagged"), Some(QuickFilter::Flagged.label()));
+    }
+
+    #[test]
+    fn the_demo_reads_after_by_the_day() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("a time");
+        let source = DemoSource::new(now);
+        let find = |query: &str| MailFind {
+            account: None,
+            folder: None,
+            query: query.into(),
+            sort: MailSort::Date,
+            order: Order::NewestFirst,
+            limit: u32::MAX,
+            cursor: None,
+        };
+        let all = demo_find(&source, find("")).expect("found").messages;
+        let newest = all.iter().map(|message| message.date.date_naive()).max().expect("some mail");
+        let after = demo_find(&source, find(&format!("after:{newest}"))).expect("found").messages;
+        assert!(!after.is_empty() && after.len() < all.len(), "the newest day only: {} of {}", after.len(), all.len());
+        assert!(after.iter().all(|message| message.date.date_naive() >= newest));
+        let nothing = demo_find(&source, find("after:2099-01-01")).expect("found").messages;
+        assert!(nothing.is_empty());
+        let everything = demo_find(&source, find("after:2000-01-01")).expect("found").messages;
+        assert_eq!(everything.len(), all.len());
+        let odd = demo_find(&source, find("after:2026-03")).expect("found").messages;
+        assert_eq!(odd.len(), all.len(), "a form the demo does not read finds everything, as before");
     }
 }
