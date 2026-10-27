@@ -979,6 +979,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
    `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
 
+   Ebenso **Mail an Cloud-Modelle für Sortieren geben** (#325, `decide_mail_to_cloud`, der Platz `decide`
+   in [ki.md](ki.md), „Erlaubnis je Platz“): `settings.set_setting` mit `decide_mail_to_cloud: true` und ein
+   `settings.update_settings`, das es einschalten würde, bekommen von jedem Client `forbidden`, auch mit
+   Admin-Rechten. Dasselbe gilt für `ai.set_slot` mit `slot: decide` und einem Modell, das anderswo rechnet,
+   und für `ai.set_assignment` der Funktion `inbox.categorize` mit einem solchen Modell: Die Zustimmung gilt
+   einem Anbieter, und kein Agent leitet sie auf einen anderen um. `decide_mail_to_cloud: false` ist eine
+   gewöhnliche Admin-Änderung. Geprüft wird beim Setzen und beim Aufruf.
+
    Ebenso **Websuche-Anbieter einschalten und SearXNG-Adresse setzen** (Werkzeug `web`, #305,
    [assistent.md](assistent.md) „Werkzeug Web“): Suchwörter gehen an die eingeschalteten Anbieter, die
    SearXNG-Adresse kann ins lokale Netz zeigen. `settings.set_setting` mit `search_provider` und `enabled`

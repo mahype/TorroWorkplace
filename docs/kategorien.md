@@ -74,7 +74,8 @@ ein KI-Ergebnis als Vorschlag gekennzeichnet ist:
 ## Die Reihenfolge beim Einordnen
 
 Wie beim Sortieren in Spuren ([eingang.md](eingang.md), Grundregel 6: erst feste Regeln, dann
-lernen, KI höchstens als Vorschlag):
+lernen, KI höchstens als Vorschlag). Die Reihenfolge ist fest: feste Merkmale, gemerkte Regeln, das
+Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug, bleibt die Mail `other`.
 
 1. **Feste Merkmale** entscheiden, was in den Kopfzeilen steht: `invitation` (iMIP `REQUEST`),
    `auto_reply` (`Auto-Submitted` ungleich `no`), `bounce` (mit E9.3a), `spam` für Mail im
@@ -82,9 +83,12 @@ lernen, KI höchstens als Vorschlag):
 2. **Gemerkte Regeln** je Absender und Domain (`RuleEffect::Category`), dieselbe Mechanik wie
    `inbox.hide_sender`: lesbar über `inbox.list_rules`, löschbar über `inbox.remove_rule`.
    Herkunft `rule`.
-3. **Lokales Entscheidermodell** für den Rest: **ein** Aufruf über die SystemOne-/Jev-Schnittstelle
-   mit **einer** `choice`-Frage über die 20 Kategorien aus Schritt „Der Katalog“ und zwei
-   Zusatzfragen. Unter der Konfidenzschwelle bleibt es `other`. Herkunft `model`.
+3. **Modell** für den Rest, gewählt über den Platz *Sortieren* ([ki.md](ki.md), Abschnitt „Plätze“) oder
+   eine Ausnahme je Funktion: **ein** Aufruf über die SystemOne-/Jev-Schnittstelle mit **einer**
+   `choice`-Frage über die 20 Kategorien aus Schritt „Der Katalog“ und zwei Zusatzfragen. Ein
+   **Entscheidermodell** antwortet direkt; unter der Konfidenzschwelle bleibt es `other`. Ist nur ein
+   **Chat-Modell** da, antwortet es über den Ersatzweg (`docs/ki.md`, „Ersatzweg beim Sortieren“): streng
+   gelesen, ohne Konfidenz, eine nicht angebotene Kategorie wird `other`. Herkunft `model`.
 4. **Von Hand** setzt der Mensch jede Kategorie über `inbox.set_item_category`, mit der Rückfrage
    „Always for this sender?“ wie beim Umsortieren der Spur. Herkunft `person`. Eine Kategorie
    `person` fassen das Einordnen beim Eintreffen und der Altbestand **nie** an; nur ein
@@ -121,7 +125,7 @@ Ein Aufruf je Mail stellt drei Fragen; das Protokoll erlaubt mehrere in einem Du
 
 | Name | Typ | Was sie fragt | Wie die Antwort gelesen wird |
 |---|---|---|---|
-| `category` | `choice` | Welche der 20 Kategorien? | `choice`, aber nur wenn `confidence` ≥ Schwelle, sonst `other` |
+| `category` | `choice` | Welche der 20 Kategorien? | `choice`, aber nur wenn `confidence` ≥ Schwelle, sonst `other`; ein Chat-Modell (Ersatzweg) gibt keine Konfidenz, dort zählt jede angebotene Kategorie |
 | `needs_reply` | `noul` | Wartet eine Antwort auf mich? | `noul` ist eine Wahrscheinlichkeit; ≥ 0,5 heißt ja |
 | `urgency` | `score` | Routine / Soon / Urgent | `score` ist eine Zahl 0–2, gerundet auf die nächste Stufe |
 
@@ -135,16 +139,18 @@ Antwort der API, solange sie niemand liest.
 ### Konfidenzschwelle
 
 **0,6, fest im Code, keine Einstellung** (Entscheidungen statt Optionen). Unter der Schwelle steht
-`other`. Der Wert ist **nicht an echten Mails gemessen** – das war in der Planung nicht möglich, da
+`other`. Sie gilt nicht für ein Chat-Modell über den Ersatzweg, das keine Konfidenz angibt. Der Wert ist
+**nicht an echten Mails gemessen** – das war in der Planung nicht möglich, da
 dafür ein eingerichtetes Entscheidermodell und ein echtes Postfach nötig sind. Nachjustiert wird er
 in einem eigenen Schritt, an den Fixtures unter `crates/torroworkplace/tests/fixtures/` und an
 echten Mails.
 
 ## Datenregel und Sicherheit
 
-- Solange `mail_to_cloud` aus ist, gehen Mails nur an Modelle **auf diesem Rechner**
-  (`AiModel::remote`, `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Ein Entscheidermodell in
-  der Cloud wird für Mail gar nicht angeboten.
+- Solange die Erlaubnis des Platzes *Sortieren* aus ist (`decide_mail_to_cloud`, [ki.md](ki.md), Abschnitt
+  „Erlaubnis je Platz“), gehen Mails nur an Modelle **auf diesem Rechner** (`AiModel::remote`,
+  `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Ein Entscheidermodell in der Cloud wird für Mail gar
+  nicht angeboten, ebenso kein Chat-Modell in der Cloud für den Ersatzweg.
 - Kein Training, keine gesammelten Mails. Das Protokoll (`audit.jsonl`) hält nur Funktion, Konto,
   Modell, Tokens und Dauer – nie Betreff, Absender oder Text.
 - Nichts wird von einer KI versteckt, verschoben, gelöscht oder beantwortet. Die Kategorie ist ein
@@ -188,8 +194,9 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Kategorien aller Mails entfernen | Einstellungen › Categorization | `inbox.clear_categories` · Delete, mit expliziter All-Konten-Bestätigung und optionaler Deaktivierung der Automatik | `inbox_clear_categories` |
 | Entfernen pausieren, fortsetzen, abbrechen | Einstellungen › Categorization | `inbox.control_clear_categories` · Delete | `inbox_control_clear_categories` |
 | Entscheidermodelle anbieten | Einstellungen › Categorization | `ai.list_models` um das Feld `decision` erweitert · Read | vorhanden |
-| Modell je Funktion lesen | Einstellungen › Categorization | `ai.list_assignments` · Read | `ai_list_assignments` |
-| Modell je Funktion setzen | Einstellungen › Categorization | `ai.set_assignment` · Admin | `ai_set_assignment` |
+| Plätze und Zuordnung lesen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.list_assignments` (Feld `slots`) · Read | `ai_list_assignments` |
+| Modell für *Sortieren* setzen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.set_slot` mit `slot: decide` · Admin; ein Modell anderswo nur Menschen | `ai_set_slot` (Freigabe) |
+| Ausnahme je Funktion setzen | Einstellungen › Categorization | `ai.set_assignment` · Admin | `ai_set_assignment` |
 
 Kein Befehl braucht `Never`: Es sind keine Geheimnisse beteiligt, Schlüssel bleiben wie bisher im
 Dienst und werden nur über die Oberfläche eingetragen.
