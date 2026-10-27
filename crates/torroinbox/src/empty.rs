@@ -139,7 +139,7 @@ mod tests {
         };
         assert_eq!(block_on(source.mail_in_pile(pile)), Ok(MailPage::of(Vec::new(), None)));
         assert_eq!(block_on(source.count_in_pile(MailPile::SetAside, None)), Ok(0));
-        let put = source.set_mail_pile(vec!["m:1".into()], Some(MailPile::ReplyLater));
+        let put = source.set_mail_pile(vec!["m:1".into()], Some(MailPile::ReplyLater), None);
         assert_eq!(block_on(put), Err(InboxError::NotFound));
         assert_eq!(block_on(source.send_reply("m:1".into(), "Thanks".into())), Err(InboxError::NotFound));
     }

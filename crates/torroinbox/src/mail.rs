@@ -313,12 +313,15 @@ pub trait MailSource: Send + Sync {
     /// `inbox.set_mail_pile` (task E19.3, [`InboxClient::set_mail_pile`]): puts the mail `ids` (`m:…`,
     /// 1 to 100) on `pile` – "Reply later" or "Set aside"; a message lies on at most one, so this moves
     /// it from the other –, or takes them off with `None` (also the undo, with the pile each lay on
-    /// before, [`MessageSummary::pile`]). Kept only in the core, nothing goes to the server.
+    /// before, [`MessageSummary::pile`]). `since` puts them on with the time they lay there before
+    /// ([`MessageSummary::pile_since`], the undo of taking them off or moving them, decision of #315);
+    /// `None` counts as now. Kept only in the core, nothing goes to the server.
     /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing changes then.
     fn set_mail_pile(
         &self,
         ids: Vec<String>,
         pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
     ) -> impl Future<Output = Result<(), InboxError>> + Send;
 
     /// One page of a pile (task E19.3, [`InboxClient::mail_in_pile`]): the mail on `find.pile` in
@@ -503,8 +506,13 @@ impl MailSource for InboxClient {
         InboxClient::set_mail_shown(self, ids, shown).await
     }
 
-    async fn set_mail_pile(&self, ids: Vec<String>, pile: Option<MailPile>) -> Result<(), InboxError> {
-        InboxClient::set_mail_pile(self, ids, pile, None).await
+    async fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        InboxClient::set_mail_pile(self, ids, pile, since).await
     }
 
     async fn mail_in_pile(&self, find: MailInPile) -> Result<MailPage, InboxError> {
@@ -688,8 +696,13 @@ impl MailSource for DemoSource {
         DemoSource::set_mail_shown(self, &ids, shown)
     }
 
-    async fn set_mail_pile(&self, ids: Vec<String>, pile: Option<MailPile>) -> Result<(), InboxError> {
-        DemoSource::set_mail_pile(self, &ids, pile)
+    async fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        DemoSource::set_mail_pile(self, &ids, pile, since)
     }
 
     /// The demo's pile ([`DemoSource::in_pile`]) a page at a time, as its roles.
@@ -965,7 +978,12 @@ impl MailSource for crate::empty::EmptySource {
     }
 
     /// There is no mail to put on a pile.
-    async fn set_mail_pile(&self, _ids: Vec<String>, _pile: Option<MailPile>) -> Result<(), InboxError> {
+    async fn set_mail_pile(
+        &self,
+        _ids: Vec<String>,
+        _pile: Option<MailPile>,
+        _since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
     }
 
@@ -5837,7 +5855,7 @@ mod tests {
 
         // Moved to the other pile, taken off: back in "All", its unread mail counted again.
         let put = |ids: &[&str], to| {
-            block_on(MailSource::set_mail_pile(&demo, ids.iter().map(|id| (*id).to_owned()).collect(), to))
+            block_on(MailSource::set_mail_pile(&demo, ids.iter().map(|id| (*id).to_owned()).collect(), to, None))
         };
         put(&["m:p7"], Some(MailPile::SetAside)).expect("moved");
         assert_eq!((count(MailPile::ReplyLater, None), count(MailPile::SetAside, None)), (1, 2));

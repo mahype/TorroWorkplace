@@ -761,7 +761,8 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             pile: letter.pile,
             category: letter.category,
             untrusted: true,
-            pile_since: None,
+            // The sample's piles since the mail came (decision of #315: the undo keeps this time).
+            pile_since: letter.pile.map(|_| now - TimeDelta::minutes(letter.minutes)),
         },
         cc: Vec::new(),
         reply_to: Vec::new(),
@@ -1263,15 +1264,29 @@ impl DemoSource {
     }
 
     /// `inbox.set_mail_pile` (task E19.3): puts the messages `ids` on `pile`, moving them from the
-    /// other one, or takes them off with `None`. [`InboxError::NotFound`] when one of them is
+    /// other one, or takes them off with `None`. Since when they lie there, as the core keeps it
+    /// ([`MessageSummary::pile_since`], decision of #315): `since` (the undo's time, at most now),
+    /// else now – the same pile again keeps its time. [`InboxError::NotFound`] when one of them is
     /// unknown; nothing changes then.
-    pub fn set_mail_pile(&self, ids: &[String], pile: Option<MailPile>) -> Result<(), InboxError> {
+    pub fn set_mail_pile(
+        &self,
+        ids: &[String],
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        let now = self.now();
         let mut data = self.lock();
         if !ids.iter().all(|id| data.mail.iter().any(|m| m.summary.id == *id)) {
             return Err(InboxError::NotFound);
         }
-        for message in data.mail.iter_mut().filter(|m| ids.contains(&m.summary.id)) {
-            message.summary.pile = pile;
+        for message in data.mail.iter_mut().map(|m| &mut m.summary).filter(|m| ids.contains(&m.id)) {
+            message.pile_since = match (pile, since) {
+                (None, _) => None,
+                (Some(_), Some(since)) => Some(since.min(now)),
+                (Some(_), None) if message.pile == pile => message.pile_since.or(Some(now)),
+                (Some(_), None) => Some(now),
+            };
+            message.pile = pile;
         }
         Ok(())
     }
@@ -1605,6 +1620,7 @@ impl DemoSource {
                 });
             for message in replied {
                 message.pile = None;
+                message.pile_since = None;
             }
         }
         data.sent.push(sent);
@@ -2703,16 +2719,41 @@ mod tests {
     #[test]
     fn mail_is_put_on_moved_between_and_taken_off_the_piles() {
         let demo = DemoSource::new(now());
-        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::ReplyLater)).expect("put on");
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::ReplyLater), None).expect("put on");
         assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w1", "m:w13", "m:p7"]);
-        demo.set_mail_pile(&["m:w1".into(), "m:p7".into()], Some(MailPile::SetAside)).expect("moved");
+        demo.set_mail_pile(&["m:w1".into(), "m:p7".into()], Some(MailPile::SetAside), None).expect("moved");
         assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w13"]);
         assert_eq!(pile_ids(&demo, MailPile::SetAside, None), ["m:w1", SET_ASIDE_MAIL, "m:p7"]);
-        demo.set_mail_pile(&["m:w1".into()], None).expect("taken off");
+        demo.set_mail_pile(&["m:w1".into()], None, None).expect("taken off");
         assert_eq!(demo.get_mail("m:w1").expect("the mail").summary.pile, None);
         let unknown = ["m:w13".to_owned(), "m:nope".to_owned()];
-        assert_eq!(demo.set_mail_pile(&unknown, None), Err(InboxError::NotFound));
+        assert_eq!(demo.set_mail_pile(&unknown, None, None), Err(InboxError::NotFound));
         assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w13"], "nothing changed");
+    }
+
+    /// Decision of #315: the demo keeps since when a mail lies on its pile, as the core does – the
+    /// sample's piles since their mail came, now when put on, the same pile again keeps its time, an
+    /// undo's `since` (at most now) puts it back with its time, off a pile it has none.
+    #[test]
+    fn a_pile_keeps_its_time() {
+        let now = Utc::now();
+        let demo = DemoSource::new(now);
+        let since = |id: &str| demo.get_mail(id).expect("the mail").summary.pile_since;
+        let date = |id: &str| demo.get_mail(id).expect("the mail").summary.date;
+        assert_eq!(since("m:p7"), Some(date("m:p7")), "the sample's piles since their mail came");
+        assert_eq!(since("m:w1"), None, "on no pile");
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::ReplyLater), None).expect("put on");
+        let put = since("m:w1").expect("since now");
+        assert!(put >= now, "now");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::ReplyLater), None).expect("again");
+        assert_eq!(since("m:p7"), Some(date("m:p7")), "the same pile keeps its time");
+        let earlier = now - TimeDelta::days(3);
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(earlier)).expect("undone");
+        assert_eq!(since("m:w1"), Some(earlier), "the undo's time");
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(now + TimeDelta::days(3))).expect("ahead");
+        assert!(since("m:w1").is_some_and(|at| at <= demo.now()), "never ahead of now");
+        demo.set_mail_pile(&["m:w1".into()], None, None).expect("taken off");
+        assert_eq!(since("m:w1"), None);
     }
 
     /// Task E19.3, decision 5 of E19: a sent answer takes its conversation off "Reply later", never

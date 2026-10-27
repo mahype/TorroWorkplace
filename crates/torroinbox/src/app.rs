@@ -674,8 +674,10 @@ pub enum Undo {
     /// mails, which go back into "Hidden" – the rule that hid them still holds.
     Shown(Vec<String>),
     /// Takes a change of pile back (task E19.4): `inbox.set_mail_pile` for these mails with the pile
-    /// they lay on before ([`MessageSummary::pile`]; `None`: on none).
-    Pile(Vec<String>, Option<MailPile>),
+    /// they lay on before ([`MessageSummary::pile`]; `None`: on none) and since when they lay there
+    /// ([`MessageSummary::pile_since`], decision of #315), so an answer sent meanwhile still takes
+    /// them off "Reply later".
+    Pile(Vec<String>, Option<MailPile>, Option<DateTime<Utc>>),
     /// Takes "Reply discarded." back (review of #315): the round of "Focus & reply" as it was left,
     /// at its place with every reply typed ([`FocusReply::restore`]), on "Reply later" – only while no
     /// other round runs; starting one drops this undo. Also what the hint of a send that failed after
@@ -683,8 +685,8 @@ pub enum Undo {
     Focus(mail::FocusKept),
     /// Takes "Removed from Reply later." in "Focus & reply" back (second review of #315): the mail
     /// `id` back on the pile and, while the round runs, back at `place` in it with `text` in its field
-    /// ([`FocusReply::put_back`]).
-    Removed { id: String, place: usize, text: String },
+    /// ([`FocusReply::put_back`]); `since` is the time it lay on the pile since (decision of #315).
+    Removed { id: String, place: usize, text: String, since: Option<DateTime<Utc>> },
     /// Takes muting back (task E8.6b), exactly as `inbox.mute_item` answered ([`Muted`]): removes
     /// the rule `rule` – only one the call made –, opens the entries `reopen` again and moves the
     /// entries `moved` back to "For me" (`inbox.set_item_lane` without `remember`).
@@ -1053,8 +1055,9 @@ pub enum Sent {
     /// hint that follows the answer (`None` after an undo).
     Shown(Vec<String>, bool, Option<Hint>),
     /// `inbox.set_mail_pile` (task E19.4, `w`, `b`, the rail's items and their undo): the mails, the
-    /// pile (`None`: off it) and the hint that follows the answer (`None` after an undo).
-    Pile(Vec<String>, Option<MailPile>, Option<Hint>),
+    /// pile (`None`: off it), since when (an undo's, decision of #315) and the hint that follows the
+    /// answer (`None` after an undo).
+    Pile(Vec<String>, Option<MailPile>, Option<DateTime<Utc>>, Option<Hint>),
     /// `MailSource::send_reply` of "Focus & reply" (task E19.5): the mail answered and the text.
     Reply(String, String),
     /// The next page of the pile for "Focus & reply" (decision of #315), asked when the round had had
@@ -3228,6 +3231,8 @@ fn keep_answer(answers: &[(String, InvitationAnswer)], message: &mut MessageSumm
 fn keep_pile(listed: &[MessageSummary], message: &mut MessageSummary) {
     if let Some(row) = listed.iter().find(|row| row.id == message.id) {
         message.pile = row.pile;
+        // Since when, too: the undo of a change sends it back (decision of #315).
+        message.pile_since = row.pile_since;
     }
 }
 
@@ -5669,6 +5674,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if before == pile {
             return Task::none();
         }
+        // Its time on the pile, for the undo (decision of #315).
+        let since = self.mail_pile_since(&id);
         let text = match (pile, before) {
             (Some(MailPile::ReplyLater), _) => tr("On Reply later."),
             (Some(MailPile::SetAside), _) => tr("Set aside."),
@@ -5678,26 +5685,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let ids = vec![id.clone()];
         let hint = Hint {
             text: text.to_owned(),
-            undo: Some(undo.unwrap_or_else(|| Undo::Pile(ids.clone(), before))),
+            undo: Some(undo.unwrap_or_else(|| Undo::Pile(ids.clone(), before, since))),
             shown: Instant::now(),
             folder: None,
         };
         self.count_pile(before, false);
         self.count_pile(pile, true);
-        self.set_row_pile(&id, pile);
+        self.set_row_pile(&id, pile, None);
         if self.view.leaves_out_piles() {
             self.take_out(&id);
         }
-        self.set_mail_pile(ids, pile, Some(hint))
+        // Put on or taken off now: no time of its own.
+        self.set_mail_pile(ids, pile, None, Some(hint))
     }
 
-    /// Sends `inbox.set_mail_pile` for `ids`; the answer comes as [`Message::Piled`] with `hint`.
-    fn set_mail_pile(&mut self, ids: Vec<String>, pile: Option<MailPile>, hint: Option<Hint>) -> Task<Message> {
+    /// Sends `inbox.set_mail_pile` for `ids` with `since` (an undo's time on the pile, `None`: now);
+    /// the answer comes as [`Message::Piled`] with `hint`.
+    fn set_mail_pile(
+        &mut self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+        hint: Option<Hint>,
+    ) -> Task<Message> {
         #[cfg(test)]
-        self.sent.push(Sent::Pile(ids.clone(), pile, hint.clone()));
+        self.sent.push(Sent::Pile(ids.clone(), pile, since, hint.clone()));
         let inbox = self.inbox.clone();
         Task::perform(
-            async move { inbox.set_mail_pile(ids, pile).await.map_err(|err| err.to_string()) },
+            async move { inbox.set_mail_pile(ids, pile, since).await.map_err(|err| err.to_string()) },
             move |result| Message::Piled(result, hint.clone()),
         )
     }
@@ -5714,16 +5729,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
+    /// Since when the mail `id` lies on its pile, as listed or loaded ([`MessageSummary::pile_since`]);
+    /// `None` for a mail on none, a time not known and a mail the window holds neither way.
+    fn mail_pile_since(&self, id: &str) -> Option<DateTime<Utc>> {
+        if let Some(message) = self.messages.iter().find(|message| message.id == id) {
+            return message.pile_since;
+        }
+        match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => mail.summary.pile_since,
+            _ => None,
+        }
+    }
+
     /// The mail `id` on `pile` where the window holds it, listed and loaded, so its rail and its row
-    /// say so before the answer.
-    fn set_row_pile(&mut self, id: &str, pile: Option<MailPile>) {
+    /// say so before the answer: since `since` (an undo's), else since now; on none without a time.
+    fn set_row_pile(&mut self, id: &str, pile: Option<MailPile>, since: Option<DateTime<Utc>>) {
+        let since = pile.map(|_| since.unwrap_or(self.now));
         for message in self.messages.iter_mut().filter(|message| message.id == id) {
             message.pile = pile;
+            message.pile_since = since;
         }
         if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut()
             && mail.summary.id == id
         {
             mail.summary.pile = pile;
+            mail.summary.pile_since = since;
         }
     }
 
@@ -5830,7 +5860,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let place = focus.at;
         let Some((id, text)) = focus.take_current() else { return Task::none() };
         // Its undo puts it back into the round with what was typed (second review of #315).
-        let undo = Undo::Removed { id: id.clone(), place, text };
+        let since = self.mail_pile_since(&id);
+        let undo = Undo::Removed { id: id.clone(), place, text, since };
         Task::batch([self.pile_with(id, None, Some(undo)), focus_top()])
     }
 
@@ -5894,11 +5925,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.hint =
                     Some(Hint { text: tr("Sent.").to_owned(), undo: None, shown: Instant::now(), folder: None });
                 self.count_pile(Some(MailPile::ReplyLater), false);
-                self.set_row_pile(&id, None);
+                self.set_row_pile(&id, None, None);
                 if self.view == View::ReplyLater {
                     self.take_out(&id);
                 }
-                let off = self.set_mail_pile(vec![id], None, None);
+                let off = self.set_mail_pile(vec![id], None, None, None);
                 if shown { Task::batch([off, focus_top()]) } else { off }
             }
         }
@@ -8419,12 +8450,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // Back into "Hidden": the load after the answer shows the row there again.
             Undo::Shown(ids) => self.set_mail_shown(ids, false, None),
             // Back on the pile it lay on, or off it: the load after the answer puts the row back.
-            Undo::Pile(ids, pile) => {
+            // With the time it lay there since (decision of #315).
+            Undo::Pile(ids, pile, since) => {
                 // Row and reader say so at once, as when it was put there (review of #315).
                 for id in &ids {
-                    self.set_row_pile(id, pile);
+                    self.set_row_pile(id, pile, since);
                 }
-                self.set_mail_pile(ids, pile, None)
+                self.set_mail_pile(ids, pile, since, None)
             }
             // The round of "Focus & reply" back with what was typed (review of #315) – never over a round
             // that runs now (second review).
@@ -8435,13 +8467,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 task
             }
             // Back on the pile, and into the round with its text (second review of #315).
-            Undo::Removed { id, place, text } => {
+            Undo::Removed { id, place, text, since } => {
                 self.count_pile(Some(MailPile::ReplyLater), true);
-                self.set_row_pile(&id, Some(MailPile::ReplyLater));
+                self.set_row_pile(&id, Some(MailPile::ReplyLater), since);
                 if let Some(focus) = self.focus_reply.as_mut() {
                     focus.put_back(id.clone(), place, &text);
                 }
-                Task::batch([self.set_mail_pile(vec![id], Some(MailPile::ReplyLater), None), focus_top()])
+                Task::batch([self.set_mail_pile(vec![id], Some(MailPile::ReplyLater), since, None), focus_top()])
             }
             Undo::Muted { rule, reopen, moved } => {
                 #[cfg(test)]
@@ -15460,8 +15492,10 @@ mod tests {
     /// Runs the last change of a pile the window started against the demo, hands the answer to
     /// `update` as the task would, and loads the view again (task E19.4).
     fn deliver_pile(app: &mut App<DemoSource>) {
-        let Some(Sent::Pile(ids, pile, hint)) = last_pile(app).cloned() else { panic!("no pile change to deliver") };
-        let result = block_on(MailSource::set_mail_pile(&*app.inbox, ids, pile)).map_err(|err| err.to_string());
+        let Some(Sent::Pile(ids, pile, since, hint)) = last_pile(app).cloned() else {
+            panic!("no pile change to deliver")
+        };
+        let result = block_on(MailSource::set_mail_pile(&*app.inbox, ids, pile, since)).map_err(|err| err.to_string());
         let _ = app.update(Message::Piled(result, hint));
         load(app);
     }
@@ -15537,15 +15571,17 @@ mod tests {
             let id = app.messages.first().map(|message| message.id.clone()).expect("mail in All");
             let _ = app.update(Message::SelectMail(id.clone()));
             let _ = app.update(Message::Key(key));
-            let hint = Hint { text: text.to_owned(), undo: Some(Undo::Pile(vec![id.clone()], None)), ..hint_of(&app) };
-            assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![id.clone()], Some(pile), Some(hint))));
+            // On no pile before: its undo takes it off, without a time.
+            let undo = Some(Undo::Pile(vec![id.clone()], None, None));
+            let hint = Hint { text: text.to_owned(), undo, ..hint_of(&app) };
+            assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![id.clone()], Some(pile), None, Some(hint))));
             assert!(!message_ids(&app).contains(&id.as_str()), "{key:?}: out of All at once");
             let counted = if pile == MailPile::ReplyLater { app.reply_later } else { app.set_aside };
             assert_eq!(counted, Some(count + 1), "{key:?}: one more on the pile");
             deliver_pile(&mut app);
             assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(text), "{key:?}");
             let _ = app.update(Message::Undo);
-            assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![id.clone()], None, None)), "{key:?}: undone");
+            assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![id.clone()], None, None, None)), "{key:?}: undone");
             deliver_pile(&mut app);
             assert!(message_ids(&app).contains(&id.as_str()), "{key:?}: back in All");
         }
@@ -15553,12 +15589,15 @@ mod tests {
         let _ = app.update(Message::Show(View::ReplyLater));
         load(&mut app);
         let _ = app.update(Message::SelectMail("m:p7".into()));
+        let since = app.messages.iter().find(|message| message.id == "m:p7").and_then(|message| message.pile_since);
+        assert!(since.is_some(), "the demo says since when");
         let _ = app.update(Message::Key(Key::W));
         match last_pile(&app) {
-            Some(Sent::Pile(ids, None, Some(hint))) => {
+            Some(Sent::Pile(ids, None, None, Some(hint))) => {
                 assert_eq!(ids, &["m:p7"]);
                 assert_eq!(hint.text, tr("Removed from Reply later."));
-                assert_eq!(hint.undo, Some(Undo::Pile(vec!["m:p7".into()], Some(MailPile::ReplyLater))));
+                // With its time on the pile (decision of #315).
+                assert_eq!(hint.undo, Some(Undo::Pile(vec!["m:p7".into()], Some(MailPile::ReplyLater), since)));
             }
             other => panic!("off the pile, not {other:?}"),
         }
@@ -15567,13 +15606,35 @@ mod tests {
         // `b` moves it from one pile to the other.
         let _ = app.update(Message::SelectMail("m:w13".into()));
         let _ = app.update(Message::Key(Key::B));
-        assert!(matches!(last_pile(&app), Some(Sent::Pile(_, Some(MailPile::SetAside), _))));
+        assert!(matches!(last_pile(&app), Some(Sent::Pile(_, Some(MailPile::SetAside), None, _))));
         assert_eq!((app.reply_later, app.set_aside), (Some(0), Some(2)), "from one pile to the other");
         // An error brings the row back with the load and says so.
         let _ = app.update(Message::Piled(Err("offline".into()), None));
         assert!(app.error.is_some());
         load(&mut app);
         assert!(message_ids(&app).contains(&"m:w13"), "the demo kept it: back in the list");
+    }
+
+    /// Decision of #315: the undo of moving a mail to the other pile sends it back to its pile with
+    /// the time it lay there since; putting it there sends no time.
+    #[test]
+    fn undo_of_moving_to_the_other_pile_keeps_its_time() {
+        let mut app = mail_window(Density::Compact, &["--open", "reply-later"]);
+        let id = app.messages.first().map(|message| message.id.clone()).expect("mail on the pile");
+        let since = app.messages.first().and_then(|message| message.pile_since);
+        assert!(since.is_some());
+        let _ = app.update(Message::SelectMail(id.clone()));
+        let _ = app.update(Message::Key(Key::B));
+        let Some(Sent::Pile(_, Some(MailPile::SetAside), None, Some(hint))) = last_pile(&app).cloned() else {
+            panic!("moved, without a time")
+        };
+        assert_eq!(hint.undo, Some(Undo::Pile(vec![id.clone()], Some(MailPile::ReplyLater), since)));
+        deliver_pile(&mut app);
+        let _ = app.update(Message::Undo);
+        assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![id.clone()], Some(MailPile::ReplyLater), since, None)));
+        deliver_pile(&mut app);
+        let back = block_on(MailSource::get_mail(app.inbox.as_ref(), id)).expect("the mail").summary;
+        assert_eq!((back.pile, back.pile_since), (Some(MailPile::ReplyLater), since), "back with its time");
     }
 
     /// The last change of a pile the window started (task E19.4): the reader's next mail, marked read
@@ -15585,7 +15646,7 @@ mod tests {
     /// The hint of the last change of a pile, for comparing a hint without its time.
     fn hint_of(app: &App<DemoSource>) -> Hint {
         match last_pile(app) {
-            Some(Sent::Pile(_, _, Some(hint))) => hint.clone(),
+            Some(Sent::Pile(_, _, _, Some(hint))) => hint.clone(),
             _ => Hint { text: String::new(), undo: None, shown: Instant::now(), folder: None },
         }
     }
@@ -15602,7 +15663,7 @@ mod tests {
         let _ = app.update(Message::SelectMail(id.clone()));
         let _ = app.update(Message::Pile(id.clone(), Some(MailPile::SetAside)));
         assert!(
-            matches!(last_pile(&app), Some(Sent::Pile(ids, Some(MailPile::SetAside), Some(_))) if ids.as_slice() == std::slice::from_ref(&id))
+            matches!(last_pile(&app), Some(Sent::Pile(ids, Some(MailPile::SetAside), None, Some(_))) if ids.as_slice() == std::slice::from_ref(&id))
         );
         let row = app.messages.iter().find(|message| message.id == id).expect("still listed");
         assert_eq!(row.pile, Some(MailPile::SetAside), "with its new pile");
@@ -15771,7 +15832,16 @@ mod tests {
         // The whole mail as the core sends it: without its pile.
         let mut mail = block_on(MailSource::get_mail(app.inbox.as_ref(), id.clone())).expect("the mail");
         mail.summary.pile = None;
+        let since = app.messages.iter().find(|message| message.id == id).and_then(|message| message.pile_since);
+        assert!(since.is_some(), "the row says since when");
+        mail.summary.pile_since = None;
         let _ = app.update(Message::LetterLoaded(id.clone(), Ok(Box::new(mail))));
+        // Since when, too (decision of #315).
+        let loaded = match &app.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) => mail.summary.pile_since,
+            _ => None,
+        };
+        assert_eq!(loaded, since, "the reader takes the row's time");
         let item = |app: &App<DemoSource>, words: &str| {
             app.rail_groups(SizeClass::Wide, &detail::Anchors::default())
                 .expect("the rail")
@@ -15784,7 +15854,7 @@ mod tests {
         assert!(matches!(remove, Some(Message::Pile(ref sent, None)) if *sent == id), "{remove:?}");
         let _ = app.update(Message::Pile(id.clone(), None));
         assert!(
-            matches!(last_pile(&app), Some(Sent::Pile(ids, None, Some(_))) if ids.as_slice() == std::slice::from_ref(&id)),
+            matches!(last_pile(&app), Some(Sent::Pile(ids, None, None, Some(_))) if ids.as_slice() == std::slice::from_ref(&id)),
             "off it"
         );
         let reader = || match &app.letter {
@@ -15807,7 +15877,7 @@ mod tests {
         let mut app = mail_window(Density::Compact, &["--open", "set-aside"]);
         let id = app.messages.first().map(|message| message.id.clone()).expect("mail set aside");
         let _ = app.update(Message::Pile(id, None));
-        let Some(Sent::Pile(_, None, Some(hint))) = last_pile(&app) else { panic!("off the pile with a hint") };
+        let Some(Sent::Pile(_, None, None, Some(hint))) = last_pile(&app) else { panic!("off the pile with a hint") };
         assert_eq!(hint.text, tr("Removed from Set aside."));
     }
 
@@ -15956,7 +16026,7 @@ mod tests {
             let hint = app.hint.clone().expect("a hint");
             if ok {
                 assert_eq!((hint.text.as_str(), hint.undo.is_none()), (tr("Sent."), true));
-                assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], None, None)), "off the pile");
+                assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], None, None, None)), "off the pile");
                 continue;
             }
             assert_eq!(hint.text, tr("Couldn't send the message."));
@@ -16031,12 +16101,15 @@ mod tests {
         let (mut app, ids) = focus_window();
         type_reply(&mut app, "Draft");
         let text = reply_text(&app);
+        let since = app.messages.iter().find(|message| message.id == ids[0]).and_then(|message| message.pile_since);
+        assert!(since.is_some(), "the demo says since when");
         let _ = app.update(Message::FocusRemove);
         assert_eq!(focused(&app), Some(ids[1].clone()));
         deliver_pile(&mut app);
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Removed from Reply later.")));
         let _ = app.update(Message::Undo);
-        assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], Some(MailPile::ReplyLater), None)));
+        // With its time on the pile (decision of #315).
+        assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], Some(MailPile::ReplyLater), since, None)));
         assert_eq!(focused(&app), Some(ids[0].clone()), "back at its place");
         assert_eq!(app.focusing().and_then(FocusReply::position), Some((1, 2)));
         assert_eq!(reply_text(&app), text, "with its text");
@@ -16097,7 +16170,7 @@ mod tests {
         // `w` outside the field: off the pile, as "Remove".
         let (mut keys, ids) = focus_window();
         let _ = keys.update(Message::Key(Key::W));
-        assert!(matches!(last_pile(&keys), Some(Sent::Pile(off, None, _)) if off == &[ids[0].clone()]));
+        assert!(matches!(last_pile(&keys), Some(Sent::Pile(off, None, _, _)) if off == &[ids[0].clone()]));
         assert_eq!(focused(&keys), Some(ids[1].clone()));
     }
 
@@ -16125,7 +16198,7 @@ mod tests {
         let result = block_on(MailSource::send_reply(&*app.inbox, ids[0].clone(), text)).map_err(|err| err.to_string());
         assert_eq!(result, Ok(()));
         let _ = app.update(Message::FocusSent(ids[0].clone(), result));
-        assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], None, None)), "off Reply later");
+        assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], None, None, None)), "off Reply later");
         assert_eq!(app.hint.as_ref().map(|hint| (hint.text.as_str(), hint.undo.is_none())), Some((tr("Sent."), true)));
         assert_eq!(focused(&app), Some(ids[1].clone()), "the next mail");
         assert_eq!(app.focusing().and_then(FocusReply::position), Some((1, 1)), "the answered one left the round");
@@ -16166,13 +16239,14 @@ mod tests {
         let (mut app, ids) = focus_window();
         let _ = app.update(Message::Mail(MailAction::Reply, ids[0].clone()));
         assert_eq!(app.sent.last(), Some(&Sent::Compose(mail::compose_args(Compose::Reply, &ids[0], true))));
+        let since = app.messages.iter().find(|message| message.id == ids[0]).and_then(|message| message.pile_since);
         let _ = app.update(Message::FocusRemove);
         match last_pile(&app) {
-            Some(Sent::Pile(off, None, Some(hint))) => {
+            Some(Sent::Pile(off, None, None, Some(hint))) => {
                 assert_eq!(off, &[ids[0].clone()]);
                 assert_eq!(hint.text, tr("Removed from Reply later."));
-                // Its undo also puts it back into the round (second review of #315).
-                let undo = Undo::Removed { id: ids[0].clone(), place: 0, text: String::new() };
+                // Its undo also puts it back into the round (second review of #315), at its time.
+                let undo = Undo::Removed { id: ids[0].clone(), place: 0, text: String::new(), since };
                 assert_eq!(hint.undo, Some(undo));
             }
             other => panic!("off the pile, not {other:?}"),
