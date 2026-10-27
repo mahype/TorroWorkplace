@@ -19,8 +19,10 @@
 //!    someone opens them (task M3.1). Fetched with `BODY.PEEK[]`: syncing never marks mail read.
 //! 5. Only a folder synced to the end remembers its HIGHESTMODSEQ, so an interrupted sync starts
 //!    over where it matters next time. The same for a folder whose flags were not all taken over:
-//!    flags of messages a `mail.set_flags` is changing, or changed while the sync ran, stay as the
-//!    store has them, because the server may have reported them from before the change
+//!    flags of messages whose flags are being changed (`mail.set_flags`, the inbox marking mail
+//!    read), or were changed while the sync ran, stay as the store has them, also when such a
+//!    message comes back with the new ones in step 3, because the server may have reported them
+//!    from before the change
 //!    ([`FlagsUnderway`](super::service::FlagsUnderway), issue #318); the next sync compares them
 //!    again.
 //! 6. Sizes the store lacks (rows from before it kept `RFC822.SIZE`, DS.1) are asked for, at most
@@ -40,7 +42,7 @@
 //! never acted on.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::PoisonError;
+use std::sync::{Mutex as StdMutex, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
@@ -50,8 +52,9 @@ use torro_mail_imap::folders;
 use torro_mail_imap::imap::{BackupMessage, BodyChunks, FetchedHeader, ImapError, Search, Session};
 use torro_mail_imap::mime::{self, ReadMessage};
 
-use super::service::{Command, MailChange, MailError, Mailbox, SharedStore};
-use super::store::{BODY_RETENTION_DAYS, Body, NewMessage, ORIGINAL_MAX_BYTES, UidValidity};
+use super::MailStoreError;
+use super::service::{Command, FlagsUnderway, MailChange, MailError, Mailbox, SharedStore};
+use super::store::{BODY_RETENTION_DAYS, Body, MailStore, NewMessage, ORIGINAL_MAX_BYTES, UidValidity};
 
 /// How many headers one `UID FETCH` asks for.
 pub const HEADER_BATCH: usize = 100;
@@ -547,7 +550,7 @@ async fn sync_folder(
         .map(|state| (state.uid, state.raw_flags.clone()))
         .collect();
     let underway = mailbox.underway();
-    let (mut removed, flags, held) = store
+    let (mut removed, flags, mut held) = store
         .run(move |store| {
             let mut removed = Vec::new();
             for uid in &gone {
@@ -603,12 +606,19 @@ async fn sync_folder(
         headers.retain(|header| !header.deleted);
         headers.sort_by_key(|header| std::cmp::Reverse(header.uid));
         let folder = target.id.clone();
-        let stored = store
+        let underway = mailbox.underway();
+        let (stored, kept) = store
             .run(move |store| {
                 let mut stored = Vec::with_capacity(headers.len());
+                let mut kept = false;
                 for header in headers {
                     let read = mime::read(&header.header).unwrap_or_else(|_| unreadable());
-                    let message = new_message(&folder, uidvalidity, &header, &read, now);
+                    let mut message = new_message(&folder, uidvalidity, &header, &read, now);
+                    // A message moved here since `know` is in the store already.
+                    if let Some(flags) = flags_on_their_way(store, &underway, &folder, header.uid)? {
+                        message.flags = flags;
+                        kept = true;
+                    }
                     let id = store.upsert_message(&folder, uidvalidity, &message)?;
                     if let Some(at) = header.internal_date {
                         store.set_internal_date(&folder, header.uid, at)?;
@@ -616,9 +626,10 @@ async fn sync_folder(
                     store.set_size(&folder, header.uid, u64::from(header.size))?;
                     stored.push((id, message.date, header));
                 }
-                Ok(stored)
+                Ok((stored, kept))
             })
             .await?;
+        held |= kept;
         let ids = stored.iter().map(|(id, _, _)| id.clone()).collect();
         ahead.extend(
             stored
@@ -679,6 +690,22 @@ async fn sync_folder(
         store.run(move |store| store.set_highest_modseq(&folder, modseq)).await?;
     }
     fill_sizes(conn, store, target, uidvalidity).await
+}
+
+/// The flags the store has for `uid` of `folder` while a change of them is on its way to the server
+/// ([`FlagsUnderway::held`]), to keep over the ones the server reported; `None` when nothing is on
+/// its way or the store has no such message. Call it holding the store, as the flags above do.
+fn flags_on_their_way(
+    store: &MailStore,
+    underway: &StdMutex<FlagsUnderway>,
+    folder: &str,
+    uid: u32,
+) -> Result<Option<Vec<Flag>>, MailStoreError> {
+    if !underway.lock().unwrap_or_else(PoisonError::into_inner).held(folder, uid) {
+        return Ok(None);
+    }
+    let Some(id) = store.message_id_for_uid(folder, uid)? else { return Ok(None) };
+    Ok(store.summary(&id)?.map(|summary| summary.flags))
 }
 
 /// Asks the server for the sizes (`RFC822.SIZE`) of up to [`SIZE_FILL_MAX`] stored messages of the
@@ -1963,6 +1990,7 @@ pub(crate) mod fake {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
 
     use torro_mail::MessageSummary;
 
@@ -2278,6 +2306,35 @@ mod tests {
         assert_eq!(all(&mailbox).await[0].flags, [Flag::Seen]);
         let kept = modseq(store.clone(), inbox.id.clone()).await;
         assert!(kept > synced, "kept again: {kept:?} after {synced:?}");
+    }
+
+    /// Issue #318: a message moved into a folder after its sync read the store comes back among the
+    /// new headers; while a flag change of it is on its way, the store's flags stay.
+    #[tokio::test]
+    async fn new_headers_keep_the_flags_on_their_way_to_the_server() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let uid = server.add("INBOX", &fake::mail("Moved here", 1, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        sync_account(&mailbox).await.expect("synced");
+        let store = mailbox.store().expect("store");
+        let inbox = store.run(|db| db.folder_by_path("INBOX")).await.expect("read").expect("the inbox").id;
+        let id = all(&mailbox).await[0].id.clone();
+        let underway = mailbox.underway();
+        let kept = |uid: u32| {
+            let (store, underway, inbox) = (store.clone(), Arc::clone(&underway), inbox.clone());
+            async move { store.run(move |db| flags_on_their_way(db, &underway, &inbox, uid)).await.expect("read") }
+        };
+        assert_eq!(kept(uid).await, None, "nothing on its way: the server's flags");
+
+        let held = mailbox.hold_flags(&inbox, &[uid, uid + 1]);
+        store.run(move |db| db.set_flags(&id, &[Flag::Flagged])).await.expect("flagged");
+        assert_eq!(kept(uid).await, Some(vec![Flag::Flagged]), "on its way: the store's");
+        assert_eq!(kept(uid + 1).await, None, "a message the store does not have yet");
+        drop(held);
+        assert_eq!(kept(uid).await, Some(vec![Flag::Flagged]), "done while the sync ran");
+        underway.lock().unwrap_or_else(PoisonError::into_inner).sync_started(&inbox);
+        assert_eq!(kept(uid).await, None, "the next sync takes the server's");
     }
 
     /// DS.1 (#314): the sync keeps every message's size; sizes a store of before lacks are filled
