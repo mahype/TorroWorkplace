@@ -3651,8 +3651,7 @@ async fn round_page<S: MailSource>(
 
 /// The pile of the mail `id` and since when, as the core says it (fifth review of #315):
 /// `mail.get_message` names no pile, `mail.search_messages` does – so the mail's own folder is
-/// searched for mail from its sender on its day (`from:` and `after:`/`before:`, one day in UTC)
-/// until it turns up. `(None, None)` when it does not: on no pile as far as the window can tell.
+/// searched for mail of its day (`after:`/`before:`, one day in UTC) until it turns up. `(None, None)` when it does not: on no pile as far as the window can tell.
 /// Errors as the core says them.
 async fn pile_of_mail<S: MailSource>(
     inbox: &S,
@@ -3662,11 +3661,9 @@ async fn pile_of_mail<S: MailSource>(
     let summary = mail.summary;
     let day = summary.date.date_naive();
     let next = day.succ_opt().unwrap_or(day);
-    let mut query = format!("after:{} before:{}", day.format("%Y-%m-%d"), next.format("%Y-%m-%d"));
-    // An address that is one word narrows it to the sender; anything else would read as more words.
-    if let Some(from) = summary.from.as_ref().filter(|from| !from.address.contains(['"', ' ', '\t'])) {
-        query = format!("from:{} {query}", from.address);
-    }
+    // Folder and day only: `from:` goes through the full-text index, which may still be filling,
+    // while the date is a plain column, so the mail is found either way (pages cover a busy day).
+    let query = format!("after:{} before:{}", day.format("%Y-%m-%d"), next.format("%Y-%m-%d"));
     let mut cursor = None;
     loop {
         let find = MailFind {
