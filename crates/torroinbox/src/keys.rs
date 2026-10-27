@@ -38,8 +38,9 @@
 //!
 //! "Focus & reply" (task E19.5, [`Focus::Replying`]) shows one mail of "Reply later" at a time with a
 //! field under it: while the field has the keyboard it takes every key (the shortcut "send" sends,
-//! Escape leaves the field); without it `j`/`k` (and ↓/↑) go to the next or previous mail, `u` undoes
-//! and `[` folds the sidebar – no key acts on the list hidden behind it.
+//! Escape leaves the field); without it `j`/`k` (and ↓/↑) go to the next or previous mail, `w` takes
+//! the mail shown off "Reply later", `u` undoes and `[` folds the sidebar – no key acts on the list
+//! hidden behind it.
 //!
 //! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
 //! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
@@ -159,7 +160,8 @@ pub enum Focus {
     Question,
     /// "Focus & reply" (task E19.5) stands in place of the list, its field without the keyboard:
     /// `j`/`k` (↓/↑) go to the next or previous mail ([`Command::Next`], [`Command::Previous`]),
-    /// `u` undoes, `[` folds the sidebar; nothing of the list, which is hidden.
+    /// `u` undoes, `w` takes the mail shown off "Reply later", `[` folds the sidebar; nothing of the
+    /// list, which is hidden.
     Replying,
 }
 
@@ -452,6 +454,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::Replying, Key::Down) => Some(Command::Next),
         (Focus::Replying, Key::Up) => Some(Command::Previous),
         (Focus::Replying, Key::U) => Some(Command::Undo),
+        (Focus::Replying, Key::W) => Some(Command::ReplyLater),
         (Focus::List | Focus::Elsewhere, Key::Actions) => Some(Command::Actions),
         (Focus::List, Key::Down) => Some(Command::Next),
         (Focus::List, Key::Up) => Some(Command::Previous),
@@ -590,7 +593,9 @@ mod tests {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
             assert_eq!(command(Focus::Replying, key), Some(wanted), "{key:?}");
         }
-        for key in [Key::E, Key::W, Key::B, Key::S, Key::R, Key::Enter, Key::Delete, Key::Slash, Key::Digit(1)] {
+        // `w` takes the mail shown off "Reply later" (review of #315).
+        assert_eq!(command(Focus::Replying, Key::W), Some(Command::ReplyLater));
+        for key in [Key::E, Key::B, Key::S, Key::R, Key::Enter, Key::Delete, Key::Slash, Key::Digit(1)] {
             assert_eq!(command(Focus::Replying, key), None, "{key:?}");
         }
     }

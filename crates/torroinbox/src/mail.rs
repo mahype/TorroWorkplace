@@ -65,6 +65,7 @@
 //! addresses in it are listed under it as "Links" that open only on a click. An attachment is fetched by the core into its attachment folder and opened with the
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1676,15 +1677,13 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Hidden => (Icon::EyeOff, tr("No hidden mail."), tr("Mail you hide from the inbox shows up here.")),
             View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
-            // The piles (task E19.4).
+            // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
             View::ReplyLater => (
                 Icon::MessageSquareReply,
                 tr("Nothing to reply to later."),
-                tr("Mail you want to answer later waits here."),
+                tr("Press W on a mail to answer it later."),
             ),
-            View::SetAside => {
-                (Icon::Bookmark, tr("Nothing set aside."), tr("Mail you set aside to look up again waits here."))
-            }
+            View::SetAside => (Icon::Bookmark, tr("Nothing set aside."), tr("Press B on a mail to set it aside.")),
             _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
@@ -2963,12 +2962,14 @@ fn file_items<'a>(
     };
     let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
     // First, so a click on the group's icon archives, as it marked an entry done before.
-    if filing.is_some_and(|filing| filing.archive) {
+    let archive = filing.is_some_and(|filing| filing.archive);
+    if archive {
         items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "E", mail(MailAction::Archive)));
     }
-    if reading.summary().is_some() {
-        items.extend(pile_items(reading));
-    }
+    // Always in their place, so the rail does not jump once the mail's headers are in; off until then.
+    // Without Archive a click on the group's icon opens its card rather than putting the mail on a
+    // pile – the pattern of Delete, which is never that click either (`RailGroup::first_press`).
+    items.extend(pile_items(reading).map(|item| if archive { item } else { item.danger() }));
     // Every mail can be followed up (decision 8 of E19): an open entry by its own id, any other mail –
     // a folder's, a done entry's – by the mail's id, of which the core makes the entry.
     if filing.is_some() {
@@ -3000,10 +3001,13 @@ fn file_items<'a>(
 
 /// "Reply later" (`w`) and "Set aside" (`b`) for the mail in `reading` (task E19.4): each puts it on
 /// its pile ([`Message::Pile`]); for the pile it lies on "Remove from Reply later" or "Remove from Set
-/// aside" instead, which takes it off.
+/// aside" instead, which takes it off. Off, without their keys, while the mail's headers are not in –
+/// which pile it lies on is not known yet.
 fn pile_items<'a>(reading: &Reading<'_>) -> [RailItem<'a, Message>; 2] {
-    let on = reading.summary().and_then(|summary| summary.pile);
-    let pile = |pile: MailPile| Some(Message::Pile(reading.id.to_owned(), (on != Some(pile)).then_some(pile)));
+    let known = reading.summary();
+    let on = known.and_then(|summary| summary.pile);
+    let pile = |pile: MailPile| known.map(|_| Message::Pile(reading.id.to_owned(), (on != Some(pile)).then_some(pile)));
+    let key = |key: &'static str| if known.is_some() { key } else { "" };
     let reply = match on {
         Some(MailPile::ReplyLater) => tr("Remove from Reply later"),
         _ => tr("Reply later"),
@@ -3013,8 +3017,8 @@ fn pile_items<'a>(reading: &Reading<'_>) -> [RailItem<'a, Message>; 2] {
         _ => tr("Set aside"),
     };
     [
-        RailItem::new(Icon::MessageSquareReply, reply, "W", pile(MailPile::ReplyLater)),
-        RailItem::new(Icon::Bookmark, aside, "B", pile(MailPile::SetAside)),
+        RailItem::new(Icon::MessageSquareReply, reply, key("W"), pile(MailPile::ReplyLater)),
+        RailItem::new(Icon::Bookmark, aside, key("B"), pile(MailPile::SetAside)),
     ]
 }
 
@@ -3986,9 +3990,10 @@ pub const FOCUS_FIELD: &str = "focus-reply";
 pub const FOCUS_MAIL: &str = "focus-mail";
 
 /// How many lines the reply field of "Focus & reply" shows empty, and how many it grows to before
-/// it scrolls: room for a short answer, and the mail above keeps most of the window.
+/// it scrolls – never more than [`FIELD_SHARE`] of the page, so the mail above keeps its room.
 const FIELD_LINES: f32 = 4.0;
 const FIELD_MAX_LINES: f32 = 10.0;
+const FIELD_SHARE: f32 = 0.4;
 
 /// "Focus & reply" (task E19.5, decision 10 of E19): one round through the pile "Reply later", a
 /// mail at a time with a field to answer it under the mail.
@@ -3996,12 +4001,14 @@ const FIELD_MAX_LINES: f32 = 10.0;
 /// [`FocusReply::ids`] are the pile's mail as the view listed it when the round started, in its
 /// order. A mail answered ([`FocusReply::answered`]) or taken off the pile
 /// ([`FocusReply::take_current`]) leaves the round, so [`FocusReply::at`] then already points at the
-/// next one; a skipped one stays on the pile and in the round ([`FocusReply::skip`]), the arrows go
+/// next one; a skipped one stays on the pile and in the round ([`FocusReply::step`]), the arrows go
 /// back to it. `at == ids.len()` is the end of the round: nothing left to reply to in it.
 ///
-/// The reply belongs to the mail shown: another mail starts with an empty field and without the
-/// error of the last send. While a reply is on its way ([`FocusReply::sending`]) nothing moves, so
-/// the answer always belongs to the mail shown.
+/// What is typed belongs to its mail: [`FocusReply::reply`] is the field of the mail shown, the
+/// replies typed to the others wait until their mail shows again – skipping and ↑/↓ lose nothing.
+/// While a reply is on its way ([`FocusReply::sending`]) nothing moves, so the answer always
+/// belongs to the mail shown. [`FocusReply::keep`] and [`FocusReply::restore`] carry a round over
+/// the hint "Reply discarded." and its undo.
 #[derive(Debug, Clone, Default)]
 pub struct FocusReply {
     /// The mail of the round (`m:…`), in the order of the pile when it started.
@@ -4010,11 +4017,23 @@ pub struct FocusReply {
     pub at: usize,
     /// What is typed into the field for the mail shown.
     pub reply: text_editor::Content,
+    /// What was typed for the other mails of the round, by id; only replies with text.
+    kept: HashMap<String, text_editor::Content>,
     /// The reply is on its way (`MailSource::send_reply`): "Sending…", the field and the buttons
     /// take nothing until the answer.
     pub sending: bool,
     /// Why the last send failed (the core's words); the text stays in the field to send again.
     pub error: Option<String>,
+}
+
+/// A round of "Focus & reply" as the undo of "Reply discarded." keeps it ([`FocusReply::keep`]):
+/// its mail, the place and the text typed for each mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusKept {
+    pub ids: Vec<String>,
+    pub at: usize,
+    /// The replies with text, by the id of their mail.
+    pub texts: Vec<(String, String)>,
 }
 
 impl FocusReply {
@@ -4033,59 +4052,52 @@ impl FocusReply {
         self.current().map(|_| (self.at + 1, self.ids.len()))
     }
 
-    /// Whether [`FocusReply::step`] can go that way: forward up to the last mail, back from any
-    /// place after the first – also from the end, to a mail skipped there. Never while sending.
+    /// Whether [`FocusReply::step`] can go that way: forward from every mail – after the last one to
+    /// the end –, back from any place after the first, also from the end. Never while sending.
     pub fn can_step(&self, forward: bool) -> bool {
         match (self.sending, forward) {
             (true, _) => false,
-            (false, true) => self.at + 1 < self.ids.len(),
+            (false, true) => self.at < self.ids.len(),
             (false, false) => self.at > 0 && !self.ids.is_empty(),
         }
     }
 
-    /// The next (`forward`) or the previous mail; `false` when it could not go there
-    /// ([`FocusReply::can_step`]). The field starts empty for it.
+    /// The next (`forward`: "Skip", ↓, `j`) or the previous mail; `false` when it could not go there
+    /// ([`FocusReply::can_step`]). The mail left stays on the pile with what was typed for it; the
+    /// field shows what was typed for the next one, empty at first.
     pub fn step(&mut self, forward: bool) -> bool {
         if !self.can_step(forward) {
             return false;
         }
+        self.leave();
         self.at = if forward { self.at + 1 } else { (self.at - 1).min(self.ids.len() - 1) };
-        self.fresh();
+        self.arrive();
         true
     }
 
-    /// "Skip": the next mail – after the last one the end –, the mail shown stays on the pile;
-    /// `false` at the end and while sending.
-    pub fn skip(&mut self) -> bool {
-        if self.sending || self.current().is_none() {
-            return false;
-        }
-        self.at += 1;
-        self.fresh();
-        true
-    }
-
-    /// "Remove from Reply later": the mail shown leaves the round, the next one shows; its id for
-    /// the window to take it off the pile. `None` at the end and while sending.
+    /// "Remove from Reply later": the mail shown leaves the round with what was typed for it, the
+    /// next one shows; its id for the window to take it off the pile. `None` at the end and while
+    /// sending.
     pub fn take_current(&mut self) -> Option<String> {
         if self.sending || self.current().is_none() {
             return None;
         }
         let id = self.ids.remove(self.at);
-        self.fresh();
+        self.arrive();
         Some(id)
     }
 
-    /// The reply to `id` was sent: it leaves the round, and the mail after it shows with an empty
+    /// The reply to `id` was sent: it leaves the round, and the mail after it shows with its own
     /// field when it was the one shown.
     pub fn answered(&mut self, id: &str) {
         self.sending = false;
         let Some(place) = self.ids.iter().position(|held| held == id) else { return };
         self.ids.remove(place);
+        self.kept.remove(id);
         if place < self.at {
             self.at -= 1;
         } else if place == self.at {
-            self.fresh();
+            self.arrive();
         }
     }
 
@@ -4100,9 +4112,45 @@ impl FocusReply {
         !self.sending && self.current().is_some() && !self.reply.text().trim().is_empty()
     }
 
-    /// An empty field and no error, for another mail.
-    fn fresh(&mut self) {
-        self.reply = text_editor::Content::new();
+    /// Whether anything typed would be lost with the round: the field or a reply kept for another mail.
+    pub fn has_text(&self) -> bool {
+        self.current().is_some_and(|_| !self.reply.text().trim().is_empty())
+            || self.kept.values().any(|reply| !reply.text().trim().is_empty())
+    }
+
+    /// The round as the undo of "Reply discarded." keeps it: mail, place and every reply with text.
+    pub fn keep(&self) -> FocusKept {
+        let shown = self.current().map(|id| (id.to_owned(), self.reply.text()));
+        let kept = self.kept.iter().map(|(id, reply)| (id.clone(), reply.text()));
+        let mut texts: Vec<(String, String)> =
+            shown.into_iter().chain(kept).filter(|(_, text)| !text.trim().is_empty()).collect();
+        texts.sort();
+        FocusKept { ids: self.ids.clone(), at: self.at, texts }
+    }
+
+    /// The round `kept` back, at its place with its replies; nothing on its way.
+    pub fn restore(kept: FocusKept) -> FocusReply {
+        let kept_texts = kept.texts.into_iter().map(|(id, text)| (id, text_editor::Content::with_text(&text)));
+        let mut focus = FocusReply { ids: kept.ids, at: kept.at, kept: kept_texts.collect(), ..FocusReply::default() };
+        focus.at = focus.at.min(focus.ids.len());
+        focus.arrive();
+        focus
+    }
+
+    /// Keeps what was typed for the mail shown before another one shows.
+    fn leave(&mut self) {
+        let reply = std::mem::take(&mut self.reply);
+        if let Some(id) = self.current().map(str::to_owned)
+            && !reply.text().trim().is_empty()
+        {
+            self.kept.insert(id, reply);
+        }
+    }
+
+    /// The field of the mail now shown: what was typed for it, else empty; no error of another mail.
+    fn arrive(&mut self) {
+        let id = self.current().map(str::to_owned);
+        self.reply = id.and_then(|id| self.kept.remove(&id)).unwrap_or_default();
         self.error = None;
     }
 }
@@ -4152,7 +4200,7 @@ pub fn focus_page<'a>(page: FocusPage<'a>) -> Element<'a, Message> {
             .style(style::scrollable)
             .width(Fill)
             .height(Fill);
-        let reply = container(focus_reply(page.focus, id, width)).padding(Padding {
+        let reply = container(focus_reply(page.focus, id, width, bounds.height)).padding(Padding {
             top: space::l(),
             bottom: space::l(),
             ..pad
@@ -4185,8 +4233,11 @@ fn focus_letter<'a>(reading: Option<Reading<'a>>, width: f32) -> Element<'a, Mes
 }
 
 /// The field, why the last send failed and the buttons of "Focus & reply" ([`focus_page`]) for the
-/// mail `id`, `width` wide. While sending the field takes no typing, so what goes is what shows.
-fn focus_reply<'a>(focus: &'a FocusReply, id: &'a str, width: f32) -> Element<'a, Message> {
+/// mail `id`, `width` wide on a page `height` high: the field grows with the reply up to
+/// [`FIELD_MAX_LINES`], never over [`FIELD_SHARE`] of the page. While sending the field takes no
+/// typing, so what goes is what shows.
+fn focus_reply<'a>(focus: &'a FocusReply, id: &'a str, width: f32, height: f32) -> Element<'a, Message> {
+    let most = field_height(FIELD_MAX_LINES).min(height * FIELD_SHARE);
     let mut field = text_editor(&focus.reply)
         .id(FOCUS_FIELD)
         .placeholder(tr("Write a reply…"))
@@ -4194,8 +4245,8 @@ fn focus_reply<'a>(focus: &'a FocusReply, id: &'a str, width: f32) -> Element<'a
         .line_height(typo::body().line_height)
         .font(typo::body().font)
         .padding(style::INPUT_PADDING)
-        .min_height(field_height(FIELD_LINES))
-        .max_height(field_height(FIELD_MAX_LINES))
+        .min_height(field_height(FIELD_LINES).min(most))
+        .max_height(most)
         .wrapping(Wrapping::WordOrGlyph)
         .style(style::text_editor)
         .key_binding(focus_binding);
@@ -4246,10 +4297,14 @@ fn send_failure<'a>(why: &'a str) -> Element<'a, Message> {
         .into()
 }
 
-/// The row under the reply field: Send (primary, with the shortcut as tooltip; off while nothing is
-/// typed, "Sending…" while on its way), Skip (secondary), Remove from Reply later (ghost) and at the
-/// right "Open in compose window" (`SquarePen`) for the mail `id`. In a row narrower than all words,
-/// Remove shows its icon with the words as tooltip. Nothing takes a click while sending.
+/// The row under the reply field: Send (primary, the shortcut in its tooltip; off while nothing is
+/// typed, "Sending…" while on its way), Skip (secondary, `J`), Remove from Reply later (ghost, `W`)
+/// and at the right "Open in compose window" (`SquarePen`) for the mail `id`. In a row narrower than
+/// all words – the wider of "Send" and "Sending…", four gaps – Remove shows its icon with the words
+/// as tooltip. Nothing takes a click while sending.
+///
+/// The compose window starts from the mail alone (`--reply <id>`, no text of its own): the reply typed
+/// here stays here, and the tooltip says so, rather than putting mail text on a command line.
 fn focus_buttons<'a>(focus: &'a FocusReply, id: &'a str, width: f32) -> Element<'a, Message> {
     let idle = !focus.sending;
     let send = if focus.sending {
@@ -4257,42 +4312,71 @@ fn focus_buttons<'a>(focus: &'a FocusReply, id: &'a str, width: f32) -> Element<
     } else {
         let send = focus.can_send().then_some(Message::FocusSend);
         let button = widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, send);
-        widgets::with_tooltip(button, compose::send_keys())
+        key_tip(button, tr("Send"), compose::send_keys())
     };
     let skip = widgets::text_button(None, tr("Skip"), style::button::secondary, idle.then_some(Message::FocusSkip));
+    let skip = key_tip(skip, tr("Skip"), "J");
     let words = tr("Remove from Reply later");
     let remove = idle.then_some(Message::FocusRemove);
-    let all = widgets::text_button_width(true, tr("Send"))
+    let send_width = widgets::text_button_width(true, tr("Send")).max(widgets::text_button_width(true, tr("Sending…")));
+    let all = send_width
         + widgets::text_button_width(false, tr("Skip"))
         + widgets::text_button_width(true, words)
         + size::control_sm()
-        + 3.0 * space::s();
+        + 4.0 * space::s();
     let remove = if all <= width {
         widgets::text_button(Some(Icon::X), words, style::button::ghost, remove)
     } else {
         widgets::compact_button(Icon::X, words, style::button::ghost, remove)
     };
+    let remove = key_tip(remove, words, "W");
     let compose = idle.then(|| Message::Mail(MailAction::Reply, id.to_owned()));
-    let compose = widgets::icon_button(Icon::SquarePen, tr("Open in compose window"), compose);
+    let compose = widgets::icon_button(Icon::SquarePen, tr("Open in compose window (your text stays here)"), compose);
     row![send, skip, remove, iced::widget::space::horizontal(), compose]
         .spacing(space::s())
         .align_y(Alignment::Center)
         .into()
 }
 
-/// The end of a round of "Focus & reply": "Nothing left to reply to." and the way back to the pile
-/// ("Back to Reply later", as Escape and the header's "‹ Reply later"), centred like an empty state.
+/// `content` with a tooltip below it: `label` and its key as [`widgets::kbd`], on the card the
+/// suite's tooltips have (menu surface, after a short delay) – as the buttons of a row's action bar
+/// name their key. `widgets::with_tooltip` takes words only.
+fn key_tip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: &'a str,
+    key: impl iced::widget::text::IntoFragment<'a>,
+) -> Element<'a, Message> {
+    let words =
+        row![typo::text(typo::caption(), label).style(theme::text_2).wrapping(Wrapping::None), widgets::kbd(key)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+    let card = container(words)
+        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::s()])
+        .style(style::container::menu);
+    iced::widget::tooltip(content, card, iced::widget::tooltip::Position::Bottom)
+        .gap(space::xs())
+        .delay(std::time::Duration::from_millis(TIP_DELAY_MS))
+        .into()
+}
+
+/// The delay of the suite's tooltips (`widgets::with_tooltip`), for [`key_tip`].
+const TIP_DELAY_MS: u64 = 500;
+
+/// The end of a round of "Focus & reply", built as an empty state (`list::empty_state`): the check in
+/// `text_3`, "Nothing left to reply to." and – `space::l()` under it – the way back to the pile
+/// ("Back to Reply later", as Escape and the header's "‹ Reply later").
 fn focus_done<'a>() -> Element<'a, Message> {
+    let mark =
+        icon::icon(Icon::CircleCheck, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let back = widgets::text_button(
         Some(Icon::ChevronLeft),
         tr("Back to Reply later"),
         style::button::secondary,
         Some(Message::FocusClose),
     );
-    let content = column![typo::text(typo::body_strong(), tr("Nothing left to reply to.")), back]
-        .spacing(space::m())
-        .align_x(Alignment::Center)
-        .max_width(size::form_max() / 2.0);
+    let title = typo::text(typo::body_strong(), tr("Nothing left to reply to.")).align_x(Alignment::Center);
+    let words = column![title, back].spacing(space::l()).align_x(Alignment::Center);
+    let content = column![mark, words].spacing(space::m()).align_x(Alignment::Center).max_width(size::form_max() / 2.0);
     center(content).padding(space::xl()).into()
 }
 
@@ -4310,33 +4394,47 @@ mod tests {
     /// The click of a reading in the tests: open, the default.
     static OPEN: AttachmentClick = AttachmentClick::Open;
 
-    /// Task E19.5: a round of "Focus & reply" – skipping keeps a mail in the round, taking it off or
-    /// answering it drops it and shows the next with an empty field; an answer to a mail before the
-    /// one shown keeps the one shown; nothing moves while sending; ↑ comes back from the end.
+    /// Task E19.5 and its review: a round of "Focus & reply" – skipping keeps a mail in the round and
+    /// what was typed for it, taking it off or answering it drops it and shows the next; an answer to a
+    /// mail before the one shown keeps the one shown; nothing moves while sending; ↑ comes back from
+    /// the end; `keep` and `restore` carry the round with every reply.
     #[test]
     fn a_round_of_focus_and_reply() {
         let ids = |focus: &FocusReply| focus.ids.join(" ");
         let mut focus = FocusReply::new(["a", "b", "c", "d"].map(String::from).to_vec());
         assert_eq!((focus.current(), focus.position()), (Some("a"), Some((1, 4))));
-        assert!(!focus.can_send(), "nothing typed");
+        assert!(!focus.can_send() && !focus.has_text(), "nothing typed");
         focus.reply = text_editor::Content::with_text("Thanks!");
-        assert!(focus.can_send());
-        assert!(focus.skip());
-        assert_eq!((focus.current(), focus.reply.text().trim()), (Some("b"), ""), "an empty field for b");
+        assert!(focus.can_send() && focus.has_text());
+        assert!(focus.step(true));
+        assert_eq!((focus.current(), focus.reply.text().trim()), (Some("b"), ""), "b has its own field");
+        assert!(focus.has_text(), "a's reply is kept");
+        assert!(focus.step(false));
+        assert_eq!(focus.reply.text().trim(), "Thanks!", "back at a, its reply is there");
+        assert!(focus.step(true));
         assert_eq!(focus.take_current().as_deref(), Some("b"));
         assert_eq!((focus.current(), ids(&focus)), (Some("c"), "a c d".to_owned()));
         focus.answered("a");
         assert_eq!((focus.current(), focus.position()), (Some("c"), Some((1, 2))), "still c");
+        assert!(!focus.has_text(), "a's reply went with it");
+        focus.reply = text_editor::Content::with_text("On it");
+        let kept = focus.keep();
+        assert_eq!(
+            kept,
+            FocusKept { ids: vec!["c".into(), "d".into()], at: 0, texts: vec![("c".into(), "On it".into())] }
+        );
         focus.sending = true;
-        assert!(!focus.skip() && !focus.step(true) && focus.take_current().is_none(), "nothing moves");
+        assert!(!focus.step(true) && !focus.step(false) && focus.take_current().is_none(), "nothing moves");
         focus.answered("c");
         assert_eq!((focus.current(), focus.sending), (Some("d"), false));
         focus.failed("offline".into());
         assert_eq!(focus.error.as_deref(), Some("offline"));
-        assert!(focus.skip());
+        assert!(focus.step(true));
         assert_eq!((focus.current(), focus.position(), focus.error.as_deref()), (None, None, None), "the end");
         assert!(!focus.can_step(true) && focus.step(false));
         assert_eq!(focus.current(), Some("d"), "back from the end");
+        let back = FocusReply::restore(kept);
+        assert_eq!((back.current(), back.reply.text().trim(), back.sending), (Some("c"), "On it", false));
     }
 
     fn folders() -> Vec<Folder> {
@@ -4729,7 +4827,8 @@ mod tests {
             let groups = action_groups(reading, None, &no_archive, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
             assert_eq!(file, strings(&[tr("Reply later"), tr("Set aside"), tr("Follow up…"), tr("Delete"), &save]));
-            assert!(group(&groups, tr("File")).first_press().is_some(), "Reply later first, never Delete");
+            // Review of #315: the click opens the card rather than putting the mail on a pile.
+            assert!(group(&groups, tr("File")).first_press().is_none(), "no pile and never Delete by a click");
         });
         // Without the archive and the piles' items the click never deletes (finding 8).
         reading_of("m:w1", MailFormat::Html, false, |reading| {
@@ -4739,7 +4838,11 @@ mod tests {
             let entry = Some(ReaderEntry { item: &item, hide: true });
             let groups = action_groups(&loading, entry, &no_archive, true, false, &detail::Anchors::default());
             let file = group(&groups, tr("File"));
-            assert!(file.items.iter().all(|i| i.label != tr("Reply later")), "the piles wait for the headers");
+            // Review of #315: in their place but off, without keys, until the headers say the pile.
+            let piles: Vec<_> =
+                file.items.iter().filter(|i| [tr("Reply later"), tr("Set aside")].contains(&&*i.label)).collect();
+            assert_eq!(piles.len(), 2, "the piles keep their place");
+            assert!(piles.iter().all(|i| i.press().is_none() && i.key.is_empty()), "off while the headers load");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
@@ -4828,7 +4931,13 @@ mod tests {
             let loading = Reading { summary: None, ..*reading };
             let groups = action_groups(&loading, None, &folders, false, false, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
-            assert_eq!(titles, strings(&[tr("Reply"), tr("Torro"), tr("Mute")]), "only what needs no headers");
+            // File keeps its piles' places, off (review of #315); the rest needs the headers.
+            assert_eq!(
+                titles,
+                strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mute")]),
+                "only what needs no headers"
+            );
+            assert!(group(&groups, tr("File")).items.iter().all(|i| i.press().is_none()), "File is off");
         });
     }
 

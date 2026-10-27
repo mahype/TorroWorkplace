@@ -601,9 +601,11 @@ impl Edit {
             Edit::Done { done, .. } => Edit::Done { id, done: !done },
             Edit::Dismiss { .. } => Edit::Done { id, done: false },
             Edit::Snooze { .. } => {
+                // An open entry that kept its follow-up after a reply (decision 7 of E19) gets it back
+                // with its date and condition: "Undo" of "Cancel follow-up" (review of #315).
                 let until = match before.state {
                     State::Snoozed { until } => Some(until),
-                    State::New | State::Seen | State::Done { .. } => None,
+                    State::New | State::Seen | State::Done { .. } => before.follow_up.map(|follow| follow.at),
                 };
                 // The condition it had (task E19.4), so "Undo" puts the follow-up back as it was.
                 let unless_reply = until.is_some() && before.follow_up.is_some_and(|follow| follow.unless_reply);
@@ -674,6 +676,9 @@ pub enum Undo {
     /// Takes a change of pile back (task E19.4): `inbox.set_mail_pile` for these mails with the pile
     /// they lay on before ([`MessageSummary::pile`]; `None`: on none).
     Pile(Vec<String>, Option<MailPile>),
+    /// Takes "Reply discarded." back (review of #315): the round of "Focus & reply" as it was left,
+    /// at its place with every reply typed ([`FocusReply::restore`]), on "Reply later".
+    Focus(mail::FocusKept),
     /// Takes muting back (task E8.6b), exactly as `inbox.mute_item` answered ([`Muted`]): removes
     /// the rule `rule` – only one the call made –, opens the entries `reopen` again and moves the
     /// entries `moved` back to "For me" (`inbox.set_item_lane` without `remember`).
@@ -3200,6 +3205,15 @@ fn keep_answer(answers: &[(String, InvitationAnswer)], message: &mut MessageSumm
     }
 }
 
+/// `message` – a mail loaded whole – on the pile its listed row says (review of #315):
+/// `mail.get_message` never names a pile, only the search does (`MessageSummary::pile`), and the
+/// rail reads the loaded mail ("Remove from …"). A mail not listed keeps what it came with.
+fn keep_pile(listed: &[MessageSummary], message: &mut MessageSummary) {
+    if let Some(row) = listed.iter().find(|row| row.id == message.id) {
+        message.pile = row.pile;
+    }
+}
+
 /// What `view` lists, asked of `inbox`: its entries and, in a view of mail, the first `limit`
 /// messages, both in `order` (task E8.15); beside them what the sidebar, the glance and the hub need
 /// – "For me" always newest first, as the glance shows it.
@@ -4065,8 +4079,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.reading = false;
         self.cursor = None;
         self.pinned_mail = None;
-        // Another view, or the pile again from the sidebar, ends "Focus & reply" (task E19.5).
-        self.focus_reply = None;
+        // Another view, or the pile again from the sidebar, ends "Focus & reply" (task E19.5), with
+        // the undo of what was typed.
+        self.end_focus();
         // "Act now" again, all of it (task E8.5), and no more Insights (task E8.8b).
         self.sorting = false;
         self.filter = None;
@@ -4521,8 +4536,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 } else if self.suggesting {
                     self.suggesting = false;
                 } else if self.focus_reply.is_some() {
-                    // "Focus & reply" (task E19.5) stands in place of the list: Escape goes back to it.
-                    self.focus_reply = None;
+                    // "Focus & reply" (task E19.5) stands in place of the list: Escape goes back to it –
+                    // not while a reply is on its way ([`App::close_focus`]).
+                    self.close_focus();
                 } else if !self.selected_mail.is_empty() {
                     self.selected_mail.clear();
                     self.mail_anchor = None;
@@ -4675,6 +4691,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let mut result = result.map(|mail| *mail);
                 if let Ok(mail) = &mut result {
                     keep_answer(&self.answers, &mut mail.summary);
+                    keep_pile(&self.messages, &mut mail.summary);
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 let unread = result.as_ref().is_ok_and(|mail| !mail.summary.flags.contains(&Flag::Seen))
@@ -4716,15 +4733,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
             }
             Message::FocusStep(forward) => return self.focus_step(forward),
-            Message::FocusSkip => {
-                if self.focus_reply.as_mut().is_some_and(FocusReply::skip) {
-                    return focus_top();
-                }
-            }
+            Message::FocusSkip => return self.focus_step(true),
             Message::FocusRemove => return self.focus_remove(),
             Message::FocusSend => return self.focus_send(),
             Message::FocusSent(id, result) => return self.focus_sent(id, result),
-            Message::FocusClose => self.focus_reply = None,
+            Message::FocusClose => self.close_focus(),
             Message::MailShown(Ok(()), hint) => {
                 if let Some(hint) = hint {
                     self.hint = Some(Hint { shown: Instant::now(), ..hint });
@@ -5579,7 +5592,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// that leaves mail on a pile out ([`View::leaves_out_piles`]: "All", a category, a smart view, a
     /// pile), as when it is archived ([`App::take_out`]); in a folder, a search, "Hidden" and "Archive"
     /// it stays with its new pile. The numbers on the piles follow at once. The hint ("On Reply
-    /// later.", "Set aside.", "Off the pile.") offers to undo it with the pile the mail lay on before
+    /// later.", "Set aside.", "Removed from Reply later.", "Removed from Set aside.") offers to undo it with the pile the mail lay on before
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
     /// ([`Message::Piled`]). Nothing for the pile the mail lies on already.
     fn pile_mail(&mut self, id: String, pile: Option<MailPile>) -> Task<Message> {
@@ -5588,10 +5601,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if before == pile {
             return Task::none();
         }
-        let text = match pile {
-            Some(MailPile::ReplyLater) => tr("On Reply later."),
-            Some(MailPile::SetAside) => tr("Set aside."),
-            None => tr("Off the pile."),
+        let text = match (pile, before) {
+            (Some(MailPile::ReplyLater), _) => tr("On Reply later."),
+            (Some(MailPile::SetAside), _) => tr("Set aside."),
+            (None, Some(MailPile::SetAside)) => tr("Removed from Set aside."),
+            (None, _) => tr("Removed from Reply later."),
         };
         let ids = vec![id.clone()];
         let hint = Hint {
@@ -5682,6 +5696,28 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         operation::focus(mail::FOCUS_FIELD)
     }
 
+    /// "‹ Reply later", "Back to Reply later" and Escape: the round ends ([`App::end_focus`]) – not
+    /// while a reply is on its way, whose answer (or error, with the text) belongs to this round
+    /// (review of #315).
+    fn close_focus(&mut self) {
+        if self.focus_reply.as_ref().is_some_and(|focus| focus.sending) {
+            return;
+        }
+        self.end_focus();
+    }
+
+    /// The round of "Focus & reply" ends. Was anything typed, the hint says "Reply discarded." with an
+    /// undo that brings the round back with its place and replies ([`Undo::Focus`], review of #315):
+    /// nothing typed is lost without a word.
+    fn end_focus(&mut self) {
+        let Some(focus) = self.focus_reply.take() else { return };
+        if focus.has_text() {
+            let undo = Some(Undo::Focus(focus.keep()));
+            self.hint =
+                Some(Hint { text: tr("Reply discarded.").to_owned(), undo, shown: Instant::now(), folder: None });
+        }
+    }
+
     /// ↓ / ↑ and `j` / `k` in "Focus & reply": the next or previous mail of the round, at its top;
     /// nothing at either end and while a reply is on its way.
     fn focus_step(&mut self, forward: bool) -> Task<Message> {
@@ -5689,7 +5725,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// "Remove from Reply later" in "Focus & reply": the mail shown leaves the round and the pile as
-    /// its rail's item takes it off ([`App::pile_mail`]: the number, the hint "Off the pile." with its
+    /// its rail's item takes it off ([`App::pile_mail`]: the number, the hint "Removed from Reply later." with its
     /// undo, which puts it back on the pile, not into the round); the next mail shows.
     fn focus_remove(&mut self) -> Task<Message> {
         let Some(id) = self.focus_reply.as_mut().and_then(FocusReply::take_current) else { return Task::none() };
@@ -6730,6 +6766,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.found = loaded.found.map(|found| *found).unwrap_or_default();
         self.more = page.next;
         self.keep_out_leaving();
+        // The mail in the reader lies where its row now says (a pile changed meanwhile, review of #315).
+        if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut() {
+            keep_pile(&self.messages, &mut mail.summary);
+        }
         self.listed = self.view.listing();
         self.loaded = true;
         // The forced error line stays over every load, so it can be photographed.
@@ -7001,6 +7041,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         match command {
             // "Focus & reply" (task E19.5): its round instead of the list's rows.
             Command::Next | Command::Previous if self.focusing().is_some() => self.focus_step(command == Command::Next),
+            // `w` in "Focus & reply" takes the mail shown off "Reply later", as its "Remove" (review of #315).
+            Command::ReplyLater if self.focusing().is_some() => self.focus_remove(),
             Command::Next => self.step(true),
             Command::Previous => self.step(false),
             Command::ColumnLeft if self.is_board() => self.step_beside(false),
@@ -8245,7 +8287,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // Back into "Hidden": the load after the answer shows the row there again.
             Undo::Shown(ids) => self.set_mail_shown(ids, false, None),
             // Back on the pile it lay on, or off it: the load after the answer puts the row back.
-            Undo::Pile(ids, pile) => self.set_mail_pile(ids, pile, None),
+            Undo::Pile(ids, pile) => {
+                // Row and reader say so at once, as when it was put there (review of #315).
+                for id in &ids {
+                    self.set_row_pile(id, pile);
+                }
+                self.set_mail_pile(ids, pile, None)
+            }
+            // The round of "Focus & reply" back with what was typed (review of #315).
+            Undo::Focus(kept) => {
+                let task = if self.view == View::ReplyLater { Task::none() } else { self.show_view(View::ReplyLater) };
+                self.focus_reply = Some(FocusReply::restore(kept));
+                task
+            }
             Undo::Muted { rule, reopen, moved } => {
                 #[cfg(test)]
                 self.sent.push(Sent::Unmute(rule.clone(), reopen.clone(), moved.clone()));
@@ -8359,8 +8413,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// reminder first "In 5 min"), Pick… and for a snoozed entry "Bring back now".
     ///
     /// In the mail window it is "Follow up" (task E19.4) for [`App::subject`] or a mail without an
-    /// entry ([`App::mail_subject`]): the same times, sent with "Only if no reply" as its line under
-    /// them says ([`App::unless_reply`], which the line switches – the menu stays open), and "Cancel
+    /// entry ([`App::mail_subject`]): first "Only if no reply" with a line under it (review of #315:
+    /// the condition is chosen before the time; [`App::unless_reply`], which the line switches – the
+    /// menu stays open), then the same times, sent with it, and "Cancel
     /// follow-up" for a snoozed entry and an open one that still has its date ([`Item::follow_up`],
     /// decision 7 of E19).
     fn snooze_choices(&self) -> Vec<Choice> {
@@ -8387,8 +8442,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         if mail {
             let mark = if self.unless_reply { Icon::SquareCheck } else { Icon::Square };
-            choices
-                .push(Choice { line: true, ..Choice::new(mark, tr("Only if no reply"), Message::ToggleUnlessReply) });
+            if let Some(first) = choices.first_mut() {
+                first.line = true;
+            }
+            choices.insert(0, Choice::new(mark, tr("Only if no reply"), Message::ToggleUnlessReply));
         }
         let snoozed = item.is_some_and(|item| matches!(item.state, State::Snoozed { .. }));
         let dated = mail && item.is_some_and(|item| item.follow_up.is_some());
@@ -9341,18 +9398,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The header of "Focus & reply" (task E19.5) in every size: "‹ Reply later" (back to the pile's
-    /// list, as Escape), "{n} of {total}" quietly beside it while a mail shows, and at the right ↑ ↓
-    /// for the previous and next mail (`k`/`j` without the keyboard in the field). The narrow header
-    /// starts with the drawer button and the window's mark, as it always does.
+    /// list, as Escape; off while a reply is on its way), "{n} of {total}" quietly beside it while a
+    /// mail shows, and at the right ↑ ↓ for the previous and next mail (`k`/`j` without the keyboard
+    /// in the field). The narrow header starts with the drawer button and the window's mark, as it
+    /// always does; there the way back is only its icon and the count is left out.
     fn focus_header<'a>(&self, class: SizeClass, focus: &FocusReply) -> Element<'a, Message> {
-        let back = widgets::text_button(
-            Some(Icon::ChevronLeft),
-            tr("Reply later"),
-            style::button::ghost,
-            Some(Message::FocusClose),
-        );
+        let roomy = matches!(class, SizeClass::Wide | SizeClass::Medium);
+        // Not while a reply is on its way ([`App::close_focus`]).
+        let close = (!focus.sending).then_some(Message::FocusClose);
+        // Narrow: the way back as an icon with its words as tooltip, and no count (review of #315).
+        let back = if roomy {
+            widgets::text_button(Some(Icon::ChevronLeft), tr("Reply later"), style::button::ghost, close)
+        } else {
+            widgets::icon_button(Icon::ChevronLeft, tr("Reply later"), close)
+        };
         let mut title = row![back].spacing(space::s()).align_y(Alignment::Center);
-        if let Some((n, total)) = focus.position() {
+        if let Some((n, total)) = focus.position().filter(|_| roomy) {
             let place = trf("{n} of {total}", &[("n", &n), ("total", &total)]);
             title = title.push(typo::text(typo::body().tabular(), place).style(theme::text_3).wrapping(Wrapping::None));
         }
@@ -9361,8 +9422,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             widgets::icon_button(Icon::ChevronUp, tr("Previous"), step(false)),
             widgets::icon_button(Icon::ChevronDown, tr("Next"), step(true)),
         ];
-        let leading =
-            if matches!(class, SizeClass::Wide | SizeClass::Medium) { Vec::new() } else { self.narrow_leading() };
+        let leading = if roomy { Vec::new() } else { self.narrow_leading() };
         shell::header_bar(leading, title, trailing)
     }
 
@@ -15354,7 +15414,7 @@ mod tests {
         match last_pile(&app) {
             Some(Sent::Pile(ids, None, Some(hint))) => {
                 assert_eq!(ids, &["m:p7"]);
-                assert_eq!(hint.text, tr("Off the pile."));
+                assert_eq!(hint.text, tr("Removed from Reply later."));
                 assert_eq!(hint.undo, Some(Undo::Pile(vec!["m:p7".into()], Some(MailPile::ReplyLater))));
             }
             other => panic!("off the pile, not {other:?}"),
@@ -15437,7 +15497,8 @@ mod tests {
         assert!(labels.contains(&tr("Only if no reply").to_owned()), "{labels:?}");
         assert!(!labels.contains(&tr("Cancel follow-up").to_owned()), "nothing to cancel yet");
         let [_, tomorrow, _] = snooze_times(app.now);
-        let _ = app.update(Message::Key(Key::Digit(2)));
+        // "Only if no reply" first (review of #315): Tomorrow is the third.
+        let _ = app.update(Message::Key(Key::Digit(3)));
         match app.sent.last() {
             Some(Sent::Edit(Edit::Snooze { id: sent, until, unless_reply }, Some(after))) => {
                 assert_eq!((sent, *until, *unless_reply), (&id, Some(tomorrow), false));
@@ -15471,17 +15532,23 @@ mod tests {
             app.choices().into_iter().find(|choice| choice.label == tr("Only if no reply")).expect("the line")
         };
         assert_eq!(only(&app).icon, Icon::Square);
-        assert!(only(&app).line, "under the times, apart");
+        // First, with a line under it (review of #315).
+        let choices = app.choices();
+        assert_eq!(choices[0].label, tr("Only if no reply"));
+        assert!(!choices[0].line && choices[1].line, "apart from the times by a line");
         let _ = app.update(only(&app).message);
         assert!(app.unless_reply && app.menu == Some(Menu::Snooze), "on, and the menu stays");
         assert_eq!(only(&app).icon, Icon::SquareCheck);
         let [_, tomorrow, _] = snooze_times(app.now);
-        let _ = app.update(Message::Key(Key::Digit(2)));
+        let _ = app.update(Message::Key(Key::Digit(3)));
         let Some(Sent::Edit(Edit::Snooze { until, unless_reply: true, .. }, Some(after))) = app.sent.last() else {
             panic!("only if no reply")
         };
         assert_eq!(*until, Some(tomorrow));
-        assert!(after.text.ends_with(tr("only if no reply")), "{}", after.text);
+        // One sentence (review of #315).
+        assert_eq!(after.text, list::follow_up_text(tomorrow, true, app.now));
+        let time = list::wake_text(tomorrow, app.now);
+        assert_eq!(after.text, trf("Follow up {time}, only if no reply", &[("time", &time)]));
         // The picker: its chip switches the same, "Follow up" sends it.
         let _ = app.update(Message::AskSnooze(id));
         assert!(!app.unless_reply, "off as the menu opens again");
@@ -15523,6 +15590,79 @@ mod tests {
         assert!(app.choices().iter().any(|choice| choice.label == tr("Cancel follow-up")));
         let properties = detail::properties(&open, app.now, true).len();
         assert_eq!(properties, detail::properties(&open, app.now, false).len() + 1, "its date in the panel");
+    }
+
+    /// Review of #315: "Undo" of "Cancel follow-up" at an open entry that kept its follow-up puts the
+    /// follow-up back with its date and condition, not `until: None` again.
+    #[test]
+    fn undo_of_cancel_follow_up_at_an_open_entry_brings_its_date_back() {
+        let app = mail_window(Density::Compact, &[]);
+        let at = app.now + TimeDelta::days(2);
+        let follow = torro_inbox::item::FollowUp { at, unless_reply: true, since: app.now };
+        let open = app.for_me.first().cloned().map(|item| Item { state: State::New, follow_up: Some(follow), ..item });
+        let open = open.expect("an entry");
+        let cancel = Edit::Snooze { id: open.id.clone(), until: None, unless_reply: false };
+        let back = Edit::Snooze { id: open.id.clone(), until: Some(at), unless_reply: true };
+        assert_eq!(cancel.after(&open, app.now).undo, Some(back));
+        let plain = Item { follow_up: None, ..open };
+        assert_eq!(cancel.undo(&plain), cancel, "an entry without a follow-up stays as it was");
+    }
+
+    /// Review of #315: `mail.get_message` names no pile (only the search does), so the reader takes the
+    /// pile of the mail's row – its rail offers "Remove from Reply later", which takes it off – and
+    /// follows the row after a change of pile and its undo.
+    #[test]
+    fn the_reader_knows_the_pile_of_its_mail() {
+        let mut app = mail_window(Density::Compact, &["--open", "reply-later"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let first = app.messages.first().cloned().expect("mail on the pile");
+        let id = first.id.clone();
+        // In its folder, where the row stays when the pile changes.
+        let folder = app.folders.iter().find(|folder| folder.id == first.folder).cloned().expect("its folder");
+        let _ = app.update(Message::Show(View::Folder(FolderView::of(&folder))));
+        load(&mut app);
+        let _ = app.update(Message::SelectMail(id.clone()));
+        // The whole mail as the core sends it: without its pile.
+        let mut mail = block_on(MailSource::get_mail(app.inbox.as_ref(), id.clone())).expect("the mail");
+        mail.summary.pile = None;
+        let _ = app.update(Message::LetterLoaded(id.clone(), Ok(Box::new(mail))));
+        let item = |app: &App<DemoSource>, words: &str| {
+            app.rail_groups(SizeClass::Wide, &detail::Anchors::default())
+                .expect("the rail")
+                .into_iter()
+                .flat_map(|group| group.items)
+                .find(|item| item.label == words)
+                .and_then(|item| item.press())
+        };
+        let remove = item(&app, tr("Remove from Reply later"));
+        assert!(matches!(remove, Some(Message::Pile(ref sent, None)) if *sent == id), "{remove:?}");
+        let _ = app.update(Message::Pile(id.clone(), None));
+        assert!(
+            matches!(last_pile(&app), Some(Sent::Pile(ids, None, Some(_))) if ids.as_slice() == std::slice::from_ref(&id)),
+            "off it"
+        );
+        let reader = || match &app.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) => mail.summary.pile,
+            _ => Some(MailPile::SetAside),
+        };
+        assert_eq!(reader(), None, "the reader follows");
+        deliver_pile(&mut app);
+        let _ = app.update(Message::Undo);
+        let reader = match &app.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) => mail.summary.pile,
+            _ => None,
+        };
+        assert_eq!(reader, Some(MailPile::ReplyLater), "and its undo");
+    }
+
+    /// Review of #315: the hint names the pile a mail was taken off.
+    #[test]
+    fn taking_mail_off_names_its_pile() {
+        let mut app = mail_window(Density::Compact, &["--open", "set-aside"]);
+        let id = app.messages.first().map(|message| message.id.clone()).expect("mail set aside");
+        let _ = app.update(Message::Pile(id, None));
+        let Some(Sent::Pile(_, None, Some(hint))) = last_pile(&app) else { panic!("off the pile with a hint") };
+        assert_eq!(hint.text, tr("Removed from Set aside."));
     }
 
     /// Task E19.4 (decision 12 of E19): the hub keeps "Later" – its sidebar, its menu without "Only if
@@ -15607,13 +15747,15 @@ mod tests {
         assert!(empty.focus_reply.is_none(), "not on an empty pile");
     }
 
-    /// Task E19.5: "Skip" goes to the next mail and leaves the one shown on the pile – nothing is
-    /// sent –; the field starts empty for it. `j`/`k` and the header's arrows walk the round; after
-    /// the last mail the round ends, ↑ goes back.
+    /// Task E19.5 and its review: "Skip" goes to the next mail and leaves the one shown on the pile –
+    /// nothing is sent –; the next has its own field, and the reply typed for the one left waits for
+    /// it. `j`/`k` and the header's arrows walk the round; after the last mail the round ends, ↑ goes
+    /// back.
     #[test]
     fn skip_goes_on_and_leaves_the_mail_on_the_pile() {
         let (mut app, ids) = focus_window();
         type_reply(&mut app, "Later, maybe");
+        let typed = reply_text(&app);
         let sent = app.sent.len();
         let _ = app.update(Message::FocusSkip);
         assert_eq!(focused(&app), Some(ids[1].clone()), "the next mail");
@@ -15623,21 +15765,64 @@ mod tests {
             "it stays on the pile"
         );
         assert_eq!(app.reply_later, Some(2));
-        // `k` and `j` without the keyboard in the field.
+        // `k` and `j` without the keyboard in the field; the first mail's reply is still there.
         let _ = app.update(Message::Key(Key::Up));
         assert_eq!(focused(&app), Some(ids[0].clone()), "k: the previous mail");
+        assert_eq!(reply_text(&app), typed, "its reply kept (review of #315)");
         let _ = app.update(Message::Key(Key::Down));
         assert_eq!(focused(&app), Some(ids[1].clone()), "j: the next mail");
+        // ↓ after the last, as Skip: the end of the round.
         let _ = app.update(Message::FocusStep(true));
-        assert_eq!(focused(&app), Some(ids[1].clone()), "no further than the last");
-        // Skip after the last: the end of the round.
-        let _ = app.update(Message::FocusSkip);
         assert!(app.focusing().is_some() && focused(&app).is_none(), "nothing left in the round");
         assert_eq!(app.focusing().and_then(FocusReply::position), None);
+        let _ = app.update(Message::FocusSkip);
+        assert!(focused(&app).is_none(), "nothing past the end");
         draw_everywhere(&mut app);
         let _ = app.update(Message::FocusStep(false));
         assert_eq!(focused(&app), Some(ids[1].clone()), "↑ goes back to the last");
         assert_eq!(app.reply_later, Some(2), "both still on the pile");
+    }
+
+    /// Review of #315: closing a round with something typed – Escape, "‹ Reply later", another view –
+    /// says "Reply discarded." with an undo that brings the round back at its place with its replies;
+    /// without text nothing is said. While a reply is on its way, Escape and "‹ Reply later" do not
+    /// close it. `w` takes the mail shown off the pile.
+    #[test]
+    fn closing_a_round_with_text_offers_it_back() {
+        let (mut app, ids) = focus_window();
+        type_reply(&mut app, "Yes");
+        let _ = app.update(Message::FocusSkip);
+        type_reply(&mut app, "Maybe");
+        for close in [Message::Escape, Message::FocusClose, Message::Show(View::All)] {
+            let _ = app.update(close.clone());
+            assert!(app.focus_reply.is_none(), "{close:?} ends it");
+            let hint = app.hint.clone().expect("a hint");
+            assert_eq!(hint.text, tr("Reply discarded."), "{close:?}");
+            let _ = app.update(Message::Undo);
+            load(&mut app);
+            assert_eq!((app.view.clone(), focused(&app)), (View::ReplyLater, Some(ids[1].clone())), "{close:?}");
+            assert_eq!(reply_text(&app).trim(), "Maybe");
+            let _ = app.update(Message::FocusStep(false));
+            assert_eq!(reply_text(&app).trim(), "Yes", "{close:?}: every reply back");
+            let _ = app.update(Message::FocusStep(true));
+        }
+        // While sending nothing closes it.
+        let _ = app.update(Message::FocusSend);
+        assert!(app.focus_reply.as_ref().is_some_and(|focus| focus.sending));
+        let _ = app.update(Message::Escape);
+        let _ = app.update(Message::FocusClose);
+        assert!(app.focus_reply.is_some(), "not while sending");
+        let _ = app.update(Message::FocusSent(ids[1].clone(), Err("offline".into())));
+        assert_eq!(reply_text(&app).trim(), "Maybe", "the error finds its text");
+        // Without text no hint.
+        let (mut quiet, _) = focus_window();
+        let _ = quiet.update(Message::Escape);
+        assert!(quiet.focus_reply.is_none() && quiet.hint.is_none(), "nothing to say");
+        // `w` outside the field: off the pile, as "Remove".
+        let (mut keys, ids) = focus_window();
+        let _ = keys.update(Message::Key(Key::W));
+        assert!(matches!(last_pile(&keys), Some(Sent::Pile(off, None, _)) if off == &[ids[0].clone()]));
+        assert_eq!(focused(&keys), Some(ids[1].clone()));
     }
 
     /// Task E19.5 (decision 5 of E19): "Send" answers the mail shown through `send_reply`, takes it off
@@ -15709,7 +15894,7 @@ mod tests {
         match last_pile(&app) {
             Some(Sent::Pile(off, None, Some(hint))) => {
                 assert_eq!(off, &[ids[0].clone()]);
-                assert_eq!(hint.text, tr("Off the pile."));
+                assert_eq!(hint.text, tr("Removed from Reply later."));
                 assert_eq!(hint.undo, Some(Undo::Pile(vec![ids[0].clone()], Some(MailPile::ReplyLater))));
             }
             other => panic!("off the pile, not {other:?}"),
@@ -16520,7 +16705,8 @@ mod tests {
         let item = app.detail.clone().expect("the entry");
         for entry in [Some(mail::ReaderEntry { item: &item, hide: true }), None] {
             for group in mail::action_groups(&reading, entry, &app.folders, true, false, &anchors) {
-                for item in group.items {
+                // An item that is off sends nothing (the piles while the headers load, review of #315).
+                for item in group.items.into_iter().filter(|item| item.on_press.is_some()) {
                     let sent = item.press().expect("on");
                     assert!(closes_rail(&sent), "{}: {sent:?}", item.label);
                 }

@@ -1806,9 +1806,13 @@ pub fn plain(text: &str) -> String {
 }
 
 /// The time at the end of a row: until when a snoozed entry sleeps ("until Wed, 14 Oct",
-/// [`wake_text`]), when it was done in "Done", otherwise when it last changed ([`stamp`]).
+/// [`wake_text`]; a follow-up only if no reply says so, task E19.5: "until Wed, 14 Oct, only if no
+/// reply"), when it was done in "Done", otherwise when it last changed ([`stamp`]).
 pub fn time_text(item: &Item, view: &View, now: DateTime<Utc>) -> String {
     match (view, &item.state) {
+        (_, State::Snoozed { until }) if item.follow_up.is_some_and(|follow| follow.unless_reply) => {
+            trf("until {time}, only if no reply", &[("time", &wake_text(*until, now))])
+        }
         (_, State::Snoozed { until }) => trf("until {time}", &[("time", &wake_text(*until, now))]),
         (View::Done, State::Done { at }) => stamp(*at, now),
         _ => stamp(item.updated, now),
@@ -1855,11 +1859,16 @@ pub fn wake_text(until: DateTime<Utc>, now: DateTime<Utc>) -> String {
 }
 
 /// When the mail window follows a conversation up (task E19.4), for its hint and its panel: "Follow
-/// up 18:30" today, else with the short date ([`wake_text`]); with `unless_reply` ", only if no
-/// reply" after it. The hub and the App Feed say "Later until …".
+/// up 18:30" today, else with the short date ([`wake_text`]); with `unless_reply` the whole sentence
+/// "Follow up 18:30, only if no reply" (one text to translate, never pieces). The hub and the App
+/// Feed say "Later until …".
 pub fn follow_up_text(until: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) -> String {
-    let text = trf("Follow up {time}", &[("time", &wake_text(until, now))]);
-    if unless_reply { format!("{text}, {}", tr("only if no reply")) } else { text }
+    let time = wake_text(until, now);
+    if unless_reply {
+        trf("Follow up {time}, only if no reply", &[("time", &time)])
+    } else {
+        trf("Follow up {time}", &[("time", &time)])
+    }
 }
 
 /// What the empty state of the mail window's "Follow up" says (task E19.4).
@@ -1957,6 +1966,23 @@ mod tests {
         assert_eq!(time_text(done, &View::Done, now()), stamp(at, now()), "when it was done");
         let waiting = by_id("demo-1");
         assert_eq!(time_text(waiting, &View::ForMe, now()), stamp(waiting.updated, now()));
+    }
+
+    /// Review of #315: a follow-up only if no reply says so in its row, and the hint says it as one
+    /// sentence – never pieces glued together.
+    #[test]
+    fn a_follow_up_only_if_no_reply_says_so_in_whole_sentences() {
+        let items = demo::sample(now());
+        let snoozed = items.iter().find(|i| i.id == "demo-10").expect("in the sample");
+        let State::Snoozed { until } = snoozed.state else { panic!("demo-10 is snoozed") };
+        let time = wake_text(until, now());
+        let follow = torro_inbox::item::FollowUp { at: until, unless_reply: true, since: now() };
+        let only = Item { follow_up: Some(follow), ..snoozed.clone() };
+        assert_eq!(time_text(&only, &View::Snoozed, now()), trf("until {time}, only if no reply", &[("time", &time)]));
+        let any = Item { follow_up: Some(torro_inbox::item::FollowUp { unless_reply: false, ..follow }), ..only };
+        assert_eq!(time_text(&any, &View::Snoozed, now()), trf("until {time}", &[("time", &time)]));
+        assert_eq!(follow_up_text(until, true, now()), trf("Follow up {time}, only if no reply", &[("time", &time)]));
+        assert_eq!(follow_up_text(until, false, now()), trf("Follow up {time}", &[("time", &time)]));
     }
 
     #[test]
