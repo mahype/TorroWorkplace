@@ -48,7 +48,7 @@
 //! not checked here: the core checks a client's reach (`Rights::reaches_mail_account`) before it asks
 //! this service.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::fmt;
 use std::io;
@@ -666,6 +666,74 @@ impl Status {
     }
 }
 
+/// The flag changes of one account on their way to the server (issue #318), so a folder sync does
+/// not put back flags the server reported before such a change reached it. `mail.set_flags`
+/// changes the store first and the server after ("optimistic", [`super::write`]), the inbox marks
+/// done mail read on the server first and in the store after ([`super::inbox_feed::set_seen`]); a
+/// sync that read the server's flags in between would write the old ones over the new.
+///
+/// Keyed by folder id and UID. A message is **held** while a change of it is open, or when one
+/// began or ended since the sync of its folder started ([`FlagsUnderway::sync_started`]): what the
+/// server reported to that sync may be from before the change. Only one sync runs per account
+/// ([`Mailbox::one_sync`]), so one set of touched messages is enough.
+#[derive(Debug, Default)]
+pub(crate) struct FlagsUnderway {
+    /// How many changes of each message are open.
+    open: BTreeMap<(String, u32), usize>,
+    /// Messages whose change began or ended since the sync of their folder started.
+    touched: BTreeSet<(String, u32)>,
+}
+
+impl FlagsUnderway {
+    /// A change of `uids` in `folder` begins: before the store shows it.
+    fn begin(&mut self, folder: &str, uids: &[u32]) {
+        for &uid in uids {
+            let key = (folder.to_string(), uid);
+            *self.open.entry(key.clone()).or_default() += 1;
+            self.touched.insert(key);
+        }
+    }
+
+    /// The change [`FlagsUnderway::begin`] noted has reached the server, or was put back.
+    fn end(&mut self, folder: &str, uids: &[u32]) {
+        for &uid in uids {
+            let key = (folder.to_string(), uid);
+            if let Some(count) = self.open.get_mut(&key) {
+                *count -= 1;
+                if *count == 0 {
+                    self.open.remove(&key);
+                }
+            }
+            self.touched.insert(key);
+        }
+    }
+
+    /// The sync of `folder` starts, before it asks the server: changes done by now reached the
+    /// server before it answers.
+    pub(crate) fn sync_started(&mut self, folder: &str) {
+        self.touched.retain(|(touched, _)| touched != folder);
+    }
+
+    /// The sync of `folder` must not write the server's flags of `uid` into the store.
+    pub(crate) fn held(&self, folder: &str, uid: u32) -> bool {
+        let key = (folder.to_string(), uid);
+        self.open.contains_key(&key) || self.touched.contains(&key)
+    }
+}
+
+/// An open flag change ([`Mailbox::hold_flags`]); dropping it ends the change, on every way out.
+pub(crate) struct FlagsHeld {
+    underway: Arc<StdMutex<FlagsUnderway>>,
+    folder: String,
+    uids: Vec<u32>,
+}
+
+impl Drop for FlagsHeld {
+    fn drop(&mut self) {
+        self.underway.lock().unwrap_or_else(PoisonError::into_inner).end(&self.folder, &self.uids);
+    }
+}
+
 /// One mail account as the service holds it: what it needs to connect, its store, its state.
 /// Shared by its worker, the commands and `accounts.sync`.
 pub(crate) struct Mailbox {
@@ -683,6 +751,9 @@ pub(crate) struct Mailbox {
     /// One folder sync at a time per account: the inbox sync of the IDLE connection and the sync
     /// of all folders compare the store with the server and must not overlap.
     sync_lock: Mutex<()>,
+    /// The flag changes on their way to the server, which the sync leaves alone. Shared, because
+    /// the sync checks it inside its store call, on a blocking thread.
+    underway: Arc<StdMutex<FlagsUnderway>>,
     /// Wakes the worker from its wait after a failure (a sync that worked in between).
     resume: Notify,
     /// The inbox's path as the server names it (`INBOX` until the folders were listed).
@@ -790,6 +861,19 @@ impl Mailbox {
     /// One folder sync at a time ([`Mailbox::sync_lock`]).
     pub(crate) async fn one_sync(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.sync_lock.lock().await
+    }
+
+    /// The flag changes on their way to the server ([`FlagsUnderway`]). Lock it only briefly and
+    /// never across an `.await`.
+    pub(crate) fn underway(&self) -> Arc<StdMutex<FlagsUnderway>> {
+        Arc::clone(&self.underway)
+    }
+
+    /// Notes a change of the flags of `uids` in `folder` (a folder id) until the returned guard is
+    /// dropped. Take it before the store shows the change.
+    pub(crate) fn hold_flags(&self, folder: &str, uids: &[u32]) -> FlagsHeld {
+        self.underway.lock().unwrap_or_else(PoisonError::into_inner).begin(folder, uids);
+        FlagsHeld { underway: self.underway(), folder: folder.to_string(), uids: uids.to_vec() }
     }
 
     /// Sends `change` to the subscribers, unless it is empty. Nobody listening is fine.
@@ -1275,6 +1359,7 @@ impl MailService {
             status: StdMutex::new(status),
             command: Arc::new(Mutex::new(None)),
             sync_lock: Mutex::new(()),
+            underway: Arc::default(),
             resume: Notify::new(),
             inbox: StdMutex::new("INBOX".to_string()),
             open_roles: StdMutex::new(Vec::new()),
@@ -1641,6 +1726,13 @@ impl MailService {
     /// [`MailError::NotFound`] for an unknown account or one whose mail is off.
     pub async fn store(&self, account: &str) -> Result<SharedStore, MailError> {
         self.mailbox_of(account).await?.store()
+    }
+
+    /// Notes a change of the flags of `uids` in `folder` of `account` until the guard is dropped, so
+    /// the account's sync does not put back the server's old flags meanwhile ([`FlagsUnderway`]).
+    /// [`MailError::NotFound`] as for [`MailService::store`].
+    pub(crate) async fn hold_flags(&self, account: &str, folder: &str, uids: &[u32]) -> Result<FlagsHeld, MailError> {
+        Ok(self.mailbox_of(account).await?.hold_flags(folder, uids))
     }
 
     pub async fn cache_policy(&self, account: &str) -> Result<MailCachePolicy, MailError> {
@@ -2990,5 +3082,32 @@ pub(crate) mod tests {
         assert_eq!(status.health(later), Health::Problem { trouble: Trouble::SignInRefused, since: later });
         status.synced(later);
         assert_eq!(status.health(later), Health::Fine);
+    }
+
+    /// Issue #318: a sync leaves alone the flags of a message whose change is open, or began or
+    /// ended while it ran; one that ended before it started is the server's again.
+    #[test]
+    fn a_sync_holds_flag_changes_that_are_open_or_ended_while_it_ran() {
+        let mut underway = FlagsUnderway::default();
+        underway.begin("f:inbox", &[1, 2]);
+        underway.begin("f:inbox", &[1]);
+        underway.end("f:inbox", &[2]);
+        underway.begin("f:archive", &[1]);
+        underway.end("f:archive", &[1]);
+        underway.sync_started("f:inbox");
+        assert!(underway.held("f:inbox", 1), "begun before the sync and still open");
+        assert!(!underway.held("f:inbox", 2), "begun and ended before the sync");
+        assert!(underway.held("f:archive", 1), "another folder's sync has not started");
+        assert!(!underway.held("f:inbox", 3));
+
+        underway.end("f:inbox", &[1]);
+        assert!(underway.held("f:inbox", 1), "one change of it is still open");
+        underway.end("f:inbox", &[1]);
+        assert!(underway.held("f:inbox", 1), "ended while the sync ran");
+        underway.begin("f:inbox", &[4]);
+        underway.end("f:inbox", &[4]);
+        assert!(underway.held("f:inbox", 4), "begun and ended while the sync ran");
+        underway.sync_started("f:inbox");
+        assert!(!underway.held("f:inbox", 1) && !underway.held("f:inbox", 4), "the next sync sees them");
     }
 }
