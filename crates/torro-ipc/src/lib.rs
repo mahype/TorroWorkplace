@@ -1830,10 +1830,13 @@ pub enum Request {
         until: Option<DateTime<Utc>>,
         /// Follow up only if nobody replies by `until` (task E19.1): a reply – mail in the
         /// conversation, not sent from the account itself, dated after this call, in any folder but
-        /// drafts, read or not – calls the follow-up off, and the conversation stays where the reply put it
-        /// without coming back at `until`. Only for mail entries and mail ids (`m:…`); on any other
-        /// entry `unsupported`, refused before an approval is asked for. Ignored without `until`,
-        /// which calls any follow-up off.
+        /// drafts, read or not – calls the follow-up off, and the conversation stays where the reply
+        /// put it without coming back at `until`. Before it comes back the core looks for such a reply
+        /// once more (within a minute of `until`), so one that reached the mail late still counts.
+        /// Without it a reply opens the conversation, and `until` brings it on top once more unless
+        /// it was archived, thrown away or marked as spam; marking the entry done ends any follow-up.
+        /// Only for mail entries and mail ids (`m:…`); on any other entry `unsupported`, refused
+        /// before an approval is asked for. Ignored without `until`, which calls any follow-up off.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unless_reply: bool,
         /// Follow up a mail entry without putting it off: its follow-up is set (`until`, with
@@ -2484,8 +2487,10 @@ pub enum Request {
         sort: Option<MailSort>,
         /// "Later" (task E9.1): `false` leaves out messages whose inbox entry is snoozed now and
         /// puts messages that came back from it (their `back`) by the time
-        /// they came back instead of their date (not with `sort: relevance`); `true` gives only the
-        /// snoozed ones. Left out: every message, by date. Filtered before paging, so pages and
+        /// they came back instead of their date (not with `sort: relevance`); such mail comes from any
+        /// folder but archive, trash and spam whatever `in:` the query says (a `folder` still holds),
+        /// and `total_estimate` does not count it from other folders. `true` gives only the snoozed
+        /// ones. Left out: every message, by date. Filtered before paging, so pages and
         /// `cursor` hold; a cursor belongs to this field as well. Only for accounts whose inbox
         /// entries the caller sees (read access to `inbox`, the account among `inbox_sources`);
         /// for the others nothing counts as snoozed.

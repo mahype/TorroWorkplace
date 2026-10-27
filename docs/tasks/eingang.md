@@ -4355,6 +4355,18 @@ E19.1 ── E19.2 ── E19.3 ── E19.4 ── E19.5
 E19.1 und E19.2 ändern dasselbe Schema (`SCHEMA_V16`, noch nicht ausgeliefert) und dieselben Stellen im Katalog: nicht
 parallel.
 
+**Nach dem Review (2026-10-27):**
+
+- `Request::SetMailPile` hat das optionale Feld `since`: Ein Undo legt die Mail mit ihrer alten Zeit zurück (höchstens
+  jetzt), und der Kern sucht sofort nach einer eigenen Antwort seither.
+- `MessageSummary::pile_since` sagt, seit wann eine Mail auf ihrem Stapel liegt; gefüllt wie `pile`.
+- `Request::SnoozeItem` hat das optionale Feld `keep_open`: Es setzt die Wiedervorlage eines Mail-Eintrags, ohne ihn
+  zurückzustellen (ein zurückgestellter wird wieder `seen`). Es dient dem Undo von „Cancel follow-up“ und von „Follow
+  up“ an einem offenen Eintrag.
+- `rules::merge_own_mail`: Eine Mail des Kontos selbst öffnet die Unterhaltung, lässt „Only if no reply“ aber stehen.
+- Außerdem: Erledigt beendet jede Wiedervorlage. Eine fällige mit „Only if no reply“ wacht erst auf, wenn der Mail-Feed
+  im Speicher keine Antwort fand. Stapel vergessen Mail, die es nicht mehr gibt. Entwürfe zählen nie als Antwort.
+
 ### E19.1 Kern: Wiedervorlage mit „Only if no reply“
 - [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-inbox/src/item.rs`, `crates/torro-inbox/src/rules.rs`,
@@ -4558,7 +4570,7 @@ parallel.
   „Cancel follow-up“ schickt `until: None`; im Hub heißt es weiter `tr("Later")`. Vergleiche mit `tr(…)`.
 
 ### E19.5 „Focus & reply“, Doku, Sichtprüfung
-- [x] erledigt
+- [ ] erledigt (umgesetzt; es fehlt nur die Sichtprüfung mit `torro-design-review`)
 - **Modell:** Opus · **Braucht:** E19.4 · **Dateien:** `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/mail.rs`,
   `crates/torroinbox/src/keys.rs`, `crates/torroinbox/src/compose.rs` (nur Sichtbarkeit der Sende-Taste),
   `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md`

@@ -500,6 +500,9 @@ keine Mail ist, ist `unsupported`, geprüft vor der Freigabe; ohne `until` zähl
 zurückgekehrte Mail aus jedem Ordner außer Archiv, Papierkorb und Spam, unabhängig vom `in:` der Suche: Eine eigene gesendete
 Mail, auf die niemand antwortete, steht oben in „All“ (verträglich, kein `v: 2`). Eine Mail des Kontos selbst in der
 Unterhaltung (Bcc an sich, Echo einer Liste) öffnet sie, ist aber keine Antwort: `unless_reply` bleibt (Review von #315).
+Erledigt beendet jede Wiedervorlage. Eine fällige mit `unless_reply` kommt erst zurück, wenn der Kern im Mail-Speicher
+keine Antwort seit dem Setzen fand (spätestens eine Minute nach dem Datum); so zählt auch eine Antwort, die erst danach
+im Speicher ankam.
 Das optionale Feld `keep_open` (Review von #315, für das Undo von „Cancel follow-up“ und von „Follow up“ an einem
 offenen Eintrag) setzt mit `until` an einem Mail-Eintrag die Wiedervorlage (mit `unless_reply`), ohne ihn
 zurückzustellen: Ein offener bleibt, wo er ist; ein zurückgestellter ist wieder offen, als `seen` an seinem alten Platz

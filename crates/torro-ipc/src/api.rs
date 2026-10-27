@@ -3306,22 +3306,12 @@ static SNOOZE_ITEM: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Puts an inbox entry off until `until` (RFC 3339), when it comes back as new, or takes it back \
-                  without `until`, and returns it. Approvals and account problems (the source `suite`) are the \
-                  person's and `not-found` for every key. `id` may also be a mail message's id (`m:…`): its \
-                  entry is snoozed with its whole conversation, and a mail without an entry gets one first \
-                  (`unsupported` when a rule hides the mail); new mail in the conversation brings it back early. \
-                  A snoozed mail is left out of mail_search_messages with `snoozed: false`. For mail it is a \
-                  follow-up: `unless_reply: true` waits only if nobody replies – a mail in the conversation not \
-                  sent from the account itself, dated after this call, in any folder but drafts, calls it off and the date \
-                  never comes; without it the date stays after a reply and brings the conversation on top once \
-                  more unless it was archived, thrown away or marked as spam. `unless_reply` is for mail only, `unsupported` on any other entry. \
-                  `keep_open: true` with `until` follows up a mail entry without putting it off: an open one \
-                  stays where it is, a snoozed one is open again (seen); it comes back on top at `until` if still \
-                  open, as a reply leaves a follow-up. For undoing a cancelled follow-up or a follow-up date \
-                  set on an open entry. A mail id filed into an entry acts as that entry (a snoozed one comes \
-                  back); a mail id without an entry of its own is `unsupported` when its conversation has a \
-                  snoozed or done entry. `unsupported` also on a done entry, on one that is no mail and without \
-                  `until`; refused before an approval is asked for.",
+                  without `until`; returns the entry. Approvals and account problems are the person's \
+                  (`not-found`). `id` may be a mail message's id (`m:…`): the entry of its conversation, filed \
+                  first if there is none. On mail it is a follow-up: new mail in the conversation brings it back \
+                  early; `unless_reply` ends it when someone replies, `keep_open` sets it without putting the \
+                  entry off (see the fields). Snoozed mail is left out of mail_search_messages with `snoozed: \
+                  false`.",
 };
 
 static SET_ITEM_LANE: Command = Command {
@@ -3862,7 +3852,8 @@ static SEARCH_MESSAGES: Command = Command {
                   mail_index_status). Pages go at most 10 000 matches deep. `snoozed: false` leaves out mail put \
                   off with inbox_snooze_item and puts mail back from it on top by the time it came back (`back`), \
                   from any folder but archive, trash and spam whatever `in:` says (a sent mail back from a follow-up stands \
-                  on top of in:inbox), though a `folder` given still holds; \
+                  on top of in:inbox), though a `folder` given still holds; `total_estimate` does not count such \
+                  mail from other folders; \
                   `snoozed: true` lists only the snoozed mail. `hidden: false` leaves out mail of the inbox folder \
                   the person hid (a sender or domain hidden with inbox_hide_sender, a conversation hidden, mail \
                   kept away by a trait muted with `hide` while that rule holds), except mail shown again with \
