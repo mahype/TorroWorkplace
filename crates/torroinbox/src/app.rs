@@ -7170,6 +7170,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::ReplyLater | Command::SetAside => Task::none(),
             // In the views of mail `s` and `m` act on the message's entry in "For me", as its card's
             // "Later" and "…" do (task E8.11).
+            // No follow-up for mail in the archive, the trash or spam in the mail window (decision of
+            // #315): its rail offers none, so `s` does nothing there either.
+            Command::Snooze if self.view.is_mail() && self.launch.kind == Kind::Mail && !self.can_follow_up() => {
+                Task::none()
+            }
             Command::Snooze | Command::Hide if self.view.is_mail() => match self.cursor_message_entry() {
                 Some(entry) => self.act_for_message(&entry, command),
                 // A message without an entry is muted by its own traits (issue #123).
@@ -8284,6 +8289,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         self.close_menus();
         self.send(edit, Some(after))
+    }
+
+    /// Whether the mail the keys act on ([`App::mail_target`]) can be followed up: not in the archive,
+    /// the trash or spam (decision of #315, `mail::follows_up`); its folder as listed or loaded. A
+    /// mail whose folder is not known can.
+    fn can_follow_up(&self) -> bool {
+        let folder = self.mail_target().and_then(|id| self.folder_of(&id));
+        folder.is_none_or(|folder| mail::follows_up(&self.folders, &folder))
     }
 
     /// Whether this window's "Later" is "Follow up" (task E19.4): the mail window's, with "Only if no
@@ -16058,6 +16071,36 @@ mod tests {
         let _ = app.update(Message::FocusReply);
         let _ = app.update(Message::Show(View::All));
         assert!(app.focus_reply.is_none(), "another view ends it");
+    }
+
+    /// Decision of #315: `s` follows up no mail in the archive, the trash or spam – the rail offers no
+    /// "Follow up…" there –, but mail in the inbox and in Sent.
+    #[test]
+    fn s_follows_up_no_archived_deleted_or_spam_mail() {
+        let mut app = mail_window(Density::Compact, &[]);
+        for (folder, offered) in [
+            ("f:work-archive", false),
+            ("f:work-trash", false),
+            ("f:work-junk", false),
+            ("f:work-inbox", true),
+            ("f:work-sent", true),
+        ] {
+            let held = app.folders.iter().find(|held| held.id == folder).cloned().expect("a demo folder");
+            let _ = app.update(Message::Show(View::Folder(FolderView::of(&held))));
+            load(&mut app);
+            let id = app.messages.first().map(|message| message.id.clone()).expect("mail in it");
+            let _ = app.update(Message::SelectMail(id.clone()));
+            let _ = app.update(Message::Key(Key::S));
+            assert_eq!(app.menu == Some(Menu::Snooze), offered, "{folder}");
+            let _ = app.update(Message::CloseMenu);
+        }
+        // "Archive" under Folders is the archive as well.
+        let _ = app.update(Message::Show(View::Archive));
+        load(&mut app);
+        let id = app.messages.first().map(|message| message.id.clone()).expect("archived mail");
+        let _ = app.update(Message::SelectMail(id));
+        let _ = app.update(Message::Key(Key::S));
+        assert_eq!(app.menu, None, "nothing in the archive");
     }
 
     /// Task E18.4: the start states of the mail window – no `--open`, `overview`, `info`, `done` and

@@ -1475,6 +1475,9 @@ struct Filing {
     archive: bool,
     /// The account has a Trash and the message lies outside it.
     delete: bool,
+    /// The message can be followed up: it lies outside the archive, the trash and spam
+    /// ([`follows_up`]).
+    follow_up: bool,
 }
 
 impl Filing {
@@ -1487,8 +1490,18 @@ impl Filing {
         Filing {
             archive: has(Role::Archive) && lies_in != Some(Role::Archive),
             delete: has(Role::Trash) && lies_in != Some(Role::Trash),
+            follow_up: !matches!(lies_in, Some(Role::Archive | Role::Trash | Role::Junk)),
         }
     }
+}
+
+/// Whether a mail in the folder `folder` (a [`Folder::id`]) can be followed up (decision of #315):
+/// not in the archive, the trash or spam – archived counts as done (decision 6 of E19), so a
+/// follow-up there would never come back in the mail window. A folder not known, as one without a
+/// role, can.
+pub fn follows_up(folders: &[Folder], folder: &str) -> bool {
+    let role = folders.iter().find(|held| held.id == folder).and_then(|held| held.role);
+    !matches!(role, Some(Role::Archive | Role::Trash | Role::Junk))
 }
 
 /// The hint after archiving (`delete: false`) or deleting.
@@ -2886,8 +2899,9 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    not lie in it already, as in rows ([`filing_actions`]; an entry's mail lies in its account's
 ///    inbox while it loads); Reply later (`w`) and Set aside (`b`, [`Message::Pile`]) – for a mail on
 ///    one of them "Remove from Reply later" or "Remove from Set aside" in its place, with the same
-///    key; Follow up… (`s`, `AskSnooze`) for every mail – its entry's when it has an open one, else the
-///    mail's own id (decision 8 of E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
+///    key; Follow up… (`s`, `AskSnooze`) for every mail but one in the archive, the trash or spam
+///    ([`follows_up`]) – its entry's when it has an open one, else the mail's own id (decision 8 of
+///    E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
 ///    `AskLane`); Delete (`#`) on the same rule as Archive; last "Save attachments (n)" for a loaded
 ///    mail with attachments (task M12.6, `AskSaveAttachments`: the menu of "Save all").
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
@@ -2971,8 +2985,9 @@ fn file_items<'a>(
     // pile – the pattern of Delete, which is never that click either (`RailGroup::first_press`).
     items.extend(pile_items(reading).map(|item| if archive { item } else { item.danger() }));
     // Every mail can be followed up (decision 8 of E19): an open entry by its own id, any other mail –
-    // a folder's, a done entry's – by the mail's id, of which the core makes the entry.
-    if filing.is_some() {
+    // a folder's, a done entry's – by the mail's id, of which the core makes the entry. Not mail in the
+    // archive, the trash or spam (decision of #315): the folder of the mail shown decides.
+    if filing.is_some_and(|filing| filing.follow_up) {
         let follow = match entry {
             Some(ReaderEntry { item, .. }) if !matches!(item.state, State::Done { .. }) => item.id.clone(),
             _ => reading.id.to_owned(),
@@ -4897,11 +4912,26 @@ mod tests {
         reading_of("m:w12", MailFormat::Html, true, |reading| {
             let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            assert_eq!(
-                file,
-                strings(&[trc("action", "Archive"), tr("Reply later"), tr("Set aside"), tr("Follow up…")])
-            );
+            // No follow-up in the trash (decision of #315).
+            assert_eq!(file, strings(&[trc("action", "Archive"), tr("Reply later"), tr("Set aside")]));
         });
+    }
+
+    /// Decision of #315: no "Follow up…" for mail in the archive, the trash or spam – archived counts as
+    /// done (decision 6 of E19), a follow-up there would never come back; in the inbox and in Sent it
+    /// stands. The folder of the mail shown decides.
+    #[test]
+    fn no_follow_up_on_archived_deleted_or_spam_mail() {
+        let folders = folders();
+        for (id, offered) in [("m:w9", false), ("m:w12", false), ("m:w11", false), ("m:w1", true), ("m:w7", true)] {
+            reading_of(id, MailFormat::Html, true, |reading| {
+                let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
+                let file = group(&groups, tr("File"));
+                let follow = file.items.iter().any(|item| item.label == tr("Follow up…"));
+                assert_eq!(follow, offered, "{id}");
+                assert_eq!(follows_up(&folders, &reading.summary().expect("headers").folder), offered, "{id}");
+            });
+        }
     }
 
     /// Task E19.4 (decision 4 of E19): a mail on a pile says so in File – "Remove from Reply later"
