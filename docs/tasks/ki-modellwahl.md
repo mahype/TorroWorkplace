@@ -170,7 +170,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   Konfidenz.
 
 ### MW.4 Rechner messen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Plattformcode für drei Systeme) · **Braucht:** MW.1 · **Dateien:**
   `crates/torroworkplace/src/account.rs`, `crates/torroworkplace/src/account/hardware.rs`, `crates/torroworkplace/tests/fixtures/hardware/`
 - `trait Probe: Send + Sync { fn measure(&self) -> BoxFuture<'_, Hardware> }` und `SystemProbe`: Arbeitsspeicher

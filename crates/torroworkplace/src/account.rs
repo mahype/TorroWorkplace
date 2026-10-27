@@ -33,6 +33,9 @@
 //! calendars or task lists, so the calendar service never loads them ([`syncs_calendars`]).
 //!
 //! Task E5.12: ntfy accounts (`AccountKind::Ntfy`) live in [`ntfy`], apart the same way.
+//!
+//! Task MW.4: [`hardware`] measures this computer (memory, processor, graphics card) for the
+//! recommendation of local models.
 
 use std::future::Future;
 use std::path::Path;
@@ -48,6 +51,7 @@ use torro_pim_caldav::{CalDavAccount, CalDavClient};
 use self::github::TokenStore;
 
 pub mod ai;
+pub mod hardware;
 pub mod ntfy;
 pub mod torromail;
 
