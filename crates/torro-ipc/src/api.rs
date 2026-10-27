@@ -2640,8 +2640,8 @@ static CONNECT_AI: Command = Command {
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Never,
-    description: "Connects an AI account (Ollama, LM Studio, OpenRouter, Anthropic, another cloud provider or any \
-                  other OpenAI-compatible server) with the address and API key a person entered in the control \
+    description: "Connects an AI account (Ollama, LM Studio, Strata, OpenRouter, Anthropic, another cloud provider \
+                  or any other OpenAI-compatible server) with the address and API key a person entered in the control \
                   centre: checks it with the server, keeps the key in the system keychain and adds the account. \
                   Returns the account, never the key. Only the app key may use it.",
 };
@@ -2775,7 +2775,7 @@ static FIND_LOCAL_SERVERS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Looks for AI servers running on this computer (Ollama at localhost:11434, LM Studio at \
-                  localhost:1234) and returns each that answers with its address, number of models and the AI \
+                  localhost:1234, Strata at 127.0.0.1:8080) and returns each that answers with its address, number of models and the AI \
                   account already connected there. Connecting one is done by a person in Torro Workplace.",
 };
 
@@ -6130,6 +6130,7 @@ mod tests {
             serde_json::json!([
                 "ollama",
                 "lm_studio",
+                "strata",
                 "openrouter",
                 "anthropic",
                 "openai_compatible",

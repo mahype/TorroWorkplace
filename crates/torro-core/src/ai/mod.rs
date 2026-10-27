@@ -3,7 +3,7 @@
 //! ([`AiModel`]), a conversation with tools ([`ChatRequest`], [`ChatReply`]) – and the
 //! [`Provider`] trait a server's protocol implements.
 //!
-//! Three wire formats: OpenAI-compatible Chat Completions for Ollama, LM Studio, vLLM,
+//! Three wire formats: OpenAI-compatible Chat Completions for Ollama, LM Studio, Strata, vLLM,
 //! llama.cpp, OpenRouter and most providers ([`openai`]); OpenAI's Responses API
 //! ([`responses`]); and Anthropic's Messages API ([`anthropic`]). Each module holds its wire
 //! format (request bodies, answers, the server-sent events of a streamed answer, model lists),
@@ -22,6 +22,7 @@
 pub mod anthropic;
 pub mod openai;
 pub mod responses;
+pub mod strata;
 pub mod systemone;
 
 use std::fmt;
@@ -47,6 +48,9 @@ pub enum AiProvider {
     Ollama,
     /// LM Studio's local server (`http://localhost:1234/v1`).
     LmStudio,
+    /// Strata (`http://127.0.0.1:8080/v1`, issue #322), a local server for large open models. The
+    /// OpenAI-compatible protocol; [`strata`] tells it from llama.cpp, which uses the same port.
+    Strata,
     /// OpenRouter (`https://openrouter.ai/api/v1`): models of many makers behind one API key. Its
     /// model list says which can call tools and which have open weights. Written `openrouter`.
     #[serde(rename = "openrouter")]
@@ -83,7 +87,7 @@ pub enum AiProvider {
 /// the choice where data goes is made knowingly. Neutral, never a warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Seat {
-    /// On this computer or a machine of the person's own (Ollama, LM Studio).
+    /// On this computer or a machine of the person's own (Ollama, LM Studio, Strata).
     ThisComputer,
     /// Wherever the person's own server is.
     OwnServer,
@@ -111,9 +115,10 @@ impl Seat {
 impl AiProvider {
     /// Every provider in the order the suite lists them (Open First): this computer, open models in
     /// the cloud, the providers, those run from China, and any other server last.
-    pub const ALL: [AiProvider; 13] = [
+    pub const ALL: [AiProvider; 14] = [
         AiProvider::Ollama,
         AiProvider::LmStudio,
+        AiProvider::Strata,
         AiProvider::OpenRouter,
         AiProvider::Anthropic,
         AiProvider::OpenAi,
@@ -126,6 +131,10 @@ impl AiProvider {
         AiProvider::MiniMax,
         AiProvider::OpenAiCompatible,
     ];
+
+    /// The providers that run on this computer and that the suite looks for at their usual
+    /// address, in the order of [`AiProvider::ALL`].
+    pub const LOCAL: [AiProvider; 3] = [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::Strata];
 
     /// The cloud providers with an API key of their own (task W.3), in the order of [`AiProvider::ALL`].
     pub const CLOUD: [AiProvider; 10] = [
@@ -147,6 +156,7 @@ impl AiProvider {
         match self {
             AiProvider::Ollama => "Ollama",
             AiProvider::LmStudio => "LM Studio",
+            AiProvider::Strata => "Strata",
             AiProvider::OpenRouter => "OpenRouter",
             AiProvider::OpenAiCompatible => "OpenAI-compatible",
             AiProvider::Anthropic => "Anthropic",
@@ -167,6 +177,7 @@ impl AiProvider {
         match self {
             AiProvider::Ollama => "ollama",
             AiProvider::LmStudio => "lm_studio",
+            AiProvider::Strata => "strata",
             AiProvider::OpenRouter => "openrouter",
             AiProvider::OpenAiCompatible => "openai_compatible",
             AiProvider::Anthropic => "anthropic",
@@ -188,6 +199,7 @@ impl AiProvider {
         match self {
             AiProvider::Ollama => Some("http://localhost:11434/v1"),
             AiProvider::LmStudio => Some("http://localhost:1234/v1"),
+            AiProvider::Strata => Some("http://127.0.0.1:8080/v1"),
             AiProvider::OpenRouter => Some("https://openrouter.ai/api/v1"),
             AiProvider::OpenAiCompatible => None,
             // Anthropic's Messages API (task KI.1b), the one address that is no OpenAI-compatible
@@ -239,14 +251,14 @@ impl AiProvider {
             AiProvider::Kimi => Some("https://platform.moonshot.ai/console/api-keys"),
             AiProvider::Glm => Some("https://z.ai/manage-apikey/apikey-list"),
             AiProvider::MiniMax => Some("https://platform.minimax.io/user-center/basic-information/interface-key"),
-            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::OpenAiCompatible => None,
+            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::Strata | AiProvider::OpenAiCompatible => None,
         }
     }
 
     /// Where the provider's servers are ([`Seat`]).
     pub fn seat(self) -> Seat {
         match self {
-            AiProvider::Ollama | AiProvider::LmStudio => Seat::ThisComputer,
+            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::Strata => Seat::ThisComputer,
             AiProvider::OpenAiCompatible => Seat::OwnServer,
             AiProvider::OpenRouter | AiProvider::Anthropic | AiProvider::OpenAi | AiProvider::Gemini => Seat::Us,
             AiProvider::Mistral => Seat::Eu,
@@ -256,13 +268,18 @@ impl AiProvider {
         }
     }
 
-    /// The provider's own models have open weights (DeepSeek, Qwen, Kimi, GLM, MiniMax; Mistral in
-    /// part), so the same model could also run on a server of one's own. OpenRouter lists open
+    /// The provider's own models have open weights (DeepSeek, Qwen, Kimi, GLM, MiniMax, and Strata,
+    /// which serves open models only; Mistral in part), so the same model could also run on a server of one's own. OpenRouter lists open
     /// models of many makers and says so per model ([`AiModel::open_weights`]).
     pub fn open_weights(self) -> bool {
         matches!(
             self,
-            AiProvider::DeepSeek | AiProvider::Qwen | AiProvider::Kimi | AiProvider::Glm | AiProvider::MiniMax
+            AiProvider::Strata
+                | AiProvider::DeepSeek
+                | AiProvider::Qwen
+                | AiProvider::Kimi
+                | AiProvider::Glm
+                | AiProvider::MiniMax
         )
     }
 }
@@ -884,7 +901,7 @@ mod tests {
             assert!(url.starts_with("https://") && !url.ends_with('/'), "{provider:?}: {url}");
             assert!(!matches!(provider.seat(), Seat::ThisComputer | Seat::OwnServer), "{provider:?}");
         }
-        for local in [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::OpenAiCompatible] {
+        for local in [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::Strata, AiProvider::OpenAiCompatible] {
             assert!(!local.needs_key() && local.china_url().is_none(), "{local:?}");
         }
         assert_eq!(AiProvider::Mistral.seat(), Seat::Eu);
@@ -942,6 +959,23 @@ mod tests {
         }
         assert!(AiProvider::OpenRouter.needs_key() && !AiProvider::Ollama.needs_key());
         assert_eq!(AiProvider::LmStudio.name(), "LM Studio");
+    }
+
+    /// Issue #322: Strata is a local provider like Ollama and LM Studio – no key, this computer,
+    /// open weights, and found at its usual address.
+    #[test]
+    fn strata_is_a_local_provider_with_open_weights() {
+        let strata = AiProvider::Strata;
+        assert_eq!((strata.name(), strata.id()), ("Strata", "strata"));
+        assert_eq!(serde_json::to_value(strata).expect("json"), "strata");
+        assert_eq!(strata.default_url(), Some("http://127.0.0.1:8080/v1"));
+        assert_eq!(strata.seat(), Seat::ThisComputer);
+        assert!(!strata.needs_key() && strata.key_url().is_none() && strata.open_weights());
+        assert!(AiProvider::ALL.contains(&strata) && !AiProvider::CLOUD.contains(&strata));
+        for local in AiProvider::LOCAL {
+            assert!(AiProvider::ALL.contains(&local) && local.seat() == Seat::ThisComputer, "{local:?}");
+        }
+        assert_eq!(AiProvider::LOCAL, [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::Strata]);
     }
 
     /// Task S.24: at the start the models with tools (or deciding ones, #231) that compute here are on; a model turned on

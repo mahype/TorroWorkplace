@@ -1,4 +1,4 @@
-//! The wire format of the OpenAI-compatible protocol (task KI.1a): what Ollama, LM Studio, vLLM,
+//! The wire format of the OpenAI-compatible protocol (task KI.1a): what Ollama, LM Studio, Strata, vLLM,
 //! llama.cpp and OpenRouter take and send at `<base>/chat/completions` and `<base>/models`, plus
 //! Ollama's `/api/show` and `/api/tags`. Pure functions over bytes and JSON, without a network, so every rule is
 //! tested here; the core sends them (`torroworkplace::account::ai::OpenAiCompatible`).
@@ -47,7 +47,7 @@ pub fn chat_body(request: &ChatRequest, stream: bool) -> Value {
 
 /// [`chat_body`] as the server of `provider` takes it: with the request's [`ChatRequest::effort`]
 /// where each one reads it (issue #131) – OpenRouter as `"reasoning": {"effort": "high"}`,
-/// Gemini and the servers of one's own (Ollama, LM Studio, vLLM …) as OpenAI's `"reasoning_effort":
+/// Gemini and the servers of one's own (Ollama, LM Studio, Strata, vLLM …) as OpenAI's `"reasoning_effort":
 /// "high"`, which Ollama's `/v1` maps onto its thinking; the other cloud providers (task W.3) get
 /// none. Without an effort the body is [`chat_body`]'s.
 pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) -> Value {
@@ -56,7 +56,11 @@ pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) 
         match provider {
             AiProvider::OpenRouter => body["reasoning"] = json!({ "effort": effort.id() }),
             // Gemini maps OpenAI's `reasoning_effort` onto its thinking budget.
-            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::OpenAiCompatible | AiProvider::Gemini => {
+            AiProvider::Ollama
+            | AiProvider::LmStudio
+            | AiProvider::Strata
+            | AiProvider::OpenAiCompatible
+            | AiProvider::Gemini => {
                 body["reasoning_effort"] = json!(effort.id());
             }
             // Anthropic and OpenAI use their own request bodies and never come through here.
@@ -549,7 +553,13 @@ mod tests {
         let openrouter = chat_body_for(AiProvider::OpenRouter, &asked, true);
         assert_eq!(openrouter["reasoning"], json!({"effort": "high"}));
         assert!(openrouter.get("reasoning_effort").is_none());
-        let reads = [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::OpenAiCompatible, AiProvider::Gemini];
+        let reads = [
+            AiProvider::Ollama,
+            AiProvider::LmStudio,
+            AiProvider::Strata,
+            AiProvider::OpenAiCompatible,
+            AiProvider::Gemini,
+        ];
         for provider in reads {
             let body = chat_body_for(provider, &asked, true);
             assert_eq!(body["reasoning_effort"], "high", "{provider:?}");

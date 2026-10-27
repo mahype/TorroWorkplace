@@ -544,7 +544,7 @@ fn has_ai_account(data: &Data, provider: AiProvider) -> bool {
 /// Open First: the servers on this computer, then the cloud providers by where they are, then what
 /// a new chat of the assistant starts with.
 fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let local = [AiProvider::Ollama, AiProvider::LmStudio].into_iter().map(|provider| local_row(state, data, provider));
+    let local = AiProvider::LOCAL.into_iter().map(|provider| local_row(state, data, provider));
     let mut local: Vec<Element<'a, Message>> = local.collect();
     local.push(opener(
         Icon::Plus,
