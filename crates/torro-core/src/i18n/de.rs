@@ -4409,6 +4409,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sorting", "Sortieren"),
     ("Let no model be the model for {slot}", "Für {slot} kein Modell mehr nehmen"),
     ("Let {engine} pick the model for {slot}", "{engine} das Modell für {slot} wählen lassen"),
+    ("{text}; effort: {effort}", "{text}; Aufwand: {effort}"),
     (
         "Let an unknown model of {engine} be the model for {slot}",
         "Ein unbekanntes Modell von {engine} für {slot} nehmen",

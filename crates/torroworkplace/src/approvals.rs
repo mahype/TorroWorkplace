@@ -1218,12 +1218,37 @@ fn model_switch_summary(account: &str, enabled: bool, facts: &Facts) -> String {
 
 /// The summary of `ai.set_slot` (issue #325): `engine` as the core names it (`None` empties the
 /// slot), the model by its listed name and where it computes ([`Facts::model`]); "an unknown model"
-/// for one the account does not list.
-fn slot_summary(slot: torro_core::ai::AiSlot, engine: Option<&str>, model: Option<&str>, facts: &Facts) -> String {
-    let slot = slot.label();
+/// for one the account does not list. An `effort` that is set follows by its word ([`effort_word`]):
+/// a fixed value of the request, never text of the client's.
+fn slot_summary(
+    slot: torro_core::ai::AiSlot,
+    engine: Option<&str>,
+    model: Option<&str>,
+    effort: Option<torro_core::ai::Effort>,
+    facts: &Facts,
+) -> String {
     let Some(engine) = engine else {
-        return trf("Let no model be the model for {slot}", &[("slot", &slot)]);
+        return trf("Let no model be the model for {slot}", &[("slot", &slot.label())]);
     };
+    let text = slot_model_summary(slot, engine, model, facts);
+    match effort {
+        Some(effort) => trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(effort))]),
+        None => text,
+    }
+}
+
+/// The word a person reads for `effort`, as the assistant's menu names it.
+fn effort_word(effort: torro_core::ai::Effort) -> &'static str {
+    match effort {
+        torro_core::ai::Effort::Low => tr("Low"),
+        torro_core::ai::Effort::Medium => tr("Medium"),
+        torro_core::ai::Effort::High => tr("High"),
+    }
+}
+
+/// [`slot_summary`] for a slot that gets the account `engine`, without the effort.
+fn slot_model_summary(slot: torro_core::ai::AiSlot, engine: &str, model: Option<&str>, facts: &Facts) -> String {
+    let slot = slot.label();
     let words: [(&str, &dyn std::fmt::Display); 2] = [("engine", &engine), ("slot", &slot)];
     let (Some(_), Some(known)) = (model, &facts.model) else {
         return match model {
@@ -1290,8 +1315,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         // Which models the suite may use (task S.24): account, model and place from the core's list.
         Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
         // Which model a slot gets (issue #325): account, model and place from the core's list.
-        Request::SetAiSlot { slot, engine, model, .. } => {
-            slot_summary(*slot, engine.as_deref().map(named).as_deref(), model.as_deref(), facts)
+        Request::SetAiSlot { slot, engine, model, effort } => {
+            slot_summary(*slot, engine.as_deref().map(named).as_deref(), model.as_deref(), *effort, facts)
         }
         Request::PullAiModel { account, .. } => pull_summary(&named(account), facts),
         Request::DeleteEvent { event, scope } => in_scope(
@@ -3719,6 +3744,18 @@ pub(crate) mod tests {
         assert_eq!(
             summary(&slot(None, None), &Facts::default()),
             trf("Let no model be the model for {slot}", &[("slot", sorting)])
+        );
+        // The effort by its word, after what the slot gets.
+        let effortful = Request::SetAiSlot {
+            slot: AiSlot::Decide,
+            engine: Some(account.into()),
+            model: Some("nimble".into()),
+            effort: Some(torro_core::ai::Effort::High),
+        };
+        let text = trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words);
+        assert_eq!(
+            summary(&effortful, &known(true)),
+            trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("High"))])
         );
 
         let pull = Request::PullAiModel { account: account.into(), model: "evil\nApprove".into() };

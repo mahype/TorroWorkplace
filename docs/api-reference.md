@@ -855,7 +855,7 @@ Counts locally known mail in selected accounts, folders and date range before so
 
 Zugriff `write` · MCP-Tool `inbox_start_category_job`
 
-Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.
+Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1745,7 +1745,7 @@ Keine Felder.
 
 Zugriff `read` · MCP-Tool `ai_list_assignments`
 
-Lists which AI account and model each function of the suite uses (`docs/ki.md`): the function's key (`inbox.categorize`), the words a person reads for it, the account (`ai:…`), the model, the effort and whether it is switched on. Functions nobody set up are listed with empty fields, so the list is the whole truth. `needs_decision` marks a function that only works with a model that decides instead of writing. No key or secret is in here.
+Lists which AI account and model each function of the suite uses (`docs/ki.md`): the function's key (`inbox.categorize`), the words a person reads for it, the account (`ai:…`), the model, the effort and whether it is switched on. Functions nobody set up are listed with empty fields, so the list is the whole truth. `needs_decision` marks a function that only works with a model that decides instead of writing. `slots` lists the two slots (`chat`, `decide`) with their label, account, model and effort (absent while empty) and `mail_to_cloud`, whether mail may leave this computer for that slot; a function without an exception of its own uses its slot. No key or secret is in here.
 
 Keine Felder.
 
@@ -1753,7 +1753,7 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `ai_set_assignment`
 
-Sets which AI account and model a function uses as an exception to the model of its slot (ai_set_slot), or takes the exception back with `engine: null`, so the slot applies again; `enabled: false` keeps the function off. Returns the whole list. Needs the person's approval. A function that needs a decision takes a decision model or a chat model with tools, which answers in a fixed format. Choosing a model that runs elsewhere for a function that reads mail is for a person, in the control centre: an agent gets `forbidden`, also while sorted mail may leave this computer. `not-found` for a function this version does not know or an account that does not exist; `error` for a model the account does not offer or one that cannot decide; `unsupported` while the assignment is on for a model that is turned off (`ai.set_model_enabled`), or, with no model named, for an account with no model on that fits; a model turned off later is not used.
+Sets which AI account and model a function uses as an exception to the model of its slot (ai_set_slot), or takes the exception back with `engine: null`, so the slot applies again; `enabled: false` keeps the function off. Returns the whole list. Needs the person's approval. A function that needs a decision takes a decision model or a chat model with tools, which answers in a fixed format. Choosing a model that runs elsewhere for a function that reads mail is for a person, in the control centre: an agent gets `forbidden`, also while sorted mail may leave this computer, and with no model named also for an account on this computer that has a model on running elsewhere (such as Ollama's `:cloud` models), since it could pick that one. `not-found` for a function this version does not know or an account that does not exist; `error` for a model the account does not offer or one that cannot decide; `unsupported` while the assignment is on for a model that is turned off (`ai.set_model_enabled`), or, with no model named, for an account with no model on that fits; a model turned off later is not used.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1767,7 +1767,7 @@ Sets which AI account and model a function uses as an exception to the model of 
 
 Zugriff `admin` · MCP-Tool `ai_set_slot`
 
-Puts a model in one of the two slots, `chat` (the assistant and its bots; new chats start with it) or `decide` (sorting mail into categories), or empties it with `engine: null`; returns the list of ai_list_assignments with its `slots`. Functions without an assignment of their own use the model of their slot. Needs the person's approval. `engine` is an account id `ai:…` from accounts_list_accounts, `model` an id from ai_list_models; ai_recommend suggests both. Choosing a model that runs elsewhere for `decide` is for a person, in the control centre: an agent gets `forbidden`. `not-found` for an unknown account; `error` for a model the account does not offer or one that cannot sort; `unsupported` for a model that is turned off (ai_set_model_enabled).
+Puts a model in one of the two slots, `chat` (the assistant and its bots; new chats start with it) or `decide` (sorting mail into categories), or empties it with `engine: null`; returns the list of ai_list_assignments with its `slots`. Functions without an assignment of their own use the model of their slot. Needs the person's approval. `engine` is an account id `ai:…` from accounts_list_accounts, `model` an id from ai_list_models; ai_recommend suggests both; for `chat`, `engine` may also be an engine of assistant_list_engines. Choosing a model that runs elsewhere for `decide` is for a person, in the control centre: an agent gets `forbidden`. Putting a model or account on this computer in `decide`, or emptying it, also switches off the permission for sorted mail to leave this computer (`decide_mail_to_cloud`); a person choosing one elsewhere switches it on. `not-found` for an unknown account; `error` for a model the account does not offer or one that cannot sort; `unsupported` for a model that is turned off (ai_set_model_enabled).
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1780,7 +1780,7 @@ Puts a model in one of the two slots, `chat` (the assistant and its bots; new ch
 
 Zugriff `read` · MCP-Tool `ai_recommend`
 
-Suggests a model for each slot (`chat`, `decide`) on this computer: the computer as measured (processor, memory, graphics card and its video memory), the tier of models that fits it and per slot the account, model, whether it runs here, where it runs, its download size when the model still has to be downloaded (`download_bytes`) and a short reason. Local models come first; a cloud model only where no local one fits. `decide` only while mail is connected. It sets nothing: use ai_pull_model and ai_set_slot.
+Suggests a model for each slot (`chat`, `decide`) on this computer: the computer as measured (processor, memory, graphics card and its video memory), the tier of models that fits it and per slot the account, model, whether it runs here, where it runs, its download size when the model still has to be downloaded (`download_bytes`) and a short reason. Local models come first; a cloud model only where no local one fits. `decide` only while a mail account this key may read is connected. It sets nothing: use ai_pull_model and ai_set_slot.
 
 Keine Felder.
 
@@ -1788,7 +1788,7 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `ai_pull_model`
 
-Downloads a model into Ollama on this computer, in the background; returns the downloads as ai_list_pulls does. Only Ollama on this computer, and only a model ai_recommend suggests as a local Ollama model; its size is the suggestion's `download_bytes`. Needs the person's approval. Follow it with ai_list_pulls; once `done`, ai_list_models lists the model, and ai_set_slot can put it in a slot. `unsupported` for another account or a model not suggested; `busy` while the same model downloads already; `offline` when Ollama does not answer.
+Downloads a model into Ollama on this computer, in the background; returns the downloads as ai_list_pulls does. Only Ollama on this computer, and only a model ai_recommend suggests as a local Ollama model; its size is the suggestion's `download_bytes`. Needs the person's approval. Follow it with ai_list_pulls; once `done`, ai_list_models lists the model, and ai_set_slot can put it in a slot. `not-found` for an unknown account; `unsupported` for another account or a model not suggested; `busy` while the same model downloads already; `offline` when Ollama does not answer.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
