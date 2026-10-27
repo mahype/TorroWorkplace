@@ -18,11 +18,14 @@
 //! The API key of an account is a secret: it lives in the system keychain and travels as a
 //! [`crate::account::Secret`]. Nothing here holds or prints one; [`AiError`] never carries a
 //! server's words that could repeat it ([`openai::error_of`]).
+//!
+//! Issue #325 (task MW.7): [`pull`] is the wire format of downloading a model into Ollama.
 
 pub mod anthropic;
 pub mod decide_chat;
 pub mod hardware;
 pub mod openai;
+pub mod pull;
 pub mod responses;
 pub mod strata;
 pub mod systemone;

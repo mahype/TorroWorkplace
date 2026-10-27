@@ -205,17 +205,21 @@ impl List {
         Ok(List { tiers, fallback, local: raw.local, cloud: raw.cloud })
     }
 
-    /// Every tier, strongest first, the last one (without conditions) at the end.
+    /// Every tier, strongest first, the last one (without conditions) at the end. Only the tests read the
+    /// whole list; the core asks [`List::ollama_model`] and [`suggest`].
+    #[cfg(test)]
     pub fn tiers(&self) -> impl Iterator<Item = &Tier> {
         self.tiers.iter().chain([&self.fallback])
     }
 
     /// The local models, as written.
+    #[cfg(test)]
     pub fn local(&self) -> &[Local] {
         &self.local
     }
 
     /// The cloud models, as written.
+    #[cfg(test)]
     pub fn cloud(&self) -> &[Cloud] {
         &self.cloud
     }

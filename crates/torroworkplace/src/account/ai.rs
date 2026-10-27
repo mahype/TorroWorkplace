@@ -1445,7 +1445,8 @@ impl AiAccounts {
         }
     }
 
-    fn http(&self) -> Result<&reqwest::Client, AiError> {
+    /// The HTTP client of the AI accounts, also for downloads of models ([`super::pull`]).
+    pub(crate) fn http(&self) -> Result<&reqwest::Client, AiError> {
         self.http.as_ref().ok_or_else(|| AiError::Format(tr("No HTTP client to ask AI servers with.").into()))
     }
 }

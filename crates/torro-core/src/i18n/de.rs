@@ -4423,6 +4423,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Download {model} ({size}) to {engine}", "{model} ({size}) in {engine} herunterladen"),
     ("Download {model} to {engine}", "{model} in {engine} herunterladen"),
+    ("Download an unknown model to {engine}", "Ein unbekanntes Modell in {engine} herunterladen"),
     // Settings › Categorization of the mail window (E12.10).
     ("Categorization", "Kategorisierung"),
     ("Sort mail into categories", "E-Mails in Kategorien einordnen"),
@@ -6554,4 +6555,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Runs on this computer after a download", "Läuft nach einem Download auf diesem Rechner"),
     ("No AI server runs on this computer", "Auf diesem Rechner läuft kein KI-Server"),
     ("No local model fits this computer", "Kein lokales Modell passt zu diesem Rechner"),
+    // Downloading models into Ollama (MW.7, issue #325); "There is no AI account {id}." stands above.
+    (
+        "Ollama could not download the model. Check the internet connection and the free disk space, then try again.",
+        "Ollama konnte das Modell nicht herunterladen. Prüfe die Internetverbindung und den freien Speicherplatz und versuch es dann noch einmal.",
+    ),
+    (
+        "Ollama's answer to the download could not be read. Try again.",
+        "Die Antwort von Ollama zum Download ließ sich nicht lesen. Versuch es noch einmal.",
+    ),
+    (
+        "The download stopped before it was complete. Try again.",
+        "Der Download brach vor dem Ende ab. Versuch es noch einmal.",
+    ),
+    ("This model is downloading to this account already.", "Dieses Modell wird schon in dieses Konto heruntergeladen."),
+    (
+        "Torro downloads only the models it suggests for this computer.",
+        "Torro lädt nur die Modelle herunter, die es für diesen Rechner vorschlägt.",
+    ),
+    (
+        "Models are downloaded only into Ollama on this computer.",
+        "Modelle werden nur in Ollama auf diesem Rechner heruntergeladen.",
+    ),
+    ("There is no download {id}.", "Es gibt keinen Download {id}."),
 ];

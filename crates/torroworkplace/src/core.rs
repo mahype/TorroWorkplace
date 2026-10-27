@@ -2013,6 +2013,9 @@ pub struct Core {
     /// of it: memory and cards do not change while the service runs, and measuring may ask tools
     /// that take a moment (`nvidia-smi`).
     hardware: tokio::sync::OnceCell<torro_core::ai::hardware::Hardware>,
+    /// The downloads of models into Ollama on this computer since the core started (task MW.7,
+    /// `ai.pull_model`, `ai.list_pulls`, `ai.cancel_pull`), in memory only.
+    pulls: crate::account::pull::Pulls,
 }
 
 /// A computer measured beforehand: the probe of a core in tests ([`Core::new`] under `cfg(test)`),
@@ -2091,6 +2094,7 @@ impl Core {
             // Tests never measure the computer they run on (`Core::with_probe`).
             probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
             hardware: tokio::sync::OnceCell::new(),
+            pulls: crate::account::pull::Pulls::default(),
         };
         let allowed = core.allowed_folders();
         Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
@@ -3923,9 +3927,18 @@ impl Core {
                     ..Facts::default()
                 }
             }
-            // A download by the account's label; its size comes from the recommendation list once
-            // downloads are in place (task MW.7), never from the client.
-            Request::PullAiModel { account, .. } => Facts { name: self.ai.label_of(account).await, ..Facts::default() },
+            // A download by the account's label, the model by the name and size the recommendation list
+            // gives it (task MW.7), never the client's: a model the list does not hold stays unknown,
+            // and the download refuses it anyway.
+            Request::PullAiModel { account, model } => {
+                let listed = crate::account::recommend::List::builtin().ok().and_then(|list| list.ollama_model(model));
+                Facts {
+                    name: self.ai.label_of(account).await,
+                    model: listed.map(|listed| crate::approvals::KnownModel { name: listed.model.clone(), here: true }),
+                    download_bytes: listed.map(|listed| listed.size_bytes),
+                    ..Facts::default()
+                }
+            }
             // The account by its label (its server), the topic by the label the account keeps for it,
             // never by its name (task E5.12).
             Request::SetNtfyTopic { account, topic, .. } => {
@@ -4915,13 +4928,17 @@ impl Core {
             }
             // Boxed, as the slots: it asks every AI account's server for its models.
             Request::AiRecommend => Box::pin(self.ai_recommend(reach)).await,
-            // The scaffold of issue #325 (task MW.1): downloaded from MW.7; until then each says it is
-            // not there yet.
-            Request::PullAiModel { .. }
-            | Request::AiPulls
-            | Request::CancelAiPull { .. } => {
-                Response::Error { code: "unsupported".into(), message: tr("This command is not supported.").into() }
-            }
+            // Downloads into Ollama on this computer (task MW.7): only models of the recommendation
+            // list, in the background; each answer lists every download of this run.
+            Request::PullAiModel { account, model } => match self.pulls.start(&self.ai, &account, &model).await {
+                Ok(pulls) => Response::AiPulls { pulls },
+                Err(err) => err.response(),
+            },
+            Request::AiPulls => Response::AiPulls { pulls: self.pulls.list() },
+            Request::CancelAiPull { id } => match self.pulls.cancel(&id) {
+                Ok(pulls) => Response::AiPulls { pulls },
+                Err(err) => err.response(),
+            },
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
@@ -22967,17 +22984,86 @@ mod tests {
         assert_eq!((chat.engine.as_str(), chat.model.as_deref()), ("ai:ollama@localhost:11434", Some("qwen3:8b")));
         assert_eq!(slots[1].chosen, None);
 
-        for request in [
-            Request::PullAiModel { account: "ai:ollama@localhost:11434".into(), model: "qwen3:14b".into() },
-            Request::AiPulls,
-            Request::CancelAiPull { id: "p1".into() },
+        // The downloads of task MW.7: an account the core does not hold, no download yet, an id it never gave.
+        for (request, code) in [
+            (
+                Request::PullAiModel { account: "ai:ollama@localhost:11434".into(), model: "qwen3:14b".into() },
+                "not-found",
+            ),
+            (Request::CancelAiPull { id: "p1".into() }, "not-found"),
         ] {
             let answer = core.handle(request.clone()).await;
-            assert!(
-                matches!(&answer, Response::Error { code, .. } if code == "unsupported"),
-                "{request:?}: {answer:?}"
-            );
+            assert!(matches!(&answer, Response::Error { code: got, .. } if got == code), "{request:?}: {answer:?}");
         }
+        assert_eq!(core.handle(Request::AiPulls).await, Response::AiPulls { pulls: Vec::new() });
+    }
+
+    /// Issue #325 (task MW.7): `ai.pull_model` downloads a model of the list into the Ollama on this
+    /// computer in the background, `ai.list_pulls` follows it to `done`, and the account then lists the
+    /// model; another account or a model the list does not hold is `unsupported`. The approval names
+    /// the list's model and size (the rest of the downloads: `account::pull`).
+    #[tokio::test]
+    async fn a_model_of_the_list_is_downloaded_into_ollama_here_and_nothing_else_is() {
+        use torro_ipc::AiPullState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = httpmock::MockServer::start_async().await;
+        ollama
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/api/pull")
+                    .json_body(serde_json::json!({"model": "qwen3:14b", "stream": true}));
+                then.status(200).body("{\"status\":\"pulling manifest\"}\n{\"status\":\"success\"}\n");
+            })
+            .await;
+        let listed = ollama
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"object": "list", "data": [{"id": "qwen3:14b"}]}));
+            })
+            .await;
+        let here = torro_core::Account::ai(AiProvider::Ollama, &ollama.url("/v1"));
+        let cloud = torro_core::Account::ai(AiProvider::OpenRouter, "https://openrouter.ai/api/v1");
+        torro_core::account::save_to(
+            &crate::account::github::tests::accounts_file(dir.path()),
+            &[here.clone(), cloud.clone()],
+        )
+        .expect("accounts saved");
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        core.ai.load().await.expect("loaded");
+        let pull = |account: &str, model: &str| Request::PullAiModel { account: account.into(), model: model.into() };
+        let code = |answer: Response| match answer {
+            Response::Error { code, .. } => code,
+            other => panic!("an error: {other:?}"),
+        };
+
+        assert_eq!(code(core.handle(pull(&cloud.id, "qwen3:14b")).await), "unsupported", "no Ollama");
+        assert_eq!(code(core.handle(pull(&here.id, "host.example/x/y")).await), "unsupported", "not in the list");
+        let size = crate::account::recommend::List::builtin().expect("list").ollama_model("qwen3:14b").expect("listed");
+        let facts = core.facts(&pull(&here.id, "qwen3:14b")).await;
+        assert_eq!(
+            (facts.model.map(|known| known.name), facts.download_bytes),
+            (Some("qwen3:14b".to_string()), Some(size.size_bytes)),
+            "the approval names what the list says"
+        );
+        let unknown = core.facts(&pull(&here.id, "host.example/x/y")).await;
+        assert_eq!((unknown.model, unknown.download_bytes), (None, None));
+
+        let Response::AiPulls { pulls } = core.handle(pull(&here.id, "qwen3:14b")).await else { panic!("started") };
+        assert_eq!(pulls.len(), 1);
+        let id = pulls[0].id.clone();
+        let mut state = pulls[0].state;
+        for _ in 0..500 {
+            let Response::AiPulls { pulls } = core.handle(Request::AiPulls).await else { panic!("listed") };
+            state = pulls[0].state;
+            if state != AiPullState::Running {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(state, AiPullState::Done);
+        assert_eq!(listed.calls_async().await, 1, "the account's models were read again");
+        let Response::AiPulls { pulls } = core.handle(Request::CancelAiPull { id }).await else { panic!("listed") };
+        assert_eq!(pulls[0].state, AiPullState::Done, "an ended download stays as it is");
     }
 
     /// A probe that counts how often the core measures (task MW.6): once per run.

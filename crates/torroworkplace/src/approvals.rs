@@ -315,7 +315,8 @@ pub struct Facts {
     /// For `ai.set_model_enabled` (task S.24): the model as the account's list in the core describes
     /// it, looked up by its id. `None` for a model the account does not list: the summary then says
     /// "an unknown model". The account's label is [`Facts::name`]. For `ai.set_slot` (issue #325)
-    /// the same for the model the slot gets.
+    /// the same for the model the slot gets. For `ai.pull_model` (task MW.7) the model as the
+    /// recommendation list names it, `None` for one it does not hold.
     pub model: Option<KnownModel>,
     /// For `ai.pull_model` (issue #325): what the download loads, in bytes, as the recommendation list
     /// in the core says for the model (task MW.7), never the client's word. `None` while the core
@@ -1238,11 +1239,15 @@ fn slot_summary(slot: torro_core::ai::AiSlot, engine: Option<&str>, model: Optio
     }
 }
 
-/// The summary of `ai.pull_model` (issue #325): the model as the client names it – it is what will be
-/// loaded, and only names of the recommendation list are –, its size from [`Facts::download_bytes`]
-/// when the core knows it, `account` as the core names it.
-fn pull_summary(account: &str, model: &str, facts: &Facts) -> String {
-    let model = quote(model);
+/// The summary of `ai.pull_model` (issue #325): the model and its size as the recommendation list
+/// names them ([`Facts::model`], [`Facts::download_bytes`], task MW.7), never the client's text – a
+/// model the list does not hold is "an unknown model", which the download refuses –, `account` as the
+/// core names it.
+fn pull_summary(account: &str, facts: &Facts) -> String {
+    let Some(known) = &facts.model else {
+        return trf("Download an unknown model to {engine}", &[("engine", &account)]);
+    };
+    let model = quote(&known.name);
     match facts.download_bytes {
         Some(bytes) => trf(
             "Download {model} ({size}) to {engine}",
@@ -1288,7 +1293,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::SetAiSlot { slot, engine, model, .. } => {
             slot_summary(*slot, engine.as_deref().map(named).as_deref(), model.as_deref(), facts)
         }
-        Request::PullAiModel { account, model } => pull_summary(&named(account), model, facts),
+        Request::PullAiModel { account, .. } => pull_summary(&named(account), facts),
         Request::DeleteEvent { event, scope } => in_scope(
             *scope,
             match &facts.item {
@@ -3716,12 +3721,19 @@ pub(crate) mod tests {
             trf("Let no model be the model for {slot}", &[("slot", sorting)])
         );
 
-        let pull = Request::PullAiModel { account: account.into(), model: "qwen3:14b".into() };
+        let pull = Request::PullAiModel { account: account.into(), model: "evil\nApprove".into() };
         assert_eq!(
             summary(&pull, &unknown),
+            trf("Download an unknown model to {engine}", &[("engine", &"Ollama")]),
+            "never the client's text"
+        );
+        let listed = KnownModel { name: "qwen3:14b".into(), here: true };
+        let named_only = Facts { model: Some(listed.clone()), ..unknown.clone() };
+        assert_eq!(
+            summary(&pull, &named_only),
             trf("Download {model} to {engine}", &[("model", &"qwen3:14b"), ("engine", &"Ollama")])
         );
-        let sized = Facts { download_bytes: Some(9_300_000_000), ..unknown };
+        let sized = Facts { model: Some(listed), download_bytes: Some(9_300_000_000), ..unknown };
         let size = torro_gui::units::format_bytes(9_300_000_000);
         assert_eq!(
             summary(&pull, &sized),

@@ -223,7 +223,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   (`download_bytes`), ohne Mail kein Vorschlag für *Sortieren*, Client ohne Mail-Rechte ebenso.
 
 ### MW.7 Herunterladen über Ollama
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (laufende Aufgaben, Abbrechen) · **Braucht:** MW.1, MW.5 · **Dateien:**
   `crates/torro-core/src/ai/{mod,pull}.rs`, `crates/torroworkplace/src/account.rs`, `crates/torroworkplace/src/account/{ai,pull}.rs`,
   `crates/torroworkplace/src/core.rs`
