@@ -1078,6 +1078,28 @@ impl AiAccounts {
         }
     }
 
+    /// Every account with all its models, what `ai.recommend` weighs (task MW.6,
+    /// [`super::recommend::suggest`]): in the order of `accounts.json`, each `local` when its server
+    /// runs on this computer ([`ai::is_this_computer`] on its address), its models as
+    /// [`AiAccounts::models`] lists them with closed weights too, `None` when that fails (no key on
+    /// this device, the server does not answer). One server after the other, so an account's list
+    /// is read through [`AiAccounts::models`] with what that keeps of it.
+    pub async fn connected(&self) -> Vec<super::recommend::Connected> {
+        let servers: Vec<(String, AiProvider, String)> = self
+            .slots
+            .read()
+            .await
+            .iter()
+            .map(|slot| (slot.account.id.clone(), slot.provider(), slot.account.server.clone()))
+            .collect();
+        let mut connected = Vec::with_capacity(servers.len());
+        for (id, provider, server) in servers {
+            let models = self.models(&id, true).await.ok();
+            connected.push(super::recommend::Connected { id, provider, local: ai::is_this_computer(&server), models });
+        }
+        connected
+    }
+
     /// All models of the account `id` as its server last listed them ([`AiAccounts::models`]), asked
     /// now when it never did or when the list lacks `model`: what the data rule needs to know where
     /// a model runs ([`AiModel::remote`], task S.23) without asking the server at every message. It

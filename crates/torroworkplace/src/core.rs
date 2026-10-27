@@ -34,6 +34,7 @@ use torro_wm::{Backend, Events, NoWindow, WindowManager, WmError};
 
 use crate::account::ai::AiAccounts;
 use crate::account::github::{GithubAccounts, GithubError};
+use crate::account::hardware::{Probe, SystemProbe};
 use crate::account::ntfy::NtfyAccounts;
 use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
@@ -2004,6 +2005,26 @@ pub struct Core {
     /// ([`crate::approvals::WebConsent::outside`]). In memory only: after a restart every
     /// conversation asks again ([`Core::web_consented`]).
     web_consents: std::sync::Mutex<HashMap<(String, String), bool>>,
+    /// Measures this computer for `ai.recommend` (task MW.6): [`SystemProbe`] in the service, a
+    /// computer measured beforehand in tests ([`Measured`], [`Core::with_probe`]) – no test reads
+    /// the real hardware.
+    probe: Box<dyn Probe>,
+    /// What [`Core::probe`] measured, at the first `ai.recommend` of this run and kept for the rest
+    /// of it: memory and cards do not change while the service runs, and measuring may ask tools
+    /// that take a moment (`nvidia-smi`).
+    hardware: tokio::sync::OnceCell<torro_core::ai::hardware::Hardware>,
+}
+
+/// A computer measured beforehand: the probe of a core in tests ([`Core::new`] under `cfg(test)`),
+/// so `ai.recommend` never reads the hardware the tests run on.
+#[derive(Debug, Clone, Default)]
+struct Measured(torro_core::ai::hardware::Hardware);
+
+impl Probe for Measured {
+    fn measure(&self) -> torro_core::ai::BoxFuture<'_, torro_core::ai::hardware::Hardware> {
+        let hardware = self.0.clone();
+        Box::pin(async move { hardware })
+    }
 }
 
 impl Core {
@@ -2067,6 +2088,9 @@ impl Core {
                 crate::extensions::Extensions::system()
             },
             web_consents: std::sync::Mutex::new(HashMap::new()),
+            // Tests never measure the computer they run on (`Core::with_probe`).
+            probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
+            hardware: tokio::sync::OnceCell::new(),
         };
         let allowed = core.allowed_folders();
         Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
@@ -2373,6 +2397,15 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_extensions(mut self, extensions: crate::extensions::Extensions) -> Core {
         self.extensions = extensions.with_allowed(self.allowed_folders());
+        self
+    }
+
+    /// The core with `probe` measuring the computer for `ai.recommend`, for tests; nothing is
+    /// measured yet.
+    #[cfg(test)]
+    pub(crate) fn with_probe(mut self, probe: impl Probe + 'static) -> Core {
+        self.probe = Box::new(probe);
+        self.hardware = tokio::sync::OnceCell::new();
         self
     }
 
@@ -4880,10 +4913,11 @@ impl Core {
                 let wanted = engine.map(|engine| torro_core::ai::SlotModel { engine, model, effort });
                 Box::pin(self.set_ai_slot(slot, wanted, client)).await
             }
-            // The scaffold of issue #325 (task MW.1): recommended from MW.6 and downloaded from MW.7;
-            // until then each says it is not there yet.
-            Request::AiRecommend
-            | Request::PullAiModel { .. }
+            // Boxed, as the slots: it asks every AI account's server for its models.
+            Request::AiRecommend => Box::pin(self.ai_recommend(reach)).await,
+            // The scaffold of issue #325 (task MW.1): downloaded from MW.7; until then each says it is
+            // not there yet.
+            Request::PullAiModel { .. }
             | Request::AiPulls
             | Request::CancelAiPull { .. } => {
                 Response::Error { code: "unsupported".into(), message: tr("This command is not supported.").into() }
@@ -5386,6 +5420,25 @@ impl Core {
             return Response::Error { code: "error".into(), message: err };
         }
         self.ai_assignments().await
+    }
+
+    /// `ai.recommend` (issue #325, task MW.6): what Torro suggests per slot on this computer
+    /// ([`crate::account::recommend::suggest`]) – the computer measured once per run
+    /// ([`Core::hardware`]), every AI account with its models ([`AiAccounts::connected`]), and
+    /// whether mail is connected **in `reach`**: a client without read access to mail, or whose
+    /// rights name none of the mail accounts, gets no suggestion for Sorting, so the answer never
+    /// tells it that mail is there (as `inbox.list_categories`). Reads only, stores nothing.
+    /// `error` with the list's own words when the built-in list is broken.
+    async fn ai_recommend(&self, reach: Reach<'_>) -> Response {
+        use crate::account::recommend;
+        let list = match recommend::List::builtin() {
+            Ok(list) => list,
+            Err(err) => return Response::Error { code: "error".into(), message: err.to_string() },
+        };
+        let hardware = self.hardware.get_or_init(|| self.probe.measure()).await;
+        let accounts = self.ai.connected().await;
+        let mail = !self.mail.accounts_in(reach).await.is_empty();
+        Response::AiRecommendation { recommendation: recommend::suggest(hardware, list, &accounts, mail) }
     }
 
     /// `ai.set_slot` (issue #325, task MW.2): puts `wanted` in `slot`, or empties it with `None`,
@@ -22915,7 +22968,6 @@ mod tests {
         assert_eq!(slots[1].chosen, None);
 
         for request in [
-            Request::AiRecommend,
             Request::PullAiModel { account: "ai:ollama@localhost:11434".into(), model: "qwen3:14b".into() },
             Request::AiPulls,
             Request::CancelAiPull { id: "p1".into() },
@@ -22926,6 +22978,140 @@ mod tests {
                 "{request:?}: {answer:?}"
             );
         }
+    }
+
+    /// A probe that counts how often the core measures (task MW.6): once per run.
+    struct Counting {
+        hardware: torro_core::ai::hardware::Hardware,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Probe for Counting {
+        fn measure(&self) -> torro_core::ai::BoxFuture<'_, torro_core::ai::hardware::Hardware> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let hardware = self.hardware.clone();
+            Box::pin(async move { hardware })
+        }
+    }
+
+    /// A computer of the tier `large` (task MW.5): 32 GB of memory, no graphics card.
+    fn large_pc() -> torro_core::ai::hardware::Hardware {
+        torro_core::ai::hardware::Hardware {
+            cpu: Some("AMD Ryzen 9 7950X".into()),
+            memory_bytes: Some(32 << 30),
+            gpu: None,
+            unified_memory: false,
+        }
+    }
+
+    /// The suggestions of an `ai.recommend` answer: slot, account, model, download size and whether
+    /// it sorts through the fallback.
+    #[allow(clippy::type_complexity, reason = "a row of a test table")]
+    fn suggested(
+        answer: &Response,
+    ) -> Vec<(torro_core::ai::AiSlot, Option<String>, Option<String>, Option<u64>, bool)> {
+        let Response::AiRecommendation { recommendation } = answer else { panic!("a recommendation: {answer:?}") };
+        recommendation
+            .slots
+            .iter()
+            .map(|held| (held.slot, held.engine.clone(), held.model.clone(), held.download_bytes, held.by_chat))
+            .collect()
+    }
+
+    /// The slots an `ai.recommend` answer suggests a model for.
+    fn suggested_slots(answer: &Response) -> Vec<torro_core::ai::AiSlot> {
+        suggested(answer).into_iter().map(|(slot, ..)| slot).collect()
+    }
+
+    /// The mail service of `dir` with the account `anna@example.org` on `server`, read in.
+    async fn mail_with_anna(dir: &std::path::Path, server: &FakeImap) -> (MailService, String) {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir, &secrets, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir, &secrets);
+        mail.reload().await;
+        (mail, anna.id)
+    }
+
+    /// Issue #325 (task MW.6): `ai.recommend` measures the computer once per run, weighs what the
+    /// Ollama on this computer lists – a model it has needs no download, one it lacks comes with its
+    /// size – and sets nothing.
+    #[tokio::test]
+    async fn the_recommendation_names_the_download_of_what_ollama_lacks_and_sets_nothing() {
+        use torro_core::ai::AiSlot;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        let (mail, _) = mail_with_anna(dir.path(), &imap).await;
+        let ollama = fake_ollama_deciding_here_and_elsewhere().await;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = Counting { hardware: large_pc(), calls: Arc::clone(&calls) };
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new()).with_mail(mail).with_probe(probe);
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let engine = account.expect("ollama").id;
+        let list = crate::account::recommend::List::builtin().expect("the built-in list");
+        let qwen = list.ollama_model("qwen3:14b").expect("chat of the tier large").size_bytes;
+
+        let answer = core.handle(Request::AiRecommend).await;
+        let Response::AiRecommendation { recommendation } = &answer else { panic!("a recommendation: {answer:?}") };
+        assert_eq!(recommendation.hardware, large_pc(), "the computer as the probe measured it");
+        assert_eq!((recommendation.tier.as_str(), recommendation.tier_label.as_str()), ("large", tr("Large")));
+        let some = |text: &str| Some(text.to_string());
+        assert_eq!(
+            suggested(&answer),
+            [
+                (AiSlot::Chat, some(&engine), some("qwen3:14b"), Some(qwen), false),
+                (AiSlot::Decide, some(&engine), some("nimble"), None, false),
+            ],
+            "Ollama lists nimble but not qwen3:14b"
+        );
+        assert!(recommendation.slots.iter().all(|held| held.local), "both run here");
+
+        assert_eq!(core.handle(Request::AiRecommend).await, answer, "the same again");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "measured once per run");
+        let unset = [(None, None, false), (None, None, false)];
+        assert_eq!(slots_of(&core.handle(Request::AiAssignments).await), unset, "a suggestion sets nothing");
+    }
+
+    /// Issue #325 (task MW.6): without mail there is no suggestion for Sorting, and a client sees
+    /// mail only where its rights reach it – read access to `mail` and the account in its selection
+    /// – so the answer never tells a key without them that mail is connected.
+    #[tokio::test]
+    async fn the_recommendation_suggests_sorting_only_with_mail_the_caller_may_read() {
+        use torro_core::ai::AiSlot;
+        let ollama = fake_ollama_deciding_here_and_elsewhere().await;
+        let alone = tempfile::tempdir().expect("temp dir");
+        let core = core_with_ai(alone.path(), &MemoryTokens::default(), Vec::new()).with_probe(Measured(large_pc()));
+        core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        assert_eq!(suggested_slots(&core.handle(Request::AiRecommend).await), [AiSlot::Chat], "no mail, no sorting");
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        let (mail, anna) = mail_with_anna(dir.path(), &imap).await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new())
+            .with_mail(mail)
+            .with_probe(Measured(large_pc()));
+        core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let both = [AiSlot::Chat, AiSlot::Decide];
+        assert_eq!(suggested_slots(&ask(&core, Some(&app_key), Request::AiRecommend).await), both);
+
+        let mut blind = RightsTemplate::ReadOnly.rights();
+        blind.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+        let (_, blind) = client(&core, blind).await;
+        let answer = ask(&core, Some(&blind), Request::AiRecommend).await;
+        assert_eq!(suggested_slots(&answer), [AiSlot::Chat], "no mail rights: {answer:?}");
+
+        let mut elsewhere = RightsTemplate::ReadOnly.rights();
+        elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, elsewhere) = client(&core, elsewhere).await;
+        let answer = ask(&core, Some(&elsewhere), Request::AiRecommend).await;
+        assert_eq!(suggested_slots(&answer), [AiSlot::Chat], "another account only: {answer:?}");
+
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.mail_accounts = Selection::Only(vec![anna]);
+        let (_, reading) = client(&core, reading).await;
+        assert_eq!(suggested_slots(&ask(&core, Some(&reading), Request::AiRecommend).await), both);
     }
 
     /// An Ollama with a deciding model here (`nimble`) and one that decides elsewhere

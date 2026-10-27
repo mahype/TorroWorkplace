@@ -21,7 +21,6 @@ use torro_core::ai::hardware::{Gpu, Hardware};
 
 /// Measures this computer. The core holds one as `Box<dyn Probe>` ([`SystemProbe`] in the
 /// service, a fixed value in tests), measures once per run and keeps the result (task MW.6).
-#[allow(dead_code, reason = "held by the core for ai.recommend, task MW.6")]
 pub trait Probe: Send + Sync {
     /// What this computer offers a local model.
     ///
@@ -34,7 +33,6 @@ pub trait Probe: Send + Sync {
 }
 
 /// The real computer: `sysinfo` for processor and memory, the system's own ways for the card.
-#[allow(dead_code, reason = "held by the core for ai.recommend, task MW.6")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemProbe;
 

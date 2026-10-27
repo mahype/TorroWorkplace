@@ -211,7 +211,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   Ollama mit Cloud-Konto, RTX 12 GB/64 GB mit Ollama, Mac 64 GB) geben den erwarteten Vorschlag.
 
 ### MW.6 `ai.recommend` im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MW.2, MW.4, MW.5 · **Dateien:** `crates/torroworkplace/src/core.rs`,
   `crates/torroworkplace/src/account/ai.rs`
 - `Core` hält einen `Box<dyn Probe>` (Tests: fester Wert) und das Ergebnis der ersten Messung. `AiRecommend`:

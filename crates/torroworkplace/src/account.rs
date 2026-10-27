@@ -56,7 +56,10 @@ use self::github::TokenStore;
 pub mod ai;
 pub mod hardware;
 pub mod ntfy;
-#[allow(dead_code, reason = "read by ai.recommend and ai.pull_model, tasks MW.6 and MW.7")]
+#[allow(
+    dead_code,
+    reason = "List::ollama_model is read by ai.pull_model (task MW.7); List::tiers, local and cloud only by tests yet"
+)]
 pub mod recommend;
 pub mod torromail;
 
