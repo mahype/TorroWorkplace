@@ -2383,6 +2383,7 @@ mod tests {
 
     #[test]
     fn theme_follows_the_stored_appearance() {
+        let _switching = switching();
         let mut ui = ui(Section::Overview);
         let _ = ui.update(Message::SystemMode(Mode::Light));
         assert_eq!(ui.theme(), theme::light(), "System follows the desktop");
@@ -2393,15 +2394,23 @@ mod tests {
         assert_eq!(ui.theme(), theme::light(), "an explicit choice ignores the desktop");
     }
 
+    /// Held by every test that can switch the process's appearance – a reload without an error, a
+    /// choice, a sample of the demo. `Follow::new` holds the appearance active when the window is built,
+    /// and a reload beside it switches back to that, so a test that checks what was drawn would see
+    /// another test's colours (issue #318).
+    static SWITCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes `SWITCHING`; a test that failed while holding it leaves nothing to clean up.
+    fn switching() -> std::sync::MutexGuard<'static, ()> {
+        SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The design pack comes with the settings (task L.3): the window draws with it from the next
     /// frame, a broken one gives the standard, an unreachable core changes nothing, and `--design`
     /// of the demo wins.
-    /// Held by the tests that switch the process's design, so they do not see each other's.
-    static SWITCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn the_stored_design_is_drawn_and_the_demo_parameter_wins() {
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         let dir = tempfile::tempdir().expect("temp dir");
         // The standard's values under another id, so the tests beside this one see the same tokens.
         for (id, toml) in [
@@ -2437,7 +2446,7 @@ mod tests {
     #[test]
     fn the_design_state_lists_the_demo_parts() {
         // `--design` and `--font` below set what the process draws with.
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         let demo = started(&["--demo", "--open", "design"]);
         assert_eq!(demo.section, Section::Appearance);
         let usable =
@@ -2523,7 +2532,7 @@ mod tests {
     /// left before the save does not switch back, a refusal does.
     #[test]
     fn a_chosen_design_is_drawn_at_once_and_saved() {
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         let dir = tempfile::tempdir().expect("temp dir");
         // The standard's values under an id of its own, so the tests beside this one see the same
         // tokens and no other test has loaded its fonts.
@@ -2566,7 +2575,7 @@ mod tests {
     /// before the save does not switch back. Only the font loads files.
     #[test]
     fn a_chosen_font_and_colour_scheme_are_drawn_at_once_and_saved() {
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         let root = tempfile::tempdir().expect("temp dir");
         // The standard's values under ids of their own, so the tests beside see the same tokens.
         let write = |folder: &str, id: &str, file: &str| {
@@ -2641,7 +2650,7 @@ mod tests {
     /// nothing.
     #[test]
     fn the_demo_draws_a_chosen_sample_and_saves_nothing() {
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         let mut demo = started(&["--demo", "--open", "design"]);
         demo.data.settings.design = "compact".into();
         let _ = demo.update(Message::General(general::Message::Choose(Part::Design, "torro".into())));
@@ -2665,7 +2674,7 @@ mod tests {
     /// that carries the design came – a reload from before the save does not count.
     #[test]
     fn a_chosen_design_is_saved_and_the_page_names_what_the_core_switched() {
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         for (part, key) in [
             (Part::Design, torro_ipc::SettingKey::Design),
             (Part::Font, torro_ipc::SettingKey::Font),
@@ -2702,7 +2711,7 @@ mod tests {
     /// plain-text mail; its font is missing, so the font stays – and the page says so.
     #[test]
     fn the_demo_switches_what_a_design_suggests() {
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         let demo = started(&["--demo", "--open", "design-switched"]);
         assert_eq!(demo.data.settings.design, "console");
         assert_eq!(demo.data.settings.mail_view, torro_core::settings::MailFormat::Text);
@@ -2715,6 +2724,7 @@ mod tests {
 
     #[test]
     fn an_unreachable_core_keeps_the_colours() {
+        let _switching = switching();
         let mut ui = ui(Section::Overview);
         let _ = ui.update(loaded(Appearance::Light, None));
         let _ = ui.update(loaded(Appearance::System, Some("core is not running")));
@@ -2733,6 +2743,7 @@ mod tests {
     /// else the section; the overview and General open it at its first step.
     #[test]
     fn the_setup_opens_from_an_app_only_while_it_is_not_done() {
+        let _switching = switching();
         let pending = started(&["--section", "accounts", "--setup-if-open", "--step", "calendar"]);
         assert!(pending.setup.is_none(), "without the demo it waits for the settings");
         let mut ui = pending;
@@ -2824,6 +2835,7 @@ mod tests {
 
     #[test]
     fn the_window_builds_in_every_class_and_state() {
+        let _switching = switching();
         let mut ui = ui(Section::Accounts);
         for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = ui.window(class);
@@ -3025,6 +3037,7 @@ mod tests {
     /// is asked for apart.
     #[test]
     fn the_install_dialog_and_a_server_s_page_open_as_demo_states() {
+        let _switching = switching();
         let form = started(&["--demo", "--open", "catalog-install"]);
         assert_eq!(form.section, Section::Connections);
         assert!(form.page_overlay().is_some() && matches!(form.cover(), Cover::Dialog));
@@ -3258,7 +3271,7 @@ mod tests {
     #[test]
     fn every_open_state_builds_in_every_class() {
         // `design-switched` chooses Console, which the whole process draws with.
-        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _switching = switching();
         for (name, _) in launch::Open::ALL {
             let ui = started(&["--demo", "--open", name]);
             for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
@@ -3305,6 +3318,7 @@ mod tests {
 
     #[test]
     fn the_demo_does_not_listen_to_a_clock_and_the_appearance_parameter_wins() {
+        let _switching = switching();
         let (demo, mut real) = (started(&["--demo"]), ui(Section::Overview));
         // Issue #206: the reload tick waits for the core's first answer, so a starting core shows no error.
         assert_eq!(demo.subscription().units(), real.subscription().units(), "no reload tick while waiting");
@@ -3324,6 +3338,7 @@ mod tests {
 
     #[test]
     fn the_general_zoom_buttons_zoom_this_window_and_the_page_shows_it() {
+        let _switching = switching();
         use torro_gui::zoom::Step;
         let mut demo = started(&["--demo", "--section", "general"]);
         let _ = demo.update(Message::Resized(Size::new(1440.0, 900.0)));
