@@ -154,7 +154,7 @@ pub fn no_model_on(data: &Data) -> bool {
 /// while no default is set. Closed models too: General offers the models turned on (task S.26),
 /// and a closed model may be one of them.
 pub fn models_request(data: &Data) -> Option<Request> {
-    let default = data.settings.assistant_default.as_ref()?;
+    let default = data.settings.ai_slots.chat.as_ref()?;
     let engine = data.engines.iter().find(|engine| engine.id == default.engine)?;
     match engine.kind {
         EngineKind::Ai => Some(Request::AiModels { account: engine.id.clone(), all: true }),
@@ -525,7 +525,7 @@ mod tests {
         let agent = agent_engine();
         let mut on_agent = data.clone();
         on_agent.engines.push(agent.clone());
-        on_agent.settings.assistant_default =
+        on_agent.settings.ai_slots.chat =
             Some(AssistantDefault { engine: agent.id.clone(), model: None, effort: None });
         assert!(models_request(&on_agent).is_none());
     }

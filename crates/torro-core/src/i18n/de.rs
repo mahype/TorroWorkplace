@@ -4404,6 +4404,25 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Let {engine} ({model}) do “{function}”", "„{function}“ von {engine} ({model}) erledigen lassen"),
     ("Let no model do “{function}” any more", "„{function}“ von keinem Modell mehr erledigen lassen"),
     ("a model it picks", "einem Modell seiner Wahl"),
+    // The two slots of models (issue #325) and their approvals.
+    ("Chat", "Chat"),
+    ("Sorting", "Sortieren"),
+    ("Let no model be the model for {slot}", "Für {slot} kein Modell mehr nehmen"),
+    ("Let {engine} pick the model for {slot}", "{engine} das Modell für {slot} wählen lassen"),
+    (
+        "Let an unknown model of {engine} be the model for {slot}",
+        "Ein unbekanntes Modell von {engine} für {slot} nehmen",
+    ),
+    (
+        "Let {engine} ({model}) be the model for {slot} (runs on this computer)",
+        "{engine} ({model}) für {slot} nehmen (rechnet auf diesem Rechner)",
+    ),
+    (
+        "Let {engine} ({model}) be the model for {slot} (runs elsewhere)",
+        "{engine} ({model}) für {slot} nehmen (rechnet anderswo)",
+    ),
+    ("Download {model} ({size}) to {engine}", "{model} ({size}) in {engine} herunterladen"),
+    ("Download {model} to {engine}", "{model} in {engine} herunterladen"),
     // Settings › Categorization of the mail window (E12.10).
     ("Categorization", "Kategorisierung"),
     ("Sort mail into categories", "E-Mails in Kategorien einordnen"),

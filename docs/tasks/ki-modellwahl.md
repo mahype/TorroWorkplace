@@ -54,7 +54,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
 ## Aufgaben
 
 ### MW.1 Gerüst: Typen, Einstellungen, Requests, Katalog, MCP
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Schnittstellen über vier Crates, Übernahme alter Werte) · **Braucht:** – · **Dateien:**
   `crates/torro-core/src/ai/{mod,hardware}.rs`, `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{core,mcp,approvals,settings_service}.rs`, Leser von `assistant_default`

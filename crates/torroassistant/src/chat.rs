@@ -206,7 +206,7 @@ pub fn default_choice<'a>(
 }
 
 /// What answers before the person picks, with its effort (issue #131): the default set in the
-/// control centre (`default`, `settings.assistant_default`) while its engine is offered, else
+/// control centre (`default`, `settings.ai_slots.chat`) while its engine is offered, else
 /// [`default_choice`] with the effort of the newest conversation that engine answered in.
 pub fn preferred_choice<'a>(
     default: Option<&AssistantDefault>,

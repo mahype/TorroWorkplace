@@ -3793,6 +3793,22 @@ impl Core {
                     ..Facts::default()
                 }
             }
+            // A slot (issue #325) like a switch of a model: the account by its label, the model by its
+            // name and where it computes as the account's list in the core says.
+            Request::SetAiSlot { engine: Some(engine), model, .. } => {
+                let known = match model {
+                    Some(model) => self.ai.described(engine, model).await,
+                    None => None,
+                };
+                Facts {
+                    name: self.ai.label_of(engine).await,
+                    model: known.map(|(name, here)| crate::approvals::KnownModel { name, here }),
+                    ..Facts::default()
+                }
+            }
+            // A download by the account's label; its size comes from the recommendation list once
+            // downloads are in place (task MW.7), never from the client.
+            Request::PullAiModel { account, .. } => Facts { name: self.ai.label_of(account).await, ..Facts::default() },
             // The account by its label (its server), the topic by the label the account keeps for it,
             // never by its name (task E5.12).
             Request::SetNtfyTopic { account, topic, .. } => {
@@ -4775,6 +4791,15 @@ impl Core {
                 let wanted = torro_core::ai::AiAssignment { function, engine, model, effort, enabled };
                 Box::pin(self.set_ai_assignment(wanted)).await
             }
+            // The scaffold of issue #325 (task MW.1): the slots are set from MW.2 on, recommended
+            // from MW.6 and downloaded from MW.7; until then each says it is not there yet.
+            Request::SetAiSlot { .. }
+            | Request::AiRecommend
+            | Request::PullAiModel { .. }
+            | Request::AiPulls
+            | Request::CancelAiPull { .. } => {
+                Response::Error { code: "unsupported".into(), message: tr("This command is not supported.").into() }
+            }
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
@@ -5160,9 +5185,20 @@ impl Core {
     }
 
     /// `ai.list_assignments` (task E12.5): every function of the suite, with what it uses and the
-    /// words a person reads for it. Functions nobody set up come with empty fields.
+    /// words a person reads for it. Functions nobody set up come with empty fields. With both slots
+    /// (issue #325): the model of each and whether mail may go elsewhere for it.
     async fn ai_assignments(&self) -> Response {
-        let stored = self.settings.current().ai_assignments;
+        let settings = self.settings.current();
+        let slots = torro_core::ai::AiSlot::ALL
+            .into_iter()
+            .map(|slot| torro_ipc::AiSlotInfo {
+                slot,
+                label: slot.label().to_string(),
+                chosen: settings.ai_slots.get(slot).cloned(),
+                mail_to_cloud: settings.mail_to_cloud_in(slot),
+            })
+            .collect();
+        let stored = settings.ai_assignments;
         let assignments = torro_core::ai::AiFunction::ALL
             .into_iter()
             .map(|function| torro_ipc::AiAssignmentInfo {
@@ -5174,7 +5210,7 @@ impl Core {
                 needs_decision: function.needs_decision(),
             })
             .collect();
-        Response::AiAssignments { assignments }
+        Response::AiAssignments { assignments, slots }
     }
 
     /// `ai.set_assignment` (task E12.5). Checked before anything is stored: the account exists,
@@ -6464,7 +6500,7 @@ impl Core {
             text: self.text_for_ai(&entry, reach).await,
             lists: crate::suggest::offered_lists(lists),
         };
-        let mut default = self.settings.current().assistant_default;
+        let mut default = self.settings.current().ai_slots.chat;
         if let Some(held) = default.as_mut()
             && let Some(model) = held.model.as_deref()
         {
@@ -8718,7 +8754,7 @@ impl Core {
         let chat = Automatic { chat: true, ..Automatic::default() };
         let (mut used, mut automatic) = (Vec::new(), Vec::new());
         let settings = self.settings.current();
-        if let Some(default) = settings.assistant_default {
+        if let Some(default) = settings.ai_slots.chat {
             match default.model {
                 Some(model) => used.push((default.engine, model)),
                 None => automatic.push((default.engine, chat)),
@@ -22492,6 +22528,46 @@ mod tests {
         Request::SetModelEnabled { account: account.into(), model: model.into(), enabled: true }
     }
 
+    /// Issue #325 (task MW.1): `ai.list_assignments` names both slots with their model and their
+    /// mail permission – the old key `assistant_default` writes the slot Chat – and the commands
+    /// still to come answer `unsupported`.
+    #[tokio::test]
+    async fn the_slots_are_listed_and_the_new_commands_wait_for_their_tasks() {
+        use torro_core::ai::AiSlot;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let default = serde_json::json!({"engine": "ai:ollama@localhost:11434", "model": "qwen3:8b"});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(core.handle(set).await, Response::Ok);
+        let cloud = Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::json!(true) };
+        assert_eq!(core.handle(cloud).await, Response::Ok);
+        let Response::AiAssignments { slots, .. } = core.handle(Request::AiAssignments).await else {
+            panic!("assignments")
+        };
+        let listed: Vec<_> = slots.iter().map(|info| (info.slot, info.label.as_str(), info.mail_to_cloud)).collect();
+        assert_eq!(
+            listed,
+            [(AiSlot::Chat, AiSlot::Chat.label(), true), (AiSlot::Decide, AiSlot::Decide.label(), false)]
+        );
+        let chat = slots[0].chosen.as_ref().expect("the old key wrote the chat");
+        assert_eq!((chat.engine.as_str(), chat.model.as_deref()), ("ai:ollama@localhost:11434", Some("qwen3:8b")));
+        assert_eq!(slots[1].chosen, None);
+
+        for request in [
+            Request::SetAiSlot { slot: AiSlot::Chat, engine: None, model: None, effort: None },
+            Request::AiRecommend,
+            Request::PullAiModel { account: "ai:ollama@localhost:11434".into(), model: "qwen3:14b".into() },
+            Request::AiPulls,
+            Request::CancelAiPull { id: "p1".into() },
+        ] {
+            let answer = core.handle(request.clone()).await;
+            assert!(
+                matches!(&answer, Response::Error { code, .. } if code == "unsupported"),
+                "{request:?}: {answer:?}"
+            );
+        }
+    }
+
     /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and
     /// while `mail_to_cloud` is off no model that runs elsewhere is taken – so no agent can route
     /// mail past the data rule.
@@ -22512,7 +22588,7 @@ mod tests {
         let engine = account.id;
 
         // Nothing is assigned at first, and the list is still whole.
-        let Response::AiAssignments { assignments } = core.handle(Request::AiAssignments).await else {
+        let Response::AiAssignments { assignments, .. } = core.handle(Request::AiAssignments).await else {
             panic!("assignments")
         };
         assert_eq!(assignments.len(), AiFunction::ALL.len());
@@ -22543,7 +22619,7 @@ mod tests {
         assert_eq!(code(&core.handle(unknown).await), "not-found");
 
         // The decision model here is on by the rule (#231) and taken, and the list says so.
-        let Response::AiAssignments { assignments } = core.handle(set(Some("nimble"))).await else {
+        let Response::AiAssignments { assignments, .. } = core.handle(set(Some("nimble"))).await else {
             panic!("assignments")
         };
         let held = &assignments[0].assignment;
@@ -22561,7 +22637,7 @@ mod tests {
             effort: None,
             enabled: false,
         };
-        let Response::AiAssignments { assignments } = core.handle(back).await else { panic!("assignments") };
+        let Response::AiAssignments { assignments, .. } = core.handle(back).await else { panic!("assignments") };
         assert!(!assignments[0].assignment.is_ready());
         assert_eq!(assignments[0].assignment.engine, None);
     }

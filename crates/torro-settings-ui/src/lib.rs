@@ -210,7 +210,7 @@ impl Data {
                 self.decider_models.retain(|(held, _)| *held != account);
                 self.decider_models.extend(models.into_iter().map(|model| (account.clone(), model)));
             }
-            Response::AiAssignments { assignments } => self.assignments = assignments,
+            Response::AiAssignments { assignments, .. } => self.assignments = assignments,
             Response::Categorization { categorization } => self.categorization = categorization,
             Response::CategoryJob { job } => self.category_job = job,
             Response::CategoryJobPreview { preview } => self.category_job_preview = Some(preview),

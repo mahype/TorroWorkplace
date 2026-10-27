@@ -129,11 +129,14 @@ impl Demo {
             appearance: Appearance::Dark,
             // An AI account with one of its models: the load's second round then really asks
             // `ai.list_models`, and the Model and Effort groups of General have rows to show.
-            assistant_default: Some(AssistantDefault {
-                engine: "ai:ollama@localhost:11434".into(),
-                model: Some("qwen3:8b".into()),
-                effort: None,
-            }),
+            ai_slots: torro_core::ai::AiSlots {
+                chat: Some(AssistantDefault {
+                    engine: "ai:ollama@localhost:11434".into(),
+                    model: Some("qwen3:8b".into()),
+                    effort: None,
+                }),
+                decide: None,
+            },
             // So "Calendars" (task S.19) shows a hidden calendar too, with its switch off.
             hidden_collections: vec![SHARED_CALENDAR.into()],
             reminders,
@@ -894,7 +897,7 @@ impl Backend for Demo {
             Request::ListExtensions => Response::Extensions { extensions: self.extensions() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
-            Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
+            Request::AiAssignments => Response::AiAssignments { assignments: self.assignments(), slots: Vec::new() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
             Request::PreviewClearCategories => Response::CategoryClearPreview {
                 preview: CategoryClearPreview {

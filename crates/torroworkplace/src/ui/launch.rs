@@ -1058,11 +1058,14 @@ pub fn demo_data() -> Data {
             start_at_login: true,
             hidden_collections,
             // Issue #131: new chats start with a model of the connected AI account, thinking hard.
-            assistant_default: Some(torro_core::settings::AssistantDefault {
-                engine: "ai:openrouter@openrouter.ai".into(),
-                model: Some("qwen/qwen3-32b".into()),
-                effort: Some(torro_core::ai::Effort::High),
-            }),
+            ai_slots: torro_core::ai::AiSlots {
+                chat: Some(torro_core::ai::SlotModel {
+                    engine: "ai:openrouter@openrouter.ai".into(),
+                    model: Some("qwen/qwen3-32b".into()),
+                    effort: Some(torro_core::ai::Effort::High),
+                }),
+                decide: None,
+            },
             ..Settings::default()
         },
         apps: Some(apps),

@@ -95,7 +95,8 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
     // everyone who had Claude Code there into this state; a removed AI account does the same.
     let current = data
         .settings
-        .assistant_default
+        .ai_slots
+        .chat
         .as_ref()
         .filter(|default| data.engines.iter().any(|engine| engine.id == default.engine));
     let footer = tr("What a new chat starts with. Each chat can pick another.");
@@ -260,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn the_default_of_new_chats_is_stored_whole() {
         let mut data = data().await;
-        let stored = data.settings.assistant_default.clone().expect("the demo sets one");
+        let stored = data.settings.ai_slots.chat.clone().expect("the demo sets one");
         let other = AssistantDefault { model: None, ..stored.clone() };
         assert_eq!(
             sent(update(Message::Default(Some(other.clone())), &data)),
@@ -294,7 +295,7 @@ mod tests {
         assert!(!takes_effort(&quick, &data), "Haiku takes no effort");
 
         for default in [stored, on_agent, quick, closed] {
-            data.settings.assistant_default = Some(default);
+            data.settings.ai_slots.chat = Some(default);
             let _ = view(&data);
         }
         assert_eq!(effort_label(Some(Effort::Medium)), tr("Medium"));
@@ -316,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn new_chats_offer_only_models_that_are_on() {
         let mut data = data().await;
-        let stored = data.settings.assistant_default.clone().expect("the demo sets one");
+        let stored = data.settings.ai_slots.chat.clone().expect("the demo sets one");
         assert!(data.default_models.iter().any(|model| model.id == "llama3.3:70b" && !model.enabled));
         let ids: Vec<String> = default_models(&stored, &data).into_iter().map(|model| model.id).collect();
         assert_eq!(ids, ["qwen3:8b"], "llama3.3:70b is off, nimble cannot use tools");
@@ -329,14 +330,14 @@ mod tests {
         assert!(default_turned_off(&off, &data));
         let unknown = AssistantDefault { model: Some("gone:1b".into()), ..stored.clone() };
         assert!(default_turned_off(&unknown, &data), "a model the account no longer lists is not on either");
-        data.settings.assistant_default = Some(off);
+        data.settings.ai_slots.chat = Some(off);
         let _ = view(&data);
         let action = update(Message::ManageAi, &data);
         assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "Manage models…");
 
         // Nothing known about the account's models yet: no claim that the model is off.
         let unknown_list = Data { default_models: Vec::new(), ..data.clone() };
-        assert!(!default_turned_off(data.settings.assistant_default.as_ref().expect("set"), &unknown_list));
+        assert!(!default_turned_off(data.settings.ai_slots.chat.as_ref().expect("set"), &unknown_list));
     }
 
     /// Task S.26: AI accounts but no model on at any – the core lists no engine – reads "No model

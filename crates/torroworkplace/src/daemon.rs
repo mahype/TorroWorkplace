@@ -791,6 +791,14 @@ fn describe(request: &Request) -> String {
             Some(engine) => format!("use {engine} for {}", function.key()),
             None => format!("use no model for {}", function.key()),
         },
+        Request::SetAiSlot { slot, engine, .. } => match engine {
+            Some(engine) => format!("use {engine} for the slot {}", slot.key()),
+            None => format!("use no model for the slot {}", slot.key()),
+        },
+        Request::AiRecommend => "recommend ai models".into(),
+        Request::PullAiModel { account, model } => format!("download {model} to {account}"),
+        Request::AiPulls => "list model downloads".into(),
+        Request::CancelAiPull { id } => format!("cancel the download {id}"),
         Request::ListCategories { .. } => "list categories".into(),
         Request::SetItemCategory { id, remember, .. } => {
             format!("file {id}{}", if *remember { " and remember" } else { "" })

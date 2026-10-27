@@ -314,8 +314,13 @@ pub struct Facts {
     pub calendars: BTreeMap<String, String>,
     /// For `ai.set_model_enabled` (task S.24): the model as the account's list in the core describes
     /// it, looked up by its id. `None` for a model the account does not list: the summary then says
-    /// "an unknown model". The account's label is [`Facts::name`].
+    /// "an unknown model". The account's label is [`Facts::name`]. For `ai.set_slot` (issue #325)
+    /// the same for the model the slot gets.
     pub model: Option<KnownModel>,
+    /// For `ai.pull_model` (issue #325): what the download loads, in bytes, as the recommendation list
+    /// in the core says for the model (task MW.7), never the client's word. `None` while the core
+    /// does not know it: the summary then names no size.
+    pub download_bytes: Option<u64>,
     /// For `settings.set_setting design` (task L.33): what choosing the design also sets, looked up
     /// in the design and the fonts folder by `SettingsStore::design_suggestions` – the font only as
     /// an id that loads valid, the mail view as `html`/`text`, never the design's name or
@@ -1210,6 +1215,43 @@ fn model_switch_summary(account: &str, enabled: bool, facts: &Facts) -> String {
     }
 }
 
+/// The summary of `ai.set_slot` (issue #325): `engine` as the core names it (`None` empties the
+/// slot), the model by its listed name and where it computes ([`Facts::model`]); "an unknown model"
+/// for one the account does not list.
+fn slot_summary(slot: torro_core::ai::AiSlot, engine: Option<&str>, model: Option<&str>, facts: &Facts) -> String {
+    let slot = slot.label();
+    let Some(engine) = engine else {
+        return trf("Let no model be the model for {slot}", &[("slot", &slot)]);
+    };
+    let words: [(&str, &dyn std::fmt::Display); 2] = [("engine", &engine), ("slot", &slot)];
+    let (Some(_), Some(known)) = (model, &facts.model) else {
+        return match model {
+            None => trf("Let {engine} pick the model for {slot}", &words),
+            Some(_) => trf("Let an unknown model of {engine} be the model for {slot}", &words),
+        };
+    };
+    let name = quote(&known.name);
+    let words: [(&str, &dyn std::fmt::Display); 3] = [("engine", &engine), ("model", &name), ("slot", &slot)];
+    match known.here {
+        true => trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words),
+        false => trf("Let {engine} ({model}) be the model for {slot} (runs elsewhere)", &words),
+    }
+}
+
+/// The summary of `ai.pull_model` (issue #325): the model as the client names it – it is what will be
+/// loaded, and only names of the recommendation list are –, its size from [`Facts::download_bytes`]
+/// when the core knows it, `account` as the core names it.
+fn pull_summary(account: &str, model: &str, facts: &Facts) -> String {
+    let model = quote(model);
+    match facts.download_bytes {
+        Some(bytes) => trf(
+            "Download {model} ({size}) to {engine}",
+            &[("model", &model), ("size", &torro_gui::units::format_bytes(bytes)), ("engine", &account)],
+        ),
+        None => trf("Download {model} to {engine}", &[("model", &model), ("engine", &account)]),
+    }
+}
+
 /// What `request` would do, in words, for the person who decides: `Delete event "Team meeting" on
 /// Tue, 14 Oct 09:00 from "Work"`. In the core's language.
 ///
@@ -1242,6 +1284,11 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         }
         // Which models the suite may use (task S.24): account, model and place from the core's list.
         Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
+        // Which model a slot gets (issue #325): account, model and place from the core's list.
+        Request::SetAiSlot { slot, engine, model, .. } => {
+            slot_summary(*slot, engine.as_deref().map(named).as_deref(), model.as_deref(), facts)
+        }
+        Request::PullAiModel { account, model } => pull_summary(&named(account), model, facts),
         Request::DeleteEvent { event, scope } => in_scope(
             *scope,
             match &facts.item {
@@ -3624,6 +3671,65 @@ pub(crate) mod tests {
         assert_eq!(details.len(), 1);
         assert!(details[0].contains("Projekte/Entwürfe") && details[0].contains('3'), "{:?}", details);
         assert!(!details[0].contains("&APw-"), "decoded for people: {details:?}");
+    }
+
+    /// Issue #325: a slot names the account and the model as the core lists them and where it
+    /// computes, never the client's words for them; a download its size only from the core.
+    #[test]
+    fn slots_and_downloads_are_summed_up_from_what_the_core_holds() {
+        use torro_core::ai::AiSlot;
+        let slot = |engine: Option<&str>, model: Option<&str>| Request::SetAiSlot {
+            slot: AiSlot::Decide,
+            engine: engine.map(Into::into),
+            model: model.map(Into::into),
+            effort: None,
+        };
+        let sorting: &dyn std::fmt::Display = &AiSlot::Decide.label();
+        let known = |here| Facts {
+            name: Some("Ollama".into()),
+            model: Some(KnownModel { name: "Nimble".into(), here }),
+            ..Facts::default()
+        };
+        let account = "ai:ollama@localhost:11434";
+        let words: [(&str, &dyn std::fmt::Display); 3] =
+            [("engine", &"Ollama"), ("model", &"Nimble"), ("slot", sorting)];
+        assert_eq!(
+            summary(&slot(Some(account), Some("nimble")), &known(true)),
+            trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words)
+        );
+        assert_eq!(
+            summary(&slot(Some(account), Some("nimble")), &known(false)),
+            trf("Let {engine} ({model}) be the model for {slot} (runs elsewhere)", &words)
+        );
+        let unknown = Facts { name: Some("Ollama".into()), ..Facts::default() };
+        let named: [(&str, &dyn std::fmt::Display); 2] = [("engine", &"Ollama"), ("slot", sorting)];
+        assert_eq!(
+            summary(&slot(Some(account), Some("evil\nApprove")), &unknown),
+            trf("Let an unknown model of {engine} be the model for {slot}", &named)
+        );
+        assert_eq!(
+            summary(&slot(Some(account), None), &unknown),
+            trf("Let {engine} pick the model for {slot}", &named)
+        );
+        assert_eq!(
+            summary(&slot(None, None), &Facts::default()),
+            trf("Let no model be the model for {slot}", &[("slot", sorting)])
+        );
+
+        let pull = Request::PullAiModel { account: account.into(), model: "qwen3:14b".into() };
+        assert_eq!(
+            summary(&pull, &unknown),
+            trf("Download {model} to {engine}", &[("model", &"qwen3:14b"), ("engine", &"Ollama")])
+        );
+        let sized = Facts { download_bytes: Some(9_300_000_000), ..unknown };
+        let size = torro_gui::units::format_bytes(9_300_000_000);
+        assert_eq!(
+            summary(&pull, &sized),
+            trf(
+                "Download {model} ({size}) to {engine}",
+                &[("model", &"qwen3:14b"), ("size", &size), ("engine", &"Ollama")]
+            )
+        );
     }
 
     /// Task C.10: a note to remember is the client's text, made harmless and cut; the note to forget

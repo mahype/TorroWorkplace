@@ -20,6 +20,7 @@
 //! server's words that could repeat it ([`openai::error_of`]).
 
 pub mod anthropic;
+pub mod hardware;
 pub mod openai;
 pub mod responses;
 pub mod strata;
@@ -495,6 +496,132 @@ impl AiFunction {
     pub fn reads_mail(self) -> bool {
         matches!(self, AiFunction::InboxCategorize)
     }
+
+    /// The slot whose model the function takes while it has no assignment of its own (issue #325):
+    /// sorting mail is a decision ([`AiSlot::Decide`]).
+    pub fn slot(self) -> AiSlot {
+        match self {
+            AiFunction::InboxCategorize => AiSlot::Decide,
+        }
+    }
+}
+
+/// One of the two places a model is chosen for (issue #325, `docs/tasks/ki-modellwahl.md`): instead
+/// of a model per function, the person picks one for chatting and one for the suite's small
+/// decisions. A function takes the model of its slot ([`AiFunction::slot`]) unless it has an
+/// assignment of its own ([`AiAssignment`], the exception). Each slot has its own permission for
+/// mail to leave this computer ([`crate::settings::Settings::mail_to_cloud_in`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AiSlot {
+    /// `"chat"`: the assistant and its bots; a new chat starts with its model. Its mail permission
+    /// is `mail_to_cloud`.
+    Chat,
+    /// `"decide"`: the suite's small decisions, sorting mail into categories first. Its mail
+    /// permission is `decide_mail_to_cloud`.
+    Decide,
+}
+
+impl AiSlot {
+    /// Both slots, in the order the control centre shows them.
+    pub const ALL: [AiSlot; 2] = [AiSlot::Chat, AiSlot::Decide];
+
+    /// How the slot is written on the wire and in the settings file: `chat`, `decide` (the serde
+    /// name).
+    pub fn key(self) -> &'static str {
+        match self {
+            AiSlot::Chat => "chat",
+            AiSlot::Decide => "decide",
+        }
+    }
+
+    /// What a person reads for the slot, in the suite's language: "Chat", "Sorting".
+    pub fn label(self) -> &'static str {
+        match self {
+            AiSlot::Chat => tr("Chat"),
+            AiSlot::Decide => tr("Sorting"),
+        }
+    }
+}
+
+/// The model chosen for a slot (issue #325), and what a new chat of the assistant starts with
+/// (issue #131, `settings.set_setting assistant_default`, the slot [`AiSlot::Chat`]):
+/// `{"engine": "ai:ollama@localhost:11434", "model": "qwen3:8b", "effort": "high"}`. The chat
+/// window takes it while the engine is offered (`assistant.list_engines`) and otherwise falls back
+/// to the one used last; the person can still pick another per message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SlotModel {
+    /// The engine's id: an AI account (`ai:…` from `accounts.list_accounts`) or, for the chat, any
+    /// engine from `assistant.list_engines`.
+    pub engine: String,
+    /// The model of that engine; `None` lets the engine pick one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How hard the model thinks; `None` leaves it to the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
+}
+
+impl SlotModel {
+    /// The longest engine or model id it takes, as `assistant.send_message` does.
+    pub const MAX_ID_BYTES: usize = 300;
+
+    /// The model in `value`, `None` for `null`, or why it does not fit: an object with a non-blank
+    /// `engine`, ids of at most [`SlotModel::MAX_ID_BYTES`] on one line, an effort of [`Effort`].
+    /// For `settings.set_setting` and the settings file.
+    pub fn from_value(value: &serde_json::Value) -> Result<Option<SlotModel>, String> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let chosen: SlotModel = serde_json::from_value(value.clone()).map_err(|err| {
+            format!("{value} is not a model to start with: send engine, model and effort, or null ({err})")
+        })?;
+        let fits = |id: &str| !id.trim().is_empty() && id.len() <= Self::MAX_ID_BYTES && !id.contains(['\n', '\r']);
+        if !fits(&chosen.engine) || chosen.model.as_deref().is_some_and(|model| !fits(model)) {
+            return Err(format!("an engine or model id is one line of 1 to {} bytes", Self::MAX_ID_BYTES));
+        }
+        Ok(Some(chosen))
+    }
+
+    /// The model as `settings.set_setting` takes it; `null` for none.
+    pub fn to_value(chosen: Option<&SlotModel>) -> serde_json::Value {
+        chosen.and_then(|chosen| serde_json::to_value(chosen).ok()).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// The model of each slot (issue #325, `settings` › `aiSlots`): `{"chat": {…}, "decide": {…}}`, a
+/// slot left out has none. Each slot is read leniently ([`SlotModel::from_value`]): one that does
+/// not read is empty and never costs the other or the settings file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AiSlots {
+    /// The slot `chat`: what a new chat of the assistant starts with.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_slot")]
+    pub chat: Option<SlotModel>,
+    /// The slot `decide`: what sorts mail unless `inbox.categorize` has an assignment of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_slot")]
+    pub decide: Option<SlotModel>,
+}
+
+impl AiSlots {
+    /// The model of `slot`; `None` when none is chosen.
+    pub fn get(&self, slot: AiSlot) -> Option<&SlotModel> {
+        match slot {
+            AiSlot::Chat => self.chat.as_ref(),
+            AiSlot::Decide => self.decide.as_ref(),
+        }
+    }
+
+    /// No slot has a model: the settings file leaves `aiSlots` out then.
+    pub fn is_empty(&self) -> bool {
+        self.chat.is_none() && self.decide.is_none()
+    }
+}
+
+/// A slot's model as written, or `None` when it does not read ([`SlotModel::from_value`]): a
+/// damaged value must not cost the other settings.
+pub(crate) fn lenient_slot<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<SlotModel>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(SlotModel::from_value(&value).ok().flatten())
 }
 
 /// Which account and model one [`AiFunction`] uses (task E12.5).
@@ -1013,6 +1140,26 @@ mod tests {
         assert_eq!(serde_json::from_str::<ModelSwitches>("{}").expect("empty"), ModelSwitches::default());
         switches.forget(account);
         assert!(switches.is_on(account, &local, true), "a removed account starts with the rule again");
+    }
+
+    /// Issue #325: each slot is written by its key, sorting mail takes the slot `decide`, and the
+    /// slots of a file read each on its own.
+    #[test]
+    fn slots_are_written_by_their_key_and_functions_name_theirs() {
+        for slot in AiSlot::ALL {
+            assert_eq!(serde_json::to_value(slot).expect("json"), serde_json::json!(slot.key()));
+        }
+        assert_eq!((AiSlot::Chat.label(), AiSlot::Decide.label()), (tr("Chat"), tr("Sorting")));
+        assert_eq!(AiFunction::InboxCategorize.slot(), AiSlot::Decide);
+        let slots: AiSlots =
+            serde_json::from_value(serde_json::json!({"chat": {"engine": ""}, "decide": {"engine": "ai:x"}}))
+                .expect("lenient");
+        assert_eq!(
+            (slots.get(AiSlot::Chat), slots.get(AiSlot::Decide).map(|chosen| chosen.engine.as_str())),
+            (None, Some("ai:x"))
+        );
+        assert!(!slots.is_empty() && AiSlots::default().is_empty());
+        assert_eq!(serde_json::to_value(AiSlots::default()).expect("json"), serde_json::json!({}));
     }
 
     #[test]

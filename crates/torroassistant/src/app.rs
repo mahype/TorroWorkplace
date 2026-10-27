@@ -490,7 +490,7 @@ pub struct App {
     /// `accounts.list_accounts` last said. With none as an engine, it tells "No model is turned on"
     /// from "No AI account yet".
     pub(crate) ai_accounts: bool,
-    /// What a new chat starts with, as set in the control centre (`settings.assistant_default`);
+    /// What a new chat starts with, as set in the control centre (`settings.ai_slots.chat`);
     /// `None`: the one used last.
     pub(crate) default: Option<AssistantDefault>,
     pub(crate) access: Access,
@@ -827,7 +827,7 @@ impl App {
                 self.choose_default();
             }
             Message::Settings(Ok(settings)) => {
-                self.default = settings.assistant_default;
+                self.default = settings.ai_slots.chat;
                 self.choose_default();
             }
             // An old core or none: new chats start with the one used last.

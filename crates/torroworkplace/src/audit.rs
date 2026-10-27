@@ -336,6 +336,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         // The function and the account are ids, not content; the model's name is the server's.
         Request::AiAssignments => Vec::new(),
         Request::SetAiAssignment { engine, .. } => engine.iter().map(|id| account(id)).collect(),
+        // The slots (issue #325) like the assignments; a download by its account and its id, never
+        // the model's name; the recommendation names nothing.
+        Request::SetAiSlot { slot, engine, .. } => {
+            [Some(id("slot", slot.key())), engine.as_deref().map(account)].into_iter().flatten().collect()
+        }
+        Request::AiRecommend | Request::AiPulls => Vec::new(),
+        Request::PullAiModel { account: name, .. } => vec![account(name)],
+        Request::CancelAiPull { id: pull } => vec![random("pull", pull)],
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
         }

@@ -1687,8 +1687,8 @@ pub enum Request {
     /// date when the text names one, and the fitting one of `lists` when given. Nothing is saved:
     /// the person checks the suggestion and makes the task with `inbox.create_task_from_item`.
     ///
-    /// The AI is the person's default of the assistant (`settings` › `assistant_default`, issue
-    /// #131) when that is an AI account, else the first AI account (`accounts.list_accounts`, kind
+    /// The AI is the person's default of the assistant (`settings` › `aiSlots.chat`, issues
+    /// #131, #325) when that is an AI account, else the first AI account (`accounts.list_accounts`, kind
     /// `ai`). The entry's title, text and sender go to it as data, never as instructions; for a
     /// mail entry the whole mail when the store holds or can fetch it. The data rule of the
     /// assistant holds (`docs/ki.md`, principle 4): an entry of mail, Nextcloud or Talk goes only to
@@ -1905,6 +1905,77 @@ pub enum Request {
         /// Switch the function on or off. Off leaves everything as it is and asks no model.
         #[serde(default)]
         enabled: bool,
+    },
+    /// Puts a model in one of the two slots (issue #325, `docs/tasks/ki-modellwahl.md`), or empties
+    /// the slot with `engine: null`; answered with [`Response::AiAssignments`] (the whole list, with
+    /// its `slots`). A function without an assignment of its own takes the model of its slot
+    /// (`chat`: the assistant and its bots, a new chat starts with it; `decide`: sorting mail).
+    ///
+    /// Checked like [`Request::SetAiAssignment`]: the account exists and offers the model, the model
+    /// is turned on, and for `decide` a model that can decide. Choosing a model elsewhere for
+    /// `decide` is the person's alone (`docs/api.md`, "Was nie nach außen geht", 6): every client
+    /// key gets `forbidden`, even while `decide_mail_to_cloud` is on, since that consent was given to
+    /// another provider. The same write sets `decide_mail_to_cloud` to whether the model runs
+    /// elsewhere.
+    ///
+    /// Error codes: `not-found` for an account that does not exist; `error` for a model the account
+    /// does not offer or one that cannot do what the slot needs; `unsupported` for a model that is
+    /// turned off (`ai.set_model_enabled`); `forbidden` as above.
+    #[serde(rename = "ai.set_slot")]
+    SetAiSlot {
+        /// The slot: `chat` or `decide`.
+        slot: torro_core::ai::AiSlot,
+        /// The AI account (`ai:…` from `accounts.list_accounts`); for `chat` also any engine from
+        /// `assistant.list_engines`. `null` empties the slot.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        engine: Option<String>,
+        /// The model of that account; `null` lets it pick one that fits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// How hard it thinks; a decision model ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<torro_core::ai::Effort>,
+    },
+    /// What Torro suggests for each slot on this computer (issue #325), answered with
+    /// [`Response::AiRecommendation`]: the computer as measured, the tier of models that fits it and
+    /// one suggestion per slot – local models first, a model to download with its size, a cloud
+    /// model only where no local one fits. A suggestion sets nothing; `ai.set_slot` and
+    /// `ai.pull_model` do. A slot `decide` is only suggested while mail the caller may read is
+    /// connected. Reads only, stores nothing.
+    ///
+    /// Error codes: `error` when it cannot be worked out.
+    #[serde(rename = "ai.recommend")]
+    AiRecommend,
+    /// Downloads the model `model` into the Ollama account `account` on this computer (issue #325),
+    /// in the background; answered at once with [`Response::AiPulls`], the download among them as
+    /// `running`. Only models the recommendation names as local Ollama models (`ai.recommend`, with
+    /// their size) – a free name could name another registry Ollama would load from. Follow it with
+    /// `ai.list_pulls`; once it is `done`, the account lists the model.
+    ///
+    /// Error codes: `not-found` for an account that does not exist; `unsupported` for an account that
+    /// is no Ollama on this computer and for a model the recommendation does not name; `busy` while the same model downloads to the same
+    /// account already; `offline` when Ollama does not answer.
+    #[serde(rename = "ai.pull_model")]
+    PullAiModel {
+        /// The Ollama account: `ai:ollama@localhost:11434` from `accounts.list_accounts`.
+        account: String,
+        /// The model as the recommendation names it (`qwen3:14b`).
+        model: String,
+    },
+    /// The downloads of models since the core started (issue #325), running and finished, answered
+    /// with [`Response::AiPulls`]: each with its account, model, state and progress in bytes. Without
+    /// a download since the start, an empty list.
+    #[serde(rename = "ai.list_pulls")]
+    AiPulls,
+    /// Cancels the running download `id` (issue #325, from `ai.list_pulls`); answered with
+    /// [`Response::AiPulls`], the download among them as `cancelled`. What Ollama loaded so far it
+    /// keeps for a later try. A download that already ended stays as it is.
+    ///
+    /// Error codes: `not-found` for an id the core does not know.
+    #[serde(rename = "ai.cancel_pull")]
+    CancelAiPull {
+        /// The download's id from `ai.list_pulls`.
+        id: String,
     },
     /// The catalogue of mail categories ([`Response::Categories`], task E12.4,
     /// `docs/kategorien.md`): every category with its group, the words for both, how much mail it
@@ -3531,9 +3602,12 @@ pub enum SettingKey {
     Voice,
     /// What a new chat of the assistant starts with (issue #131): `{"engine": "<id from
     /// assistant.list_engines>", "model": "<model id>", "effort": "low" | "medium" | "high"}`, model
-    /// and effort optional; `null` for the engine and model used last
-    /// (`torro_core::settings::AssistantDefault`). The engine is not checked here: an engine that is
-    /// not offered when a chat starts is passed over.
+    /// and effort optional; `null` for the engine and model used last (`torro_core::ai::SlotModel`).
+    /// It writes the slot `chat` (issue #325): an alias of `ai.set_slot` with the slot `chat`, kept
+    /// for older clients, without that command's checks – not even whether the model is turned on.
+    /// The engine is not checked here: an engine that is not offered when a chat starts is passed
+    /// over. That keeps the data rule: no function that reads mail takes the slot `chat`, and the
+    /// assistant and its bots check `mail_to_cloud` when they run.
     AssistantDefault,
     /// Where the first-run setup stands (task W.1, `docs/einrichtung.md`): `"pending"` (start it
     /// again), `"skipped"` (put off: the overview offers to continue) or `"done"` (finished).
@@ -3572,6 +3646,13 @@ pub enum SettingKey {
     /// außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights, so no agent
     /// can let mail out to itself. Any client allowed to change settings may send `false`.
     MailToCloud,
+    /// The data rule for the slot Sorting (issue #325, `ai.set_slot decide`): `false` keeps the mail
+    /// it sorts with models on the person's own computers; `true` lets it go to the model elsewhere
+    /// chosen for Sorting. `mail_to_cloud` stays the rule of the chat. Choosing a model for Sorting
+    /// sets it along. Only the app key may send `true` – a person in the control centre (point 6 of
+    /// "Was nie nach außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights.
+    /// Any client allowed to change settings may send `false`.
+    DecideMailToCloud,
     /// How reminders of events come (task ER1.2), as one object; it changes only the fields it
     /// names, and in `calendars` only the calendars it names (`torro_core::settings::Reminders`);
     /// a calendar the client does not see is `not-found`: `{"enabled": true, "defaultLead": 1 (minutes
@@ -3977,6 +4058,10 @@ pub enum Response {
     /// secret is in here – only ids.
     AiAssignments {
         assignments: Vec<crate::AiAssignmentInfo>,
+        /// Both slots with their model and their mail permission (issue #325, [`Request::SetAiSlot`]);
+        /// empty from a core before the slots.
+        #[serde(default)]
+        slots: Vec<crate::AiSlotInfo>,
     },
     /// The catalogue of mail categories ([`Request::ListCategories`]). The suite's own words, so
     /// nothing here is foreign text.
@@ -4244,6 +4329,15 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         account: String,
         models: Vec<AiModel>,
+    },
+    /// What Torro suggests for each slot on this computer ([`Request::AiRecommend`]).
+    AiRecommendation {
+        recommendation: crate::AiRecommendation,
+    },
+    /// The downloads of models since the core started ([`Request::PullAiModel`], [`Request::AiPulls`],
+    /// [`Request::CancelAiPull`]), oldest first.
+    AiPulls {
+        pulls: Vec<crate::AiPull>,
     },
     /// The AI servers found on this computer ([`Request::FindAiServers`]).
     AiServers {
@@ -4805,6 +4899,99 @@ pub struct AiAssignmentInfo {
     pub needs_decision: bool,
 }
 
+/// One slot with its model (`ai.list_assignments`, issue #325): the slot, the words a person reads
+/// for it, the model chosen and whether mail may go elsewhere for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiSlotInfo {
+    pub slot: torro_core::ai::AiSlot,
+    /// What a person reads for the slot, in the core's language: "Chat", "Sorting".
+    pub label: String,
+    /// The model chosen (`engine`, `model`, `effort` beside the other fields); `None` when the slot
+    /// is empty.
+    #[serde(flatten)]
+    pub chosen: Option<torro_core::ai::SlotModel>,
+    /// Mail may go to a model elsewhere for this slot: `mail_to_cloud` for `chat`,
+    /// `decide_mail_to_cloud` for `decide`.
+    pub mail_to_cloud: bool,
+}
+
+/// What Torro suggests on this computer ([`Request::AiRecommend`], issue #325). Only words and ids:
+/// nothing here is set until a person or a client sends `ai.set_slot` or `ai.pull_model`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiRecommendation {
+    /// The computer as measured; what could not be measured is left out.
+    pub hardware: torro_core::ai::hardware::Hardware,
+    /// The tier of models that fits the computer, by its id in the recommendation list (`large`).
+    pub tier: String,
+    /// What a person reads for the tier, in the core's language.
+    pub tier_label: String,
+    /// One suggestion per slot that has one, in the order of `torro_core::ai::AiSlot::ALL`.
+    pub slots: Vec<SlotSuggestion>,
+}
+
+/// The model suggested for one slot ([`AiRecommendation::slots`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotSuggestion {
+    pub slot: torro_core::ai::AiSlot,
+    /// The connected account it runs at (`ai:…`); `None` when none is connected yet – a local model
+    /// without Ollama, whose `reason` then says what is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The kind of server it runs on.
+    pub provider: AiProvider,
+    /// The model's id (`qwen3:14b`); `None` when the account picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// It runs on this computer.
+    pub local: bool,
+    /// Where it runs, in the core's language ("This computer", "Cloud · EU").
+    pub seat: String,
+    /// What a download would load, in bytes, while the account does not list the model yet; `None`
+    /// when nothing needs to be downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_bytes: Option<u64>,
+    /// For `decide`: the model is no decision model and sorts by answering in a fixed format.
+    #[serde(default)]
+    pub by_chat: bool,
+    /// Why this model, in the core's language, one short sentence.
+    pub reason: String,
+}
+
+/// One download of a model ([`Request::AiPulls`], issue #325).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiPull {
+    /// The download's id, for `ai.cancel_pull`.
+    pub id: String,
+    /// The Ollama account it loads into (`ai:…`).
+    pub account: String,
+    /// The model it loads.
+    pub model: String,
+    pub state: AiPullState,
+    /// Bytes loaded so far; `None` before Ollama says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<u64>,
+    /// Bytes in all; `None` before Ollama says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// Why it failed, in the core's language; never the server's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Where a download of a model stands ([`AiPull::state`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiPullState {
+    /// `"running"`: loading.
+    Running,
+    /// `"done"`: loaded; the account lists the model.
+    Done,
+    /// `"failed"`: stopped with `error`.
+    Failed,
+    /// `"cancelled"`: stopped by `ai.cancel_pull`.
+    Cancelled,
+}
+
 /// An AI server found on this computer ([`Request::FindAiServers`], task KI.1a).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiServer {
@@ -5354,6 +5541,42 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(json, r#"{"method":"workspaces.load_template","id":"dev","mode":"add"}"#);
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+    }
+
+    /// Issue #325: a slot carries its model beside its other fields, an empty one none, and an
+    /// answer of a core before the slots reads with no slots.
+    #[test]
+    fn slots_carry_their_model_flat_and_an_older_answer_has_none() {
+        use torro_core::ai::{AiSlot, SlotModel};
+        let chosen =
+            SlotModel { engine: "ai:ollama@localhost:11434".into(), model: Some("nimble".into()), effort: None };
+        let full =
+            AiSlotInfo { slot: AiSlot::Decide, label: "Sorting".into(), chosen: Some(chosen), mail_to_cloud: false };
+        let json = serde_json::to_value(&full).expect("json");
+        assert_eq!(
+            json,
+            serde_json::json!({"slot": "decide", "label": "Sorting", "engine": "ai:ollama@localhost:11434",
+                "model": "nimble", "mail_to_cloud": false})
+        );
+        assert_eq!(serde_json::from_value::<AiSlotInfo>(json).expect("back"), full);
+        let empty = AiSlotInfo { slot: AiSlot::Chat, label: "Chat".into(), chosen: None, mail_to_cloud: true };
+        let json = serde_json::to_value(&empty).expect("json");
+        assert_eq!(json, serde_json::json!({"slot": "chat", "label": "Chat", "mail_to_cloud": true}));
+        assert_eq!(serde_json::from_value::<AiSlotInfo>(json).expect("back"), empty);
+
+        let older: Response =
+            serde_json::from_str(r#"{"result": "ai-assignments", "assignments": []}"#).expect("reads");
+        assert_eq!(older, Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() });
+        let pulls: Response = serde_json::from_str(
+            r#"{"result": "ai-pulls", "pulls": [{"id": "p1", "account": "ai:ollama@localhost:11434",
+                "model": "qwen3:14b", "state": "running", "completed": 10, "total": 100}]}"#,
+        )
+        .expect("reads");
+        let Response::AiPulls { pulls } = pulls else { panic!("pulls") };
+        assert_eq!(
+            (pulls[0].state, pulls[0].completed, pulls[0].error.as_deref()),
+            (AiPullState::Running, Some(10), None)
+        );
     }
 
     #[test]
