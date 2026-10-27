@@ -588,7 +588,7 @@ fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 /// A server on this computer: looking, found with "Connect" (or "Connected"), or not running.
 fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Element<'a, Message> {
-    let tile = widgets::source_tile(TileFace::Icon(Icon::AppWindow), TileSize::Medium, None);
+    let tile = widgets::source_tile(TileFace::letter(provider.name()), TileSize::Medium, None);
     let Some(found) = &state.ai_found else {
         return setting_row(
             Some(tile),
@@ -608,6 +608,8 @@ fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Elem
     let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
     let host = rest.split('/').next().unwrap_or(rest);
     let detail = match server.models {
+        // Strata is found by its `/health`, with no model loaded it lists none.
+        0 if provider == AiProvider::Strata => trf("{host} · no model loaded", &[("host", &host)]),
         1 => trf("{host} · 1 model", &[("host", &host)]),
         n => trf("{host} · {n} models", &[("host", &host), ("n", &n)]),
     };

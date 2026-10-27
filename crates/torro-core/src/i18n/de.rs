@@ -3113,6 +3113,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("vLLM, llama.cpp or a server of your own", "vLLM, llama.cpp oder ein eigener Server"),
     ("{host} · 1 model", "{host} · 1 Modell"),
     ("{host} · {n} models", "{host} · {n} Modelle"),
+    ("{host} · no model loaded", "{host} · kein Modell geladen"),
+    (
+        "This server does not answer as Strata. Check the address.",
+        "Dieser Server meldet sich nicht als Strata. Prüfe die Adresse.",
+    ),
     ("{name} is ready to use.", "{name} ist bereit."),
     // Assistant (C.1)
     ("A test step: nothing ran", "Ein Testschritt: nichts ausgeführt"),

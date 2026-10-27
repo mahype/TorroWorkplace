@@ -1772,6 +1772,8 @@ fn local_ai_detail(server: &AiServer) -> String {
     let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
     let host = rest.split('/').next().unwrap_or(rest);
     match server.models {
+        // Strata is found by its `/health`, with no model loaded it lists none.
+        0 if server.provider == AiProvider::Strata => trf("{host} · no model loaded", &[("host", &host)]),
         1 => trf("{host} · 1 model", &[("host", &host)]),
         n => trf("{host} · {n} models", &[("host", &host), ("n", &n)]),
     }
@@ -3878,6 +3880,20 @@ mod tests {
         assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}");
         assert_eq!(state.step, Step::AiChoose);
         state
+    }
+
+    /// Issue #322: a Strata found with no model loaded says so; Ollama with none keeps the count.
+    #[test]
+    fn a_strata_without_a_model_says_no_model_is_loaded() {
+        let idle = |provider, url| AiServer { models: 0, ..ai_server(provider, url, None) };
+        assert_eq!(
+            local_ai_detail(&idle(AiProvider::Strata, "http://127.0.0.1:8080/v1")),
+            trf("{host} · no model loaded", &[("host", &"127.0.0.1:8080")])
+        );
+        assert_eq!(
+            local_ai_detail(&idle(AiProvider::Ollama, "http://localhost:11434/v1")),
+            trf("{host} · {n} models", &[("host", &"localhost:11434"), ("n", &0)])
+        );
     }
 
     #[test]

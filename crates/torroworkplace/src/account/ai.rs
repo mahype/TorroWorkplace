@@ -63,6 +63,10 @@ const READ_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long [`AiAccounts::find_local`] waits for each local server: one that runs answers at once.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The most of Strata's `/health` answer that is read (a real one is a few hundred bytes): the
+/// address is the person's to give, and an answer that never ends is no Strata.
+const HEALTH_MAX: usize = 64 * 1024;
+
 /// How long Ollama may take to describe one model (`/api/show`, read from disk) or to list where its
 /// models run (`/api/tags`); a model it does not describe in time stays without a word on tools, so
 /// one stuck model never holds up the list, and without the tags in time every model counts as
@@ -226,15 +230,31 @@ impl OpenAiCompatible {
         openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))
     }
 
+    /// Whether the server here is Strata: its `GET /health` says `strata` ([`strata::is_strata`]). The
+    /// request carries no key (`/health` is not behind it) and its answer is read up to
+    /// [`HEALTH_MAX`] only. Strata runs on the port llama.cpp uses and lists models the same way,
+    /// so the list cannot tell them apart.
+    async fn is_strata(&self) -> bool {
+        let Ok(mut response) = self.wire.send(self.wire.http.get(strata::health_url(&self.wire.base))).await else {
+            return false;
+        };
+        let mut body = Vec::new();
+        while let Ok(Some(chunk)) = response.chunk().await {
+            body.extend_from_slice(&chunk);
+            if body.len() > HEALTH_MAX {
+                return false;
+            }
+        }
+        strata::is_strata(&body)
+    }
+
     /// What [`AiAccounts::find_local`] asks of a server: how many models it lists, `None` when no
-    /// server of this provider answers. Strata runs on the port llama.cpp uses and lists models the
-    /// same way, so it is found by its `/health` (not behind the API key, [`strata::is_strata`]);
-    /// the list is only for the count, and a Strata with no model loaded or behind a key has none
-    /// to show but is still there.
+    /// server of this provider answers. Strata is found by [`OpenAiCompatible::is_strata`]; the
+    /// list is only for the count, and a Strata with no model loaded or behind a key has none to
+    /// show but is still there.
     async fn probe(&self) -> Option<usize> {
         if self.provider == AiProvider::Strata {
-            let health = self.wire.send(self.wire.http.get(strata::health_url(&self.wire.base))).await.ok()?;
-            if !strata::is_strata(&self.wire.body(health).await.ok()?) {
+            if !self.is_strata().await {
                 return None;
             }
             return Some(self.list().await.map_or(0, |models| models.len()));
@@ -938,6 +958,13 @@ impl AiAccounts {
             return Err(AiError::Invalid(
                 tr("An API key is only sent over https or to this computer. Use an https address.").into(),
             ));
+        }
+        // Strata's models count as computed on this computer (the data rule), so only a server that
+        // says it is Strata may be connected as one.
+        if provider == AiProvider::Strata
+            && !OpenAiCompatible::new(self.http()?.clone(), provider, &base, None).is_strata().await
+        {
+            return Err(AiError::Invalid(tr("This server does not answer as Strata. Check the address.").into()));
         }
         let client = AiClient::new(self.http()?.clone(), provider, &base, key.clone());
         client.check().await?;
@@ -2311,6 +2338,32 @@ pub(crate) mod tests {
         assert_eq!(on(&ai, &info.id).await, ["qwen3.8-flash-next"], "computes here, so on at the start");
         assert_eq!(ai.runs_elsewhere(&info.id, "qwen3.8-flash-next").await, Ok(false));
         assert_eq!(label(&Account::ai(AiProvider::Strata, "http://127.0.0.1:8080/v1")), "Strata");
+    }
+
+    /// Issue #322: only a server that says it is Strata can be connected as Strata – its models count as
+    /// computed here – and a `/health` that never ends says nothing.
+    #[tokio::test]
+    async fn only_a_server_that_answers_as_strata_is_connected_as_strata() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ai = service(dir.path(), &keys, Vec::new());
+        let (llama, strata) = (fake_llama_cpp().await, fake_strata(&["qwen"], None).await);
+        let flood = MockServer::start_async().await;
+        flood
+            .mock_async(|when, then| {
+                when.method("GET").path("/health");
+                let padding = " ".repeat(HEALTH_MAX + 1);
+                then.status(200).body(format!(r#"{{"service": "strata"{padding}}}"#));
+            })
+            .await;
+
+        for wrong in [llama.url("/v1"), flood.url("/v1"), NOBODY.to_string()] {
+            let refused = ai.connect(AiProvider::Strata, Some(&wrong), Secret::default()).await;
+            assert!(matches!(&refused, Err(AiError::Invalid(message)) if message.contains("Strata")), "{refused:?}");
+        }
+        assert!(ai.infos().await.is_empty(), "nothing stored for a server that is no Strata");
+        ai.connect(AiProvider::Strata, Some(&strata.url("/v1")), Secret::default()).await.expect("a Strata");
+        assert_eq!(ai.infos().await.len(), 1);
     }
 
     #[tokio::test]
