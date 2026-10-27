@@ -16967,6 +16967,35 @@ mod tests {
         }
     }
 
+    /// Review of PR #327 (decision 12 of E19): the rows of the mail window say "only if no reply" at a
+    /// follow-up with the condition; the hub, the App Feed and the notifications tell the time alone.
+    #[test]
+    fn only_the_mail_window_tells_only_if_no_reply() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Show(View::Snoozed));
+        load(&mut app);
+        let item = app.items.iter().find(|item| item.id == "demo-follow-p4").cloned().expect("the follow-up");
+        let State::Snoozed { until } = item.state else { panic!("snoozed") };
+        let time = list::wake_text(until, app.now);
+        let rows = app.rows_data(&detail::Anchors::default());
+        assert_eq!(
+            list::time_text_in(&item, rows.view, rows.now, rows.bare),
+            trf("until {time}, only if no reply", &[("time", &time)]),
+            "the mail window"
+        );
+        for kind in ["hub", "notifications"] {
+            let mut other = loaded(&["--view", kind]);
+            let _ = other.update(Message::Show(View::Snoozed));
+            load(&mut other);
+            let rows = other.rows_data(&detail::Anchors::default());
+            assert_eq!(
+                list::time_text_in(&item, rows.view, rows.now, rows.bare),
+                trf("until {time}", &[("time", &time)]),
+                "{kind}"
+            );
+        }
+    }
+
     /// Task E18.4: the start states of the mail window – no `--open`, `overview`, `info`, `done` and
     /// the mail entry states show All (those with the first mail of All in the reader), `archive` and
     /// `hidden` their view; the other windows stay on their overview.

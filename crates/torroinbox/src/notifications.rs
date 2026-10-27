@@ -505,7 +505,7 @@ pub fn meta_line(item: &Item, rows: &Rows<'_>, names: Names, known: &[SourceInfo
     if item.count > 1 {
         parts.push(trf("{n} reports", &[("n", &item.count)]));
     }
-    parts.push(list::time_text(item, rows.view, rows.now));
+    parts.push(list::time_text_in(item, rows.view, rows.now, rows.bare));
     parts.join(" · ")
 }
 
@@ -1271,7 +1271,7 @@ mod tests {
             folders: &[],
             bare: false,
         };
-        let time = list::time_text(backup, &view, now());
+        let time = list::time_text_in(backup, &view, now(), false);
         let reports = trf("{n} reports", &[("n", &3)]);
         let all = Names { source: true, lane: true };
         assert_eq!(meta_line(backup, &rows, all, &[]), format!("backup · {} · {reports} · {time}", tr("Info")));
@@ -1285,7 +1285,7 @@ mod tests {
         // Task E5.15: a service's card says what its traits say, an alert that it is urgent, and the
         // account where two of one service are listed.
         let review = items.iter().find(|item| item.id == "demo-14").expect("the review");
-        let time = list::time_text(review, &view, now());
+        let time = list::time_text_in(review, &view, now(), false);
         let said = format!("torro/workplace · {} · {time}", tr("Review requested"));
         assert_eq!(meta_line(review, &rows, in_column, &[]), said);
         let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false, health: None };
@@ -1293,7 +1293,7 @@ mod tests {
         assert_eq!(meta_line(review, &rows, all, &two), format!("GitHub · anna-berg · {said}"));
         assert_eq!(meta_line(review, &rows, all, &two[..1]), format!("GitHub · {said}"));
         let alert = items.iter().find(|item| item.id == "demo-18").expect("the alert");
-        let alert_time = list::time_text(alert, &view, now());
+        let alert_time = list::time_text_in(alert, &view, now(), false);
         let priority = trf("Priority {n}", &[("n", &5)]);
         assert_eq!(
             meta_line(alert, &rows, in_column, &[]),

@@ -1159,7 +1159,7 @@ fn card_meta(item: &Item, rows: &Rows<'_>) -> String {
     if item.count > 1 {
         parts.push(trf("{n} reports", &[("n", &item.count)]));
     }
-    parts.push(list::time_text(item, rows.view, rows.now));
+    parts.push(list::time_text_in(item, rows.view, rows.now, rows.bare));
     parts.join(" · ")
 }
 
@@ -1267,7 +1267,7 @@ fn sort_meta(item: &Item, rows: &Rows<'_>) -> String {
     if item.count > 1 {
         parts.push(trf("{n} reports", &[("n", &item.count)]));
     }
-    parts.push(list::time_text(item, rows.view, rows.now));
+    parts.push(list::time_text_in(item, rows.view, rows.now, rows.bare));
     parts.join(" · ")
 }
 
@@ -1755,7 +1755,7 @@ mod tests {
             bare: false,
         };
         let review = find(&items, "demo-14");
-        let time = list::time_text(&review, &view, now());
+        let time = list::time_text_in(&review, &view, now(), false);
         assert_eq!(
             sort_meta(&review, &rows),
             format!("GitHub · torro/workplace · {} · {time}", tr("Review requested"))
