@@ -2297,7 +2297,9 @@ mod tests {
         sync_account(&mailbox).await.expect("synced while the change is on its way");
         assert_eq!(all(&mailbox).await[0].flags, [Flag::Seen], "the change stays");
         assert_eq!(modseq(store.clone(), inbox.id.clone()).await, synced, "the folder is compared again next time");
-        assert!(changes.try_recv().map_or(true, |change| change.flags.is_empty()), "no flag change announced");
+        while let Ok(change) = changes.try_recv() {
+            assert!(change.flags.is_empty(), "no flag change announced: {change:?}");
+        }
 
         // The server has it now, the change is done: the next sync takes the server's flags over.
         server.set_flags("INBOX", uid, &["\\Seen"]);
@@ -2308,8 +2310,10 @@ mod tests {
         assert!(kept > synced, "kept again: {kept:?} after {synced:?}");
     }
 
-    /// Issue #318: a message moved into a folder after its sync read the store comes back among the
-    /// new headers; while a flag change of it is on its way, the store's flags stay.
+    /// Issue #318: the header phase of a sync keeps the store's flags of a message it finds stored
+    /// already (moved into the folder after the sync read it) while a flag change of it is on its
+    /// way. This checks that decision ([`flags_on_their_way`]); no sync runs here, because the
+    /// message would have to arrive in the store between two steps of one.
     #[tokio::test]
     async fn new_headers_keep_the_flags_on_their_way_to_the_server() {
         let dir = tempfile::tempdir().expect("temp dir");
