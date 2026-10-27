@@ -493,9 +493,9 @@ zurückgekommene nach dem Zeitpunkt ihrer Rückkehr ein, `true` liefert nur die 
 Blättern. Jede Mail einer Suche trägt `back`, wenn sie aus „Später“ zurückkam (verträglich, kein `v: 2`).
 An Mail ist `snooze_item` eine Wiedervorlage (E19.1, „Follow up“ im Mail-Fenster): Das optionale Feld `unless_reply`
 („Only if no reply“) lässt die Wiedervorlage entfallen, sobald eine Antwort kommt – eine Mail der Unterhaltung, nicht
-vom Konto selbst, datiert nach dem Aufruf, in jedem Ordner, gelesen oder nicht; die Unterhaltung steht dann ohne
+vom Konto selbst, datiert nach dem Aufruf, in jedem Ordner außer Entwürfen, gelesen oder nicht; die Unterhaltung steht dann ohne
 „back“ wieder in „All“ und kommt am Datum nicht wieder. Ohne `unless_reply` öffnet eine Antwort die Unterhaltung, das
-Datum bleibt und holt sie noch einmal nach oben, solange ihr Eintrag offen ist. `unless_reply` an einem Eintrag, der
+Datum bleibt und holt sie noch einmal nach oben, solange sie nicht archiviert, gelöscht oder als Spam markiert ist. `unless_reply` an einem Eintrag, der
 keine Mail ist, ist `unsupported`, geprüft vor der Freigabe; ohne `until` zählt es nicht. Mit `snoozed: false` kommt
 zurückgekehrte Mail aus jedem Ordner außer Archiv, Papierkorb und Spam, unabhängig vom `in:` der Suche: Eine eigene gesendete
 Mail, auf die niemand antwortete, steht oben in „All“ (verträglich, kein `v: 2`).
@@ -526,7 +526,7 @@ reply_later` bzw. `set_aside` legt 1 bis 100 Mails (`ids`, `m:…`, auch mehrere
 kommen sie herunter. Eine Mail liegt auf höchstens einem Stapel, erneut legen verlegt sie; derselbe Stapel noch einmal
 ändert nichts (auch nicht, seit wann sie dort liegt). Gemerkt wird nur im Kern, nichts geht an den Server, Mail und
 Eintrag bleiben, wie sie sind. „Reply later“ räumt sich selbst ab: Taucht nach dem Auflegen eine Mail von der Adresse des
-Kontos in der Unterhaltung auf (jeder Ordner, jedes Programm), nimmt der Kern die Mail herunter; „Set aside“ bleibt, bis
+Kontos in der Unterhaltung auf (jeder Ordner außer Entwürfen, jedes Programm), nimmt der Kern die Mail herunter; „Set aside“ bleibt, bis
 man sie herunternimmt. Reichweite, Grenzen, Freigabe und Protokoll wie bei `set_mail_shown`: `not-found` für den ganzen
 Aufruf, sobald eine Mail außer Reichweite liegt, geprüft vor der Freigabe; die Freigabe nennt die Betreffe aus dem
 Mail-Speicher, das Protokoll nur gehashte Kennungen. Dazu `mail.search_messages` mit dem optionalen Feld `pile`:

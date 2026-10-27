@@ -3314,7 +3314,7 @@ static SNOOZE_ITEM: Command = Command {
                   follow-up: `unless_reply: true` waits only if nobody replies – a mail in the conversation not \
                   sent from the account itself, dated after this call, in any folder but drafts, calls it off and the date \
                   never comes; without it the date stays after a reply and brings the conversation on top once \
-                  more while it is still open. `unless_reply` is for mail only, `unsupported` on any other entry.",
+                  more unless it was archived, thrown away or marked as spam. `unless_reply` is for mail only, `unsupported` on any other entry.",
 };
 
 static SET_ITEM_LANE: Command = Command {
