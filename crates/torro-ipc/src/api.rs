@@ -3633,7 +3633,8 @@ static SET_MAIL_SHOWN: Command = Command {
                   stays done). A message that is not hidden now is left alone. Undo with `shown: false`. Hiding \
                   the entry again (inbox_mute_item with `hide`, inbox_hide_sender) hides the mail again. \
                   `not-found` for the whole call when one message is in a mail account this key may not \
-                  read or whose inbox entries it may not see; nothing is changed then.",
+                  read (read access to `mail` besides write access to `inbox`) or whose inbox entries it may not \
+                  see, the same answer as for a message that does not exist; nothing is changed then.",
 };
 
 static SET_MAIL_PILE: Command = Command {
@@ -3650,8 +3651,9 @@ static SET_MAIL_PILE: Command = Command {
                   a mail from the account's own address in the conversation after it was put there (sent, not \
                   a draft) takes it off; Set aside stays until taken off. Kept by the core only, nothing changes on the server. \
                   `error` for no ids or more than 100; `not-found` for the whole call when one message is in a \
-                  mail account this key may not read or whose inbox entries it may not see; nothing is changed \
-                  then.",
+                  mail account this key may not read (read access to `mail` besides write access to `inbox`) or \
+                  whose inbox entries it may not see, the same answer as for a message that does not exist; \
+                  nothing is changed then.",
 };
 
 static LIST_RULES: Command = Command {
@@ -6706,6 +6708,13 @@ mod tests {
         assert_eq!(access(event), Access::Write);
         assert_eq!(access(Request::GetQuiet), Access::Read);
         assert_eq!(access(Request::ResolveItems { thread_key: "t".into() }), Access::Write);
+        // Showing mail again and the piles (tasks E18.2, E19.2) write the inbox; the core asks read
+        // access to `mail` besides (review of #315), as a mail account's source needs it.
+        assert_eq!(access(Request::SetMailShown { ids: vec!["m:1".into()], shown: true }), Access::Write);
+        assert_eq!(access(Request::SetMailPile { ids: vec!["m:1".into()], pile: None }), Access::Write);
+        let mut no_mail = RightsTemplate::FullAccess.rights();
+        no_mail.areas.remove(&Area::Mail);
+        assert!(!no_mail.reaches_source(&SourceRef::mail("anna@example.org")), "no mail read, no mail source");
         assert_eq!(access(Request::SetItemDone { id: "i".into(), done: false, dismissed: false }), Access::Write);
         assert_eq!(access(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: false }), Access::Write);
         assert_eq!(access(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: true }), Access::Admin);

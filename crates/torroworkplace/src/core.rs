@@ -7332,21 +7332,31 @@ impl Core {
     /// The mail `ids` of `inbox.set_mail_shown` (task E18.2) or `inbox.set_mail_pile` (task E19.2)
     /// as pairs of account (`mail:<address>`) and message (`m:…`), in their order, looked up in the
     /// stores of the accounts `reach` reads ([`crate::mail::write::locate`]). For a client each
-    /// account must also be one whose inbox entries it sees (the source among `inbox_sources`,
+    /// account must be one it reads – read access to `mail` and the account in `mail_accounts`
+    /// ([`reads_mail`]; review of #315: write access to `inbox` alone must not tell which mail ids
+    /// exist) – and whose inbox entries it sees (the source among `inbox_sources`,
     /// [`torro_ipc::api::Rights::reaches_source`]), as for `inbox.snooze_item` with a mail's id. Else
-    /// `not-found` for the whole call, the same answer as for a mail that does not exist. Checked
-    /// before an approval is asked for and again when the command runs.
+    /// `not-found` for the whole call, the same answer as for a mail that does not exist: what a key
+    /// may not see is not there for it. Checked before an approval is asked for and again when the
+    /// command runs. The app key reaches every account.
     async fn reachable_mail_of(&self, ids: &[String], reach: Reach<'_>) -> Result<Vec<(String, String)>, Response> {
+        let not_found = || refusal("not-found", tr("No such message.").into());
+        if let Reach::Client(rights) = reach
+            && !rights.area(Area::Mail).allows(Access::Read)
+        {
+            return Err(not_found());
+        }
         let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
         let found = crate::mail::write::locate(&self.mail, reach, &wanted).await.map_err(|err| err.response())?;
         let sees = |account: &str| match reach {
             Reach::Suite => true,
             Reach::Client(rights) => {
-                account.parse::<torro_inbox::SourceRef>().is_ok_and(|source| rights.reaches_source(&source))
+                reads_mail(reach, account)
+                    && account.parse::<torro_inbox::SourceRef>().is_ok_and(|source| rights.reaches_source(&source))
             }
         };
         if found.iter().any(|message| !sees(&message.account)) {
-            return Err(refusal("not-found", tr("No such message.").into()));
+            return Err(not_found());
         }
         Ok(found.into_iter().map(|message| (message.account, message.id)).collect())
     }
@@ -19618,6 +19628,39 @@ mod tests {
         assert_eq!(every_page(&core, &app_key, snoozed).await, (vec!["B".to_string()], Some(1)));
         let aside = |cursor| pile_search(Some(PileFilter::SetAside), None, Some(false), 1, cursor);
         assert_eq!(every_page(&core, &app_key, aside).await, (vec!["C".to_string()], Some(1)));
+    }
+
+    /// Review of #315: a key that may change the inbox but not read mail learns nothing of mail ids
+    /// from `inbox.set_mail_pile` or `inbox.set_mail_shown` – a mail there and one that is not get
+    /// the same answer, before anyone is asked, and nothing is kept. The app key still may.
+    #[tokio::test]
+    async fn piles_and_show_again_need_mail_read() {
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &crate::mail::read::tests::mail_from("Offer", 2, "news@shop.example", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let id = ids_by_subject(&core, &app_key).await["Offer"].id.clone();
+        let mut no_mail = RightsTemplate::FullAccess.rights();
+        no_mail.areas.remove(&Area::Mail);
+        no_mail.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, no_mail) = client(&core, no_mail).await;
+        let requests = |id: &str| {
+            [
+                Request::SetMailPile { ids: vec![id.into()], pile: Some(MailPile::ReplyLater) },
+                Request::SetMailShown { ids: vec![id.into()], shown: true },
+            ]
+        };
+        for (known, unknown) in requests(&id).into_iter().zip(requests("m:unknown")) {
+            let (known, unknown) = (ask(&core, Some(&no_mail), known).await, ask(&core, Some(&no_mail), unknown).await);
+            assert_eq!(code(&known), "not-found", "{known:?}");
+            assert_eq!(known, unknown, "a mail there answers as one that is not");
+        }
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        assert!(core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL).is_empty());
+        assert!(core.inbox.mail_hidden(&[ANNA_MAIL.into()], Utc::now()).expect("read").shown_of(ANNA_MAIL).is_empty());
+        let pile = Request::SetMailPile { ids: vec![id], pile: Some(MailPile::ReplyLater) };
+        assert_eq!(ask(&core, Some(&app_key), pile).await, Response::Ok, "the app key may");
     }
 
     /// Task E19.2: the piles keep to the accounts a key reads and whose entries it sees – checked
