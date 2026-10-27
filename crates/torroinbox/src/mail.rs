@@ -4073,6 +4073,12 @@ pub struct FocusReply {
     /// How much mail lay on the pile when the round started (`count_in_pile`, the sidebar's number),
     /// less what left it since: the `{total}` of "{n} of {total}"; `None` when not known.
     pub total: Option<usize>,
+    /// Which round this is, set by the window for every round it starts or brings back: the answer
+    /// of a next page carries it and counts only for its own round (third review of #315).
+    pub round: u64,
+    /// The pile and since when of the mail the round loaded itself ([`FocusReply::extend`]), which the
+    /// window lists nowhere: "Remove" and its undo find them here (third review of #315).
+    piles: HashMap<String, (Option<MailPile>, Option<DateTime<Utc>>)>,
 }
 
 /// A round of "Focus & reply" as the undo of "Reply discarded." keeps it ([`FocusReply::keep`]):
@@ -4086,6 +4092,13 @@ pub struct FocusKept {
     /// Why the reply to the mail at `at` could not be sent, when the round comes back for it
     /// (a send that failed after its round was closed, second review of #315).
     pub error: Option<String>,
+    /// Every mail the round had – the one on its way too –, so the round that comes back never takes
+    /// one of them in again (third review of #315: no second send).
+    pub seen: Vec<String>,
+    /// The pile's number as the round counted it ([`FocusReply::total`]).
+    pub total: Option<usize>,
+    /// The piles of the mail the round loaded itself ([`FocusReply::pile_of`]).
+    pub piles: Vec<(String, Option<MailPile>, Option<DateTime<Utc>>)>,
 }
 
 impl FocusReply {
@@ -4112,14 +4125,15 @@ impl FocusReply {
         &self.seen
     }
 
-    /// The next page is in: `ids` – the pile's mail the round has not had yet, in the pile's order –
-    /// go at the end of the round, and the first of them shows when the round stood at its end;
-    /// `more` says whether the pile has still further pages.
-    pub fn extend(&mut self, ids: Vec<String>, more: bool) {
+    /// The next page is in: `found` – the pile's mail the round has not had yet, in the pile's order
+    /// – go at the end of the round with their piles ([`FocusReply::pile_of`]), and the first of them
+    /// shows when the round stood at its end; `more` says whether the pile has still further pages.
+    pub fn extend(&mut self, found: Vec<MessageSummary>, more: bool) {
         let at_end = self.current().is_none();
-        for id in ids {
-            if self.seen.insert(id.clone()) {
-                self.ids.push(id);
+        for message in found {
+            if self.seen.insert(message.id.clone()) {
+                self.piles.insert(message.id.clone(), (message.pile, message.pile_since));
+                self.ids.push(message.id);
             }
         }
         self.more = more;
@@ -4127,6 +4141,19 @@ impl FocusReply {
         self.load_error = None;
         if at_end {
             self.arrive();
+        }
+    }
+
+    /// The pile and since when of `id`, when the round loaded it itself ([`FocusReply::extend`]);
+    /// `None` for mail the window lists.
+    pub fn pile_of(&self, id: &str) -> Option<(Option<MailPile>, Option<DateTime<Utc>>)> {
+        self.piles.get(id).copied()
+    }
+
+    /// `id` now lies on `pile` since `since`, where the round keeps its pile.
+    pub fn set_pile(&mut self, id: &str, pile: Option<MailPile>, since: Option<DateTime<Utc>>) {
+        if let Some(held) = self.piles.get_mut(id) {
+            *held = (pile, since);
         }
     }
 
@@ -4246,15 +4273,30 @@ impl FocusReply {
             shown.into_iter().chain(kept).filter(|(_, text)| !text.trim().is_empty()).collect();
         texts.sort();
         let ids = self.ids.iter().filter(|id| Some(id.as_str()) != away).cloned().collect();
-        FocusKept { ids, at: self.at, texts, error: None }
+        let mut seen: Vec<String> = self.seen.iter().cloned().collect();
+        seen.sort();
+        let mut piles: Vec<_> = self.piles.iter().map(|(id, (pile, since))| (id.clone(), *pile, *since)).collect();
+        piles.sort_by(|a, b| a.0.cmp(&b.0));
+        // The mail on its way leaves the pile with its answer.
+        let total = self.total.map(|total| if away.is_some() { total.saturating_sub(1) } else { total });
+        FocusKept { ids, at: self.at, texts, error: None, seen, total, piles }
     }
 
-    /// The round `kept` back, at its place with its replies and the error it came back for; nothing
-    /// on its way.
+    /// The round `kept` back, at its place with its replies, its count, the piles it loaded and the
+    /// error it came back for; nothing on its way. What lies on the pile beyond it shows up again at
+    /// its end (`more`) – never mail it had before (third review of #315).
     pub fn restore(kept: FocusKept) -> FocusReply {
         let kept_texts = kept.texts.into_iter().map(|(id, text)| (id, text_editor::Content::with_text(&text)));
-        // What lies on the pile beyond it shows up again at its end (`more`).
-        let mut focus = FocusReply { at: kept.at, kept: kept_texts.collect(), more: true, ..FocusReply::new(kept.ids) };
+        let piles = kept.piles.into_iter().map(|(id, pile, since)| (id, (pile, since))).collect();
+        let mut focus = FocusReply {
+            at: kept.at,
+            kept: kept_texts.collect(),
+            more: true,
+            total: kept.total,
+            piles,
+            ..FocusReply::new(kept.ids)
+        };
+        focus.seen.extend(kept.seen);
         focus.at = focus.at.min(focus.ids.len());
         focus.arrive();
         focus.error = kept.error;
@@ -4567,13 +4609,19 @@ mod tests {
                 ids: vec!["c".into(), "d".into()],
                 at: 0,
                 texts: vec![("c".into(), "On it".into())],
-                error: None
+                error: None,
+                seen: ["a", "b", "c", "d"].map(String::from).to_vec(),
+                total: None,
+                piles: Vec::new(),
             }
         );
         focus.sending = true;
         assert!(!focus.step(true) && !focus.step(false) && focus.take_current().is_none(), "nothing moves");
         // While sending, the round as kept leaves the mail on its way out, text and all.
-        assert_eq!(focus.keep(), FocusKept { ids: vec!["d".into()], at: 0, texts: Vec::new(), error: None });
+        // It stays among what the round had, so the round that comes back never takes it in again.
+        let away = focus.keep();
+        assert_eq!((away.ids, away.texts), (vec!["d".to_owned()], Vec::new()));
+        assert!(away.seen.contains(&"c".to_owned()), "the mail on its way was had");
         assert!(!focus.has_text(), "the reply on its way is not discarded");
         focus.answered("c");
         assert_eq!((focus.current(), focus.sending), (Some("d"), false));

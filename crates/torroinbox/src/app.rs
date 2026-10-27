@@ -2518,6 +2518,8 @@ pub struct App<S> {
     /// The reply whose round was closed while it was on its way (second review of #315): its mail
     /// and text, until the answer says whether it went ([`App::focus_sent`]).
     reply_away: Option<(String, String)>,
+    /// How many rounds of "Focus & reply" were started or brought back ([`App::next_round`]).
+    rounds: u64,
     /// The day and time in the picker of "Pick…".
     pick: Pick,
     /// The dialog of "Make task" while [`Menu::Task`] is open.
@@ -3040,9 +3042,10 @@ pub enum Message {
     FocusClose,
     /// "Retry" at the end of a round of "Focus & reply" whose next page could not be loaded.
     FocusLoad,
-    /// The next page of the pile for "Focus & reply" (decision of #315): the mail the round has not had
+    /// The next page of the pile for "Focus & reply" (decision of #315) for the round with this number
+    /// ([`FocusReply::round`]; the answer of another round is dropped): the mail the round has not had
     /// yet and whether the pile has more ([`round_page`]), or why it could not be loaded.
-    FocusMore(Result<(Vec<String>, bool), String>),
+    FocusMore(u64, Result<(Vec<MessageSummary>, bool), String>),
     /// The source's answer to a [`MailEdit`] of these messages, with the hint to show (`None`:
     /// none, or an undo).
     MailEdited(Result<(), String>, Vec<String>, Option<Hint>),
@@ -3231,14 +3234,15 @@ fn keep_answer(answers: &[(String, InvitationAnswer)], message: &mut MessageSumm
     }
 }
 
-/// `message` – a mail loaded whole – on the pile its listed row says (review of #315):
-/// `mail.get_message` never names a pile, only the search does (`MessageSummary::pile`), and the
-/// rail reads the loaded mail ("Remove from …"). A mail not listed keeps what it came with.
-fn keep_pile(listed: &[MessageSummary], message: &mut MessageSummary) {
-    if let Some(row) = listed.iter().find(|row| row.id == message.id) {
-        message.pile = row.pile;
+/// `message` – a mail loaded whole – on the pile `listed` says, its row's or the one a round of
+/// "Focus & reply" loaded it with ([`App::listed_pile`], review of #315): `mail.get_message` never
+/// names a pile, only the search does (`MessageSummary::pile`), and the rail reads the loaded mail
+/// ("Remove from …"). A mail not listed (`None`) keeps what it came with.
+fn keep_pile(listed: Option<(Option<MailPile>, Option<DateTime<Utc>>)>, message: &mut MessageSummary) {
+    if let Some((pile, since)) = listed {
+        message.pile = pile;
         // Since when, too: the undo of a change sends it back (decision of #315).
-        message.pile_since = row.pile_since;
+        message.pile_since = since;
     }
 }
 
@@ -3602,22 +3606,24 @@ where
 /// The mail of "Reply later" that a round of "Focus & reply" has not had yet (decision of #315): the
 /// pile's pages of `limit`, newest first as `order` says, walked from the start until one holds mail
 /// not in `seen` or there are no more – from the start each time, as the round took mail off the pile
-/// and an offset from before would skip some. Returns that mail in the pile's order and whether the
-/// pile has pages after it.
+/// and an offset from before would skip some. Returns that mail – whole summaries, with their pile
+/// and since when (third review of #315) – in the pile's order and whether the pile has pages after
+/// it. A cursor that does not move on ends the walk, as in [`walk_selected`].
 async fn round_page<S: MailSource>(
     inbox: &S,
     seen: &std::collections::HashSet<String>,
     limit: u32,
     order: Order,
     accounts: Option<&[String]>,
-) -> Result<(Vec<String>, bool), String> {
+) -> Result<(Vec<MessageSummary>, bool), String> {
     let mut cursor = None;
     loop {
-        let page = pile_selected(inbox, &View::ReplyLater, limit, cursor, order, accounts).await?;
-        let new: Vec<String> =
-            page.messages.into_iter().map(|message| message.id).filter(|id| !seen.contains(id)).collect();
-        if !new.is_empty() || page.next.is_none() {
-            return Ok((new, page.next.is_some()));
+        let page = pile_selected(inbox, &View::ReplyLater, limit, cursor.clone(), order, accounts).await?;
+        let new: Vec<MessageSummary> =
+            page.messages.into_iter().filter(|message| !seen.contains(&message.id)).collect();
+        let stuck = page.next.is_some() && page.next == cursor;
+        if !new.is_empty() || page.next.is_none() || stuck {
+            return Ok((new, page.next.is_some() && !stuck));
         }
         cursor = page.next;
     }
@@ -3784,6 +3790,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             unless_reply: false,
             focus_reply: None,
             reply_away: None,
+            rounds: 0,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
             lists: None,
@@ -4751,7 +4758,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let mut result = result.map(|mail| *mail);
                 if let Ok(mail) = &mut result {
                     keep_answer(&self.answers, &mut mail.summary);
-                    keep_pile(&self.messages, &mut mail.summary);
+                    keep_pile(self.listed_pile(&mail.summary.id), &mut mail.summary);
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 let unread = result.as_ref().is_ok_and(|mail| !mail.summary.flags.contains(&Flag::Seen))
@@ -4804,10 +4811,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     focus.load_error = None;
                 }
             }
-            Message::FocusMore(result) => {
-                if let Some(focus) = self.focus_reply.as_mut().filter(|focus| focus.loading) {
+            // Only for the round that asked (third review of #315).
+            Message::FocusMore(round, result) => {
+                if let Some(focus) = self.focus_reply.as_mut().filter(|focus| focus.loading && focus.round == round) {
                     match result {
-                        Ok((ids, more)) => focus.extend(ids, more),
+                        Ok((found, more)) => focus.extend(found, more),
                         Err(why) => {
                             focus.loading = false;
                             focus.load_error = Some(why);
@@ -5730,8 +5738,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// The pile the mail `id` lies on, as listed or loaded ([`MessageSummary::pile`]); `None` for a
     /// mail on none and one the window holds neither way.
     fn mail_pile(&self, id: &str) -> Option<MailPile> {
-        if let Some(message) = self.messages.iter().find(|message| message.id == id) {
-            return message.pile;
+        if let Some((pile, _)) = self.listed_pile(id) {
+            return pile;
         }
         match &self.letter {
             Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => mail.summary.pile,
@@ -5739,11 +5747,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
+    /// The pile and since when of the mail `id` as the window lists it: its row, else what a round of
+    /// "Focus & reply" loaded it with ([`FocusReply::pile_of`], third review of #315); `None` for mail
+    /// listed neither way.
+    fn listed_pile(&self, id: &str) -> Option<(Option<MailPile>, Option<DateTime<Utc>>)> {
+        let row = self.messages.iter().find(|message| message.id == id).map(|row| (row.pile, row.pile_since));
+        row.or_else(|| self.focus_reply.as_ref().and_then(|focus| focus.pile_of(id)))
+    }
+
     /// Since when the mail `id` lies on its pile, as listed or loaded ([`MessageSummary::pile_since`]);
     /// `None` for a mail on none, a time not known and a mail the window holds neither way.
     fn mail_pile_since(&self, id: &str) -> Option<DateTime<Utc>> {
-        if let Some(message) = self.messages.iter().find(|message| message.id == id) {
-            return message.pile_since;
+        if let Some((_, since)) = self.listed_pile(id) {
+            return since;
         }
         match &self.letter {
             Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => mail.summary.pile_since,
@@ -5755,6 +5771,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// say so before the answer: since `since` (an undo's), else since now; on none without a time.
     fn set_row_pile(&mut self, id: &str, pile: Option<MailPile>, since: Option<DateTime<Utc>>) {
         let since = pile.map(|_| since.unwrap_or(self.now));
+        if let Some(focus) = self.focus_reply.as_mut() {
+            focus.set_pile(id, pile, since);
+        }
         for message in self.messages.iter_mut().filter(|message| message.id == id) {
             message.pile = pile;
             message.pile_since = since;
@@ -5803,12 +5822,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // The whole pile (decision of #315): what is listed, the rest page by page at the round's end;
         // its total from the sidebar's number.
         let total = self.reply_later.map(|n| usize::try_from(n).unwrap_or(usize::MAX));
-        self.focus_reply = Some(FocusReply::of_pile(ids, self.more.is_some(), total));
+        let mut focus = FocusReply::of_pile(ids, self.more.is_some(), total);
+        focus.round = self.next_round();
+        self.focus_reply = Some(focus);
         // A new round makes the undo of an old one void (second review of #315).
         if self.hint.as_ref().is_some_and(|hint| matches!(hint.undo, Some(Undo::Focus(_)))) {
             self.hint = None;
         }
         operation::focus(mail::FOCUS_FIELD)
+    }
+
+    /// The number of the next round of "Focus & reply" ([`FocusReply::round`]): every round started or
+    /// brought back gets its own, so a page that comes late finds no other round (third review of #315).
+    fn next_round(&mut self) -> u64 {
+        self.rounds += 1;
+        self.rounds
     }
 
     /// The next page of the pile when the round of "Focus & reply" stands at the end of what it has
@@ -5817,13 +5845,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn focus_more(&mut self) -> Task<Message> {
         let Some(focus) = self.focus_reply.as_mut().filter(|focus| focus.wants_more()) else { return Task::none() };
         focus.loading = true;
-        let seen = focus.seen().clone();
+        let (seen, round) = (focus.seen().clone(), focus.round);
         #[cfg(test)]
         self.sent.push(Sent::RoundPage(seen.len()));
         let (inbox, order, accounts) = (self.inbox.clone(), self.order, self.mail_accounts.clone());
         Task::perform(
             async move { round_page(&*inbox, &seen, mail::PAGE, order, accounts.as_deref()).await },
-            Message::FocusMore,
+            move |result| Message::FocusMore(round, result),
         )
     }
 
@@ -5916,7 +5944,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Err(why) => {
                 let undo = away.map(|text| {
                     let texts = vec![(id.clone(), text)];
-                    Undo::Focus(mail::FocusKept { ids: vec![id.clone()], at: 0, texts, error: Some(why.clone()) })
+                    Undo::Focus(mail::FocusKept {
+                        ids: vec![id.clone()],
+                        at: 0,
+                        texts,
+                        error: Some(why.clone()),
+                        seen: vec![id.clone()],
+                        total: None,
+                        piles: Vec::new(),
+                    })
                 });
                 self.hint = Some(Hint {
                     text: tr("Couldn't send the message.").to_owned(),
@@ -6928,7 +6964,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.keep_out_leaving();
         // The mail in the reader lies where its row now says (a pile changed meanwhile, review of #315).
         if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut() {
-            keep_pile(&self.messages, &mut mail.summary);
+            let listed =
+                self.messages.iter().find(|row| row.id == mail.summary.id).map(|row| (row.pile, row.pile_since));
+            keep_pile(listed, &mut mail.summary);
         }
         self.listed = self.view.listing();
         self.loaded = true;
@@ -8474,7 +8512,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Undo::Focus(_) if self.focus_reply.is_some() => Task::none(),
             Undo::Focus(kept) => {
                 let task = if self.view == View::ReplyLater { Task::none() } else { self.show_view(View::ReplyLater) };
-                self.focus_reply = Some(FocusReply::restore(kept));
+                let mut focus = FocusReply::restore(kept);
+                focus.round = self.next_round();
+                self.focus_reply = Some(focus);
                 task
             }
             // Back on the pile, and into the round with its text (second review of #315).
@@ -15853,6 +15893,39 @@ mod tests {
         let snoozed = Item { state: State::Snoozed { until: at }, ..open.clone() };
         let again = Edit::Snooze { id: id(), until: Some(at), unless_reply: true, keep_open: false };
         assert_eq!(none.undo(&snoozed), again, "a snoozed entry back to its time, put off");
+
+        // Third review of #315, through the demo: "Follow up → Tomorrow" at an open mail entry with a
+        // standing follow-up, then "Undo" – open again, with its old follow-up.
+        let mut app = app;
+        let id = app
+            .for_me
+            .iter()
+            .find(|item| matches!(item.link, Some(Link::Mail { .. })) && item.state.is_open())
+            .map(|item| item.id.clone())
+            .expect("an open mail entry");
+        block_on(app.inbox.snooze_item(id.clone(), Some(at), true, true)).expect("followed up, open");
+        load(&mut app);
+        let state = |app: &App<DemoSource>| {
+            block_on(app.inbox.list_items(torro_inbox::ItemFilter::default()))
+                .expect("the entries")
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| (item.state, item.follow_up.map(|follow| (follow.at, follow.unless_reply))))
+        };
+        let _ = app.update(Message::AskSnooze(id.clone()));
+        let tomorrow = app.choices().into_iter().find(|choice| choice.label == tr("Tomorrow")).expect("Tomorrow");
+        let _ = app.update(tomorrow.message);
+        deliver(&mut app);
+        assert!(
+            matches!(state(&app), Some((State::Snoozed { .. }, Some((until, false)))) if until != at),
+            "put off till tomorrow: {:?}",
+            state(&app)
+        );
+        let _ = app.update(Message::Undo);
+        deliver(&mut app);
+        let (back, follow) = state(&app).expect("the entry");
+        assert!(back.is_open(), "open again, not put off: {back:?}");
+        assert_eq!(follow, Some((at, true)), "its old follow-up back");
     }
 
     /// Decision of #315, through the demo: "Cancel follow-up" at an open mail entry that kept its
@@ -16138,7 +16211,8 @@ mod tests {
         assert!(focused(&app).is_none());
         draw_everywhere(&mut app);
         // An error stays, "Retry" asks again.
-        let _ = app.update(Message::FocusMore(Err("offline".into())));
+        let round = app.focus_reply.as_ref().map(|focus| focus.round).expect("the round");
+        let _ = app.update(Message::FocusMore(round, Err("offline".into())));
         let focus = app.focus_reply.as_ref().expect("the round");
         assert_eq!((focus.loading, focus.load_error.as_deref()), (false, Some("offline")));
         let asked = app.sent.len();
@@ -16149,7 +16223,7 @@ mod tests {
         assert!(app.sent[asked..].iter().any(|sent| matches!(sent, Sent::RoundPage(1))), "Retry asks again");
         let seen = app.focus_reply.as_ref().map(|focus| focus.seen().clone()).expect("the round");
         let page = block_on(round_page(&*app.inbox, &seen, mail::PAGE, app.order, None));
-        let _ = app.update(Message::FocusMore(page));
+        let _ = app.update(Message::FocusMore(round, page));
         assert_eq!(focused(&app), Some(ids[1].clone()), "the next mail of the pile");
         assert_eq!(app.focusing().and_then(FocusReply::position), Some((2, 2)));
         // Nothing more on the pile: the end.
@@ -16160,6 +16234,100 @@ mod tests {
         assert!(!app.sent[asked..].iter().any(|sent| matches!(sent, Sent::RoundPage(_))));
     }
 
+    /// A round over a pile whose list holds its first mail only (third review of #315): skipped to its
+    /// end, the round asks for the next page; `round` is its number.
+    fn round_at_its_end() -> (App<DemoSource>, Vec<String>, u64) {
+        let mut app = mail_window(Density::Compact, &["--open", "reply-later"]);
+        let ids: Vec<String> = app.messages.iter().map(|message| message.id.clone()).collect();
+        app.messages.truncate(1);
+        app.more = Some("c:1".into());
+        let _ = app.update(Message::FocusReply);
+        let _ = app.update(Message::FocusSkip);
+        let round = app.focus_reply.as_ref().filter(|focus| focus.loading).map(|focus| focus.round).expect("loading");
+        (app, ids, round)
+    }
+
+    /// The next page for the round of `app`, pages of one mail (more than one page), from the demo.
+    fn next_page(app: &App<DemoSource>) -> Result<(Vec<MessageSummary>, bool), String> {
+        let seen = app.focus_reply.as_ref().map(|focus| focus.seen().clone()).expect("the round");
+        block_on(round_page(&*app.inbox, &seen, 1, app.order, None))
+    }
+
+    /// Third review of #315: "Remove" at a mail the round loaded itself – on page 2, never in the list
+    /// – takes it off the pile, although its whole mail names no pile (as `mail.get_message` does), and
+    /// "Undo" puts it back with its time.
+    #[test]
+    fn remove_takes_mail_of_a_later_page_off_and_undo_keeps_its_time() {
+        let (mut app, ids, round) = round_at_its_end();
+        let page = next_page(&app);
+        let since = page.as_ref().ok().and_then(|(found, _)| found.first()).and_then(|message| message.pile_since);
+        assert!(since.is_some(), "the page says since when");
+        let _ = app.update(Message::FocusMore(round, page));
+        assert_eq!(focused(&app), Some(ids[1].clone()));
+        assert!(!message_ids(&app).contains(&ids[1].as_str()), "not in the list");
+        // Its whole mail as the core sends it: no pile.
+        let mut mail = block_on(MailSource::get_mail(app.inbox.as_ref(), ids[1].clone())).expect("the mail");
+        (mail.summary.pile, mail.summary.pile_since) = (None, None);
+        let _ = app.update(Message::LetterLoaded(ids[1].clone(), Ok(Box::new(mail))));
+        let _ = app.update(Message::FocusRemove);
+        match last_pile(&app) {
+            Some(Sent::Pile(off, None, None, Some(hint))) => {
+                assert_eq!(off, std::slice::from_ref(&ids[1]), "off the pile");
+                let undo = Undo::Removed { id: ids[1].clone(), place: 1, text: String::new(), since };
+                assert_eq!(hint.undo, Some(undo));
+            }
+            other => panic!("off the pile, not {other:?}"),
+        }
+        deliver_pile(&mut app);
+        let _ = app.update(Message::Undo);
+        assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[1].clone()], Some(MailPile::ReplyLater), since, None)));
+        assert_eq!(focused(&app), Some(ids[1].clone()), "back in the round");
+    }
+
+    /// Third review of #315: a reply on its way when the round was left is never taken in again by the
+    /// round its undo brings back – not even from the next page; the count goes on from the pile's.
+    #[test]
+    fn a_round_brought_back_never_takes_in_the_mail_it_sent() {
+        let (mut app, ids) = focus_window();
+        let _ = app.update(Message::FocusSkip);
+        type_reply(&mut app, "Other");
+        let _ = app.update(Message::FocusStep(false));
+        type_reply(&mut app, "Yes");
+        let _ = app.update(Message::FocusSend);
+        let _ = app.update(Message::Show(View::All));
+        let _ = app.update(Message::Undo);
+        load(&mut app);
+        let focus = app.focus_reply.as_ref().expect("the round back");
+        assert_eq!((focus.ids.clone(), focus.total), (vec![ids[1].clone()], Some(1)), "the count kept");
+        assert_eq!(focus.position(), Some((1, 1)));
+        // To the end: the next page has nothing the round had, the mail on its way included.
+        let _ = app.update(Message::FocusSkip);
+        let round = app.focus_reply.as_ref().filter(|focus| focus.loading).map(|focus| focus.round).expect("loading");
+        let page = next_page(&app);
+        assert!(page.as_ref().is_ok_and(|(found, _)| found.is_empty()), "not the mail sent: {page:?}");
+        let _ = app.update(Message::FocusMore(round, page));
+        let focus = app.focus_reply.as_ref().expect("the round");
+        assert!(focus.current().is_none() && !focus.ids.contains(&ids[0]), "the end, without it");
+    }
+
+    /// Third review of #315: the answer of a next page counts only for the round that asked – a round
+    /// left and started anew drops the old answer and takes its own.
+    #[test]
+    fn a_next_page_belongs_to_its_round() {
+        let (mut app, ids, first) = round_at_its_end();
+        let page = next_page(&app);
+        let _ = app.update(Message::FocusClose);
+        let _ = app.update(Message::FocusReply);
+        let _ = app.update(Message::FocusSkip);
+        let second = app.focus_reply.as_ref().filter(|focus| focus.loading).map(|focus| focus.round).expect("loading");
+        assert_ne!(first, second, "a round of its own");
+        let _ = app.update(Message::FocusMore(first, page.clone()));
+        let focus = app.focus_reply.as_ref().expect("the round");
+        assert!(focus.loading && focus.current().is_none(), "the old answer is dropped");
+        let _ = app.update(Message::FocusMore(second, page));
+        assert_eq!(focused(&app), Some(ids[1].clone()), "its own comes in");
+    }
+
     /// Decision of #315: the next page of a round walks the pile from its start, page by page, to the
     /// first mail the round has not had – mail taken off meanwhile shifts no offset.
     #[test]
@@ -16167,8 +16335,13 @@ mod tests {
         let app = mail_window(Density::Compact, &["--open", "reply-later"]);
         let ids: Vec<String> = app.messages.iter().map(|message| message.id.clone()).collect();
         let seen: std::collections::HashSet<String> = [ids[0].clone()].into();
-        let page = block_on(round_page(&*app.inbox, &seen, 1, app.order, None));
-        assert_eq!(page, Ok((vec![ids[1].clone()], false)), "past the page it had, to the end");
+        let page = block_on(round_page(&*app.inbox, &seen, 1, app.order, None)).expect("a page");
+        let found: Vec<&str> = page.0.iter().map(|message| message.id.as_str()).collect();
+        assert_eq!((found, page.1), (vec![ids[1].as_str()], false), "past the page it had, to the end");
+        // With its pile and since when (third review of #315).
+        assert!(
+            page.0.iter().all(|message| message.pile == Some(MailPile::ReplyLater) && message.pile_since.is_some())
+        );
         let all: std::collections::HashSet<String> = ids.iter().cloned().collect();
         assert_eq!(block_on(round_page(&*app.inbox, &all, 1, app.order, None)), Ok((Vec::new(), false)));
     }

@@ -119,6 +119,10 @@ struct Data {
     hidden_mail: BTreeSet<String>,
     /// The hidden mail shown again (`inbox.set_mail_shown`, task E18.3): the exceptions.
     shown_mail: BTreeSet<String>,
+    /// The answers sent from the demo – account, conversation and when –, so putting mail back on
+    /// "Reply later" with an older time takes it off again at once, as the core's
+    /// `take_off_answered` does (third review of #315).
+    answers: Vec<(String, String, DateTime<Utc>)>,
 }
 
 impl Data {
@@ -287,6 +291,7 @@ impl DemoSource {
             draft_count: 0,
             hidden_mail: BTreeSet::from([HIDDEN_MAIL.to_owned()]),
             shown_mail: BTreeSet::new(),
+            answers: Vec::new(),
         };
         DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
     }
@@ -1266,7 +1271,9 @@ impl DemoSource {
     /// `inbox.set_mail_pile` (task E19.3): puts the messages `ids` on `pile`, moving them from the
     /// other one, or takes them off with `None`. Since when they lie there, as the core keeps it
     /// ([`MessageSummary::pile_since`], decision of #315): `since` (the undo's time, at most now),
-    /// else now – the same pile again keeps its time. [`InboxError::NotFound`] when one of them is
+    /// else now – the same pile again keeps its time, also with `since`. Put back on "Reply later"
+    /// with a `since` before an answer the demo sent in the conversation, a mail comes off at once,
+    /// as the core's `take_off_answered`. [`InboxError::NotFound`] when one of them is
     /// unknown; nothing changes then.
     pub fn set_mail_pile(
         &self,
@@ -1279,14 +1286,26 @@ impl DemoSource {
         if !ids.iter().all(|id| data.mail.iter().any(|m| m.summary.id == *id)) {
             return Err(InboxError::NotFound);
         }
+        let answers = data.answers.clone();
         for message in data.mail.iter_mut().map(|m| &mut m.summary).filter(|m| ids.contains(&m.id)) {
             message.pile_since = match (pile, since) {
                 (None, _) => None,
+                // The same pile keeps its time, whatever `since` says (as the core).
+                (Some(_), _) if message.pile == pile => message.pile_since.or(Some(since.unwrap_or(now).min(now))),
                 (Some(_), Some(since)) => Some(since.min(now)),
-                (Some(_), None) if message.pile == pile => message.pile_since.or(Some(now)),
                 (Some(_), None) => Some(now),
             };
             message.pile = pile;
+            // Back on "Reply later" from before an answer sent since: off at once.
+            let answered = |at: DateTime<Utc>| {
+                answers.iter().any(|(account, thread, sent)| {
+                    *account == message.account && *thread == message.thread_id && *sent > at
+                })
+            };
+            if pile == Some(MailPile::ReplyLater) && since.is_some() && message.pile_since.is_some_and(answered) {
+                message.pile = None;
+                message.pile_since = None;
+            }
         }
         Ok(())
     }
@@ -1603,6 +1622,7 @@ impl DemoSource {
     /// An answer takes the mail of its conversation off "Reply later" (task E19.3), as the core does
     /// once the account's own mail turns up there (decision 5 of E19); "Set aside" stays.
     pub fn send_draft(&self, id: &str) -> Result<(), InboxError> {
+        let now = self.now();
         let mut data = self.lock();
         let at = data.drafts.iter().position(|draft| draft.id.as_deref() == Some(id)).ok_or(InboxError::NotFound)?;
         let draft = &data.drafts[at];
@@ -1614,6 +1634,7 @@ impl DemoSource {
             data.mail.iter().find(|m| m.summary.id == answered).map(|m| m.summary.thread_id.clone())
         });
         if let Some(thread) = answered {
+            data.answers.push((sent.account.clone(), thread.clone(), now));
             let replied =
                 data.mail.iter_mut().map(|m| &mut m.summary).filter(|m| {
                     m.account == sent.account && m.thread_id == thread && m.pile == Some(MailPile::ReplyLater)
@@ -2752,10 +2773,27 @@ mod tests {
         let earlier = now - TimeDelta::days(3);
         demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(earlier)).expect("undone");
         assert_eq!(since("m:w1"), Some(earlier), "the undo's time");
-        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(now + TimeDelta::days(3))).expect("ahead");
-        assert!(since("m:w1").is_some_and(|at| at <= demo.now()), "never ahead of now");
+        // Third review of #315: on the same pile the time stays, also when a `since` comes.
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(now - TimeDelta::days(9))).expect("same");
+        assert_eq!(since("m:w1"), Some(earlier), "the same pile keeps its time, whatever since says");
         demo.set_mail_pile(&["m:w1".into()], None, None).expect("taken off");
         assert_eq!(since("m:w1"), None);
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(now + TimeDelta::days(3))).expect("ahead");
+        assert!(since("m:w1").is_some_and(|at| at <= demo.now()), "never ahead of now");
+        // Third review of #315: back on "Reply later" from before an answer sent since – off at once;
+        // from after it, it stays.
+        let before = since("m:p7").expect("on Reply later");
+        demo.set_mail_pile(&["m:p7".into()], None, None).expect("taken off");
+        let draft = Draft { in_reply_to: Some("m:p7".into()), ..draft(MAIL_ACCOUNTS[1], &["clara@example.org"]) };
+        let saved = demo.save_draft(draft).expect("saved");
+        demo.send_draft(&saved.id.expect("an id")).expect("answered");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::ReplyLater), Some(before)).expect("undone");
+        let back = demo.get_mail("m:p7").expect("the mail").summary;
+        assert_eq!((back.pile, back.pile_since), (None, None), "answered since: off at once");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::ReplyLater), Some(demo.now())).expect("after");
+        assert_eq!(demo.get_mail("m:p7").expect("the mail").summary.pile, Some(MailPile::ReplyLater), "stays");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::SetAside), Some(before)).expect("set aside");
+        assert_eq!(demo.get_mail("m:p7").expect("the mail").summary.pile, Some(MailPile::SetAside), "not Reply later");
     }
 
     /// Task E19.3, decision 5 of E19: a sent answer takes its conversation off "Reply later", never
