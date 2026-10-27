@@ -230,8 +230,9 @@ pub fn mark_read(inbox: &Inbox, mail: &Arc<MailService>, item: &Item) {
 }
 
 /// Sets `\Seen` on the server for those of `messages` (`m:…` of `account`) that are unread, and
-/// then in the store, so the next sync finds nothing changed. Returns how many were marked. A
-/// folder the server renumbered since is skipped: its UIDs name other mail now.
+/// then in the store, so the next sync finds nothing changed; a sync meanwhile leaves their flags
+/// alone ([`MailService::hold_flags`]). Returns how many were marked. A folder the server
+/// renumbered since is skipped: its UIDs name other mail now.
 pub(crate) async fn set_seen(mail: &MailService, account: &str, messages: Vec<String>) -> Result<usize, MailError> {
     let store = mail.store(account).await?;
     let targets = store
@@ -247,11 +248,19 @@ pub(crate) async fn set_seen(mail: &MailService, account: &str, messages: Vec<St
         })
         .await?;
     let mut folders: BTreeMap<(String, u32), Vec<(String, u32)>> = BTreeMap::new();
+    let mut by_folder: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     for target in targets {
+        by_folder.entry(target.folder.clone()).or_default().push(target.uid);
         folders.entry((target.folder_path, target.uidvalidity)).or_default().push((target.id, target.uid));
     }
     if folders.is_empty() {
         return Ok(0);
+    }
+    // Until the store has `\Seen` too, the account's sync keeps the server's flags of these
+    // messages out of the store: it may have read them before the `STORE` (issue #318).
+    let mut held = Vec::new();
+    for (folder, uids) in &by_folder {
+        held.push(mail.hold_flags(account, folder, uids).await?);
     }
     let mut marked: Vec<String> = Vec::new();
     let mut command = mail.command(account).await?;

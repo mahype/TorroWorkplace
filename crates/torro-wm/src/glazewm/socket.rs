@@ -167,11 +167,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn closed_port_is_not_running() {
-        let port = {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
-            listener.local_addr().expect("local address").port()
-        };
-        let err = request(port, "query monitors").await.expect_err("nothing listens");
+        // Port 1 (tcpmux) is closed on any machine that runs the tests. A port bound and freed here
+        // could go to a fake server of a test beside this one, which would answer (issue #318); a
+        // port below 1024 is never handed out by `bind(0)`.
+        let err = request(1, "query monitors").await.expect_err("nothing listens");
         assert!(matches!(err, WmError::NotRunning(_)), "{err:?}");
     }
 
