@@ -20,6 +20,7 @@
 //! server's words that could repeat it ([`openai::error_of`]).
 
 pub mod anthropic;
+pub mod decide_chat;
 pub mod hardware;
 pub mod openai;
 pub mod responses;
@@ -323,7 +324,8 @@ pub struct AiModel {
     /// The model decides instead of writing (task E12.3, `docs/kategorien.md`): it answers named
     /// questions with probabilities at `<base>/systemone` ([`systemone`]). `true` or `false`
     /// where the server says so (Ollama 0.35 and newer list the capability `decision` in
-    /// `/api/show`), `null` where it does not tell. Only such a model is offered for sorting mail.
+    /// `/api/show`), `null` where it does not tell. Such a model sorts mail directly; one that can
+    /// use tools does it through the fallback ([`AiModel::can_decide`], [`decide_chat`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<bool>,
     /// The model is turned on for the whole suite (task S.24, `docs/settings.md` › KI): modules
@@ -358,6 +360,23 @@ impl AiModel {
     /// neither is of no use to any module.
     pub fn is_usable(&self) -> bool {
         self.tools != Some(false) || self.decision == Some(true)
+    }
+
+    /// The model can take the slot Sorting ([`AiSlot::Decide`], a function that needs a decision,
+    /// [`AiFunction::needs_decision`]; issue #325, task MW.3): it decides
+    /// ([`AiModel::decision`] is `true`), or it can use tools (`tools` is not `false`) and answers the
+    /// questions in a fixed format ([`decide_chat`]). What `ai.set_slot` and `ai.set_assignment`
+    /// take and what sorting mail picks; a model that can do neither, like an embedding model, is
+    /// refused.
+    pub fn can_decide(&self) -> bool {
+        self.decision == Some(true) || self.tools != Some(false)
+    }
+
+    /// The model takes the slot Sorting only through the fallback ([`decide_chat`]): it is no
+    /// decision model, but can use tools. The core then asks it with a chat turn instead of
+    /// `<base>/systemone`.
+    pub fn decides_by_chat(&self) -> bool {
+        self.decision != Some(true) && self.tools != Some(false)
     }
 }
 
@@ -455,9 +474,9 @@ impl ModelSwitches {
 /// all the same – the entry is dropped ([`crate::settings::Settings::ai_assignments`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 pub enum AiFunction {
-    /// Sorting incoming mail into categories (task E12.6, `docs/kategorien.md`). Needs a decision
-    /// model ([`AiModel::decision`]), and – while mail may not leave this computer – one that
-    /// runs here.
+    /// Sorting incoming mail into categories (task E12.6, `docs/kategorien.md`). Needs a model that
+    /// decides – a decision model, or a chat model through the fallback ([`AiModel::can_decide`]) –,
+    /// and – while mail may not leave this computer – one that runs here.
     #[serde(rename = "inbox.categorize")]
     InboxCategorize,
 }
@@ -485,8 +504,9 @@ impl AiFunction {
         }
     }
 
-    /// The function only works with a model that decides instead of writing
-    /// ([`AiModel::decision`]).
+    /// The function only works with a model that decides: a decision model ([`AiModel::decision`])
+    /// directly, or a chat model with tools through the fallback (task MW.3,
+    /// [`AiModel::can_decide`], [`decide_chat`]).
     pub fn needs_decision(self) -> bool {
         matches!(self, AiFunction::InboxCategorize)
     }
@@ -1140,6 +1160,21 @@ mod tests {
         assert_eq!(serde_json::from_str::<ModelSwitches>("{}").expect("empty"), ModelSwitches::default());
         switches.forget(account);
         assert!(switches.is_on(account, &local, true), "a removed account starts with the rule again");
+    }
+
+    /// Task MW.3: the slot Sorting takes a decision model directly and a model with tools through
+    /// the fallback; one that can do neither is no model for it.
+    #[test]
+    fn sorting_takes_a_decision_model_or_one_with_tools() {
+        let with = |decision: Option<bool>, tools: Option<bool>| AiModel { decision, tools, ..AiModel::named("m") };
+        let nimble = with(Some(true), Some(false));
+        assert!(nimble.can_decide() && !nimble.decides_by_chat(), "directly");
+        let qwen = with(Some(false), Some(true));
+        assert!(qwen.can_decide() && qwen.decides_by_chat(), "through the fallback");
+        let unsure = with(None, None);
+        assert!(unsure.can_decide() && unsure.decides_by_chat(), "a server that does not tell, like LM Studio");
+        let embedding = with(Some(false), Some(false));
+        assert!(!embedding.can_decide() && !embedding.decides_by_chat());
     }
 
     /// Issue #325: each slot is written by its key, sorting mail takes the slot `decide`, and the

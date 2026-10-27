@@ -136,12 +136,20 @@ impl SettingsStore {
     /// and one coming back later would otherwise belong to no account, or by chance to the first.
     /// So is a PDF template or folder that changes and does not fit, as `set_setting` refuses it
     /// (`torro_core::settings::PdfSettings::check_changes`).
+    ///
+    /// `decide_mail_to_cloud` (issue #325) is never stored unset: `new` without it – from an app
+    /// before the slots – keeps it as stored, since unset would take the old AI values over again at
+    /// the next load (`Settings::take_over_old_ai`).
     pub fn update(&self, new: Settings) -> Result<(), String> {
         let ids = new.hidden_collections.iter().chain(new.list_orders.keys());
         if let Some(bare) = ids.into_iter().find(|id| torro_pim::account::is_legacy_id(id)) {
             return Err(format!("{bare:?} is not a collection id; use the ids from accounts.list_accounts"));
         }
-        self.change(|settings| *settings = new)
+        self.change(|settings| {
+            let stored = settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide);
+            let decide_mail_to_cloud = Some(new.decide_mail_to_cloud.unwrap_or(stored));
+            *settings = Settings { decide_mail_to_cloud, ..new }
+        })
     }
 
     /// Like [`SettingsStore::update`], but the hidden collections, the orders of the task lists and
@@ -1963,6 +1971,29 @@ mod tests {
         store.set_ai_slot(AiSlot::Chat, Some(chat.clone()), true).expect("chat");
         let now = store.current();
         assert_eq!((now.ai_slots.chat, now.decide_mail_to_cloud, now.mail_to_cloud), (Some(chat), Some(true), false));
+    }
+
+    /// Issue #325 (task MW.3): the person's whole settings without `decideMailToCloud` – an app from
+    /// before the slots – keep it as stored, so the file never holds it unset (which would take the old
+    /// AI values over again); with it, it is taken.
+    #[test]
+    fn the_person_s_whole_settings_never_unset_the_permission_of_sorting() {
+        use torro_core::ai::AiSlot;
+        let (dir, store) = store();
+        store.set(SettingKey::DecideMailToCloud, &json!(true)).expect("the person");
+        let mut sent = store.current();
+        sent.decide_mail_to_cloud = None;
+        store.update(sent.clone()).expect("written");
+        assert_eq!(store.current().decide_mail_to_cloud, Some(true), "kept as stored");
+        let file = std::fs::read_to_string(dir.path().join("settings.json")).expect("the file");
+        assert!(file.contains("\"decideMailToCloud\": true"), "{file}");
+
+        sent.decide_mail_to_cloud = Some(false);
+        store.update(sent.clone()).expect("written");
+        assert!(!store.current().mail_to_cloud_in(AiSlot::Decide), "taken when it is there");
+        sent.decide_mail_to_cloud = None;
+        store.update(sent).expect("written");
+        assert_eq!(store.current().decide_mail_to_cloud, Some(false));
     }
 
     /// #231: a client's whole settings never open the API or MCP again, but may close them; the

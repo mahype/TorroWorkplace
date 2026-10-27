@@ -1881,13 +1881,24 @@ pub enum Request {
     #[serde(rename = "ai.list_assignments")]
     AiAssignments,
     /// Sets what one function uses, or takes the assignment back with `engine: null`
-    /// ([`Response::AiAssignments`], task E12.5). `not-found` for a function this version does
-    /// not know or an account that does not exist; `error` for a model the account does not
-    /// offer, for a function that needs a decision model and a model that does not decide, and –
-    /// while mail may not leave this computer – for a model that runs elsewhere; `unsupported` for
-    /// a model that is turned off (`ai.set_model_enabled`, task S.24, #231), and with no model named
-    /// for an account with no model on – for a function that needs a decision model, with none on
-    /// that decides.
+    /// ([`Response::AiAssignments`], task E12.5). The assignment is the exception: it goes before
+    /// the model of the function's slot ([`Request::SetAiSlot`], issue #325) and stays when the slot
+    /// changes; switched off (`enabled: false`) it keeps the function off whatever the slot says.
+    ///
+    /// A function that needs a decision takes a decision model directly or a chat model that can use
+    /// tools through the fallback (task MW.3), which answers in a fixed format. Choosing a model
+    /// elsewhere – or, naming none, an account elsewhere – for a function that reads mail, while the
+    /// assignment is on, is the person's alone (`docs/api.md`, "Was nie nach außen geht", 6): every
+    /// client key gets `forbidden`, even while `decide_mail_to_cloud` is on, since that consent was
+    /// given to another provider. A person who chooses one lets the mail out with it and so sets
+    /// `decide_mail_to_cloud`.
+    ///
+    /// Error codes: `not-found` for a function this version does not know or an account that does
+    /// not exist; `error` for a model the account does not offer, and for a function that needs a
+    /// decision a model that neither decides nor can use tools; `forbidden` as above; `unsupported`
+    /// for a model that is turned off (`ai.set_model_enabled`, task S.24, #231), and with no model
+    /// named for an account with no model on – for a function that needs a decision, with none on
+    /// that can.
     #[serde(rename = "ai.set_assignment")]
     SetAiAssignment {
         /// The function's key: `inbox.categorize`.
@@ -1912,7 +1923,8 @@ pub enum Request {
     /// (`chat`: the assistant and its bots, a new chat starts with it; `decide`: sorting mail).
     ///
     /// Checked like [`Request::SetAiAssignment`]: the account exists and offers the model, the model
-    /// is turned on, and for `decide` a model that can decide. Choosing a model elsewhere for
+    /// is turned on, and for `decide` a model that decides or, through the fallback (task MW.3), can
+    /// use tools and answers in a fixed format. Choosing a model elsewhere for
     /// `decide` is the person's alone (`docs/api.md`, "Was nie nach außen geht", 6): every client
     /// key gets `forbidden`, even while `decide_mail_to_cloud` is on, since that consent was given to
     /// another provider. The same write sets `decide_mail_to_cloud` to whether the model runs
@@ -4894,8 +4906,10 @@ pub struct AiAssignmentInfo {
     pub assignment: torro_core::ai::AiAssignment,
     /// What a person reads for the function, in the core's language.
     pub label: String,
-    /// The function needs a model that decides instead of writing ([`torro_core::ai::AiModel`]'s
-    /// `decision`), so only such models may be chosen for it.
+    /// The function needs a model that decides: a decision model ([`torro_core::ai::AiModel`]'s
+    /// `decision`) directly, or a chat model that can use tools (`tools` not `false`) through the
+    /// fallback, which answers in a fixed format (task MW.3); a model that can do neither may not be
+    /// chosen for it.
     pub needs_decision: bool,
 }
 

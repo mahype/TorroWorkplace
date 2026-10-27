@@ -2771,15 +2771,17 @@ static SET_ASSIGNMENT: Command = Command {
     area: Area::Ai,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Sets which AI account and model a function uses, or takes it back with `engine: null`; \
-                  returns the whole list. Needs the person's approval. `not-found` for a function this version \
-                  does not know or an account that does not exist; `error` for a model the account does not \
-                  offer, for a function that needs a decision model and a model that does not decide, and – \
-                  while mail may only go to models on this computer – for a model that runs elsewhere. That \
-                  last rule is the person's to lift, in the control centre, never an agent's. `unsupported` \
-                  while the assignment is on for a model that is turned off (`ai.set_model_enabled`), or, \
-                  with no model named, for an account with no model on (for a function that needs a decision \
-                  model: none on that decides); a model turned off later is not used.",
+    description: "Sets which AI account and model a function uses as an exception to the model of its slot \
+                  (ai_set_slot), or takes the exception back with `engine: null`, so the slot applies again; \
+                  `enabled: false` keeps the function off. Returns the whole list. Needs the person's approval. \
+                  A function that needs a decision takes a decision model or a chat model with tools, which \
+                  answers in a fixed format. Choosing a model that runs elsewhere for a function that reads \
+                  mail is for a person, in the control centre: an agent gets `forbidden`, also while sorted \
+                  mail may leave this computer. `not-found` for a function this version does not know or an \
+                  account that does not exist; `error` for a model the account does not offer or one that \
+                  cannot decide; `unsupported` while the assignment is on for a model that is turned off \
+                  (`ai.set_model_enabled`), or, with no model named, for an account with no model on that \
+                  fits; a model turned off later is not used.",
 };
 
 // Admin like `ai.set_assignment`: it decides which account of the person works for the whole suite.

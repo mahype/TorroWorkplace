@@ -139,7 +139,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   vor und bleibt beim Platzwechsel; Erlaubnis aus → Modell anderswo wird beim Aufruf nicht gefragt (`NotLocal`).
 
 ### MW.3 Sortieren per Chat-Modell (Ersatzweg)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Prompt-Grenze, strenges Lesen fremder Antworten) · **Braucht:** MW.2 · **Dateien:**
   `crates/torro-core/src/ai/{mod,decide_chat}.rs`, `crates/torroworkplace/src/{categorize,core}.rs`,
   `crates/torroworkplace/src/account/ai.rs`, `crates/torro-settings-ui/src/mail.rs`

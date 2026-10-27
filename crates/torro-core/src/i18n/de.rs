@@ -4443,8 +4443,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Füge unter KI eine KI auf diesem Rechner hinzu, etwa Ollama, und lade ein Modell, das entscheidet.",
     ),
     (
-        "Mail may go to an AI elsewhere; every model that decides is offered.",
-        "E-Mails dürfen zu einer KI anderswo gehen; angeboten wird jedes Modell, das entscheidet.",
+        "Mail may go to an AI elsewhere for sorting; every model that can sort it is offered.",
+        "E-Mails dürfen zum Einordnen zu einer KI anderswo gehen; angeboten wird jedes Modell, das sie einordnen kann.",
     ),
     ("Catch up", "Altbestand"),
     ("Catch up now", "Jetzt nachrechnen"),
@@ -4790,8 +4790,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("This AI account offers no model {id}.", "Dieses KI-Konto bietet kein Modell {id}."),
     (
-        "This model does not decide. Pick one that does, like nimble on Ollama.",
-        "Dieses Modell entscheidet nicht. Nimm eines, das es kann, etwa nimble auf Ollama.",
+        "This model can neither decide nor use tools. Pick one that can, like nimble or qwen3 on Ollama.",
+        "Dieses Modell kann weder entscheiden noch Werkzeuge nutzen. Nimm eines, das es kann, etwa nimble oder qwen3 auf Ollama.",
     ),
     ("This AI server does not offer decision models.", "Dieser KI-Server bietet keine Entscheidermodelle."),
     (
@@ -5620,8 +5620,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Decides", "Entscheidet"),
     ("Can't use tools or decide", "Kann weder Werkzeuge nutzen noch entscheiden"),
     (
-        "No model of {provider} that decides is on. Turn one on in Settings › AI.",
-        "Kein Modell von {provider}, das entscheidet, ist an. Schalte eins unter Einstellungen › KI an.",
+        "No model of {provider} that can sort mail is on. Turn one on in Settings › AI.",
+        "Kein Modell von {provider}, das E-Mails einordnen kann, ist an. Schalte eins unter Einstellungen › KI an.",
     ),
     ("You turned this off for {bot} in {area}.", "Du hast das für {bot} in {area} abgeschaltet."),
     ("You turned this off in {area}.", "Du hast das in {area} abgeschaltet."),
@@ -6537,4 +6537,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Noch keine Antwort – sieh in „Gesendet“ nach, bevor du nochmal sendest.",
     ),
     ("No longer on Reply later.", "Nicht mehr auf „Später beantworten“."),
+    // Sorting through a chat model, the fallback of the slot Sorting (MW.3, issue #325).
+    (
+        "The AI model's answer could not be read. Try again or pick another model.",
+        "Die Antwort des KI-Modells ließ sich nicht lesen. Versuch es noch einmal oder nimm ein anderes Modell.",
+    ),
+    ("Only for sorting mail", "Nur zum Einordnen von E-Mails"),
+    ("Answers in a fixed format, slower", "Antwortet in festem Format, langsamer"),
 ];

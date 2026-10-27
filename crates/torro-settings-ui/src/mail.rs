@@ -2283,66 +2283,171 @@ mod tests {
         assert_eq!(value, &serde_json::json!(["promotion"]), "only the ones still hidden");
     }
 
-    /// Task E12.10: switching the sorting on keeps the model that is assigned, and picking a
-    /// model switches it on – that is what picking one means.
-    #[test]
-    fn the_switch_and_the_model_go_together() {
-        use torro_core::ai::{AiAssignment, AiFunction};
+    /// The slot Sorting with `model` of the local Ollama (task MW.3).
+    fn slot(model: &str) -> torro_core::ai::SlotModel {
+        torro_core::ai::SlotModel {
+            engine: "ai:ollama@localhost:11434".into(),
+            model: Some(model.into()),
+            effort: None,
+        }
+    }
 
-        let assignments = vec![torro_ipc::AiAssignmentInfo {
+    /// The exception `inbox.categorize` with `model` of the local Ollama, on or off (task MW.3).
+    fn exception(model: &str, enabled: bool) -> Vec<torro_ipc::AiAssignmentInfo> {
+        use torro_core::ai::{AiAssignment, AiFunction};
+        vec![torro_ipc::AiAssignmentInfo {
             assignment: AiAssignment {
                 function: AiFunction::InboxCategorize,
                 engine: Some("ai:ollama@localhost:11434".into()),
-                model: Some("nimble".into()),
+                model: Some(model.into()),
                 effort: None,
-                enabled: false,
+                enabled,
             },
             label: "Sort mail into categories".into(),
             needs_decision: true,
-        }];
-        let data = Data { assignments, ..Data::default() };
-        let on = categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &data);
-        let Action::Send(requests) = on else { panic!("a request") };
-        let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = requests.as_slice() else {
-            panic!("one assignment")
-        };
-        assert_eq!(engine.as_deref(), Some("ai:ollama@localhost:11434"), "the model assigned stays");
-        assert_eq!(model.as_deref(), Some("nimble"));
-        assert!(enabled);
-
-        let pick = categorization::update::<()>(
-            &mut Default::default(),
-            categorization::Message::Model("ai:x".into(), "tev1".into()),
-            &data,
-        );
-        let Action::Send(requests) = pick else { panic!("a request") };
-        let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = requests.as_slice() else {
-            panic!("one assignment")
-        };
-        assert_eq!((engine.as_deref(), model.as_deref(), *enabled), (Some("ai:x"), Some("tev1"), true));
+        }]
     }
 
-    /// Task S.26: only models turned on are offered for sorting mail – switching it on takes the
-    /// first one that is on, and with none on there is nothing to switch on.
+    /// What `message` sends on the Categorization page over `data`, one request after the other.
+    fn sent(message: categorization::Message, data: &Data) -> Vec<torro_ipc::Request> {
+        match categorization::update::<()>(&mut Default::default(), message, data) {
+            Action::Send(requests) => requests,
+            Action::None => Vec::new(),
+            _ => panic!("a request or nothing"),
+        }
+    }
+
+    /// `ai.set_slot decide` with `model` of `engine`.
+    fn set_slot(engine: &str, model: &str) -> torro_ipc::Request {
+        torro_ipc::Request::SetAiSlot {
+            slot: torro_core::ai::AiSlot::Decide,
+            engine: Some(engine.into()),
+            model: Some(model.into()),
+            effort: None,
+        }
+    }
+
+    /// The exception taken back (`engine: null`).
+    fn no_exception() -> torro_ipc::Request {
+        torro_ipc::Request::SetAiAssignment {
+            function: torro_core::ai::AiFunction::InboxCategorize,
+            engine: None,
+            model: None,
+            effort: None,
+            enabled: false,
+        }
+    }
+
+    /// Issue #325 (task MW.3): picking a model sets the slot Sorting – no new exception after the
+    /// slots took the old assignment over –, and takes an exception back after the slot; the switch
+    /// "off" is the exception switched off with what sorts now, "on" takes it back, and fills an
+    /// empty slot with what sorted last.
+    #[test]
+    fn the_model_goes_into_the_slot_and_the_switch_is_the_exception() {
+        use categorization::Message;
+        let ollama = "ai:ollama@localhost:11434";
+        let mut by_slot = Data::default();
+        by_slot.settings.ai_slots.decide = Some(slot("nimble"));
+        assert!(categorization::in_effect(&by_slot).is_ready(), "the slot sorts");
+
+        assert_eq!(sent(Message::Model("ai:x".into(), "tev1".into()), &by_slot), [set_slot("ai:x", "tev1")]);
+        let off = sent(Message::Enabled(false), &by_slot);
+        let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = off.as_slice() else {
+            panic!("the exception switched off: {off:?}")
+        };
+        assert_eq!((engine.as_deref(), model.as_deref(), *enabled), (Some(ollama), Some("nimble"), false));
+
+        // Switched off by the exception: the page says so, "on" takes the exception back.
+        let switched_off = Data { assignments: exception("nimble", false), ..by_slot.clone() };
+        assert!(!categorization::in_effect(&switched_off).is_ready());
+        assert_eq!(sent(Message::Enabled(true), &switched_off), [no_exception()]);
+        assert_eq!(
+            sent(Message::Model("ai:x".into(), "tev1".into()), &switched_off),
+            [set_slot("ai:x", "tev1"), no_exception()],
+            "the slot first, then the exception goes"
+        );
+        // Without a slot, "on" puts what sorted last into it before the exception goes.
+        let no_slot = Data { assignments: exception("nimble", false), ..Data::default() };
+        assert_eq!(sent(Message::Enabled(true), &no_slot), [set_slot(ollama, "nimble"), no_exception()]);
+        // Nothing sorts: nothing to switch off.
+        assert!(sent(Message::Enabled(false), &Data::default()).is_empty());
+    }
+
+    /// Task S.26 (and MW.3): only models turned on are offered for sorting mail – switching it on
+    /// with nothing set puts the first one that is on into the slot, and with none on there is
+    /// nothing to switch on.
     #[test]
     fn sorting_mail_offers_only_models_that_are_on() {
         use torro_core::ai::AiModel;
 
         let decider = |id: &str, enabled: bool| {
-            ("ai:ollama@localhost:11434".to_string(), AiModel { decision: Some(true), enabled, ..AiModel::named(id) })
+            let model = AiModel { decision: Some(true), enabled, remote: Some(false), ..AiModel::named(id) };
+            ("ai:ollama@localhost:11434".to_string(), model)
         };
         let data = Data { decider_models: vec![decider("off", false), decider("on", true)], ..Data::default() };
-        let on = categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &data);
-        let Action::Send(requests) = on else { panic!("a request") };
-        let [torro_ipc::Request::SetAiAssignment { model, .. }] = requests.as_slice() else { panic!("one assignment") };
-        assert_eq!(model.as_deref(), Some("on"), "the model that is off is not offered");
+        let on = sent(categorization::Message::Enabled(true), &data);
+        assert_eq!(on, [set_slot("ai:ollama@localhost:11434", "on")], "the model that is off is not offered");
         let _ = categorization::view(&Default::default(), &data);
 
         let none = Data { decider_models: vec![decider("off", false)], ..Data::default() };
-        let nothing =
-            categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &none);
-        assert!(matches!(nothing, Action::None), "nothing on, nothing to switch on");
+        assert!(sent(categorization::Message::Enabled(true), &none).is_empty(), "nothing on, nothing to switch on");
         let _ = categorization::view(&Default::default(), &none);
+    }
+
+    /// Task MW.3: chat models with tools are offered too, after nothing – a model that can do neither
+    /// is not –; while sorted mail stays here only those that compute here, judged by the slot's own
+    /// permission (`decide_mail_to_cloud`), not the chat's.
+    #[test]
+    fn chat_models_are_offered_for_sorting_and_only_here_while_mail_stays_here() {
+        use torro_core::ai::AiModel;
+
+        let ollama = "ai:ollama@localhost:11434";
+        let openrouter = "ai:openrouter@openrouter.ai";
+        let model = |engine: &str, id: &str, decision: Option<bool>, tools: Option<bool>, remote: Option<bool>| {
+            (engine.to_string(), AiModel { decision, tools, remote, enabled: true, ..AiModel::named(id) })
+        };
+        let mut data = Data {
+            decider_models: vec![
+                model(ollama, "nimble", Some(true), Some(false), Some(false)),
+                model(ollama, "qwen3:8b", Some(false), Some(true), Some(false)),
+                model(ollama, "nomic-embed-text", Some(false), Some(false), Some(false)),
+                model(ollama, "glm:cloud", Some(false), Some(true), Some(true)),
+                model(openrouter, "qwen/qwen3-14b", None, Some(true), None),
+                model("ai:lm_studio@localhost:1234", "gemma", None, None, None),
+                model("ai:openai_compatible@127.0.0.1:8000", "mine", None, None, None),
+                model("ai:openai_compatible@gpu.example.org", "far", None, None, None),
+            ],
+            ..Data::default()
+        };
+        let ids = |data: &Data| -> Vec<String> {
+            categorization::offered(data).into_iter().map(|(_, model)| model.id).collect()
+        };
+        data.settings.mail_to_cloud = true;
+        assert_eq!(ids(&data), ["nimble", "qwen3:8b", "gemma", "mine"], "the chat's permission opens nothing");
+        data.settings.decide_mail_to_cloud = Some(true);
+        assert_eq!(ids(&data), ["nimble", "qwen3:8b", "glm:cloud", "qwen/qwen3-14b", "gemma", "mine", "far"]);
+        data.settings.ai_slots.decide = Some(slot("qwen3:8b"));
+        let _ = categorization::view(&Default::default(), &data);
+    }
+
+    /// Task MW.3: an exception with a model of its own is what sorts, and the page shows it as such.
+    #[test]
+    fn an_exception_with_its_own_model_sorts_instead_of_the_slot() {
+        use torro_core::ai::AiModel;
+
+        let ollama = "ai:ollama@localhost:11434";
+        let mut data = Data {
+            assignments: exception("tev1", true),
+            decider_models: ["nimble", "tev1"]
+                .into_iter()
+                .map(|id| (ollama.to_string(), AiModel { decision: Some(true), enabled: true, ..AiModel::named(id) }))
+                .collect(),
+            ..Data::default()
+        };
+        data.settings.ai_slots.decide = Some(slot("nimble"));
+        let held = categorization::in_effect(&data);
+        assert_eq!((held.model.as_deref(), held.enabled), (Some("tev1"), true));
+        let _ = categorization::view(&Default::default(), &data);
     }
 
     /// PR review #242: a model assigned for sorting mail that is turned off in Accounts is not shown
@@ -2440,7 +2545,8 @@ mod tests {
 ///
 /// ```text
 /// Sort mail into categories   on/off
-/// Model                       the decision models of the AI accounts, local first
+/// Model                       the models of the AI accounts that can sort: decision models, and
+///                             chat models that answer in a fixed format (task MW.3)
 /// Catch up                    how far the backlog has come, "Catch up now" / "Cancel"
 /// Show in the sidebar         one switch per category
 /// Rules ↗                     the kept senders, in the Notification Hub
@@ -2449,9 +2555,17 @@ mod tests {
 /// **No setting for the moment of sorting or the confidence threshold**: both are fixed
 /// (`docs/kategorien.md`, "decisions instead of options").
 ///
-/// Models that do not run on this computer are **not offered** while mail may not leave it
-/// (`docs/ki.md`, principle 4); a quiet line says so. The core refuses such a model as well
-/// (task E12.5), so the rule holds even if this list were wrong.
+/// **The slot and its exception** (issue #325, task MW.3): what the page shows is what sorts – the
+/// exception `inbox.categorize` while one is stored, else the slot Sorting ([`in_effect`]). Picking a
+/// model sets the slot (`ai.set_slot decide`) and takes an exception back, so no new exception is
+/// made. The switch "off" stores the exception switched off, with the account and model in effect;
+/// "on" takes it back (`engine: null`), and the slot sorts again. An exception with a model of its
+/// own says so at its row ("Only for sorting mail").
+///
+/// Models that do not run on this computer are **not offered** while sorted mail may not leave it
+/// (the permission of the slot Sorting, `decide_mail_to_cloud`; `docs/ki.md`, principle 4); a quiet
+/// line says so. The core refuses such a model as well (task E12.5), so the rule holds even if this
+/// list were wrong.
 ///
 /// **A model turned off** (PR review #242): only models turned on in the control centre's
 /// AI section are offered (task S.26). The assigned one turned off since stands on top of "Model"
@@ -2461,7 +2575,7 @@ pub mod categorization {
     use iced::Theme;
     use iced::widget::text::Wrapping;
     use iced::widget::{column, svg};
-    use torro_core::ai::{AiAssignment, AiFunction, AiModel};
+    use torro_core::ai::{AiAssignment, AiFunction, AiModel, AiSlot};
     use torro_core::i18n::trf;
     use torro_gui::icon;
     use torro_gui::theme::palette;
@@ -2534,7 +2648,6 @@ pub mod categorization {
     }
 
     pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
-        let held = assignment(data);
         match message {
             Message::Editor(message) => super::editor::update(&mut state.editor, message, data),
             Message::AllAccounts => {
@@ -2594,47 +2707,110 @@ pub mod categorization {
             }
             Message::ControlClear(id, action) => Action::send(Request::ControlClearCategories { id, action }),
             Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
-            // Switching on without a model named would store an assignment the core throws away
-            // (no account, nothing to ask): the first model that can decide is taken, which is
-            // what the switch means. Nothing offered, nothing to switch on.
-            Message::Enabled(true) if held.engine.is_none() => match offered(data).first() {
-                Some((engine, model)) => Action::send(Request::SetAiAssignment {
-                    function: AiFunction::InboxCategorize,
-                    engine: Some(engine.clone()),
-                    model: Some(model.id.clone()),
-                    effort: None,
-                    enabled: true,
-                }),
-                None => Action::None,
-            },
-            Message::Enabled(on) => Action::send(Request::SetAiAssignment {
-                function: AiFunction::InboxCategorize,
-                engine: held.engine.clone(),
-                model: held.model.clone(),
-                effort: held.effort,
-                enabled: on,
-            }),
-            Message::Model(engine, model) => Action::send(Request::SetAiAssignment {
-                function: AiFunction::InboxCategorize,
-                engine: Some(engine),
-                model: Some(model),
-                effort: held.effort,
-                // Picking a model switches the sorting on: that is what picking one means.
-                enabled: true,
-            }),
+            Message::Enabled(true) => switched_on(data),
+            // Off is the exception switched off, with what sorts now: it goes before the slot and
+            // keeps sorting off, also while the slot changes. Nothing sorts, nothing to switch off.
+            Message::Enabled(false) => {
+                let held = in_effect(data);
+                match held.engine {
+                    Some(engine) => Action::send(Request::SetAiAssignment {
+                        function: AiFunction::InboxCategorize,
+                        engine: Some(engine),
+                        model: held.model,
+                        effort: held.effort,
+                        enabled: false,
+                    }),
+                    None => Action::None,
+                }
+            }
+            // Picking a model switches the sorting on: that is what picking one means. It goes into
+            // the slot; an exception would stand before it, so it is taken back – after the slot, so
+            // a slot refused leaves the exception as it was.
+            Message::Model(engine, model) => {
+                let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
+                let mut requests = vec![set_slot(engine, Some(model), effort)];
+                requests.extend(stored_exception(data).map(|_| no_exception()));
+                Action::Send(requests)
+            }
             Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel, again: false }),
             Message::Shown(category, shown) => Action::send(super::editor::shown_request(data, category, shown)),
             Message::ManageModels => Action::ControlCentre(crate::assistant::AI_SECTION.to_string()),
         }
     }
 
-    /// What is assigned for sorting mail, or nothing assigned.
-    fn assignment(data: &Data) -> AiAssignment {
+    /// The exception stored for sorting mail (`ai.set_assignment inbox.categorize`), on or off; `None`
+    /// when none is stored – the core lists the function with empty fields then.
+    fn stored_exception(data: &Data) -> Option<AiAssignment> {
         data.assignments
             .iter()
             .find(|info| info.assignment.function == AiFunction::InboxCategorize)
             .map(|info| info.assignment.clone())
-            .unwrap_or_else(|| AiAssignment::none(AiFunction::InboxCategorize))
+            .filter(|held| held.engine.is_some())
+    }
+
+    /// What sorts mail now (issue #325), as the core weighs it: the exception while one is stored –
+    /// one switched off keeps sorting off –, else the slot Sorting as an assignment that is on; nothing
+    /// assigned when neither is set.
+    pub fn in_effect(data: &Data) -> AiAssignment {
+        let function = AiFunction::InboxCategorize;
+        if let Some(own) = stored_exception(data) {
+            return own;
+        }
+        match data.settings.ai_slots.get(AiSlot::Decide) {
+            Some(slot) => AiAssignment {
+                function,
+                engine: Some(slot.engine.clone()),
+                model: slot.model.clone(),
+                effort: slot.effort,
+                enabled: true,
+            },
+            None => AiAssignment::none(function),
+        }
+    }
+
+    /// The exception with a model of its own: stored and on, so it sorts instead of the slot.
+    fn own_exception(data: &Data) -> Option<AiAssignment> {
+        stored_exception(data).filter(|held| held.enabled)
+    }
+
+    /// The switch "on": the exception switched off is taken back, so the slot sorts again. Without a
+    /// slot, it gets what sorted last – the exception's model – or the first model offered; nothing
+    /// to sort with, nothing to switch on. The slot first, so a refused one takes nothing back.
+    fn switched_on<A>(data: &Data) -> Action<A> {
+        let exception = stored_exception(data);
+        let mut requests = Vec::new();
+        if data.settings.ai_slots.decide.is_none() {
+            let from_exception = exception
+                .as_ref()
+                .and_then(|held| held.engine.clone().map(|engine| set_slot(engine, held.model.clone(), held.effort)));
+            let first =
+                || offered(data).into_iter().next().map(|(engine, model)| set_slot(engine, Some(model.id), None));
+            match from_exception.or_else(first) {
+                Some(request) => requests.push(request),
+                None => return Action::None,
+            }
+        }
+        requests.extend(exception.map(|_| no_exception()));
+        match requests.is_empty() {
+            true => Action::None,
+            false => Action::Send(requests),
+        }
+    }
+
+    /// `ai.set_slot decide` with `engine` and `model`.
+    fn set_slot(engine: String, model: Option<String>, effort: Option<torro_core::ai::Effort>) -> Request {
+        Request::SetAiSlot { slot: AiSlot::Decide, engine: Some(engine), model, effort }
+    }
+
+    /// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back.
+    fn no_exception() -> Request {
+        Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: None,
+            model: None,
+            effort: None,
+            enabled: false,
+        }
     }
 
     /// The section's page: the list, or the open page of a category or a sorting rule with
@@ -2650,13 +2826,13 @@ pub mod categorization {
     }
 
     pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-        let held = assignment(data);
+        let held = in_effect(data);
         let on = held.is_ready();
         let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
         let sorting = widgets::group(
             tr("Categorization"),
             vec![switch_row],
-            Some(match data.settings.mail_to_cloud {
+            Some(match data.settings.mail_to_cloud_in(AiSlot::Decide) {
                 true => tr("The chosen model sorts mail. Mail may leave this computer; no message is moved or deleted, and categories can be changed by hand.").to_string(),
                 false => tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.").to_string(),
             }),
@@ -3017,38 +3193,53 @@ pub mod categorization {
                 false => tr("Local model: mail content stays on this computer.").to_string(),
             };
         }
-        let held = assignment(data);
-        let remote = data
+        let held = in_effect(data);
+        let here = data
             .decider_models
             .iter()
             .find(|(engine, model)| {
                 held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
             })
-            .and_then(|(_, model)| model.remote);
-        match remote {
-            Some(true) => tr("Cloud model: mail content leaves this computer.").to_string(),
-            Some(false) => tr("Local model: mail content stays on this computer.").to_string(),
+            .map(|(engine, model)| stays_here(engine, model));
+        match here {
+            Some(false) => tr("Cloud model: mail content leaves this computer.").to_string(),
+            Some(true) => tr("Local model: mail content stays on this computer.").to_string(),
             None => tr("Choose a decision model above.").to_string(),
         }
     }
 
-    /// The models that may sort mail: every AI account's models that decide and are turned on for
-    /// the suite (task S.26, `AiModel::enabled`), and – while mail may not leave this computer –
-    /// only those that run here (`docs/ki.md`, principle 4). The core refuses the others as well
-    /// (task E12.5), so the rule holds even if this list were wrong.
-    fn offered(data: &Data) -> Vec<(String, AiModel)> {
+    /// The models that may sort mail: every AI account's models that can – decision models, and
+    /// chat models with tools through the fallback (task MW.3, `AiModel::can_decide`) – and are
+    /// turned on for the suite (task S.26, `AiModel::enabled`), and – while sorted mail may not leave
+    /// this computer – only those that run here (`docs/ki.md`, principle 4). The core refuses the
+    /// others as well (task E12.5), so the rule holds even if this list were wrong.
+    pub(super) fn offered(data: &Data) -> Vec<(String, AiModel)> {
         deciders(data).into_iter().filter(|(_, model)| model.enabled).collect()
     }
 
-    /// The models that decide and may see mail, turned on or not.
+    /// The models that can sort mail and may see it, turned on or not.
     fn deciders(data: &Data) -> Vec<(String, AiModel)> {
-        let local_only = !data.settings.mail_to_cloud;
+        let local_only = !data.settings.mail_to_cloud_in(AiSlot::Decide);
         data.decider_models
             .iter()
-            .filter(|(_, model)| model.decision == Some(true))
-            .filter(|(_, model)| !local_only || model.remote != Some(true))
+            .filter(|(_, model)| model.can_decide())
+            .filter(|(engine, model)| !local_only || stays_here(engine, model))
             .cloned()
             .collect()
+    }
+
+    /// Whether `model` of the AI account `engine` (`ai:<provider>@<host>`) computes on this computer,
+    /// as far as the list tells: what its server says (`AiModel::remote`, Ollama and Strata), else
+    /// by the account – LM Studio, or a server of one's own at an address of this computer. A cloud
+    /// provider says nothing and counts as elsewhere. Only for what is offered; the core judges again.
+    fn stays_here(engine: &str, model: &AiModel) -> bool {
+        if let Some(remote) = model.remote {
+            return !remote;
+        }
+        let (provider, host) = engine.strip_prefix("ai:").and_then(|rest| rest.split_once('@')).unwrap_or_default();
+        let lm_studio = torro_core::ai::AiProvider::LmStudio.id();
+        let own = torro_core::ai::AiProvider::OpenAiCompatible.id();
+        provider == lm_studio || (provider == own && torro_core::ai::is_this_computer(host))
     }
 
     /// The model assigned for sorting mail when the sorting is on and that model of its AI account
@@ -3057,7 +3248,7 @@ pub mod categorization {
     /// lacks it. `None` while the sorting is off, the model is on, "Automatic" is assigned, or the
     /// account's models are not in yet.
     pub fn assigned_off(data: &Data) -> Option<(String, String)> {
-        let held = assignment(data);
+        let held = in_effect(data);
         let (engine, model) = (held.engine.filter(|_| held.enabled)?, held.model?);
         let mut listed = data.decider_models.iter().filter(|(account, _)| *account == engine).peekable();
         listed.peek()?;
@@ -3068,10 +3259,12 @@ pub mod categorization {
         }
     }
 
-    /// One row per model that may sort mail, the assigned one checked; picking one switches the
-    /// sorting on. Without any, one row says so instead: where to turn one on when there are
-    /// models that decide but none is on (task S.26), else where to add one. The assigned model
-    /// turned off since comes first ([`assigned_off`]), "Manage models…" last.
+    /// One row per model that may sort mail, the one in effect checked; picking one switches the
+    /// sorting on. A chat model says that it answers in a fixed format (the fallback, task MW.3), the
+    /// model of an exception that it is only for sorting mail. Without any, one row says so instead:
+    /// where to turn one on when there are models that can sort but none is on (task S.26), else where
+    /// to add one. The model in effect turned off since comes first ([`assigned_off`]), "Manage
+    /// models…" last.
     fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
         let offered = offered(data);
         let off = assigned_off(data);
@@ -3093,17 +3286,44 @@ pub mod categorization {
             let none = iced::widget::space().width(0);
             rows.push(setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none));
         }
+        let own = own_exception(data);
         rows.extend(offered.into_iter().map(|(engine, model)| {
-            let chosen = held.is_ready()
-                && held.engine.as_deref() == Some(engine.as_str())
-                && held.model.as_deref() == Some(model.id.as_str());
-            choice(label(&engine, &model.name), chosen, Message::Model(engine, model.id))
+            let is = |held: &AiAssignment| {
+                held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
+            };
+            let chosen = held.is_ready() && is(held);
+            let notes: Vec<&str> = [
+                own.as_ref().filter(|own| is(own)).map(|_| tr("Only for sorting mail")),
+                model.decides_by_chat().then(|| tr("Answers in a fixed format, slower")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let detail = (!notes.is_empty()).then(|| notes.join(" · "));
+            model_choice(label(&engine, &model.name), detail, chosen, Message::Model(engine, model.id))
         }));
         // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
         let arrow = icon::icon(Icon::ArrowUpRight, icon::SIZE)
             .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
         rows.push(pressable(setting_row(None, tr("Manage models…"), None, arrow), Some(Message::ManageModels)));
         rows
+    }
+
+    /// One model to pick, like [`choice`], with a line under its name where it has one: the row is
+    /// the button, a check at the end marks the one that sorts.
+    fn model_choice<'a>(
+        label: String,
+        detail: Option<String>,
+        chosen: bool,
+        on_press: Message,
+    ) -> Element<'a, Message> {
+        let check: Element<'a, Message> = match chosen {
+            true => icon::icon(Icon::Check, icon::SIZE)
+                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) })
+                .into(),
+            false => iced::widget::space().width(icon::SIZE).into(),
+        };
+        pressable(setting_row(None, label, detail, check), Some(on_press))
     }
 
     /// The assigned model turned off (PR review #242), as a row of "Model": an alert in the attention
@@ -3130,8 +3350,8 @@ pub mod categorization {
 
     /// Under the models: why the list may be short.
     fn model_note(data: &Data) -> String {
-        match data.settings.mail_to_cloud {
-            true => tr("Mail may go to an AI elsewhere; every model that decides is offered.").to_owned(),
+        match data.settings.mail_to_cloud_in(AiSlot::Decide) {
+            true => tr("Mail may go to an AI elsewhere for sorting; every model that can sort it is offered.").to_owned(),
             false => {
                 tr("Only models on this computer are offered: mail stays here unless you allow more in the control centre.")
                     .to_owned()

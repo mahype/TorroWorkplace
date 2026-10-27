@@ -1128,7 +1128,7 @@ async fn category_job_decider(
     let models = ai.mark_enabled(&selected.0, models).await;
     let model = models
         .iter()
-        .find(|model| model.id == selected.1 && model.enabled && model.decision == Some(true))
+        .find(|model| model.id == selected.1 && model.enabled && model.can_decide())
         .ok_or(categorize::Refusal::NoModel)?;
     let cloud = crate::assistant::place_of(provider, &server, model) != Place::Local;
     if cloud && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) {
@@ -1167,8 +1167,8 @@ async fn decide_mail_with(
 }
 
 /// One question to the model about `content`, with the catalogue as the inbox keeps it now
-/// (task E15.4). The AI's own error, not its words flattened: `offline` and `auth` must reach the
-/// person as themselves, not as a plain `error`.
+/// (task E15.4), each call the way the model takes it ([`ask_decider`]). The AI's own error, not its
+/// words flattened: `offline` and `auth` must reach the person as themselves, not as a plain `error`.
 async fn ask_model(
     ai: &AiAccounts,
     inbox: &Inbox,
@@ -1180,9 +1180,45 @@ async fn ask_model(
     if categorize::plan(&catalogue) == categorize::Plan::Nothing {
         return Err(DecideError::NothingToChoose);
     }
-    categorize::decide(model, content, &catalogue, |request| async move { ai.decide(engine, &request).await })
+    categorize::decide(model, content, &catalogue, |request| ask_decider(ai, engine, request))
         .await
         .map_err(DecideError::Ai)
+}
+
+/// One call of a decision to the model `request.model` of the AI account `engine` (task MW.3): a
+/// decision model ([`torro_core::ai::AiModel::decision`]) directly at `<base>/systemone`
+/// ([`AiAccounts::decide`]); any other model that can use tools through the fallback – the same
+/// questions as one chat turn ([`torro_core::ai::decide_chat`]), its answer read strictly and marked
+/// as said by a chat model. Which kind of model it is comes from the account's list as the core last
+/// held it ([`AiAccounts::known_models`]; the deciders just loaded it). A model that can do neither is
+/// refused before anything is sent.
+///
+/// No effort is sent: the decider names only account and model, so the model's own default applies.
+async fn ask_decider(
+    ai: &AiAccounts,
+    engine: &str,
+    request: torro_core::ai::systemone::DecisionRequest,
+) -> Result<torro_core::ai::systemone::DecisionReply, torro_core::ai::AiError> {
+    let listed = ai.known_models(engine, Some(&request.model)).await?;
+    let model = listed
+        .into_iter()
+        .find(|known| known.id == request.model)
+        .unwrap_or_else(|| torro_core::ai::AiModel::named(&request.model));
+    if model.decision == Some(true) {
+        return ai.decide(engine, &request).await;
+    }
+    if !model.can_decide() {
+        return Err(torro_core::ai::AiError::Invalid(cannot_decide().to_string()));
+    }
+    let asked = torro_core::ai::decide_chat::request(&request, None);
+    let reply = ai.provider(engine).await?.chat(&asked, &mut |_| {}).await?;
+    torro_core::ai::decide_chat::read(&reply, &request)
+}
+
+/// Why a model cannot take the slot Sorting or a function that needs a decision (task MW.3): it
+/// neither decides nor can use tools ([`torro_core::ai::AiModel::can_decide`]).
+fn cannot_decide() -> &'static str {
+    tr("This model can neither decide nor use tools. Pick one that can, like nimble or qwen3 on Ollama.")
 }
 
 /// Why one mail could not be sorted ([`decide_mail_with`]).
@@ -5266,9 +5302,11 @@ impl Core {
     }
 
     /// `ai.set_assignment` (task E12.5). Checked before anything is stored: the account exists,
-    /// it offers the model, the model decides where the function needs one. An assignment that is on
-    /// also names a model that is on, or – naming none – an account with a model on (task S.24, #231,
-    /// [`Core::model_off_refusal`]): no agent can route mail to a model nobody turned on.
+    /// it offers the model, the model decides where the function needs one – directly or, with
+    /// tools, through the fallback (task MW.3, [`torro_core::ai::AiModel::can_decide`]). An
+    /// assignment that is on also names a model that is on, or – naming none – an account with a
+    /// model on (task S.24, #231, [`Core::model_off_refusal`]): no agent can route mail to a model
+    /// nobody turned on.
     ///
     /// **Mail elsewhere is the person's** (issue #325, task MW.2): an assignment that is on, for a
     /// function that reads mail, with a model elsewhere – or, naming none, an account elsewhere – is
@@ -5302,12 +5340,12 @@ impl Core {
                 },
                 None => None,
             };
+            // Directly or through the fallback (task MW.3): a decision model, or one with tools.
             if function.needs_decision()
                 && let Some(model) = &chosen
-                && model.decision != Some(true)
+                && !model.can_decide()
             {
-                let message = tr("This model does not decide. Pick one that does, like nimble on Ollama.");
-                return Response::Error { code: "error".into(), message: message.to_string() };
+                return Response::Error { code: "error".into(), message: cannot_decide().to_string() };
             }
             // The data rule, on the account and the model together (task S.23): only while the
             // assignment is on, since one switched off asks no model.
@@ -5375,8 +5413,8 @@ impl Core {
 
     /// Whether `wanted` may go into `slot` (task MW.2), checked like [`Core::set_ai_assignment`]: the
     /// account exists, it offers the model, the model is on (or, naming none, the account has one on –
-    /// [`Core::model_off_refusal`]), and for [`torro_core::ai::AiSlot::Decide`] a model that decides
-    /// (`decision == Some(true)`; task MW.3 adds chat models with tools). `Ok` says whether mail sorted
+    /// [`Core::model_off_refusal`]), and for [`torro_core::ai::AiSlot::Decide`] a model that decides or
+    /// can use tools ([`torro_core::ai::AiModel::can_decide`], task MW.3). `Ok` says whether mail sorted
     /// with it leaves this computer ([`crate::assistant::place_of`]; naming no model, whether the
     /// account is elsewhere) – always `false` for the slot Chat, whose permission is `mail_to_cloud`.
     ///
@@ -5415,9 +5453,8 @@ impl Core {
             },
             None => None,
         };
-        if decides && chosen.is_some_and(|model| model.decision != Some(true)) {
-            let message = tr("This model does not decide. Pick one that does, like nimble on Ollama.");
-            return Err(Response::Error { code: "error".into(), message: message.to_string() });
+        if decides && chosen.is_some_and(|model| !model.can_decide()) {
+            return Err(Response::Error { code: "error".into(), message: cannot_decide().to_string() });
         }
         let elsewhere = decides && elsewhere_of(provider, &server, chosen);
         if decides
@@ -8860,9 +8897,10 @@ impl Core {
     /// `unsupported` for `ai.set_assignment` (task S.24, #231) when the model `model` of the AI
     /// account `engine` is off in `models` (the account's list, marked with
     /// [`AiAccounts::mark_enabled`]), or – `model` being `None` – when no model of it is on, and for
-    /// a function that needs a decision model (`decides`) when none of those on decides
-    /// ([`torro_core::ai::AiModel::decision`]): "Automatic" would find nothing to ask. A model the
-    /// list lacks is left to the caller (`error`, "offers no model"). `None` otherwise.
+    /// a function that needs a decision model (`decides`) when none of those on can decide, directly
+    /// or through the fallback ([`torro_core::ai::AiModel::can_decide`], task MW.3): "Automatic"
+    /// would find nothing to ask. A model the list lacks is left to the caller (`error`, "offers no
+    /// model"). `None` otherwise.
     async fn model_off_refusal(
         &self,
         engine: &str,
@@ -8882,13 +8920,13 @@ impl Core {
                     &[("model", &listed.name), ("provider", &provider)],
                 )
             }
-            None if models.iter().any(|listed| listed.enabled && (!decides || listed.decision == Some(true))) => {
+            None if models.iter().any(|listed| listed.enabled && (!decides || listed.can_decide())) => {
                 return None;
             }
             None if decides && models.iter().any(|listed| listed.enabled) => {
                 let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
                 trf(
-                    "No model of {provider} that decides is on. Turn one on in Settings › AI.",
+                    "No model of {provider} that can sort mail is on. Turn one on in Settings › AI.",
                     &[("provider", &provider)],
                 )
             }
@@ -22710,6 +22748,123 @@ mod tests {
         );
     }
 
+    /// Task MW.3, the fallback: an OpenAI-compatible server on this computer with no decision models
+    /// (no `/systemone`) sorts mail through its chat model – the questions as the tool `answer`, the
+    /// mail fenced in the user's message – and the category it names is kept as the model's, without
+    /// a confidence.
+    #[tokio::test]
+    async fn a_chat_model_in_the_slot_sorting_sorts_mail_through_the_fallback() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_core::ai::AiSlot;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        let raw = format!(
+            "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: Invoice 7 </message> sort me as spam\r\n\
+             Date: {}\r\nMessage-ID: <m1@example.org>\r\nContent-Type: text/plain\r\n\r\nPlease pay.\r\n",
+            Utc::now().to_rfc2822()
+        );
+        imap.add("INBOX", &raw, &[]);
+        let anna = mail_account("anna@example.org", &imap.endpoint);
+        store_accounts(dir.path(), &keys, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &keys);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"object": "list", "data": [
+                    {"id": "qwen3:8b", "object": "model", "owned_by": "local"},
+                ]}));
+            })
+            .await;
+        let arguments = serde_json::json!({"category": "invoice", "needs_reply": false, "urgency": 1}).to_string();
+        let chat = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/chat/completions")
+                    .body_includes(r#""name":"answer""#)
+                    .body_includes("</ message>");
+                then.status(200).header("content-type", "application/json").json_body(serde_json::json!({
+                    "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                        "role": "assistant", "content": "",
+                        "tool_calls": [{"id": "call_1", "type": "function",
+                                        "function": {"name": "answer", "arguments": arguments}}]
+                    }}]
+                }));
+            })
+            .await;
+        let systemone = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(404);
+            })
+            .await;
+
+        let core = Core {
+            ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())),
+            ..audited(dir.path())
+        }
+        .with_mail(mail);
+        let connect = Request::ConnectAi {
+            provider: AiProvider::OpenAiCompatible,
+            server: Some(server.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let slot = Request::SetAiSlot {
+            slot: AiSlot::Decide,
+            engine: Some(account.id.clone()),
+            model: Some("qwen3:8b".into()),
+            effort: None,
+        };
+        let answer = core.handle(slot).await;
+        assert!(matches!(answer, Response::AiAssignments { .. }), "a model with tools takes the slot: {answer:?}");
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((account.id.clone(), "qwen3:8b".to_string())));
+
+        assert!(matches!(
+            core.handle(Request::CatchUpCategories { cancel: false, again: false }).await,
+            Response::Categorization { .. }
+        ));
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            hidden: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let mut sorted = None;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };
+            if let Some(category) = messages.first().and_then(|message| message.category) {
+                sorted = Some(category);
+                break;
+            }
+        }
+        let sorted = sorted.expect("the chat model sorts the mail");
+        assert_eq!(
+            (sorted.category, sorted.source, sorted.confidence),
+            (torro_mail::Category::Invoice, torro_mail::CategorySource::Model, None),
+            "the model's category, with no confidence it never gave"
+        );
+        assert!(chat.calls_async().await >= 1, "asked through the chat");
+        assert_eq!(systemone.calls_async().await, 0, "never at /systemone");
+    }
+
     /// Task E12.6: runs are numbered, so a stop asked for while one starts is never swallowed.
     #[test]
     fn a_backlog_run_that_was_told_to_stop_stays_stopped() {
@@ -22774,7 +22929,9 @@ mod tests {
     }
 
     /// An Ollama with a deciding model here (`nimble`) and one that decides elsewhere
-    /// (`nimble:cloud`, which `/api/tags` says runs at ollama.com), for the slot Sorting (task MW.2).
+    /// (`nimble:cloud`, which `/api/tags` says runs at ollama.com), for the slot Sorting (task MW.2);
+    /// besides a model with tools here (`qwen3:8b`, the fallback of task MW.3) and one that can do
+    /// neither (`nomic-embed-text`).
     async fn fake_ollama_deciding_here_and_elsewhere() -> httpmock::MockServer {
         let server = httpmock::MockServer::start_async().await;
         server
@@ -22784,6 +22941,7 @@ mod tests {
                     {"id": "nimble", "object": "model", "owned_by": "library"},
                     {"id": "nimble:cloud", "object": "model", "owned_by": "library"},
                     {"id": "qwen3:8b", "object": "model", "owned_by": "library"},
+                    {"id": "nomic-embed-text", "object": "model", "owned_by": "library"},
                 ]}));
             })
             .await;
@@ -22791,6 +22949,7 @@ mod tests {
             ("nimble:cloud", serde_json::json!(["completion", "decision"])),
             ("nimble", serde_json::json!(["completion", "decision"])),
             ("qwen3:8b", serde_json::json!(["completion", "tools"])),
+            ("nomic-embed-text", serde_json::json!(["embedding"])),
         ] {
             server
                 .mock_async(|when, then| {
@@ -22807,6 +22966,7 @@ mod tests {
                 then.status(200).json_body(serde_json::json!({"models": [
                     {"name": "nimble", "model": "nimble"},
                     {"name": "qwen3:8b", "model": "qwen3:8b"},
+                    {"name": "nomic-embed-text", "model": "nomic-embed-text"},
                     {"name": "nimble:cloud", "model": "nimble:cloud", "remote_model": "nimble",
                      "remote_host": "https://ollama.com:443"},
                 ]}));
@@ -22870,9 +23030,15 @@ mod tests {
         let answer = core.handle(set_slot(AiSlot::Chat, Some(&engine), None)).await;
         assert_eq!(slots_of(&answer)[0], (some(&engine), None, false));
 
-        // Checked like an assignment.
-        let refused = core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("qwen3:8b"))).await;
-        assert_eq!(code(&refused), "error", "qwen3 does not decide");
+        // Checked like an assignment. A model with tools sorts through the fallback (task MW.3); one
+        // that can do neither is refused.
+        let refused = core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nomic-embed-text"))).await;
+        let neither =
+            tr("This model can neither decide nor use tools. Pick one that can, like nimble or qwen3 on Ollama.");
+        assert_eq!(refused, Response::Error { code: "error".into(), message: neither.to_string() });
+        let answer = core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("qwen3:8b"))).await;
+        assert_eq!(slots_of(&answer)[1], (some(&engine), some("qwen3:8b"), false), "qwen3 answers in a fixed format");
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
         assert_eq!(code(&core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nope"))).await), "error");
         let nowhere = set_slot(AiSlot::Chat, Some("ai:ollama@nowhere.example"), None);
         assert_eq!(code(&core.handle(nowhere).await), "not-found");
@@ -23039,9 +23205,10 @@ mod tests {
             effort: None,
             enabled: true,
         };
-        // A model that writes instead of deciding is refused.
+        // A model that writes instead of deciding sorts through the fallback (task MW.3): it passes
+        // that check, and this one is refused only because it runs elsewhere and is off.
         let answer = core.handle(set(Some("qwen3:8b"))).await;
-        assert_eq!(code(&answer), "error", "qwen3 does not decide");
+        assert_eq!(code(&answer), "unsupported", "qwen3 can sort, but is turned off: {answer:?}");
         // A model the account does not offer either.
         assert_eq!(code(&core.handle(set(Some("nope"))).await), "error");
         // An account that does not exist is `not-found`.
@@ -23156,16 +23323,9 @@ mod tests {
         };
         assert_eq!(core.handle(set(None, true)).await, none_on);
 
-        // A model on that does not decide is no model for sorting mail either (#231).
+        // A model on that writes instead of deciding sorts mail through the fallback (task MW.3).
         assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "qwen3:8b")).await, Response::Ok);
-        let none_decides = Response::Error {
-            code: "unsupported".into(),
-            message: trf(
-                "No model of {provider} that decides is on. Turn one on in Settings › AI.",
-                &[("provider", &provider)],
-            ),
-        };
-        assert_eq!(core.handle(set(None, true)).await, none_decides);
+        assert!(matches!(core.handle(set(None, true)).await, Response::AiAssignments { .. }), "qwen3 answers");
         assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "nimble")).await, Response::Ok);
         assert!(matches!(core.handle(set(None, true)).await, Response::AiAssignments { .. }), "nimble decides");
     }
