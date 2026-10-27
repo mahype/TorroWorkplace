@@ -1496,6 +1496,8 @@ struct Filing {
     /// The message can be followed up: it lies outside the archive, the trash and spam
     /// ([`follows_up`]).
     follow_up: bool,
+    /// The message can go on a pile: it lies outside the trash and spam ([`takes_piles`]).
+    piles: bool,
 }
 
 impl Filing {
@@ -1509,8 +1511,18 @@ impl Filing {
             archive: has(Role::Archive) && lies_in != Some(Role::Archive),
             delete: has(Role::Trash) && lies_in != Some(Role::Trash),
             follow_up: !matches!(lies_in, Some(Role::Archive | Role::Trash | Role::Junk)),
+            piles: !matches!(lies_in, Some(Role::Trash | Role::Junk)),
         }
     }
+}
+
+/// Whether a mail in the folder `folder` (a [`Folder::id`]) can go on "Reply later" or "Set aside"
+/// (review of PR #327): not in the trash or spam, whose mail a pile leaves out (decision 3 of E19); the
+/// archive can – setting archived mail aside is the main case. A folder not known, as one without a
+/// role, can.
+pub fn takes_piles(folders: &[Folder], folder: &str) -> bool {
+    let role = folders.iter().find(|held| held.id == folder).and_then(|held| held.role);
+    !matches!(role, Some(Role::Trash | Role::Junk))
 }
 
 /// Whether a mail in the folder `folder` (a [`Folder::id`]) can be followed up (decision of #315):
@@ -2915,9 +2927,9 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 /// 2. **File** ([`file_items`], task E19.4): Archive (`e`, task E18.5: in the place of the entry's
 ///    former Done – mail is archived, never done) where the account has the folder and the mail does
 ///    not lie in it already, as in rows ([`filing_actions`]; an entry's mail lies in its account's
-///    inbox while it loads); Reply later (`w`) and Set aside (`b`, [`Message::Pile`]) – for a mail on
-///    one of them "Remove from Reply later" or "Remove from Set aside" in its place, with the same
-///    key; Follow up… (`s`, `AskSnooze`) for every mail but one in the archive, the trash or spam
+///    inbox while it loads); Reply later (`w`) and Set aside (`b`, [`Message::Pile`]) but for mail in
+///    the trash or spam ([`takes_piles`]) – for a mail on one of them "Remove from Reply later" or
+///    "Remove from Set aside" in its place, with the same key, wherever it lies; Follow up… (`s`, `AskSnooze`) for every mail but one in the archive, the trash or spam
 ///    ([`follows_up`]) – its entry's when it has an open one, else the mail's own id (decision 8 of
 ///    E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
 ///    `AskLane`); Delete (`#`) on the same rule as Archive; last "Save attachments (n)" for a loaded
@@ -3001,7 +3013,13 @@ fn file_items<'a>(
     // Always in their place, so the rail does not jump once the mail's headers are in; off until then.
     // Without Archive a click on the group's icon opens its card rather than putting the mail on a
     // pile – the pattern of Delete, which is never that click either (`RailGroup::first_press`).
-    items.extend(pile_items(reading).map(|item| if archive { item } else { item.danger() }));
+    // Not for mail in the trash or spam (review of PR #327) – but "Remove from …" for one that lies on
+    // a pile, wherever it is.
+    let takes = filing.is_none_or(|filing| filing.piles);
+    let on = reading.summary().and_then(|summary| summary.pile);
+    let piles = pile_items(reading).into_iter().zip([MailPile::ReplyLater, MailPile::SetAside]);
+    let piles = piles.filter(|(_, pile)| takes || on == Some(*pile)).map(|(item, _)| item);
+    items.extend(piles.map(|item| if archive { item } else { item.danger() }));
     // Every mail can be followed up (decision 8 of E19): an open entry by its own id, any other mail –
     // a folder's, a done entry's – by the mail's id, of which the core makes the entry. Not mail in the
     // archive, the trash or spam (decision of #315): the folder of the mail shown decides.
@@ -5079,8 +5097,8 @@ mod tests {
         reading_of("m:w12", MailFormat::Html, true, |reading| {
             let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            // No follow-up in the trash (decision of #315).
-            assert_eq!(file, strings(&[trc("action", "Archive"), tr("Reply later"), tr("Set aside")]));
+            // No follow-up in the trash (decision of #315), and no piles (review of PR #327).
+            assert_eq!(file, strings(&[trc("action", "Archive")]));
         });
     }
 
@@ -5099,6 +5117,45 @@ mod tests {
                 assert_eq!(follows_up(&folders, &reading.summary().expect("headers").folder), offered, "{id}");
             });
         }
+    }
+
+    /// Review of PR #327: no "Reply later" or "Set aside" for mail in the trash or spam; in the archive,
+    /// the inbox and Sent they stand ("Set aside" for archived mail is the main case). A mail in the
+    /// trash that lies on a pile still offers "Remove from …".
+    #[test]
+    fn no_piles_for_deleted_or_spam_mail() {
+        let folders = folders();
+        let piles = |groups: &[RailGroup<'_, Message>]| -> Vec<String> {
+            group(groups, tr("File"))
+                .items
+                .iter()
+                .map(|item| item.label.to_string())
+                .filter(|label| {
+                    label.contains(tr("Reply later"))
+                        || label.contains(trc("pile", "Set aside"))
+                        || label == tr("Set aside")
+                })
+                .collect()
+        };
+        for (id, offered) in [("m:w12", false), ("m:w11", false), ("m:w9", true), ("m:w1", true), ("m:w7", true)] {
+            reading_of(id, MailFormat::Html, true, |reading| {
+                let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
+                let expected = if offered { strings(&[tr("Reply later"), tr("Set aside")]) } else { Vec::new() };
+                assert_eq!(piles(&groups), expected, "{id}");
+                assert_eq!(takes_piles(&folders, &reading.summary().expect("headers").folder), offered, "{id}");
+            });
+        }
+        // In the trash, but on "Set aside": only its "Remove from Set aside".
+        reading_of("m:w12", MailFormat::Html, true, |reading| {
+            let Some(Ok(mail)) = reading.loaded else { panic!("loaded") };
+            let mut mail = mail.clone();
+            mail.summary.pile = Some(MailPile::SetAside);
+            let loaded = Ok(mail.clone());
+            let piled = Reading { summary: Some(&mail.summary), loaded: Some(&loaded), ..*reading };
+            let groups = action_groups(&piled, None, &folders, true, false, &detail::Anchors::default());
+            assert_eq!(piles(&groups), strings(&[tr("Remove from Set aside")]));
+            assert!(matches!(sends(&groups, tr("File"), tr("Remove from Set aside")), Some(Message::Pile(_, None))));
+        });
     }
 
     /// Task E19.4 (decision 4 of E19): a mail on a pile says so in File – "Remove from Reply later"

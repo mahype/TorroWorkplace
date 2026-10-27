@@ -7498,6 +7498,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::ReplyLater | Command::SetAside if self.launch.kind == Kind::Mail => {
                 let Some(id) = self.mail_target() else { return Task::none() };
                 let pile = if command == Command::ReplyLater { MailPile::ReplyLater } else { MailPile::SetAside };
+                // No pile for mail in the trash or spam (review of PR #327), as its rail offers none;
+                // off its pile it still comes.
+                let takes = self.folder_of(&id).is_none_or(|folder| mail::takes_piles(&self.folders, &folder));
+                if !takes && self.mail_pile(&id) != Some(pile) {
+                    return Task::none();
+                }
                 let next = (self.mail_pile(&id) != Some(pile)).then_some(pile);
                 self.pile_mail(id, next)
             }
@@ -16931,6 +16937,34 @@ mod tests {
         let _ = app.update(Message::SelectMail(id));
         let _ = app.update(Message::Key(Key::S));
         assert_eq!(app.menu, None, "nothing in the archive");
+    }
+
+    /// Review of PR #327: `w` and `b` put no mail of the trash or spam on a pile, but mail of the
+    /// archive and the inbox.
+    #[test]
+    fn w_and_b_pile_no_deleted_or_spam_mail() {
+        let mut app = mail_window(Density::Compact, &[]);
+        for (folder, offered) in
+            [("f:work-trash", false), ("f:work-junk", false), ("f:work-archive", true), ("f:work-inbox", true)]
+        {
+            for key in [Key::W, Key::B] {
+                let held = app.folders.iter().find(|held| held.id == folder).cloned().expect("a demo folder");
+                let _ = app.update(Message::Show(View::Folder(FolderView::of(&held))));
+                load(&mut app);
+                let id =
+                    app.messages.iter().find(|message| message.pile.is_none()).map(|m| m.id.clone()).expect("mail");
+                let _ = app.update(Message::SelectMail(id.clone()));
+                let before = app.sent.iter().filter(|sent| matches!(sent, Sent::Pile(..))).count();
+                let _ = app.update(Message::Key(key));
+                let after = app.sent.iter().filter(|sent| matches!(sent, Sent::Pile(..))).count();
+                assert_eq!(after > before, offered, "{folder} {key:?}");
+                if offered {
+                    deliver_pile(&mut app);
+                    let _ = app.update(Message::Undo);
+                    deliver_pile(&mut app);
+                }
+            }
+        }
     }
 
     /// Task E18.4: the start states of the mail window – no `--open`, `overview`, `info`, `done` and
