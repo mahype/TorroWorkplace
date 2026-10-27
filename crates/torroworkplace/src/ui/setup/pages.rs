@@ -544,7 +544,7 @@ fn has_ai_account(data: &Data, provider: AiProvider) -> bool {
 /// Open First: the servers on this computer, then the cloud providers by where they are, then what
 /// a new chat of the assistant starts with.
 fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let local = [AiProvider::Ollama, AiProvider::LmStudio].into_iter().map(|provider| local_row(state, data, provider));
+    let local = AiProvider::LOCAL.into_iter().map(|provider| local_row(state, data, provider));
     let mut local: Vec<Element<'a, Message>> = local.collect();
     local.push(opener(
         Icon::Plus,
@@ -588,7 +588,7 @@ fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 /// A server on this computer: looking, found with "Connect" (or "Connected"), or not running.
 fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Element<'a, Message> {
-    let tile = widgets::source_tile(TileFace::Icon(Icon::AppWindow), TileSize::Medium, None);
+    let tile = widgets::source_tile(TileFace::letter(provider.name()), TileSize::Medium, None);
     let Some(found) = &state.ai_found else {
         return setting_row(
             Some(tile),
@@ -608,6 +608,8 @@ fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Elem
     let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
     let host = rest.split('/').next().unwrap_or(rest);
     let detail = match server.models {
+        // Strata is found by its `/health`; with no model loaded, or behind an API key, it lists none.
+        0 if provider == AiProvider::Strata => trf("{host} · no models listed", &[("host", &host)]),
         1 => trf("{host} · 1 model", &[("host", &host)]),
         n => trf("{host} · {n} models", &[("host", &host), ("n", &n)]),
     };

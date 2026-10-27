@@ -66,11 +66,11 @@ pub const WITHHELD: &str = "withheld by your data rule";
 /// Where the model of an AI account runs, as far as the data rule cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
-    /// On a computer of the person: a model of a local server (Ollama, LM Studio) that computes
+    /// On a computer of the person: a model of a local server (Ollama, LM Studio, Strata) that computes
     /// there, or of another OpenAI-compatible server at an address of this computer.
     Local,
     /// Anywhere else: OpenRouter, a server of a provider, a server in the network that is no
-    /// Ollama or LM Studio, a cloud model of Ollama (task S.23).
+    /// Ollama, LM Studio or Strata, a cloud model of Ollama (task S.23).
     Remote,
 }
 
@@ -80,6 +80,9 @@ pub enum Place {
 /// - Ollama: local only for a model it says runs on its own machine ([`AiModel::remote`] `false`)
 ///   and whose name is no cloud name ([`openai::ollama_cloud_name`]); a model it did not describe
 ///   (not listed, or the list failed) counts as elsewhere, so mail stays home in doubt;
+/// - Strata (issue #322): local for a model marked [`AiModel::remote`] `false`. Strata says nothing
+///   about where a model runs; the core sets the mark for every model of a Strata account, so a
+///   model of an unknown origin stays remote;
 /// - LM Studio: local wherever it runs (on the person's own machines), unless the model is known to
 ///   run elsewhere;
 /// - OpenRouter and the other cloud providers (task W.3): never (an address of this computer would
@@ -92,6 +95,7 @@ pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
     let elsewhere = model.remote == Some(true);
     match provider {
         AiProvider::Ollama if model.remote == Some(false) && !openai::ollama_cloud_name(&model.id) => Place::Local,
+        AiProvider::Strata if model.remote == Some(false) => Place::Local,
         AiProvider::LmStudio if !elsewhere => Place::Local,
         AiProvider::OpenAiCompatible if !elsewhere && is_this_computer(server) => Place::Local,
         // Every cloud provider (task W.3), and any other server elsewhere.
@@ -406,6 +410,15 @@ mod tests {
         for cloud in AiProvider::CLOUD {
             assert_eq!(place_of(cloud, cloud.default_url().unwrap_or_default(), &local), Place::Remote, "{cloud:?}");
         }
+    }
+
+    /// Issue #322: Strata is local for a model it says computes on its machine, remote in doubt.
+    #[test]
+    fn strata_is_local_for_models_that_run_on_its_machine() {
+        let strata = "http://127.0.0.1:8080/v1";
+        assert_eq!(place_of(AiProvider::Strata, strata, &model("qwen3.8-flash-next", Some(false))), Place::Local);
+        assert_eq!(place_of(AiProvider::Strata, strata, &model("qwen3.8-flash-next", None)), Place::Remote);
+        assert_eq!(place_of(AiProvider::Strata, strata, &model("qwen3.8-flash-next", Some(true))), Place::Remote);
     }
 
     /// Task S.23: Ollama's cloud models run on `ollama.com`, though Ollama runs here.

@@ -1,4 +1,4 @@
-//! AI accounts (task KI.1a, `docs/ki.md`): servers the suite asks a model – Ollama and LM Studio on
+//! AI accounts (task KI.1a, `docs/ki.md`): servers the suite asks a model – Ollama, LM Studio and Strata on
 //! this computer, OpenRouter in the cloud, any other OpenAI-compatible server. Connecting one
 //! (`accounts.connect_ai`), its models (`ai.list_models`), finding local servers
 //! (`ai.find_local_servers`), removing it (`accounts.remove_account`).
@@ -39,7 +39,7 @@ use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{
     self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, ModelSwitches, Provider, anthropic, openai,
-    responses, systemone,
+    responses, strata, systemone,
 };
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiServer};
@@ -50,7 +50,7 @@ use super::{keychain, with_account};
 
 /// The local servers [`AiAccounts::find_local`] asks, in this order: the providers that run on
 /// this computer, at their usual addresses.
-pub const LOCAL_SERVERS: [AiProvider; 2] = [AiProvider::Ollama, AiProvider::LmStudio];
+pub const LOCAL_SERVERS: [AiProvider; 3] = AiProvider::LOCAL;
 
 /// How long a connection to an AI server may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -62,6 +62,10 @@ const READ_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long [`AiAccounts::find_local`] waits for each local server: one that runs answers at once.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The most of Strata's `/health` answer that is read (a real one is a few hundred bytes): the
+/// address is the person's to give, and an answer that never ends is no Strata.
+const HEALTH_MAX: usize = 64 * 1024;
 
 /// How long Ollama may take to describe one model (`/api/show`, read from disk) or to list where its
 /// models run (`/api/tags`); a model it does not describe in time stays without a word on tools, so
@@ -226,6 +230,38 @@ impl OpenAiCompatible {
         openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))
     }
 
+    /// Whether the server here is Strata: its `GET /health` says `strata` ([`strata::is_strata`]). The
+    /// request carries no key (`/health` is not behind it) and its answer is read up to
+    /// [`HEALTH_MAX`] only. Strata runs on the port llama.cpp uses and lists models the same way,
+    /// so the list cannot tell them apart.
+    async fn is_strata(&self) -> bool {
+        let Ok(mut response) = self.wire.send(self.wire.http.get(strata::health_url(&self.wire.base))).await else {
+            return false;
+        };
+        let mut body = Vec::new();
+        while let Ok(Some(chunk)) = response.chunk().await {
+            body.extend_from_slice(&chunk);
+            if body.len() > HEALTH_MAX {
+                return false;
+            }
+        }
+        strata::is_strata(&body)
+    }
+
+    /// What [`AiAccounts::find_local`] asks of a server: how many models it lists, `None` when no
+    /// server of this provider answers. Strata is found by [`OpenAiCompatible::is_strata`]; the
+    /// list is only for the count, and a Strata with no model loaded or behind a key has none to
+    /// show but is still there.
+    async fn probe(&self) -> Option<usize> {
+        if self.provider == AiProvider::Strata {
+            if !self.is_strata().await {
+                return None;
+            }
+            return Some(self.list().await.map_or(0, |models| models.len()));
+        }
+        self.list().await.ok().map(|models| models.len())
+    }
+
     /// Ollama's word on whether `model` calls tools, thinks (issue #131) and decides (task
     /// E12.3) – `POST <root>/api/show`; `None` for each when it does not answer within
     /// [`SHOW_TIMEOUT`] or does not say.
@@ -303,7 +339,8 @@ impl Provider for OpenAiCompatible {
     /// `GET <base>/models`; for Ollama each model's capabilities from `/api/show` besides, one after
     /// the other (a local server, a handful of models), and where each runs from `/api/tags`
     /// ([`openai::ollama_runs_elsewhere`]: a cloud model, or every model when the tags do not
-    /// answer, is [`AiModel::remote`]).
+    /// answer, is [`AiModel::remote`]). Strata's models all run on its machine ([`AiModel::remote`]
+    /// `false`); it says nothing else about them.
     fn models(&self) -> BoxFuture<'_, Result<Vec<AiModel>, AiError>> {
         Box::pin(async move {
             let mut models = self.list().await?;
@@ -312,6 +349,11 @@ impl Provider for OpenAiCompatible {
                 for model in &mut models {
                     (model.tools, model.reasoning, model.decision) = self.ollama_capabilities(&model.id).await;
                     model.remote = Some(openai::ollama_runs_elsewhere(&model.id, tags.as_ref()));
+                }
+            }
+            if self.provider == AiProvider::Strata {
+                for model in &mut models {
+                    model.remote = Some(false);
                 }
             }
             Ok(models)
@@ -917,6 +959,13 @@ impl AiAccounts {
                 tr("An API key is only sent over https or to this computer. Use an https address.").into(),
             ));
         }
+        // Strata's models count as computed on this computer (the data rule), so only a server that
+        // says it is Strata may be connected as one.
+        if provider == AiProvider::Strata
+            && !OpenAiCompatible::new(self.http()?.clone(), provider, &base, None).is_strata().await
+        {
+            return Err(AiError::Invalid(tr("This server does not answer as Strata. Check the address.").into()));
+        }
         let client = AiClient::new(self.http()?.clone(), provider, &base, key.clone());
         client.check().await?;
         let account = Account::ai(provider, &base);
@@ -1037,8 +1086,8 @@ impl AiAccounts {
         for (at, (provider, url)) in self.local.iter().cloned().enumerate() {
             let client = OpenAiCompatible::new(http.clone(), provider, &url, None);
             probes.spawn(async move {
-                let models = tokio::time::timeout(PROBE_TIMEOUT, client.list()).await.ok()?.ok()?;
-                Some((at, provider, url, models.len()))
+                let models = tokio::time::timeout(PROBE_TIMEOUT, client.probe()).await.ok()??;
+                Some((at, provider, url, models))
             });
         }
         let mut found: Vec<(usize, AiProvider, String, usize)> =
@@ -1438,6 +1487,51 @@ pub(crate) mod tests {
                     {"name": "gemma3:4b", "model": "gemma3:4b"},
                     {"name": "broken:1b", "model": "broken:1b"},
                 ]}));
+            })
+            .await;
+        server
+    }
+
+    /// Issue #322: a Strata that says who it is at `/health` (no key needed there) and lists `models`
+    /// at `/v1/models` – only with the key, like a Strata started with `--api-key`.
+    pub(crate) async fn fake_strata(models: &[&str], key: Option<&str>) -> MockServer {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/health").header_missing("authorization");
+                then.status(200).json_body(json!({
+                    "status": "ok", "max_context": 32768, "model": models.first(), "images": false,
+                    "api_key": key.is_some(), "loaded": !models.is_empty(), "service": "strata",
+                }));
+            })
+            .await;
+        let data: Vec<_> = models.iter().map(|id| json!({"id": id, "object": "model"})).collect();
+        server
+            .mock_async(|when, then| {
+                let when = when.method("GET").path("/v1/models");
+                if let Some(key) = key {
+                    when.header("authorization", format!("Bearer {key}"));
+                }
+                then.status(200).json_body(json!({"object": "list", "data": data}));
+            })
+            .await;
+        server
+    }
+
+    /// llama.cpp's server on the port Strata uses: the same `/v1/models`, a `/health` that does not
+    /// say `strata`.
+    pub(crate) async fn fake_llama_cpp() -> MockServer {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/health");
+                then.status(200).json_body(json!({"status": "ok"}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(json!({"object": "list", "data": [{"id": "gguf", "object": "model"}]}));
             })
             .await;
         server
@@ -2184,6 +2278,92 @@ pub(crate) mod tests {
             ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("connected");
         assert_eq!(ai.find_local().await[0].account.as_deref(), Some(info.id.as_str()));
         assert!(service(dir.path(), &keys, Vec::new()).find_local().await.is_empty());
+    }
+
+    /// Issue #322: a running Strata is found by its `/health` and shows its models; llama.cpp on the
+    /// same port, which lists models just the same, is not Strata; nothing there is nothing found.
+    #[tokio::test]
+    async fn strata_is_found_by_its_health_and_nothing_else_is_taken_for_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (strata, llama) = (fake_strata(&["qwen3.8-flash-next"], None).await, fake_llama_cpp().await);
+
+        let ai = service(dir.path(), &keys, vec![(AiProvider::Strata, strata.url("/v1"))]);
+        let found = ai.find_local().await;
+        assert_eq!(
+            found,
+            [AiServer { provider: AiProvider::Strata, url: strata.url("/v1"), models: 1, account: None }]
+        );
+        let info =
+            ai.connect(AiProvider::Strata, Some(&strata.url("/v1")), Secret::default()).await.expect("connected");
+        assert_eq!(ai.find_local().await[0].account.as_deref(), Some(info.id.as_str()));
+
+        let local = vec![(AiProvider::Strata, llama.url("/v1")), (AiProvider::LmStudio, llama.url("/v1"))];
+        let found = service(dir.path(), &keys, local).find_local().await;
+        assert_eq!(found.iter().map(|server| server.provider).collect::<Vec<_>>(), [AiProvider::LmStudio]);
+        assert!(
+            service(dir.path(), &keys, vec![(AiProvider::Strata, NOBODY.to_string())]).find_local().await.is_empty()
+        );
+    }
+
+    /// Issue #322: `/health` alone makes it Strata – a Strata with no model loaded lists none, and one
+    /// behind an API key refuses the list; both are found, with no models to show.
+    #[tokio::test]
+    async fn a_strata_without_a_model_or_behind_a_key_is_still_found() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (idle, locked) = (fake_strata(&[], None).await, fake_strata(&["qwen"], Some("secret-key")).await);
+        let local = vec![(AiProvider::Strata, idle.url("/v1")), (AiProvider::Strata, locked.url("/v1"))];
+        let found = service(dir.path(), &keys, local).find_local().await;
+        assert_eq!(found.iter().map(|server| server.models).collect::<Vec<_>>(), [0, 0]);
+    }
+
+    /// Issue #322: the models of Strata run on this computer (`remote: false`) and are not described
+    /// by the server beyond their names (`tools` stays `null`), so the data rule counts them as local.
+    #[tokio::test]
+    async fn the_models_of_strata_run_on_this_computer_and_say_nothing_of_tools() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let strata = fake_strata(&["qwen3.8-flash-next"], None).await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let info =
+            ai.connect(AiProvider::Strata, Some(&strata.url("/v1")), Secret::default()).await.expect("connected");
+
+        let models = ai.models(&info.id, false).await.expect("models");
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            (models[0].id.as_str(), models[0].remote, models[0].tools),
+            ("qwen3.8-flash-next", Some(false), None)
+        );
+        assert_eq!(on(&ai, &info.id).await, ["qwen3.8-flash-next"], "computes here, so on at the start");
+        assert_eq!(ai.runs_elsewhere(&info.id, "qwen3.8-flash-next").await, Ok(false));
+        assert_eq!(label(&Account::ai(AiProvider::Strata, "http://127.0.0.1:8080/v1")), "Strata");
+    }
+
+    /// Issue #322: only a server that says it is Strata can be connected as Strata – its models count as
+    /// computed here – and a `/health` that never ends says nothing.
+    #[tokio::test]
+    async fn only_a_server_that_answers_as_strata_is_connected_as_strata() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ai = service(dir.path(), &keys, Vec::new());
+        let (llama, strata) = (fake_llama_cpp().await, fake_strata(&["qwen"], None).await);
+        let flood = MockServer::start_async().await;
+        flood
+            .mock_async(|when, then| {
+                when.method("GET").path("/health");
+                let padding = " ".repeat(HEALTH_MAX + 1);
+                then.status(200).body(format!(r#"{{"service": "strata"{padding}}}"#));
+            })
+            .await;
+
+        for wrong in [llama.url("/v1"), flood.url("/v1"), NOBODY.to_string()] {
+            let refused = ai.connect(AiProvider::Strata, Some(&wrong), Secret::default()).await;
+            assert!(matches!(&refused, Err(AiError::Invalid(message)) if message.contains("Strata")), "{refused:?}");
+        }
+        assert!(ai.infos().await.is_empty(), "nothing stored for a server that is no Strata");
+        ai.connect(AiProvider::Strata, Some(&strata.url("/v1")), Secret::default()).await.expect("a Strata");
+        assert_eq!(ai.infos().await.len(), 1);
     }
 
     #[tokio::test]

@@ -38,7 +38,7 @@
 //!    keeps the password; any other answer, "Back" or closing clears it.
 //!    The steps and the check boxes are data, so a step or a service is added without a new screen.
 //! 5. AI providers (task KI.1a, Open First): **AI** – opening it sends `Request::FindAiServers`;
-//!    "On this computer" lists Ollama and LM Studio, each found one with its models and
+//!    "On this computer" lists Ollama, LM Studio and Strata, each found one with its models and
 //!    "Connect" (one press sends `Request::ConnectAi` for its address, no key), the others as "Not
 //!    running on this computer". Below, OpenRouter opens **API key** (a masked field and a link to
 //!    OpenRouter's key page) and "Other OpenAI-compatible server" opens **Server** (address and an
@@ -106,9 +106,6 @@ use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
-
-/// The AI servers "On this computer" lists, in this order (Open First).
-const LOCAL_AI: [AiProvider; 2] = [AiProvider::Ollama, AiProvider::LmStudio];
 
 /// The step the dialog is on. Each step has its own subtitle and footer button.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1714,7 +1711,7 @@ fn signing_in_step(data: &Data) -> Element<'_, Message> {
 /// The AI providers, Open First: the servers on this computer, each found one with "Connect", then
 /// OpenRouter and any other server, each a row that opens its form.
 fn ai_step(state: &State) -> Element<'_, Message> {
-    let local = LOCAL_AI.into_iter().map(|provider| local_ai_row(&state.ai, provider)).collect();
+    let local = AiProvider::LOCAL.into_iter().map(|provider| local_ai_row(&state.ai, provider)).collect();
     let footer = tr("Models on this computer run here. Nothing you ask them leaves it.");
     let way = |provider, name: &'static str, summary: &'static str| {
         pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(Message::ChooseAi(provider)))
@@ -1775,6 +1772,8 @@ fn local_ai_detail(server: &AiServer) -> String {
     let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
     let host = rest.split('/').next().unwrap_or(rest);
     match server.models {
+        // Strata is found by its `/health`; with no model loaded, or behind an API key, it lists none.
+        0 if server.provider == AiProvider::Strata => trf("{host} · no models listed", &[("host", &host)]),
         1 => trf("{host} · 1 model", &[("host", &host)]),
         n => trf("{host} · {n} models", &[("host", &host), ("n", &n)]),
     }
@@ -3881,6 +3880,20 @@ mod tests {
         assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}");
         assert_eq!(state.step, Step::AiChoose);
         state
+    }
+
+    /// Issue #322: a Strata found with no models listed says so; Ollama with none keeps the count.
+    #[test]
+    fn a_strata_without_a_model_says_no_model_is_loaded() {
+        let idle = |provider, url| AiServer { models: 0, ..ai_server(provider, url, None) };
+        assert_eq!(
+            local_ai_detail(&idle(AiProvider::Strata, "http://127.0.0.1:8080/v1")),
+            trf("{host} · no models listed", &[("host", &"127.0.0.1:8080")])
+        );
+        assert_eq!(
+            local_ai_detail(&idle(AiProvider::Ollama, "http://localhost:11434/v1")),
+            trf("{host} · {n} models", &[("host", &"localhost:11434"), ("n", &0)])
+        );
     }
 
     #[test]

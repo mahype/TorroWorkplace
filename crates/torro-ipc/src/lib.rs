@@ -680,7 +680,7 @@ pub enum Request {
     /// either.
     #[serde(rename = "accounts.connect_ai")]
     ConnectAi {
-        /// Which kind of server: `ollama`, `lm_studio`, `openrouter`, `openai_compatible`, or a cloud
+        /// Which kind of server: `ollama`, `lm_studio`, `strata`, `openrouter`, `openai_compatible`, or a cloud
         /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`,
         /// `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address
         /// is its international API; for its platform for mainland China pass that address as
@@ -833,9 +833,10 @@ pub enum Request {
         /// `true` turns it on, `false` off.
         enabled: bool,
     },
-    /// Looks for AI servers on this computer (task KI.1a): Ollama at `localhost:11434` and
-    /// LM Studio at `localhost:1234`, by asking each for its models (`GET <server>/models`, a
-    /// short wait each). Nothing else is contacted and nothing is stored.
+    /// Looks for AI servers on this computer (task KI.1a): Ollama at `localhost:11434`, LM Studio
+    /// at `localhost:1234` and Strata at `127.0.0.1:8080` (issue #322), by asking each for its
+    /// models (`GET <server>/models`, a short wait each; Strata is told from llama.cpp, which uses
+    /// the same port, by its `GET /health`). Nothing else is contacted and nothing is stored.
     ///
     /// Answered with [`Response::AiServers`]: the servers that answered, in that order, with the
     /// number of models and the account already connected there; an empty list when none runs.

@@ -50,10 +50,17 @@ benutzt nie den Schlüssel eines Agenten.
 
 | Art | Anbieter | Anbindung |
 |---|---|---|
-| **Lokal** | Ollama, LM Studio, llama.cpp-Server, vLLM, LocalAI | OpenAI-kompatible Schnittstelle (`/v1/chat/completions`, `/v1/models`); Adresse, meist ohne Schlüssel |
+| **Lokal** | Ollama, LM Studio, [Strata](https://github.com/Niko1221/Strata), llama.cpp-Server, vLLM, LocalAI | OpenAI-kompatible Schnittstelle (`/v1/chat/completions`, `/v1/models`); Adresse, meist ohne Schlüssel |
 | **Selbst gehostet** | eigener Server mit einem der obigen; Nextcloud Assistant (TaskProcessing-API, z. B. mit lokalem LLM auf dem Nextcloud-Server) | OpenAI-kompatibel bzw. über das vorhandene Nextcloud-Konto, ohne neuen Schlüssel |
 | **Offene Modelle in der Cloud** | **OpenRouter** (Qwen, Llama, Mistral, DeepSeek … über einen Schlüssel; Filter „open weights“) | OpenAI-kompatibel (`https://openrouter.ai/api/v1`); API-Schlüssel |
 | **Anbieter** | Anthropic, OpenAI, Mistral, Google | eigene Schnittstelle (Anthropic) bzw. OpenAI-kompatibel; API-Schlüssel |
+
+**Strata** (MIT, Standardadresse `http://127.0.0.1:8080/v1`) ist ein lokaler Server für sehr große offene
+Modelle auf einem PC mit RTX- oder Radeon-Karte. Es ist ein Katalogeintrag, kein neues Protokoll. Auf Port 8080
+läuft auch der llama.cpp-Server und beide beantworten `/v1/models` gleich; die Suche erkennt Strata deshalb an
+`GET /health` (`"service": "strata"`, nicht hinter dem API-Schlüssel). Dessen Modell-Liste ist leer, solange
+kein Modell geladen ist. Strata sagt nicht, ob ein Modell Werkzeuge kann (`tools` bleibt unbekannt); seine Modelle
+rechnen auf diesem Rechner (`remote: false`) und unterliegen der Datenregel wie die von Ollama.
 
 Zwei Protokolle decken fast alles ab: **OpenAI-kompatibel** und **Anthropic**. Weitere kommen als
 Eintrag im Katalog dazu, nie als Umbau. Die Modell-Liste holt der Kern vom Anbieter (`/v1/models`),
@@ -113,7 +120,7 @@ Kommt **nach** E1–E3 des Eingangs. Aufgaben entstehen, wenn dieses Konzept fre
 1. **KI.1 Kern:** KI-Konten (`AccountKind::Ai`), Anbieter-Trait mit OpenAI-kompatibel und Anthropic,
    Modell-Liste, Zuordnung je Funktion, Datenregel je Quelle, Zähler. Tests mit `httpmock`.
 2. **KI.2 Steuerzentrale:** Anbieter „AI providers“ im Assistenten (die Zeile gibt es schon),
-   lokale Anbieter oben, automatische Suche nach Ollama/LM Studio auf `localhost`; Modelle an/aus auf der Kontoseite
+   lokale Anbieter oben, automatische Suche nach Ollama/LM Studio/Strata auf `localhost`; Modelle an/aus auf der Kontoseite
    unter Accounts (S.24, S.26, S.31 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md); S.25 entfällt mit #231),
    die Zuordnung je Funktion in den Modulen.
 3. **E6.x Eingang:** Spur vorschlagen, Eintrag zusammenfassen, Tageszusammenfassung.
