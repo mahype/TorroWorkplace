@@ -2527,9 +2527,10 @@ pub struct App<S> {
     focus_reply: Option<FocusReply>,
     /// How many rounds of "Focus & reply" were started or brought back ([`App::next_round`]).
     rounds: u64,
-    /// The mail whose reply had no answer within [`SEND_TIMEOUT`] (fifth review of #315): its late
-    /// answer only says what happened in a hint and leaves the round as it is ([`App::focus_sent`]).
-    late_reply: Option<String>,
+    /// How many replies "Focus & reply" has sent (review of PR #327): each send gets the next number
+    /// ([`FocusReply::send`]), and only the answer with the number of the send on its way counts for
+    /// the round ([`App::focus_sent`]).
+    sends: u64,
     /// The mail of `--message` that came while a reply was on its way (fifth review of #315): shown
     /// once the round lets go ([`App::show_waiting_start`]), so it is not lost.
     waiting_start: Option<(String, Result<Box<Mail>, String>)>,
@@ -3052,8 +3053,9 @@ pub enum Message {
     /// "Send" or the shortcut "send" in the field: the reply typed to the mail shown
     /// ([`App::focus_send`]).
     FocusSend,
-    /// The answer to "Send" for the mail with this id ([`App::focus_sent`]).
-    FocusSent(String, Result<(), String>),
+    /// The answer to "Send" for the mail with this id, of the send with this number
+    /// ([`FocusReply::send`], [`App::focus_sent`]).
+    FocusSent(String, u64, Result<(), String>),
     /// The pile of the mail "Remove from Reply later" was pressed for, asked of the core
     /// ([`pile_of_mail`], fifth review of #315): its id, its place in the round, its text and its pile
     /// with since when, or why it could not be read ([`App::focus_removed`]).
@@ -3847,7 +3849,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             unless_reply: false,
             focus_reply: None,
             rounds: 0,
-            late_reply: None,
+            sends: 0,
             waiting_start: None,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
@@ -4880,7 +4882,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::FocusSkip => return self.focus_step(true),
             Message::FocusRemove => return self.focus_remove(),
             Message::FocusSend => return self.focus_send(),
-            Message::FocusSent(id, result) => return self.focus_sent(id, result),
+            Message::FocusSent(id, send, result) => return self.focus_sent(id, send, result),
             Message::FocusPileKnown(id, place, text, known) => return self.focus_removed(id, place, text, known),
             Message::FocusClose => self.close_focus(),
             // [`App::update`] asks again once the error is gone.
@@ -6049,7 +6051,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let Some(focus) = self.focus_reply.as_mut().filter(|focus| focus.can_send()) else { return Task::none() };
         let Some(id) = focus.current().map(str::to_owned) else { return Task::none() };
         let text = focus.reply.text();
+        self.sends += 1;
+        let send = self.sends;
         focus.sending = true;
+        focus.send = Some(send);
         focus.sending_since = Some(Instant::now());
         focus.timed_out = false;
         focus.error = None;
@@ -6059,7 +6064,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let asked = id.clone();
         Task::perform(
             async move { inbox.send_reply(asked, text).await.map_err(|err| err.to_string()) },
-            move |result| Message::FocusSent(id.clone(), result),
+            move |result| Message::FocusSent(id.clone(), send, result),
         )
     }
 
@@ -6070,12 +6075,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// list, one less on its number. Not sent: the text stays in the field with why under it, "Send"
     /// tries again. The round cannot be left while the reply is on its way ([`App::holds_round`],
     /// fourth review of #315), so the answer finds it.
-    fn focus_sent(&mut self, id: String, result: Result<(), String>) -> Task<Message> {
-        let here = self.focus_reply.as_ref().is_some_and(|focus| focus.sending && focus.current() == Some(id.as_str()));
-        // The answer to a send the round gave up on (fifth review of #315): only a hint says what became
-        // of it; the round stays as it is.
-        if !here && self.late_reply.as_deref() == Some(id.as_str()) {
-            self.late_reply = None;
+    ///
+    /// Only the answer of the send on its way counts – `send` its number ([`FocusReply::send`], review
+    /// of PR #327): one the round gave up on ([`SEND_TIMEOUT`]) only says in a hint what became of it
+    /// and leaves the round as it is, also when a later send of the same mail is on its way.
+    fn focus_sent(&mut self, id: String, send: u64, result: Result<(), String>) -> Task<Message> {
+        let here = self
+            .focus_reply
+            .as_ref()
+            .is_some_and(|focus| focus.sending && focus.send == Some(send) && focus.current() == Some(id.as_str()));
+        if !here {
             let text = if result.is_ok() { tr("Sent.") } else { tr("Couldn't send the message.") };
             self.say_sent(text);
             return Task::none();
@@ -6118,13 +6127,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The timer of a reply on its way (fifth review of #315): once [`SEND_TIMEOUT`] passed since it
     /// went out without an answer, the round lets go ([`FocusReply::give_up`]) and its late answer only
-    /// shows as a hint ([`App::late_reply`]).
+    /// shows as a hint (its number is no longer the one on its way, [`App::focus_sent`]).
     fn send_tick(&mut self, now: Instant) -> Task<Message> {
         let Some(focus) = self.focus_reply.as_mut().filter(|focus| focus.sending) else { return Task::none() };
         if focus.sending_since.is_none_or(|since| now.saturating_duration_since(since) < SEND_TIMEOUT) {
             return Task::none();
         }
-        self.late_reply = focus.current().map(str::to_owned);
         focus.give_up();
         self.show_waiting_start()
     }
@@ -16255,6 +16263,13 @@ mod tests {
         (app, ids)
     }
 
+    /// The answer to the send now on its way in "Focus & reply" (its number, review of PR #327),
+    /// handed to `update` as the task would.
+    fn answer(app: &mut App<DemoSource>, id: String, result: Result<(), String>) {
+        let send = app.focus_reply.as_ref().and_then(|focus| focus.send).unwrap_or(app.sends);
+        let _ = app.update(Message::FocusSent(id, send, result));
+    }
+
     /// Types `text` into the reply field of "Focus & reply".
     fn type_reply(app: &mut App<DemoSource>, text: &str) {
         let paste = text_editor::Edit::Paste(Arc::new(text.to_owned()));
@@ -16383,13 +16398,13 @@ mod tests {
         assert_eq!(app.hint.as_ref().map(|hint| &hint.text), Some(&removed.text), "the hint waits");
         assert_eq!(reply_text(&app), text, "with its text");
         // An error stays with the text.
-        let _ = app.update(Message::FocusSent(ids[1].clone(), Err("offline".into())));
+        answer(&mut app, ids[1].clone(), Err("offline".into()));
         let focus = app.focus_reply.as_ref().expect("the round");
         assert_eq!((focus.sending, focus.error.as_deref()), (false, Some("offline")));
         assert_eq!(reply_text(&app), text, "the text stays in the field");
         // Sent: "Sent." leaves the hint with its undo, which works now.
         let _ = app.update(Message::FocusSend);
-        let _ = app.update(Message::FocusSent(ids[1].clone(), Ok(())));
+        answer(&mut app, ids[1].clone(), Ok(()));
         assert_eq!(app.hint.as_ref().map(|hint| &hint.text), Some(&removed.text), "not pushed out by Sent.");
         let _ = app.update(Message::Undo);
         assert_eq!((focused(&app), reply_text(&app).trim().to_owned()), (Some(ids[0].clone()), "Draft".to_owned()));
@@ -16497,7 +16512,7 @@ mod tests {
         let (mut app, ids) = focus_window();
         type_reply(&mut app, "Yes");
         let _ = app.update(Message::FocusSend);
-        let _ = app.update(Message::FocusSent(ids[0].clone(), Ok(())));
+        answer(&mut app, ids[0].clone(), Ok(()));
         type_reply(&mut app, "Other");
         let _ = app.update(Message::Show(View::All));
         let _ = app.update(Message::Undo);
@@ -16514,6 +16529,29 @@ mod tests {
         let _ = app.update(Message::FocusMore(round, page));
         let focus = app.focus_reply.as_ref().expect("the round");
         assert!(focus.current().is_none() && !focus.ids.contains(&ids[0]), "the end, without it");
+    }
+
+    /// Review of PR #327: after the time limit a reply can go again; a late result of the first send
+    /// only shows as a hint and leaves the round sending the second, whose result counts as ever.
+    #[test]
+    fn a_late_result_belongs_to_its_send() {
+        let (mut app, ids) = focus_window();
+        type_reply(&mut app, "Yes");
+        let _ = app.update(Message::FocusSend);
+        let focus = app.focus_reply.as_ref().expect("the round");
+        let (first, since) = (focus.send.expect("its number"), focus.sending_since.expect("on its way"));
+        let _ = app.update(Message::SendTick(since + SEND_TIMEOUT));
+        assert!(!app.holds_round(), "given up");
+        let _ = app.update(Message::FocusSend);
+        let second = app.focus_reply.as_ref().and_then(|focus| focus.send).expect("its number");
+        assert_ne!(first, second, "a number of its own");
+        let _ = app.update(Message::FocusSent(ids[0].clone(), first, Ok(())));
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Sent.")), "the first: a hint");
+        let focus = app.focus_reply.as_ref().expect("the round");
+        assert!(focus.sending && focus.current() == Some(ids[0].as_str()), "the second still on its way");
+        let _ = app.update(Message::FocusSent(ids[0].clone(), second, Ok(())));
+        assert_eq!(focused(&app), Some(ids[1].clone()), "the second's answer counts");
+        assert!(!app.holds_round());
     }
 
     /// Review of PR #327: a "Remove" in a round that fails – the core cannot say the pile, or cannot
@@ -16615,7 +16653,7 @@ mod tests {
             // The late answer: a hint only.
             let piles = app.sent.iter().filter(|sent| matches!(sent, Sent::Pile(..))).count();
             let ok = late.is_ok();
-            let _ = app.update(Message::FocusSent(ids[0].clone(), late));
+            answer(&mut app, ids[0].clone(), late);
             let said = if ok { tr("Sent.") } else { tr("Couldn't send the message.") };
             assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(said));
             assert_eq!((focused(&app), reply_text(&app)), (Some(ids[0].clone()), text.clone()), "the round as it was");
@@ -16644,7 +16682,7 @@ mod tests {
         let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:w9".into())).map(Box::new);
         let _ = app.update(Message::StartMail("m:w9".into(), mail.map_err(|err| err.to_string())));
         assert_eq!(app.view, View::ReplyLater, "it waits");
-        let _ = app.update(Message::FocusSent(ids[0].clone(), Ok(())));
+        answer(&mut app, ids[0].clone(), Ok(()));
         assert!(app.focus_reply.is_none(), "the round ends for it");
         assert!(matches!(&app.view, View::Folder(_)), "its folder: {:?}", app.view);
         assert_eq!(app.cursor.as_deref(), Some("m:w9"), "with the mail");
@@ -16753,7 +16791,7 @@ mod tests {
         let _ = app.update(Message::Escape);
         let _ = app.update(Message::FocusClose);
         assert!(app.focus_reply.is_some(), "not while sending");
-        let _ = app.update(Message::FocusSent(ids[1].clone(), Err("offline".into())));
+        answer(&mut app, ids[1].clone(), Err("offline".into()));
         assert_eq!(reply_text(&app).trim(), "Maybe", "the error finds its text");
         // Without text no hint.
         let (mut quiet, _) = focus_window();
@@ -16789,7 +16827,7 @@ mod tests {
 
         let result = block_on(MailSource::send_reply(&*app.inbox, ids[0].clone(), text)).map_err(|err| err.to_string());
         assert_eq!(result, Ok(()));
-        let _ = app.update(Message::FocusSent(ids[0].clone(), result));
+        answer(&mut app, ids[0].clone(), result);
         assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], None, None, None)), "off Reply later");
         assert_eq!(app.hint.as_ref().map(|hint| (hint.text.as_str(), hint.undo.is_none())), Some((tr("Sent."), true)));
         assert_eq!(focused(&app), Some(ids[1].clone()), "the next mail");
@@ -16810,7 +16848,7 @@ mod tests {
         type_reply(&mut app, "Yes, book it!");
         let _ = app.update(Message::FocusSend);
         let text = reply_text(&app);
-        let _ = app.update(Message::FocusSent(ids[0].clone(), Err("offline".into())));
+        answer(&mut app, ids[0].clone(), Err("offline".into()));
         let focus = app.focus_reply.as_ref().expect("the round");
         assert_eq!((focus.sending, focus.error.as_deref()), (false, Some("offline")));
         assert_eq!(reply_text(&app), text, "the text stays");

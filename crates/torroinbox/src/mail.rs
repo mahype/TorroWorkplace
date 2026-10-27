@@ -4063,6 +4063,9 @@ pub struct FocusReply {
     /// When the reply now on its way went out, for the window's time limit (`App` gives up after
     /// `SEND_TIMEOUT`, fifth review of #315); `None` while nothing is on its way.
     pub sending_since: Option<std::time::Instant>,
+    /// The number of the send on its way (the window counts its sends, review of PR #327): only its
+    /// answer counts for the round; `None` while nothing is on its way.
+    pub send: Option<u64>,
     /// The last send had no answer in time ([`FocusReply::give_up`]): under the field "No answer yet
     /// – check Sent before sending again.", the text stays.
     pub timed_out: bool,
@@ -4247,6 +4250,7 @@ impl FocusReply {
         }
         self.sending = false;
         self.sending_since = None;
+        self.send = None;
         self.ids.remove(self.at);
         self.kept.remove(id);
         self.left_pile();
@@ -4261,6 +4265,7 @@ impl FocusReply {
         }
         self.sending = false;
         self.sending_since = None;
+        self.send = None;
         self.error = Some(why);
     }
 
@@ -4273,6 +4278,7 @@ impl FocusReply {
         }
         self.sending = false;
         self.sending_since = None;
+        self.send = None;
         self.timed_out = true;
         self.error = None;
     }
