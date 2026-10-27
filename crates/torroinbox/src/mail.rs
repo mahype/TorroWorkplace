@@ -4215,14 +4215,16 @@ impl FocusReply {
     }
 
     /// The undo of "Remove from Reply later": `id` back into the round at `place` (as far as the
-    /// round still reaches), shown, with `text` in its field. Nothing while sending.
-    pub fn put_back(&mut self, id: String, place: usize, text: &str) {
+    /// round still reaches), shown, with `text` in its field, back on "Reply later" since `since`
+    /// ([`FocusReply::pile_of`], fourth review of #315). Nothing while sending.
+    pub fn put_back(&mut self, id: String, place: usize, text: &str, since: Option<DateTime<Utc>>) {
         if self.sending || self.ids.contains(&id) {
             return;
         }
         self.leave();
         let place = place.min(self.ids.len());
         self.seen.insert(id.clone());
+        self.piles.insert(id.clone(), (Some(MailPile::ReplyLater), since));
         self.total = self.total.map(|total| total + 1);
         self.ids.insert(place, id);
         self.at = place;
@@ -4231,22 +4233,25 @@ impl FocusReply {
     }
 
     /// The reply to `id` was sent: it leaves the round, and the mail after it shows with its own
-    /// field when it was the one shown.
+    /// field. Only for the mail shown, the one whose reply is on its way (fourth review of #315: the
+    /// round stays while it is, `App::close_focus`); any other id changes nothing.
     pub fn answered(&mut self, id: &str) {
+        if self.current() != Some(id) {
+            return;
+        }
         self.sending = false;
-        let Some(place) = self.ids.iter().position(|held| held == id) else { return };
-        self.ids.remove(place);
+        self.ids.remove(self.at);
         self.kept.remove(id);
         self.left_pile();
-        if place < self.at {
-            self.at -= 1;
-        } else if place == self.at {
-            self.arrive();
-        }
+        self.arrive();
     }
 
-    /// The reply could not be sent, for `why`: it stays in the field, "Send" tries again.
-    pub fn failed(&mut self, why: String) {
+    /// The reply to `id` could not be sent, for `why`: it stays in the field, "Send" tries again.
+    /// Only for the mail shown, as [`FocusReply::answered`].
+    pub fn failed(&mut self, id: &str, why: String) {
+        if self.current() != Some(id) {
+            return;
+        }
         self.sending = false;
         self.error = Some(why);
     }
@@ -4257,29 +4262,25 @@ impl FocusReply {
     }
 
     /// Whether anything typed would be lost with the round: the field or a reply kept for another mail.
-    /// The reply on its way goes on its own and is not lost with the round ([`FocusReply::keep`]).
     pub fn has_text(&self) -> bool {
         !self.keep().texts.is_empty()
     }
 
-    /// The round as the undo of "Reply discarded." keeps it: mail, place and every reply with text.
-    /// While a reply is on its way its mail is left out, text and all (second review of #315): the
-    /// round that comes back must never offer to send it again – the window says what became of it.
+    /// The round as the undo of "Reply discarded." keeps it: mail, place, every reply with text, what
+    /// it had, its count and its piles. A round is never left while a reply is on its way (fourth
+    /// review of #315), so nothing kept is on its way.
     pub fn keep(&self) -> FocusKept {
-        let away = self.current().filter(|_| self.sending);
-        let shown = self.current().filter(|_| !self.sending).map(|id| (id.to_owned(), self.reply.text()));
+        let shown = self.current().map(|id| (id.to_owned(), self.reply.text()));
         let kept = self.kept.iter().map(|(id, reply)| (id.clone(), reply.text()));
         let mut texts: Vec<(String, String)> =
             shown.into_iter().chain(kept).filter(|(_, text)| !text.trim().is_empty()).collect();
         texts.sort();
-        let ids = self.ids.iter().filter(|id| Some(id.as_str()) != away).cloned().collect();
+        let ids = self.ids.clone();
         let mut seen: Vec<String> = self.seen.iter().cloned().collect();
         seen.sort();
         let mut piles: Vec<_> = self.piles.iter().map(|(id, (pile, since))| (id.clone(), *pile, *since)).collect();
         piles.sort_by(|a, b| a.0.cmp(&b.0));
-        // The mail on its way leaves the pile with its answer.
-        let total = self.total.map(|total| if away.is_some() { total.saturating_sub(1) } else { total });
-        FocusKept { ids, at: self.at, texts, error: None, seen, total, piles }
+        FocusKept { ids, at: self.at, texts, error: None, seen, total: self.total, piles }
     }
 
     /// The round `kept` back, at its place with its replies, its count, the piles it loaded and the
@@ -4592,40 +4593,38 @@ mod tests {
         assert_eq!(focus.take_current(), Some(("b".to_owned(), "Maybe".to_owned())), "with its text");
         assert_eq!((focus.current(), ids(&focus)), (Some("c"), "a c d".to_owned()));
         // Its undo puts it back at its place with its text (second review of #315).
-        focus.put_back("b".into(), 1, "Maybe");
+        focus.put_back("b".into(), 1, "Maybe", None);
         assert_eq!(
             (focus.current(), focus.reply.text().trim(), ids(&focus)),
             (Some("b"), "Maybe", "a b c d".to_owned())
         );
+        // Back on "Reply later" for the round (fourth review of #315).
+        assert_eq!(focus.pile_of("b"), Some((Some(MailPile::ReplyLater), None)));
         assert!(focus.take_current().is_some());
+        // An answer or an error counts only for the mail shown (fourth review of #315).
         focus.answered("a");
-        assert_eq!((focus.current(), focus.position()), (Some("c"), Some((1, 2))), "still c");
-        assert!(!focus.has_text(), "a's reply went with it");
+        assert_eq!((focus.current(), ids(&focus)), (Some("c"), "a c d".to_owned()), "a is not shown");
         focus.reply = text_editor::Content::with_text("On it");
         let kept = focus.keep();
         assert_eq!(
             kept,
             FocusKept {
-                ids: vec!["c".into(), "d".into()],
-                at: 0,
-                texts: vec![("c".into(), "On it".into())],
+                ids: vec!["a".into(), "c".into(), "d".into()],
+                at: 1,
+                texts: vec![("a".into(), "Thanks!".into()), ("c".into(), "On it".into())],
                 error: None,
                 seen: ["a", "b", "c", "d"].map(String::from).to_vec(),
                 total: None,
-                piles: Vec::new(),
+                piles: vec![("b".into(), Some(MailPile::ReplyLater), None)],
             }
         );
         focus.sending = true;
         assert!(!focus.step(true) && !focus.step(false) && focus.take_current().is_none(), "nothing moves");
-        // While sending, the round as kept leaves the mail on its way out, text and all.
-        // It stays among what the round had, so the round that comes back never takes it in again.
-        let away = focus.keep();
-        assert_eq!((away.ids, away.texts), (vec!["d".to_owned()], Vec::new()));
-        assert!(away.seen.contains(&"c".to_owned()), "the mail on its way was had");
-        assert!(!focus.has_text(), "the reply on its way is not discarded");
+        focus.failed("a", "elsewhere".into());
+        assert!(focus.sending && focus.error.is_none(), "another mail's error changes nothing");
         focus.answered("c");
-        assert_eq!((focus.current(), focus.sending), (Some("d"), false));
-        focus.failed("offline".into());
+        assert_eq!((focus.current(), focus.sending, ids(&focus)), (Some("d"), false, "a d".to_owned()));
+        focus.failed("d", "offline".into());
         assert_eq!(focus.error.as_deref(), Some("offline"));
         assert!(focus.step(true));
         assert_eq!((focus.current(), focus.position(), focus.error.as_deref()), (None, None, None), "the end");

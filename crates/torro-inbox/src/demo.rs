@@ -1798,11 +1798,18 @@ impl InboxSource for DemoSource {
         if keep_open && until.is_none() {
             return Err(InboxError::Unsupported);
         }
+        // By a mail's id, as the core (8d13da01): `keep_open` needs its conversation open – filing
+        // would wake a snoozed entry on top or reopen a done one. Its entry's own id brings a snoozed
+        // one back.
+        let by_mail = rules::is_message_id(&id) && !data.items.iter().any(|item| item.id == id);
         let at = match data.snooze_target(&id, until.is_some())? {
             SnoozeTarget::Entry(at) => at,
             SnoozeTarget::StandIn(item) => return Ok(*item),
         };
         let item = &mut data.items[at];
+        if keep_open && by_mail && !item.state.is_open() {
+            return Err(InboxError::Unsupported);
+        }
         if keep_open {
             let done = matches!(item.state, State::Done { .. });
             let (Some(until), true, false) = (until, item.source.kind == SourceKind::Mail, done) else {
@@ -2847,11 +2854,17 @@ mod tests {
         let open = demo.snooze_item("m:w1".into(), Some(until), false, true).await.expect("kept open");
         assert!(open.state.is_open() && open.follow_up.is_some_and(|f| f.at == until), "{open:?}");
         demo.snooze_item("demo-follow-w10".into(), Some(until), false, false).await.expect("put off");
+        // Fourth review of #315, as the core: by the mail's id a snoozed conversation is refused –
+        // filing would wake it on top –, by its entry's id it comes back.
+        let by_mail = demo.snooze_item("m:w10".into(), Some(until), false, true).await;
+        assert_eq!(by_mail, Err(InboxError::Unsupported), "a snoozed conversation by its mail's id");
         let reopened = demo.snooze_item("demo-follow-w10".into(), Some(until), false, true).await.expect("reopened");
         assert_eq!((reopened.state, reopened.follow_up.map(|f| f.at)), (State::Seen, Some(until)), "a snoozed entry");
         demo.set_item_done("demo-follow-w10".into(), true).await.expect("done");
         let refused = demo.snooze_item("demo-follow-w10".into(), Some(until), false, true).await;
         assert_eq!(refused, Err(InboxError::Unsupported), "a done entry");
+        let by_mail = demo.snooze_item("m:w10".into(), Some(until), false, true).await;
+        assert_eq!(by_mail, Err(InboxError::Unsupported), "a done conversation by its mail's id");
         assert_eq!(demo.snooze_item("demo-7".into(), Some(until), false, true).await, Err(InboxError::Unsupported));
         assert_eq!(demo.snooze_item("m:w1".into(), None, false, true).await, Err(InboxError::Unsupported));
     }

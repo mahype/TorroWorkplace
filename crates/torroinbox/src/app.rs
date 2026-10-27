@@ -2517,7 +2517,6 @@ pub struct App<S> {
     focus_reply: Option<FocusReply>,
     /// The reply whose round was closed while it was on its way (second review of #315): its mail
     /// and text, until the answer says whether it went ([`App::focus_sent`]).
-    reply_away: Option<(String, String)>,
     /// How many rounds of "Focus & reply" were started or brought back ([`App::next_round`]).
     rounds: u64,
     /// The day and time in the picker of "Pick…".
@@ -3789,7 +3788,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             mail_subject: None,
             unless_reply: false,
             focus_reply: None,
-            reply_away: None,
             rounds: 0,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
@@ -4135,6 +4133,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Shows `view` as a click in the sidebar does: no selection, no detail, no search left from
     /// the last one, and loads it when it is another.
     fn show_view(&mut self, view: View) -> Task<Message> {
+        // Not while a reply of "Focus & reply" is on its way (fourth review of #315).
+        if self.holds_round() {
+            self.close_menus();
+            return Task::none();
+        }
         self.close_menus();
         self.selected_mail.clear();
         self.mail_anchor = None;
@@ -5190,6 +5193,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// "Insights" in the hub's sidebar: the page on the overview's entries, its numbers asked anew.
     fn show_insights(&mut self) -> Task<Message> {
+        if self.holds_round() {
+            return Task::none();
+        }
         self.close_menus();
         self.detail = None;
         self.cursor = None;
@@ -5231,6 +5237,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// "To sort" in the hub's sidebar: the overview's entries with To sort alone – no view of its own,
     /// so the entries stay those of "Act now" and nothing is asked anew when it was shown already.
     fn show_to_sort(&mut self) -> Task<Message> {
+        if self.holds_round() {
+            return Task::none();
+        }
         self.close_menus();
         self.detail = None;
         self.cursor = None;
@@ -5681,14 +5690,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
     /// ([`Message::Piled`]). Nothing for the pile the mail lies on already.
     fn pile_mail(&mut self, id: String, pile: Option<MailPile>) -> Task<Message> {
-        self.pile_with(id, pile, None)
+        self.pile_with(id, pile, None, None)
     }
 
     /// [`App::pile_mail`] with `undo` as the hint's undo instead of [`Undo::Pile`] (`None`): "Remove
     /// from Reply later" in "Focus & reply" also puts the mail back into its round ([`Undo::Removed`]).
-    fn pile_with(&mut self, id: String, pile: Option<MailPile>, undo: Option<Undo>) -> Task<Message> {
+    ///
+    /// `assumed` is the pile the mail lies on when the window knows none ([`App::mail_pile`]): "Remove"
+    /// in "Focus & reply" takes mail of "Reply later" off, whatever the list says (fourth review of
+    /// #315).
+    fn pile_with(
+        &mut self,
+        id: String,
+        pile: Option<MailPile>,
+        undo: Option<Undo>,
+        assumed: Option<MailPile>,
+    ) -> Task<Message> {
         self.close_menus();
-        let before = self.mail_pile(&id);
+        let before = self.mail_pile(&id).or(assumed);
         if before == pile {
             return Task::none();
         }
@@ -5810,7 +5829,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Nothing on another view or an empty pile (the button is off there). What was open over the
     /// list – reader, selection, menus – closes: the round takes its place.
     fn start_focus(&mut self) -> Task<Message> {
-        if self.view != View::ReplyLater || self.messages.is_empty() {
+        if self.view != View::ReplyLater || self.messages.is_empty() || self.holds_round() {
             return Task::none();
         }
         self.close_menus();
@@ -5859,24 +5878,26 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// while a reply is on its way, whose answer (or error, with the text) belongs to this round
     /// (review of #315).
     fn close_focus(&mut self) {
-        if self.focus_reply.as_ref().is_some_and(|focus| focus.sending) {
+        if self.holds_round() {
             return;
         }
         self.end_focus();
     }
 
+    /// Whether a round of "Focus & reply" holds the window: a reply is on its way (fourth review of
+    /// #315). Until its answer nothing leaves the round – no other view (sidebar, drawer, menu, keys,
+    /// search, the glance, the settings), no new round, no undo of an old one –, so the answer, or its
+    /// error with the text, always finds the round that sent it.
+    fn holds_round(&self) -> bool {
+        self.focus_reply.as_ref().is_some_and(|focus| focus.sending)
+    }
+
     /// The round of "Focus & reply" ends. Was anything typed, the hint says "Reply discarded." with an
     /// undo that brings the round back with its place and replies ([`Undo::Focus`], review of #315):
-    /// nothing typed is lost without a word.
-    ///
-    /// A reply on its way goes on (second review of #315): its mail is left out of that undo
-    /// ([`FocusReply::keep`]), so nothing can send it twice, and its text waits in
-    /// [`App::reply_away`] for the answer ([`App::focus_sent`]).
+    /// nothing typed is lost without a word. Never while a reply is on its way: every way out asks
+    /// [`App::holds_round`] first.
     fn end_focus(&mut self) {
         let Some(focus) = self.focus_reply.take() else { return };
-        if focus.sending {
-            self.reply_away = focus.current().map(|id| (id.to_owned(), focus.reply.text()));
-        }
         if focus.has_text() {
             let undo = Some(Undo::Focus(focus.keep()));
             self.hint =
@@ -5900,7 +5921,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // Its undo puts it back into the round with what was typed (second review of #315).
         let since = self.mail_pile_since(&id);
         let undo = Undo::Removed { id: id.clone(), place, text, since };
-        Task::batch([self.pile_with(id, None, Some(undo)), focus_top()])
+        // Every mail of a round lies on "Reply later" (fourth review of #315).
+        Task::batch([self.pile_with(id, None, Some(undo), Some(MailPile::ReplyLater)), focus_top()])
     }
 
     /// "Send" in "Focus & reply": the text typed as the answer to the mail shown
@@ -5927,44 +5949,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// back) and the mail goes off "Reply later" at once, as the core would take it off once the sent
     /// copy turns up (decision 5 of E19): `inbox.set_mail_pile` with `None`, its row out of the pile's
     /// list, one less on its number. Not sent: the text stays in the field with why under it, "Send"
-    /// tries again. Also when the round ended meanwhile – the reply went all the same.
+    /// tries again. The round cannot be left while the reply is on its way ([`App::holds_round`],
+    /// fourth review of #315), so the answer finds it.
     fn focus_sent(&mut self, id: String, result: Result<(), String>) -> Task<Message> {
-        // Whether the round that sent it still shows it; else it was closed meanwhile.
         let here = self.focus_reply.as_ref().is_some_and(|focus| focus.sending && focus.current() == Some(id.as_str()));
-        let away = self.reply_away.take_if(|(away, _)| *away == id).map(|(_, text)| text);
         match result {
-            Err(why) if here => {
-                if let Some(focus) = self.focus_reply.as_mut() {
-                    focus.failed(why);
+            Err(why) => {
+                match self.focus_reply.as_mut().filter(|_| here) {
+                    Some(focus) => focus.failed(&id, why),
+                    None => self.error = Some(Failure::new(tr("Couldn't send the message."), why)),
                 }
                 Task::none()
             }
-            // The round was closed while it was on its way (second review of #315): the hint says so,
-            // and its undo brings that mail back in a round with its text and why – nothing is lost.
-            Err(why) => {
-                let undo = away.map(|text| {
-                    let texts = vec![(id.clone(), text)];
-                    Undo::Focus(mail::FocusKept {
-                        ids: vec![id.clone()],
-                        at: 0,
-                        texts,
-                        error: Some(why.clone()),
-                        seen: vec![id.clone()],
-                        total: None,
-                        piles: Vec::new(),
-                    })
-                });
-                self.hint = Some(Hint {
-                    text: tr("Couldn't send the message.").to_owned(),
-                    undo,
-                    shown: Instant::now(),
-                    folder: None,
-                });
-                self.error = Some(Failure::new(tr("Couldn't send the message."), why));
-                Task::none()
-            }
             Ok(()) => {
-                let shown = here;
                 if let Some(focus) = self.focus_reply.as_mut() {
                     focus.answered(&id);
                 }
@@ -5976,7 +5973,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     self.take_out(&id);
                 }
                 let off = self.set_mail_pile(vec![id], None, None, None);
-                if shown { Task::batch([off, focus_top()]) } else { off }
+                if here { Task::batch([off, focus_top()]) } else { off }
             }
         }
     }
@@ -6474,6 +6471,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// view has no field, an empty search opens with it.
     fn focus_search(&mut self) -> Task<Message> {
         self.close_menus();
+        // The search takes the place of the list: not while a round holds the window.
+        if self.holds_round() {
+            return Task::none();
+        }
         if self.folders.is_empty() {
             return Task::none();
         }
@@ -6529,6 +6530,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Shows `view`, a search, remembering where the search started; the same search again asks
     /// nothing.
     fn show_search(&mut self, view: View) -> Task<Message> {
+        if self.holds_round() {
+            return Task::none();
+        }
         if view == self.view {
             return Task::none();
         }
@@ -6824,6 +6828,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// give it back to the entries. Nothing open behind them is lost – the panel, the search and
     /// the cursor stay until a click shows them again ([`shows_entries`]).
     fn toggle_settings(&mut self) -> Task<Message> {
+        // The settings take the content area: not over a reply on its way.
+        if self.holds_round() {
+            return Task::none();
+        }
         self.close_menus();
         if self.settings.is_some() {
             self.leave_settings();
@@ -7019,6 +7027,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// The mail window has no "For me" (task E18.4, decision 8 of E18): it shows "All" with the
     /// entry's mail under the cursor and in the reader, once the mail stands in the list.
     fn open_for_me(&mut self, id: String) -> Task<Message> {
+        if self.holds_round() {
+            return Task::none();
+        }
         let Some(item) = self.for_me.iter().find(|item| item.id == id).cloned() else { return Task::none() };
         self.close_menus();
         if self.launch.kind == Kind::Mail {
@@ -8374,6 +8385,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// under the cursor and in the reader – kept there ([`App::pinned_mail`]) though it may lie
     /// beyond the folder's first page. A mail that cannot be read says so.
     fn show_start_mail(&mut self, id: String, result: Result<Box<Mail>, String>) -> Task<Message> {
+        if self.holds_round() {
+            return Task::none();
+        }
         let mail = match result {
             Ok(mail) => *mail,
             Err(err) => {
@@ -8522,7 +8536,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.count_pile(Some(MailPile::ReplyLater), true);
                 self.set_row_pile(&id, Some(MailPile::ReplyLater), since);
                 if let Some(focus) = self.focus_reply.as_mut() {
-                    focus.put_back(id.clone(), place, &text);
+                    focus.put_back(id.clone(), place, &text, since);
                 }
                 Task::batch([self.set_mail_pile(vec![id], Some(MailPile::ReplyLater), since, None), focus_top()])
             }
@@ -16151,44 +16165,46 @@ mod tests {
         assert_eq!(app.reply_later, Some(2), "both still on the pile");
     }
 
-    /// Second review of #315: another view while a reply is on its way ends the round, but neither
-    /// the hint nor its undo offers that mail – it cannot be sent twice; the replies to the others come
-    /// back. The answer then says "Sent.", or the error with an undo that brings the mail back with its
-    /// text and why.
+    /// Fourth review of #315: while a reply is on its way the round cannot be left – Escape,
+    /// "‹ Reply later", the sidebar's views, the search, the glance, the settings, a new round all wait –
+    /// so its answer always finds it: an error stays in the field with the text, and once the answer is
+    /// in, leaving works again.
     #[test]
-    fn leaving_while_sending_neither_drops_nor_doubles_the_reply() {
-        for ok in [true, false] {
-            let (mut app, ids) = focus_window();
-            let _ = app.update(Message::FocusSkip);
-            type_reply(&mut app, "Other");
-            let _ = app.update(Message::FocusStep(false));
-            type_reply(&mut app, "Yes");
-            let text = reply_text(&app);
-            let _ = app.update(Message::FocusSend);
-            let _ = app.update(Message::Show(View::All));
-            assert!(app.focus_reply.is_none(), "another view ends the round");
-            let Some(Hint { undo: Some(Undo::Focus(kept)), text: said, .. }) = app.hint.clone() else {
-                panic!("the other reply is offered back")
-            };
-            assert_eq!(said, tr("Reply discarded."));
-            assert_eq!(kept.ids, [ids[1].clone()], "not the mail on its way");
-            assert_eq!(kept.texts, [(ids[1].clone(), "Other".to_owned())]);
-            let result = if ok { Ok(()) } else { Err("offline".to_owned()) };
-            let _ = app.update(Message::FocusSent(ids[0].clone(), result));
-            let hint = app.hint.clone().expect("a hint");
-            if ok {
-                assert_eq!((hint.text.as_str(), hint.undo.is_none()), (tr("Sent."), true));
-                assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], None, None, None)), "off the pile");
-                continue;
-            }
-            assert_eq!(hint.text, tr("Couldn't send the message."));
-            let _ = app.update(Message::Undo);
-            load(&mut app);
-            assert_eq!(focused(&app), Some(ids[0].clone()), "the mail back in a round");
-            assert_eq!(reply_text(&app), text, "with its text");
-            let focus = app.focus_reply.as_ref().expect("the round");
-            assert_eq!((focus.sending, focus.error.as_deref()), (false, Some("offline")), "and why");
+    fn a_round_stays_while_a_reply_is_sent() {
+        let (mut app, ids) = focus_window();
+        type_reply(&mut app, "Yes");
+        let text = reply_text(&app);
+        let _ = app.update(Message::FocusSend);
+        let entry = app.for_me.first().map(|item| item.id.clone()).expect("an entry");
+        for leave in [
+            Message::Escape,
+            Message::FocusClose,
+            Message::Show(View::All),
+            Message::Show(View::ReplyLater),
+            Message::Switcher(Switcher::Search),
+            Message::OpenForMe(entry),
+            Message::OpenSettings,
+            Message::FocusReply,
+            Message::Key(Key::Slash),
+        ] {
+            let _ = app.update(leave.clone());
+            assert_eq!(app.view, View::ReplyLater, "{leave:?}: the view stays");
+            assert!(app.settings.is_none(), "{leave:?}: no settings over it");
+            let focus = app.focusing().expect("the round stays");
+            assert!(focus.sending && focus.current() == Some(ids[0].as_str()), "{leave:?}");
         }
+        assert_eq!(reply_text(&app), text, "with its text");
+        // An error stays with the text; then leaving works again.
+        let _ = app.update(Message::FocusSent(ids[0].clone(), Err("offline".into())));
+        let focus = app.focus_reply.as_ref().expect("the round");
+        assert_eq!((focus.sending, focus.error.as_deref()), (false, Some("offline")));
+        assert_eq!(reply_text(&app), text, "the text stays in the field");
+        // A send that succeeds lets the round go as well.
+        let _ = app.update(Message::FocusSend);
+        let _ = app.update(Message::FocusSent(ids[0].clone(), Ok(())));
+        assert_eq!(focused(&app), Some(ids[1].clone()), "answered: the next mail");
+        let _ = app.update(Message::Show(View::All));
+        assert!(app.focus_reply.is_none() && app.view == View::All, "leaving works again");
     }
 
     /// Decision of #315: "Focus & reply" goes over the whole pile – at the end of what the list had
@@ -16284,30 +16300,61 @@ mod tests {
         assert_eq!(focused(&app), Some(ids[1].clone()), "back in the round");
     }
 
-    /// Third review of #315: a reply on its way when the round was left is never taken in again by the
-    /// round its undo brings back – not even from the next page; the count goes on from the pile's.
+    /// Third review of #315: the round that "Reply discarded." brings back never takes in a mail it had
+    /// – the one answered included – and keeps its count.
     #[test]
     fn a_round_brought_back_never_takes_in_the_mail_it_sent() {
         let (mut app, ids) = focus_window();
-        let _ = app.update(Message::FocusSkip);
-        type_reply(&mut app, "Other");
-        let _ = app.update(Message::FocusStep(false));
         type_reply(&mut app, "Yes");
         let _ = app.update(Message::FocusSend);
+        let _ = app.update(Message::FocusSent(ids[0].clone(), Ok(())));
+        type_reply(&mut app, "Other");
         let _ = app.update(Message::Show(View::All));
         let _ = app.update(Message::Undo);
         load(&mut app);
         let focus = app.focus_reply.as_ref().expect("the round back");
         assert_eq!((focus.ids.clone(), focus.total), (vec![ids[1].clone()], Some(1)), "the count kept");
         assert_eq!(focus.position(), Some((1, 1)));
-        // To the end: the next page has nothing the round had, the mail on its way included.
+        assert_eq!(reply_text(&app).trim(), "Other");
+        // To the end: the next page has nothing the round had.
         let _ = app.update(Message::FocusSkip);
         let round = app.focus_reply.as_ref().filter(|focus| focus.loading).map(|focus| focus.round).expect("loading");
         let page = next_page(&app);
-        assert!(page.as_ref().is_ok_and(|(found, _)| found.is_empty()), "not the mail sent: {page:?}");
+        assert!(page.as_ref().is_ok_and(|(found, _)| found.is_empty()), "nothing it had: {page:?}");
         let _ = app.update(Message::FocusMore(round, page));
         let focus = app.focus_reply.as_ref().expect("the round");
         assert!(focus.current().is_none() && !focus.ids.contains(&ids[0]), "the end, without it");
+    }
+
+    /// Fourth review of #315: "Remove" in a round assumes "Reply later" for a mail whose pile the window
+    /// does not know (a list loaded anew, a round brought back): it takes it off with its hint, and
+    /// "Undo" puts it back on the pile and into the round.
+    #[test]
+    fn remove_assumes_reply_later() {
+        let (mut app, ids) = focus_window();
+        // The list loaded anew without it: no row, no letter says its pile.
+        app.messages.retain(|message| message.id != ids[0]);
+        app.letter = None;
+        assert_eq!(app.mail_pile(&ids[0]), None);
+        let _ = app.update(Message::FocusRemove);
+        match last_pile(&app) {
+            Some(Sent::Pile(off, None, None, Some(hint))) => {
+                assert_eq!(off, std::slice::from_ref(&ids[0]), "off the pile");
+                assert_eq!(hint.text, tr("Removed from Reply later."));
+            }
+            other => panic!("off the pile, not {other:?}"),
+        }
+        assert_eq!(focused(&app), Some(ids[1].clone()));
+        deliver_pile(&mut app);
+        let _ = app.update(Message::Undo);
+        assert!(
+            matches!(last_pile(&app), Some(Sent::Pile(back, Some(MailPile::ReplyLater), _, None)) if back == std::slice::from_ref(&ids[0]))
+        );
+        assert_eq!(focused(&app), Some(ids[0].clone()), "back in the round");
+        assert_eq!(
+            app.focusing().and_then(|focus| focus.pile_of(&ids[0])).map(|(pile, _)| pile),
+            Some(Some(MailPile::ReplyLater))
+        );
     }
 
     /// Third review of #315: the answer of a next page counts only for the round that asked – a round
