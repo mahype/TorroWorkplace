@@ -818,8 +818,9 @@ pub struct Setup {
 
 impl Setup {
     /// The version of the setup this build brings. Raised when a release adds a step the person
-    /// should be told about ("New in setup: AI"). 2: the step "Web search" (task WEB.7).
-    pub const VERSION: u32 = 2;
+    /// should be told about ("New in setup: AI"). 2: the step "Web search" (task WEB.7). 3: the step
+    /// Documents (#303).
+    pub const VERSION: u32 = 3;
 
     /// The setup after a person moved it to `state`: finishing or putting it off records this
     /// build's version; starting it again keeps the version of the last run.
@@ -2719,6 +2720,10 @@ mod tests {
         let before_web = Setup { state: SetupState::Done, version: 1 };
         assert!(before_web.has_new_steps(), "version 1 had no web search");
         assert!(!before_web.moved_to(SetupState::Done).has_new_steps());
+        // Issue #303: and whoever finished it before the step Documents.
+        assert_eq!(Setup::VERSION, 3);
+        let before_documents = Setup { state: SetupState::Done, version: 2 };
+        assert!(before_documents.has_new_steps(), "version 2 had no step Documents");
     }
 
     #[test]

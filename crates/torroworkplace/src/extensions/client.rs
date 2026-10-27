@@ -341,6 +341,8 @@ pub fn allow(tool: &ReportedTool, access: Access) -> AllowedTool {
 /// The tools of the server `id` (people call it `name`) as the core offers them: each tool in `reported` (what
 /// the server reports now, in its order), compared with what a person allowed:
 ///
+/// - [`ToolState::Blocked`] when the catalog entry blocks it (`blocked`, issue #303): never offered, whatever a
+///   person allowed;
 /// - [`ToolState::Unsupported`] when its name makes no name towards agents ([`tool_name`]: too long, other
 ///   characters); `tool_name` is `None` then;
 /// - [`ToolState::Allowed`] when `allowed` has a tool of that name with the same [`fingerprint`] and the access
@@ -357,6 +359,7 @@ pub fn tool_states(
     name: &str,
     reported: &[ReportedTool],
     allowed: &[AllowedTool],
+    blocked: &[String],
     access: impl Fn(&str) -> Access,
 ) -> Vec<ExtensionTool> {
     reported
@@ -365,6 +368,7 @@ pub fn tool_states(
             let outward = tool_name(id, &tool.name);
             let kept = allowed.iter().find(|known| known.name == tool.name && known.fingerprint == fingerprint(tool));
             let (state, access) = match (&outward, kept) {
+                _ if blocked.contains(&tool.name) => (ToolState::Blocked, access(&tool.name)),
                 (None, _) => (ToolState::Unsupported, access(&tool.name)),
                 (Some(_), Some(kept)) => match access(&tool.name) {
                     now if kept.access.covers(now) => (ToolState::Allowed, now),
@@ -739,7 +743,7 @@ mod tests {
         let (connection, server) = connected(&fixture).await;
         let first = connection.list_tools(WAIT).await.expect("listed");
         let allowed: Vec<AllowedTool> = first.iter().map(|tool| allow(tool, Access::Read)).collect();
-        let states = tool_states("time", "Time", &first, &allowed, |_| Access::Read);
+        let states = tool_states("time", "Time", &first, &allowed, &[], |_| Access::Read);
         assert!(states.iter().all(|tool| tool.state == ToolState::Allowed && tool.access == Access::Read));
 
         let mut changes = connection.tools_changed();
@@ -756,7 +760,7 @@ mod tests {
         let now = connection.list_tools(WAIT).await.expect("listed");
         // The catalog rates `now` as before, every other tool `delete`.
         let rating = |name: &str| if name == "now" { Access::Read } else { Access::Delete };
-        let states = tool_states("time", "Time", &now, &allowed, rating);
+        let states = tool_states("time", "Time", &now, &allowed, &[], rating);
         let state = |name: &str| states.iter().find(|tool| tool.name == name).map(|tool| (tool.state, tool.access));
         assert_eq!(state("now"), Some((ToolState::Allowed, Access::Read)), "unchanged stays allowed");
         assert_eq!(state("zone"), Some((ToolState::Review, Access::Delete)), "changed description");
@@ -768,7 +772,7 @@ mod tests {
         assert_eq!(states[0].extension_name, "Time");
 
         // A tool the server no longer reports is gone.
-        let gone = tool_states("time", "Time", &now[..1], &allowed, |_| Access::Delete);
+        let gone = tool_states("time", "Time", &now[..1], &allowed, &[], |_| Access::Delete);
         assert_eq!(gone.len(), 1);
     }
 
@@ -778,14 +782,14 @@ mod tests {
     fn a_tool_rated_higher_since_it_was_allowed_waits_for_a_person() {
         let tools = [reported("now", "The time"), reported("zone", "A zone")];
         let allowed = [allow(&tools[0], Access::Read), allow(&tools[1], Access::Write)];
-        let states = tool_states("time", "Time", &tools, &allowed, |name| match name {
+        let states = tool_states("time", "Time", &tools, &allowed, &[], |name| match name {
             "now" => Access::Write,
             _ => Access::Read,
         });
         let state = |name: &str| states.iter().find(|tool| tool.name == name).map(|tool| (tool.state, tool.access));
         assert_eq!(state("now"), Some((ToolState::Review, Access::Write)), "rated higher");
         assert_eq!(state("zone"), Some((ToolState::Allowed, Access::Read)), "rated lower");
-        let same = tool_states("time", "Time", &tools, &allowed, |name| match name {
+        let same = tool_states("time", "Time", &tools, &allowed, &[], |name| match name {
             "now" => Access::Read,
             _ => Access::Write,
         });

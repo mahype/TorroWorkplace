@@ -3108,6 +3108,21 @@ pub enum Request {
         /// The secret; the core never sends it back.
         value: Secret,
     },
+    /// Chooses the folder the catalog server `id` works in ([`Response::Extension`], issue #303):
+    /// one of the allowed folders, given as its path, or `None` to take the choice back. The server
+    /// is started with it as its bound, and Torro checks the paths of every call against it; without
+    /// one every call is refused. Choosing a folder is granting rights: app key only, never an MCP
+    /// tool (point 10). `not-found` for an unknown id or a path that is no allowed folder,
+    /// `unsupported` for a server that works in no folder, `forbidden` for a folder that cannot be
+    /// chosen (it holds something blocked, or it may be written and holds a folder that may only be
+    /// read).
+    #[serde(rename = "extensions.set_folder")]
+    SetExtensionFolder {
+        /// The server's id.
+        id: String,
+        /// The allowed folder's path, or `null` for none.
+        folder: Option<String>,
+    },
     /// The last lines the server wrote to stderr, at most 200 lines or 64 KB, kept in memory only
     /// ([`Response::Logs`]). App key only, never an MCP tool (point 10): its output may hold anything
     /// the server read. `not-found` for an unknown id.

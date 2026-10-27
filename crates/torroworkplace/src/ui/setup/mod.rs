@@ -28,6 +28,11 @@
 //! (`torro_settings_ui::assistant::web`): a provider's switch is saved at once, the first one switched on also
 //! switches the tool `web` on; "Let the assistant use it" gives the assistant's client read access to `web` with
 //! "Continue" ([`with_web`]). Only a person does this – the control centre holds the app key.
+//!
+//! The step "Documents" (issue #303, `docs/einrichtung.md` step 10) only presents the ArtCraft apps of the catalog
+//! (`extensions.list_catalog`, which the shell loads while the step shows): each with what it is for and how it stands
+//! here – set up as an MCP server, installed on this computer, or "Get <App>" with the link to its releases. It stores
+//! nothing; the apps are set up under MCP servers.
 
 mod pages;
 
@@ -73,11 +78,12 @@ pub enum Step {
     Inbox,
     Ai,
     Web,
+    Documents,
     Done,
 }
 
 impl Step {
-    pub const ALL: [Step; 10] = [
+    pub const ALL: [Step; 11] = [
         Step::Welcome,
         Step::Nextcloud,
         Step::Components,
@@ -87,6 +93,7 @@ impl Step {
         Step::Inbox,
         Step::Ai,
         Step::Web,
+        Step::Documents,
         Step::Done,
     ];
 
@@ -102,6 +109,7 @@ impl Step {
             Step::Inbox => "inbox",
             Step::Ai => "ai",
             Step::Web => "web",
+            Step::Documents => "documents",
             Step::Done => "done",
         }
     }
@@ -127,6 +135,7 @@ impl Step {
             Step::Inbox => tr("Notification Hub"),
             Step::Ai => tr("AI"),
             Step::Web => tr("Web search"),
+            Step::Documents => tr("Documents"),
             Step::Done => tr("All set"),
         }
     }
@@ -143,6 +152,7 @@ impl Step {
             Step::Inbox => Icon::Inbox,
             Step::Ai => Icon::Sparkles,
             Step::Web => Icon::Globe,
+            Step::Documents => Icon::FileText,
             Step::Done => Icon::CircleCheck,
         }
     }
@@ -154,8 +164,8 @@ impl Step {
             Step::Tasks => Some(Component::Tasks),
             Step::Mail => Some(Component::Mail),
             Step::Inbox => Some(Component::Inbox),
-            // The web search is a tool of the assistant.
-            Step::Web => Some(Component::Assistant),
+            // The web search is a tool of the assistant; so are the documents' apps, for it and its agents.
+            Step::Web | Step::Documents => Some(Component::Assistant),
             _ => None,
         }
     }
@@ -336,6 +346,11 @@ impl State {
         self.caldav.is_some() || self.github_token || self.github.checking()
     }
 
+    /// The step shown.
+    pub fn step(&self) -> Step {
+        self.step
+    }
+
     /// The steps walked now.
     fn steps(&self) -> Vec<Step> {
         steps(&self.off)
@@ -474,6 +489,8 @@ pub enum Message {
     Web(web::Message),
     /// "Let the assistant use it" on the web step.
     AllowWeb(bool),
+    /// "Get <App>" on the step Documents: the app's releases (the catalog entry's address) in the browser.
+    GetApp(String),
 }
 
 /// What the setup wants the shell to do.
@@ -683,6 +700,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             state.web_allowed = allowed;
             stay(Action::None)
         }
+        Message::GetApp(url) => stay(Action::OpenUrl(url)),
     }
 }
 
@@ -1221,14 +1239,15 @@ mod tests {
             Step::Inbox,
             Step::Ai,
             Step::Web,
+            Step::Documents,
             Step::Done,
         ];
         assert_eq!(setup.steps(), walk);
         assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
-        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 10)));
+        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 11)));
         update(&mut setup, Message::Next, &data());
         assert_eq!(setup.step, Step::Components, "a Nextcloud is connected: the step goes on");
-        for _ in 0..7 {
+        for _ in 0..8 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -1251,7 +1270,7 @@ mod tests {
     #[test]
     fn passed_steps_are_checked_and_clicked_ones_can_be_gone_back_to() {
         let mut setup = state(Step::Welcome);
-        for _ in 0..9 {
+        for _ in 0..10 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -1661,7 +1680,7 @@ mod tests {
         assert_eq!(rights.area(Area::Tools), before.rights.area(Area::Tools), "write access stays write");
         assert_eq!(Rights { tools: before.rights.tools.clone(), ..rights.clone() }, before.rights, "nothing else");
         assert!(rights.reaches_tool(ToolId::Web) && rights.reaches_tool(ToolId::Pdf));
-        assert_eq!(setup.step, Step::Done);
+        assert_eq!(setup.step, Step::Documents);
         update(&mut setup, Message::Back, &data);
         assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "at most once");
     }
@@ -1740,14 +1759,14 @@ mod tests {
         assert!(!setup.busy());
         let sent = requests(update(&mut setup, Message::Next, &stored));
         assert!(matches!(sent.as_slice(), [Request::UpdateClient { .. }]), "{sent:?}");
-        assert_eq!(setup.step, Step::Done);
+        assert_eq!(setup.step, Step::Documents);
 
         let mut unticked = state(Step::Web);
         update(&mut unticked, duckduckgo_on(), &data);
         update(&mut unticked, Message::AllowWeb(false), &data);
         assert_eq!(pages::primary(&unticked, &data), (tr("Continue"), true), "nothing to wait for");
         update(&mut unticked, Message::Next, &data);
-        assert_eq!(unticked.step, Step::Done);
+        assert_eq!(unticked.step, Step::Documents);
     }
 
     /// Found in the second review of #305: SearXNG without an address is switched on but cannot be asked
@@ -1812,7 +1831,7 @@ mod tests {
         assert!(requests(update(&mut setup, Message::Web(key), &data)).is_empty());
         assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Web(Discard)".into()));
         assert!(requests(update(&mut setup, Message::Skip, &data)).is_empty());
-        assert_eq!((setup.step, setup.mark(Step::Web)), (Step::Done, Mark::Skipped));
+        assert_eq!((setup.step, setup.mark(Step::Web)), (Step::Documents, Mark::Skipped));
         assert!(escape(&setup).is_some_and(|m| matches!(m, Message::Back)), "the typed key went with the step");
     }
 
@@ -1871,7 +1890,72 @@ mod tests {
         assert_eq!(Step::from_arg("later"), None, "no such step");
         assert_eq!(
             Step::args(),
-            ["welcome", "nextcloud", "components", "calendar", "tasks", "mail", "inbox", "ai", "web", "done"]
+            [
+                "welcome",
+                "nextcloud",
+                "components",
+                "calendar",
+                "tasks",
+                "mail",
+                "inbox",
+                "ai",
+                "web",
+                "documents",
+                "done"
+            ]
         );
+    }
+
+    /// Issue #303: the step Documents is the assistant's, so it is walked only while the assistant is on, right
+    /// before the end.
+    #[test]
+    fn documents_come_after_the_web_search_with_the_assistant() {
+        let all = steps(&BTreeSet::new());
+        let at = all.iter().position(|step| *step == Step::Documents).expect("walked");
+        assert_eq!((all[at - 1], all[at + 1]), (Step::Web, Step::Done));
+        let without = steps(&BTreeSet::from([Component::Assistant]));
+        assert!(!without.contains(&Step::Documents) && !without.contains(&Step::Web));
+    }
+
+    /// Issue #303: each ArtCraft app shows how it stands – set up as a server, its program found, or missing –, and
+    /// "Get <App>" opens the releases the catalog entry names; nothing is stored.
+    #[test]
+    fn documents_show_each_app_as_it_stands() {
+        let mut data = data();
+        super::super::launch::demo_documents(&mut data);
+        let entry = |id: &str| data.catalog.entries().iter().find(|entry| entry.id == id).cloned().expect("listed");
+        let states: Vec<pages::AppState> =
+            pages::APPS.iter().map(|(id, ..)| pages::app_state(&data, &entry(id))).collect();
+        use pages::AppState::{Installed, Missing, SetUp};
+        assert_eq!(states, [SetUp, Missing, Installed, Missing]);
+        let deckcraft = entry("deckcraft");
+        let mut setup = state(Step::Documents);
+        match update(&mut setup, Message::GetApp(deckcraft.url.clone()), &data) {
+            Outcome::Stay(Action::OpenUrl(url)) => assert_eq!(url, "https://github.com/storytold/deckcraft/releases"),
+            other => panic!("expected the releases in the browser, got {other:?}"),
+        }
+        assert_eq!(pages::primary(&setup, &data), (tr("Continue"), true));
+        assert!(pages::skip(&setup, &data).is_some(), "it can be skipped like any step");
+        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)), "stores nothing");
+        assert_eq!(setup.step, Step::Done);
+    }
+
+    /// Review of PR #316: before the catalog answers the step shows "Loading …", a failed list a sentence, and a
+    /// catalog without the ArtCraft apps (a service of another version) another; otherwise the four apps in order.
+    #[test]
+    fn documents_say_how_the_catalog_answered() {
+        use super::super::connections::Listing;
+        use pages::Listed;
+        let mut data = data();
+        let Listed::Apps(apps) = pages::listed(&data) else { panic!("the demo lists the apps") };
+        let ids: Vec<&str> = apps.iter().map(|(entry, ..)| entry.id.as_str()).collect();
+        assert_eq!(ids, ["wordcraft", "deckcraft", "gridcraft", "pdfcraft"]);
+        let catalog = data.catalog.entries().to_vec();
+        data.catalog = Listing::Entries(Vec::new());
+        assert_eq!(pages::listed(&data), Listed::Loading);
+        data.catalog = Listing::Failed("unsupported".into());
+        assert_eq!(pages::listed(&data), Listed::Failed);
+        data.catalog = Listing::Entries(catalog.into_iter().filter(|entry| !entry.id.ends_with("craft")).collect());
+        assert_eq!(pages::listed(&data), Listed::NotInCatalog);
     }
 }

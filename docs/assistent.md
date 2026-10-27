@@ -487,8 +487,8 @@ legen. Den **Inhalt** einer Datei liest oder ändert es nicht; das machen Dokume
 Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalter, Ordnerliste und Freigabe-Karten.
 
 - **Freigegebene Ordner** (Steuerzentrale › MCP servers, Gruppe „Allowed folders“; seit dem Merge mit #302 dort, Einstellung
-  `allowed_folder`): eine gemeinsame Liste für alle Werkzeuge, die mit Dateien arbeiten; auch #303 begrenzt ArtCraft
-  damit. Je Ordner „Read“ oder „Read and write“, neu hinzugefügt zuerst „Read“. Die Liste verwalten heißt Rechte
+  `allowed_folder`): eine gemeinsame Liste für alle Werkzeuge, die mit Dateien arbeiten; die ArtCraft-Apps (#303)
+  arbeiten je in einem davon, den die Person auf der Seite der App wählt (`extensions.set_folder`, MCP Never). Je Ordner „Read“ oder „Read and write“, neu hinzugefügt zuerst „Read“. Die Liste verwalten heißt Rechte
   vergeben: nur Menschen, auch das Entfernen (Punkt 9 in [api.md](api.md)). Liegen Ordner ineinander, gilt der
   innerste.
 - **Pfade:** absolut, ohne `..` und `.`. Der Kern löst sie auf (`canonicalize`) und vergleicht mit den aufgelösten

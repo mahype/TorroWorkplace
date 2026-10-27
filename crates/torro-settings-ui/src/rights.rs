@@ -1569,6 +1569,8 @@ mod tests {
             secrets: Vec::new(),
             notes: Vec::new(),
             fingerprint: None,
+            folder: None,
+            folder_unusable: false,
         }
     }
 

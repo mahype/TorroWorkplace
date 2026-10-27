@@ -938,11 +938,28 @@ impl Ui {
             }
             // A server's page (task MA.8): "Time" running or with a changed tool, "GitHub" stopped
             // after errors.
-            Open::ExtensionDetail | Open::ExtensionReview | Open::ExtensionCrashed => {
+            Open::ExtensionDetail
+            | Open::ExtensionReview
+            | Open::ExtensionCrashed
+            | Open::ExtensionFolder
+            | Open::ExtensionUnbounded
+            | Open::ExtensionUnusable => {
                 if open == Open::ExtensionReview {
                     launch::demo_review(&mut self.data);
                 }
-                let id = if open == Open::ExtensionCrashed { "github" } else { "time" };
+                // The ArtCraft apps (issue #303) choose among the allowed folders of `connections`.
+                if matches!(open, Open::ExtensionFolder | Open::ExtensionUnbounded | Open::ExtensionUnusable) {
+                    launch::demo_connections(&mut self.data);
+                }
+                if open == Open::ExtensionUnusable {
+                    launch::demo_unusable(&mut self.data);
+                }
+                let id = match open {
+                    Open::ExtensionCrashed => "github",
+                    Open::ExtensionFolder | Open::ExtensionUnusable => "wordcraft",
+                    Open::ExtensionUnbounded => "gridcraft",
+                    _ => "time",
+                };
                 vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Open(id.into()))]
             }
             // A server of one's own (task MA.9): the form filled in from a pasted block, the field
@@ -962,6 +979,10 @@ impl Ui {
                 messages
             }
             Open::Setup(step) => {
+                // The step Documents (issue #303) shows one app of each state: GridCraft only installed.
+                if step == setup::Step::Documents {
+                    launch::demo_documents(&mut self.data);
+                }
                 self.setup = Some(setup::State::new(step, &self.data.settings));
                 vec![]
             }
@@ -1024,14 +1045,21 @@ impl Ui {
     }
 
     /// Loads everything from the service; the demo has none and keeps its sample data. The catalog of
-    /// MCP servers only while their section is open: the core looks for programs on disk for it.
+    /// MCP servers only while their section or the setup's step Documents (issue #303) is open: the core
+    /// looks for programs on disk for it.
     fn reload(&self) -> Task<Message> {
         match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
+            (false, _) if self.on_documents() => Task::batch([load(true), load_catalog()]),
             // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
             (false, Section::Connections) => Task::batch([load(true), load_catalog()]),
             (false, _) => load(self.setup.is_some()),
         }
+    }
+
+    /// Whether the setup shows its step Documents, which lists the ArtCraft apps of the catalog.
+    fn on_documents(&self) -> bool {
+        self.setup.as_ref().is_some_and(|setup| setup.step() == setup::Step::Documents)
     }
 
     /// The first [`Ui::reload`], after the core answers: one started just now does not listen yet
@@ -1311,7 +1339,14 @@ impl Ui {
             }
             Message::Setup(m) => {
                 let Some(state) = self.setup.as_mut() else { return Task::none() };
+                let before = state.step();
                 match setup::update(state, m, &self.data) {
+                    // Entering the step Documents asks for the catalog at once (issue #303).
+                    setup::Outcome::Stay(action)
+                        if before != setup::Step::Documents && self.on_documents() && !self.launch.demo =>
+                    {
+                        return Task::batch([self.perform(action), load_catalog()]);
+                    }
                     setup::Outcome::Stay(action) => action,
                     // Finished or put off: the window goes on as the control centre.
                     setup::Outcome::Close(action) => {
@@ -2995,12 +3030,21 @@ mod tests {
         assert!(form.page_overlay().is_some() && matches!(form.cover(), Cover::Dialog));
         let tools = started(&["--demo", "--open", "catalog-install-tools"]);
         assert!(tools.page_overlay().is_some(), "the dialog at the tools the demo reported");
-        for (name, id) in [("extension-detail", "time"), ("extension-review", "time"), ("extension-crashed", "github")]
-        {
+        for (name, id) in [
+            ("extension-detail", "time"),
+            ("extension-review", "time"),
+            ("extension-crashed", "github"),
+            ("extension-folder", "wordcraft"),
+            ("extension-unbounded", "gridcraft"),
+            ("extension-unusable", "wordcraft"),
+        ] {
             let ui = started(&["--demo", "--open", name]);
             assert_eq!(ui.connections.page, connections::Page::Server(id.into()), "{name}");
             assert!(ui.page_header(SizeClass::Wide).sub_page.is_some() && ui.page_overlay().is_none(), "{name}");
         }
+        let unusable = started(&["--demo", "--open", "extension-unusable"]);
+        let word = connections::server_of(&unusable.data, "wordcraft").expect("WordCraft");
+        assert!(word.folder_unusable && word.folder.is_some(), "issue #303: chosen, but not usable now");
         let review = started(&["--demo", "--open", "extension-review"]);
         let time = connections::server_of(&review.data, "time").expect("Time");
         assert_eq!(time.status, torro_ipc::extensions::Status::Review);

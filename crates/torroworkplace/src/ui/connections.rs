@@ -59,7 +59,11 @@
 //! (`extensions.update_extension`), its tools with access and state and "Allow tools" for those
 //! that wait, its secrets as "Stored" or "Missing" with "Replace…" (`extensions.set_secret`), its
 //! output (`extensions.read_logs`, read when the page opens, in a field to select and copy from),
-//! and "Remove…" with a question first (`extensions.remove_extension`). Who may use it is set per
+//! and "Remove…" with a question first (`extensions.remove_extension`). A catalog server that works on the
+//! person's files (issue #303, ArtCraft: [`CatalogEntry::folder`]) has the group "Folder" before its tools: the
+//! folder chosen for it or "No folder chosen", and "Choose…" with a menu of the allowed folders and "None"
+//! (`extensions.set_folder`, [`Message::SetFolder`]); a refusal shows above the page. One without a bound of its own
+//! (GridCraft, [`FolderCheck::TorroOnly`]) says so there, in its catalog row and its dialogs. Who may use it is set per
 //! client (API, MCP clients, the assistant's Access), never here. The sidebar marks the section while a
 //! server waits for its tools or stopped after errors ([`alert`]).
 //!
@@ -102,12 +106,13 @@ use torro_core::settings::{
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Status as Dot};
+use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Status as Dot};
 use torro_gui::{style, typo};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area};
 use torro_ipc::extensions::{
-    CatalogEntry, CrashReason, ExtensionInfo, ExtensionTool, InstallFrom, MAX_ID_CHARS, ParseError, ServerSpec, Source,
-    Status, ToolState, Value, blocked_env, parse_mcp_servers, valid_env_name, valid_header_name, valid_id,
+    CatalogEntry, CrashReason, ExtensionInfo, ExtensionTool, FolderCheck, InstallFrom, MAX_ID_CHARS, ParseError,
+    Prerequisite, ServerSpec, Source, Status, ToolState, Value, blocked_env, parse_mcp_servers, valid_env_name,
+    valid_header_name, valid_id,
 };
 use torro_ipc::tools::{ToolAccess, ToolInfo};
 use torro_ipc::{Request, Response, Secret, SettingKey};
@@ -596,6 +601,9 @@ struct ServerState {
     replacing: Option<Replacing>,
     /// "Remove…" asks first.
     removing: bool,
+    /// The menu of "Choose…" in "Folder" is open (issue #303), under its button ([`ServerState::anchor`]).
+    folders_open: bool,
+    anchor: Anchor,
 }
 
 /// A request of a server's page on its way.
@@ -605,6 +613,7 @@ enum Waiting {
     Allow,
     Update,
     Remove,
+    Folder,
 }
 
 /// The output of a server as the page has it.
@@ -652,6 +661,8 @@ pub enum Asked {
     Update(String),
     /// `extensions.remove_extension` on the server's page.
     Remove(String),
+    /// `extensions.set_folder` on the server's page (issue #303).
+    Folder(String),
 }
 
 /// A header or footer line being typed.
@@ -823,6 +834,12 @@ pub enum Message {
     CancelRemove,
     /// A link of a catalog entry (its website, where to get a secret): the browser.
     Link(String),
+    /// "Choose…" in "Folder" on a server's page: opens or closes the menu of the allowed folders.
+    ToggleFolders,
+    /// A click next to that menu, or Escape.
+    CloseFolders,
+    /// An allowed folder of that menu (its path), or "None": `extensions.set_folder` for the server.
+    SetFolder(String, Option<String>),
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
@@ -1057,6 +1074,24 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             ask(Asked::Remove(id.clone()), Request::RemoveExtension { id })
         }
         Message::Link(url) => Action::OpenUrl(url),
+        Message::ToggleFolders => {
+            state.server.folders_open = !state.server.folders_open;
+            Action::None
+        }
+        Message::CloseFolders => {
+            state.server.folders_open = false;
+            Action::None
+        }
+        Message::SetFolder(id, folder) => {
+            state.server.folders_open = false;
+            let chosen = server_of(data, &id).and_then(|server| server.folder.as_deref());
+            // As paths: the core keeps the folder without a slash at its end, as a setting may have one.
+            if chosen.map(Path::new) == folder.as_deref().map(Path::new) {
+                return Action::None;
+            }
+            (state.server.waiting, state.server.problem) = (Some(Waiting::Folder), None);
+            ask(Asked::Folder(id.clone()), Request::SetExtensionFolder { id, folder })
+        }
     }
 }
 
@@ -1312,7 +1347,7 @@ pub fn answered(state: &mut State, asked: Asked, result: &Result<Response, Strin
             }
             Action::None
         }
-        Asked::Switch(id) | Asked::Update(id) | Asked::Remove(id) => {
+        Asked::Switch(id) | Asked::Update(id) | Asked::Remove(id) | Asked::Folder(id) => {
             if state.page != Page::Server(id) {
                 return Action::None;
             }
@@ -1399,6 +1434,9 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.server.removing {
         return Some(Message::CancelRemove);
     }
+    if state.server.folders_open {
+        return Some(Message::CloseFolders);
+    }
     if let Some(typed) = web::escape(&state.web).filter(|_| state.page == Page::SearchProviders) {
         return Some(Message::Web(typed));
     }
@@ -1451,6 +1489,15 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option
     let server = server_of(data, id)?;
     if let Some(replacing) = &state.server.replacing {
         return Some(replace_dialog(replacing, server));
+    }
+    if state.server.folders_open {
+        let menu = folder_menu(data, server);
+        return Some(widgets::floating(
+            &state.server.anchor,
+            Placement::Below(Align::End),
+            menu,
+            Message::CloseFolders,
+        ));
     }
     state.server.removing.then(|| {
         confirm(
@@ -1992,10 +2039,15 @@ fn catalog_row<'a>(data: &'a Data, entry: &'a CatalogEntry, words: bool) -> Elem
         widgets::ellipsized(typo::meta(), facts(entry), theme::text_3),
     ]
     .width(Fill);
+    if entry.folder == Some(FolderCheck::TorroOnly) {
+        lines = lines.push(container(unbounded(&entry.name, typo::meta())).padding([space::xs(), 0.0]));
+    }
     if server.is_none() && !entry.missing.is_empty() {
         let needs =
             typo::text(typo::meta(), missing_sentence(entry)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
-        let line = row![widgets::status_dot(Dot::Attention), needs].spacing(space::s()).align_y(Alignment::Center);
+        // The dot in an icon's cell: this line starts where the line of a server without its own bound does.
+        let line =
+            row![mark_cell(widgets::status_dot(Dot::Attention)), needs].spacing(space::s()).align_y(Alignment::Center);
         lines = lines.push(container(line).padding([space::xs(), 0.0]));
     }
     let mut controls = row![].spacing(space::s()).align_y(Alignment::Center);
@@ -2020,12 +2072,33 @@ fn catalog_row<'a>(data: &'a Data, entry: &'a CatalogEntry, words: bool) -> Elem
 }
 
 /// "Model Context Protocol · MIT · version 2026.10.19": who makes an entry, its licence and the
-/// version the catalog installs.
+/// version the catalog installs; for a program the person installs themselves (ArtCraft, issue #303)
+/// the version the entry was tested with, "tested with version 0.11.0".
 fn facts(entry: &CatalogEntry) -> String {
+    let named = [("publisher", &entry.publisher), ("license", &entry.license), ("version", &entry.version)];
+    let named = named.map(|(name, value)| (name, value as &dyn fmt::Display));
+    match entry.requires.iter().any(|needed| matches!(needed, Prerequisite::Program { .. })) {
+        true => trf("{publisher} · {license} · tested with version {version}", &named),
+        false => trf("{publisher} · {license} · version {version}", &named),
+    }
+}
+
+/// That `app` keeps to no folder itself (GridCraft, [`FolderCheck::TorroOnly`]), as a sentence.
+fn unbounded_sentence(app: &str) -> String {
     trf(
-        "{publisher} · {license} · version {version}",
-        &[("publisher", &entry.publisher), ("license", &entry.license), ("version", &entry.version)],
+        "{app} doesn't keep to a folder itself: Torro checks every path, and saving a file waits for your approval.",
+        &[("app", &app)],
     )
+}
+
+/// That `app` keeps to no folder itself (GridCraft, [`FolderCheck::TorroOnly`]), with the info icon, in `level`:
+/// what its catalog row, its dialogs and its page say.
+fn unbounded<'a>(app: &str, level: typo::Level) -> Element<'a, Message> {
+    let info = icon::icon(Icon::Info, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    row![info, typo::text(level, unbounded_sentence(app)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
 }
 
 /// What a catalog entry misses, as the sentence to act on: "Needs Docker. Install it to use this
@@ -2051,6 +2124,9 @@ fn server_page<'a>(state: &'a State, data: &'a Data, id: &str, words: bool) -> E
         parts.push(notice(problem.clone()));
     }
     parts.push(status_group(page, data, server, words));
+    if let Some(check) = folder_check(data, server) {
+        parts.push(folder_group(page, data, server, check, words));
+    }
     parts.push(tools_of_server(page, server, words));
     if !server.secrets.is_empty() {
         parts.push(secrets_group(server, words));
@@ -2174,6 +2250,148 @@ fn website_button<'a>(url: &str) -> Element<'a, Message> {
     widgets::icon_button(Icon::ArrowUpRight, tr("Website"), Some(Message::Link(url.to_string())))
 }
 
+/// How the catalog entry of `server` keeps it in a folder (issue #303); `None` for one that works in none and for a
+/// server of one's own.
+fn folder_check(data: &Data, server: &ExtensionInfo) -> Option<FolderCheck> {
+    let Source::Catalog { entry, .. } = &server.source else { return None };
+    data.catalog.entries().iter().find(|listed| &listed.id == entry)?.folder
+}
+
+/// "Folder" (issue #303): the allowed folder the server works in, by its name with its path and access below, or
+/// "No folder chosen" with the attention dot; "Choose…" opens the menu of the allowed folders ([`folder_menu`]).
+/// Without any allowed folder, "Add folder…" as under "Organize files". Below: that it works only there and saves as
+/// new files, and for GridCraft that it keeps to no folder itself. The rows that tell what to do wrap
+/// ([`status_row`]), so a narrow window never cuts them.
+fn folder_group<'a>(
+    page: &'a ServerState,
+    data: &'a Data,
+    server: &'a ExtensionInfo,
+    check: FolderCheck,
+    words: bool,
+) -> Element<'a, Message> {
+    // Every mark of the group in a cell as wide as an icon, so the dot and the folder line up, and so does the text.
+    let attention = || mark_cell(widgets::status_dot(Dot::Attention));
+    let press = folder_press(page, data, server);
+    let row = if adds_folder(data, server) {
+        let button = match words {
+            true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, press),
+            false => widgets::icon_button(Icon::Plus, tr("Add folder…"), press),
+        };
+        let detail = tr("Allow a folder first; then choose it here.");
+        status_row(attention(), tr("No allowed folders").into(), Some(detail.into()), button)
+    } else {
+        let busy = page.waiting == Some(Waiting::Folder);
+        let button = match (busy, words) {
+            (true, _) => widgets::busy_button(tr("Saving…"), style::button::secondary),
+            (false, true) => widgets::text_button(None, tr("Choose…"), style::button::secondary, press),
+            (false, false) => widgets::icon_button(Icon::Folder, tr("Choose…"), press),
+        };
+        let button = widgets::anchored(&page.anchor, button);
+        match folder_state(data, server) {
+            FolderState::Usable(path, access) => {
+                let detail = match access {
+                    Some(access) => format!("{path} · {}", AccessChoice(access)),
+                    None => path.to_string(),
+                };
+                status_row(mark_cell(folder_mark()), file_name(path), Some(detail), button)
+            }
+            FolderState::Unusable(path) => {
+                let detail = trf("{path} · Can't be used now: choose another.", &[("path", &path)]);
+                status_row(attention(), file_name(path), Some(detail), button)
+            }
+            FolderState::NotAllowed(path) => {
+                let detail = trf("{path} · No longer allowed: choose another.", &[("path", &path)]);
+                status_row(attention(), file_name(path), Some(detail), button)
+            }
+            FolderState::None => {
+                let detail = tr("Every call is refused until you choose one.");
+                status_row(attention(), tr("No folder chosen").into(), Some(detail.into()), button)
+            }
+        }
+    };
+    // Sentences below the group, which wrap in every width: what the folder means, and for GridCraft that it keeps
+    // to none itself.
+    let mut footer = trf(
+        "{app} works only in the folder you choose. Torro saves its changes as new files, never over the original.",
+        &[("app", &server.name)],
+    );
+    if check == FolderCheck::TorroOnly {
+        footer = format!("{footer} {}", unbounded_sentence(&server.name));
+    }
+    widgets::group(tr("Folder"), vec![row], Some(footer))
+}
+
+/// How the folder of a server stands on its page (issue #303).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FolderState<'a> {
+    /// Chosen and usable, as the core says; with its access when the settings name it in the same spelling.
+    Usable(&'a str, Option<FolderAccess>),
+    /// Chosen and allowed still, but the core can't use it now ([`ExtensionInfo::folder_unusable`]: not there, or it
+    /// holds a folder that may only be read or something Torro protects).
+    Unusable(&'a str),
+    /// Chosen, can't be used, and no longer among the allowed folders.
+    NotAllowed(&'a str),
+    /// None chosen.
+    None,
+}
+
+/// How the folder of `server` stands. Whether it can be used is the core's word ([`ExtensionInfo::folder_unusable`]),
+/// which compares resolved paths; the settings, compared as paths (a slash at the end does not count), only give the
+/// access to show and tell "no longer allowed" from "can't be used now". A folder chosen in another spelling (a
+/// symbolic link, another case) is usable all the same, just without its access.
+fn folder_state<'a>(data: &Data, server: &'a ExtensionInfo) -> FolderState<'a> {
+    let Some(path) = server.folder.as_deref() else { return FolderState::None };
+    let allowed = data.settings.tools.folders.iter().find(|folder| Path::new(&folder.path) == Path::new(path));
+    match (server.folder_unusable, allowed) {
+        (true, Some(_)) => FolderState::Unusable(path),
+        (true, None) => FolderState::NotAllowed(path),
+        (false, allowed) => FolderState::Usable(path, allowed.map(|folder| folder.access)),
+    }
+}
+
+/// `mark` (a dot, an icon) centred in a cell as wide as an icon ([`icon::SIZE`]), so the text after marks of either
+/// kind starts on one line.
+fn mark_cell<'a>(mark: Element<'a, Message>) -> Element<'a, Message> {
+    container(mark).center_x(icon::SIZE).into()
+}
+
+/// Whether "Folder" offers "Add folder…" instead of "Choose…": no folder is allowed, and none is chosen.
+fn adds_folder(data: &Data, server: &ExtensionInfo) -> bool {
+    data.settings.tools.folders.is_empty() && server.folder.is_none()
+}
+
+/// What the button of "Folder" sends: "Add folder…" the system's folder chooser, as under "Organize files" (the folder
+/// then allowed to read); "Choose…" the menu of the allowed folders, not while a request of the page is on its way.
+fn folder_press(page: &ServerState, data: &Data, server: &ExtensionInfo) -> Option<Message> {
+    match adds_folder(data, server) {
+        true => Some(Message::Choose(Chooser::AllowedFolder)),
+        false => page.waiting.is_none().then_some(Message::ToggleFolders),
+    }
+}
+
+/// The menu of "Choose…" in "Folder": each allowed folder by its name, with its path and access below and a dot at
+/// the one chosen, then "None".
+fn folder_menu<'a>(data: &'a Data, server: &'a ExtensionInfo) -> Element<'a, Message> {
+    let chosen = server.folder.as_deref();
+    let items = data
+        .settings
+        .tools
+        .folders
+        .iter()
+        .map(|folder| {
+            // The access first: the path is what a narrow menu cuts.
+            let detail = format!("{} · {}", AccessChoice(folder.access), folder.path);
+            let press = Message::SetFolder(server.id.clone(), Some(folder.path.clone()));
+            MenuItem::new(Icon::Folder, file_name(&folder.path), press)
+                .detail(detail)
+                .current(chosen.is_some_and(|path| Path::new(path) == Path::new(&folder.path)))
+        })
+        .collect();
+    let none =
+        MenuItem::new(Icon::FolderX, tr("None"), Message::SetFolder(server.id.clone(), None)).current(chosen.is_none());
+    widgets::menu(vec![MenuSection::titled(tr("Allowed folders"), items), MenuSection::new(vec![none])])
+}
+
 /// "Tools": each with its state, the access a call needs and what the server says it does; then,
 /// when any waits for a person, "Allow tools" for exactly this list. What the core noticed (tools it
 /// does not offer) below.
@@ -2237,6 +2455,7 @@ fn tool_state(server: &ExtensionInfo, tool: &ExtensionTool) -> (Dot, String) {
         }
         ToolState::Review => (Dot::Attention, tr("Not allowed yet").to_string()),
         ToolState::Unsupported => (Dot::Inactive, tr("Not offered").to_string()),
+        ToolState::Blocked => (Dot::Inactive, tr("Blocked by Torro").to_string()),
     }
 }
 
@@ -2389,6 +2608,9 @@ fn form_dialog<'a>(install: &'a Install, entry: &'a CatalogEntry) -> Element<'a,
         runs_as_you(),
     ]
     .spacing(space::l());
+    if entry.folder == Some(FolderCheck::TorroOnly) {
+        body = body.push(unbounded(&entry.name, typo::body()));
+    }
     if !entry.secrets.is_empty() {
         let rows = entry.secrets.iter().map(|secret| secret_field(install, secret)).collect();
         let footer = tr("Kept in the system keychain; only this server gets it, when it starts.");
@@ -4481,5 +4703,94 @@ mod tests {
             asked(update(&mut State::default(), Message::Open("notes".into()), &data)).0,
             Asked::Logs("notes".into())
         );
+    }
+
+    /// Issue #303: "Choose…" in "Folder" opens the menu of the allowed folders over the page; an allowed folder sends
+    /// `extensions.set_folder` with its path, "None" with `null`, the one chosen nothing; a refusal shows above the
+    /// page. Escape closes the menu first.
+    #[test]
+    fn a_folder_is_chosen_from_the_menu() {
+        let mut data = launch::demo_data();
+        launch::demo_connections(&mut data);
+        let mut state = State::default();
+        let id = || "wordcraft".to_string();
+        let _ = update(&mut state, Message::Open(id()), &data);
+        assert!(overlay(&state, &data, SizeClass::Wide).is_none());
+        let _ = update(&mut state, Message::ToggleFolders, &data);
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some(), "the menu");
+        assert_eq!(escape(&state), Some(Message::CloseFolders));
+        let documents = Some("/home/anna/Documents".to_string());
+        let (what, request) = asked(update(&mut state, Message::SetFolder(id(), documents.clone()), &data));
+        assert_eq!(
+            (what.clone(), request),
+            (Asked::Folder(id()), Request::SetExtensionFolder { id: id(), folder: documents })
+        );
+        assert!(!state.server.folders_open && state.server.waiting == Some(Waiting::Folder));
+        let refused = Response::Error { code: "forbidden".into(), message: "Not this one".into() };
+        let _ = answered(&mut state, what, &Ok(refused));
+        assert_eq!((state.server.waiting, state.server.problem.as_deref()), (None, Some("Not this one")));
+        let (_, none) = asked(update(&mut state, Message::SetFolder(id(), None), &data));
+        assert_eq!(none, Request::SetExtensionFolder { id: id(), folder: None });
+        let json = serde_json::to_value(&none).expect("json");
+        assert_eq!(json["folder"], serde_json::Value::Null, "None goes out as null");
+        let chosen = Some("/home/anna/Projects/Invoices".to_string());
+        assert!(matches!(update(&mut state, Message::SetFolder(id(), chosen), &data), Action::None), "chosen already");
+    }
+
+    /// Issue #303: an ArtCraft app the person installs shows the version it was tested with, and GridCraft says in
+    /// its row that it keeps to no folder itself; on a page without allowed folders "Add folder…" opens the system's
+    /// folder chooser, and the folder chosen there is allowed to read. With folders the button opens the menu.
+    #[test]
+    fn the_catalog_says_what_an_artcraft_app_is() {
+        let data = launch::demo_data();
+        let entry = |id: &str| data.catalog.entries().iter().find(|entry| entry.id == id).cloned().expect("listed");
+        fn named(entry: &CatalogEntry) -> [(&'static str, &dyn fmt::Display); 3] {
+            [("publisher", &entry.publisher), ("license", &entry.license), ("version", &entry.version)]
+        }
+        let word = entry("wordcraft");
+        let tested = trf("{publisher} · {license} · tested with version {version}", &named(&word));
+        assert_eq!(facts(&word), tested);
+        let time = entry("time");
+        assert_eq!(facts(&time), trf("{publisher} · {license} · version {version}", &named(&time)));
+        assert_eq!(entry("gridcraft").folder, Some(FolderCheck::TorroOnly));
+        let server = server_of(&data, "gridcraft").expect("installed").clone();
+        assert_eq!(folder_check(&data, &server), Some(FolderCheck::TorroOnly));
+        assert!(data.settings.tools.folders.is_empty(), "the demo starts without allowed folders");
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Open("gridcraft".into()), &data);
+        let press = folder_press(&state.server, &data, &server);
+        assert_eq!(press, Some(Message::Choose(Chooser::AllowedFolder)), "Add folder…");
+        let picked = update(&mut state, press.expect("pressable"), &data);
+        assert!(matches!(picked, Action::Pick(Chooser::AllowedFolder)), "{picked:?}");
+        let folder = PathBuf::from("/home/anna/Sheets");
+        match update(&mut state, Message::Picked(Chooser::AllowedFolder, Some(folder.clone())), &data) {
+            Action::Send(request) => assert_eq!(Some(request), added_folder_request(&data, &folder)),
+            other => panic!("expected the folder allowed, got {other:?}"),
+        }
+        let mut with_folders = data.clone();
+        launch::demo_connections(&mut with_folders);
+        assert_eq!(folder_press(&state.server, &with_folders, &server), Some(Message::ToggleFolders), "Choose…");
+    }
+
+    /// Review of PR #316: the folder of a server stands as usable with its access, as usable no longer (the core's
+    /// `folder_unusable`), as no longer allowed, or as none; a slash at the end of the stored path does not count.
+    #[test]
+    fn the_folder_of_a_server_shows_how_it_stands() {
+        let mut data = launch::demo_data();
+        launch::demo_connections(&mut data);
+        let word = server_of(&data, "wordcraft").expect("installed").clone();
+        let invoices = "/home/anna/Projects/Invoices";
+        let read_write = Some(FolderAccess::ReadWrite);
+        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, read_write));
+        let unusable = ExtensionInfo { folder_unusable: true, ..word.clone() };
+        assert_eq!(folder_state(&data, &unusable), FolderState::Unusable(invoices));
+        let gone = ExtensionInfo { folder: Some("/home/anna/Gone".into()), folder_unusable: true, ..word.clone() };
+        assert_eq!(folder_state(&data, &gone), FolderState::NotAllowed("/home/anna/Gone"));
+        // The core uses one the settings name in another spelling (a link): usable, without its access.
+        let linked = ExtensionInfo { folder: Some("/home/anna/Invoices".into()), ..word.clone() };
+        assert_eq!(folder_state(&data, &linked), FolderState::Usable("/home/anna/Invoices", None));
+        assert_eq!(folder_state(&data, &ExtensionInfo { folder: None, ..word.clone() }), FolderState::None);
+        data.settings.tools.folders[1].path = format!("{invoices}/");
+        assert_eq!(folder_state(&data, &word), FolderState::Usable(invoices, read_write), "as paths");
     }
 }

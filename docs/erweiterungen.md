@@ -329,7 +329,8 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
 - **Fremder Text:** Beschreibungen, Schemas und Antworten eines Servers sind `untrusted`, überall. Die Beschreibung
   eines Werkzeugs beginnt bei Agenten mit „From <Name> (external, untrusted): …“.
 - **Nicht angeboten:** Elicitation, Sampling und Roots. Torro meldet diese Fähigkeiten beim `initialize` nicht an;
-  Sampling und Roots kommen mit #304.
+  Sampling kommt später. Ordnergrenzen bekommen Server nicht als Roots, sondern als Startoptionen (#303, Abschnitt
+  „Dokumente mit ArtCraft“).
 - **Umgebung des Programms:** leer, dann nur `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL` und `TMPDIR` (unter Windows
   einige mehr), dann der `PATH` (der Ordner des gefundenen Programms vorn), dann die Variablen des Servers. Gesperrt und
   beim Installieren mit Fehler abgelehnt: was ein Programm anderen Code laden lässt (`LD_*`, `DYLD_*`,
@@ -348,8 +349,9 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
 - **Speicher:** `<data>/extensions/extensions.json` (Ordner 0700, Datei 0600), die Geheimnisse im Schlüsselbund unter
   `ext:<id>:<NAME>`. Ein Server wird in der Steuerzentrale eingerichtet: aus dem eingebauten Katalog, über das Formular
   oder durch Einfügen eines `mcpServers`-Blocks. Ein Manifest je Erweiterung (oben) ist dafür nicht gebaut.
-- **Katalog:** eingebaut (`assets/extensions/catalog.toml`) mit Time, Sequential Thinking und GitHub. Fehlt eine
-  Voraussetzung (`npx`, `uvx`, Docker), steht das in der Zeile, und der Server lässt sich nicht installieren.
+- **Katalog:** eingebaut (`assets/extensions/catalog.toml`) mit Time, Sequential Thinking und GitHub, seit #303 auch
+  WordCraft, DeckCraft, GridCraft und PdfCraft. Fehlt eine Voraussetzung (`npx`, `uvx`, Docker, `<app>-cli`), steht
+  das in der Zeile, und der Server lässt sich nicht installieren.
 - **Protokoll und Log** nennen Kennung des Servers, Werkzeugname und Fehlerart, nie Argumente, Antworten oder Werte
   von Variablen.
 - **Nur aus der Oberfläche:** Installieren, Einschalten, Zustimmen, Aktualisieren, Geheimnisse setzen, Ausgabe lesen
@@ -383,6 +385,84 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   Agenten sehen neue Server-Werkzeuge erst in der nächsten Sitzung.
 - **Oberfläche:** Steuerzentrale › MCP servers hat vier Teile, Allowed folders (#304), Built-in tools (mit den Unterseiten „PDF templates“
   und „Search providers“ der Websuche, #305), Catalog und Your own servers; jeder Server hat eine eigene Seite. Assistent › Tools zeigt nur noch einen Verweis.
+
+## Dokumente mit ArtCraft (#303)
+
+Umgesetzt in den Aufgaben AC.1–AC.7 ([tasks/artcraft.md](tasks/artcraft.md)), Stand der Quellen am 2026-10-26:
+WordCraft v0.11.0, DeckCraft v0.11.1, GridCraft v0.12.1, PdfCraft v0.14.0 (https://github.com/storytold), je
+`MIT OR Apache-2.0`. Torro bearbeitet Dokumente nicht selbst und bindet keine ArtCraft-Bibliothek ein: Die Person
+installiert die Apps, Torro startet ihren MCP-Server (`<app>-cli mcp`, ohne Fenster) und vergibt die Rechte, die
+ArtCraft selbst nicht kennt.
+
+- **Vier Katalog-Einträge**, jede App ein eigener Server mit eigener Stufe: `wordcraft`, `deckcraft`, `gridcraft`,
+  `pdfcraft`, „Experimental“, Link zu den Releases der App. PdfCraft ohne `--compact`: alle 181 Werkzeuge einzeln
+  eingestuft (49 Lesen, 109 Schreiben, 17 mit Freigabe, 6 gesperrt). Nie `--connect`, nie `--root`. `version` ist die
+  geprüfte Version („tested with“); die Regel „ein Argument nennt die Version“ gilt nur für `npx`, `uvx`, `docker`.
+  `<app>-cli` liegt unter Linux in `/usr/bin`, unter macOS nur im eigenen Zip der Release (die Person legt es nach
+  `/usr/local/bin` oder `~/.local/bin`), unter Windows in `%ProgramFiles%\<App>` (Katalogfeld `look_in`).
+- **Ein Ordner je App:** Die Person wählt auf der Seite der App einen der freigegebenen Ordner
+  (`extensions.set_folder`, Admin, nur App-Schlüssel, MCP Never). Torro startet WordCraft, DeckCraft und PdfCraft mit
+  ihm als `--automation-read-root` und, bei „Read and write“, als `--automation-write-root`; sonst ist der eigene
+  Arbeitsordner `<data>/extensions/<id>/work` die Schreibgrenze. Ohne gewählten oder ohne nutzbaren Ordner ist der
+  Arbeitsordner beide Grenzen und jeder Aufruf wird abgelehnt. Ein anderer Ordner startet den Server beim nächsten
+  Aufruf neu.
+- **Wählbar** ist ein freigegebener Ordner ohne gesperrten Inhalt (Schlüsselspeicher, Ordner der Suite, Dateien der
+  Clients) und, bei „Read and write“, ohne inneren Ordner mit „Read“. Geprüft beim Wählen, bei jedem Start und bei
+  jedem Aufruf.
+- **Torro prüft die Pfade selbst**, vor der Freigabe und beim Ausführen: die Argumente, die der Katalog als gelesen
+  (`reads`) oder als Ziel (`target`) nennt, und in beliebiger Tiefe jeden Text unter `path`, `paths`, `out`,
+  `out_dir`, `folder`, `file`, `image`, `directories`. Jeder liegt im gewählten Ordner, nicht bloß in irgendeinem
+  freigegebenen, und ist nicht gesperrt. Bei GridCraft, das keine eigene Grenze hat, ist das die einzige Grenze.
+- **Speichern nur als neue Datei:** Ein Ziel darf es nicht geben, auch nicht als symbolischen Link (`conflict`). Wo
+  ein fehlendes Ziel „über das Original“ heißt (`save_document`, `save_presentation`, `save_workbook`, `doc_save`),
+  ist es Pflicht (`error`). Werkzeuge mit mehreren oder unbekannt benannten Ausgaben (DeckCraft `export`, PdfCraft
+  `doc_split` u. a.), Drucken, Skripte und die Allzweck-Befehle sind `delete`, also mit Freigabe. GridCraft speichert
+  nur mit Freigabe.
+- **Gesperrt** (nie angeboten, nie zustimmbar, `ToolState::Blocked`; als Wert unter `name`, `id`, `command` oder
+  `method` in den Argumenten abgelehnt, ohne Rücksicht auf Groß- und Kleinschreibung): die Werkzeuge, die das Fenster
+  der laufenden App bedienen (`screenshot`, `click`, `key`, `ui_inspect`, `pointer`, `call_app`, Befehle `ui.*`),
+  GridCraft `execute_command`, PdfCraft `js_run` und die Signatur-Werkzeuge mit Schlüsseln des Systems
+  (`sign_document`, `sign_trust`, `sign_id_create`, `sign_keychain_ids`, `sign_windows_ids`, Befehle
+  `tools.js_console` und `sign.digital`).
+- **Den Ordner sehen** der App-Schlüssel und jeder Client mit einer Stufe für den Server (`ExtensionInfo::folder`,
+  dazu `folder_unusable`, solange er nicht nutzbar ist), damit ein Agent absolute Pfade darin bilden kann. Er ist
+  eine Grenze, kein Geheimnis. Einen nicht nutzbaren Ordner sieht nur der App-Schlüssel; ein Client erfährt dann nur
+  `folder_unusable`.
+- **Oberfläche:** Seite des Servers unter MCP servers, Gruppe „Folder“ vor „Tools“ mit „Choose…“ (Menü der
+  freigegebenen Ordner und „None“); GridCraft sagt in Katalog, Dialog und Seite, dass es sich an keinen Ordner hält.
+  Die Einrichtung stellt die Apps im Schritt „Documents“ vor ([einrichtung.md](einrichtung.md)).
+
+### Abweichungen und offene Punkte (AC.1–AC.7)
+
+- **Startoptionen statt Roots:** Die Grenzen sind Startoptionen (`Launch::bounds`), keine MCP-Roots: ArtCraft meldet
+  keine Roots-Fähigkeit und ignoriert `roots/list_changed`.
+- **Sperren nach Namen** (`*.torro-backup`, `.Trash-*`) im gewählten Ordner findet die Prüfung beim Wählen nicht;
+  symbolische Links im Ordner löst ArtCraft beim Prüfen seiner Grenze selbst auf.
+- **Allzweck-Befehle können überschreiben** (`execute`, `batch`, `run_command`, `tool_call`, `command_run`, etwa mit
+  `file.saveAs`). Schutz ist dort allein die Freigabe, die ihre Argumente zeigt; mit „Freigabe vorher: Nie“ entfällt
+  sie, bei PdfCraft auch fürs Drucken.
+- **Ziele ohne Endung:** PdfCraft `image_save` hängt eine fehlende Endung selbst an; Torro prüft das Ziel ohne sie.
+- **Strenger als geplant** (aus dem API-Review): Bei GridCraft sind Werkzeuge, die der Katalog nicht nennt, gesperrt
+  statt `delete`, denn dort ist Torros Pfadprüfung die einzige Grenze und kennt nur die Argumente der genannten.
+  PdfCraft `link_open` ist `delete` statt `read`: Es öffnet die Datei, die ein Link nennt, auch eine absolute.
+  Gesperrte Namen sucht Torro auch unter `tool`, `tools`, `op`, `action`, `cmd` und `commands`.
+- **Eintrag nicht mehr im Katalog:** Grenzen und Pfadprüfung hängen am Katalog-Eintrag. Nimmt ein späteres Update
+  einen ArtCraft-Eintrag heraus oder benennt ihn um, wird eine gespeicherte Installation, die in einem Ordner
+  gearbeitet hat (gewählter Ordner oder eine Kennung aus `catalog::WORK_IN_A_FOLDER`), bei jedem Aufruf vor dem Start
+  abgelehnt, und keines ihrer Werkzeuge wird angeboten: nie ohne Grenze. Ihre Seite sagt das; die Person entfernt sie.
+- **Nur in Allzweck-Befehlen:** Gesperrte Namen sucht Torro in den Argumenten der Werkzeuge, die der Katalog mit
+  `commands = true` als Allzweck-Befehle kennzeichnet (WordCraft `execute`, `batch`; DeckCraft `run_command`,
+  `batch`; PdfCraft `tool_call`, `command_run`, `command_batch`, `doc_batch`, `action_run`), und in Werkzeugen, die der
+  Katalog nicht nennt. Ein Formularfeld namens „key“ oder DeckCrafts Zeichenwerkzeug „pointer“ sind keine Befehle.
+- **Nicht nutzbarer Ordner:** Ist ein gewählter Ordner gerade nicht nutzbar (nicht mehr freigegeben, nicht da,
+  etwas Gesperrtes oder ein innerer „Read“-Ordner darin), sagt das `ExtensionInfo::folder_unusable`; die Seite zeigt
+  ihn mit Achtungspunkt („Can't be used now: choose another.“), und jeder Aufruf nennt den Grund.
+- DeckCraft schreibt durch symbolische Links, und WordCraft v0.11.0 prüft den Verzeichniseintrag noch nicht; Torro
+  deckt das nur für die Ziele ab, die es selbst prüft.
+- Die Werkzeugtabelle von PdfCraft steht in `crates/automation/src/tools.rs`, nicht in `crates/mcp`. GridCraft
+  v0.12.1 hat kein `list_windows`; der Eintrag nennt es nicht.
+- **Neubewertung um 2027-01-26:** Rechtliches (Nachbau im Aussehen von Adobe- und Microsoft-Programmen), Rechte-Stufen
+  und mehrere Ordner bei ArtCraft, Ordnergrenzen in GridCraft.
 
 ## Entscheidungen und offene Fragen
 

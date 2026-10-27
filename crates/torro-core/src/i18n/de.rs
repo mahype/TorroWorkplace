@@ -6111,6 +6111,142 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("None of its tools is offered.", "Keins seiner Werkzeuge wird angeboten."),
     ("Not allowed yet", "Noch nicht erlaubt"),
     ("Not offered", "Nicht angeboten"),
+    ("Blocked by Torro", "Von Torro gesperrt"),
+    ("Documents", "Dokumente"),
+    ("Work with your documents", "Mit deinen Dokumenten arbeiten"),
+    (
+        "Let the assistant open, read and edit your documents, presentations, spreadsheets and PDFs. The free ArtCraft \
+         apps do the work right here on your computer, and Torro keeps your originals safe: every change is saved as a \
+         new file.",
+        "Lass den Assistenten deine Dokumente, Präsentationen, Tabellen und PDFs öffnen, lesen und bearbeiten. Die \
+         freien ArtCraft-Apps erledigen das direkt auf deinem Rechner, und Torro schützt deine Originale: Jede \
+         Änderung wird als neue Datei gespeichert.",
+    ),
+    ("ArtCraft apps", "ArtCraft-Apps"),
+    (
+        "Documents (.docx) · Summarize a contract, fix the wording of a letter, draft a reply from your notes",
+        "Dokumente (.docx) · Einen Vertrag zusammenfassen, einen Brief sprachlich glätten, aus Notizen eine Antwort \
+         entwerfen",
+    ),
+    (
+        "Presentations (.pptx) · Turn an outline into slides, add a chart, tidy up every slide's text",
+        "Präsentationen (.pptx) · Aus einer Gliederung Folien machen, ein Diagramm einfügen, die Texte aller Folien \
+         glätten",
+    ),
+    (
+        "Spreadsheets (.xlsx, .csv) · Read out figures, fill in a table, sort and chart your data",
+        "Tabellen (.xlsx, .csv) · Zahlen auslesen, eine Tabelle ausfüllen, Daten sortieren und als Diagramm zeigen",
+    ),
+    (
+        "PDF · Find a passage, fill in a form, comment, combine or split files",
+        "PDF · Eine Stelle finden, ein Formular ausfüllen, kommentieren, Dateien zusammenfügen oder teilen",
+    ),
+    (
+        "Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each one works only \
+         in a folder you choose; changes are saved as new files, and anything that could replace a file asks you \
+         first. What the assistant reads goes to the AI model you chose.",
+        "Quelloffen (MIT oder Apache 2.0) und noch jung: Die Apps nennen sich selbst experimentell. Jede arbeitet nur \
+         in einem Ordner, den du wählst; Änderungen werden als neue Dateien gespeichert, und was eine Datei ersetzen \
+         könnte, fragt dich vorher. Was der Assistent liest, geht an das KI-Modell, das du gewählt hast.",
+    ),
+    (
+        "Installed one? Set it up later in Settings › MCP servers › Catalog.",
+        "Eine installiert? Richte sie später unter Einstellungen › MCP-Server › Katalog ein.",
+    ),
+    (
+        "The apps can't be listed right now. You find them later under MCP servers.",
+        "Die Apps lassen sich gerade nicht auflisten. Du findest sie später unter MCP-Server.",
+    ),
+    ("Installed", "Installiert"),
+    ("Set up", "Eingerichtet"),
+    ("Get {app}", "{app} holen"),
+    (
+        "This version of Torro Workplace doesn't list the ArtCraft apps yet.",
+        "Diese Version von Torro Workplace führt die ArtCraft-Apps noch nicht.",
+    ),
+    ("No folder chosen", "Kein Ordner gewählt"),
+    ("Every call is refused until you choose one.", "Jeder Aufruf wird abgelehnt, bis du einen wählst."),
+    ("Allow a folder first; then choose it here.", "Gib zuerst einen Ordner frei und wähle ihn dann hier."),
+    ("{path} · No longer allowed: choose another.", "{path} · Nicht mehr freigegeben: Wähle einen anderen."),
+    ("{path} · Can't be used now: choose another.", "{path} · Gerade nicht nutzbar: Wähle einen anderen."),
+    (
+        "{app} works only in the folder you choose. Torro saves its changes as new files, never over the original.",
+        "{app} arbeitet nur in dem Ordner, den du wählst. Torro speichert Änderungen als neue Dateien, nie über das \
+         Original.",
+    ),
+    (
+        "{publisher} · {license} · tested with version {version}",
+        "{publisher} · {license} · getestet mit Version {version}",
+    ),
+    (
+        "{app} doesn't keep to a folder itself: Torro checks every path, and saving a file waits for your approval.",
+        "{app} hält sich selbst an keinen Ordner: Torro prüft jeden Pfad, und das Speichern einer Datei wartet auf \
+         deine Freigabe.",
+    ),
+    ("This MCP server doesn't work in a folder.", "Dieser MCP-Server arbeitet nicht in einem Ordner."),
+    (
+        "This MCP server worked in a folder, but the catalog no longer says how to keep it there, so none of its tools \
+         runs. Remove it.",
+        "Dieser MCP-Server hat in einem Ordner gearbeitet, aber der Katalog sagt nicht mehr, wie er dort bleibt; \
+         darum läuft keines seiner Werkzeuge. Entferne ihn.",
+    ),
+    (
+        "Torro blocks this command: it works the app's window, runs scripts or reaches keys.",
+        "Torro sperrt diesen Befehl: Er bedient das Fenster der App, führt Skripte aus oder greift auf Schlüssel zu.",
+    ),
+    (
+        "The folder chosen for {app} can't be used now: it isn't allowed any more, isn't there, or holds something \
+         Torro protects. Choose another in Torro Workplace under MCP servers.",
+        "Der Ordner, der für {app} gewählt ist, ist gerade nicht nutzbar: Er ist nicht mehr freigegeben, nicht da \
+         oder enthält etwas, das Torro schützt. Wähle in Torro Workplace unter „MCP-Server“ einen anderen.",
+    ),
+    (
+        "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
+        "Wähle zuerst in Torro Workplace unter „MCP-Server“ einen Ordner für {app}. Die App arbeitet nur dort.",
+    ),
+    (
+        "Give the new file's path in “{argument}”: without it {app} saves over the original, and Torro saves changes \
+         only as a new file.",
+        "Gib in „{argument}“ den Pfad der neuen Datei an: Ohne ihn speichert {app} über das Original, und Torro \
+         speichert Änderungen nur als neue Datei.",
+    ),
+    (
+        "There is a file of that name already. Torro saves changes only as a new file: choose a name that isn't taken.",
+        "Eine Datei mit diesem Namen gibt es schon. Torro speichert Änderungen nur als neue Datei: Wähle einen freien \
+         Namen.",
+    ),
+    (
+        "A path in this call isn't in the folder chosen for {app}, or Torro protects it.",
+        "Ein Pfad in diesem Aufruf liegt nicht im Ordner, der für {app} gewählt ist, oder Torro schützt ihn.",
+    ),
+    (
+        "Give every path in full, inside the folder chosen for {app}.",
+        "Gib jeden Pfad vollständig an, innerhalb des Ordners, der für {app} gewählt ist.",
+    ),
+    (
+        "The folder chosen for {app} may only be read. To save, allow reading and writing there.",
+        "Der Ordner, der für {app} gewählt ist, darf nur gelesen werden. Zum Speichern erlaube dort Lesen und \
+         Schreiben.",
+    ),
+    (
+        "Torro blocks these tools: {tools}. No one may use them: they work the app's window, run scripts, reach keys \
+         of your keychain, or take paths Torro can't check.",
+        "Torro sperrt diese Werkzeuge: {tools}. Niemand darf sie nutzen: Sie bedienen das Fenster der App, führen \
+         Skripte aus, greifen auf Schlüssel deines Schlüsselbunds zu oder nehmen Pfade, die Torro nicht prüfen kann.",
+    ),
+    (
+        "This isn't an allowed folder. Allow it under Allowed folders first.",
+        "Das ist kein freigegebener Ordner. Gib ihn zuerst unter „Freigegebene Ordner“ frei.",
+    ),
+    (
+        "This folder holds files Torro protects, such as keys. Choose a folder inside it that holds none.",
+        "Dieser Ordner enthält Dateien, die Torro schützt, etwa Schlüssel. Wähle einen Ordner darin, der keine enthält.",
+    ),
+    (
+        "This folder holds a folder that may only be read. Choose another one, or let the outer folder only be read.",
+        "Dieser Ordner enthält einen Ordner, der nur gelesen werden darf. Wähle einen anderen oder lass den äußeren \
+         Ordner nur lesen.",
+    ),
     ("Not offered until you allow them", "Nicht angeboten, bevor du sie erlaubst"),
     ("Output", "Ausgabe"),
     ("Program", "Programm"),

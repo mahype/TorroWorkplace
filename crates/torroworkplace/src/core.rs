@@ -1930,7 +1930,7 @@ impl Core {
         // Tests bring their own mail accounts (`Core::with_mail`); none may reach the user's.
         let mail = if cfg!(test) { MailService::without_home() } else { MailService::system() };
         let mail = Arc::new(mail.with_calendars(Arc::clone(&pim)));
-        Core {
+        let core = Core {
             backend,
             store,
             work: Mutex::new(()),
@@ -1980,7 +1980,16 @@ impl Core {
                 crate::extensions::Extensions::system()
             },
             web_consents: std::sync::Mutex::new(HashMap::new()),
-        }
+        };
+        let allowed = core.allowed_folders();
+        Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
+    }
+
+    /// The folders a person allowed, as the settings have them when asked, with what the tools never reach
+    /// ([`crate::tools::Tools::excluded`]): what the MCP servers that work in a folder may be given (issue #303).
+    fn allowed_folders(&self) -> crate::extensions::AllowedNow {
+        let (settings, excluded) = (self.settings.clone(), self.tools.excluded().to_vec());
+        Arc::new(move || crate::tools::folders::Allowed::of(&settings.current().tools.folders, &excluded))
     }
 
     /// Tells the core how the template keys stand (issue #243): `active` when the keys of every
@@ -2233,13 +2242,14 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_tools(mut self, tools: crate::tools::Tools) -> Core {
         self.tools = Arc::new(tools);
+        self.extensions = self.extensions.clone().with_allowed(self.allowed_folders());
         self
     }
 
     /// The core with `extensions` instead of the service's, for tests.
     #[cfg(test)]
     pub(crate) fn with_extensions(mut self, extensions: crate::extensions::Extensions) -> Core {
-        self.extensions = extensions;
+        self.extensions = extensions.with_allowed(self.allowed_folders());
         self
     }
 
@@ -4902,6 +4912,7 @@ impl Core {
             | Request::ConfirmExtensionTools { .. }
             | Request::UpdateExtension { .. }
             | Request::SetExtensionSecret { .. }
+            | Request::SetExtensionFolder { .. }
             | Request::ReadExtensionLogs { .. }
             | Request::RemoveExtension { .. }) => self.extensions_request(request, reach).await,
         }
@@ -4909,7 +4920,7 @@ impl Core {
 
     /// The `extensions.*` requests but the catalog (issue #302, task MA.5) for `reach`. For a client the
     /// refusals of [`Core::extension_refusal`] once more (the callers checked them), and `forbidden` for what
-    /// only the app key may: installing, allowing tools, updating, secrets, output and switching on.
+    /// only the app key may: installing, allowing tools, updating, secrets, the folder, output and switching on.
     async fn extensions_request(&self, request: Request, reach: Reach<'_>) -> Response {
         if let Reach::Client(rights) = reach {
             if matches!(
@@ -4918,6 +4929,7 @@ impl Core {
                     | Request::ConfirmExtensionTools { .. }
                     | Request::UpdateExtension { .. }
                     | Request::SetExtensionSecret { .. }
+                    | Request::SetExtensionFolder { .. }
                     | Request::ReadExtensionLogs { .. }
                     | Request::SetExtensionEnabled { enabled: true, .. }
             ) {
@@ -4939,6 +4951,7 @@ impl Core {
             Request::ConfirmExtensionTools { id, fingerprint } => self.extensions.confirm(&id, &fingerprint).await,
             Request::UpdateExtension { id, server } => self.extensions.update(&id, server).await,
             Request::SetExtensionSecret { id, name, value } => self.extensions.set_secret(&id, &name, value).await,
+            Request::SetExtensionFolder { id, folder } => self.extensions.set_folder(&id, folder).await,
             Request::ReadExtensionLogs { id } => self.extensions.logs(&id),
             Request::RemoveExtension { id } => self.remove_extension(&id).await,
             other => Response::Error {
@@ -5007,16 +5020,22 @@ impl Core {
     /// [`torro_ipc::api::Lack::Extension`] when its level for the server does not cover the tool's access or
     /// the tool is switched off for it ([`torro_ipc::api::Rights::allows_extension`]). Checked before an
     /// approval is asked for ([`Core::handle_client`]) and again when an approved one runs
-    /// ([`Core::run_approved`], with what both a bot and the assistant may).
+    /// ([`Core::run_approved`], with what both a bot and the assistant may). Last, for a server that works in a
+    /// folder (issue #303), its blocked tools and commands and the paths of the call
+    /// ([`crate::extensions::Extensions::files_refusal`]): after the rights, so a client without them learns
+    /// nothing of the server's folder.
     fn extension_refusal(&self, rights: &torro_ipc::api::Rights, request: &Request) -> Option<Response> {
         if let Some(unseen) = self.extension_unseen(rights, request) {
             return Some(unseen);
         }
-        let Request::CallExtensionTool { extension, tool, .. } = request else { return None };
+        let Request::CallExtensionTool { extension, tool, arguments } = request else { return None };
         let access = self.extensions.tool_access(extension, tool)?;
         let command = request.operation().name();
         let lack = torro_ipc::api::Lack::Extension;
-        (!rights.allows_extension(extension, tool, access)).then(|| Refused::Lacks { command, lack }.response())
+        if !rights.allows_extension(extension, tool, access) {
+            return Some(Refused::Lacks { command, lack }.response());
+        }
+        self.extensions.files_refusal(extension, tool, arguments)
     }
 
     /// `extensions.remove_extension` (issue #302): takes the server out of every client's rights (its level and
@@ -11512,6 +11531,70 @@ mod tests {
         (audited(dir).with_extensions(extensions), secrets)
     }
 
+    /// Issue #303: the folders a person may choose for a document server are the allowed folders of the settings
+    /// as they are when asked.
+    #[tokio::test]
+    async fn a_document_server_works_in_an_allowed_folder_of_the_settings() {
+        use torro_core::settings::{AllowedFolder, FolderAccess};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _) = extensions_core(dir.path());
+        let docs = dir.path().join("Docs");
+        std::fs::create_dir_all(&docs).expect("made");
+        let docs = docs.to_string_lossy().into_owned();
+        crate::extensions::testing::artcraft_installed(&core.extensions, None);
+        let choose = || Request::SetExtensionFolder { id: "wordcraft".into(), folder: Some(docs.clone()) };
+        assert_eq!(code(&core.handle(choose()).await), "not-found", "not allowed yet");
+        let mut whole = settings(&core).await;
+        whole.tools.folders = vec![AllowedFolder { path: docs.clone(), access: FolderAccess::ReadWrite }];
+        assert_eq!(core.handle(Request::UpdateSettings { settings: whole }).await, Response::Ok);
+        let Response::Extension { extension } = core.handle(choose()).await else { panic!("the server") };
+        assert_eq!(extension.folder, Some(docs));
+    }
+
+    /// Issue #303: a call of a document server that names a path outside its folder or a blocked command is refused
+    /// before anyone is asked to approve it; a client without a level for the server hears only that there is none.
+    #[tokio::test]
+    async fn a_document_servers_call_is_checked_before_an_approval() {
+        use torro_core::settings::{AllowedFolder, FolderAccess};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _) = extensions_core(dir.path());
+        let resolved = std::fs::canonicalize(dir.path()).expect("resolved");
+        for folder in ["Docs", "Other"] {
+            std::fs::create_dir_all(resolved.join(folder)).expect("made");
+        }
+        let at = |relative: &str| resolved.join(relative).to_string_lossy().into_owned();
+        let mut whole = settings(&core).await;
+        whole.tools.folders = vec![
+            AllowedFolder { path: at("Docs"), access: FolderAccess::ReadWrite },
+            AllowedFolder { path: at("Other"), access: FolderAccess::ReadWrite },
+        ];
+        assert_eq!(core.handle(Request::UpdateSettings { settings: whole }).await, Response::Ok);
+        crate::extensions::testing::artcraft_installed(&core.extensions, Some(at("Docs")));
+        let call = |tool: &str, arguments: serde_json::Value| Request::CallExtensionTool {
+            extension: "wordcraft".into(),
+            tool: tool.into(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+        };
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.extensions.insert("wordcraft".into(), Level::Full);
+        rights.confirm = torro_ipc::api::Confirm::OnDelete;
+        let (_, key) = client(&core, rights).await;
+        let nothing_asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty() };
+        let outside = call("save_document", serde_json::json!({"path": at("Other/copy.docx")}));
+        assert_eq!(code(&ask(&core, Some(&key), outside.clone()).await), "not-found");
+        let blocked = call("execute", serde_json::json!({"command": "ui.click"}));
+        assert_eq!(code(&ask(&core, Some(&key), blocked).await), "forbidden");
+        assert!(nothing_asked().await, "nothing to approve");
+        // Allowed paths pass the check; the all-purpose tool then waits for the person.
+        let saving =
+            call("execute", serde_json::json!({"command": "file.saveAs", "params": {"path": at("Docs/copy.docx")}}));
+        let asked = waits(ask(&core, Some(&key), saving).await);
+        assert_eq!(asked.command, "extensions.call_tool");
+        let (_, stranger) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let unseen = ask(&core, Some(&stranger), outside).await;
+        assert_eq!(unseen, crate::extensions::no_server("wordcraft"));
+    }
+
     /// The stand-in server `fixture` as a person installed it and allowed `echo` (read), `pwd` (write) and
     /// `crash` (delete); `slow` it reports but is not allowed.
     fn fixture_installed(core: &Core, secrets: &crate::extensions::store::testing::MemorySecrets) {
@@ -11531,7 +11614,7 @@ mod tests {
     }
 
     /// Issue #302, point 10: what only a person does with a server (installing, allowing tools, updating,
-    /// secrets, output, switching on) is `forbidden` for a client before anything else, also with every right,
+    /// secrets, output, switching on, its folder) is `forbidden` for a client before anything else, also with every right,
     /// and nobody is asked to approve it. Listing works for a client, a server it does not know is `not-found`.
     #[tokio::test]
     async fn mcp_servers_keep_for_people_what_is_theirs() {
@@ -11546,6 +11629,9 @@ mod tests {
             Request::SetExtensionSecret { id: id(), name: "KEY".into(), value: torro_ipc::Secret::new("k") },
             Request::ReadExtensionLogs { id: id() },
             Request::SetExtensionEnabled { id: id(), enabled: true },
+            // Choosing a folder grants rights (issue #303), taking the choice back too.
+            Request::SetExtensionFolder { id: id(), folder: Some(dir.path().display().to_string()) },
+            Request::SetExtensionFolder { id: id(), folder: None },
         ];
         let mut rights = RightsTemplate::FullAccess.rights();
         for area in Area::ALL {
@@ -11932,10 +12018,15 @@ mod tests {
             }
             other => panic!("expected the catalog, got {other:?}"),
         };
+        let cli = |app: &str| (app.to_string(), vec![Prerequisite::Program { name: format!("{app}-cli") }]);
         let expected = vec![
             ("time".to_string(), Vec::new()),
             ("sequential-thinking".to_string(), vec![Prerequisite::Npx]),
             ("github".to_string(), vec![Prerequisite::Docker]),
+            cli("wordcraft"),
+            cli("deckcraft"),
+            cli("gridcraft"),
+            cli("pdfcraft"),
         ];
         assert_eq!(missing(core.handle(Request::ListCatalog).await), expected);
         let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;

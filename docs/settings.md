@@ -405,8 +405,9 @@ MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen B
   Note; Schalter „Search the web“ und die Unterseite **„Search providers“** (#305): je Anbieter Schalter, Schlüssel und
   bei SearXNG die Adresse, dieselbe Ansicht wie im Einrichtungsschritt „Web search“.
   Wer ein Werkzeug nutzen darf, steht bei den Clients (Access, API, MCP clients), nicht hier.
-- **Catalog:** die eingebauten fremden MCP-Server (Time, Sequential Thinking, GitHub) mit Name, Herausgeber, Lizenz,
-  „Experimental“ und, was fehlt (etwa Node.js oder Docker). „Install…“ öffnet einen Dialog mit den Werkzeugen und
+- **Catalog:** die eingebauten fremden MCP-Server (Time, Sequential Thinking, GitHub, seit #303 WordCraft, DeckCraft,
+  GridCraft und PdfCraft) mit Name, Herausgeber, Lizenz, „Experimental“ und, was fehlt (etwa Node.js, Docker oder
+  `wordcraft-cli`); bei Programmen, die die Person selbst installiert, „tested with version …“. „Install…“ öffnet einen Dialog mit den Werkzeugen und
   ihrem Zugriff, verdeckten Feldern für Geheimnisse und dem Hinweis, dass der Server als die Person auf diesem Rechner
   läuft. Danach zeigt er die Werkzeuge, die er gemeldet hat; erst „Allow tools“ schaltet sie ein.
 - **Your own servers:** Server, die die Person selbst einträgt. „Add server…“ verlangt einen Befehl oder eine Adresse,
@@ -417,6 +418,10 @@ MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen B
 **Die Seite eines Servers:** Status mit Wort und Symbol, der Schalter an/aus, die Werkzeuge mit Zugriff und Stand
 („Changed since you allowed it“, mit „Allow tools“), Geheimnisse als „Stored“ bzw. „Missing“ mit „Replace…“, „Output“
 (die letzte Ausgabe zum Kopieren), „Update“, wenn der Katalog eine neuere Version hat, und „Remove…“ mit Rückfrage.
+Ein Server, der mit Dateien arbeitet (#303, ArtCraft), hat vor den Werkzeugen die Gruppe **„Folder“**: der gewählte
+freigegebene Ordner (mit Achtungspunkt, wenn er gerade nicht nutzbar ist) oder „No folder chosen“, „Choose…“ mit den
+freigegebenen Ordnern und „None“ (`extensions.set_folder`, nur Menschen, MCP Never), ohne freigegebene Ordner „Add
+folder…“; gesperrte Werkzeuge stehen als „Blocked by Torro“.
 Wer den Server nutzen darf, sagt der Hinweis „Who may use it: API, MCP clients and the assistant's Access“; die Stufe je
 Server setzt der Rechte-Editor. Die Seitenleiste markiert den Abschnitt, wenn ein Server auf Zustimmung wartet oder
 nach Fehlern steht.
@@ -717,7 +722,8 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | Keep conversations (30, 90 Tage, 1 Jahr, Forever) | wie lange Unterhaltungen bleiben | Assistant › Keep conversations | `assistantRetention` | `set_setting assistant_retention` | Assistent | bleibt, Assistent |
 | Make PDFs, Organize files (Schalter je Werkzeug) | ob es ein eigenes Werkzeug auf diesem Rechner gibt, für jeden Client (#225, #304) | MCP servers › Built-in tools (seit #302; vorher Assistent › Tools, WZ.6) | `tools.enabled` | `set_setting tool_enabled` (an nur Menschen, Punkt 9); Liste `tools.list_tools` | Assistent | Assistent |
 | Folder (Choose…, Use desktop) | wohin neue PDFs gehen, sonst Schreibtisch | MCP servers › Built-in tools | `tools.pdf.folder` | `set_setting pdf_folder` (setzen nur Menschen, `null` jeder mit Admin) | Assistent | Assistent; Dialog des Systems in der App |
-| Allowed folders (Add folder…, Read / Read and write, Remove) | in welchen Ordnern Werkzeuge mit Dateien arbeiten dürfen (Files, später ArtCraft) und wie weit (#304) | MCP servers › Allowed folders, eine Gruppe vor Built-in tools (WD.4, seit #302 dort) | `tools.folders` | `set_setting allowed_folder` (`{"path", "access"}`, `null` entfernt; nur Menschen, auch das Entfernen, Punkt 9) | Werkzeuge mit Dateien | Assistent; Dialog des Systems in der App, neu zuerst „Read“ |
+| Folder eines MCP-Servers (Choose…, None) | in welchem freigegebenen Ordner eine ArtCraft-App arbeitet (#303) | MCP servers › Seite des Servers › Folder | `extensions.json`, `folder` des Servers | `extensions.set_folder` (Admin, nur App-Schlüssel, MCP Never, Punkt 10) | ArtCraft-Apps | Assistent, Agenten |
+| Allowed folders (Add folder…, Read / Read and write, Remove) | in welchen Ordnern Werkzeuge mit Dateien arbeiten dürfen (Files, ArtCraft) und wie weit (#304) | MCP servers › Allowed folders, eine Gruppe vor Built-in tools (WD.4, seit #302 dort) | `tools.folders` | `set_setting allowed_folder` (`{"path", "access"}`, `null` entfernt; nur Menschen, auch das Entfernen, Punkt 9) | Werkzeuge mit Dateien | Assistent; Dialog des Systems in der App, neu zuerst „Read“ |
 | Vorlagen Letter, Report, Note: Paper, Margins, Font size, Header, Footer, Page numbers, Logo | wie eine PDF gesetzt wird | MCP servers › Built-in tools › PDF templates | `tools.pdf.letter`, `.report`, `.note` | `set_setting pdf_template` (ganze Vorlage; Logo setzen nur Menschen) | Assistent | Assistent; jede Änderung schickt die ganze Vorlage |
 | Welche Werkzeuge ein Client darf | Rechte, Bereich `tools` mit Auswahl | Agents & API (WZ.7) | `clients.json` | `clients.update_client`, MCP bewusst nie | alle Clients | Rechte-Editor (seit #231: Assistent › Access, API, MCP clients); Tools zeigt es nur an |
 | Websuche-Anbieter (Schalter je Anbieter: SearXNG, Brave, Tavily, Exa, Mojeek, DuckDuckGo, Wikipedia) | an welche Dienste die Suchwörter des Werkzeugs `web` gehen, in fester Reihenfolge (#305) | neu: MCP servers › Built-in tools › Web (WEB.6, seit #302 dort), Einrichtung „Web search“ (WEB.7) | `webSearch.providers` | `set_setting search_provider` (an nur Menschen, Punkt 6); Liste `tools.list_search_providers` | Assistent | Assistent |

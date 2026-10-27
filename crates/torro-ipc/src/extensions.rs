@@ -332,6 +332,9 @@ pub enum ToolState {
     Review,
     /// Never offered: its name makes no valid tool name ([`tool_name`]).
     Unsupported,
+    /// Never offered and never allowed: the catalog entry blocks it (issue #303), for example a tool
+    /// that works the running app's window or reaches keys in the system's keychain.
+    Blocked,
 }
 
 /// One tool of a server as the core knows it.
@@ -393,6 +396,29 @@ pub struct ExtensionInfo {
     /// core ever read its tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    /// The folder a person chose for a catalog server that works in one ([`CatalogEntry::folder`],
+    /// `extensions.set_folder`): an allowed folder, as its path. Shown to the app key and to clients
+    /// with a level for this server, so an agent can make absolute paths in it; it is a bound, no
+    /// secret. `None` while none is chosen; then every call of the server is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// A folder is chosen ([`ExtensionInfo::folder`]) but cannot be used now: no longer allowed, not there (a drive
+    /// not mounted), or no longer one that may be chosen (it holds something locked, or a folder that may only be
+    /// read). Every call is refused until a person chooses another. `false` (left out) otherwise. A client then gets
+    /// no [`ExtensionInfo::folder`], only this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folder_unusable: bool,
+}
+
+/// Who keeps a catalog server in the folder a person chose for it ([`CatalogEntry::folder`], issue
+/// #303). Torro checks the paths in every call either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderCheck {
+    /// The server is started with the folder as its bound and Torro checks the paths too.
+    Both,
+    /// The server has no bound of its own (GridCraft): Torro's check of the paths is the only one.
+    TorroOnly,
 }
 
 /// What a server needs on the computer to start.
@@ -468,6 +494,11 @@ pub struct CatalogEntry {
     /// What of `requires` is missing on this computer now ([`Prerequisite::needs`]); installing
     /// waits until nothing is.
     pub missing: Vec<Prerequisite>,
+    /// The server works only in one folder a person chooses among the allowed folders
+    /// (`extensions.set_folder`, issue #303), and who keeps it there; `None` for a server that works
+    /// with no files of the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<FolderCheck>,
 }
 
 /// What a person installs (`extensions.install_extension`).

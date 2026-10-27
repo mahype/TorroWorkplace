@@ -3,12 +3,17 @@
 //! rules for ids and names are `torro_ipc::extensions`; this module holds the logic.
 //!
 //! - `catalog`: the built-in catalog (`assets/extensions/catalog.toml`), read and checked (task MA.2).
+//! - `files`: Torro's own check of the paths in a call of a server that works in a folder (issue #303).
 //! - `prereq`: whether the programs a server needs (`npx`, `uvx`, `docker`) are on this computer (task MA.2).
 //! - `store`: `<data>/extensions/extensions.json` and the servers' secrets in the keychain (task MA.3).
 //! - `env`: the environment and headers a server gets, and which addresses may be used (task MA.3).
 //! - `client`: the MCP connection to one server, and what a person allowed compared with what it reports
 //!   (task MA.4).
 //! - `supervisor`: the processes and connections of all servers, their time limits and restarts (task MA.4).
+//!
+//! Catalog servers that work on the person's files (issue #303, ArtCraft) work in one allowed folder a person
+//! chooses for each ([`Extensions::set_folder`]): started with it as their bound ([`Launch::bounds`]), and without a
+//! usable one with their own working folder as the bound, never none ([`Extensions::usable_folder`]).
 //!
 //! [`Extensions`] answers the `extensions.*` requests (task MA.5). Rights are not checked here but by the core
 //! before (`Core::extension_refusal`): a level per server and per tool access. What is checked here for every
@@ -20,6 +25,7 @@
 pub mod catalog;
 pub mod client;
 pub mod env;
+pub mod files;
 pub mod prereq;
 #[allow(dead_code, reason = "`Store::dir` has no caller outside the tests yet")]
 pub mod store;
@@ -28,10 +34,12 @@ pub mod supervisor;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::FolderAccess;
 use torro_ipc::Response;
 use torro_ipc::Secret;
 use torro_ipc::api::{Access, Level};
@@ -45,6 +53,12 @@ use self::prereq::Roots;
 use self::store::{SecretStore, Store, StoreError, StoredExtension};
 use self::supervisor::{Launch, Purpose, Reset, Supervisor, SupervisorError, Timing};
 use crate::pim::Reach;
+use crate::tools::folders::Allowed;
+
+/// The folders a person allowed, as the settings have them now, with what stays locked in them
+/// ([`Allowed::of`] with `crate::tools::Tools::excluded`): read anew for every start and call, so a folder added,
+/// removed or set to "Read" counts at once.
+pub type AllowedNow = Arc<dyn Fn() -> Allowed + Send + Sync>;
 
 /// The core's MCP servers. [`Extensions::system`] looks for programs where the service does and keeps the
 /// servers in the core's data folder; tests bring their own roots ([`Extensions::with_roots`]) and store
@@ -74,6 +88,9 @@ pub struct Extensions {
     /// How often the secrets of each id changed (counted under `changing`): a call that read them without the
     /// lock starts only when the count is still the one before its read ([`Extensions::launch_for_call`]).
     secret_changes: Arc<Mutex<HashMap<String, u64>>>,
+    /// The allowed folders of now ([`Extensions::with_allowed`]); `None`: no folder, so a server that works in one
+    /// is bound to its own working folder and every call of it is refused.
+    allowed: Option<AllowedNow>,
 }
 
 impl fmt::Debug for Extensions {
@@ -98,6 +115,7 @@ impl Extensions {
             under_way: Arc::default(),
             watching: Arc::default(),
             secret_changes: Arc::default(),
+            allowed: None,
         }
     }
 
@@ -115,7 +133,15 @@ impl Extensions {
             under_way: Arc::default(),
             watching: Arc::default(),
             secret_changes: Arc::default(),
+            allowed: None,
         }
+    }
+
+    /// These servers with the allowed folders `allowed` gives (the core's settings, issue #303): the folders a
+    /// person may choose for a server that works in one ([`Extensions::set_folder`]).
+    pub fn with_allowed(mut self, allowed: AllowedNow) -> Extensions {
+        self.allowed = Some(allowed);
+        self
     }
 
     /// These servers kept in `store`, with their secrets in `secrets`: for tests, a temporary folder and a map.
@@ -202,7 +228,10 @@ impl Extensions {
         let Ok(all) = self.load() else { return Vec::new() };
         let mut tools = Vec::new();
         for stored in all.iter().filter(|stored| stored.enabled && sees(reach, &stored.id)) {
-            if matches!(self.status(stored, &[]), Status::Crashed { .. } | Status::Missing { .. }) {
+            // A server that lost its bounds runs nothing (issue #303), so nothing of it is offered either.
+            if matches!(self.status(stored, &[]), Status::Crashed { .. } | Status::Missing { .. })
+                || bounds_lost(stored)
+            {
                 continue;
             }
             // Compared with what a person allowed also while it does not run: a tool changed since it was
@@ -237,6 +266,11 @@ impl Extensions {
             Ok(found) => found,
             Err(refused) => return refused,
         };
+        // For every key, the app key too, before anything starts: the paths and names of the call (issue #303).
+        // After the server and the tool were found, so a server switched off says that first.
+        if let Some(refused) = self.files_refusal(id, tool, &arguments) {
+            return refused;
+        }
         // The server's list as it runs now: a tool it changed since a person allowed it is not called.
         let reported = match self.supervisor.tools(&launch, Purpose::Use).await {
             Ok(reported) => reported,
@@ -347,8 +381,11 @@ impl Extensions {
                 Err(err) => return store_error(&err),
             }
         };
-        // The secrets as given go to this start only; the keychain gets them once the server started.
-        let launch = Launch { id: id.clone(), server: store::stored_form(&spec), secrets: given(&spec), work_dir };
+        // The secrets as given go to this start only; the keychain gets them once the server started. No folder is
+        // chosen yet: a server that works in one is bound to its working folder.
+        let bounds = self.bounds(&source, None, &work_dir);
+        let server = store::stored_form(&spec);
+        let launch = Launch { id: id.clone(), server, secrets: given(&spec), work_dir, bounds };
         // Put back when this is dropped during the start: an id removed before stays stopped.
         let reset = self.supervisor.reset_until_kept(&id);
         let reported = match self.supervisor.tools(&launch, Purpose::Install).await {
@@ -386,6 +423,7 @@ impl Extensions {
             enabled: false,
             allowed: Vec::new(),
             reported,
+            folder: None,
         };
         let committed = self.commit(changing, &id, None, &spec, all, None, entry).await;
         let (installed, _changing) = match committed {
@@ -431,9 +469,10 @@ impl Extensions {
                 return error("conflict", message.into());
             }
             let entry = entry_of(&stored.source);
+            let blocked = |tool: &str| entry.is_some_and(|entry| entry.blocks(tool));
             stored.allowed = reported
                 .iter()
-                .filter(|tool| tool_name(&stored.id, &tool.name).is_some())
+                .filter(|tool| tool_name(&stored.id, &tool.name).is_some() && !blocked(&tool.name))
                 .map(|tool| client::allow(tool, access_in(entry, &tool.name)))
                 .collect();
             stored.reported = reported;
@@ -512,7 +551,8 @@ impl Extensions {
             false => BTreeMap::new(),
         };
         secrets.extend(given(&spec));
-        let launch = Launch { id: id.to_string(), server: store::stored_form(&spec), secrets, work_dir };
+        let bounds = self.bounds(&source, old.folder.as_deref(), &work_dir);
+        let launch = Launch { id: id.to_string(), server: store::stored_form(&spec), secrets, work_dir, bounds };
         // Forgotten for the trial start (a crashed server is updated to mend it), put back when it fails.
         let reset = self.supervisor.reset_until_kept(id);
         drop(changing);
@@ -741,13 +781,122 @@ impl Extensions {
         self.with_secrets(move |secrets| store::read_secrets(secrets, &id, &spec)).await
     }
 
-    /// What starts `stored`: its spec, its stored secrets and its working folder, which is not made here but
-    /// by the supervisor: the server may be removed before it starts ([`Store::work_path`]).
+    /// What starts `stored`: its spec, its stored secrets, its working folder, which is not made here but by the
+    /// supervisor: the server may be removed before it starts ([`Store::work_path`]), and its bounds
+    /// ([`Extensions::bounds`]).
     async fn launch(&self, stored: &StoredExtension) -> Result<Launch, StoreError> {
         let store = self.store.as_ref().ok_or_else(no_store)?;
         let work_dir = store.work_path(&stored.id)?;
         let secrets = self.read_secrets(&stored.id, &stored.server).await?;
-        Ok(Launch { id: stored.id.clone(), server: stored.server.clone(), secrets, work_dir })
+        let bounds = self.bounds(&stored.source, stored.folder.as_deref(), &work_dir);
+        Ok(Launch { id: stored.id.clone(), server: stored.server.clone(), secrets, work_dir, bounds })
+    }
+
+    /// The arguments that bound a server of `source` with the chosen `folder` (issue #303), after its own: for a
+    /// catalog entry with [`catalog::Bounds`] the read bound and the write bound, each followed by one folder. The
+    /// read bound is the chosen folder when it is usable ([`Extensions::usable_folder`]), the write bound too when it
+    /// may be written, else `work_dir`, the server's own folder: without a bound ArtCraft writes anywhere. Empty for
+    /// every other server, GridCraft too (it has no bound of its own).
+    fn bounds(&self, source: &Source, folder: Option<&str>, work_dir: &Path) -> Vec<String> {
+        let Some(bounds) = entry_of(source).and_then(|entry| entry.bounds.as_ref()) else { return Vec::new() };
+        let work = work_dir.to_string_lossy().into_owned();
+        let usable = self.usable(source, folder).and_then(|(root, access)| Some((root.to_str()?.to_string(), access)));
+        let (read, write) = match usable {
+            Some((root, FolderAccess::ReadWrite)) => (root.clone(), root),
+            Some((root, FolderAccess::Read)) => (root, work),
+            None => (work.clone(), work),
+        };
+        vec![bounds.read_root.clone(), read, bounds.write_root.clone(), write]
+    }
+
+    /// The folder a person chose for `stored` (issue #303), resolved as the allowed folder it is now, with that
+    /// folder's access: `None` for a server that works in no folder, when none is chosen and when the chosen one is
+    /// not usable now – no longer allowed, not there (a drive not mounted), or no longer one that may be chosen
+    /// ([`folder_refusal`]: something locked inside, or an inner "Read" folder in one that may be written). Looked
+    /// at for every start and, by the core, for every call.
+    pub fn usable_folder(&self, stored: &StoredExtension) -> Option<(PathBuf, FolderAccess)> {
+        self.usable(&stored.source, stored.folder.as_deref())
+    }
+
+    fn usable(&self, source: &Source, folder: Option<&str>) -> Option<(PathBuf, FolderAccess)> {
+        entry_of(source)?.info.folder?;
+        let allowed = self.allowed_folders();
+        let (root, access) = allowed_folder(&allowed, folder?)?;
+        folder_refusal(&allowed, &root, access).is_none().then_some((root, access))
+    }
+
+    /// Why `tool` of the server `id` must not run with `arguments` now ([`files::refusal`], issue #303): for a
+    /// catalog server that works in a folder, its blocked tools and commands and the paths of the call. `None` for
+    /// every other server and an unknown one (whose call fails on its own). Checked by [`Extensions::call`] for
+    /// every key, and by the core for a client before an approval is asked for and when an approved one runs.
+    pub fn files_refusal(
+        &self,
+        id: &str,
+        tool: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Response> {
+        let stored = self.stored(id)?;
+        if bounds_lost(&stored) {
+            return Some(error("forbidden", tr(LOST_BOUNDS).into()));
+        }
+        let entry = entry_of(&stored.source).filter(|entry| entry.info.folder.is_some())?;
+        let place = match self.usable_folder(&stored) {
+            Some((root, access)) => files::Folder::Usable(root, access),
+            None if stored.folder.is_some() => files::Folder::Unusable,
+            None => files::Folder::None,
+        };
+        files::refusal(entry, place, &self.allowed_folders(), tool, arguments)
+    }
+
+    /// The allowed folders of now ([`Extensions::with_allowed`]); none without them.
+    pub fn allowed_folders(&self) -> Allowed {
+        self.allowed.as_ref().map_or_else(Allowed::default, |allowed| allowed())
+    }
+
+    /// `extensions.set_folder` (the app key only): `folder`, the path of an allowed folder, becomes the folder the
+    /// catalog server `id` works in; `None` takes the choice back. A running server is started again with the new
+    /// bounds on its next call ([`Launch::bounds`]). `not-found` for an unknown id and a path that is no allowed
+    /// folder (one that is not there counts as none), `unsupported` for a server that works in no folder,
+    /// `forbidden` with why for a folder that cannot be chosen ([`folder_refusal`]). The answer names no path.
+    pub async fn set_folder(&self, id: &str, folder: Option<String>) -> Response {
+        let changed = {
+            let _changing = self.changing.lock().await;
+            let (mut all, index) = match self.load_with(id) {
+                Ok(found) => found,
+                Err(refused) => return refused,
+            };
+            let stored = &mut all[index];
+            if entry_of(&stored.source).and_then(|entry| entry.info.folder).is_none() {
+                return error("unsupported", tr("This MCP server doesn't work in a folder.").into());
+            }
+            // Kept as a plain absolute path, without a slash at its end or a doubled one, so it reads as the
+            // allowed folder the settings name; a relative one would be taken from the service's working folder.
+            let folder = match folder {
+                Some(path) if !Path::new(&path).is_absolute() => {
+                    let message = tr("This isn't an allowed folder. Allow it under Allowed folders first.");
+                    return error("not-found", message.into());
+                }
+                Some(path) => Some(Path::new(&path).components().collect::<PathBuf>().to_string_lossy().into_owned()),
+                None => None,
+            };
+            if let Some(path) = &folder {
+                let allowed = self.allowed_folders();
+                let Some((root, access)) = allowed_folder(&allowed, path) else {
+                    let message = tr("This isn't an allowed folder. Allow it under Allowed folders first.");
+                    return error("not-found", message.into());
+                };
+                if let Some(reason) = folder_refusal(&allowed, &root, access) {
+                    return error("forbidden", reason);
+                }
+            }
+            stored.folder = folder;
+            let changed = stored.clone();
+            if let Err(err) = self.save(&all) {
+                return store_error(&err);
+            }
+            changed
+        };
+        self.one(changed, Reach::Suite).await
     }
 
     /// The server `id` and what starts it, for a call of `tool` ([`Extensions::call`]). The secrets are read
@@ -771,7 +920,13 @@ impl Extensions {
             let launch = self.launch(&stored).await.map_err(|err| store_error(&err))?;
             let _changing = self.changing.lock().await;
             match self.find(id) {
-                Ok(now) if now.server == stored.server && now.enabled && self.secrets_changed(id) == changes => {
+                // The folder too: a call must not run with the bounds of a folder chosen before.
+                Ok(now)
+                    if now.server == stored.server
+                        && now.folder == stored.folder
+                        && now.enabled
+                        && self.secrets_changed(id) == changes =>
+                {
                     return Ok((stored, launch));
                 }
                 // Switched off meanwhile: its stop may still be on the way, so nothing must reach it.
@@ -796,7 +951,7 @@ impl Extensions {
         let rest = self.clone();
         let mut changes = self.supervisor.changes();
         // The rest of the servers' state without the supervisor: a clone with a strong one would keep it.
-        let Extensions { roots, store, secrets, changing, under_way, watching, secret_changes, .. } = rest;
+        let Extensions { roots, store, secrets, changing, under_way, watching, secret_changes, allowed, .. } = rest;
         tokio::spawn(async move {
             while changes.changed().await.is_ok() {
                 let Some(supervisor) = supervisor.upgrade() else { break };
@@ -809,6 +964,7 @@ impl Extensions {
                     under_way: Arc::clone(&under_way),
                     watching: Arc::clone(&watching),
                     secret_changes: Arc::clone(&secret_changes),
+                    allowed: allowed.clone(),
                 };
                 extensions.keep_reported().await;
             }
@@ -880,7 +1036,12 @@ impl Extensions {
             true => stored.allowed.iter().find(|allowed| allowed.name == tool).map_or(Access::Delete, |a| a.access),
             false => access_in(entry, tool),
         };
-        client::tool_states(&stored.id, &stored.name, reported, &stored.allowed, now)
+        let blocked: Vec<String> = reported
+            .iter()
+            .filter(|tool| entry.is_some_and(|entry| entry.blocks(&tool.name)))
+            .map(|tool| tool.name.clone())
+            .collect();
+        client::tool_states(&stored.id, &stored.name, reported, &stored.allowed, &blocked, now)
     }
 
     /// The tool `tool` of `stored` when a person allowed it as the server reports it ([`Extensions::reported`])
@@ -978,11 +1139,31 @@ impl Extensions {
                     &[("name", &tool.name), ("n", &max)],
                 )
             })
-            .collect();
+            .collect::<Vec<String>>();
+        let mut notes = notes;
+        let blocked: Vec<&str> =
+            tools.iter().filter(|tool| tool.state == ToolState::Blocked).map(|tool| tool.name.as_str()).collect();
+        if bounds_lost(&stored) {
+            notes.push(tr(LOST_BOUNDS).into());
+        }
+        if !blocked.is_empty() {
+            notes.push(trf(
+                "Torro blocks these tools: {tools}. No one may use them: they work the app's window, run scripts, reach \
+                 keys of your keychain, or take paths Torro can't check.",
+                &[("tools", &blocked.join(", "))],
+            ));
+        }
         let status = self.status(&stored, &tools);
+        let folder_unusable = stored.folder.is_some() && self.usable_folder(&stored).is_none();
         let (server, status) = match reach {
             Reach::Suite => (shown, status),
             Reach::Client(_) => (store::redacted(&shown), redacted_status(status)),
+        };
+        // A client gets the folder only while the server works in it: the path of one it can't use would only tell
+        // where the person's home is (review of PR #316).
+        let folder = match reach {
+            Reach::Suite => stored.folder,
+            Reach::Client(_) => stored.folder.filter(|_| !folder_unusable),
         };
         ExtensionInfo {
             id: stored.id,
@@ -995,8 +1176,50 @@ impl Extensions {
             secrets,
             notes,
             fingerprint: Some(client::list_fingerprint(&reported)),
+            folder_unusable,
+            folder,
         }
     }
+}
+
+/// Whether `stored` is a catalog server that worked in a folder but whose entry no longer bounds it (dropped,
+/// renamed or without `[server.folder]` in a later catalog): a folder chosen for it, or an id of
+/// [`catalog::WORK_IN_A_FOLDER`]. Such a server is refused every call and none of its tools is offered – it would run
+/// without its bounds and without the check of its paths (decision 3 of #303: never without a bound).
+fn bounds_lost(stored: &StoredExtension) -> bool {
+    matches!(stored.source, Source::Catalog { .. })
+        && entry_of(&stored.source).is_none_or(|entry| entry.info.folder.is_none())
+        && (stored.folder.is_some() || catalog::WORK_IN_A_FOLDER.contains(&stored.id.as_str()))
+}
+
+/// Why a server that lost its bounds runs nothing ([`bounds_lost`]): the refusal of its calls and the note on it.
+const LOST_BOUNDS: &str = "This MCP server worked in a folder, but the catalog no longer says how to keep it there, \
+                           so none of its tools runs. Remove it.";
+
+/// The allowed folder `path` names, resolved, with its access: `None` when it is not there or is no allowed folder
+/// of `allowed` (a folder inside one is none either: a person chooses among the allowed folders).
+fn allowed_folder(allowed: &Allowed, path: &str) -> Option<(PathBuf, FolderAccess)> {
+    let resolved = std::fs::canonicalize(path).ok()?;
+    allowed.roots().iter().find(|(root, _)| *root == resolved).cloned()
+}
+
+/// Why the allowed folder `root` with `access` cannot be a server's folder (issue #303), for people; `None` when it
+/// can. The server's all-purpose tools reach everything below its bound and know neither the suite's locks nor the
+/// inner folders: so nothing locked may be in it (the home folder holds the key stores), and in a folder it may
+/// write no folder that may only be read. Locks by name (`*.torro-backup`, trash folders) are not looked for.
+fn folder_refusal(allowed: &Allowed, root: &Path, access: FolderAccess) -> Option<String> {
+    if allowed.holds_lock(root) {
+        let message =
+            tr("This folder holds files Torro protects, such as keys. Choose a folder inside it that holds none.");
+        return Some(message.into());
+    }
+    if access == FolderAccess::ReadWrite && allowed.holds_read_folder(root) {
+        let message = tr(
+            "This folder holds a folder that may only be read. Choose another one, or let the outer folder only be read.",
+        );
+        return Some(message.into());
+    }
+    None
 }
 
 /// The most a call of a server tool may carry as arguments, as JSON: 64 KB. More is refused before anyone is
@@ -1231,6 +1454,74 @@ pub(crate) mod testing {
         (extensions, secrets)
     }
 
+    /// The stand-in for an ArtCraft app (issue #303): `tests/fixtures/extensions/artcraft.sh`.
+    pub(crate) fn artcraft_script() -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/extensions/artcraft.sh")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The tools the ArtCraft stand-in reports, as it describes them.
+    pub(crate) fn artcraft_tools() -> Vec<ReportedTool> {
+        [
+            ("list_commands", "Lists commands"),
+            ("get_text", "Reads the text"),
+            ("open_document", "Opens a file"),
+            ("save_document", "Saves"),
+            ("execute", "Runs a command"),
+            ("batch", "Runs commands"),
+            ("screenshot", "Takes a screenshot"),
+            ("click", "Clicks"),
+            ("key", "Presses a key"),
+            ("ui_inspect", "Inspects the window"),
+            ("args", "Its arguments"),
+        ]
+        .into_iter()
+        .map(|(name, description)| ReportedTool {
+            name: name.into(),
+            description: description.into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        })
+        .collect()
+    }
+
+    /// The ArtCraft stand-in stored as the catalog server `wordcraft` (its spec points at the script), switched on,
+    /// every tool allowed with the catalog's access, working in `folder`.
+    pub(crate) fn artcraft_installed(extensions: &Extensions, folder: Option<String>) -> StoredExtension {
+        let tools = artcraft_tools();
+        let entry = catalog_entry("wordcraft").ok();
+        let allowed = tools.iter().map(|tool| client::allow(tool, access_in(entry, &tool.name))).collect();
+        let stored = StoredExtension {
+            id: "wordcraft".into(),
+            name: "WordCraft".into(),
+            source: Source::Catalog { entry: "wordcraft".into(), version: "0.11.0".into() },
+            server: ServerSpec::Stdio {
+                command: "/bin/sh".into(),
+                args: vec![artcraft_script()],
+                env: BTreeMap::new(),
+            },
+            enabled: true,
+            allowed,
+            reported: tools,
+            folder,
+        };
+        let mut all = extensions.load().expect("the store");
+        all.retain(|known| known.id != stored.id);
+        all.push(stored.clone());
+        extensions.save(&all).expect("saved");
+        stored
+    }
+
+    /// Allowed folders for [`Extensions::with_allowed`] that a test changes as it goes, with `excluded` locked.
+    pub(crate) fn allowed_in(
+        folders: &Arc<Mutex<Vec<torro_core::settings::AllowedFolder>>>,
+        excluded: Vec<std::path::PathBuf>,
+    ) -> AllowedNow {
+        let folders = Arc::clone(folders);
+        Arc::new(move || Allowed::of(&folders.lock().unwrap_or_else(PoisonError::into_inner), &excluded))
+    }
+
     /// The servers in the store.
     pub(crate) fn stored_all(extensions: &Extensions) -> Vec<StoredExtension> {
         extensions.load().expect("the store")
@@ -1264,6 +1555,7 @@ pub(crate) mod testing {
             enabled: true,
             allowed,
             reported: tools,
+            folder: None,
         };
         secrets
             .0
@@ -1430,6 +1722,7 @@ mod tests {
             enabled: true,
             allowed: vec![client::allow(&reported[0], Access::Write), client::allow(&reported[1], Access::Read)],
             reported,
+            folder: None,
         };
         store_all(&extensions, &[stored]);
         let shown = info(extensions.get("time", Reach::Suite).await);
@@ -1487,6 +1780,149 @@ mod tests {
         let moved = as_catalog_moved(&old, &new);
         assert!(store::keeps_secrets(&moved, &new));
         assert_eq!(moved.values(), old.values());
+    }
+
+    /// Issue #303: a person chooses one of the allowed folders for a server that works in one. A path that is no
+    /// allowed folder (also one inside it) is `not-found`; a folder that holds something locked, or one that may be
+    /// written and holds a folder that may only be read, is `forbidden`; a server that works in no folder is
+    /// `unsupported`. `None` takes the choice back. The chosen folder shows, also once it is no longer usable.
+    #[tokio::test]
+    async fn a_folder_is_chosen_among_the_allowed_folders() {
+        use torro_core::settings::AllowedFolder;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let home = std::fs::canonicalize(dir.path()).expect("resolved").join("home");
+        for folder in ["Docs/Private", "Work/.ssh", "Plain/Inner", "Elsewhere"] {
+            std::fs::create_dir_all(home.join(folder)).expect("made");
+        }
+        let path = |relative: &str| home.join(relative).to_string_lossy().into_owned();
+        let folders = Arc::new(Mutex::new(vec![
+            AllowedFolder { path: path("Docs"), access: FolderAccess::ReadWrite },
+            AllowedFolder { path: path("Docs/Private"), access: FolderAccess::Read },
+            AllowedFolder { path: path("Work"), access: FolderAccess::ReadWrite },
+            AllowedFolder { path: path("Plain"), access: FolderAccess::ReadWrite },
+        ]));
+        let (extensions, secrets) = extensions_in(dir.path(), roots());
+        let extensions = extensions.with_allowed(allowed_in(&folders, vec![home.join("Work/.ssh")]));
+        artcraft_installed(&extensions, None);
+        installed(&extensions, &secrets, "fixture", &[("echo", Access::Read)]);
+
+        let unchosen = info(extensions.get("wordcraft", Reach::Suite).await);
+        assert_eq!(unchosen.folder, None);
+        let choose = |id: &'static str, folder: Option<String>| extensions.set_folder(id, folder);
+        assert_eq!(code(&choose("nope", Some(path("Plain"))).await), "not-found");
+        assert_eq!(code(&choose("fixture", Some(path("Plain"))).await), "unsupported");
+        for outside in [path("Elsewhere"), path("Plain/Inner"), path("Missing")] {
+            assert_eq!(code(&choose("wordcraft", Some(outside.clone())).await), "not-found", "{outside}");
+        }
+        let locked = choose("wordcraft", Some(path("Work"))).await;
+        assert_eq!(code(&locked), "forbidden");
+        let inner_read = choose("wordcraft", Some(path("Docs"))).await;
+        assert_eq!(code(&inner_read), "forbidden");
+        for refused in [&locked, &inner_read] {
+            let Response::Error { message, .. } = refused else { panic!("an error") };
+            assert!(!message.contains(&*home.to_string_lossy()), "no path in {message}");
+        }
+        assert_eq!(stored_all(&extensions)[0].folder, None, "nothing kept");
+
+        // Chosen with "Read and write", then a folder inside it is allowed with "Read": no longer usable.
+        let mut plain = info(choose("wordcraft", Some(path("Plain"))).await);
+        assert_eq!(plain.folder, Some(path("Plain")));
+        folders
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(AllowedFolder { path: path("Plain/Inner"), access: FolderAccess::Read });
+        let stored = extensions.stored("wordcraft").expect("stored");
+        assert_eq!(extensions.usable_folder(&stored), None, "an inner read folder made later counts at once");
+        assert!(info(extensions.get("wordcraft", Reach::Suite).await).folder_unusable, "and the page says so");
+        let refused = extensions.files_refusal("wordcraft", "get_text", &Default::default());
+        assert_eq!(refused.as_ref().map(code), Some("forbidden"));
+        plain = info(extensions.get("wordcraft", Reach::Suite).await);
+        assert_eq!(plain.folder, Some(path("Plain")), "kept, for the person to see and change");
+        // A client with a level learns that it can't be used, not where it is.
+        let reader = reader_of("wordcraft");
+        let seen = info(extensions.get("wordcraft", Reach::Client(&reader)).await);
+        assert_eq!((seen.folder, seen.folder_unusable), (None, true));
+
+        // Relative is never taken from the service's folder; a slash at the end is dropped, as the settings write it.
+        assert_eq!(code(&choose("wordcraft", Some("Plain".into())).await), "not-found");
+        let sep = std::path::MAIN_SEPARATOR;
+        let chosen = info(choose("wordcraft", Some(format!("{}{sep}", path("Docs/Private")))).await);
+        assert_eq!(chosen.folder, Some(path("Docs/Private")));
+        let stored = extensions.stored("wordcraft").expect("stored");
+        assert_eq!(extensions.usable_folder(&stored), Some((home.join("Docs/Private"), FolderAccess::Read)));
+        let reader = reader_of("wordcraft");
+        let seen = info(extensions.get("wordcraft", Reach::Client(&reader)).await);
+        assert_eq!(seen.folder, Some(path("Docs/Private")), "a client with a level sees the folder it works in");
+        // No longer allowed: kept, but not usable.
+        folders.lock().unwrap_or_else(PoisonError::into_inner).retain(|folder| folder.path != path("Docs/Private"));
+        assert_eq!(extensions.usable_folder(&stored), None);
+        let unusable = info(extensions.get("wordcraft", Reach::Suite).await);
+        assert_eq!(unusable.folder, Some(path("Docs/Private")));
+        assert_eq!(info(choose("wordcraft", None).await).folder, None);
+        assert_eq!(stored_all(&extensions).iter().find(|s| s.id == "wordcraft").map(|s| s.folder.clone()), Some(None));
+    }
+
+    /// Review of PR #316: a stored server that worked in a folder but whose catalog entry is gone (or no longer has a
+    /// folder) is refused every call, by its folder or by its id; another server whose entry is gone is not.
+    #[tokio::test]
+    async fn a_folder_server_without_its_entry_never_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (extensions, _) = extensions_in(dir.path(), roots());
+        let gone = |id: &str, entry: &str, folder: Option<String>| StoredExtension {
+            id: id.into(),
+            name: id.into(),
+            source: Source::Catalog { entry: entry.into(), version: "1".into() },
+            server: ServerSpec::Stdio { command: "/bin/sh".into(), args: Vec::new(), env: BTreeMap::new() },
+            enabled: true,
+            allowed: Vec::new(),
+            reported: Vec::new(),
+            folder,
+        };
+        store_all(
+            &extensions,
+            &[
+                gone("old-craft", "old-craft", Some("/somewhere".into())),
+                gone("deckcraft", "deck-craft-renamed", None),
+                gone("weather", "weather", None),
+            ],
+        );
+        let refused = |id: &str| extensions.files_refusal(id, "anything", &Default::default());
+        assert_eq!(refused("old-craft").as_ref().map(code), Some("forbidden"), "a folder was chosen");
+        assert_eq!(refused("deckcraft").as_ref().map(code), Some("forbidden"), "its id works in a folder");
+        assert_eq!(refused("weather"), None, "never worked in a folder");
+        // Nothing of them is offered, and their page says why.
+        let allowed_all = |mut stored: StoredExtension| {
+            let tools = artcraft_tools();
+            stored.allowed = tools.iter().map(|tool| client::allow(tool, Access::Delete)).collect();
+            stored.reported = tools;
+            stored
+        };
+        store_all(
+            &extensions,
+            &[
+                allowed_all(gone("old-craft", "old-craft", Some("/somewhere".into()))),
+                allowed_all(gone("weather", "weather", None)),
+            ],
+        );
+        let offered: Vec<String> = extensions.offered(Reach::Suite).into_iter().map(|tool| tool.extension).collect();
+        assert!(!offered.is_empty() && offered.iter().all(|id| id == "weather"), "{offered:?}");
+        let page = info(extensions.get("old-craft", Reach::Suite).await);
+        assert!(page.notes.contains(&tr(LOST_BOUNDS).to_string()), "{:?}", page.notes);
+    }
+
+    /// Issue #303: only catalog servers with bounds get them; Time, a person's own server and GridCraft none.
+    #[test]
+    fn only_servers_with_bounds_get_them() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (extensions, _) = extensions_in(dir.path(), roots());
+        let catalog = |entry: &str| Source::Catalog { entry: entry.into(), version: "1".into() };
+        let work = dir.path().join("work");
+        for source in [catalog("time"), catalog("gridcraft"), Source::Custom] {
+            assert_eq!(extensions.bounds(&source, Some("/somewhere"), &work), Vec::<String>::new(), "{source:?}");
+        }
+        let work = work.to_string_lossy().into_owned();
+        let bounds = extensions.bounds(&catalog("pdfcraft"), None, Path::new(&work));
+        assert_eq!(bounds, ["--automation-read-root", &work, "--automation-write-root", &work]);
     }
 
     /// The process tests run the stand-in server with `/bin/sh`.
@@ -2146,6 +2582,110 @@ mod tests {
             assert_eq!(extensions.supervisor.status("fixture"), crashed, "still crashed");
             let mended = info(extensions.update("fixture", Some(fixture_spec(Value::Stored { secret: true }))).await);
             assert_ne!(mended.status, crashed);
+        }
+
+        /// Issue #303: a server that works in a folder starts with its bounds after its own arguments. "Read and
+        /// write": both are the folder; "Read": the write bound is its own working folder; none chosen: that for
+        /// both. Another folder starts it again with the new ones.
+        #[tokio::test]
+        async fn the_chosen_folder_bounds_the_server() {
+            use torro_core::settings::AllowedFolder;
+            let dir = tempfile::tempdir().expect("temp dir");
+            let resolved = std::fs::canonicalize(dir.path()).expect("resolved");
+            for folder in ["Docs", "Letters"] {
+                std::fs::create_dir_all(resolved.join(folder)).expect("made");
+            }
+            let path = |relative: &str| resolved.join(relative).to_string_lossy().into_owned();
+            let folders = Arc::new(Mutex::new(vec![
+                AllowedFolder { path: path("Docs"), access: FolderAccess::ReadWrite },
+                AllowedFolder { path: path("Letters"), access: FolderAccess::Read },
+            ]));
+            let (extensions, _) = extensions_in(dir.path(), roots());
+            let extensions = extensions.with_allowed(allowed_in(&folders, Vec::new()));
+            artcraft_installed(&extensions, Some(path("Docs")));
+            let work = extensions.store.as_ref().expect("a store").work_path("wordcraft").expect("its folder");
+            let work = work.to_string_lossy().into_owned();
+            let started = || async {
+                let Response::ToolResult { output } = extensions.call("wordcraft", "args", Default::default()).await
+                else {
+                    panic!("an answer");
+                };
+                let torro_ipc::extensions::Content::Text { text } = &output.content[0] else { panic!("text") };
+                text.clone()
+            };
+            let both =
+                |read: &str, write: &str| format!("--automation-read-root {read} --automation-write-root {write}");
+            assert_eq!(started().await, both(&path("Docs"), &path("Docs")));
+            info(extensions.set_folder("wordcraft", Some(path("Letters"))).await);
+            assert_eq!(started().await, both(&path("Letters"), &work), "started again with the new bounds");
+            // Without a folder every call is refused (issue #303, AC.4); the bounds it would start with are its own
+            // folder.
+            let unchosen = info(extensions.set_folder("wordcraft", None).await);
+            assert_eq!(code(&extensions.call("wordcraft", "args", Default::default()).await), "forbidden");
+            let stored = extensions.stored("wordcraft").expect("stored");
+            let launch = extensions.launch(&stored).await.expect("a launch");
+            assert_eq!(launch.bounds.join(" "), both(&work, &work));
+            assert_eq!(unchosen.folder, None);
+            // A folder set to "Read" meanwhile counts at the next start.
+            info(extensions.set_folder("wordcraft", Some(path("Docs"))).await);
+            folders.lock().unwrap_or_else(PoisonError::into_inner)[0].access = FolderAccess::Read;
+            assert_eq!(started().await, both(&path("Docs"), &work));
+        }
+
+        /// Issue #303: a call Torro refuses never reaches the server, an allowed one does; the blocked tools show as
+        /// such, are never allowed by "Allow tools" and are named in the notes.
+        #[tokio::test]
+        async fn a_refused_call_never_reaches_the_server() {
+            use torro_core::settings::AllowedFolder;
+            let dir = tempfile::tempdir().expect("temp dir");
+            let resolved = std::fs::canonicalize(dir.path()).expect("resolved");
+            std::fs::create_dir_all(resolved.join("Docs")).expect("made");
+            std::fs::create_dir_all(resolved.join("Other")).expect("made");
+            std::fs::write(resolved.join("Docs/letter.docx"), b"x").expect("written");
+            std::fs::write(resolved.join("Other/secret.docx"), b"x").expect("written");
+            let path = |relative: &str| resolved.join(relative).to_string_lossy().into_owned();
+            let folders = Arc::new(Mutex::new(vec![
+                AllowedFolder { path: path("Docs"), access: FolderAccess::ReadWrite },
+                AllowedFolder { path: path("Other"), access: FolderAccess::ReadWrite },
+            ]));
+            // The program the catalog names is there, so the server is offered.
+            let bin = dir.path().join("bin");
+            std::fs::create_dir_all(&bin).expect("dir");
+            std::fs::write(bin.join("wordcraft-cli"), "#!/bin/sh\n").expect("write");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("wordcraft-cli"), std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            let mut with_cli = roots();
+            with_cli.fixed.push(bin);
+            let (extensions, _) = extensions_in(dir.path(), with_cli);
+            let extensions = extensions.with_allowed(allowed_in(&folders, Vec::new()));
+            artcraft_installed(&extensions, Some(path("Docs")));
+            let opening = |file: &str| serde_json::json!({"path": path(file)}).as_object().cloned().expect("an object");
+            let refused = extensions.call("wordcraft", "open_document", opening("Other/secret.docx")).await;
+            assert_eq!(code(&refused), "not-found");
+            assert_eq!(code(&extensions.call("wordcraft", "screenshot", Default::default()).await), "not-found");
+            let opened = extensions.call("wordcraft", "open_document", opening("Docs/letter.docx")).await;
+            assert!(matches!(opened, Response::ToolResult { .. }), "{opened:?}");
+            let work = extensions.store.as_ref().expect("a store").work_path("wordcraft").expect("its folder");
+            let log = std::fs::read_to_string(work.join("calls.log")).expect("the calls");
+            assert_eq!(log.lines().count(), 1, "{log}");
+            assert!(log.contains("letter.docx") && !log.contains("secret.docx"), "{log}");
+
+            let shown = info(extensions.get("wordcraft", Reach::Suite).await);
+            let state = |name: &str| shown.tools.iter().find(|tool| tool.name == name).map(|tool| tool.state);
+            for blocked in ["screenshot", "click", "key", "ui_inspect"] {
+                assert_eq!(state(blocked), Some(ToolState::Blocked), "{blocked}");
+            }
+            assert_eq!(state("open_document"), Some(ToolState::Allowed));
+            assert!(shown.notes.iter().any(|note| note.contains("ui_inspect")), "{:?}", shown.notes);
+            let offered: Vec<String> = extensions.offered(Reach::Suite).into_iter().map(|tool| tool.name).collect();
+            assert!(!offered.iter().any(|name| name == "screenshot") && offered.iter().any(|name| name == "args"));
+            let confirmed = info(extensions.confirm("wordcraft", &shown.fingerprint.expect("a fingerprint")).await);
+            assert_eq!(confirmed.tools.iter().filter(|tool| tool.state == ToolState::Blocked).count(), 4);
+            let allowed = extensions.stored("wordcraft").expect("stored").allowed;
+            assert!(
+                allowed.iter().all(|tool| !["screenshot", "click", "key", "ui_inspect"].contains(&tool.name.as_str()))
+            );
+            assert_eq!(allowed.len(), 7);
         }
 
         /// A catalog entry installs only with its programs: `unsupported` with what is missing, then with a

@@ -167,6 +167,13 @@ pub enum Open {
     ExtensionReview,
     /// The page of "GitHub", stopped after errors, with its stored token and its output.
     ExtensionCrashed,
+    /// The page of "WordCraft" (issue #303): the group "Folder" with the allowed folder chosen for it, its blocked
+    /// tools.
+    ExtensionFolder,
+    /// The page of "GridCraft" (issue #303): no folder chosen yet, and that it keeps to no folder itself.
+    ExtensionUnbounded,
+    /// The page of "WordCraft" whose folder is allowed still but can't be used now (`folder_unusable`).
+    ExtensionUnusable,
     /// The form of a server of one's own (task MA.9), filled in from a pasted block
     /// ([`DEMO_PASTE_ONE`]): a command with arguments, its API key marked secret, a plain variable.
     CustomServer,
@@ -203,7 +210,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 103] = [
+    pub const ALL: [(&'static str, Open); 107] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -284,6 +291,9 @@ impl Open {
         ("extension-detail", Open::ExtensionDetail),
         ("extension-review", Open::ExtensionReview),
         ("extension-crashed", Open::ExtensionCrashed),
+        ("extension-folder", Open::ExtensionFolder),
+        ("extension-unbounded", Open::ExtensionUnbounded),
+        ("extension-unusable", Open::ExtensionUnusable),
         ("custom-server", Open::CustomServer),
         ("custom-server-paste", Open::CustomServerPaste),
         ("custom-server-choose", Open::CustomServerChoose),
@@ -306,6 +316,7 @@ impl Open {
         ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
         ("setup-ai", Open::SetupAi),
         ("setup-web", Open::Setup(super::setup::Step::Web)),
+        ("setup-documents", Open::Setup(super::setup::Step::Documents)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
@@ -1065,8 +1076,9 @@ pub fn demo_data() -> Data {
     }
 }
 
-/// The built-in catalog as the core lists it on a computer without Node.js: Sequential Thinking
-/// needs `npx` (task MA.8 shows it without "Install…"). The others need nothing the demo lacks.
+/// The built-in catalog as the core lists it on a computer without Node.js and with only two of the ArtCraft
+/// apps: Sequential Thinking needs `npx` (task MA.8 shows it without "Install…"), DeckCraft and PdfCraft their
+/// `<app>-cli` (issue #303). The others need nothing the demo lacks.
 fn demo_catalog() -> Vec<torro_ipc::extensions::CatalogEntry> {
     use torro_ipc::extensions::Prerequisite;
     let entries = crate::extensions::catalog::builtin().unwrap_or_default();
@@ -1074,8 +1086,8 @@ fn demo_catalog() -> Vec<torro_ipc::extensions::CatalogEntry> {
         .iter()
         .map(|entry| {
             let mut info = entry.info.clone();
-            if info.requires.contains(&Prerequisite::Npx) {
-                info.missing = vec![Prerequisite::Npx];
+            if info.requires.contains(&Prerequisite::Npx) || matches!(info.id.as_str(), "deckcraft" | "pdfcraft") {
+                info.missing = info.requires.clone();
             }
             info
         })
@@ -1136,6 +1148,8 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             secrets: Vec::new(),
             notes: Vec::new(),
             fingerprint: Some("demo-time".into()),
+            folder: None,
+            folder_unusable: false,
         },
         ExtensionInfo {
             id: "github".into(),
@@ -1159,6 +1173,8 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             secrets: vec![SecretInfo { name: "GITHUB_PERSONAL_ACCESS_TOKEN".into(), stored: true }],
             notes: Vec::new(),
             fingerprint: Some("demo-github".into()),
+            folder: None,
+            folder_unusable: false,
         },
         ExtensionInfo {
             id: "notes".into(),
@@ -1174,8 +1190,74 @@ fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
             secrets: Vec::new(),
             notes: Vec::new(),
             fingerprint: Some("demo-notes".into()),
+            folder: None,
+            folder_unusable: false,
+        },
+        // Issue #303: WordCraft works in an allowed folder; GridCraft has none chosen yet.
+        ExtensionInfo {
+            id: "wordcraft".into(),
+            name: "WordCraft".into(),
+            source: Source::Catalog { entry: "wordcraft".into(), version: version("wordcraft").unwrap_or_default() },
+            server: program("wordcraft-cli", &["mcp"], BTreeMap::new()),
+            enabled: true,
+            status: Status::Stopped,
+            tools: vec![
+                tool(
+                    "wordcraft",
+                    "WordCraft",
+                    "get_text",
+                    "Read the text of the document",
+                    Access::Read,
+                    ToolState::Allowed,
+                ),
+                tool("wordcraft", "WordCraft", "open_document", "Open a .docx file", Access::Read, ToolState::Allowed),
+                tool("wordcraft", "WordCraft", "save_document", "Save the document", Access::Write, ToolState::Allowed),
+                tool("wordcraft", "WordCraft", "execute", "Run a command", Access::Delete, ToolState::Allowed),
+                tool("wordcraft", "WordCraft", "screenshot", "Take a screenshot", Access::Delete, ToolState::Blocked),
+                tool("wordcraft", "WordCraft", "click", "Click in the window", Access::Delete, ToolState::Blocked),
+            ],
+            secrets: Vec::new(),
+            notes: vec![demo_blocked_note(&["screenshot", "click"])],
+            fingerprint: Some("demo-wordcraft".into()),
+            folder: Some("/home/anna/Projects/Invoices".into()),
+            folder_unusable: false,
+        },
+        ExtensionInfo {
+            id: "gridcraft".into(),
+            name: "GridCraft".into(),
+            source: Source::Catalog { entry: "gridcraft".into(), version: version("gridcraft").unwrap_or_default() },
+            server: program("gridcraft-cli", &["mcp"], BTreeMap::new()),
+            enabled: true,
+            status: Status::Stopped,
+            tools: vec![
+                tool("gridcraft", "GridCraft", "read_range", "Read a range of cells", Access::Read, ToolState::Allowed),
+                tool(
+                    "gridcraft",
+                    "GridCraft",
+                    "save_workbook",
+                    "Save the workbook",
+                    Access::Delete,
+                    ToolState::Allowed,
+                ),
+                tool("gridcraft", "GridCraft", "screenshot", "Take a screenshot", Access::Delete, ToolState::Blocked),
+                tool("gridcraft", "GridCraft", "execute_command", "Run a command", Access::Delete, ToolState::Blocked),
+            ],
+            secrets: Vec::new(),
+            notes: vec![demo_blocked_note(&["screenshot", "execute_command"])],
+            fingerprint: Some("demo-gridcraft".into()),
+            folder: None,
+            folder_unusable: false,
         },
     ]
+}
+
+/// The note the core gives a server with blocked tools (issue #303), for the demo's ArtCraft apps.
+fn demo_blocked_note(tools: &[&str]) -> String {
+    trf(
+        "Torro blocks these tools: {tools}. No one may use them: they work the app's window, run scripts, reach \
+         keys of your keychain, or take paths Torro can't check.",
+        &[("tools", &tools.join(", "))],
+    )
 }
 
 /// `--open connections` (task MA.7): the PDF tool on, a folder of its own and a logo in the report
@@ -1217,6 +1299,21 @@ pub fn demo_connections_empty(data: &mut Data) {
 pub fn demo_uninstalled(data: &mut Data) {
     if let super::connections::Listing::Entries(servers) = &mut data.extensions {
         servers.retain(|server| server.id != "github");
+    }
+}
+
+/// `--open extension-unusable` (issue #303): WordCraft's folder is allowed still, but the core can't use it now.
+pub fn demo_unusable(data: &mut Data) {
+    if let super::connections::Listing::Entries(servers) = &mut data.extensions {
+        servers.iter_mut().filter(|server| server.id == "wordcraft").for_each(|server| server.folder_unusable = true);
+    }
+}
+
+/// `--open setup-documents` (issue #303): the step Documents with one ArtCraft app of each state – WordCraft set
+/// up, GridCraft installed but not set up (its server taken out), DeckCraft and PdfCraft missing.
+pub fn demo_documents(data: &mut Data) {
+    if let super::connections::Listing::Entries(servers) = &mut data.extensions {
+        servers.retain(|server| server.id != "gridcraft");
     }
 }
 
@@ -1317,6 +1414,8 @@ fn demo_custom(
         secrets,
         notes: Vec::new(),
         fingerprint: Some(format!("demo-{id}")),
+        folder: None,
+        folder_unusable: false,
     }
 }
 
@@ -1356,6 +1455,8 @@ fn demo_server(id: &str, data: &Data) -> Option<torro_ipc::extensions::Extension
         secrets: entry.secrets.iter().map(|secret| SecretInfo { name: secret.name.clone(), stored: true }).collect(),
         notes: Vec::new(),
         fingerprint: Some(format!("demo-{}", entry.id)),
+        folder: None,
+        folder_unusable: false,
     })
 }
 
@@ -1783,6 +1884,12 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         | Request::SetExtensionEnabled { id, .. }
         | Request::UpdateExtension { id, .. } => Some(Response::Extension { extension: demo_server(id, data)? }),
         Request::SetExtensionSecret { .. } | Request::RemoveExtension { .. } => Some(Response::Ok),
+        // As the core, without looking at the folder: the server with the folder chosen; nothing is kept.
+        Request::SetExtensionFolder { id, folder } => {
+            let mut server = demo_server(id, data)?;
+            server.folder = folder.clone();
+            Some(Response::Extension { extension: server })
+        }
         Request::ReadExtensionLogs { id } => Some(Response::Logs { lines: demo_logs(id) }),
         Request::ClientActivity { id } => {
             let client = client_of(id)?;
@@ -2244,8 +2351,9 @@ mod tests {
         assert_eq!((app.section, app.setup, app.setup_if_open), (Section::Accounts, Some(Step::Calendar), true));
         let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
         assert!(
-            err.to_string()
-                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, web, done"),
+            err.to_string().ends_with(
+                "valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, web, documents, done"
+            ),
             "{err}"
         );
     }

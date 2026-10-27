@@ -86,7 +86,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
 | `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
-| `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret` (die letzten vier **nur App-Schlüssel**) |
+| `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret`, `set_folder` (die letzten fünf **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 
@@ -802,6 +802,15 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
   Klartextwerte als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil, etwa „…/server“, weil die Ordner davor
   Home und Benutzernamen verraten). Nur der App-Schlüssel sieht sie vollständig.
 - **Länge:** `extensions.call_tool` mit mehr als 64 KB Argumenten (als JSON) wird mit `error` abgelehnt.
+- **Server mit Ordner (#303, ArtCraft):** Den gewählten Ordner (`ExtensionInfo::folder`) sieht jeder Client mit einer
+  Stufe für den Server ungeschwärzt, solange er nutzbar ist: Ein Agent braucht ihn, um Pfade darin zu bilden, er ist
+  eine Grenze, kein Geheimnis. Ist er nicht nutzbar, sieht ihn nur der App-Schlüssel; ein Client erfährt dann nur
+  `folder_unusable`. Vor der Freigabe und beim Ausführen prüft der Dienst die Pfade des Aufrufs: außerhalb des Ordners
+  oder gesperrt `not-found`, ohne nutzbaren Ordner `forbidden`, ebenso ein gesperrter Befehl in den Argumenten eines
+  Allzweck-Befehls (`commands = true` im Katalog) oder eines Werkzeugs, das der Katalog nicht nennt; ein Ziel, das es
+  gibt, `conflict`, ein fehlendes Pflicht-Ziel oder ein relativer Pfad `error`. Ein Werkzeug, das der Katalog sperrt,
+  gibt es für niemanden (`not-found`, nicht `forbidden`). Details:
+  [erweiterungen.md › Dokumente mit ArtCraft](erweiterungen.md#dokumente-mit-artcraft-303).
 - **Neu eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft, wartet wieder auf Zustimmung.
 - **Geheimnisse bei Update:** eigene Server behalten gespeicherte Geheimnisse nur bei gleichem Befehl und gleichen
   Argumenten (stdio) bzw. gleichem Ursprung (HTTP); Katalog-Server beim Versionswechsel aus dem Katalog.
@@ -997,13 +1006,15 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `forbidden` (`Request::kept_for_people`, `Tools::needs_a_person`); ein Client, der die ganzen Einstellungen
    schreibt, behält die gespeicherte Liste (`Tools::from_client`).
 10. **Einen MCP-Server installieren, einschalten, seinen Werkzeugen zustimmen, ihn aktualisieren, seine
-   Geheimnisse setzen und seine Ausgaben lesen** (Issue #302, Fußnote ²⁵): `extensions.install_extension`,
-   `extensions.confirm_tools`, `extensions.update_extension`, `extensions.set_secret` und `extensions.read_logs`
-   nur mit dem App-Schlüssel (`Mcp::Never`), `extensions.set_enabled` mit `enabled: true` wie das Mikrofon nach dem
-   Wert (`Request::kept_for_people`): Jeder Client bekommt `forbidden`, auch mit Admin-Rechten, und niemand wird um
-   eine Freigabe gefragt. Ausschalten und Entfernen (mit Freigabe) dürfen Agenten. Grund: Ein Server ist ein
-   Programm, das mit den Rechten der Person auf ihrem Rechner läuft; wer ihn installiert oder einschaltet,
-   entscheidet, welcher Code dort läuft und welche Werkzeuge Agenten bekommen. Seine Ausgaben (stderr) können alles
+   Geheimnisse setzen, seinen Ordner wählen und seine Ausgaben lesen** (Issue #302, Fußnote ²⁵; Ordner #303):
+   `extensions.install_extension`, `extensions.confirm_tools`, `extensions.update_extension`,
+   `extensions.set_secret`, `extensions.set_folder` und `extensions.read_logs` nur mit dem App-Schlüssel
+   (`Mcp::Never`), `extensions.set_enabled` mit `enabled: true` wie das Mikrofon nach dem Wert
+   (`Request::kept_for_people`): Jeder Client bekommt `forbidden`, auch mit Admin-Rechten, und niemand wird um eine
+   Freigabe gefragt. Ausschalten und Entfernen (mit Freigabe) dürfen Agenten. Grund: Ein Server ist ein Programm, das
+   mit den Rechten der Person auf ihrem Rechner läuft; wer ihn installiert oder einschaltet, entscheidet, welcher Code
+   dort läuft und welche Werkzeuge Agenten bekommen. Wer seinen Ordner wählt, vergibt Rechte wie mit
+   `allowed_folder` (Punkt 9): Der Server arbeitet in diesem Ordner. Seine Ausgaben (stderr) können alles
    enthalten, was er gelesen hat, und sein Status nennt deshalb nur feste Fehlerarten (`exited`, `start_timeout`,
    `spawn_failed`, `protocol`), nie seinen Text. Geheimnisse eines Servers liegen im Schlüsselbund
    (`ext:<id>:<NAME>`) und gehen nur beim Start an genau diesen Server; jede Antwort nennt nur „gespeichert“ oder

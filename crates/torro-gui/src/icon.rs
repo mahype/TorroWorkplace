@@ -192,6 +192,16 @@ pub enum Icon {
     Download,
     /// Save, "Save as…": a floppy disk.
     Save,
+    /// WordCraft, a document (issue #303, the setup's step "Documents").
+    FileText,
+    /// DeckCraft, a presentation.
+    Presentation,
+    /// GridCraft, a spreadsheet.
+    Sheet,
+    /// PdfCraft, a PDF.
+    FileType,
+    /// "None" in the menu of a server's folder: no folder chosen (issue #303).
+    FolderX,
 }
 
 impl Icon {
@@ -304,6 +314,11 @@ impl Icon {
         Icon::BellRing,
         Icon::Download,
         Icon::Save,
+        Icon::FileText,
+        Icon::Presentation,
+        Icon::Sheet,
+        Icon::FileType,
+        Icon::FolderX,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -426,6 +441,11 @@ impl Icon {
             Icon::BellRing => include_bytes!("../assets/icons/bell-ring.svg"),
             Icon::Download => include_bytes!("../assets/icons/download.svg"),
             Icon::Save => include_bytes!("../assets/icons/save.svg"),
+            Icon::FileText => include_bytes!("../assets/icons/file-text.svg"),
+            Icon::Presentation => include_bytes!("../assets/icons/presentation.svg"),
+            Icon::Sheet => include_bytes!("../assets/icons/sheet.svg"),
+            Icon::FileType => include_bytes!("../assets/icons/file-type.svg"),
+            Icon::FolderX => include_bytes!("../assets/icons/folder-x.svg"),
         }
     }
 }
