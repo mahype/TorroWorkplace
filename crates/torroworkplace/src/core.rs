@@ -1351,7 +1351,7 @@ async fn category_job_run(
                 }
             };
             if let Some(facts) = facts
-                && !facts.category.is_some_and(|held| held.source != torro_mail::CategorySource::Model)
+                && facts.category.is_none_or(|held| held.source == torro_mail::CategorySource::Model)
             {
                 let input = torro_inbox::rules::SortInput {
                     sender: facts.sender.as_deref(),
