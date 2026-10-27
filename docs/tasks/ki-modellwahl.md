@@ -106,7 +106,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   `kept_for_people` für `decide_mail_to_cloud true`; Vertragstest Tool ↔ Katalog grün.
 
 ### MW.2 Plätze wirken: setzen, zurückfallen, Erlaubnis je Platz
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Datenregel, Rechte, Freigabepfad) · **Braucht:** MW.1 · **Dateien:**
   `crates/torroworkplace/src/{core,settings_service}.rs`, `crates/torroworkplace/src/account/ai.rs`,
   `crates/torroworkplace/src/categorize.rs`

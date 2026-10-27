@@ -14,9 +14,16 @@
 //! the person set by hand ([`torro_mail::CategorySource::Person`]) is never touched by the
 //! automatic run – only an explicit `inbox.classify_item` overwrites it.
 //!
-//! **The data rule** (`docs/ki.md`, principle 4): while `mail_to_cloud` is off, mail goes only to
-//! a model that computes on this computer. Guarded twice – `ai.set_assignment` refuses to assign
-//! one elsewhere (task E12.5), and [`chosen`] refuses to ask one.
+//! **Which model** (issue #325, task MW.2): the assignment of `inbox.categorize` while one is
+//! stored – the exception, also one switched off, which keeps sorting off –, else the model of the
+//! slot Sorting (`aiSlots.decide`). The core weighs the two (`assignment_in_effect` in `core.rs`)
+//! and hands [`chosen`] the result as one assignment.
+//!
+//! **The data rule** (`docs/ki.md`, principle 4): while the permission of the slot Sorting
+//! (`decide_mail_to_cloud`; the chat's `mail_to_cloud` is not asked here) is off, mail goes only to
+//! a model that computes on this computer. Guarded twice – only a person chooses a model elsewhere
+//! for sorting (`ai.set_slot`, `ai.set_assignment`, which then set that permission), and [`chosen`]
+//! refuses to ask one while it is off.
 //!
 //! **The switches of the models** (task S.24, #231): only a model that is on is asked. Guarded
 //! twice as well – `ai.set_assignment` refuses a model that is off, and [`chosen`] treats one
@@ -103,7 +110,8 @@ pub enum Refusal {
     /// gone – removed or signed out since it was chosen –, or the model it names is turned off
     /// (task S.24).
     NoModel,
-    /// Mail may only go to a model on this computer, and the one assigned is not.
+    /// Mail may only go to a model on this computer – the permission of the slot Sorting is off –,
+    /// and the one assigned is not.
     NotLocal,
 }
 

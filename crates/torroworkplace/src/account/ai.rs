@@ -709,12 +709,27 @@ pub struct Automatic {
 impl Automatic {
     /// What "Automatic" was used for at a function: its decision model for one that needs one
     /// (only one on this computer for a function that reads mail while `mail_to_cloud` is off), else
-    /// the model a chat takes.
+    /// the model a chat takes. `mail_to_cloud` is the permission of the function's slot (issue #325,
+    /// `Settings::mail_to_cloud_in(function.slot())`), not the chat's.
     pub fn for_function(function: ai::AiFunction, mail_to_cloud: bool) -> Automatic {
         match function.needs_decision() {
             true if function.reads_mail() && !mail_to_cloud => Automatic { decides_here: true, ..Automatic::default() },
             true => Automatic { decides: true, ..Automatic::default() },
             false => Automatic { chat: true, ..Automatic::default() },
+        }
+    }
+
+    /// What "Automatic" is used for at a slot (issue #325) with no model named: the chat's model for
+    /// [`ai::AiSlot::Chat`]; for [`ai::AiSlot::Decide`] what sorting mail takes – the first model
+    /// that decides, only one on this computer while `mail_to_cloud` (the slot's permission,
+    /// `Settings::mail_to_cloud_in`) is off.
+    pub fn for_slot(slot: ai::AiSlot, mail_to_cloud: bool) -> Automatic {
+        match slot {
+            ai::AiSlot::Chat => Automatic { chat: true, ..Automatic::default() },
+            ai::AiSlot::Decide => match mail_to_cloud {
+                false => Automatic { decides_here: true, ..Automatic::default() },
+                true => Automatic { decides: true, ..Automatic::default() },
+            },
         }
     }
 
@@ -1344,8 +1359,8 @@ impl AiAccounts {
 
     /// The first start after the update that brought the switches (task S.24): when there was no
     /// `ai-models.json` at the core's first look ([`Switches::keep_used`]), the models the suite
-    /// already uses – `used` as pairs of account id and model id (the assistant's default for new
-    /// chats, the models of the bots and of the functions) – are turned on, so nothing that worked
+    /// already uses – `used` as pairs of account id and model id (the models of both slots, issue #325,
+    /// the models of the bots and of the functions) – are turned on, so nothing that worked
     /// stops, and the file is written with the mark gone. Afterwards it does nothing, and a model a
     /// module chooses later turns nothing on. Ids that are no AI account (`ai:…`) are left out, and
     /// so are accounts a person switched a model at already (#231): their switch wins. Lets the
@@ -2655,6 +2670,10 @@ pub(crate) mod tests {
         let sorting = ai::AiFunction::InboxCategorize;
         assert_eq!(Automatic::for_function(sorting, false), Automatic { decides_here: true, ..Automatic::default() });
         assert_eq!(Automatic::for_function(sorting, true), Automatic { decides: true, ..Automatic::default() });
+        // Issue #325: a slot as the functions it serves.
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Chat, true), Automatic { chat: true, ..Automatic::default() });
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Decide, false), Automatic::for_function(sorting, false));
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Decide, true), Automatic::for_function(sorting, true));
     }
 
     /// #231: an account used with "Automatic" before the switches keeps that model on at its first
