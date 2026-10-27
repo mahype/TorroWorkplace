@@ -16,10 +16,10 @@
 //! **Cache.** Flags change in the store at once and are put back when the server refuses
 //! ("optimistic"). Until the server has the change, the account's sync leaves the flags of these
 //! messages in the store as they are ([`MailService::hold_flags`]): the server may have reported
-//! them to it before the change arrived (issue #318). Moves, deletions and drafts change the store as soon as the server confirmed:
-//! only then is the new UID known. A moved message keeps its id ([`MailStore::relocate_message`])
-//! when its new UID can be found by its `Message-ID`; otherwise it leaves the store and the next
-//! sync brings it back under a new id.
+//! them to it before the change arrived (issue #318). Moves, deletions and drafts change the store
+//! as soon as the server confirmed: only then is the new UID known. A moved message keeps its id
+//! ([`MailStore::relocate_message`]) when its new UID can be found by its `Message-ID`; otherwise
+//! it leaves the store and the next sync brings it back under a new id.
 //!
 //! **Drafts** (security rules 1 and 2 of task M2.1): the core remembers who wrote each draft
 //! ([`DraftAuthor`]); a client key replaces only its own (others are `not-found`), and attaches

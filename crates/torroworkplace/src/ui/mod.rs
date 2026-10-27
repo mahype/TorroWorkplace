@@ -2397,7 +2397,8 @@ mod tests {
     /// Held by every test that can switch the process's appearance – a reload without an error, a
     /// choice, a sample of the demo. `Follow::new` holds the appearance active when the window is built,
     /// and a reload beside it switches back to that, so a test that checks what was drawn would see
-    /// another test's colours (issue #318).
+    /// another test's colours (issue #318). Held as well by the tests that compare tokens read at
+    /// different moments, which a switch in between would set apart.
     static SWITCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Takes `SWITCHING`; a test that failed while holding it leaves nothing to clean up.
@@ -2827,6 +2828,7 @@ mod tests {
 
     #[test]
     fn page_margin_follows_the_size_class() {
+        let _switching = switching();
         assert_eq!(page_margin(SizeClass::Wide), layout::page_padding());
         assert_eq!(page_margin(SizeClass::Medium), Padding::new(space::xl()), "24 in the standard design");
         assert_eq!(page_margin(SizeClass::Narrow), Padding::new(space::l()));
@@ -3338,8 +3340,8 @@ mod tests {
 
     #[test]
     fn the_general_zoom_buttons_zoom_this_window_and_the_page_shows_it() {
-        let _switching = switching();
         use torro_gui::zoom::Step;
+        let _switching = switching();
         let mut demo = started(&["--demo", "--section", "general"]);
         let _ = demo.update(Message::Resized(Size::new(1440.0, 900.0)));
         for _ in 0..3 {
