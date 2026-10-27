@@ -520,6 +520,9 @@ impl Feed {
             let since = initial.then(|| now - TimeDelta::days(FIRST_SYNC_DAYS));
             self.file(&store, &account, folder, new, since, now).await;
         }
+        if !removed.is_empty() {
+            self.forget_gone(&store, &account, Some(&removed)).await;
+        }
         let touched: Vec<String> = flags.into_iter().chain(removed).collect();
         if !touched.is_empty() {
             self.settle(&store, &account, Some(&touched), now).await;
@@ -558,8 +561,8 @@ impl Feed {
                 // that failed, it must not take mail off "Reply later" or end a follow-up.
                 let drafts = store.folder_by_role(Role::Drafts)?.map(|folder| folder.id);
                 let (mut replies, mut sent) = (Vec::new(), Vec::new());
-                for id in &ids {
-                    let Some(summary) = store.summary(id)? else { continue };
+                // One query for the whole change, however many mails it brings (review of #315).
+                for summary in summaries(store, &ids)? {
                     if drafts.as_ref() == Some(&summary.folder) {
                         continue;
                     }
@@ -575,8 +578,9 @@ impl Feed {
                 // The mail on "Reply later" in the conversation of a mail of one's own, with its date.
                 let mut answered = Vec::new();
                 if !sent.is_empty() {
-                    for (message, _) in &piled {
-                        let Some(summary) = store.summary(message)? else { continue };
+                    let messages: Vec<String> = piled.iter().map(|(message, _)| message.clone()).collect();
+                    for summary in summaries(store, &messages)? {
+                        let message = summary.id.clone();
                         let dates = sent.iter().filter(|(thread, _)| *thread == summary.thread_id);
                         answered.extend(dates.map(|(_, date)| (message.clone(), *date)));
                     }
@@ -640,6 +644,43 @@ impl Feed {
         }
     }
 
+    /// Takes mail of `account` off its pile that the store no longer holds (review of #315): with
+    /// `removed`, only those of these messages (a folder's change said they went), else every mail on
+    /// a pile (a catch-up). Deleted mail is gone for good; mail another program moved comes back under
+    /// a new id, which the pile cannot know, so its old id goes too. The core's own moves keep the id
+    /// and the store holds it still: such mail stays on its pile.
+    async fn forget_gone(&self, store: &SharedStore, account: &str, removed: Option<&[String]>) {
+        let piled = match self.inbox.mail_piles(&[account.to_string()]) {
+            Ok(piles) => piles.all_of(account),
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the piles of {account}: {err}");
+                return;
+            }
+        };
+        let asked: Vec<String> = match removed {
+            Some(removed) => piled.into_iter().filter(|message| removed.contains(message)).collect(),
+            None => piled,
+        };
+        if asked.is_empty() {
+            return;
+        }
+        let ids = asked.clone();
+        let held = match store.run(move |store| summaries(store, &ids)).await {
+            Ok(held) => held,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the mail of {account}: {err}");
+                return;
+            }
+        };
+        let gone: Vec<String> =
+            asked.into_iter().filter(|message| !held.iter().any(|summary| &summary.id == message)).collect();
+        if !gone.is_empty()
+            && let Err(err) = self.inbox.forget_piled(account, &gone)
+        {
+            eprintln!("torroworkplace: inbox: cannot take gone mail off its pile in {account}: {err}");
+        }
+    }
+
     /// The follow-ups "only if no reply" of `account` checked anew at `now` against everything its
     /// store holds (task E19.1), after changes were missed: a conversation with a reply since the
     /// follow-up was set ([`MailStore::replies_after`]) calls it off. The reply's own date is not
@@ -686,6 +727,7 @@ impl Feed {
         for account in self.mail.infos(Reach::Suite).await.into_iter().map(|info| info.id) {
             // Mail switched off: nothing is synced, nothing to file.
             let Ok(store) = self.mail.store(&account).await else { continue };
+            self.forget_gone(&store, &account, None).await;
             self.catch_up_replies(&store, &account, now).await;
             self.catch_up_answered(&store, &account, now).await;
             let since = now - TimeDelta::days(FIRST_SYNC_DAYS);
@@ -982,6 +1024,16 @@ pub(crate) async fn wake_follow_ups(inbox: &Inbox, mail: &MailService, now: Date
             eprintln!("torroworkplace: inbox: cannot wake a follow-up of {account}: {err}");
         }
     }
+}
+
+/// The messages of `ids` the store holds, in one query (review of #315: a change may bring many),
+/// in no particular order; ids it does not hold are left out.
+fn summaries(store: &MailStore, ids: &[String]) -> Result<Vec<torro_mail::MessageSummary>, MailStoreError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query = SearchQuery { only: Some(ids.to_vec()), ..SearchQuery::default() };
+    store.search(&query, u32::try_from(ids.len()).unwrap_or(u32::MAX), 0)
 }
 
 /// The address of the mail account `account` (`mail:<address>`): its own mail is no reply.
@@ -1440,6 +1492,110 @@ pub(crate) mod tests {
         feed.take(change(&of("Re Trip mine"), Some(Role::Sent)), Utc::now()).await;
         feed.catch_up(Utc::now()).await;
         assert_eq!(pile_of("Trip"), Some(MailPile::ReplyLater), "answered before it was put there");
+    }
+
+    /// Review of #315: a pile forgets mail that is gone from the store – when its folder's change
+    /// says it was removed, and on a catch-up –, but keeps mail the core moved (its id stays).
+    #[tokio::test]
+    async fn piles_forget_mail_that_is_gone() {
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for subject in ["Deleted", "Missed", "Moved"] {
+            server.add("INBOX", &bernd(subject, 2), &["\\Seen"]);
+        }
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        let pairs: Vec<(String, String)> =
+            ["Deleted", "Missed", "Moved"].iter().map(|subject| (ANNA.to_string(), of(subject).id)).collect();
+        inbox.set_mail_pile(&pairs, Some(MailPile::SetAside), Utc::now()).expect("put");
+        let piled = || inbox.mail_piles(&[ANNA.to_string()]).expect("read").all_of(ANNA);
+        // Gone from the store: deleted, and one whose change the feed missed; one moved by the core.
+        let archive = store.run(|store| store.folder_by_role(Role::Archive)).await.expect("read").expect("an archive");
+        let (deleted, missed, moved) = (of("Deleted").id, of("Missed").id, of("Moved").id);
+        let gone = [deleted.clone(), missed.clone()];
+        let kept = moved.clone();
+        store
+            .run(move |store| {
+                for id in &gone {
+                    store.delete_message(id)?;
+                }
+                store.relocate_message(&kept, &archive.id, 14, 1)?;
+                Ok(())
+            })
+            .await
+            .expect("changed");
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let removed = MailChange {
+            account: ANNA.into(),
+            folder: of("Deleted").folder,
+            role: Some(Role::Inbox),
+            new: Vec::new(),
+            flags: Vec::new(),
+            removed: vec![deleted.clone(), moved.clone()],
+            initial: false,
+        };
+        feed.take(removed, Utc::now()).await;
+        let mut left = piled();
+        left.sort();
+        let mut expected = vec![missed.clone(), moved.clone()];
+        expected.sort();
+        assert_eq!(left, expected, "the deleted one is forgotten, the moved one stays");
+        feed.catch_up(Utc::now()).await;
+        assert_eq!(piled(), [moved], "the catch-up forgets what the feed missed");
+    }
+
+    /// Review of #315: one change with several new mails reads them at once and does what each one
+    /// asks – an answer of one's own takes mail off "Reply later", a reply ends a follow-up "only if
+    /// no reply", other mail does nothing.
+    #[tokio::test]
+    async fn one_change_with_several_mails_notes_each() {
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for subject in ["Offer", "Plan", "Other"] {
+            server.add("INBOX", &bernd(subject, 5), &["\\Seen"]);
+        }
+        let reply = |subject: &str, from: &str, to: &str| letter(subject, from, 1, "", Some(to));
+        server.add("INBOX", &reply("Re Offer mine", "Anna <anna@example.org>", "Offer@example.org"), &["\\Seen"]);
+        server.add("INBOX", &reply("Re Plan", "Bernd <bernd@example.com>", "Plan@example.org"), &["\\Seen"]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        let since = Utc::now() - TimeDelta::days(4);
+        inbox.set_mail_pile(&[(ANNA.to_string(), of("Offer").id)], Some(MailPile::ReplyLater), since).expect("put");
+        let found = mail_to_snooze(&mail, Reach::Suite, &of("Plan").id).await.expect("the mail");
+        let plan = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
+        let until = Utc::now() + TimeDelta::hours(1);
+        let request = Request::SnoozeItem { id: plan, until: Some(until), unless_reply: true, keep_open: false };
+        assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let change = MailChange {
+            account: ANNA.into(),
+            folder: of("Offer").folder,
+            role: Some(Role::Inbox),
+            new: ["Re Offer mine", "Re Plan", "Other", "m:unknown"]
+                .iter()
+                .map(|s| if s.starts_with("m:") { s.to_string() } else { of(s).id })
+                .collect(),
+            flags: Vec::new(),
+            removed: Vec::new(),
+            initial: false,
+        };
+        feed.take(change, Utc::now()).await;
+        assert!(inbox.mail_piles(&[ANNA.to_string()]).expect("read").all_of(ANNA).is_empty(), "answered");
+        assert!(inbox.awaiting_reply(ANNA).expect("read").is_empty(), "the reply ended the follow-up");
     }
 
     /// Review of #315: a reply dated before the follow-up's time that the feed had not got to yet

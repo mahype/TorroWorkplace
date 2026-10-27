@@ -1071,6 +1071,24 @@ impl Inbox {
         piles.map_err(|failure| failure.to_string())
     }
 
+    /// Takes the messages `messages` (`m:…`) of the mail account `account` off their piles for good
+    /// (review of #315): the mail feed found them gone from the store – deleted, or moved by
+    /// another program, which gives the mail a new id. Returns how many rows went; `Err` holds the
+    /// message for the log.
+    pub fn forget_piled(&self, account: &str, messages: &[String]) -> Result<usize, String> {
+        self.with(|db| {
+            let tx = db.transaction()?;
+            let mut gone = 0;
+            for message in messages {
+                gone += tx
+                    .execute("DELETE FROM mail_piles WHERE account = ?1 AND message = ?2", params![account, message])?;
+            }
+            tx.commit()?;
+            Ok(gone)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// The messages of the mail account `account` (`mail:<address>`) on "Reply later" (task E19.2),
     /// each with when it was put there: what the mail feed looks for a reply of one's own to
     /// ([`Inbox::answered`]). Usually few, so most changes cost one query. `Err` holds the message
