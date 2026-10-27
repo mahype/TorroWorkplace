@@ -1069,6 +1069,24 @@ fn elsewhere_of(provider: torro_core::ai::AiProvider, server: &str, model: Optio
     }
 }
 
+/// Whether "Automatic" – an assignment that names the AI account at `provider` and `server` but no
+/// model – can send mail elsewhere (review of issue #325): the account is elsewhere, or one of its
+/// `models` that is on and fits ([`torro_core::ai::AiModel::can_decide`] where the function `decides`)
+/// computes elsewhere. The pick ([`categorize::chosen`]) takes the first that fits, and a local Ollama
+/// lists its `:cloud` models among the others; which one comes first may change with the list, and the
+/// permission of Sorting can be turned on later. So for a client in doubt elsewhere.
+fn may_pick_elsewhere(
+    provider: torro_core::ai::AiProvider,
+    server: &str,
+    models: &[torro_core::ai::AiModel],
+    decides: bool,
+) -> bool {
+    elsewhere_of(provider, server, None)
+        || models.iter().any(|model| {
+            model.enabled && (!decides || model.can_decide()) && elsewhere_of(provider, server, Some(model))
+        })
+}
+
 /// The models of an account that count for its switches ([`Core::model_off_refusal`]): all of
 /// `models`, or with `here_only` only those that compute on this computer – where mail must stay
 /// here and no model is named, one on elsewhere would never be asked, and nothing would say why.
@@ -5402,10 +5420,17 @@ impl Core {
             // assignment is on, since one switched off asks no model.
             let elsewhere = elsewhere_of(provider, &server, chosen.as_ref());
             let sorts_mail = function.reads_mail() && wanted.enabled;
+            // For a client, "Automatic" counts as elsewhere while it could fall on a model elsewhere
+            // (review of #325): judged on the list just loaded, as the check before the approval did on
+            // the one the core held.
+            let for_client = match &chosen {
+                Some(_) => elsewhere,
+                None => may_pick_elsewhere(provider, &server, &models, function.needs_decision()),
+            };
             if sorts_mail
                 && client
                 && let Some(refused) =
-                    self.for_people_elsewhere("ai.set_assignment", engine, chosen.as_ref(), elsewhere).await
+                    self.for_people_elsewhere("ai.set_assignment", engine, chosen.as_ref(), for_client).await
             {
                 return refused;
             }
@@ -6056,6 +6081,11 @@ impl Core {
 
     /// Start one deliberately selected, durable sorting run. The old catch-up command retains
     /// its 30-day/500-mail default; this request has no such cap.
+    ///
+    /// A client (`reach`) that names a model elsewhere gets it only when it is what sorting uses now
+    /// ([`decider_of`]), else `forbidden` with [`torro_ipc::api::Lack::ForPeople`] (review of issue
+    /// #325) – judged on the list [`category_job_decider`] just loaded, the last guard an approval runs
+    /// on to ([`Core::names_another_model_elsewhere`] checked before).
     async fn start_category_job(&self, scope: torro_ipc::inbox::CategoryJobScope, reach: Reach<'_>) -> Response {
         use torro_ipc::inbox::{CategoryJob, CategoryJobAccount, CategoryJobState};
         let scope = match self.category_scope(scope, reach).await {
@@ -6076,6 +6106,14 @@ impl Core {
                 (Err(_), true) => (None, None),
                 (Err(refusal), false) => return refused_decider(refusal),
             };
+        if matches!(reach, Reach::Client(_))
+            && scope.model.is_some()
+            && model_in_cloud == Some(true)
+            && decider_of(&self.settings, &self.ai).await.ok() != decider
+        {
+            let lack = torro_ipc::api::Lack::ForPeople;
+            return Refused::Lacks { command: "inbox.start_category_job", lack }.response();
+        }
         let previews = match self.mail.category_job_preview(reach, &scope).await {
             Ok(previews) => previews,
             Err(err) => return err.response(),
@@ -8897,11 +8935,14 @@ impl Core {
     /// `ai.set_slot decide` with a model elsewhere, and `ai.set_assignment` that is on for a function
     /// that reads mail ([`torro_core::ai::AiFunction::reads_mail`]) with one – also while the
     /// permission is on, since it was given to another provider. Naming no model, the account's seat
-    /// decides ([`elsewhere_of`]). Emptying a slot, taking an assignment back or switching it off
-    /// are ordinary admin commands. The handlers judge again with the server's list of now
-    /// ([`Core::set_ai_slot`], [`Core::set_ai_assignment`]).
+    /// decides ([`elsewhere_of`]) – for an assignment also a model elsewhere among those "Automatic"
+    /// could pick ([`may_pick_elsewhere`], review of #325) –, and `inbox.start_category_job` naming a
+    /// model elsewhere that sorting does not use now ([`Core::names_another_model_elsewhere`]).
+    /// Emptying a slot, taking an assignment back or switching it off are ordinary admin commands. The
+    /// handlers judge again with the server's list of now ([`Core::set_ai_slot`],
+    /// [`Core::set_ai_assignment`], [`Core::start_category_job`]).
     async fn turns_on_elsewhere(&self, request: &Request) -> Result<bool, torro_core::ai::AiError> {
-        let (engine, model) = match request {
+        let (engine, model, function) = match request {
             Request::SetModelEnabled { account, model, enabled } => {
                 self.ai.switches_writable().await?;
                 return match enabled {
@@ -8910,21 +8951,49 @@ impl Core {
                 };
             }
             Request::SetAiSlot { slot: torro_core::ai::AiSlot::Decide, engine: Some(engine), model, .. } => {
-                (engine, model)
+                (engine, model, None)
             }
             Request::SetAiAssignment { function, engine: Some(engine), model, enabled: true, .. }
                 if function.reads_mail() =>
             {
-                (engine, model)
+                (engine, model, Some(*function))
             }
+            Request::StartCategoryJob { scope } => return self.names_another_model_elsewhere(scope).await,
             _ => return Ok(false),
         };
-        match model {
-            Some(model) => self.ai.runs_elsewhere(engine, model).await,
-            None => {
-                Ok(self.ai.server(engine).await.is_some_and(|(provider, server)| elsewhere_of(provider, &server, None)))
-            }
+        if let Some(model) = model {
+            return self.ai.runs_elsewhere(engine, model).await;
         }
+        let Some((provider, server)) = self.ai.server(engine).await else { return Ok(false) };
+        // The slot needs no list: a slot Sorting that lands here switches its permission off, so its
+        // "Automatic" takes only models here ([`SettingsStore::set_ai_slot`]). An exception does not
+        // touch the permission, so a model elsewhere among those it could pick counts.
+        match function {
+            Some(function) if !elsewhere_of(provider, &server, None) => {
+                let models = self.ai.known_models(engine, None).await?;
+                let models = self.ai.mark_enabled(engine, models).await;
+                Ok(may_pick_elsewhere(provider, &server, &models, function.needs_decision()))
+            }
+            _ => Ok(elsewhere_of(provider, &server, None)),
+        }
+    }
+
+    /// Whether the sorting run `scope` names a model that computes elsewhere other than the one
+    /// sorting uses now ([`decider_of`]: the exception, else the slot Sorting) – review of issue #325.
+    /// The permission of Sorting was given to that model; a client naming another one elsewhere would
+    /// send the mail in the run to a provider the person never chose. A model here, and the model in
+    /// effect, are not. Where the model computes is the core's list ([`AiAccounts::runs_elsewhere`]);
+    /// [`Core::start_category_job`] judges again with the server's list of now.
+    async fn names_another_model_elsewhere(
+        &self,
+        scope: &torro_ipc::inbox::CategoryJobScope,
+    ) -> Result<bool, torro_core::ai::AiError> {
+        let (Some(engine), Some(model)) = (&scope.engine, &scope.model) else { return Ok(false) };
+        if !self.ai.runs_elsewhere(engine, model).await? {
+            return Ok(false);
+        }
+        let in_effect = decider_of(&self.settings, &self.ai).await.ok();
+        Ok(in_effect.is_none_or(|(held_engine, held_model)| (&held_engine, &held_model) != (engine, model)))
     }
 
     /// `ai.set_model_enabled` (task S.24): the switch, stored in `ai-models.json`. For a client
@@ -23205,16 +23274,24 @@ mod tests {
     /// besides a model with tools here (`qwen3:8b`, the fallback of task MW.3) and one that can do
     /// neither (`nomic-embed-text`).
     async fn fake_ollama_deciding_here_and_elsewhere() -> httpmock::MockServer {
+        fake_ollama_deciding(false).await
+    }
+
+    /// [`fake_ollama_deciding_here_and_elsewhere`], but listing `nimble:cloud` first (`cloud_first`),
+    /// so "Automatic" – the first deciding model that is on – falls on the model elsewhere (review of
+    /// issue #325).
+    async fn fake_ollama_deciding(cloud_first: bool) -> httpmock::MockServer {
         let server = httpmock::MockServer::start_async().await;
+        let mut listed = ["nimble", "nimble:cloud", "qwen3:8b", "nomic-embed-text"];
+        if cloud_first {
+            listed.swap(0, 1);
+        }
+        let data: Vec<_> =
+            listed.iter().map(|id| serde_json::json!({"id": id, "object": "model", "owned_by": "library"})).collect();
         server
             .mock_async(|when, then| {
                 when.method("GET").path("/v1/models");
-                then.status(200).json_body(serde_json::json!({"object": "list", "data": [
-                    {"id": "nimble", "object": "model", "owned_by": "library"},
-                    {"id": "nimble:cloud", "object": "model", "owned_by": "library"},
-                    {"id": "qwen3:8b", "object": "model", "owned_by": "library"},
-                    {"id": "nomic-embed-text", "object": "model", "owned_by": "library"},
-                ]}));
+                then.status(200).json_body(serde_json::json!({"object": "list", "data": data}));
             })
             .await;
         for (model, capabilities) in [
@@ -23440,6 +23517,106 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(category_job_decider(&core.settings, &core.ai, &scope).await, Err(categorize::Refusal::NotLocal));
+    }
+
+    /// Review of issue #325: a client that names a model for a sorting run gets one elsewhere only when
+    /// it is what sorting uses now – before any approval and in the handler an approval runs on to –,
+    /// since the permission of Sorting was given to that model, not to whichever an agent names. A
+    /// model on this computer, and the model in effect, still go.
+    #[tokio::test]
+    async fn a_client_sorts_mail_elsewhere_only_with_the_model_sorting_uses() {
+        use torro_core::ai::AiSlot;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama_deciding_here_and_elsewhere().await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let engine = account.expect("ollama").id;
+        assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
+        // The person sorts with the model here and lets sorted mail out all the same.
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
+        let permission = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
+        assert_eq!(core.handle(permission).await, Response::Ok);
+        let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let info = core.clients.list().into_iter().find(|info| info.id == id).expect("the client");
+        let job = |model: &str| Request::StartCategoryJob {
+            scope: torro_ipc::inbox::CategoryJobScope {
+                engine: Some(engine.clone()),
+                model: Some(model.into()),
+                ..Default::default()
+            },
+        };
+        let refused = Refused::Lacks { command: "inbox.start_category_job", lack: Lack::ForPeople };
+
+        // Another model elsewhere: refused at the door and in the handler an approval would run on to
+        // (what `handle_client` runs once the door let it through), and no run starts.
+        let from_client = |request: Request| {
+            let door = door_for(&core, Some(&key));
+            let (core, key) = (&core, &key);
+            async move { Box::pin(core.handle_from(Some(key), door, request)).await }
+        };
+        assert_eq!(from_client(job("nimble:cloud")).await.err(), Some(refused));
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert_eq!(code(&core.inbox_request(job("nimble:cloud"), Some(&info), None).await), "forbidden");
+        assert_eq!(core.handle(Request::GetCategoryJob { id: None }).await, Response::CategoryJob { job: None });
+
+        // A model here goes, as from the person.
+        let answer = from_client(job("nimble")).await;
+        assert!(matches!(answer, Ok(Response::CategoryJob { job: Some(_) })), "{answer:?}");
+        *core.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+        // Once the person sorts with the model elsewhere, a client may name it.
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
+        let answer = from_client(job("nimble:cloud")).await;
+        assert!(matches!(answer, Ok(Response::CategoryJob { job: Some(_) })), "{answer:?}");
+        *core.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let answer = core.inbox_request(job("nimble:cloud"), Some(&info), None).await;
+        assert!(matches!(answer, Response::CategoryJob { job: Some(_) }), "{answer:?}");
+    }
+
+    /// Review of issue #325: for a client, an exception without a model at an account on this computer
+    /// counts as elsewhere while a model of it that is on and can sort computes elsewhere – "Automatic"
+    /// takes the first that decides, and here that is `nimble:cloud`, so the mail would go to
+    /// ollama.com under a permission given to another model. The person may; with the model elsewhere
+    /// off, a client may too.
+    #[tokio::test]
+    async fn a_client_lets_no_account_here_pick_a_model_elsewhere_for_sorting() {
+        use torro_core::ai::AiSlot;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama_deciding(true).await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let engine = account.expect("ollama").id;
+        assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
+        // The person lets sorted mail out, for a model of their choice.
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
+        assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide));
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights.clone()).await;
+        let reach = Reach::Client(&rights);
+        let automatic = set_sorting(Some(&engine), None, true);
+
+        let door = door_for(&core, Some(&key));
+        let refused = Refused::Lacks { command: "ai.set_assignment", lack: Lack::ForPeople };
+        assert_eq!(Box::pin(core.handle_from(Some(&key), door, automatic.clone())).await.err(), Some(refused));
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert_eq!(code(&core.handle_within(automatic.clone(), reach).await), "forbidden");
+        assert!(core.settings.current().ai_assignments.is_empty(), "no exception stored");
+
+        // What the guard keeps from a client: from the person, "Automatic" takes the model elsewhere.
+        let answer = core.handle(automatic.clone()).await;
+        assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble:cloud".to_string())));
+        core.handle(set_sorting(None, None, false)).await;
+
+        // With the model elsewhere off, "Automatic" can only take one here: an ordinary admin command.
+        assert_eq!(core.handle(switch(&engine, "nimble:cloud", false)).await, Response::Ok);
+        assert_eq!(core.turns_on_elsewhere(&automatic).await, Ok(false));
+        let answer = core.handle_within(automatic, reach).await;
+        assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
     }
 
     /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and
