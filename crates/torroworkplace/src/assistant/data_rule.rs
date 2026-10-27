@@ -80,8 +80,9 @@ pub enum Place {
 /// - Ollama: local only for a model it says runs on its own machine ([`AiModel::remote`] `false`)
 ///   and whose name is no cloud name ([`openai::ollama_cloud_name`]); a model it did not describe
 ///   (not listed, or the list failed) counts as elsewhere, so mail stays home in doubt;
-/// - Strata (issue #322): like Ollama, local only for a model it says runs on its own machine
-///   ([`AiModel::remote`] `false`, which the core sets for every model Strata lists);
+/// - Strata (issue #322): local for a model marked [`AiModel::remote`] `false`. Strata says nothing
+///   about where a model runs; the core sets the mark for every model of a Strata account, so a
+///   model of an unknown origin stays remote;
 /// - LM Studio: local wherever it runs (on the person's own machines), unless the model is known to
 ///   run elsewhere;
 /// - OpenRouter and the other cloud providers (task W.3): never (an address of this computer would
