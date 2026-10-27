@@ -173,10 +173,14 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
 - **Ein Modell anderswo für Mail-Funktionen setzt nur ein Mensch**: als Platz *Sortieren* wie als Ausnahme
   `inbox.categorize` (`ai.set_assignment`), auch wenn die Erlaubnis schon an ist. Die Zustimmung gilt einem
   Anbieter; kein Agent leitet sie auf einen anderen um. Ein Client bekommt dafür `forbidden`, auch nach einer
-  Freigabe. Eine Ausnahme ohne Modell („Automatic“) gilt für einen Client schon dann als anderswo, wenn das Konto
-  ein angeschaltetes, sortierfähiges Modell anderswo hat (ein `:cloud`-Modell am lokalen Ollama): die Auswahl
-  könnte es nehmen. Ein Sortierauftrag (`inbox.start_category_job`) darf ein Modell anderswo nur nennen, wenn es
+  Freigabe. Ein Sortierauftrag (`inbox.start_category_job`) darf ein Modell anderswo nur nennen, wenn es
   das ist, mit dem gerade sortiert wird.
+- **„Automatic“ an einem Konto auf diesem Rechner bleibt hier.** Ohne Modell nimmt Sortieren an Ollama, LM Studio
+  oder Strata nur Modelle, die auf diesem Rechner rechnen, nie ein `:cloud`-Modell – auch bei eingeschalteter
+  Erlaubnis. Wer „Ollama hier“ wählt, wählt „hier“; die Erlaubnis gilt dem Modell, das ein Mensch gewählt hat.
+  Darum gilt so eine Wahl als Platz wie als Ausnahme als „hier“ (auch für Clients), und eine zurückgenommene
+  Ausnahme oder ein ausgeschaltetes lokales Modell lassen die Mail nie in die Cloud fallen: Es rechnet das
+  nächste Modell hier, sonst keines.
 - **Geprüft wird zweimal:** beim Setzen und beim Aufruf. Ist die Erlaubnis aus, fragt das Einordnen kein Modell
   anderswo; es bleibt bei `NotLocal` und ändert nichts.
 

@@ -150,7 +150,9 @@ echten Mails.
 - Solange die Erlaubnis des Platzes *Sortieren* aus ist (`decide_mail_to_cloud`, [ki.md](ki.md), Abschnitt
   „Erlaubnis je Platz“), gehen Mails nur an Modelle **auf diesem Rechner** (`AiModel::remote`,
   `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Ein Entscheidermodell in der Cloud wird für Mail gar
-  nicht angeboten, ebenso kein Chat-Modell in der Cloud für den Ersatzweg.
+  nicht angeboten, ebenso kein Chat-Modell in der Cloud für den Ersatzweg. „Automatic“ an einem Konto auf
+  diesem Rechner nimmt nur Modelle hier, auch bei eingeschalteter Erlaubnis ([ki.md](ki.md), „Erlaubnis je
+  Platz“): ein `:cloud`-Modell des lokalen Ollama sortiert nur, wenn ein Mensch es ausdrücklich wählt.
 - Kein Training, keine gesammelten Mails. Das Protokoll (`audit.jsonl`) hält nur Funktion, Konto,
   Modell, Tokens und Dauer – nie Betreff, Absender oder Text.
 - Nichts wird von einer KI versteckt, verschoben, gelöscht oder beantwortet. Die Kategorie ist ein

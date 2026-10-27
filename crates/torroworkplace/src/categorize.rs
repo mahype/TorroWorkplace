@@ -30,7 +30,8 @@
 //! (`decide_mail_to_cloud`; the chat's `mail_to_cloud` is not asked here) is off, mail goes only to
 //! a model that computes on this computer. Guarded twice – only a person chooses a model elsewhere
 //! for sorting (`ai.set_slot`, `ai.set_assignment`, which then set that permission), and [`chosen`]
-//! refuses to ask one while it is off.
+//! refuses to ask one while it is off. "Automatic" at an account on this computer takes only a model
+//! here, also while the permission is on: the permission was given to the model a person chose.
 //!
 //! **The switches of the models** (task S.24, #231): only a model that is on is asked. Guarded
 //! twice as well – `ai.set_assignment` refuses a model that is off, and [`chosen`] treats one
@@ -137,11 +138,18 @@ pub enum Refusal {
 /// Ollama serves cloud models too (`:cloud`), and one of those would send the mail to
 /// ollama.com. So `here` answers for the concrete model, both when the assignment names one and
 /// when one is picked for it.
+///
+/// **"Automatic" at an account on this computer stays here** (`seat_here`, review of issue #325):
+/// with no model named, an account that sits on this computer ([`torro_core::ai::Seat::ThisComputer`])
+/// picks only among the models `here` lets through, whatever the permission says. Who chooses
+/// "Ollama on this computer" chooses "here"; its `:cloud` models are never picked for them, only
+/// named. `ai.set_slot` and `ai.set_assignment` judge such a choice as here for the same reason.
 pub fn chosen(
     assignment: Option<&AiAssignment>,
     models: &[AiModel],
     here: impl Fn(&AiModel) -> bool,
     local_only: bool,
+    seat_here: bool,
 ) -> Result<(String, String), Refusal> {
     let assignment = assignment.filter(|held| held.is_ready()).ok_or(Refusal::NoModel)?;
     let engine = assignment.engine.clone().ok_or(Refusal::NoModel)?;
@@ -152,7 +160,10 @@ pub fn chosen(
             .iter()
             .find(|model| &model.id == id && model.enabled && model.can_decide())
             .ok_or(Refusal::NoModel)?,
-        None => pick_model(models, |model| model.enabled && (!local_only || here(model))).ok_or(Refusal::NoModel)?,
+        None => {
+            let here_only = local_only || seat_here;
+            pick_model(models, |model| model.enabled && (!here_only || here(model))).ok_or(Refusal::NoModel)?
+        }
     };
     if local_only && !here(chosen) {
         return Err(Refusal::NotLocal);
@@ -661,28 +672,28 @@ mod tests {
         };
         let named = assign(Some("nimble"), true);
         assert_eq!(
-            chosen(Some(&named), &models, here, true),
+            chosen(Some(&named), &models, here, true, true),
             Ok(("ai:ollama@localhost:11434".into(), "nimble".into()))
         );
-        assert_eq!(chosen(None, &models, here, true), Err(Refusal::NoModel));
-        assert_eq!(chosen(Some(&assign(Some("nimble"), false)), &models, here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(None, &models, here, true, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("nimble"), false)), &models, here, true, true), Err(Refusal::NoModel));
         // The model was removed after it was chosen: nothing is asked, and nothing fails.
-        assert_eq!(chosen(Some(&assign(Some("gone"), true)), &models, here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("gone"), true)), &models, here, true, true), Err(Refusal::NoModel));
         // No model named: one that decides is picked.
         assert_eq!(
-            chosen(Some(&assign(None, true)), &models, here, true),
+            chosen(Some(&assign(None, true)), &models, here, true, true),
             Ok(("ai:ollama@localhost:11434".into(), "nimble".into()))
         );
         // Task MW.3: an account with only a model that writes takes it through the fallback; one
         // with only a model that can do neither (an embedding model) has nothing to ask.
         assert_eq!(
-            chosen(Some(&assign(None, true)), &models[..1], here, true),
+            chosen(Some(&assign(None, true)), &models[..1], here, true, true),
             Ok(("ai:ollama@localhost:11434".into(), "qwen3:8b".into()))
         );
         let embedding = vec![AiModel { tools: Some(false), ..model("nomic-embed-text", Some(false)) }];
-        assert_eq!(chosen(Some(&assign(None, true)), &embedding, here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(None, true)), &embedding, here, true, true), Err(Refusal::NoModel));
         let named = assign(Some("nomic-embed-text"), true);
-        assert_eq!(chosen(Some(&named), &embedding, here, true), Err(Refusal::NoModel), "named, all the same");
+        assert_eq!(chosen(Some(&named), &embedding, here, true, true), Err(Refusal::NoModel), "named, all the same");
     }
 
     /// Task S.24 (#231): a model turned off after it was assigned is not asked, and no other model
@@ -699,14 +710,14 @@ mod tests {
         let mut off = model("nimble", Some(true));
         off.enabled = false;
         let models = vec![off, model("tev1", Some(true))];
-        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true), Err(Refusal::NoModel));
-        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, false), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, false, true), Err(Refusal::NoModel));
         assert_eq!(
-            chosen(Some(&assign(None)), &models, here, true),
+            chosen(Some(&assign(None)), &models, here, true, true),
             Ok(("ai:ollama@localhost:11434".into(), "tev1".into())),
             "picked among the models that are on"
         );
-        assert_eq!(chosen(Some(&assign(None)), &models[..1], here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(None)), &models[..1], here, true, true), Err(Refusal::NoModel));
     }
 
     #[test]
@@ -723,14 +734,41 @@ mod tests {
         cloud.remote = Some(true);
         let mixed = vec![cloud, model("nimble", Some(true))];
         assert_eq!(
-            chosen(Some(&assign(None)), &mixed, here, true),
+            chosen(Some(&assign(None)), &mixed, here, true, true),
             Ok(("ai:ollama@localhost:11434".into(), "nimble".into())),
             "the cloud model is passed over"
         );
-        assert_eq!(chosen(Some(&assign(None)), &mixed[..1], here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(None)), &mixed[..1], here, true, true), Err(Refusal::NoModel));
         // Named by hand, it is refused rather than quietly swapped.
-        assert_eq!(chosen(Some(&assign(Some("glm-5.3:cloud"))), &mixed, here, true), Err(Refusal::NotLocal));
-        assert!(chosen(Some(&assign(Some("glm-5.3:cloud"))), &mixed, here, false).is_ok(), "allowed by the person");
+        assert_eq!(chosen(Some(&assign(Some("glm-5.3:cloud"))), &mixed, here, true, true), Err(Refusal::NotLocal));
+        assert!(
+            chosen(Some(&assign(Some("glm-5.3:cloud"))), &mixed, here, false, true).is_ok(),
+            "allowed by the person"
+        );
+    }
+
+    /// Review of issue #325: "Automatic" at an account on this computer picks only models here, also
+    /// while the permission of Sorting is on – a `:cloud` model listed first is passed over, and with
+    /// no model here there is none to ask. At an account elsewhere the permission alone decides.
+    #[test]
+    fn automatic_at_an_account_here_never_picks_a_model_elsewhere() {
+        let automatic = AiAssignment {
+            function: Function::InboxCategorize,
+            engine: Some("ai:ollama@localhost:11434".to_string()),
+            model: None,
+            effort: None,
+            enabled: true,
+        };
+        let mut cloud = model("nimble:cloud", Some(true));
+        cloud.remote = Some(true);
+        let mixed = vec![cloud, model("nimble", Some(true))];
+        let picked = |models: &[AiModel], seat_here| chosen(Some(&automatic), models, here, false, seat_here);
+        assert_eq!(picked(&mixed, true), Ok(("ai:ollama@localhost:11434".into(), "nimble".into())), "permission on");
+        assert_eq!(picked(&mixed[..1], true), Err(Refusal::NoModel), "nothing here, nothing asked");
+        assert_eq!(picked(&mixed, false), Ok(("ai:ollama@localhost:11434".into(), "nimble:cloud".into())), "elsewhere");
+        // Named by the person, the model elsewhere is still theirs to choose.
+        let named = AiAssignment { model: Some("nimble:cloud".into()), ..automatic.clone() };
+        assert!(chosen(Some(&named), &mixed, here, false, true).is_ok());
     }
 
     /// Task MW.3: a deciding model goes first, then one that can use tools; one that can do neither
