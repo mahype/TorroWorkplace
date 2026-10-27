@@ -1057,6 +1057,9 @@ pub enum Sent {
     Pile(Vec<String>, Option<MailPile>, Option<Hint>),
     /// `MailSource::send_reply` of "Focus & reply" (task E19.5): the mail answered and the text.
     Reply(String, String),
+    /// The next page of the pile for "Focus & reply" (decision of #315), asked when the round had had
+    /// this many mails.
+    RoundPage(usize),
     /// The calendars were asked for (the dialog of "Make event" opened, task E8.5b).
     Calendars,
     /// `inbox.create_event_from_item`: entry, calendar, title (`None`: the entry's), start and end,
@@ -3026,6 +3029,11 @@ pub enum Message {
     FocusSent(String, Result<(), String>),
     /// "‹ Reply later", "Back to Reply later" and Escape: the round ends, the pile's list shows.
     FocusClose,
+    /// "Retry" at the end of a round of "Focus & reply" whose next page could not be loaded.
+    FocusLoad,
+    /// The next page of the pile for "Focus & reply" (decision of #315): the mail the round has not had
+    /// yet and whether the pile has more ([`round_page`]), or why it could not be loaded.
+    FocusMore(Result<(Vec<String>, bool), String>),
     /// The source's answer to a [`MailEdit`] of these messages, with the hint to show (`None`:
     /// none, or an undo).
     MailEdited(Result<(), String>, Vec<String>, Option<Hint>),
@@ -3580,6 +3588,30 @@ where
     }
 }
 
+/// The mail of "Reply later" that a round of "Focus & reply" has not had yet (decision of #315): the
+/// pile's pages of `limit`, newest first as `order` says, walked from the start until one holds mail
+/// not in `seen` or there are no more – from the start each time, as the round took mail off the pile
+/// and an offset from before would skip some. Returns that mail in the pile's order and whether the
+/// pile has pages after it.
+async fn round_page<S: MailSource>(
+    inbox: &S,
+    seen: &std::collections::HashSet<String>,
+    limit: u32,
+    order: Order,
+    accounts: Option<&[String]>,
+) -> Result<(Vec<String>, bool), String> {
+    let mut cursor = None;
+    loop {
+        let page = pile_selected(inbox, &View::ReplyLater, limit, cursor, order, accounts).await?;
+        let new: Vec<String> =
+            page.messages.into_iter().map(|message| message.id).filter(|id| !seen.contains(id)).collect();
+        if !new.is_empty() || page.next.is_none() {
+            return Ok((new, page.next.is_some()));
+        }
+        cursor = page.next;
+    }
+}
+
 /// The number on the pile `pile` (task E19.4): `MailSource::count_in_pile` once for every account
 /// (`accounts` `None`), else for each account chosen, summed. `None` when one count failed, so the
 /// row shows no number rather than a wrong one.
@@ -3985,11 +4017,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             self.rail_open = None;
             self.rail_pending = None;
         }
+        // A round of "Focus & reply" at the end of what is loaded loads the pile's next page (decision of
+        // #315) – before the letter follows, so the next mail is read once it is in.
+        let more = self.focus_more();
         // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
         let letter = self.follow_letter();
         self.follow_text();
         self.follow_html();
-        Task::batch([task, letter])
+        Task::batch([task, more, letter])
     }
 
     /// The parsed HTML of the mail held (task M9.7, [`App::html`]): made when a mail with HTML is
@@ -4748,6 +4783,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::FocusSend => return self.focus_send(),
             Message::FocusSent(id, result) => return self.focus_sent(id, result),
             Message::FocusClose => self.close_focus(),
+            // [`App::update`] asks again once the error is gone.
+            Message::FocusLoad => {
+                if let Some(focus) = self.focus_reply.as_mut() {
+                    focus.load_error = None;
+                }
+            }
+            Message::FocusMore(result) => {
+                if let Some(focus) = self.focus_reply.as_mut().filter(|focus| focus.loading) {
+                    match result {
+                        Ok((ids, more)) => focus.extend(ids, more),
+                        Err(why) => {
+                            focus.loading = false;
+                            focus.load_error = Some(why);
+                        }
+                    }
+                }
+            }
             Message::MailShown(Ok(()), hint) => {
                 if let Some(hint) = hint {
                     self.hint = Some(Hint { shown: Instant::now(), ..hint });
@@ -5708,12 +5760,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.detail = None;
         self.reading = false;
         let ids = self.messages.iter().map(|message| message.id.clone()).collect();
-        self.focus_reply = Some(FocusReply::new(ids));
+        // The whole pile (decision of #315): what is listed, the rest page by page at the round's end;
+        // its total from the sidebar's number.
+        let total = self.reply_later.map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+        self.focus_reply = Some(FocusReply::of_pile(ids, self.more.is_some(), total));
         // A new round makes the undo of an old one void (second review of #315).
         if self.hint.as_ref().is_some_and(|hint| matches!(hint.undo, Some(Undo::Focus(_)))) {
             self.hint = None;
         }
         operation::focus(mail::FOCUS_FIELD)
+    }
+
+    /// The next page of the pile when the round of "Focus & reply" stands at the end of what it has
+    /// ([`FocusReply::wants_more`], decision of #315): [`round_page`] for the accounts shown, the
+    /// answer as [`Message::FocusMore`]. Nothing otherwise.
+    fn focus_more(&mut self) -> Task<Message> {
+        let Some(focus) = self.focus_reply.as_mut().filter(|focus| focus.wants_more()) else { return Task::none() };
+        focus.loading = true;
+        let seen = focus.seen().clone();
+        #[cfg(test)]
+        self.sent.push(Sent::RoundPage(seen.len()));
+        let (inbox, order, accounts) = (self.inbox.clone(), self.order, self.mail_accounts.clone());
+        Task::perform(
+            async move { round_page(&*inbox, &seen, mail::PAGE, order, accounts.as_deref()).await },
+            Message::FocusMore,
+        )
     }
 
     /// "‹ Reply later", "Back to Reply later" and Escape: the round ends ([`App::end_focus`]) – not
@@ -15896,6 +15967,61 @@ mod tests {
             let focus = app.focus_reply.as_ref().expect("the round");
             assert_eq!((focus.sending, focus.error.as_deref()), (false, Some("offline")), "and why");
         }
+    }
+
+    /// Decision of #315: "Focus & reply" goes over the whole pile – at the end of what the list had
+    /// loaded it loads the next page (showing loading meanwhile), "{n} of {total}" counts the pile's
+    /// number, an error of the next page stays with "Retry", and only when nothing more comes does
+    /// the round end.
+    #[test]
+    fn focus_and_reply_walks_the_whole_pile() {
+        let mut app = mail_window(Density::Compact, &["--open", "reply-later"]);
+        let ids: Vec<String> = app.messages.iter().map(|message| message.id.clone()).collect();
+        // The list holds a first page only; the source has more.
+        app.messages.truncate(1);
+        app.more = Some("c:1".into());
+        let _ = app.update(Message::FocusReply);
+        assert_eq!(app.focusing().and_then(FocusReply::position), Some((1, 2)), "the pile's number");
+        let asked = app.sent.len();
+        let _ = app.update(Message::FocusSkip);
+        assert!(app.focus_reply.as_ref().is_some_and(|focus| focus.loading), "the next page is asked for");
+        assert_eq!(app.sent[asked..].iter().filter(|sent| matches!(sent, Sent::RoundPage(1))).count(), 1);
+        assert!(focused(&app).is_none());
+        draw_everywhere(&mut app);
+        // An error stays, "Retry" asks again.
+        let _ = app.update(Message::FocusMore(Err("offline".into())));
+        let focus = app.focus_reply.as_ref().expect("the round");
+        assert_eq!((focus.loading, focus.load_error.as_deref()), (false, Some("offline")));
+        let asked = app.sent.len();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.sent.len(), asked, "no new ask while the error stands");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::FocusLoad);
+        assert!(app.sent[asked..].iter().any(|sent| matches!(sent, Sent::RoundPage(1))), "Retry asks again");
+        let seen = app.focus_reply.as_ref().map(|focus| focus.seen().clone()).expect("the round");
+        let page = block_on(round_page(&*app.inbox, &seen, mail::PAGE, app.order, None));
+        let _ = app.update(Message::FocusMore(page));
+        assert_eq!(focused(&app), Some(ids[1].clone()), "the next mail of the pile");
+        assert_eq!(app.focusing().and_then(FocusReply::position), Some((2, 2)));
+        // Nothing more on the pile: the end.
+        let asked = app.sent.len();
+        let _ = app.update(Message::FocusSkip);
+        let focus = app.focus_reply.as_ref().expect("the round");
+        assert!(focus.current().is_none() && !focus.more && !focus.loading, "the end of the round");
+        assert!(!app.sent[asked..].iter().any(|sent| matches!(sent, Sent::RoundPage(_))));
+    }
+
+    /// Decision of #315: the next page of a round walks the pile from its start, page by page, to the
+    /// first mail the round has not had – mail taken off meanwhile shifts no offset.
+    #[test]
+    fn a_rounds_next_page_walks_the_pile_from_its_start() {
+        let app = mail_window(Density::Compact, &["--open", "reply-later"]);
+        let ids: Vec<String> = app.messages.iter().map(|message| message.id.clone()).collect();
+        let seen: std::collections::HashSet<String> = [ids[0].clone()].into();
+        let page = block_on(round_page(&*app.inbox, &seen, 1, app.order, None));
+        assert_eq!(page, Ok((vec![ids[1].clone()], false)), "past the page it had, to the end");
+        let all: std::collections::HashSet<String> = ids.iter().cloned().collect();
+        assert_eq!(block_on(round_page(&*app.inbox, &all, 1, app.order, None)), Ok((Vec::new(), false)));
     }
 
     /// Second review of #315: "Undo" of "Removed from Reply later." in a running round puts the mail

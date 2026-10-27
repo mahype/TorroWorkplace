@@ -65,7 +65,7 @@
 //! addresses in it are listed under it as "Links" that open only on a click. An attachment is fetched by the core into its attachment folder and opened with the
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -4042,6 +4042,19 @@ pub struct FocusReply {
     pub sending: bool,
     /// Why the last send failed (the core's words); the text stays in the field to send again.
     pub error: Option<String>,
+    /// Every mail that was ever in the round – answered, taken off or skipped –, so the next page
+    /// of the pile adds only mail the round has not had ([`FocusReply::extend`], decision of #315).
+    seen: HashSet<String>,
+    /// The pile may hold more than the round has: at its end the window loads the next page
+    /// ([`FocusReply::wants_more`]); `false` once the pile had nothing new.
+    pub more: bool,
+    /// The next page is on its way; the end of the round shows loading until it is in.
+    pub loading: bool,
+    /// Why the next page could not be loaded; the end of the round says so with "Retry".
+    pub load_error: Option<String>,
+    /// How much mail lay on the pile when the round started (`count_in_pile`, the sidebar's number),
+    /// less what left it since: the `{total}` of "{n} of {total}"; `None` when not known.
+    pub total: Option<usize>,
 }
 
 /// A round of "Focus & reply" as the undo of "Reply discarded." keeps it ([`FocusReply::keep`]):
@@ -4060,7 +4073,43 @@ pub struct FocusKept {
 impl FocusReply {
     /// A round through `ids`, at the first, with an empty field.
     pub fn new(ids: Vec<String>) -> FocusReply {
-        FocusReply { ids, ..FocusReply::default() }
+        let seen = ids.iter().cloned().collect();
+        FocusReply { ids, seen, ..FocusReply::default() }
+    }
+
+    /// A round through the pile (decision of #315): `ids` as loaded, `more` when the pile has
+    /// further pages, `total` the pile's number when it is known.
+    pub fn of_pile(ids: Vec<String>, more: bool, total: Option<usize>) -> FocusReply {
+        FocusReply { more, total, ..FocusReply::new(ids) }
+    }
+
+    /// Whether the window should load the next page now: at the end of the round, with more on the
+    /// pile, nothing on its way and no error waiting for "Retry".
+    pub fn wants_more(&self) -> bool {
+        self.current().is_none() && self.more && !self.loading && self.load_error.is_none()
+    }
+
+    /// The mail the round has had, for the next page ([`FocusReply::extend`]).
+    pub fn seen(&self) -> &HashSet<String> {
+        &self.seen
+    }
+
+    /// The next page is in: `ids` – the pile's mail the round has not had yet, in the pile's order –
+    /// go at the end of the round, and the first of them shows when the round stood at its end;
+    /// `more` says whether the pile has still further pages.
+    pub fn extend(&mut self, ids: Vec<String>, more: bool) {
+        let at_end = self.current().is_none();
+        for id in ids {
+            if self.seen.insert(id.clone()) {
+                self.ids.push(id);
+            }
+        }
+        self.more = more;
+        self.loading = false;
+        self.load_error = None;
+        if at_end {
+            self.arrive();
+        }
     }
 
     /// The mail shown; `None` at the end of the round.
@@ -4068,9 +4117,16 @@ impl FocusReply {
         self.ids.get(self.at).map(String::as_str)
     }
 
-    /// "{n} of {total}" of the mail shown, from 1; `None` at the end.
+    /// "{n} of {total}" of the mail shown, from 1; `None` at the end. The total is the pile's, as far
+    /// as it is known – never less than the round holds.
     pub fn position(&self) -> Option<(usize, usize)> {
-        self.current().map(|_| (self.at + 1, self.ids.len()))
+        let total = self.total.unwrap_or(0).max(self.ids.len());
+        self.current().map(|_| (self.at + 1, total))
+    }
+
+    /// One mail less on the pile, for the total.
+    fn left_pile(&mut self) {
+        self.total = self.total.map(|total| total.saturating_sub(1));
     }
 
     /// Whether [`FocusReply::step`] can go that way: forward from every mail – after the last one to
@@ -4108,6 +4164,7 @@ impl FocusReply {
         }
         let text = self.reply.text();
         let id = self.ids.remove(self.at);
+        self.left_pile();
         self.arrive();
         Some((id, text))
     }
@@ -4120,6 +4177,8 @@ impl FocusReply {
         }
         self.leave();
         let place = place.min(self.ids.len());
+        self.seen.insert(id.clone());
+        self.total = self.total.map(|total| total + 1);
         self.ids.insert(place, id);
         self.at = place;
         self.reply = text_editor::Content::with_text(text);
@@ -4133,6 +4192,7 @@ impl FocusReply {
         let Some(place) = self.ids.iter().position(|held| held == id) else { return };
         self.ids.remove(place);
         self.kept.remove(id);
+        self.left_pile();
         if place < self.at {
             self.at -= 1;
         } else if place == self.at {
@@ -4175,7 +4235,8 @@ impl FocusReply {
     /// on its way.
     pub fn restore(kept: FocusKept) -> FocusReply {
         let kept_texts = kept.texts.into_iter().map(|(id, text)| (id, text_editor::Content::with_text(&text)));
-        let mut focus = FocusReply { ids: kept.ids, at: kept.at, kept: kept_texts.collect(), ..FocusReply::default() };
+        // What lies on the pile beyond it shows up again at its end (`more`).
+        let mut focus = FocusReply { at: kept.at, kept: kept_texts.collect(), more: true, ..FocusReply::new(kept.ids) };
         focus.at = focus.at.min(focus.ids.len());
         focus.arrive();
         focus.error = kept.error;
@@ -4226,10 +4287,20 @@ pub struct FocusPage<'a> {
 ///    the right the compose window for this reply ("Open in compose window": Cc, attachments,
 ///    format).
 ///
-/// No action rail: the round does one thing. At the end of the round the page says "Nothing left
+/// No action rail: the round does one thing. At the end of what is loaded the page shows loading
+/// while the next page of the pile comes (or its error with "Retry", decision of #315); at the end
+/// of the round it says "Nothing left
 /// to reply to." with the way back ([`focus_done`]).
 pub fn focus_page<'a>(page: FocusPage<'a>) -> Element<'a, Message> {
-    let Some(id) = page.focus.current() else { return focus_done() };
+    let Some(id) = page.focus.current() else {
+        // The end of what is loaded: the next page while the pile has more (decision of #315), its
+        // error with "Retry", and only then the end of the round.
+        return match &page.focus.load_error {
+            Some(_) => widgets::error_state(tr("Couldn't load more messages."), Message::FocusLoad),
+            None if page.focus.more => widgets::loading(),
+            None => focus_done(),
+        };
+    };
     responsive(move |bounds| {
         let pad = focus_padding(page.narrow);
         let width = (bounds.width - pad.left - pad.right).max(0.0).min(size::reading_max());
