@@ -131,10 +131,11 @@ Nie `gh pr review --approve` oder `--request-changes` benutzen: Ein Review-Statu
 
 ## 4. Review-Label am PR setzen
 
-Direkt nach dem Kommentar bekommt der PR das Label zum Fazit. Alle drei entfernen und das zum Fazit passende setzen (`merge-ready` bei "Keine Blocker", `changes-requested` bei "Überarbeitung empfohlen"):
+Direkt nach dem Kommentar bekommt der PR das Label zum Fazit. Alle drei entfernen und das zum Fazit passende setzen (`merge-ready` bei "Keine Blocker", `changes-requested` bei "Überarbeitung empfohlen"), in **zwei getrennten Aufrufen**: Entfernen und Setzen im selben `gh pr edit` lässt den PR ohne Review-Label zurück (bei PR #316 mehrfach beobachtet).
 
 ```bash
-gh pr edit <nr> --repo <repo> --remove-label "awaiting-review" --remove-label "merge-ready" --remove-label "changes-requested" --add-label "<merge-ready|changes-requested>" --add-assignee @me
+gh pr edit <nr> --repo <repo> --remove-label "awaiting-review" --remove-label "merge-ready" --remove-label "changes-requested"
+gh pr edit <nr> --repo <repo> --add-label "<merge-ready|changes-requested>" --add-assignee @me
 ```
 
 Scheitert der Befehl mit `not found`, fehlt ein Label im Repo: mit `gh label create <name> --repo <repo> --force` (Farben und Beschreibung aus `docs/issue-workflow.md`) anlegen und wiederholen.
