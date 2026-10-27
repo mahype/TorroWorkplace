@@ -27,7 +27,9 @@
 //!   or not, a first sync too, that lies in the conversation of a follow-up "only if no reply" and
 //!   is not from the account itself calls that follow-up off ([`Inbox::reply_came`]), before the
 //!   inbox folder's mail is filed. A catch-up asks the store for replies the feed missed
-//!   ([`MailStore::replies_after`]).
+//!   ([`MailStore::replies_after`]). A due follow-up "only if no reply" wakes only after the same
+//!   look ([`wake_follow_ups`], every [`RETIRE_EVERY`]): a reply dated before its time may reach
+//!   the store after it.
 //! - **Answered from "Reply later"** (task E19.2, decision 5, `Feed::note_replies` as well): new mail
 //!   of any folder sent from the account itself takes the mail of its conversation off "Reply
 //!   later" that was put there before it ([`Inbox::answered`]), whatever program sent it; "Set
@@ -65,7 +67,7 @@ use torro_pim_github::IssueRef;
 use super::MailStoreError;
 use super::service::{MailChange, MailError, MailService, SharedStore};
 use super::store::{MailStore, SearchQuery};
-use crate::inbox::{Inbox, NewMail};
+use crate::inbox::{DueFollowUp, Inbox, NewMail};
 use crate::pim::Reach;
 
 /// The first sync of a folder brings only mail of this many days into the inbox.
@@ -470,7 +472,10 @@ impl Feed {
                     Err(RecvError::Lagged(_)) => self.catch_up(Utc::now()).await,
                     Err(RecvError::Closed) => return,
                 },
-                _ = retire.tick() => self.retire(Utc::now()).await,
+                _ = retire.tick() => {
+                    self.retire(Utc::now()).await;
+                    wake_follow_ups(&self.inbox, &self.mail, Utc::now()).await;
+                }
             }
         }
     }
@@ -677,6 +682,7 @@ impl Feed {
     /// "Reply later" ([`Feed::catch_up_answered`]), files the unread mail of its inbox
     /// folder of the last [`FIRST_SYNC_DAYS`] days (none twice) and settles every open entry.
     async fn catch_up(&self, now: DateTime<Utc>) {
+        wake_follow_ups(&self.inbox, &self.mail, now).await;
         for account in self.mail.infos(Reach::Suite).await.into_iter().map(|info| info.id) {
             // Mail switched off: nothing is synced, nothing to file.
             let Ok(store) = self.mail.store(&account).await else { continue };
@@ -936,6 +942,46 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
         auto_submitted: message.traits.auto_submitted.clone(),
         junk,
     })
+}
+
+/// Wakes the follow-ups "only if no reply" due at `now` (review of #315), after a look in each
+/// account's store for a reply since the follow-up was set (not one's own, not a draft,
+/// [`MailStore::replies_after`]): with one the follow-up is called off ([`Inbox::reply_came`]) – the
+/// reply may be dated before the time and have reached the store only after it, or the feed missed
+/// its change –, without one the entry wakes ([`Inbox::wake_follow_up`]). An account whose store
+/// cannot be read wakes its entries all the same: a follow-up must not wait for ever. The feed calls
+/// this every [`RETIRE_EVERY`] and on a catch-up, so a due one comes back within a minute.
+pub(crate) async fn wake_follow_ups(inbox: &Inbox, mail: &MailService, now: DateTime<Utc>) {
+    let due = match inbox.due_follow_ups(now) {
+        Ok(due) => due,
+        Err(err) => {
+            eprintln!("torroworkplace: inbox: cannot read the follow-ups that are due: {err}");
+            return;
+        }
+    };
+    for follow_up in due {
+        let DueFollowUp { id, account, thread, since } = follow_up;
+        let replied = match mail.store(&account).await {
+            Ok(store) => {
+                let (lookup, own) = (thread.clone(), own_address(&account));
+                match store.run(move |store| store.replies_after(&lookup, since, &own)).await {
+                    Ok(count) => count > 0,
+                    Err(err) => {
+                        eprintln!("torroworkplace: inbox: cannot look for replies in {account}: {err}");
+                        false
+                    }
+                }
+            }
+            Err(_) => false,
+        };
+        let done = match replied {
+            true => inbox.reply_came(&account, &thread, now, now).map(drop),
+            false => inbox.wake_follow_up(&id, now).map(drop),
+        };
+        if let Err(err) = done {
+            eprintln!("torroworkplace: inbox: cannot wake a follow-up of {account}: {err}");
+        }
+    }
 }
 
 /// The address of the mail account `account` (`mail:<address>`): its own mail is no reply.
@@ -1394,6 +1440,54 @@ pub(crate) mod tests {
         feed.take(change(&of("Re Trip mine"), Some(Role::Sent)), Utc::now()).await;
         feed.catch_up(Utc::now()).await;
         assert_eq!(pile_of("Trip"), Some(MailPile::ReplyLater), "answered before it was put there");
+    }
+
+    /// Review of #315: a reply dated before the follow-up's time that the feed had not got to yet
+    /// (in the store, never seen as a change) keeps a follow-up "only if no reply" from coming back;
+    /// one without a reply comes back at its time. Until the feed has looked, a due one waits.
+    #[tokio::test]
+    async fn a_follow_up_checks_for_a_reply_before_it_wakes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for subject in ["Offer", "Plan"] {
+            server.add("INBOX", &bernd(subject, 5), &["\\Seen"]);
+        }
+        let late = letter("Re Offer", "Bernd <bernd@example.com>", 2, "", Some("Offer@example.org"));
+        server.add("Archive", &late, &[]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        // Set four days ago, due an hour ago; the reply is two days old.
+        let (since, at) = (Utc::now() - TimeDelta::days(4), Utc::now() - TimeDelta::hours(1));
+        let mut entries = BTreeMap::new();
+        for subject in ["Offer", "Plan"] {
+            let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
+            let entry = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
+            let request =
+                Request::SnoozeItem { id: entry.clone(), until: Some(at), unless_reply: true, keep_open: false };
+            assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
+            entries.insert(subject, entry);
+        }
+        let entry =
+            |subject: &str| match inbox.handle(Request::GetItem { id: entries[subject].clone() }, None, Utc::now()) {
+                Response::Item { item } => item,
+                other => panic!("the entry, got {other:?}"),
+            };
+        assert_eq!(entry("Offer").state, State::Snoozed { until: at }, "due, it waits for the feed's look");
+
+        wake_follow_ups(&inbox, &mail, Utc::now()).await;
+        let offer = entry("Offer");
+        assert_eq!((offer.state, offer.follow_up), (State::Seen, None), "the late reply counts");
+        let plan = entry("Plan");
+        assert_eq!((plan.state, plan.updated), (State::New, at), "no reply: back at its time");
+        let later = inbox.mail_later(&[ANNA.to_string()], Utc::now()).expect("read");
+        assert_eq!(later.back_at(ANNA, &of("Plan").id), Some(at));
+        assert_eq!(later.back_at(ANNA, &of("Offer").id), None, "not back");
     }
 
     /// Review of #315, decision 6: a mail of one's own filed into the conversation (Bcc to oneself,

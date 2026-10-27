@@ -19317,7 +19317,8 @@ mod tests {
         }
         assert_eq!(subjects(&page(ask(&core, Some(&app_key), search(Some("in:inbox"))).await)), ["Mail 1"]);
 
-        core.inbox.tend(later + chrono::TimeDelta::minutes(1), false).expect("woken");
+        // "Only if no reply": the feed looks for a reply, finds none and wakes it (review of #315).
+        crate::mail::inbox_feed::wake_follow_ups(&core.inbox, &core.mail, later + chrono::TimeDelta::minutes(1)).await;
         let all = page(ask(&core, Some(&app_key), search(Some("in:inbox"))).await);
         assert_eq!(subjects(&all), ["Question", "Mail 1"], "the sent mail on top of All, not the trash or archive");
         assert_eq!(all[0].back, Some(later));

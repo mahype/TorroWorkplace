@@ -829,6 +829,41 @@ impl Inbox {
         .map_err(|failure| failure.to_string())
     }
 
+    /// The follow-ups "only if no reply" due at `now` (review of #315), snoozed or open: those
+    /// [`wake_due`] leaves for the mail feed, which looks for a reply first. `Err` holds the message
+    /// for the log.
+    pub fn due_follow_ups(&self, now: DateTime<Utc>) -> Result<Vec<DueFollowUp>, String> {
+        let condition = "state IN ('new', 'seen', 'snoozed') AND follow_up <= ?";
+        let due = self.work(false, |db| read_items(db, &Scope::All, condition, vec![text(stamp(now))], ""));
+        let due = due.map_err(|failure| failure.to_string())?;
+        let waiting = due.into_iter().filter_map(|Stored { owner, item }| {
+            let follow_up = item.follow_up.filter(|follow_up| follow_up.unless_reply)?;
+            Some(DueFollowUp { id: item.id, account: owner, thread: item.thread_key, since: follow_up.since })
+        });
+        Ok(waiting.collect())
+    }
+
+    /// Wakes the entry `id` at `now` if its follow-up is due ([`rules::wake`]): back on top at the
+    /// follow-up's time, noted as back from "Later". For a follow-up "only if no reply" once the mail
+    /// feed found no reply (review of #315). Returns whether it woke; `Err` holds the message for the
+    /// log.
+    pub fn wake_follow_up(&self, id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+        self.with(|db| {
+            let Some(Stored { mut item, .. }) = read_items(db, &Scope::All, "id = ?", vec![text(id)], "")?.pop() else {
+                return Ok(false);
+            };
+            if !rules::wake(&mut item, now) {
+                return Ok(false);
+            }
+            let tx = db.transaction()?;
+            update_item(&tx, &item)?;
+            came_back(&tx, &item.id, item.updated)?;
+            tx.commit()?;
+            Ok(true)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// The follow-ups "only if no reply" of the mail account `account` (`mail:<address>`, task
     /// E19.1): for each, the conversation (`thread_key`) and since when replies count
     /// ([`torro_inbox::item::FollowUp::since`]). What the mail feed looks for in new mail
@@ -4001,6 +4036,11 @@ fn follow_up_column(item: &Item) -> Option<String> {
 
 /// Wakes every snoozed entry due at `now`, and every open one whose follow-up is due (task E19.1),
 /// ([`rules::wake`]); both are back from "Later" ([`came_back`]). Returns how many.
+///
+/// Not a follow-up "only if no reply" (review of #315): a reply may lie in the mail store already,
+/// dated before the time, that the mail feed has not got to. The feed looks for one first and then
+/// wakes the entry or calls the follow-up off ([`Inbox::due_follow_ups`], [`Inbox::wake_follow_up`],
+/// `mail::inbox_feed::wake_follow_ups`, every minute); until then it waits.
 fn wake_due(db: &mut Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
     let condition = "(state = 'snoozed' AND state_at <= ?) OR (state IN ('new', 'seen') AND follow_up <= ?)";
     let due = read_items(db, &Scope::All, condition, vec![text(stamp(now)), text(stamp(now))], "")?;
@@ -4010,6 +4050,9 @@ fn wake_due(db: &mut Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
     let tx = db.transaction()?;
     let mut woken = 0;
     for Stored { mut item, .. } in due {
+        if item.follow_up.is_some_and(|follow_up| follow_up.unless_reply) {
+            continue;
+        }
         if rules::wake(&mut item, now) {
             update_item(&tx, &item)?;
             came_back(&tx, &item.id, item.updated)?;
@@ -4727,6 +4770,20 @@ fn take_github_mail(db: &Connection, issue: &IssueRef, entry: &str, now: DateTim
         }
     }
     Ok(())
+}
+
+/// A follow-up "only if no reply" that is due ([`Inbox::due_follow_ups`], review of #315): what the
+/// mail feed needs to look for a reply in the account's store before it wakes the entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueFollowUp {
+    /// The entry's id.
+    pub id: String,
+    /// The mail account (`mail:<address>`).
+    pub account: String,
+    /// The conversation (`thread_key`, the store's `thread_id`).
+    pub thread: String,
+    /// Since when replies count ([`torro_inbox::item::FollowUp::since`]).
+    pub since: DateTime<Utc>,
 }
 
 /// An open mail entry and the messages filed into it ([`Inbox::open_mail_entries`]).
@@ -9114,11 +9171,21 @@ pub(crate) mod tests {
         let filed_reply = entry_at(&inbox, &id, at(13, 2));
         assert_eq!((filed_reply.state, filed_reply.updated), (State::New, at(9, 0)));
         assert!(inbox.mail_later(&[ANNA.to_string()], at(13, 3)).expect("read").back_of(ANNA).is_empty());
-        // A follow-up whose date passed before the feed got to a reply comes back all the same.
+        // Review of #315: a due follow-up "only if no reply" waits for the feed's look for a reply
+        // (`wake_due` leaves it), so a reply the feed gets to first still calls it off.
         let other = filed(&inbox, &personal("m:3", "t:2", at(8, 0)), at(8, 1));
         item(inbox.handle(follow_up(&other, Some(at(10, 0)), true), None, at(8, 2)));
-        assert!(!inbox.reply_came(ANNA, "t:2", at(11, 0), at(11, 1)).expect("noted"), "woken first");
-        let woken = entry_at(&inbox, &other, at(11, 2));
+        assert_eq!(entry_at(&inbox, &other, at(10, 30)).state, State::Snoozed { until: at(10, 0) }, "waits");
+        let due = inbox.due_follow_ups(at(10, 31)).expect("read");
+        assert_eq!(due.iter().map(|due| due.id.as_str()).collect::<Vec<_>>(), [other.as_str()]);
+        assert!(inbox.reply_came(ANNA, "t:2", at(11, 0), at(11, 1)).expect("noted"), "the reply counts");
+        let open = entry_at(&inbox, &other, at(11, 2));
+        assert_eq!((open.state, open.updated, open.follow_up), (State::Seen, at(8, 0), None));
+        // Without a reply the feed wakes it, back at its time.
+        let third = filed(&inbox, &personal("m:4", "t:3", at(8, 0)), at(8, 1));
+        item(inbox.handle(follow_up(&third, Some(at(10, 0)), true), None, at(8, 2)));
+        assert!(inbox.wake_follow_up(&third, at(10, 1)).expect("woken"));
+        let woken = entry_at(&inbox, &third, at(10, 2));
         assert_eq!((woken.state, woken.updated), (State::New, at(10, 0)));
     }
 
