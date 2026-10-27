@@ -2219,9 +2219,13 @@ mod tests {
         // Task E19.2: a pile by its word, off without one.
         let pile = call("inbox_set_mail_pile", json!({"ids": ["m:1"], "pile": "reply_later"}));
         let reply_later = Some(torro_mail::MailPile::ReplyLater);
-        assert_eq!(pile, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: reply_later }));
+        assert_eq!(pile, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: reply_later, since: None }));
         let off = call("inbox_set_mail_pile", json!({"ids": ["m:1"]}));
-        assert_eq!(off, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: None }));
+        assert_eq!(off, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None }));
+        // Review of #315: undo with the time the mail had on its pile.
+        let undo = json!({"ids": ["m:1"], "pile": "reply_later", "since": "2026-10-16T08:00:00Z"});
+        let undo = call("inbox_set_mail_pile", undo);
+        assert!(matches!(undo, Ok(Request::SetMailPile { since: Some(_), .. })), "{undo:?}");
         let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
         assert!(
             matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_), unless_reply: false }) if id == "m:1"),

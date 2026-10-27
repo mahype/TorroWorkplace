@@ -1002,7 +1002,7 @@ mod tests {
         assert!(refused(&shown(vec!["m:".to_string() + &"x".repeat(MAX_ID_BYTES)])));
         assert_eq!(shown(ids(2)).message_ids(), ["m:0", "m:1"]);
         // Task E19.2: the piles alike, also without a pile (taking off).
-        let pile = |ids| Request::SetMailPile { ids, pile: None };
+        let pile = |ids| Request::SetMailPile { ids, pile: None, since: None };
         assert!(refused(&pile(ids(0))) && refused(&pile(ids(MAX_IDS + 1))));
         assert_eq!(limit_refusal(&pile(ids(MAX_IDS))), None);
         assert!(refused(&pile(vec!["m:".to_string() + &"x".repeat(MAX_ID_BYTES)])));

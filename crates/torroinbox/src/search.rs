@@ -864,6 +864,7 @@ mod tests {
             pile: None,
             untrusted: true,
             category: None,
+            pile_since: None,
         };
         let jonas = who("Jonas", "jonas@example.org");
         let messages = [

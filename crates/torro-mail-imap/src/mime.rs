@@ -311,6 +311,7 @@ impl ReadMessage {
                 // (task E12.1); the store keeps it.
                 category: None,
                 untrusted: true,
+                pile_since: None,
             },
             cc: self.cc,
             reply_to: self.reply_to,

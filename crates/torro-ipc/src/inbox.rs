@@ -429,11 +429,18 @@ impl InboxClient {
 
     /// `inbox.set_mail_pile` (task E19.2): puts the mail messages `ids` (`m:…`, 1 to 100) on `pile`
     /// – "Reply later" or "Set aside", moving them from the other one –, or takes them off with
-    /// `None` (also the undo of putting them there). Nothing goes to the server.
-    /// [`InboxError::NotFound`] when one of them lies in an account the window may not see; nothing
-    /// changes then.
-    pub async fn set_mail_pile(&self, ids: Vec<String>, pile: Option<MailPile>) -> Result<(), InboxError> {
-        self.ask_ok(Request::SetMailPile { ids, pile }).await
+    /// `None` (also the undo of putting them there). `since` puts them back with the time they had
+    /// on their pile ([`torro_mail::MessageSummary::pile_since`]): the undo of taking them off or
+    /// moving them, so a reply of one's own sent meanwhile still takes them off "Reply later"; `None`
+    /// counts as now. Nothing goes to the server. [`InboxError::NotFound`] when one of them lies in
+    /// an account the window may not see; nothing changes then.
+    pub async fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        self.ask_ok(Request::SetMailPile { ids, pile, since }).await
     }
 
     /// One page of a pile (task E19.3, [`MailInPile`]): `mail.search_messages` without a folder,
@@ -1879,6 +1886,7 @@ mod tests {
             pile: None,
             category: None,
             untrusted: true,
+            pile_since: None,
         }
     }
 
@@ -2212,8 +2220,9 @@ mod tests {
         .await;
         let client = core.client();
         let anna = || Some("mail:anna@example.org".to_owned());
-        client.set_mail_pile(vec!["m:1".into(), "m:2".into()], Some(MailPile::ReplyLater)).await.expect("put on");
-        client.set_mail_pile(vec!["m:1".into()], None).await.expect("taken off");
+        client.set_mail_pile(vec!["m:1".into(), "m:2".into()], Some(MailPile::ReplyLater), None).await.expect("put on");
+        client.set_mail_pile(vec!["m:1".into()], None, None).await.expect("taken off");
+        client.set_mail_pile(vec!["m:1".into()], Some(MailPile::SetAside), Some(at(9))).await.expect("undone");
         let find = MailInPile {
             pile: MailPile::SetAside,
             account: anna(),
@@ -2250,8 +2259,13 @@ mod tests {
         assert_eq!(
             asked,
             [
-                Request::SetMailPile { ids: vec!["m:1".into(), "m:2".into()], pile: Some(MailPile::ReplyLater) },
-                Request::SetMailPile { ids: vec!["m:1".into()], pile: None },
+                Request::SetMailPile {
+                    ids: vec!["m:1".into(), "m:2".into()],
+                    pile: Some(MailPile::ReplyLater),
+                    since: None
+                },
+                Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None },
+                Request::SetMailPile { ids: vec!["m:1".into()], pile: Some(MailPile::SetAside), since: Some(at(9)) },
                 search(anna(), PileFilter::SetAside, 20, Some("c1"), Some(Order::OldestFirst)),
                 search(anna(), PileFilter::ReplyLater, 1, None, None),
                 search(None, PileFilter::ReplyLater, 1, None, None),

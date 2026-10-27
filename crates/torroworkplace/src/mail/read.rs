@@ -586,6 +586,7 @@ async fn ranked_page(
     for (summary, _) in &mut all {
         summary.back = view.later.back_at(&summary.account, &summary.id);
         summary.pile = view.piles.pile_of(&summary.account, &summary.id);
+        summary.pile_since = view.piles.since_of(&summary.account, &summary.id);
     }
     match query.relevance {
         // Stable: the same rank keeps each store's own order (newest first among equals).

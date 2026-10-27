@@ -974,10 +974,11 @@ impl Inbox {
     }
 
     /// `inbox.set_mail_pile` (task E19.2): puts the messages `mail` (pairs of account
-    /// `mail:<address>` and message `m:…`) on `pile` at `now`, or takes them off without one. A
-    /// message lies on at most one pile: one on the other pile moves with `at = now`, one on the same
-    /// pile keeps its `at`, so a repeated call never moves what counts as a reply of one's own
-    /// ([`Inbox::answered`]). The caller has checked that the caller may see each of them; nothing
+    /// `mail:<address>` and message `m:…`) on `pile` at `now` – the time it counts as put there: now,
+    /// or for an Undo the time it had (review of #315, `since`, which the caller caps at now) –, or
+    /// takes them off without one. A message lies on at most one pile: one on the other pile moves
+    /// with `at = now`, one on the same pile keeps its `at`, so a repeated call never moves what
+    /// counts as a reply of one's own ([`Inbox::answered`]). The caller has checked that the caller may see each of them; nothing
     /// else changes: no entry, no mail. `Err` holds the message for the log.
     pub fn set_mail_pile(
         &self,
@@ -1015,13 +1016,17 @@ impl Inbox {
         let piles = self.work(false, |db| {
             let mut piles = MailPiles::default();
             // One query per account, so the rows of accounts the caller may not see are never read.
-            let mut statement = db.prepare("SELECT message, pile FROM mail_piles WHERE account = ?1")?;
+            let mut statement = db.prepare("SELECT message, pile, at FROM mail_piles WHERE account = ?1")?;
             for account in accounts {
-                let rows =
-                    statement.query_map([account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+                let rows = statement.query_map([account], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                })?;
                 for row in rows {
-                    let (message, pile) = row?;
+                    let (message, pile, at) = row?;
                     let Some(pile) = pile_of_column(&pile) else { continue };
+                    if let Ok(at) = DateTime::parse_from_rfc3339(&at) {
+                        piles.since.entry(account.clone()).or_default().insert(message.clone(), at.with_timezone(&Utc));
+                    }
                     piles.piles.entry(account.clone()).or_default().insert(message, pile);
                 }
             }
@@ -4784,6 +4789,8 @@ impl MailHidden {
 pub struct MailPiles {
     /// The pile of each message on one.
     pub piles: BTreeMap<String, BTreeMap<String, MailPile>>,
+    /// Since when each of them lies there (review of #315, `MessageSummary::pile_since`).
+    pub since: BTreeMap<String, BTreeMap<String, DateTime<Utc>>>,
 }
 
 impl MailPiles {
@@ -4801,6 +4808,11 @@ impl MailPiles {
     /// The pile the message `message` of `account` lies on, `None` when it lies on none.
     pub fn pile_of(&self, account: &str, message: &str) -> Option<MailPile> {
         self.piles.get(account)?.get(message).copied()
+    }
+
+    /// Since when the message `message` of `account` lies on its pile, `None` when it lies on none.
+    pub fn since_of(&self, account: &str, message: &str) -> Option<DateTime<Utc>> {
+        self.since.get(account)?.get(message).copied()
     }
 }
 
@@ -9941,6 +9953,7 @@ pub(crate) mod tests {
             pile: None,
             untrusted: true,
             category: None,
+            pile_since: None,
         };
         let stand_in = rules::message_stand_in(&summary, None, true).expect("a mail account");
         assert_eq!(inbox.entry_of_message(ANNA, "m:9"), None, "never filed");

@@ -761,6 +761,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             pile: letter.pile,
             category: letter.category,
             untrusted: true,
+            pile_since: None,
         },
         cc: Vec::new(),
         reply_to: Vec::new(),

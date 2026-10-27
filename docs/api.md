@@ -532,8 +532,11 @@ Aufruf, sobald eine Mail außer Reichweite liegt, geprüft vor der Freigabe; die
 Mail-Speicher, das Protokoll nur gehashte Kennungen. Dazu `mail.search_messages` mit dem optionalen Feld `pile`:
 `without` lässt Mail auf einem Stapel weg („All“, Kategorien, Smart views), `reply_later` bzw. `set_aside` liefert nur
 diesen Stapel; gefiltert wird vor dem Blättern, mit `snoozed` und `hidden` gelten alle, und wie diese nur für Konten,
-deren Einträge der Schlüssel sieht. Jede Mail einer Suche trägt `pile`, wenn sie auf einem Stapel liegt (verträglich,
-kein `v: 2`).
+deren Einträge der Schlüssel sieht. Jede Mail einer Suche trägt `pile`, wenn sie auf einem Stapel liegt, und
+`pile_since`, seit wann (verträglich, kein `v: 2`). Für Undo (Review von #315) nimmt `set_mail_pile` das optionale Feld
+`since`: Mit `pile` legt es die Mail mit diesem Zeitpunkt statt jetzt auf (höchstens jetzt; ohne `pile` und für Mail, die
+schon auf diesem Stapel liegt, zählt es nicht). So räumt eine eigene Antwort, die zwischen dem ersten Auflegen und dem
+Undo gesendet wurde, die Mail trotzdem von „Reply later“ ab – der Kern sieht beim Aufruf sofort nach.
 `set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
 Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
 

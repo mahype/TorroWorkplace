@@ -7406,18 +7406,56 @@ impl Core {
         if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
             return refused;
         }
-        let Request::SetMailPile { ids, pile } = request else {
+        let Request::SetMailPile { ids, pile, since } = request else {
             return refusal("error", "only inbox.set_mail_pile is answered here".into());
         };
         let mail = match self.reachable_mail_of(&ids, reach).await {
             Ok(mail) => mail,
             Err(refused) => return refused,
         };
-        match self.inbox.set_mail_pile(&mail, pile, Utc::now()) {
-            Ok(()) => Response::Ok,
-            Err(err) => {
-                eprintln!("torroworkplace: inbox: cannot keep the pile of mail: {err}");
-                refusal("error", "the inbox cannot be written".into())
+        // Undo puts mail back with the time it had (review of #315), never later than now.
+        let now = Utc::now();
+        let at = since.map_or(now, |since| since.min(now));
+        if let Err(err) = self.inbox.set_mail_pile(&mail, pile, at) {
+            eprintln!("torroworkplace: inbox: cannot keep the pile of mail: {err}");
+            return refusal("error", "the inbox cannot be written".into());
+        }
+        // An answer of one's own sent since then was missed while the mail lay elsewhere: it takes
+        // the mail off "Reply later" now, as the mail feed would have (decision 5).
+        if pile == Some(torro_mail::MailPile::ReplyLater) && since.is_some() {
+            self.take_off_answered(&mail, now).await;
+        }
+        Response::Ok
+    }
+
+    /// Takes those of `mail` (pairs of account and message) off "Reply later" whose conversation holds
+    /// a mail of one's own dated after they were put there ([`crate::mail::store::MailStore::sent_after`],
+    /// [`Inbox::answered`] with `now`, which is after). For an Undo of `inbox.set_mail_pile` with
+    /// `since` (review of #315). A failure goes to the log: the mail stays on the pile, and the
+    /// feed's next catch-up finds the answer.
+    async fn take_off_answered(&self, mail: &[(String, String)], now: chrono::DateTime<Utc>) {
+        let Ok(piles) = self.inbox.mail_piles(&mail.iter().map(|(account, _)| account.clone()).collect::<Vec<_>>())
+        else {
+            return;
+        };
+        for (account, message) in mail {
+            let Some(at) = piles.since_of(account, message) else { continue };
+            let Ok(store) = self.mail.store(account).await else { continue };
+            let (id, own) = (message.clone(), crate::mail::inbox_feed::own_address(account));
+            let answered = store
+                .run(move |store| match store.summary(&id)? {
+                    Some(summary) => Ok(store.sent_after(&summary.thread_id, at, &own)? > 0),
+                    None => Ok(false),
+                })
+                .await;
+            match answered {
+                Ok(true) => {
+                    if let Err(err) = self.inbox.answered(account, std::slice::from_ref(message), now) {
+                        eprintln!("torroworkplace: inbox: cannot take mail off its pile in {account}: {err}");
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => eprintln!("torroworkplace: inbox: cannot read the answers in {account}: {err}"),
             }
         }
     }
@@ -19569,6 +19607,7 @@ mod tests {
         let pile = |subjects: &[&str], pile| Request::SetMailPile {
             ids: subjects.iter().map(|subject| id(subject)).collect(),
             pile,
+            since: None,
         };
         let subjects = |response: Response| match response {
             Response::MailMessages { messages, .. } => messages,
@@ -19630,6 +19669,68 @@ mod tests {
         assert_eq!(every_page(&core, &app_key, aside).await, (vec!["C".to_string()], Some(1)));
     }
 
+    /// Review of #315: Undo puts mail back on its pile with the time it had (`since`, at most now);
+    /// every message of a search names since when it lies there; a reply of one's own sent between
+    /// takes it off "Reply later" at once. Without a pile `since` counts for nothing.
+    #[tokio::test]
+    async fn a_pile_keeps_its_time_on_undo() {
+        use crate::mail::read::tests::mail_from;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        for subject in ["Offer", "Plan"] {
+            server.add("INBOX", &mail_from(subject, 5, "bernd@example.com", None), &["\\Seen"]);
+        }
+        let date = (Utc::now() - chrono::TimeDelta::days(1)).to_rfc2822();
+        let answer = format!(
+            "From: Anna <anna@example.org>\r\nTo: bernd@example.com\r\nSubject: Re Offer\r\nDate: {date}\r\n\
+             Message-ID: <Re-Offer@example.org>\r\nIn-Reply-To: <Offer@example.org>\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nYes\r\n"
+        );
+        server.add("Sent", &answer, &["\\Seen"]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let (offer, plan) = (mail["Offer"].id.clone(), mail["Plan"].id.clone());
+        let put = |id: &str, pile, since| Request::SetMailPile { ids: vec![id.into()], pile, since };
+        let lying = |subject: &'static str| {
+            let core = &core;
+            let app_key = &app_key;
+            async move {
+                let search = pile_search(None, None, None, 10, None);
+                let Response::MailMessages { messages, .. } = ask(core, Some(app_key), search).await else {
+                    panic!("a page")
+                };
+                let message = messages.into_iter().find(|message| message.subject == subject).expect("listed");
+                (message.pile, message.pile_since)
+            }
+        };
+        // Whole seconds: the inbox keeps times to the microsecond.
+        let first = chrono::SubsecRound::trunc_subsecs(Utc::now() - chrono::TimeDelta::days(4), 0);
+
+        // Undo of "Remove from Reply later": back with its time.
+        assert_eq!(ask(&core, Some(&app_key), put(&plan, Some(MailPile::ReplyLater), Some(first))).await, Response::Ok);
+        assert_eq!(lying("Plan").await, (Some(MailPile::ReplyLater), Some(first)));
+        // A time to come counts as now.
+        let soon = Utc::now() + chrono::TimeDelta::days(1);
+        assert_eq!(ask(&core, Some(&app_key), put(&plan, Some(MailPile::SetAside), Some(soon))).await, Response::Ok);
+        let (pile, since) = lying("Plan").await;
+        assert_eq!(pile, Some(MailPile::SetAside));
+        assert!(since.is_some_and(|since| since > first && since <= Utc::now()), "{since:?}");
+        // Without a pile `since` counts for nothing.
+        assert_eq!(ask(&core, Some(&app_key), put(&plan, None, Some(first))).await, Response::Ok);
+        assert_eq!(lying("Plan").await, (None, None));
+
+        // Answered between the first time and the Undo: off "Reply later" at once.
+        assert_eq!(
+            ask(&core, Some(&app_key), put(&offer, Some(MailPile::ReplyLater), Some(first))).await,
+            Response::Ok
+        );
+        assert_eq!(lying("Offer").await, (None, None), "the answer came after it was put there");
+        // Put there now, after the answer: it stays.
+        assert_eq!(ask(&core, Some(&app_key), put(&offer, Some(MailPile::ReplyLater), None)).await, Response::Ok);
+        assert_eq!(lying("Offer").await.0, Some(MailPile::ReplyLater));
+    }
+
     /// Review of #315: a key that may change the inbox but not read mail learns nothing of mail ids
     /// from `inbox.set_mail_pile` or `inbox.set_mail_shown` – a mail there and one that is not get
     /// the same answer, before anyone is asked, and nothing is kept. The app key still may.
@@ -19647,7 +19748,7 @@ mod tests {
         let (_, no_mail) = client(&core, no_mail).await;
         let requests = |id: &str| {
             [
-                Request::SetMailPile { ids: vec![id.into()], pile: Some(MailPile::ReplyLater) },
+                Request::SetMailPile { ids: vec![id.into()], pile: Some(MailPile::ReplyLater), since: None },
                 Request::SetMailShown { ids: vec![id.into()], shown: true },
             ]
         };
@@ -19659,7 +19760,7 @@ mod tests {
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
         assert!(core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL).is_empty());
         assert!(core.inbox.mail_hidden(&[ANNA_MAIL.into()], Utc::now()).expect("read").shown_of(ANNA_MAIL).is_empty());
-        let pile = Request::SetMailPile { ids: vec![id], pile: Some(MailPile::ReplyLater) };
+        let pile = Request::SetMailPile { ids: vec![id], pile: Some(MailPile::ReplyLater), since: None };
         assert_eq!(ask(&core, Some(&app_key), pile).await, Response::Ok, "the app key may");
     }
 
@@ -19676,7 +19777,7 @@ mod tests {
         server.add("INBOX", &mail_from("Quarterly offer", 2, "news@shop.example", None), &[]);
         let (core, app_key) = shown_core(dir.path(), &server).await;
         let id = ids_by_subject(&core, &app_key).await["Quarterly offer"].id.clone();
-        let pile = |ids: Vec<String>| Request::SetMailPile { ids, pile: Some(MailPile::ReplyLater) };
+        let pile = |ids: Vec<String>| Request::SetMailPile { ids, pile: Some(MailPile::ReplyLater), since: None };
         let piled = || core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL);
 
         // An account outside `mail_accounts`, or whose entries the key does not see: `not-found`,
@@ -19738,7 +19839,7 @@ mod tests {
         assert_eq!(search(&unseeing, Some(PileFilter::Without)).await.len(), 1, "nothing lies on a pile for it");
         assert!(search(&unseeing, Some(PileFilter::ReplyLater)).await.is_empty());
         // A client may take it off.
-        let off = Request::SetMailPile { ids: vec![id], pile: None };
+        let off = Request::SetMailPile { ids: vec![id], pile: None, since: None };
         assert_eq!(ask(core, Some(&reader), off).await, Response::Ok);
         assert!(piled().is_empty());
     }

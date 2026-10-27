@@ -504,7 +504,7 @@ impl MailSource for InboxClient {
     }
 
     async fn set_mail_pile(&self, ids: Vec<String>, pile: Option<MailPile>) -> Result<(), InboxError> {
-        InboxClient::set_mail_pile(self, ids, pile).await
+        InboxClient::set_mail_pile(self, ids, pile, None).await
     }
 
     async fn mail_in_pile(&self, find: MailInPile) -> Result<MailPage, InboxError> {

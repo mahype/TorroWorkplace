@@ -1054,6 +1054,7 @@ pub(crate) mod tests {
             pile: None,
             category: None,
             untrusted: true,
+            pile_since: None,
         }
     }
 

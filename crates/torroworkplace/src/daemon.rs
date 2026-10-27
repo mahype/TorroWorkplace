@@ -852,8 +852,8 @@ fn describe(request: &Request) -> String {
         Request::SetMailShown { ids, shown: true } => format!("show {} mails again", ids.len()),
         Request::SetMailShown { ids, shown: false } => format!("hide {} mails again", ids.len()),
         // Only the count, as above (task E19.2).
-        Request::SetMailPile { ids, pile: Some(_) } => format!("put {} mails on a pile", ids.len()),
-        Request::SetMailPile { ids, pile: None } => format!("take {} mails off their pile", ids.len()),
+        Request::SetMailPile { ids, pile: Some(_), .. } => format!("put {} mails on a pile", ids.len()),
+        Request::SetMailPile { ids, pile: None, .. } => format!("take {} mails off their pile", ids.len()),
         Request::ListRules => "inbox rules".into(),
         Request::GetStats { .. } => "inbox statistics".into(),
         Request::GetQuiet => "inbox quiet".into(),

@@ -939,7 +939,7 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
 }
 
 /// The address of the mail account `account` (`mail:<address>`): its own mail is no reply.
-fn own_address(account: &str) -> String {
+pub(crate) fn own_address(account: &str) -> String {
     account.strip_prefix(torro_mail::ACCOUNT_PREFIX).unwrap_or(account).to_string()
 }
 

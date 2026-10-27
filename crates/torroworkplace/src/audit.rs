@@ -1087,7 +1087,7 @@ pub(crate) mod tests {
         let shown = super::ids(&Request::SetMailShown { ids: vec!["m:1".into(), "m:2".into()], shown: true });
         assert_eq!(shown, [format!("message:{}", hashed("m:1")), format!("message:{}", hashed("m:2"))]);
         // Task E19.2: the piles alike, never the pile's word.
-        let piled = super::ids(&Request::SetMailPile { ids: vec!["m:1".into()], pile: None });
+        let piled = super::ids(&Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None });
         assert_eq!(piled, [format!("message:{}", hashed("m:1"))]);
         let update = Request::UpdateMailAccount {
             format: None,

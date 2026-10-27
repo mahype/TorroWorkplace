@@ -2236,6 +2236,13 @@ pub enum Request {
         /// `reply_later` or `set_aside`; leave out to take the mail off its pile.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pile: Option<torro_mail::MailPile>,
+        /// Since when the mail lies on `pile` (review of #315): for Undo, which puts mail back with
+        /// the time it had ([`torro_mail::MessageSummary::pile_since`]) instead of now, so a reply of
+        /// one's own sent meanwhile still takes it off "Reply later" – the core looks for one at
+        /// once. At most now: a later time counts as now. Ignored without `pile`, and for mail that
+        /// lies on that pile already (it keeps its time). Leave out for now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<DateTime<Utc>>,
     },
     /// The lasting rules: lanes remembered for sources, muted sources, hidden senders and domains
     /// and muted traits that have not ended ([`Response::Rules`]), only of sources the client may
