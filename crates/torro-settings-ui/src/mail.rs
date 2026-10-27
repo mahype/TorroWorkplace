@@ -3204,7 +3204,7 @@ pub mod categorization {
         match here {
             Some(false) => tr("Cloud model: mail content leaves this computer.").to_string(),
             Some(true) => tr("Local model: mail content stays on this computer.").to_string(),
-            None => tr("Choose a decision model above.").to_string(),
+            None => tr("Choose a model above.").to_string(),
         }
     }
 
@@ -3352,10 +3352,10 @@ pub mod categorization {
     fn model_note(data: &Data) -> String {
         match data.settings.mail_to_cloud_in(AiSlot::Decide) {
             true => tr("Mail may go to an AI elsewhere for sorting; every model that can sort it is offered.").to_owned(),
-            false => {
-                tr("Only models on this computer are offered: mail stays here unless you allow more in the control centre.")
-                    .to_owned()
-            }
+            false => tr(
+                "Only models on this computer are offered: mail stays here unless you choose a model elsewhere for Sorting in Settings › AI.",
+            )
+            .to_owned(),
         }
     }
 }

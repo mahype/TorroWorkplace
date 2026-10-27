@@ -26,7 +26,7 @@
 //! shows why with "Retry". These requests go with [`Action::AskAi`] and come back tagged ([`Asked`],
 //! [`ai_answered`]), so an answer is never taken for another one's. Where *Sorting* sends mail to a
 //! model elsewhere – chosen or suggested –, the group says so; the data rule then shows that
-//! permission with "Stop" (`settings.set_setting decide_mail_to_cloud false`).
+//! permission with "Keep mail here" (`settings.set_setting decide_mail_to_cloud false`).
 //!
 //! A detail page per account has groups for the status ("Sync now"), the calendars and task lists
 //! (a switch each for showing them in the apps, read-only ones marked) and the connection, and
@@ -133,7 +133,7 @@ use torro_ipc::{
 use torro_mail::{MailFormat, Notify, Role, Security, Services};
 use torro_pim::AccountState;
 
-use torro_settings_ui::parts::picker;
+use torro_settings_ui::parts::{picker, picker_fill};
 
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, Header, chevron, confirm, dialog, notice, pressable, row_frame, setting_row, wizard};
@@ -563,7 +563,7 @@ pub enum Message {
     Recommend,
     /// "Retry" after a step failed: what started it, again.
     RetrySlot,
-    /// "Stop" of the permission of *Sorting* in the data rule: `decide_mail_to_cloud` off.
+    /// "Keep mail here" of the permission of *Sorting* in the data rule: `decide_mail_to_cloud` off.
     StopSortingMail,
 }
 
@@ -2185,53 +2185,67 @@ fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
 }
 
 /// The data rule in the AI section (task C.17, here since S.30; the permission per slot since issue
-/// #325): "Chat may read mail in the cloud" – off, only AI accounts on the person's own computers read
-/// mail; on, models elsewhere too. The sentence under it says that it holds for the assistant and
-/// every bot. While *Sorting* may send mail elsewhere (`decide_mail_to_cloud`, set by choosing a model
-/// elsewhere for it), a row says so with "Stop"; it is never switched on here.
+/// #325): "Chat may read mail in the cloud" – off, the chat reads mail only with AI on the person's own
+/// computers; on, with models elsewhere too. The sentence under the group says that the switch holds
+/// for the assistant and every bot. While *Sorting* may send mail elsewhere (`decide_mail_to_cloud`, set
+/// by choosing a model elsewhere for it), a row says where mail goes, with "Keep mail here"; it is never
+/// switched on here.
 fn data_rule_group<'a>(settings: &Settings) -> Element<'a, Message> {
     let switch =
         toggler(settings.mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
     let detail = match settings.mail_to_cloud {
-        false => tr("Off: only AI accounts on your own computers read mail"),
+        false => tr("Off: the chat reads mail only with AI on your own computers"),
         true => tr("Mail goes to the model's provider and can't be taken back"),
     };
     let mut rows = vec![setting_row(None, tr("Chat may read mail in the cloud"), Some(detail.to_string()), switch)];
     if settings.mail_to_cloud_in(AiSlot::Decide) {
-        let stop = widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::StopSortingMail));
-        let detail = tr("Because a model elsewhere sorts mail").to_string();
-        rows.push(setting_row(None, tr("Sorting sends mail to the cloud"), Some(detail), stop));
+        let keep =
+            widgets::text_button(None, tr("Keep mail here"), style::button::secondary, Some(Message::StopSortingMail));
+        let detail = sorting_place(settings).map(|(provider, seat)| mail_sentence(provider, seat));
+        rows.push(setting_row(None, tr("Sorting sends mail to the cloud"), detail, keep));
     }
-    let footer = tr("Holds for the assistant and all its bots, whatever their rights allow.");
+    let footer = tr("The switch holds for the assistant and all its bots, whatever their rights allow.");
     widgets::group(tr("Data rule"), rows, Some(footer.to_string()))
+}
+
+/// Where *Sorting* sends mail while it may (`decide_mail_to_cloud`): the provider of its model
+/// ("OpenRouter"; the account's id for a provider Torro does not know) and where that runs ("Cloud ·
+/// US"). `None` while it keeps mail here or has no model.
+fn sorting_place(settings: &Settings) -> Option<(&str, &'static str)> {
+    let chosen = settings.ai_slots.get(AiSlot::Decide).filter(|_| settings.mail_to_cloud_in(AiSlot::Decide))?;
+    let provider = ai_provider(&chosen.engine);
+    let name = provider.map_or(chosen.engine.as_str(), |provider| provider.name());
+    let seat = provider.map_or(tr("Cloud"), |provider| seat_of(provider, false));
+    Some((name, seat))
+}
+
+/// "Mail goes to OpenRouter (Cloud · US) for sorting only.": the one sentence for where *Sorting* sends
+/// mail, under "Models" and in the data rule.
+fn mail_sentence(provider: &str, seat: &str) -> String {
+    trf("Mail goes to {provider} ({seat}) for sorting only.", &[("provider", &provider), ("seat", &seat)])
 }
 
 /// The group "Models" of the AI section (issue #325, task MW.8): the computer as measured, then per
 /// slot its row with the list of models, why the last step failed, where *Sorting* sends mail, and
-/// what Torro suggests. Not shown without an AI account: the section's "Add" comes first.
+/// what Torro suggests. Not shown without an AI account: the section's "Add" comes first. `stacked`
+/// (narrow): every row puts its control under its text ([`models_row`]).
 fn slots_group<'a>(state: &'a State, data: &'a Data, stacked: bool) -> Option<Element<'a, Message>> {
     ai_accounts(data).next()?;
-    let mut rows = vec![computer_row(&state.slots)];
+    let mut rows = vec![computer_row(&state.slots, stacked)];
     for slot in AiSlot::ALL {
         rows.push(slot_row(state, data, slot, stacked));
         if let Some(failure) = state.slots.failed.as_ref().filter(|failure| failure.slot == slot) {
-            rows.push(failure_row(failure));
+            rows.push(failure_row(failure, stacked));
         }
         if slot == AiSlot::Decide
-            && let Some(chosen) = data.settings.ai_slots.get(slot).filter(|_| data.settings.mail_to_cloud_in(slot))
+            && let Some((provider, seat)) = sorting_place(&data.settings)
         {
-            let provider = ai_provider(&chosen.engine);
-            let name: &str = match provider {
-                Some(provider) => provider.name(),
-                None => chosen.engine.as_str(),
-            };
-            let seat = provider.map_or(tr("Cloud"), |provider| seat_of(provider, false));
-            rows.push(mail_note(name, seat, data.settings.mail_to_cloud));
+            rows.push(mail_note(provider, seat, data.settings.mail_to_cloud));
         }
         if let Some(suggestion) = suggestion_of(state, slot).filter(|suggestion| {
             !holds(data, slot, suggestion.engine.as_deref(), suggestion.model.as_deref()) || suggestion.engine.is_none()
         }) {
-            rows.push(suggestion_row(state, suggestion));
+            rows.push(suggestion_row(state, suggestion, stacked));
             if slot == AiSlot::Decide && !suggestion.local {
                 rows.push(mail_note(suggestion.provider.name(), &suggestion.seat, data.settings.mail_to_cloud));
             }
@@ -2239,6 +2253,52 @@ fn slots_group<'a>(state: &'a State, data: &'a Data, stacked: bool) -> Option<El
     }
     let footer = tr("Torro suggests a model for each slot. Nothing changes until you choose one.");
     Some(widgets::group(tr("Models"), rows, Some(footer.to_string())))
+}
+
+/// A row of "Models": `mark` in front (or nothing), `label` over `detail`, and `control`. Beside each
+/// other with the metrics of [`setting_row`], each line cut with "…" and a tooltip; `stacked` (narrow)
+/// the control stands under the text, on its axis, and the detail wraps – a model's name, a download's
+/// progress or a reason do not fit beside a button there, and must not be cut. `alert` puts a
+/// `CircleAlert` in the attention colour before the detail: something about the row needs a look.
+fn models_row<'a>(
+    mark: Option<Element<'a, Message>>,
+    label: impl IntoFragment<'a>,
+    detail: Option<String>,
+    alert: bool,
+    control: Element<'a, Message>,
+    stacked: bool,
+) -> Element<'a, Message> {
+    if !stacked && !alert {
+        return setting_row(mark, label, detail, control);
+    }
+    let detail = detail.map(|detail| {
+        let line: Element<'a, Message> = match stacked {
+            true => typo::text(typo::meta(), detail).style(theme::text_2).width(Fill).into(),
+            false => widgets::ellipsized(typo::meta(), detail, theme::text_2),
+        };
+        match alert {
+            true => row![attention_mark(icon::SIZE_SM), line].spacing(space::xs()).align_y(Alignment::Center).into(),
+            false => line,
+        }
+    });
+    let tall = detail.is_some();
+    let lines = column![widgets::ellipsized(typo::body(), label, theme::text)].push(detail);
+    if !stacked {
+        let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
+        return row_frame(row![text.width(Fill), control].spacing(space::l()).align_y(Alignment::Center), tall);
+    }
+    // The mark stays beside the label's line, not the middle of text and control.
+    let first_line = typo::body().line_height.to_absolute(typo::body().size).0;
+    let mark = mark.map(|mark| container(mark).center_y(first_line));
+    let text = column![lines, control].spacing(space::s()).width(Fill);
+    container(row![].push(mark).push(text).spacing(space::m())).width(Fill).padding([space::m(), space::l()]).into()
+}
+
+/// `CircleAlert` at `size` in the attention colour.
+fn attention_mark<'a>(size: f32) -> Element<'a, Message> {
+    icon::icon(Icon::CircleAlert, size)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) })
+        .into()
 }
 
 /// Where a model of `provider` runs, for a sentence about mail: the provider's seat ("Cloud · US"),
@@ -2251,25 +2311,31 @@ fn seat_of(provider: AiProvider, local: bool) -> &'static str {
 }
 
 /// The first row of "Models": the computer as `ai.recommend` measured it ("GeForce RTX 4070 · 12 GB
-/// video memory · 64 GB memory") with the tier of models that fits it at the right; while the first
-/// answer is on its way "Measuring this computer…" (it can take a while), after a failure the reason
-/// with "Retry".
-fn computer_row<'a>(slots: &'a SlotsPage) -> Element<'a, Message> {
+/// video memory · 64 GB memory") with the class of models that fits it at the right ("Graphics card
+/// class"; not in the narrow class, where the line wraps instead); while the first answer is on its way
+/// "Measuring this computer…" (it can take a while), after a failure the reason with "Retry".
+fn computer_row<'a>(slots: &'a SlotsPage, stacked: bool) -> Element<'a, Message> {
     let mark =
         icon::icon(Icon::Monitor, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     if let Some(problem) = slots.recommend_error.as_ref().filter(|_| !slots.recommending) {
         let retry = widgets::text_button(None, tr("Retry"), style::button::secondary, Some(Message::Recommend));
-        return setting_row(Some(mark.into()), tr("No suggestion right now"), Some(problem.clone()), retry);
+        let (label, detail) = (tr("No suggestion right now"), Some(problem.clone()));
+        return models_row(Some(mark.into()), label, detail, false, retry, stacked);
     }
     match &slots.recommendation {
         Some(recommendation) => {
-            let tier = typo::text(typo::meta(), recommendation.tier_label.as_str()).style(theme::text_3);
+            let tier: Element<'a, Message> = match stacked {
+                true => Space::new().into(),
+                false => typo::text(typo::meta(), trf("{tier} class", &[("tier", &recommendation.tier_label)]))
+                    .style(theme::text_3)
+                    .into(),
+            };
             let line = hardware_line(&recommendation.hardware);
-            setting_row(Some(mark.into()), tr("This computer"), Some(line), tier)
+            models_row(Some(mark.into()), tr("This computer"), Some(line), false, tier, stacked)
         }
         None => {
             let detail = tr("Measuring this computer…").to_string();
-            setting_row(Some(mark.into()), tr("This computer"), Some(detail), Space::new())
+            models_row(Some(mark.into()), tr("This computer"), Some(detail), false, Space::new().into(), stacked)
         }
     }
 }
@@ -2302,31 +2368,70 @@ fn slot_about(slot: AiSlot) -> &'static str {
     }
 }
 
-/// A slot's row: its name, what it is for (or "Saving…" while a choice is on its way) and the list of
-/// models ([`slot_choices`]).
-fn slot_row<'a>(state: &'a State, data: &'a Data, slot: AiSlot, stacked: bool) -> Element<'a, Message> {
-    let (choices, chosen) = slot_choices(state, data, slot);
+/// What a sorting model through the fallback adds to its line ([`AiModel::decides_by_chat`], task
+/// MW.3), in the words of Settings › Mail › Categorization.
+fn by_chat_note() -> &'static str {
+    tr("Answers in a fixed format, slower")
+}
+
+/// The line under a slot's name: "Saving…" while a choice is on its way; "Turned off in Settings › AI"
+/// (with the alert, `true`) while the model it holds is not among those turned on ([`held_model`]);
+/// else what the slot is for, for *Sorting* with a chat model "· Answers in a fixed format, slower".
+fn slot_detail(state: &State, data: &Data, slot: AiSlot) -> (String, bool) {
     let busy =
         state.slots.using.as_ref().is_some_and(|using| using.slot == slot && !matches!(using.step, UseStep::Pull(_)));
-    let detail = if busy { tr("Saving…") } else { slot_about(slot) };
-    let pick = picker(choices, chosen, move |choice: SlotChoice| Message::PickSlot(slot, choice));
-    if !stacked {
-        return setting_row(None, slot.label(), Some(detail.to_string()), pick);
+    if busy {
+        return (tr("Saving…").to_string(), false);
     }
-    // Narrow: a model's name with how it sorts is wider than the row leaves beside the slot's name.
-    let lines = column![
-        widgets::ellipsized(typo::body(), slot.label(), theme::text),
-        widgets::ellipsized(typo::meta(), detail, theme::text_2),
-    ];
-    let content = column![lines, pick].spacing(space::s());
-    container(content).width(Fill).padding([space::m(), space::l()]).into()
+    match held_model(state, data, slot) {
+        Held::Off => (tr("Turned off in Settings › AI").to_string(), true),
+        Held::On(model) if slot == AiSlot::Decide && model.decides_by_chat() => {
+            (format!("{} · {}", slot_about(slot), by_chat_note()), false)
+        }
+        _ => (slot_about(slot).to_string(), false),
+    }
+}
+
+/// What a slot holds, as far as its account's list says.
+enum Held<'a> {
+    /// Nothing, the account picks, or its models are not in yet.
+    Unknown,
+    /// A model the account lists turned on.
+    On(&'a AiModel),
+    /// A model the account lists turned off, or lacks: the slot does nothing with it.
+    Off,
+}
+
+/// What `slot` holds ([`Held`]), the model's id matched as Ollama lists it ([`same_model`]).
+fn held_model<'a>(state: &'a State, data: &Data, slot: AiSlot) -> Held<'a> {
+    let Some(stored) = data.settings.ai_slots.get(slot) else { return Held::Unknown };
+    let (Some(id), Some(models)) = (&stored.model, state.models.get(&stored.engine)) else { return Held::Unknown };
+    match models.iter().find(|model| same_model(&model.id, id)) {
+        Some(model) if model.enabled => Held::On(model),
+        _ => Held::Off,
+    }
+}
+
+/// A slot's row: its name, the line under it ([`slot_detail`]) and the list of models
+/// ([`slot_choices`]); `stacked` (narrow) the list under the text, as wide as the row, so both slots'
+/// lists line up.
+fn slot_row<'a>(state: &'a State, data: &'a Data, slot: AiSlot, stacked: bool) -> Element<'a, Message> {
+    let (choices, chosen) = slot_choices(state, data, slot);
+    let (detail, alert) = slot_detail(state, data, slot);
+    let on_pick = move |choice: SlotChoice| Message::PickSlot(slot, choice);
+    let pick = match stacked {
+        true => picker_fill(choices, chosen, on_pick),
+        false => picker(choices, chosen, on_pick),
+    };
+    models_row(None, slot.label(), Some(detail), alert, pick, stacked)
 }
 
 /// The list of a slot and what it has (task MW.8): "None", then the models turned on of every AI
 /// account that serve the slot – *Chat* those that can use tools (or do not say), *Sorting* those that
-/// decide ("decides directly") or can use tools ("answers in a fixed format", [`AiModel::can_decide`]) –,
-/// by account and name, the account's name only with more than one AI account. A chosen model the
-/// lists do not hold (turned off, not listed yet) stands right after "None", so the list shows it.
+/// decide or can use tools ([`AiModel::can_decide`]; how one sorts stands under the slot's name, so the
+/// list stays narrow) –, by account and name, the account's name only with more than one AI account.
+/// A chosen model the lists do not hold (turned off, not listed yet) stands right after "None", by its
+/// name where its account lists it, so the list shows it.
 pub fn slot_choices(state: &State, data: &Data, slot: AiSlot) -> (Vec<SlotChoice>, SlotChoice) {
     let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
     let several = accounts.len() > 1;
@@ -2334,11 +2439,6 @@ pub fn slot_choices(state: &State, data: &Data, slot: AiSlot) -> (Vec<SlotChoice
         let mut parts = vec![model.map_or_else(|| id.to_string(), |model| model.name.clone())];
         if several && let Some(account) = account {
             parts.push(account.label.clone());
-        }
-        if slot == AiSlot::Decide
-            && let Some(model) = model
-        {
-            parts.push(sorting_way(model).to_string());
         }
         parts.join(" · ")
     };
@@ -2366,7 +2466,10 @@ pub fn slot_choices(state: &State, data: &Data, slot: AiSlot) -> (Vec<SlotChoice
         return (choices.clone(), found.clone());
     }
     let account = accounts.iter().copied().find(|account| account.id == stored.engine);
-    let known = stored.model.as_ref().and_then(|id| state.models.get(&stored.engine)?.iter().find(|m| &m.id == id));
+    let known = stored
+        .model
+        .as_ref()
+        .and_then(|id| state.models.get(&stored.engine)?.iter().find(|model| same_model(&model.id, id)));
     let name = match &stored.model {
         Some(id) => label(account, known, id),
         // The account picks: its name says which.
@@ -2386,43 +2489,40 @@ fn serves(model: &AiModel, slot: AiSlot) -> bool {
         }
 }
 
-/// How a model sorts mail: "decides directly" (a decision model) or "answers in a fixed format" (a chat
-/// model through the fallback, [`AiModel::decides_by_chat`]).
-fn sorting_way(model: &AiModel) -> &'static str {
-    match model.decides_by_chat() {
-        true => tr("answers in a fixed format"),
-        false => tr("decides directly"),
-    }
-}
-
 /// Why the last step under a slot failed, in the core's words, with "Retry".
-fn failure_row<'a>(failure: &'a SlotFailure) -> Element<'a, Message> {
+fn failure_row<'a>(failure: &'a SlotFailure, stacked: bool) -> Element<'a, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
     let retry = widgets::text_button(None, tr("Retry"), style::button::secondary, Some(Message::RetrySlot));
-    setting_row(Some(alert.into()), failure.message.as_str(), None, retry)
+    match stacked {
+        // The core's sentence is long: it wraps above "Retry" instead of being cut.
+        true => models_row(Some(alert.into()), failure.message.as_str(), None, false, retry, true),
+        false => setting_row(Some(alert.into()), failure.message.as_str(), None, retry),
+    }
 }
 
 /// Where *Sorting* sends mail, said where the choice is made: "Mail goes to OpenRouter (Cloud · US) for
-/// sorting only." and, while the chat may read none, "The chat still gets no mail." Wraps rather than
-/// cutting off: it is the one sentence here that must be read whole.
+/// sorting only." and, while the chat may read none, "The chat still gets no mail." As high as the rows
+/// around it ([`row_frame`]); wraps rather than cutting off: it is the one sentence here that must be
+/// read whole.
 fn mail_note<'a>(provider: &str, seat: &str, chat_reads_mail: bool) -> Element<'a, Message> {
-    let mut sentence =
-        trf("Mail goes to {provider} ({seat}) for sorting only.", &[("provider", &provider), ("seat", &seat)]);
+    let mut sentence = mail_sentence(provider, seat);
     if !chat_reads_mail {
         sentence = format!("{sentence} {}", tr("The chat still gets no mail."));
     }
     let mark = icon::icon(Icon::Cloud, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let line = typo::text(typo::meta(), sentence).style(theme::text_2).width(Fill);
-    let content = row![mark, line].spacing(space::m()).align_y(Alignment::Center);
-    container(content).width(Fill).padding([space::m(), space::l()]).into()
+    row_frame(row![mark, line].spacing(space::m()).align_y(Alignment::Center), false)
 }
 
 /// What Torro suggests for a slot: the model (or, where the account picks one, the provider), where it
-/// runs and why, and at the right "Use suggestion" – "Use suggestion · 5.2 GB" where it downloads
-/// first. While its download runs the progress with "Cancel"; while the chain saves "Saving…"; without
-/// an account to run it (no Ollama) the reason stands there instead of the button.
-fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion) -> Element<'a, Message> {
+/// runs and why, and "Use suggestion" – "Use suggestion · 5.2 GB" where it downloads first. While its
+/// download runs the progress with "Cancel"; while the chain saves "Saving…"; while the chain of the
+/// other slot runs the button is off and its tooltip says what it waits for; without an account to run
+/// it (no Ollama) the reason stands there instead of the button. No mark: the suggestion comes from
+/// Torro's fixed list, not from a model, so it has no Sparkles – only their room, so it lines up with
+/// the rows around it. `stacked` (narrow): the control under the text ([`models_row`]).
+fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion, stacked: bool) -> Element<'a, Message> {
     let slot = suggestion.slot;
     let name = match (&suggestion.engine, &suggestion.model) {
         (Some(engine), Some(id)) => state
@@ -2439,13 +2539,12 @@ fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion) -> Eleme
         detail.push(suggestion.reason.clone());
     }
     if suggestion.by_chat {
-        detail.push(tr("answers in a fixed format").to_string());
+        detail.push(by_chat_note().to_string());
     }
-    let mark =
-        icon::icon(Icon::Sparkles, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let room = || Some(Space::new().width(icon::SIZE).into());
     let Some(engine) = &suggestion.engine else {
         let reason = typo::text(typo::meta(), suggestion.reason.as_str()).style(theme::text_2);
-        return setting_row(Some(mark.into()), label, Some(detail.join(" · ")), reason);
+        return models_row(room(), label, Some(detail.join(" · ")), false, reason.into(), stacked);
     };
     let model = suggestion.model.as_deref().unwrap_or_default();
     let pull = pull_of(&state.slots.pulls, engine, model).filter(|pull| pull.state == AiPullState::Running);
@@ -2465,10 +2564,24 @@ fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion) -> Eleme
                 None => tr("Use suggestion").to_string(),
             };
             let free = using.is_none().then_some(Message::UseSuggestion(slot));
-            widgets::text_button(None, words, style::button::secondary, free)
+            let button = widgets::text_button(None, words, style::button::secondary, free);
+            match using {
+                Some(other) => widgets::with_tooltip(button, waits_for(other)),
+                None => button,
+            }
         }
     };
-    setting_row(Some(mark.into()), label, Some(detail.join(" · ")), control)
+    models_row(room(), label, Some(detail.join(" · ")), false, control, stacked)
+}
+
+/// Why "Use suggestion" is off while the chain of another slot runs: "Wait until the download for
+/// Chat has finished", or "Wait until Chat is saved" once the download is done.
+fn waits_for(other: &Using) -> String {
+    let slot = other.slot.label();
+    match other.step {
+        UseStep::Pull(_) => trf("Wait until the download for {slot} has finished", &[("slot", &slot)]),
+        _ => trf("Wait until {slot} is saved", &[("slot", &slot)]),
+    }
 }
 
 /// How far a download is: "Downloading 3.9 GB of 9.3 GB", or "Starting download…" before Ollama
@@ -5085,13 +5198,55 @@ mod tests {
         let (decide, _) = slot_choices(&state, &data, AiSlot::Decide);
         let qwen =
             decide.iter().find(|choice| choice.model.as_deref() == Some("qwen/qwen3-235b-a22b")).expect("listed");
-        assert!(qwen.label.ends_with(tr("answers in a fixed format")), "{}", qwen.label);
+        assert_eq!(qwen.label, "Qwen3 235B A22B · OpenRouter", "how it sorts stands under the slot's name");
         assert!(!decide.iter().any(|choice| choice.model.as_deref() == Some("nimble:latest")), "nimble is off");
-        let nimble = AiModel { tools: Some(false), decision: Some(true), ..AiModel::named("n") };
-        assert_eq!(sorting_way(&nimble), tr("decides directly"));
         data.accounts.retain(|account| account.id != DEMO_OLLAMA);
         let (one, _) = slot_choices(&state, &data, AiSlot::Chat);
         assert!(one.iter().any(|choice| choice.label == "Qwen3 235B A22B"), "one account: no account name");
+    }
+
+    /// The line under a slot's name: a model the account lists off (or lacks) says so with the alert,
+    /// Sorting through a chat model says how it sorts, and a choice on its way "Saving…".
+    #[test]
+    fn the_slot_says_what_its_model_does() {
+        let (mut state, mut data) = shown(false);
+        let off = (tr("Turned off in Settings › AI").to_string(), true);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), off, "qwen3-32b is not on");
+        let sorting = format!("{} · {}", tr("Sorts mail into categories"), tr("Answers in a fixed format, slower"));
+        assert_eq!(slot_detail(&state, &data, AiSlot::Decide), (sorting, false));
+        // A model turned off but listed shows by its name.
+        if let Some(chat) = data.settings.ai_slots.chat.as_mut() {
+            chat.model = Some("deepseek/deepseek-chat-v3.1".into());
+        }
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), off);
+        assert_eq!(slot_choices(&state, &data, AiSlot::Chat).1.label, "DeepSeek V3.1 · OpenRouter");
+        // A model turned on says what the slot is for; before the account's models are in, too.
+        if let Some(chat) = data.settings.ai_slots.chat.as_mut() {
+            chat.model = Some("qwen/qwen3-235b-a22b".into());
+        }
+        let chat = (tr("The assistant and its bots").to_string(), false);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), chat);
+        state.models.remove(OPENROUTER);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), chat, "not known yet: no alert");
+        let none = slot_choices(&state, &data, AiSlot::Chat).0[0].clone();
+        let _ = update(&mut state, Message::PickSlot(AiSlot::Chat, none), &data);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), (tr("Saving…").to_string(), false));
+        draw_ai(&state, &data);
+    }
+
+    /// Sorting's place in the data rule and under "Models", and why "Use suggestion" waits.
+    #[test]
+    fn the_rows_name_where_mail_goes_and_what_waits() {
+        let (mut state, mut data) = shown(true);
+        assert_eq!(sorting_place(&data.settings), Some(("OpenRouter", tr("Cloud · US"))));
+        let _ = update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data);
+        draw_ai(&state, &data);
+        let using = state.slots.using.as_ref().expect("the chat's download runs");
+        assert_eq!(waits_for(using), trf("Wait until the download for {slot} has finished", &[("slot", &tr("Chat"))]));
+        let saving = Using { step: UseStep::Set, ..using.clone() };
+        assert_eq!(waits_for(&saving), trf("Wait until {slot} is saved", &[("slot", &tr("Chat"))]));
+        data.settings.decide_mail_to_cloud = Some(false);
+        assert_eq!(sorting_place(&data.settings), None, "mail stays here");
     }
 
     /// The computer in one line, the share of a download, and the group in every state.

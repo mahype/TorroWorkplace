@@ -3811,8 +3811,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Task C.17: the data rule for mail under Mail of the assistant and its bots.
     ("Mail to cloud models", "Mail an Cloud-Modelle"),
     (
-        "Off: only AI accounts on your own computers read mail",
-        "Aus: Nur KI-Konten auf deinen eigenen Rechnern lesen Mail",
+        "Off: the chat reads mail only with AI on your own computers",
+        "Aus: Der Chat liest Mail nur mit KI auf deinen eigenen Rechnern",
     ),
     (
         "Mail goes to the model's provider and can't be taken back",
@@ -4435,9 +4435,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
          wird versteckt, verschoben oder gelöscht, und jede Kategorie kannst du von Hand ändern.",
     ),
     (
-        "Only models on this computer are offered: mail stays here unless you allow more in the control centre.",
-        "Angeboten werden nur Modelle auf diesem Rechner: E-Mails bleiben hier, solange du in der Steuerzentrale \
-         nichts anderes erlaubst.",
+        "Only models on this computer are offered: mail stays here unless you choose a model elsewhere for Sorting in Settings › AI.",
+        "Angeboten werden nur Modelle auf diesem Rechner: E-Mails bleiben hier, solange du unter Einstellungen › KI \
+         für „Sortieren“ kein Modell anderswo wählst.",
     ),
     ("No model that can sort mail", "Kein Modell, das E-Mails einordnen kann"),
     (
@@ -4711,7 +4711,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Cloud model: mail content leaves this computer.", "Cloud-Modell: E-Mail-Inhalte verlassen diesen Rechner."),
     ("Local model: mail content stays on this computer.", "Lokales Modell: E-Mail-Inhalte bleiben auf diesem Rechner."),
-    ("Choose a decision model above.", "Wähle oben ein Entscheidungsmodell."),
+    ("Choose a model above.", "Wähle oben ein Modell."),
     ("Error", "Fehler"),
     (
         "Choose all mail accounts to remove every category.",
@@ -5095,8 +5095,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Every MCP client and its hooks are refused", "Jeder MCP-Client und seine Hooks werden abgewiesen"),
     ("Hide commands", "Befehle ausblenden"),
     (
-        "Holds for the assistant and all its bots, whatever their rights allow.",
-        "Gilt für den Assistenten und alle seine Bots, was immer ihre Rechte erlauben.",
+        "The switch holds for the assistant and all its bots, whatever their rights allow.",
+        "Der Schalter gilt für den Assistenten und alle seine Bots, was immer ihre Rechte erlauben.",
     ),
     ("Hooks without an agent", "Hooks ohne Agent"),
     ("Import from TorroMail", "Aus TorroMail übernehmen"),
@@ -6552,8 +6552,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Graphics card", "Grafikkarte"),
     ("Large", "Groß"),
     ("Small", "Klein"),
-    ("Runs on this computer and is ready", "Läuft auf diesem Rechner und ist bereit"),
-    ("Runs on this computer after a download", "Läuft nach einem Download auf diesem Rechner"),
+    ("Ready", "Bereit"),
+    ("Downloads first", "Wird zuerst heruntergeladen"),
     ("No AI server runs on this computer", "Auf diesem Rechner läuft kein KI-Server"),
     ("No local model fits this computer", "Kein lokales Modell passt zu diesem Rechner"),
     // Downloading models into Ollama (MW.7, issue #325); "There is no AI account {id}." stands above.
@@ -6580,10 +6580,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("There is no download {id}.", "Es gibt keinen Download {id}."),
     // The slots in the control centre's AI section (MW.8, issue #325); "Models", "Chat", "Sorting", "This
-    // computer", "Retry", "Saving…", "None", "Cancel" and "Stop" stand above.
+    // computer", "Retry", "Saving…", "None", "Cancel", "Turned off in Settings › AI" and "Answers in a fixed
+    // format, slower" stand above.
     ("Chat may read mail in the cloud", "Chat darf Mail in der Cloud lesen"),
     ("Sorting sends mail to the cloud", "Sortieren schickt Mail in die Cloud"),
-    ("Because a model elsewhere sorts mail", "Weil ein Modell anderswo Mail sortiert"),
+    ("Keep mail here", "Mail hier behalten"),
+    ("{tier} class", "Klasse {tier}"),
+    ("Wait until the download for {slot} has finished", "Warte, bis der Download für {slot} fertig ist"),
+    ("Wait until {slot} is saved", "Warte, bis {slot} gespeichert ist"),
     (
         "Torro suggests a model for each slot. Nothing changes until you choose one.",
         "Torro schlägt für jeden Platz ein Modell vor. Nichts ändert sich, bis du eines wählst.",
@@ -6596,8 +6600,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not measured", "Nicht gemessen"),
     ("The assistant and its bots", "Der Assistent und seine Bots"),
     ("Sorts mail into categories", "Sortiert Mail in Kategorien"),
-    ("answers in a fixed format", "antwortet in festem Format"),
-    ("decides directly", "entscheidet direkt"),
     ("Mail goes to {provider} ({seat}) for sorting only.", "Mail geht nur zum Sortieren an {provider} ({seat})."),
     ("The chat still gets no mail.", "Der Chat bekommt weiterhin keine Mail."),
     ("Suggested: {model}", "Vorschlag: {model}"),

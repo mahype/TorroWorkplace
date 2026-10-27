@@ -1070,7 +1070,7 @@ pub fn demo_data() -> Data {
                     effort: Some(torro_core::ai::Effort::High),
                 }),
                 // Issue #325: mail is sorted in the cloud, by a chat model through the fallback, so the
-                // group "Models" says where mail goes and the data rule shows the permission with "Stop".
+                // group "Models" says where mail goes and the data rule shows the permission with "Keep mail here".
                 decide: Some(torro_core::ai::SlotModel {
                     engine: DEMO_OPENROUTER.into(),
                     model: Some("qwen/qwen3-235b-a22b".into()),
@@ -2085,20 +2085,8 @@ fn demo_recommendation(data: &Data) -> torro_ipc::AiRecommendation {
         };
     let slots = match ollama {
         true => vec![
-            local(
-                AiSlot::Chat,
-                Some(DEMO_OLLAMA),
-                "qwen3:14b",
-                Some(9_276_198_565),
-                tr("Runs on this computer after a download").into(),
-            ),
-            local(
-                AiSlot::Decide,
-                Some(DEMO_OLLAMA),
-                "nimble:latest",
-                None,
-                tr("Runs on this computer and is ready").into(),
-            ),
+            local(AiSlot::Chat, Some(DEMO_OLLAMA), "qwen3:14b", Some(9_276_198_565), tr("Downloads first").into()),
+            local(AiSlot::Decide, Some(DEMO_OLLAMA), "nimble:latest", None, tr("Ready").into()),
         ],
         false => vec![
             torro_ipc::SlotSuggestion {

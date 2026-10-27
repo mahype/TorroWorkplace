@@ -406,11 +406,12 @@ fn suggest_slot(list: &List, tier: &str, slot: AiSlot, accounts: &[Connected]) -
     })
 }
 
-/// A suggestion of the local `entry` as `model` at the account `engine`.
+/// A suggestion of the local `entry` as `model` at the account `engine`. Its reason says only what
+/// the seat ("This computer") beside it in the row does not: "Ready" or "Downloads first".
 fn local_suggestion(entry: &Local, engine: Option<&str>, model: &str, download_bytes: Option<u64>) -> SlotSuggestion {
     let reason = match download_bytes {
-        Some(_) => tr("Runs on this computer after a download"),
-        None => tr("Runs on this computer and is ready"),
+        Some(_) => tr("Downloads first"),
+        None => tr("Ready"),
     };
     SlotSuggestion {
         slot: entry.slot,
@@ -660,11 +661,11 @@ mod tests {
         assert_eq!((got.tier.as_str(), got.tier_label.as_str()), ("gpu", tr("Graphics card")));
         let chat = slot(&got, AiSlot::Chat).expect("chat");
         assert_eq!((chat.engine.as_deref(), chat.model.as_deref()), (Some(OLLAMA), Some("qwen3:14b")));
-        assert_eq!((chat.download_bytes, chat.reason.as_str()), (None, tr("Runs on this computer and is ready")));
+        assert_eq!((chat.download_bytes, chat.reason.as_str()), (None, tr("Ready")));
         let decide = slot(&got, AiSlot::Decide).expect("sorting");
         assert_eq!((decide.engine.as_deref(), decide.model.as_deref()), (Some(OLLAMA), Some("nimble")));
         assert_eq!((decide.download_bytes, decide.by_chat), (Some(9_527_504_198), false));
-        assert_eq!(decide.reason, tr("Runs on this computer after a download"));
+        assert_eq!(decide.reason, tr("Downloads first"));
 
         // Ollama lists a model without a tag as `:latest`: it is there, by the id Ollama lists.
         let pulled =
