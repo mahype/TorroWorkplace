@@ -3650,7 +3650,8 @@ static SET_MAIL_PILE: Command = Command {
                   `error` for no ids or more than 100; `not-found` for the whole call when one message is in a \
                   mail account this key may not read (read access to `mail` besides write access to `inbox`) or \
                   whose inbox entries it may not see, the same answer as for a message that does not exist; \
-                  nothing is changed then. `since` (with `pile`) is for undo: the mail goes back with the time \
+                  `unsupported` for the whole call when putting mail on a pile and one lies in the trash or in \
+                  spam (archived mail may; taking mail off works anywhere); nothing is changed then. `since` (with `pile`) is for undo: the mail goes back with the time \
                   it had on its pile (`pile_since` of mail_search_messages, at most now), so an answer of one's \
                   own sent meanwhile still takes it off Reply later, at once.",
 };

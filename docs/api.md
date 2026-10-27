@@ -542,7 +542,9 @@ kommen sie herunter. Eine Mail liegt auf höchstens einem Stapel, erneut legen v
 Eintrag bleiben, wie sie sind. „Reply later“ räumt sich selbst ab: Taucht nach dem Auflegen eine Mail von der Adresse des
 Kontos in der Unterhaltung auf (jeder Ordner außer Entwürfen, jedes Programm), nimmt der Kern die Mail herunter; „Set aside“ bleibt, bis
 man sie herunternimmt. Reichweite, Grenzen, Freigabe und Protokoll wie bei `set_mail_shown`: `not-found` für den ganzen
-Aufruf, sobald eine Mail außer Reichweite liegt, geprüft vor der Freigabe; die Freigabe nennt die Betreffe aus dem
+Aufruf, sobald eine Mail außer Reichweite liegt, geprüft vor der Freigabe. Mail im Papierkorb oder im Spam kommt auf
+keinen Stapel (Review von #315): Mit `pile` ist der ganze Aufruf dann `unsupported`, geprüft vor der Freigabe; Mail im
+Archiv darf, und herunternehmen geht überall. Die Freigabe nennt die Betreffe aus dem
 Mail-Speicher, das Protokoll nur gehashte Kennungen. Dazu `mail.search_messages` mit dem optionalen Feld `pile`:
 `without` lässt Mail auf einem Stapel weg („All“, Kategorien, Smart views), `reply_later` bzw. `set_aside` liefert nur
 diesen Stapel; gefiltert wird vor dem Blättern, mit `snoozed` und `hidden` gelten alle, und wie diese nur für Konten,

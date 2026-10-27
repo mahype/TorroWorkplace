@@ -2237,6 +2237,10 @@ pub enum Request {
     /// not sent and never counts), the core
     /// takes it off. "Set aside" stays until taken off.
     ///
+    /// Mail in the trash or in spam goes on no pile: with `pile`, `unsupported` for the whole call
+    /// as soon as one id lies in a folder with that role, checked before an approval is asked for;
+    /// archived mail may. Taking mail off (`pile` left out) works wherever it lies.
+    ///
     /// Mail of several accounts may go in one call. Answered with [`Response::Ok`]; `not-found`
     /// for the whole call, with nothing changed, as soon as one id is in no account whose mail the
     /// caller reads (`mail_accounts`) and whose inbox entries it sees (the account among

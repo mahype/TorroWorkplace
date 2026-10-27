@@ -2862,6 +2862,12 @@ impl Core {
         {
             return Ok(refused);
         }
+        // No pile for mail in the trash or in spam (review of #315): refused before anyone is asked.
+        if let Request::SetMailPile { ids, pile: Some(_), .. } = &request
+            && let Some(refused) = self.unpileable(ids, Reach::Client(&rights)).await
+        {
+            return Ok(refused);
+        }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
         // Point 6 (task C.9): switching the microphone on is a person's, also with every right, and
         // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
@@ -7366,6 +7372,36 @@ impl Core {
         Ok(found.into_iter().map(|message| (message.account, message.id)).collect())
     }
 
+    /// `unsupported` when one of the mail `ids` (in reach, [`Core::reachable_mail_of`] checked that)
+    /// lies in a folder with the role trash or junk (review of #315): thrown away or spam, it goes
+    /// on no pile – the mail window does not offer it there, and the API keeps to the same. Archived
+    /// mail may. Only for putting mail on a pile; taking it off works wherever it lies, so mail that
+    /// went to the trash afterwards still comes off. `None` when every mail may go on a pile, also
+    /// when a store cannot be read (the command finds that out itself).
+    async fn unpileable(&self, ids: &[String], reach: Reach<'_>) -> Option<Response> {
+        let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let found = crate::mail::write::locate(&self.mail, reach, &wanted).await.ok()?;
+        let mut accounts: Vec<&str> = found.iter().map(|message| message.account.as_str()).collect();
+        accounts.sort_unstable();
+        accounts.dedup();
+        for account in accounts {
+            let Ok(store) = self.mail.store(account).await else { continue };
+            let bins = store.run(|store| store.folders()).await.ok().unwrap_or_default();
+            let bin = |folder: &str| {
+                bins.iter().any(|held| {
+                    held.id == folder && matches!(held.role, Some(torro_mail::Role::Trash | torro_mail::Role::Junk))
+                })
+            };
+            if found.iter().any(|message| message.account == account && bin(&message.folder)) {
+                return Some(refusal(
+                    "unsupported",
+                    "mail in the trash or in spam goes on no pile; move it out first".into(),
+                ));
+            }
+        }
+        None
+    }
+
     /// `inbox.set_mail_shown` (task E18.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
     /// also for the app key, which comes here without the client's checks), the mail in reach
     /// ([`Core::reachable_mail_of`]), then with `shown` the exception for the mail that is hidden now
@@ -7418,6 +7454,11 @@ impl Core {
             Ok(mail) => mail,
             Err(refused) => return refused,
         };
+        if pile.is_some()
+            && let Some(refused) = self.unpileable(&ids, reach).await
+        {
+            return refused;
+        }
         // Undo puts mail back with the time it had (review of #315), never later than now.
         let now = Utc::now();
         let at = since.map_or(now, |since| since.min(now));
@@ -19871,6 +19912,57 @@ mod tests {
         assert!(core.inbox.mail_hidden(&[ANNA_MAIL.into()], Utc::now()).expect("read").shown_of(ANNA_MAIL).is_empty());
         let pile = Request::SetMailPile { ids: vec![id], pile: Some(MailPile::ReplyLater), since: None };
         assert_eq!(ask(&core, Some(&app_key), pile).await, Response::Ok, "the app key may");
+    }
+
+    /// Review of #315: mail in the trash or in spam goes on no pile, by the API either – the whole
+    /// call is `unsupported`, before anyone is asked –; archived mail does, and mail that went to
+    /// the trash after it was put there still comes off.
+    #[tokio::test]
+    async fn no_piles_for_deleted_or_spam_mail() {
+        use crate::mail::read::tests::mail_from;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
+        server.add_folder("Junk", "\\HasNoChildren \\Junk", 16);
+        for (folder, subject) in [("INBOX", "Kept"), ("Trash", "Thrown"), ("Junk", "Spam"), ("Archive", "Filed")] {
+            server.add(folder, &mail_from(subject, 2, "bernd@example.com", None), &["\\Seen"]);
+        }
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let store = core.mail.store(ANNA_MAIL).await.expect("the store");
+        let every = crate::mail::store::SearchQuery::default();
+        let mail = store.run(move |store| store.search(&every, 50, 0)).await.expect("read");
+        let id = |subject: &str| mail.iter().find(|m| m.subject == subject).expect("synced").id.clone();
+        let put = |ids: Vec<String>, pile| Request::SetMailPile { ids, pile, since: None };
+        let piled = || core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL);
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+
+        for subject in ["Thrown", "Spam"] {
+            let with_kept = put(vec![id("Kept"), id(subject)], Some(MailPile::ReplyLater));
+            assert_eq!(code(&ask(&core, Some(&asking), with_kept.clone()).await), "unsupported", "{subject}");
+            assert_eq!(code(&ask(&core, Some(&app_key), with_kept).await), "unsupported", "{subject}");
+        }
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        assert!(piled().is_empty(), "the whole call is refused");
+        assert_eq!(ask(&core, Some(&app_key), put(vec![id("Filed")], Some(MailPile::SetAside))).await, Response::Ok);
+        assert_eq!(piled(), [id("Filed")], "archived mail may");
+
+        // Put there in the inbox, then thrown away: it still comes off.
+        assert_eq!(ask(&core, Some(&app_key), put(vec![id("Kept")], Some(MailPile::ReplyLater))).await, Response::Ok);
+        let kept = id("Kept");
+        store
+            .run(move |store| {
+                let trash = store.folder_by_role(torro_mail::Role::Trash)?.expect("a trash folder");
+                store.relocate_message(&kept, &trash.id, 15, 9)?;
+                Ok(())
+            })
+            .await
+            .expect("thrown away");
+        assert_eq!(ask(&core, Some(&app_key), put(vec![id("Kept")], None)).await, Response::Ok);
+        waits(ask(&core, Some(&asking), put(vec![id("Filed")], None)).await);
+        assert_eq!(piled(), [id("Filed")]);
     }
 
     /// Task E19.2: the piles keep to the accounts a key reads and whose entries it sees – checked
