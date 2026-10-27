@@ -601,11 +601,11 @@ impl Edit {
             Edit::Done { done, .. } => Edit::Done { id, done: !done },
             Edit::Dismiss { .. } => Edit::Done { id, done: false },
             Edit::Snooze { .. } => {
-                // An open entry that kept its follow-up after a reply (decision 7 of E19) gets it back
-                // with its date and condition: "Undo" of "Cancel follow-up" (review of #315).
+                // An entry that was not put off stays so: the core has no request for "open with a
+                // follow-up", and `until` would hide it until then (second review of #315).
                 let until = match before.state {
                     State::Snoozed { until } => Some(until),
-                    State::New | State::Seen | State::Done { .. } => before.follow_up.map(|follow| follow.at),
+                    State::New | State::Seen | State::Done { .. } => None,
                 };
                 // The condition it had (task E19.4), so "Undo" puts the follow-up back as it was.
                 let unless_reply = until.is_some() && before.follow_up.is_some_and(|follow| follow.unless_reply);
@@ -677,8 +677,14 @@ pub enum Undo {
     /// they lay on before ([`MessageSummary::pile`]; `None`: on none).
     Pile(Vec<String>, Option<MailPile>),
     /// Takes "Reply discarded." back (review of #315): the round of "Focus & reply" as it was left,
-    /// at its place with every reply typed ([`FocusReply::restore`]), on "Reply later".
+    /// at its place with every reply typed ([`FocusReply::restore`]), on "Reply later" – only while no
+    /// other round runs; starting one drops this undo. Also what the hint of a send that failed after
+    /// its round was closed offers: the round of that mail with its text and why.
     Focus(mail::FocusKept),
+    /// Takes "Removed from Reply later." in "Focus & reply" back (second review of #315): the mail
+    /// `id` back on the pile and, while the round runs, back at `place` in it with `text` in its field
+    /// ([`FocusReply::put_back`]).
+    Removed { id: String, place: usize, text: String },
     /// Takes muting back (task E8.6b), exactly as `inbox.mute_item` answered ([`Muted`]): removes
     /// the rule `rule` – only one the call made –, opens the entries `reopen` again and moves the
     /// entries `moved` back to "For me" (`inbox.set_item_lane` without `remember`).
@@ -2497,6 +2503,9 @@ pub struct App<S> {
     /// the place, the reply typed and whether it is on its way. It stands in place of list and reader
     /// of "Reply later" ([`App::focusing`]); another view ends it.
     focus_reply: Option<FocusReply>,
+    /// The reply whose round was closed while it was on its way (second review of #315): its mail
+    /// and text, until the answer says whether it went ([`App::focus_sent`]).
+    reply_away: Option<(String, String)>,
     /// The day and time in the picker of "Pick…".
     pick: Pick,
     /// The dialog of "Make task" while [`Menu::Task`] is open.
@@ -3731,6 +3740,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             mail_subject: None,
             unless_reply: false,
             focus_reply: None,
+            reply_away: None,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
             lists: None,
@@ -5596,6 +5606,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
     /// ([`Message::Piled`]). Nothing for the pile the mail lies on already.
     fn pile_mail(&mut self, id: String, pile: Option<MailPile>) -> Task<Message> {
+        self.pile_with(id, pile, None)
+    }
+
+    /// [`App::pile_mail`] with `undo` as the hint's undo instead of [`Undo::Pile`] (`None`): "Remove
+    /// from Reply later" in "Focus & reply" also puts the mail back into its round ([`Undo::Removed`]).
+    fn pile_with(&mut self, id: String, pile: Option<MailPile>, undo: Option<Undo>) -> Task<Message> {
         self.close_menus();
         let before = self.mail_pile(&id);
         if before == pile {
@@ -5610,7 +5626,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let ids = vec![id.clone()];
         let hint = Hint {
             text: text.to_owned(),
-            undo: Some(Undo::Pile(ids.clone(), before)),
+            undo: Some(undo.unwrap_or_else(|| Undo::Pile(ids.clone(), before))),
             shown: Instant::now(),
             folder: None,
         };
@@ -5693,6 +5709,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.reading = false;
         let ids = self.messages.iter().map(|message| message.id.clone()).collect();
         self.focus_reply = Some(FocusReply::new(ids));
+        // A new round makes the undo of an old one void (second review of #315).
+        if self.hint.as_ref().is_some_and(|hint| matches!(hint.undo, Some(Undo::Focus(_)))) {
+            self.hint = None;
+        }
         operation::focus(mail::FOCUS_FIELD)
     }
 
@@ -5709,8 +5729,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// The round of "Focus & reply" ends. Was anything typed, the hint says "Reply discarded." with an
     /// undo that brings the round back with its place and replies ([`Undo::Focus`], review of #315):
     /// nothing typed is lost without a word.
+    ///
+    /// A reply on its way goes on (second review of #315): its mail is left out of that undo
+    /// ([`FocusReply::keep`]), so nothing can send it twice, and its text waits in
+    /// [`App::reply_away`] for the answer ([`App::focus_sent`]).
     fn end_focus(&mut self) {
         let Some(focus) = self.focus_reply.take() else { return };
+        if focus.sending {
+            self.reply_away = focus.current().map(|id| (id.to_owned(), focus.reply.text()));
+        }
         if focus.has_text() {
             let undo = Some(Undo::Focus(focus.keep()));
             self.hint =
@@ -5728,8 +5755,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// its rail's item takes it off ([`App::pile_mail`]: the number, the hint "Removed from Reply later." with its
     /// undo, which puts it back on the pile, not into the round); the next mail shows.
     fn focus_remove(&mut self) -> Task<Message> {
-        let Some(id) = self.focus_reply.as_mut().and_then(FocusReply::take_current) else { return Task::none() };
-        Task::batch([self.pile_mail(id, None), focus_top()])
+        let Some(focus) = self.focus_reply.as_mut() else { return Task::none() };
+        let place = focus.at;
+        let Some((id, text)) = focus.take_current() else { return Task::none() };
+        // Its undo puts it back into the round with what was typed (second review of #315).
+        let undo = Undo::Removed { id: id.clone(), place, text };
+        Task::batch([self.pile_with(id, None, Some(undo)), focus_top()])
     }
 
     /// "Send" in "Focus & reply": the text typed as the answer to the mail shown
@@ -5758,18 +5789,35 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// list, one less on its number. Not sent: the text stays in the field with why under it, "Send"
     /// tries again. Also when the round ended meanwhile – the reply went all the same.
     fn focus_sent(&mut self, id: String, result: Result<(), String>) -> Task<Message> {
-        match (result, self.focus_reply.as_mut()) {
-            (Err(why), Some(focus)) => {
-                focus.failed(why);
+        // Whether the round that sent it still shows it; else it was closed meanwhile.
+        let here = self.focus_reply.as_ref().is_some_and(|focus| focus.sending && focus.current() == Some(id.as_str()));
+        let away = self.reply_away.take_if(|(away, _)| *away == id).map(|(_, text)| text);
+        match result {
+            Err(why) if here => {
+                if let Some(focus) = self.focus_reply.as_mut() {
+                    focus.failed(why);
+                }
                 Task::none()
             }
-            (Err(why), None) => {
+            // The round was closed while it was on its way (second review of #315): the hint says so,
+            // and its undo brings that mail back in a round with its text and why – nothing is lost.
+            Err(why) => {
+                let undo = away.map(|text| {
+                    let texts = vec![(id.clone(), text)];
+                    Undo::Focus(mail::FocusKept { ids: vec![id.clone()], at: 0, texts, error: Some(why.clone()) })
+                });
+                self.hint = Some(Hint {
+                    text: tr("Couldn't send the message.").to_owned(),
+                    undo,
+                    shown: Instant::now(),
+                    folder: None,
+                });
                 self.error = Some(Failure::new(tr("Couldn't send the message."), why));
                 Task::none()
             }
-            (Ok(()), focus) => {
-                let shown = focus.as_ref().and_then(|focus| focus.current()) == Some(id.as_str());
-                if let Some(focus) = focus {
+            Ok(()) => {
+                let shown = here;
+                if let Some(focus) = self.focus_reply.as_mut() {
                     focus.answered(&id);
                 }
                 self.hint =
@@ -8294,11 +8342,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
                 self.set_mail_pile(ids, pile, None)
             }
-            // The round of "Focus & reply" back with what was typed (review of #315).
+            // The round of "Focus & reply" back with what was typed (review of #315) – never over a round
+            // that runs now (second review).
+            Undo::Focus(_) if self.focus_reply.is_some() => Task::none(),
             Undo::Focus(kept) => {
                 let task = if self.view == View::ReplyLater { Task::none() } else { self.show_view(View::ReplyLater) };
                 self.focus_reply = Some(FocusReply::restore(kept));
                 task
+            }
+            // Back on the pile, and into the round with its text (second review of #315).
+            Undo::Removed { id, place, text } => {
+                self.count_pile(Some(MailPile::ReplyLater), true);
+                self.set_row_pile(&id, Some(MailPile::ReplyLater));
+                if let Some(focus) = self.focus_reply.as_mut() {
+                    focus.put_back(id.clone(), place, &text);
+                }
+                Task::batch([self.set_mail_pile(vec![id], Some(MailPile::ReplyLater), None), focus_top()])
             }
             Undo::Muted { rule, reopen, moved } => {
                 #[cfg(test)]
@@ -15592,20 +15651,23 @@ mod tests {
         assert_eq!(properties, detail::properties(&open, app.now, false).len() + 1, "its date in the panel");
     }
 
-    /// Review of #315: "Undo" of "Cancel follow-up" at an open entry that kept its follow-up puts the
-    /// follow-up back with its date and condition, not `until: None` again.
+    /// Second review of #315: an open entry that kept its follow-up is not put off by an undo – the core
+    /// has no "open with a follow-up", and `until` would hide it until then (or bring a date in the
+    /// past): "Undo" at an open entry sends `until: None`, whatever its follow-up says.
     #[test]
-    fn undo_of_cancel_follow_up_at_an_open_entry_brings_its_date_back() {
+    fn undo_at_an_open_entry_sends_until_none() {
         let app = mail_window(Density::Compact, &[]);
         let at = app.now + TimeDelta::days(2);
         let follow = torro_inbox::item::FollowUp { at, unless_reply: true, since: app.now };
         let open = app.for_me.first().cloned().map(|item| Item { state: State::New, follow_up: Some(follow), ..item });
         let open = open.expect("an entry");
-        let cancel = Edit::Snooze { id: open.id.clone(), until: None, unless_reply: false };
-        let back = Edit::Snooze { id: open.id.clone(), until: Some(at), unless_reply: true };
-        assert_eq!(cancel.after(&open, app.now).undo, Some(back));
-        let plain = Item { follow_up: None, ..open };
-        assert_eq!(cancel.undo(&plain), cancel, "an entry without a follow-up stays as it was");
+        let none = Edit::Snooze { id: open.id.clone(), until: None, unless_reply: false };
+        assert_eq!(none.after(&open, app.now).undo, Some(none.clone()), "Cancel follow-up");
+        let tomorrow =
+            Edit::Snooze { id: open.id.clone(), until: Some(app.now + TimeDelta::days(1)), unless_reply: false };
+        assert_eq!(tomorrow.undo(&open), none, "Follow up → Tomorrow");
+        let done = Item { state: State::Done { at: app.now }, ..open };
+        assert_eq!(tomorrow.undo(&done), none, "never a date for a done entry");
     }
 
     /// Review of #315: `mail.get_message` names no pile (only the search does), so the reader takes the
@@ -15783,6 +15845,81 @@ mod tests {
         assert_eq!(app.reply_later, Some(2), "both still on the pile");
     }
 
+    /// Second review of #315: another view while a reply is on its way ends the round, but neither
+    /// the hint nor its undo offers that mail – it cannot be sent twice; the replies to the others come
+    /// back. The answer then says "Sent.", or the error with an undo that brings the mail back with its
+    /// text and why.
+    #[test]
+    fn leaving_while_sending_neither_drops_nor_doubles_the_reply() {
+        for ok in [true, false] {
+            let (mut app, ids) = focus_window();
+            let _ = app.update(Message::FocusSkip);
+            type_reply(&mut app, "Other");
+            let _ = app.update(Message::FocusStep(false));
+            type_reply(&mut app, "Yes");
+            let text = reply_text(&app);
+            let _ = app.update(Message::FocusSend);
+            let _ = app.update(Message::Show(View::All));
+            assert!(app.focus_reply.is_none(), "another view ends the round");
+            let Some(Hint { undo: Some(Undo::Focus(kept)), text: said, .. }) = app.hint.clone() else {
+                panic!("the other reply is offered back")
+            };
+            assert_eq!(said, tr("Reply discarded."));
+            assert_eq!(kept.ids, [ids[1].clone()], "not the mail on its way");
+            assert_eq!(kept.texts, [(ids[1].clone(), "Other".to_owned())]);
+            let result = if ok { Ok(()) } else { Err("offline".to_owned()) };
+            let _ = app.update(Message::FocusSent(ids[0].clone(), result));
+            let hint = app.hint.clone().expect("a hint");
+            if ok {
+                assert_eq!((hint.text.as_str(), hint.undo.is_none()), (tr("Sent."), true));
+                assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], None, None)), "off the pile");
+                continue;
+            }
+            assert_eq!(hint.text, tr("Couldn't send the message."));
+            let _ = app.update(Message::Undo);
+            load(&mut app);
+            assert_eq!(focused(&app), Some(ids[0].clone()), "the mail back in a round");
+            assert_eq!(reply_text(&app), text, "with its text");
+            let focus = app.focus_reply.as_ref().expect("the round");
+            assert_eq!((focus.sending, focus.error.as_deref()), (false, Some("offline")), "and why");
+        }
+    }
+
+    /// Second review of #315: "Undo" of "Removed from Reply later." in a running round puts the mail
+    /// back on the pile and back at its place in the round, with its text.
+    #[test]
+    fn undo_of_remove_puts_the_mail_back_into_the_round() {
+        let (mut app, ids) = focus_window();
+        type_reply(&mut app, "Draft");
+        let text = reply_text(&app);
+        let _ = app.update(Message::FocusRemove);
+        assert_eq!(focused(&app), Some(ids[1].clone()));
+        deliver_pile(&mut app);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Removed from Reply later.")));
+        let _ = app.update(Message::Undo);
+        assert_eq!(last_pile(&app), Some(&Sent::Pile(vec![ids[0].clone()], Some(MailPile::ReplyLater), None)));
+        assert_eq!(focused(&app), Some(ids[0].clone()), "back at its place");
+        assert_eq!(app.focusing().and_then(FocusReply::position), Some((1, 2)));
+        assert_eq!(reply_text(&app), text, "with its text");
+        assert_eq!(app.reply_later, Some(2), "back on the pile");
+    }
+
+    /// Second review of #315: starting a new round makes the undo of an old one void; an undo never
+    /// replaces a round that runs.
+    #[test]
+    fn a_new_round_voids_the_undo_of_the_old_one() {
+        let (mut app, ids) = focus_window();
+        type_reply(&mut app, "Old");
+        let _ = app.update(Message::FocusClose);
+        let old = app.hint.clone().expect("Reply discarded.");
+        let _ = app.update(Message::FocusReply);
+        assert!(app.hint.is_none(), "the old undo is gone");
+        type_reply(&mut app, "New");
+        app.hint = Some(old);
+        let _ = app.update(Message::Undo);
+        assert_eq!((focused(&app), reply_text(&app).trim().to_owned()), (Some(ids[0].clone()), "New".to_owned()));
+    }
+
     /// Review of #315: closing a round with something typed – Escape, "‹ Reply later", another view –
     /// says "Reply discarded." with an undo that brings the round back at its place with its replies;
     /// without text nothing is said. While a reply is on its way, Escape and "‹ Reply later" do not
@@ -15895,7 +16032,9 @@ mod tests {
             Some(Sent::Pile(off, None, Some(hint))) => {
                 assert_eq!(off, &[ids[0].clone()]);
                 assert_eq!(hint.text, tr("Removed from Reply later."));
-                assert_eq!(hint.undo, Some(Undo::Pile(vec![ids[0].clone()], Some(MailPile::ReplyLater))));
+                // Its undo also puts it back into the round (second review of #315).
+                let undo = Undo::Removed { id: ids[0].clone(), place: 0, text: String::new() };
+                assert_eq!(hint.undo, Some(undo));
             }
             other => panic!("off the pile, not {other:?}"),
         }

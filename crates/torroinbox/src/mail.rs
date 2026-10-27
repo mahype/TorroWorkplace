@@ -2978,6 +2978,9 @@ fn file_items<'a>(
             _ => reading.id.to_owned(),
         };
         let follow = RailItem::new(Icon::CalendarClock, tr("Follow up…"), "S", Some(Message::AskSnooze(follow)));
+        // Without Archive not what a click on the group's icon does either, also while the piles are
+        // off as the headers load: the click always opens the card (second review of #315).
+        let follow = if archive { follow } else { follow.danger() };
         items.push(follow.at(&anchors.snooze));
     }
     if let Some(ReaderEntry { item, .. }) = entry {
@@ -4034,6 +4037,9 @@ pub struct FocusKept {
     pub at: usize,
     /// The replies with text, by the id of their mail.
     pub texts: Vec<(String, String)>,
+    /// Why the reply to the mail at `at` could not be sent, when the round comes back for it
+    /// (a send that failed after its round was closed, second review of #315).
+    pub error: Option<String>,
 }
 
 impl FocusReply {
@@ -4078,13 +4084,31 @@ impl FocusReply {
     /// "Remove from Reply later": the mail shown leaves the round with what was typed for it, the
     /// next one shows; its id for the window to take it off the pile. `None` at the end and while
     /// sending.
-    pub fn take_current(&mut self) -> Option<String> {
+    ///
+    /// Returns the mail's id and what was typed for it, so its undo can put both back
+    /// ([`FocusReply::put_back`], second review of #315).
+    pub fn take_current(&mut self) -> Option<(String, String)> {
         if self.sending || self.current().is_none() {
             return None;
         }
+        let text = self.reply.text();
         let id = self.ids.remove(self.at);
         self.arrive();
-        Some(id)
+        Some((id, text))
+    }
+
+    /// The undo of "Remove from Reply later": `id` back into the round at `place` (as far as the
+    /// round still reaches), shown, with `text` in its field. Nothing while sending.
+    pub fn put_back(&mut self, id: String, place: usize, text: &str) {
+        if self.sending || self.ids.contains(&id) {
+            return;
+        }
+        self.leave();
+        let place = place.min(self.ids.len());
+        self.ids.insert(place, id);
+        self.at = place;
+        self.reply = text_editor::Content::with_text(text);
+        self.error = None;
     }
 
     /// The reply to `id` was sent: it leaves the round, and the mail after it shows with its own
@@ -4113,27 +4137,33 @@ impl FocusReply {
     }
 
     /// Whether anything typed would be lost with the round: the field or a reply kept for another mail.
+    /// The reply on its way goes on its own and is not lost with the round ([`FocusReply::keep`]).
     pub fn has_text(&self) -> bool {
-        self.current().is_some_and(|_| !self.reply.text().trim().is_empty())
-            || self.kept.values().any(|reply| !reply.text().trim().is_empty())
+        !self.keep().texts.is_empty()
     }
 
     /// The round as the undo of "Reply discarded." keeps it: mail, place and every reply with text.
+    /// While a reply is on its way its mail is left out, text and all (second review of #315): the
+    /// round that comes back must never offer to send it again – the window says what became of it.
     pub fn keep(&self) -> FocusKept {
-        let shown = self.current().map(|id| (id.to_owned(), self.reply.text()));
+        let away = self.current().filter(|_| self.sending);
+        let shown = self.current().filter(|_| !self.sending).map(|id| (id.to_owned(), self.reply.text()));
         let kept = self.kept.iter().map(|(id, reply)| (id.clone(), reply.text()));
         let mut texts: Vec<(String, String)> =
             shown.into_iter().chain(kept).filter(|(_, text)| !text.trim().is_empty()).collect();
         texts.sort();
-        FocusKept { ids: self.ids.clone(), at: self.at, texts }
+        let ids = self.ids.iter().filter(|id| Some(id.as_str()) != away).cloned().collect();
+        FocusKept { ids, at: self.at, texts, error: None }
     }
 
-    /// The round `kept` back, at its place with its replies; nothing on its way.
+    /// The round `kept` back, at its place with its replies and the error it came back for; nothing
+    /// on its way.
     pub fn restore(kept: FocusKept) -> FocusReply {
         let kept_texts = kept.texts.into_iter().map(|(id, text)| (id, text_editor::Content::with_text(&text)));
         let mut focus = FocusReply { ids: kept.ids, at: kept.at, kept: kept_texts.collect(), ..FocusReply::default() };
         focus.at = focus.at.min(focus.ids.len());
         focus.arrive();
+        focus.error = kept.error;
         focus
     }
 
@@ -4412,8 +4442,16 @@ mod tests {
         assert!(focus.step(false));
         assert_eq!(focus.reply.text().trim(), "Thanks!", "back at a, its reply is there");
         assert!(focus.step(true));
-        assert_eq!(focus.take_current().as_deref(), Some("b"));
+        focus.reply = text_editor::Content::with_text("Maybe");
+        assert_eq!(focus.take_current(), Some(("b".to_owned(), "Maybe".to_owned())), "with its text");
         assert_eq!((focus.current(), ids(&focus)), (Some("c"), "a c d".to_owned()));
+        // Its undo puts it back at its place with its text (second review of #315).
+        focus.put_back("b".into(), 1, "Maybe");
+        assert_eq!(
+            (focus.current(), focus.reply.text().trim(), ids(&focus)),
+            (Some("b"), "Maybe", "a b c d".to_owned())
+        );
+        assert!(focus.take_current().is_some());
         focus.answered("a");
         assert_eq!((focus.current(), focus.position()), (Some("c"), Some((1, 2))), "still c");
         assert!(!focus.has_text(), "a's reply went with it");
@@ -4421,10 +4459,18 @@ mod tests {
         let kept = focus.keep();
         assert_eq!(
             kept,
-            FocusKept { ids: vec!["c".into(), "d".into()], at: 0, texts: vec![("c".into(), "On it".into())] }
+            FocusKept {
+                ids: vec!["c".into(), "d".into()],
+                at: 0,
+                texts: vec![("c".into(), "On it".into())],
+                error: None
+            }
         );
         focus.sending = true;
         assert!(!focus.step(true) && !focus.step(false) && focus.take_current().is_none(), "nothing moves");
+        // While sending, the round as kept leaves the mail on its way out, text and all.
+        assert_eq!(focus.keep(), FocusKept { ids: vec!["d".into()], at: 0, texts: Vec::new(), error: None });
+        assert!(!focus.has_text(), "the reply on its way is not discarded");
         focus.answered("c");
         assert_eq!((focus.current(), focus.sending), (Some("d"), false));
         focus.failed("offline".into());
@@ -4843,6 +4889,9 @@ mod tests {
                 file.items.iter().filter(|i| [tr("Reply later"), tr("Set aside")].contains(&&*i.label)).collect();
             assert_eq!(piles.len(), 2, "the piles keep their place");
             assert!(piles.iter().all(|i| i.press().is_none() && i.key.is_empty()), "off while the headers load");
+            // Second review of #315: nor does the click open "Follow up" – it opens the card.
+            assert!(file.items.iter().any(|i| i.label == tr("Follow up…") && i.press().is_some()));
+            assert!(file.first_press().is_none(), "the click opens the card");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
