@@ -8911,9 +8911,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// the wide mail window, the one that can expand it (decision 5 of E14) – and remembers it for this
     /// window's key ([`Launch::window_key`]); not in the demo, which stores nothing.
     fn toggle_actions(&mut self) -> Task<Message> {
+        // Drawn collapsed for want of room, the rail cannot expand: `]` keeps the choice as it is
+        // rather than switching it unseen.
         // Without a mail open there is no rail to switch: `]` would change the next mail's unseen.
         let no_rail = self.rail_groups(SizeClass::Wide, &detail::Anchors::default()).is_none();
-        if self.launch.kind != Kind::Mail || self.class() != SizeClass::Wide || no_rail {
+        if self.launch.kind != Kind::Mail || self.class() != SizeClass::Wide || !self.rail_can_expand() || no_rail {
             return Task::none();
         }
         self.actions = self.actions.toggled();
@@ -9018,14 +9020,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The mode the mail's action rail is drawn in, in `class` (task E14.3): medium and narrow always
-    /// collapsed (decision 5); wide the one the person chose ([`App::actions`]). The choice holds even
-    /// where an expanded rail leaves the reader narrower than [`size::form_max()`]: the person asked for
-    /// it and can always collapse it again.
+    /// collapsed (decision 5); wide the one the person chose ([`App::actions`]) – but collapsed while an
+    /// expanded rail would leave the reader less than [`size::form_max()`] (finding 1 of the review),
+    /// so the mail never gets squeezed. The choice stays as it is: `]` and the button switch it, and
+    /// with more room it shows expanded again.
     fn rail_mode(&self, class: SizeClass) -> RailMode {
-        if class != SizeClass::Wide {
+        let expanded = self.actions == RailMode::Expanded;
+        if class != SizeClass::Wide || (expanded && !self.rail_can_expand()) {
             return RailMode::Collapsed;
         }
         self.actions
+    }
+
+    /// Whether an expanded rail leaves the reader at least [`size::form_max()`] – without, the
+    /// rail draws collapsed ([`App::rail_mode`]) with its toggle off ([`App::rail_toggle`]).
+    fn rail_can_expand(&self) -> bool {
+        self.reader_room(RailMode::Expanded) >= size::form_max()
+    }
+
+    /// How wide the reader's mail is beside a `rail` of that mode and the gap before it
+    /// (`mail::reader`), the divider placed as with the collapsed rail – an expanded one only
+    /// narrows the list's room further, never the reader's.
+    fn reader_room(&self, rail: RailMode) -> f32 {
+        let beside = |rail: RailMode| space::xs() + rail.width();
+        let limits = Limits::new(size::list(), self.content_width() - beside(RailMode::Collapsed));
+        self.content_width() - self.split.width(limits) - split::handle_width() - beside(rail)
     }
 
     /// The reader beside the list (task E8.3): in the wide mail window, for the mail open in the
@@ -9073,10 +9092,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The toggle of the mail's action rail in `class`: none in medium and narrow windows; in the wide
-    /// window always a working one, whatever the reader's width – the person can expand the rail also
-    /// where that squeezes the mail, and collapse it again.
+    /// window a working one while the rail can expand ([`App::rail_can_expand`]), else off with the reason
+    /// as its tooltip – the head stays, so the rail's icons do not move between designs and widths (issue
+    /// #291: Console's wider rail could not expand at 1600, and Reply jumped up without the head).
     fn rail_toggle(&self, class: SizeClass) -> RailToggle<Message> {
-        if class == SizeClass::Wide { RailToggle::On(Message::ToggleActions) } else { RailToggle::Hidden }
+        match (class, self.rail_can_expand()) {
+            (SizeClass::Wide, true) => RailToggle::On(Message::ToggleActions),
+            (SizeClass::Wide, false) => RailToggle::Off(tr("Widen the window to expand actions")),
+            _ => RailToggle::Hidden,
+        }
     }
 
     /// The group of `groups` that stands selected in the collapsed rail (finding 14): the one open
@@ -17808,36 +17832,35 @@ mod tests {
         let _ = app.view();
     }
 
-    /// Task E14.3 (review): the expanded rail is drawn even where the reader gets narrower than a
-    /// form's width – in the wide window at 1024 –, and the toggle stays working at every wide
-    /// width, so the person can always expand and collapse it; the divider reckons with the rail as
-    /// drawn.
+    /// Task E14.3 (finding 1): an expanded rail that would leave the reader less than a form's width
+    /// draws collapsed – in the wide window at 1024 – while the choice stays expanded, and expands
+    /// again with room; the divider reckons with the rail as drawn.
     #[test]
-    fn the_rail_expands_at_every_wide_width_and_its_toggle_stays_working() {
+    fn the_rail_draws_collapsed_where_the_reader_would_be_squeezed() {
         let mut app = mail_window(Density::Compact, &["--open", "mail-actions"]);
         let _ = app.update(Message::Resized(Size::new(1024.0, 760.0)));
         assert_eq!(app.class(), SizeClass::Wide);
-        assert_eq!((app.actions, app.rail_mode(SizeClass::Wide)), (RailMode::Expanded, RailMode::Expanded));
-        assert_eq!(app.split_limits().total, app.content_width() - space::xs() - RailMode::Expanded.width());
-        assert!(
-            matches!(app.rail_toggle(SizeClass::Wide), RailToggle::On(Message::ToggleActions)),
-            "narrow, but the toggle works"
-        );
-        let anchors = detail::Anchors::default().with_rail();
-        let _ = app.view();
-        // Collapsing gives the reader its room back.
-        let _ = app.update(Message::ToggleActions);
-        assert_eq!((app.actions, app.rail_mode(SizeClass::Wide)), (RailMode::Collapsed, RailMode::Collapsed));
+        assert_eq!((app.actions, app.rail_mode(SizeClass::Wide)), (RailMode::Expanded, RailMode::Collapsed));
         assert_eq!(app.split_limits().total, app.content_width() - space::xs() - RailMode::Collapsed.width());
+        let anchors = detail::Anchors::default().with_rail();
         let _ = app.update(Message::Rail(RailEvent::Open(1)));
-        assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "collapsed, its groups open beside it");
+        assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "drawn collapsed, its groups open beside it");
+        let _ = app.view();
+        assert!(!app.rail_can_expand(), "no button to expand where it cannot");
+        // Issue #291: but the head stays with the toggle off, so Reply and the rest do not move.
+        let off = app.rail_toggle(SizeClass::Wide);
+        assert!(matches!(off, RailToggle::Off(why) if why == tr("Widen the window to expand actions")), "{off:?}");
+        assert!(off.has_head());
+        let _ = app.update(Message::ToggleActions);
+        assert_eq!(app.actions, RailMode::Expanded, "`]` keeps the choice while the rail cannot expand");
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Actions(..))));
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!(app.rail_mode(SizeClass::Wide), RailMode::Expanded, "with room it shows expanded");
+        assert!(app.reader_room(RailMode::Expanded) >= size::form_max());
         assert!(
             matches!(app.rail_toggle(SizeClass::Wide), RailToggle::On(Message::ToggleActions)),
-            "and it works the other way too"
+            "with room it works"
         );
-        // Expanding again, also with the reader narrow.
-        let _ = app.update(Message::ToggleActions);
-        assert_eq!(app.rail_mode(SizeClass::Wide), RailMode::Expanded);
         assert!(matches!(app.rail_toggle(SizeClass::Medium), RailToggle::Hidden), "medium and narrow draw no head");
         assert!(matches!(app.rail_toggle(SizeClass::Narrow), RailToggle::Hidden));
         let _ = app.view();
