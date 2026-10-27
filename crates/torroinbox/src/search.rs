@@ -274,28 +274,41 @@ impl QuickFilter {
     }
 }
 
-/// The words of `query` apart at white space outside quotes, so a phrase stays one word. As in the
-/// core, a quote opens only at the start of a word or right after `name:`; one inside a word (`12"`)
-/// is just a character.
+/// The words of `query` as the core reads them (`crates/torroworkplace/src/mail/query.rs`): apart at
+/// white space outside quotes, so a phrase stays one word. A quote opens a phrase only at the start of
+/// a word, after a leading `-`, or right after the first `:` (`subject:"…"`); inside a word (`12"`) it
+/// is a character. The closing quote ends the word, what follows it is the next one.
 fn query_words(query: &str) -> Vec<&str> {
     let mut words = Vec::new();
-    let (mut start, mut quoted, mut before) = (None, false, ' ');
+    let (mut word, mut colon, mut quoted): (Option<usize>, Option<usize>, bool) = (None, None, false);
     for (at, c) in query.char_indices() {
-        let opens = c == '"' && !quoted && (start.is_none() || before == ':');
-        if opens || (c == '"' && quoted) {
-            quoted = !quoted;
-        }
-        match (c.is_whitespace() && !quoted, start) {
-            (true, Some(from)) => {
-                words.push(&query[from..at]);
-                start = None;
+        if quoted {
+            if c == '"' {
+                quoted = false;
+                if let Some(from) = word.take() {
+                    words.push(&query[from..at + 1]);
+                }
+                colon = None;
             }
-            (false, None) if !c.is_whitespace() => start = Some(at),
-            _ => {}
+            continue;
         }
-        before = c;
+        if c.is_whitespace() {
+            if let Some(from) = word.take() {
+                words.push(&query[from..at]);
+            }
+            colon = None;
+            continue;
+        }
+        let from = *word.get_or_insert(at);
+        if c == ':' && colon.is_none() {
+            colon = Some(at);
+        }
+        if c == '"' {
+            let after_dash = query[from..].starts_with('-') && at == from + 1;
+            quoted = at == from || after_dash || colon.is_some_and(|name| name + 1 == at);
+        }
     }
-    if let Some(from) = start {
+    if let Some(from) = word {
         words.push(&query[from..]);
     }
     words
@@ -1213,6 +1226,21 @@ mod tests {
         assert_eq!(pizza, "12\" pizza is:unread");
         assert_eq!(active(&pizza, today), [QuickFilter::Unread]);
         assert_eq!(toggle(&pizza, QuickFilter::Unread, today), "12\" pizza");
+        // Where the core opens a phrase, so does the menu: after a `-`, after `name:`, after a closed one.
+        for phrase in ["-\"a is:unread b\"", "subject:\"a is:unread b\"", "\"a\" \"b c is:unread d\""] {
+            assert!(active(phrase, today).is_empty(), "{phrase}");
+            assert_eq!(without_filters(phrase, today), phrase, "{phrase}");
+        }
+        assert_eq!(active("\"a b\"is:unread", today), [QuickFilter::Unread]);
+        assert_eq!(toggle("\"a b\"is:unread", QuickFilter::Unread, today), "\"a b\"");
+        assert!(active("a:b:\"x is:unread y\"", today).len() == 1, "only the first colon names an operator");
+        assert_eq!(
+            query_words("\"a\"\"b c is:unread d\""),
+            ["\"a\"", "\"b c is:unread d\""],
+            "a phrase right after one"
+        );
+        assert_eq!(query_words("\"a b c"), ["\"a b c"], "a phrase left open runs to the end");
+        assert_eq!(query_words("  ä:\"é ü\" ö\t\"  "), ["ä:\"é ü\"", "ö", "\"  "]);
     }
 
     #[test]
