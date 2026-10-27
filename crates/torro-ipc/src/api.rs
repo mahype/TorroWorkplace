@@ -3308,7 +3308,8 @@ static SNOOZE_ITEM: Command = Command {
     description: "Puts an inbox entry off until `until` (RFC 3339), when it comes back as new, or takes it back \
                   without `until`; returns the entry. Approvals and account problems are the person's \
                   (`not-found`). `id` may be a mail message's id (`m:…`): the entry of its conversation, filed \
-                  first if there is none. On mail it is a follow-up: new mail in the conversation brings it back \
+                  first if there is none (`unsupported` when a rule hides the mail); without `until` nothing is \
+                  filed and the answer is the entry it would be. On mail it is a follow-up: new mail in the conversation brings it back \
                   early; `unless_reply` ends it when someone replies, `keep_open` sets it without putting the \
                   entry off (see the fields). Snoozed mail is left out of mail_search_messages with `snoozed: \
                   false`.",
