@@ -37,7 +37,10 @@ globalen Tasten belegen darf. Unter Hyprland geschieht das über die Lua-Schnitt
 Managers (`hl.bind`, `hl.unbind`): zur Laufzeit, nach dem Start und nach jedem Neuladen der
 Konfiguration erneut; die Konfigurationsdatei bleibt unberührt. Die Taste ruft dann
 `torroworkplace ctl setups load <id> --mode add` auf. Unter macOS und Windows meldet der Dienst die
-Tasten über das Crate `global-hotkey` an; ein Druck lädt die Vorlage wie „Hinzufügen“ im Menü.
+Tasten über das Crate `global-hotkey` an; ein Druck lädt die Vorlage wie „Hinzufügen“ im Menü. Der
+Modifikator ist einstellbar, Vorgabe Super + Alt unter Linux, Ctrl + Option unter macOS und Ctrl + Shift
+unter Windows: Dort meldet das System AltGr als Ctrl + Alt, Ctrl + Alt + Ziffer nähme also die Tasten,
+die auf deutscher Tastatur `{ [ ] } ² ³` tippen.
 
 ## Funktionen
 

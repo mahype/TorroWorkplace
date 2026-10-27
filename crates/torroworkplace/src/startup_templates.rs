@@ -14,6 +14,10 @@
 //!    does; a failing template does not stop the others ([`load_all`]);
 //! 4. gives the focus back to the screen that had it and writes the marker.
 //!
+//! The core runs the pass holding the turn of saves and loads (`Core::load_at_login`), after any one
+//! that runs is over: no other save or load moves the focus between focusing a screen and loading onto
+//! it, and the pass moves none while another one runs.
+//!
 //! The marker is written once the pass ran, also when single templates failed: a failure is reported
 //! (stderr and a notification, [`report`]) and would only fail again, so trying anew at every restart
 //! of the daemon in the same session would load the templates that did work a second time. It is not
@@ -51,6 +55,8 @@ pub struct Pace {
 impl Pace {
     /// At login: once a second, for a minute at most.
     pub const LOGIN: Pace = Pace { every: Duration::from_secs(1), tries: 60 };
+    /// Once the screens settled already: [`SAME_IN_A_ROW`] reads at once, only to see they still hold.
+    pub const SETTLED: Pace = Pace { every: Duration::ZERO, tries: SAME_IN_A_ROW as u32 };
 }
 
 /// One session of the person: what tells a login from a restart of the daemon.
@@ -167,7 +173,7 @@ pub fn in_order(templates: Vec<Template>) -> Vec<Template> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     /// The load ran, or its screen could not be focused (then an `error`): the answer, as the menu's
-    /// "Add" gets it (`Response::Loaded`, or an error such as `busy`). Boxed: an answer is large.
+    /// "Add" gets it (`Response::Loaded`, or an error such as `not-found`). Boxed: an answer is large.
     Ran(Box<Response>),
     /// Its screen is missing and its [`ScreenFallback::Skip`](torro_setups::ScreenFallback::Skip) says
     /// not to load it elsewhere.
@@ -188,9 +194,10 @@ pub struct Done {
 
 /// Loads each of `templates` (in this order) onto its screen among `monitors`: focuses the screen
 /// [`torro_setups::Startup::monitor_in`] picks, then `load` with the template's id, which must load it
-/// like `Request::LoadTemplate { mode: Add }` does (the core passes exactly that request). A template with
-/// no screen is [`Outcome::Skipped`], one whose screen cannot be focused fails without loading, so it
-/// never lands on the wrong screen; neither stops the others.
+/// like `Request::LoadTemplate { mode: Add }` does (the core loads it the same way, `Core::load_template`).
+/// A template with no screen is [`Outcome::Skipped`], one whose screen cannot be focused fails without
+/// loading, so it never lands on the wrong screen; neither stops the others. The caller holds the turn
+/// of saves and loads, so `load` never answers `busy` and nothing else moves the focus in between.
 ///
 /// Afterwards the screen that showed the active workspace before gets the focus back, so the person
 /// finds the screen they were on; when none did, the focus stays where the last load left it.
@@ -251,7 +258,8 @@ pub struct Marking<'a> {
 
 /// The whole pass at the daemon's start (see the module): nothing when `marking` says this session
 /// loaded already; else waits for the screens ([`settled_monitors`] with `pace`), loads the templates
-/// that load at login ([`in_order`], [`load_all`] with `load`) and writes the marker.
+/// that load at login ([`in_order`], [`load_all`] with `load`) and writes the marker. The caller holds
+/// the turn of saves and loads for the whole pass (see the module).
 ///
 /// `templates` is what the store listed. Returns what was done, `None` when the pass did not run:
 /// loaded already in this session, the templates unreadable, or no screens. Without templates to load
@@ -545,7 +553,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let file = dir.path().join(FILE);
         let wm = two_screens();
-        let busy = Response::Error { code: "busy".into(), message: "another save or load is running".into() };
+        let broken = Response::Error { code: "not-found".into(), message: "no template first".into() };
         let templates = vec![
             template("first", Some(1), Some(("DP-1", ScreenFallback::Main))),
             template("second", Some(2), Some(("DP-1", ScreenFallback::Main))),
@@ -553,7 +561,7 @@ mod tests {
         let seen = Mutex::new(Vec::new());
         let load = |id: String| {
             seen.lock().expect("seen").push(id.clone());
-            let answer = if id == "first" { busy.clone() } else { loaded() };
+            let answer = if id == "first" { broken.clone() } else { loaded() };
             async move { answer }
         };
         let session = Session::Boot(1_700_000_000);
@@ -561,9 +569,9 @@ mod tests {
 
         let done = run(&wm, Ok(templates), marking, QUICK, load).await.expect("ran");
 
-        assert_eq!(done[0].outcome, Outcome::Ran(Box::new(busy)));
+        assert_eq!(done[0].outcome, Outcome::Ran(Box::new(broken)));
         assert_eq!(done[1].outcome, Outcome::Ran(Box::new(loaded())));
-        assert_eq!(*seen.lock().expect("seen"), ["first", "second"]);
+        assert_eq!(*seen.lock().expect("seen"), ["first", "second"], "one failing does not stop the next");
         assert!(already_loaded(&file, &session));
     }
 

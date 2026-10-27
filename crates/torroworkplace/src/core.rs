@@ -1351,7 +1351,7 @@ async fn category_job_run(
                 }
             };
             if let Some(facts) = facts
-                && !facts.category.is_some_and(|held| held.source != torro_mail::CategorySource::Model)
+                && facts.category.is_none_or(|held| held.source == torro_mail::CategorySource::Model)
             {
                 let input = torro_inbox::rules::SortInput {
                     sender: facts.sender.as_deref(),
@@ -2068,9 +2068,7 @@ impl Core {
     }
 
     /// Loads the templates that load at login, once per session, in the background
-    /// ([`crate::startup_templates::run`], task WS.5): each the way `workspaces.load_template` in the
-    /// mode `add` does, through [`Core::handle`], so it takes its turn with the other saves and loads
-    /// (`busy` while one runs). Without a window manager nothing. Part of [`Core::start`].
+    /// ([`Core::load_at_login`], task WS.5). Without a window manager nothing. Part of [`Core::start`].
     fn load_templates_at_login(self: &Arc<Self>) {
         if matches!(self.backend, Backend::Unsupported { .. }) {
             return;
@@ -2083,15 +2081,53 @@ impl Core {
                 file: file.as_deref(),
                 session: crate::startup_templates::Session::current(),
             };
-            let core = &core;
-            let load = |id: String| core.handle(Request::LoadTemplate { id, mode: torro_setups::LoadMode::Add });
             let pace = crate::startup_templates::Pace::LOGIN;
-            if let Some(done) =
-                crate::startup_templates::run(&core.backend, core.store.list(), marking, pace, load).await
-            {
+            if let Some(done) = core.load_at_login(&core.backend, &SystemLauncher, marking, pace).await {
                 crate::startup_templates::report(&done);
             }
         });
+    }
+
+    /// The pass of [`crate::startup_templates::run`] on `wm`, each template loaded the way
+    /// `workspaces.load_template` in the mode `add` does ([`Core::load_template`], with `launcher`).
+    ///
+    /// It takes its turn with the other saves and loads, but waits for it instead of answering `busy`:
+    /// first until a save or load that runs is over, then it holds the turn ([`Core::exclusive`]) for
+    /// the whole pass. Focusing a screen while another load runs would put that load's windows on the
+    /// wrong workspace, and an update running meanwhile would capture the wrong one; so the pass
+    /// touches no screen before it has the turn, and while it runs, other saves and loads answer
+    /// `busy`. The wait for the screens ([`crate::startup_templates::settled_monitors`], up to a minute)
+    /// comes before the turn, so keys and the tray stay free meanwhile; under the turn `run` only reads
+    /// them again at once ([`crate::startup_templates::Pace::SETTLED`]).
+    async fn load_at_login(
+        &self,
+        wm: &impl WindowManager,
+        launcher: &impl Launcher,
+        marking: crate::startup_templates::Marking<'_>,
+        pace: crate::startup_templates::Pace,
+    ) -> Option<Vec<crate::startup_templates::Done>> {
+        // Only reads the screens, moves nothing: needs no turn.
+        crate::startup_templates::settled_monitors(|| wm.monitors(), pace).await;
+        let _turn = self.work.lock().await;
+        let pace = crate::startup_templates::Pace::SETTLED;
+        let load = |id: String| async move {
+            self.load_template(wm, launcher, &id, torro_setups::LoadMode::Add).await.unwrap_or_else(|err| error(&err))
+        };
+        crate::startup_templates::run(wm, self.store.list(), marking, pace, load).await
+    }
+
+    /// Loads template `id` with `wm` and `launcher` in `mode`: what `workspaces.load_template` does
+    /// once it has the turn. The caller holds the turn ([`Core::exclusive`], [`Core::load_at_login`]).
+    async fn load_template(
+        &self,
+        wm: &impl WindowManager,
+        launcher: &impl Launcher,
+        id: &str,
+        mode: torro_setups::LoadMode,
+    ) -> Result<Response, SetupsError> {
+        let template = self.store.load(id)?;
+        let report = restore(wm, launcher, &template, mode, &RestoreOptions::default()).await?;
+        Ok(Response::loaded(&report))
     }
 
     /// The template keys as [`Core::report_shortcuts`] last told, with the modifiers the settings
@@ -4383,13 +4419,7 @@ impl Core {
                 .await
             }
             Request::LoadTemplate { id, mode } => {
-                self.exclusive(async {
-                    let template = self.store.load(&id)?;
-                    let report =
-                        restore(&self.backend, &SystemLauncher, &template, mode, &RestoreOptions::default()).await?;
-                    Ok(Response::loaded(&report))
-                })
-                .await
+                self.exclusive(self.load_template(&self.backend, &SystemLauncher, &id, mode)).await
             }
             Request::Sync => self.sync(reach).await,
             Request::ConnectGithub => self.connect_github(client).await,
@@ -9004,7 +9034,7 @@ impl Core {
 
     /// Runs a save or load unless another one is running; every command that writes a template runs
     /// through here (save, update, delete, rename, key, startup), so none writes over another's
-    /// change. `busy` while one runs.
+    /// change. `busy` while one runs, also while the login pass holds the turn ([`Core::load_at_login`]).
     async fn exclusive(&self, work: impl Future<Output = Result<Response, SetupsError>>) -> Response {
         let Ok(_guard) = self.work.try_lock() else {
             return Response::Error { code: "busy".into(), message: "another save or load is running".into() };
@@ -10851,6 +10881,68 @@ mod tests {
             Response::Saved { template } => template,
             other => panic!("expected the saved template, got {other:?}"),
         }
+    }
+
+    /// Issue #243: while another save or load holds the turn, the login pass waits for it without
+    /// touching a screen (focusing one would move the other load's windows); then it focuses its
+    /// screen and loads.
+    #[tokio::test]
+    async fn the_login_pass_waits_for_a_running_load_without_moving_the_focus() {
+        use torro_wm::fake::{Call, FakeWm};
+        use torro_wm::{Monitor, Rect, WorkspaceId};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let now = chrono::Utc::now();
+        core.store
+            .save(&torro_setups::Template {
+                schema_version: torro_setups::SCHEMA_VERSION,
+                id: "dev".into(),
+                name: "Dev".into(),
+                wm: "hyprland".into(),
+                created: now,
+                updated: now,
+                source: torro_setups::Source { workspace: "7".into(), monitor: None, monitor_rect: None },
+                tree: None,
+                windows: vec![],
+                shortcut: Some(1),
+                startup: Some(torro_setups::Startup {
+                    screen: "HDMI-A-1".into(),
+                    fallback: torro_setups::ScreenFallback::Main,
+                }),
+            })
+            .expect("saved");
+        let wm = FakeWm::new("1");
+        let screen = |name: &str, x, workspace: &str| Monitor {
+            name: name.into(),
+            rect: Rect { x, y: 0, width: 1920, height: 1080 },
+            scale: 1.0,
+            active_workspace: Some(WorkspaceId(workspace.into())),
+        };
+        wm.set_monitors(vec![screen("DP-1", 0, "1"), screen("HDMI-A-1", 1920, "7")]);
+        let marking =
+            crate::startup_templates::Marking { file: None, session: crate::startup_templates::Session::Boot(1) };
+        let pace = crate::startup_templates::Pace { every: std::time::Duration::ZERO, tries: 3 };
+        let launcher = Recorder::default();
+
+        let other = core.work.lock().await;
+        let pass = core.load_at_login(&wm, &launcher, marking, pace);
+        tokio::pin!(pass);
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(100), &mut pass).await;
+        assert!(waited.is_err(), "the pass waits for the other load");
+        assert!(wm.calls().is_empty(), "nothing focused while another load runs: {:?}", wm.calls());
+        drop(other);
+
+        let done = pass.await.expect("the pass ran");
+        assert_eq!(done.len(), 1);
+        assert!(
+            matches!(&done[0].outcome, crate::startup_templates::Outcome::Ran(answer) if matches!(**answer, Response::Loaded { .. })),
+            "{:?}",
+            done[0].outcome
+        );
+        let focused: Vec<Call> = wm.calls().into_iter().filter(|call| matches!(call, Call::FocusMonitor(_))).collect();
+        assert_eq!(focused.first(), Some(&Call::FocusMonitor("HDMI-A-1".into())), "focused once it had the turn");
+        // The turn is free again for the person's saves and loads.
+        assert!(core.work.try_lock().is_ok());
     }
 
     /// Issue #243: a key moves to the template that gets it, `null` takes it away, and every other

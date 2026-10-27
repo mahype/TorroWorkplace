@@ -187,7 +187,7 @@ pub struct Settings {
     pub web_search: WebSearch,
     /// Workspace templates (issue #243): the modifiers held with the digit keys that load them
     /// ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of
-    /// this system (Linux super_alt, macOS and Windows ctrl_alt).
+    /// this system (Linux super_alt, macOS ctrl_alt, Windows ctrl_shift).
     #[serde(default, deserialize_with = "lenient")]
     #[schemars(transform = without_default)]
     pub workspaces: WorkspaceSettings,
@@ -199,7 +199,7 @@ pub struct Settings {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSettings {
     /// The modifiers held with a digit key `1` … `0` to load the template that has the key, one
-    /// choice for all templates; default per system: Linux super_alt, macOS and Windows ctrl_alt.
+    /// choice for all templates; default per system: Linux super_alt, macOS ctrl_alt, Windows ctrl_shift.
     #[serde(default)]
     #[schemars(transform = without_default)]
     pub modifiers: ShortcutModifiers,
@@ -223,9 +223,9 @@ pub enum ShortcutModifiers {
     SuperAlt,
     /// `"super_ctrl"`: Super + Ctrl.
     SuperCtrl,
-    /// `"ctrl_alt"`: Ctrl + Alt (Control + Option on macOS), the default on macOS and Windows.
+    /// `"ctrl_alt"`: Ctrl + Alt (Control + Option on macOS), the default on macOS.
     CtrlAlt,
-    /// `"ctrl_shift"`: Ctrl + Shift.
+    /// `"ctrl_shift"`: Ctrl + Shift, the default on Windows.
     CtrlShift,
 }
 
@@ -240,14 +240,22 @@ impl ShortcutModifiers {
 }
 
 impl Default for ShortcutModifiers {
-    /// Super + Alt on Linux (Hyprland binds Super + digit itself), Ctrl + Option on macOS (Command
-    /// + Option + digit is taken by many apps), Ctrl + Alt on Windows.
+    /// The default of the system this runs on ([`default_modifiers_on`]).
     fn default() -> ShortcutModifiers {
-        if cfg!(any(target_os = "macos", target_os = "windows")) {
-            ShortcutModifiers::CtrlAlt
-        } else {
-            ShortcutModifiers::SuperAlt
-        }
+        default_modifiers_on(std::env::consts::OS)
+    }
+}
+
+/// The default modifiers of the template keys on the system `os` names (as `std::env::consts::OS`):
+/// Super + Alt on Linux and every other system (Hyprland binds Super + digit itself), Ctrl + Option on
+/// `"macos"` (Command + Option + digit is taken by many apps), Ctrl + Shift on `"windows"`: Windows
+/// reports AltGr as Ctrl + Alt, so Ctrl + Alt + digit would take the keys that type `{ [ ] } ² ³` on
+/// a German keyboard, and the Windows key with a digit belongs to the taskbar.
+fn default_modifiers_on(os: &str) -> ShortcutModifiers {
+    match os {
+        "macos" => ShortcutModifiers::CtrlAlt,
+        "windows" => ShortcutModifiers::CtrlShift,
+        _ => ShortcutModifiers::SuperAlt,
     }
 }
 
@@ -2326,8 +2334,13 @@ mod tests {
     fn the_template_keys_modifiers_are_read_leniently() {
         use super::{Settings, ShortcutModifiers};
 
-        let mac_or_windows = cfg!(any(target_os = "macos", target_os = "windows"));
-        let default = if mac_or_windows { ShortcutModifiers::CtrlAlt } else { ShortcutModifiers::SuperAlt };
+        let default = if cfg!(target_os = "macos") {
+            ShortcutModifiers::CtrlAlt
+        } else if cfg!(target_os = "windows") {
+            ShortcutModifiers::CtrlShift
+        } else {
+            ShortcutModifiers::SuperAlt
+        };
         assert_eq!(Settings::default().workspaces.modifiers, default);
         let old: Settings = serde_json::from_str("{}").expect("old file");
         assert_eq!(old.workspaces.modifiers, default, "a file from before issue #243");
@@ -2339,6 +2352,19 @@ mod tests {
                 .expect("odd value");
         assert_eq!(odd.workspaces.modifiers, default);
         assert_eq!(serde_json::to_value(ShortcutModifiers::SuperCtrl).expect("json"), "super_ctrl");
+    }
+
+    /// PR #259: Linux takes Super + Alt, macOS Ctrl + Option, Windows Ctrl + Shift, since Ctrl + Alt is
+    /// AltGr there; any other system names the keys as Linux does.
+    #[test]
+    fn the_template_keys_default_per_system() {
+        use super::{ShortcutModifiers, default_modifiers_on};
+
+        assert_eq!(default_modifiers_on("linux"), ShortcutModifiers::SuperAlt);
+        assert_eq!(default_modifiers_on("macos"), ShortcutModifiers::CtrlAlt);
+        assert_eq!(default_modifiers_on("windows"), ShortcutModifiers::CtrlShift);
+        assert_eq!(default_modifiers_on("freebsd"), ShortcutModifiers::SuperAlt);
+        assert_eq!(ShortcutModifiers::default(), default_modifiers_on(std::env::consts::OS));
     }
 
     /// Task E12.5: the assignments are read leniently – an entry this version cannot use is

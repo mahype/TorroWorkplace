@@ -12,8 +12,9 @@
 //! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
 //!   ([`tend_inbox`]),
 //!
-//! and ends on "Quit", Ctrl+C or when the socket server fails. Every command, from the
-//! tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
+//! and ends on "Quit", Ctrl+C, SIGTERM on Unix (`systemctl --user stop`, `kill`; [`stop_signals`]) or
+//! when the socket server fails; Ctrl+C and SIGTERM during the start end the process at once. Every
+//! command, from the tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
 //! state directory before the core starts ([`claim_service`]), and when it ends it stops the socket
 //! server and releases the template keys it bound on Hyprland ([`Core::release_template_keys`]), after
 //! which nothing binds them again, and ends the MCP servers it started with their process trees
@@ -439,9 +440,13 @@ async fn serve(shows: Shows) -> Result<(), String> {
         Err(err) => eprintln!("torroworkplace: no window manager events: {err}"),
     }
 
+    // Only now, with nothing left to wait for before the `select!`: during the start Ctrl+C and SIGTERM
+    // end the process at once, as without a handler (the keys bound by then are written down, the next
+    // start releases them); a handler installed earlier would hold them until the start is through.
+    let stopped = stop_signals();
     let result = tokio::select! {
         _ = quit_rx.recv() => Ok(()),
-        _ = tokio::signal::ctrl_c() => Ok(()),
+        () = stopped => Ok(()),
         ended = &mut ipc => match ended {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err.to_string()),
@@ -498,6 +503,68 @@ async fn once_listening(
     remove_mark(start_mark);
     then.await;
     true
+}
+
+/// Resolves when the service is told from outside to end: Ctrl+C (SIGINT on Unix) on every system and,
+/// on Unix, SIGTERM, which `systemctl --user stop` and `kill` send. Both then take the same way out as
+/// "Quit": the socket stops and the template keys are released ([`serve`]).
+///
+/// Both handlers are installed by the call, not when the future is first polled (as
+/// `tokio::signal::ctrl_c` would), so a signal between the call and the first poll is kept, not deadly.
+/// Until the call both signals end the process the default way, at once; tokio never takes a handler
+/// back, so from the call on they no longer do. [`serve`] therefore calls it only once the service
+/// runs, right before it waits. Must be called inside the runtime. A handler that cannot be installed
+/// is logged, and that signal keeps ending the process at once.
+fn stop_signals() -> impl Future<Output = ()> + Send + 'static {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::SignalKind;
+        let interrupted = on_signal(SignalKind::interrupt(), "Ctrl+C");
+        let terminated = on_signal(SignalKind::terminate(), "SIGTERM");
+        async move {
+            tokio::select! {
+                () = interrupted => {}
+                () = terminated => {}
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let ctrl_c = tokio::signal::windows::ctrl_c()
+            .inspect_err(|err| {
+                eprintln!("torroworkplace: cannot listen for Ctrl+C: {err}; it ends the service at once")
+            })
+            .ok();
+        async move {
+            match ctrl_c {
+                Some(mut ctrl_c) => {
+                    ctrl_c.recv().await;
+                }
+                None => std::future::pending().await,
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::future::pending::<()>()
+    }
+}
+
+/// Unix: resolves on the signal `kind` (`name` for the log), with the handler installed by the call;
+/// never when it cannot be installed (logged), so that signal keeps its default ([`stop_signals`]).
+#[cfg(unix)]
+fn on_signal(kind: tokio::signal::unix::SignalKind, name: &str) -> impl Future<Output = ()> + Send + 'static {
+    let signal = tokio::signal::unix::signal(kind)
+        .inspect_err(|err| eprintln!("torroworkplace: cannot listen for {name}: {err}; it ends the service at once"))
+        .ok();
+    async move {
+        match signal {
+            Some(mut signal) => {
+                signal.recv().await;
+            }
+            None => std::future::pending().await,
+        }
+    }
 }
 
 /// Makes this process the one service of the user: locks [`SERVICE_LOCK`] for as long as the
@@ -1239,5 +1306,74 @@ mod tests {
             collection: Some("work".into()),
         };
         assert_eq!(describe(&answer), "answer an invitation");
+    }
+
+    /// Set for this test binary as a child of [`a_stop_signal_ends_the_service_like_quit`]: only then
+    /// does [`stop_signals_in_a_child`] wait for a signal.
+    #[cfg(unix)]
+    const STOP_CHILD: &str = "TORRO_TEST_STOP_SIGNALS";
+
+    /// What the child prints once [`stop_signals`] is called.
+    #[cfg(unix)]
+    const STOP_READY: &str = "torro-stop-signals-ready";
+
+    /// PR #259: `systemctl --user stop` and `kill` send SIGTERM, a terminal Ctrl+C sends SIGINT; both
+    /// must end the service the way "Quit" does (releasing the template keys), not kill the process,
+    /// also when they come before anything waits for them.
+    ///
+    /// The signal goes to a child, this test binary running only [`stop_signals_in_a_child`], never to
+    /// the test binary itself: tokio never takes a handler back, so the test binary would ignore SIGTERM
+    /// and Ctrl+C from then on, and `timeout`, the test runner or a person could no longer stop it.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_signal_ends_the_service_like_quit() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        let path = module_path!().split_once("::").map_or(module_path!(), |(_, path)| path);
+        let test = format!("{path}::stop_signals_in_a_child");
+        for signal in ["TERM", "INT"] {
+            let mut child = Command::new(std::env::current_exe().expect("test binary"))
+                .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+                .env(STOP_CHILD, "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("child starts");
+            let mut lines = std::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
+            // On the line of the test runner's "test … ", which ends only after the test.
+            let ready = lines.by_ref().map_while(Result::ok).any(|line| line.contains(STOP_READY));
+            if ready {
+                let sent = Command::new("kill")
+                    .args([format!("-{signal}"), child.id().to_string()])
+                    .status()
+                    .expect("kill runs");
+                assert!(sent.success(), "SIG{signal} not sent");
+            }
+            // Read to the end: the child still writes its result, a closed pipe would fail it.
+            let rest: Vec<String> = lines.map_while(Result::ok).collect();
+            let output = child.wait_with_output().expect("child ends");
+            let errors = String::from_utf8_lossy(&output.stderr);
+            assert!(ready, "the child never got ready: {rest:?} {errors}");
+            assert!(
+                output.status.success(),
+                "SIG{signal} did not end it like Quit: {:?} {rest:?} {errors}",
+                output.status
+            );
+        }
+    }
+
+    /// The child of [`a_stop_signal_ends_the_service_like_quit`]; without [`STOP_CHILD`] it does
+    /// nothing. Waits a while before it polls [`stop_signals`]: the signal comes meanwhile and must be
+    /// kept, not end the process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_signals_in_a_child() {
+        if std::env::var_os(STOP_CHILD).is_none() {
+            return;
+        }
+        let stopped = stop_signals();
+        println!("{STOP_READY}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(tokio::time::timeout(Duration::from_secs(10), stopped).await.is_ok(), "the signal did not end it");
     }
 }

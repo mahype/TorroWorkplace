@@ -269,7 +269,7 @@ fn cancelled(event: &Event) -> bool {
 /// Another event than `event` with a call link runs at `now`; a cancelled one does not count.
 fn in_a_call(events: &[Event], event: &Event, now: DateTime<Utc>) -> bool {
     events.iter().any(|other| {
-        !(other.uid == event.uid && other.start == event.start)
+        (other.uid != event.uid || other.start != event.start)
             && !cancelled(other)
             && running(other, now)
             && join_of(other).is_some()

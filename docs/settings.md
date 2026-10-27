@@ -528,7 +528,7 @@ Start sind Eigenschaften einer Vorlage. Jede hat einen eigenen Befehl (`workspac
 - **Fenstermanager:** Gruppe „Window manager“ mit Name, Version und Bildschirmen. Fehlt er, steht da, welcher
   erwartet wird und was zu tun ist.
 - **Tastenkürzel:** Zeile „Shortcuts“ mit der Wahl des Modifikators (`set_setting workspace_shortcuts`). Vorgabe:
-  Super + Alt unter Linux, Ctrl + Option unter macOS, Ctrl + Alt unter Windows. Die Zeile sagt, ob die Tasten wirken,
+  Super + Alt unter Linux, Ctrl + Option unter macOS, Ctrl + Shift unter Windows. Die Zeile sagt, ob die Tasten wirken,
   oder warum nicht.
 - **Vorlagen:** nach Taste sortiert (1 … 9, 0, dann ohne Taste). Je Zeile die Taste, der Name, Fensterzahl und
   Alter, „Beim Start · DP-1“ bei Start, „Laden“ (in den aktiven Workspace, wie „Hinzufügen“) und „…“ mit

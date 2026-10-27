@@ -1896,7 +1896,7 @@ pub mod storage {
             Message::Job(action) => {
                 let Some(account) = selected(state, data).map(str::to_string) else { return Action::None };
                 if action == MailCacheAction::CleanCache
-                    && !state.cleanup_preview.as_ref().is_some_and(|estimate| estimate.account == account)
+                    && state.cleanup_preview.as_ref().is_none_or(|estimate| estimate.account != account)
                 {
                     return Action::None;
                 }

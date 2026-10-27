@@ -3624,7 +3624,8 @@ pub enum SettingKey {
     /// key (issue #243, `workspaces.set_template_shortcut`): `"super_alt"`, `"super_ctrl"`,
     /// `"ctrl_alt"` or `"ctrl_shift"` (`torro_core::settings::ShortcutModifiers`; on macOS Super is
     /// Command and Alt is Option). One choice for all templates; the default is Super + Alt on
-    /// Linux, Ctrl + Alt (Control + Option) on macOS and Windows. The keys are bound anew at once.
+    /// Linux, Ctrl + Alt (Control + Option) on macOS and Ctrl + Shift on Windows. The keys are bound
+    /// anew at once.
     WorkspaceShortcuts,
     /// The map and the place search of the event editor (task TE.1, `docs/termin-editor.md`), as one
     /// object; it changes only the fields it names (`torro_core::settings::Maps`): `{"enabled":
