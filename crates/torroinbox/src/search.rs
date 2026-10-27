@@ -274,12 +274,15 @@ impl QuickFilter {
     }
 }
 
-/// The words of `query` apart at white space outside quotes, so a phrase stays one word.
+/// The words of `query` apart at white space outside quotes, so a phrase stays one word. As in the
+/// core, a quote opens only at the start of a word or right after `name:`; one inside a word (`12"`)
+/// is just a character.
 fn query_words(query: &str) -> Vec<&str> {
     let mut words = Vec::new();
-    let (mut start, mut quoted) = (None, false);
+    let (mut start, mut quoted, mut before) = (None, false, ' ');
     for (at, c) in query.char_indices() {
-        if c == '"' {
+        let opens = c == '"' && !quoted && (start.is_none() || before == ':');
+        if opens || (c == '"' && quoted) {
             quoted = !quoted;
         }
         match (c.is_whitespace() && !quoted, start) {
@@ -287,9 +290,10 @@ fn query_words(query: &str) -> Vec<&str> {
                 words.push(&query[from..at]);
                 start = None;
             }
-            (false, None) => start = Some(at),
+            (false, None) if !c.is_whitespace() => start = Some(at),
             _ => {}
         }
+        before = c;
     }
     if let Some(from) = start {
         words.push(&query[from..]);
@@ -806,11 +810,11 @@ impl DemoQuery {
                 Some(("to", who)) => parsed.to.push(who.to_owned()),
                 Some(("subject", word)) => parsed.subject.push(word.to_owned()),
                 Some(("in", folder)) => parsed.folder = Some(folder.to_owned()),
-                Some(("has", "attachment")) => parsed.attachment = true,
+                Some(("has", "attachment" | "attachments")) => parsed.attachment = true,
                 Some(("is", "unread")) => parsed.flags.push((Flag::Seen, false)),
                 Some(("is", "read")) => parsed.flags.push((Flag::Seen, true)),
-                Some(("is", "flagged")) => parsed.flags.push((Flag::Flagged, true)),
-                Some(("is", "unflagged")) => parsed.flags.push((Flag::Flagged, false)),
+                Some(("is", "flagged" | "starred")) => parsed.flags.push((Flag::Flagged, true)),
+                Some(("is", "unflagged" | "unstarred")) => parsed.flags.push((Flag::Flagged, false)),
                 Some(("after", day)) => parsed.after.extend(NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()),
                 // Other date forms and the rest the demo does not read: they find everything.
                 Some(_) => {}
@@ -1204,6 +1208,11 @@ mod tests {
         assert!(active("after:2026-10", today).is_empty());
         assert!(active("subject:\"is:unread\" \"has:attachment now\"", today).is_empty(), "nor one in quotes");
         assert_eq!(toggle("\"see is:unread now\"", QuickFilter::Unread, today), "\"see is:unread now\" is:unread");
+        // A quote inside a word opens no phrase, as in the core: the filter still shows and goes.
+        let pizza = toggle("12\" pizza", QuickFilter::Unread, today);
+        assert_eq!(pizza, "12\" pizza is:unread");
+        assert_eq!(active(&pizza, today), [QuickFilter::Unread]);
+        assert_eq!(toggle(&pizza, QuickFilter::Unread, today), "12\" pizza");
     }
 
     #[test]
