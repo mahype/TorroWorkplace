@@ -503,8 +503,9 @@ Unterhaltung (Bcc an sich, Echo einer Liste) öffnet sie, ist aber keine Antwort
 Das optionale Feld `keep_open` (Review von #315, für das Undo von „Cancel follow-up“) setzt mit `until` an einem
 **offenen** Mail-Eintrag nur die Wiedervorlage (mit `unless_reply`), ohne ihn zurückzustellen: Er bleibt, wo er ist, und
 kommt am Datum nach oben, wenn er dann offen ist – der Zustand, den eine Antwort hinterlässt (Entscheidung 6). Ohne
-`until`, an einem zurückgestellten oder erledigten Eintrag und an einem, der keine Mail ist, ist es `unsupported`,
-geprüft vor der Freigabe.
+`until`, an einem zurückgestellten oder erledigten Eintrag, an einem, der keine Mail ist, und an einer Mail-Kennung,
+deren Unterhaltung schon einen zurückgestellten oder erledigten Eintrag hat, ist es `unsupported`, geprüft vor der
+Freigabe.
 Ebenso `hidden` (E18.1, „Hidden“ im Mail-Fenster): `false` lässt Mails des Posteingangsordners weg, die der Mensch
 ausgeblendet hat – von einem Absender oder einer Domain (`hide_sender`, geprüft beim Lesen gegen den Absender, also
 auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr Eintrag erledigt ist, oder durch ein

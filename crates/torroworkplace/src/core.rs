@@ -6095,7 +6095,7 @@ impl Core {
             Ok((Request::SnoozeItem { id, until: Some(until), unless_reply, keep_open }, Some(stand_in))) => {
                 // Boxed: looking the mail up would grow this poll frame, deep in the stack already
                 // when an approved command runs it.
-                match Box::pin(self.file_to_snooze(id, stand_in, until, client, reach)).await {
+                match Box::pin(self.file_to_snooze(id, stand_in, until, keep_open, client, reach)).await {
                     Ok(entry) => (Request::SnoozeItem { id: entry, until: Some(until), unless_reply, keep_open }, None),
                     Err(refused) => return *refused,
                 }
@@ -6648,17 +6648,19 @@ impl Core {
     /// ([`Inbox::file_mail`], lane by the rules), whatever the account's `notify` says – the person
     /// asked for it. Its conversation's entry when it has one. Checked first as an entry of the
     /// account would be ([`Inbox::message_refusal`]: `not-found`, `forbidden`). `unsupported` when
-    /// a rule of the person hides the mail from the inbox, `not-found` when the mail went meanwhile,
-    /// `error` when the inbox cannot be written.
+    /// a rule of the person hides the mail from the inbox, or with `keep_open` its conversation's
+    /// entry is snoozed or done (checked before filing, so nothing is reopened), `not-found` when the
+    /// mail went meanwhile, `error` when the inbox cannot be written.
     async fn file_to_snooze(
         &self,
         id: String,
         stand_in: torro_inbox::Item,
         until: chrono::DateTime<Utc>,
+        keep_open: bool,
         client: Option<&torro_ipc::ClientInfo>,
         reach: Reach<'_>,
     ) -> Result<String, Box<Response>> {
-        let request = Request::SnoozeItem { id: id.clone(), until: Some(until), unless_reply: false, keep_open: false };
+        let request = Request::SnoozeItem { id: id.clone(), until: Some(until), unless_reply: false, keep_open };
         if let Some(refused) = self.inbox.message_refusal(&request, &stand_in, client) {
             return Err(Box::new(refused));
         }
@@ -19674,6 +19676,48 @@ mod tests {
         assert_eq!(every_page(&core, &app_key, snoozed).await, (vec!["B".to_string()], Some(1)));
         let aside = |cursor| pile_search(Some(PileFilter::SetAside), None, Some(false), 1, cursor);
         assert_eq!(every_page(&core, &app_key, aside).await, (vec!["C".to_string()], Some(1)));
+    }
+
+    /// API review of #315: `keep_open` by the id of a mail without an entry whose conversation has a
+    /// snoozed or done entry is `unsupported` before anyone is asked – filing it would not make the
+    /// conversation open – and nothing is filed or reopened.
+    #[tokio::test]
+    async fn a_mail_of_a_conversation_put_off_or_done_is_not_followed_up_open() {
+        use crate::mail::read::tests::mail_from;
+        use crate::mail::sync::fake;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Offer", 3, "bernd@example.com", None), &[]);
+        server.add("INBOX", &fake::mail("Re Offer", 2, Some("Offer@example.org")), &["\\Seen"]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let (offer, reply) = (mail["Offer"].id.clone(), mail["Re Offer"].id.clone());
+        let until = Utc::now() + chrono::TimeDelta::hours(1);
+        let snooze = |id: &str, keep_open| Request::SnoozeItem {
+            id: id.into(),
+            until: Some(until),
+            unless_reply: false,
+            keep_open,
+        };
+        let Response::Item { item } = ask(&core, Some(&app_key), snooze(&offer, false)).await else {
+            panic!("put off")
+        };
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+
+        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported", "put off");
+        assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
+        let done = Request::SetItemDone { id: item.id.clone(), done: true, dismissed: false };
+        assert!(matches!(ask(&core, Some(&app_key), done).await, Response::Item { .. }));
+        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported", "done");
+        assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &reply), None, "nothing filed");
+        assert!(
+            matches!(entry(&core, dir.path(), &item.id).await.state, torro_inbox::State::Done { .. }),
+            "not reopened"
+        );
     }
 
     /// Review of #315: `keep_open` by a mail's id – filed first, or through its entry – follows the

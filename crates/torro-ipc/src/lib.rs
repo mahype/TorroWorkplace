@@ -1836,12 +1836,13 @@ pub enum Request {
         /// which calls any follow-up off.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unless_reply: bool,
-        /// Follow up an **open** mail entry without putting it off (review of #315): only its
-        /// follow-up is set (`until`, with `unless_reply`), it stays where it is and comes back on
-        /// top at `until` if it is still open then – the state a reply leaves a follow-up in
-        /// (decision 6). For the Undo of "Cancel follow-up" on such an entry. Needs `until`;
-        /// `unsupported` on a snoozed or done entry, on one that is no mail and without `until`,
-        /// refused before an approval is asked for.
+        /// Follow up an **open** mail entry without putting it off: only its follow-up is set
+        /// (`until`, with `unless_reply`), it stays where it is and comes back on top at `until` if
+        /// it is still open then – the same state a follow-up without the condition is in after a
+        /// reply opened its conversation. For undoing "Cancel follow-up" on such an entry. Needs
+        /// `until`; `unsupported` on a snoozed or done entry, on one that is no mail, for a mail id
+        /// whose conversation has a snoozed or done entry, and without `until` – refused before an
+        /// approval is asked for.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep_open: bool,
     },
@@ -2244,10 +2245,9 @@ pub enum Request {
         /// `reply_later` or `set_aside`; leave out to take the mail off its pile.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pile: Option<torro_mail::MailPile>,
-        /// Since when the mail lies on `pile` (review of #315): for Undo, which puts mail back with
-        /// the time it had ([`torro_mail::MessageSummary::pile_since`]) instead of now, so a reply of
-        /// one's own sent meanwhile still takes it off "Reply later" – the core looks for one at
-        /// once. At most now: a later time counts as now. Ignored without `pile`, and for mail that
+        /// Since when the mail lies on `pile`: for undo, which puts mail back with the time it had
+        /// (`pile_since` of mail_search_messages) instead of now, so a reply of one's own sent
+        /// meanwhile still takes it off "Reply later" – the core looks for one at once. At most now: a later time counts as now. Ignored without `pile`, and for mail that
         /// lies on that pile already (it keeps its time). Leave out for now.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<DateTime<Utc>>,

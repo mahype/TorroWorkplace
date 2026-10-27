@@ -1081,9 +1081,15 @@ impl Inbox {
     /// an entry (issue #123) would refuse `client`, before anyone is asked to approve it; `None`
     /// when it may run. `stand_in` is the message as an entry would hold it
     /// (`crate::mail::inbox_feed::message_stand_in`, looked up in the stores the client reaches).
-    /// The same checks [`Inbox::handle_message`] makes ([`check_message`]).
+    /// The same checks [`Inbox::handle_message`] makes ([`check_message`]); for `inbox.snooze_item`
+    /// with `keep_open` also the entry the mail would be filed into ([`check_open_conversation`]), so
+    /// what would end in `unsupported` once filed is refused before anyone is asked.
     pub fn message_refusal(&self, request: &Request, stand_in: &Item, client: Option<&ClientInfo>) -> Option<Response> {
-        check_message(request, stand_in, client, Utc::now()).err().map(Failure::response)
+        let checked = check_message(request, stand_in, client, Utc::now()).and_then(|()| match request {
+            Request::SnoozeItem { keep_open: true, .. } => self.with(|db| check_open_conversation(db, stand_in)),
+            _ => Ok(()),
+        });
+        checked.err().map(Failure::response)
     }
 
     /// `inbox.list_mute_options`, `inbox.mute_item`, `inbox.snooze_item` without `until` (task
@@ -3630,6 +3636,19 @@ fn check_message(
             api::check_item_change(stand_in, client).map_err(Failure::Forbidden)
         }
         _ => Err(Failure::Invalid("only muting, snoozing and the category take the id of a mail".into())),
+    }
+}
+
+/// `unsupported` when the conversation of the mail `stand_in` stands for already has an entry that
+/// is snoozed or done: `inbox.snooze_item` with `keep_open` follows up an open conversation only, and
+/// filing the mail would not change that – or reopen a done one, which nobody asked for. No entry
+/// yet is fine: filing makes an open one.
+fn check_open_conversation(db: &Connection, stand_in: &Item) -> Result<(), Failure> {
+    match read_owned(db, &stand_in.source.key(), &stand_in.thread_key)? {
+        Some(entry) if !entry.state.is_open() => {
+            Err(Failure::Unsupported("keep_open follows up an open mail entry; this conversation is not open".into()))
+        }
+        _ => Ok(()),
     }
 }
 

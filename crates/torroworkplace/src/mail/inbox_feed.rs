@@ -1396,9 +1396,6 @@ pub(crate) mod tests {
         assert_eq!(pile_of("Trip"), Some(MailPile::ReplyLater), "answered before it was put there");
     }
 
-    /// Review of #315: a draft in the conversation is no answer of one's own – saved or a sending
-    /// that failed – and no reply either, also one from another address (an alias); the mail
-    /// stays on "Reply later" and the follow-up stands, a catch-up too. A sent mail takes it off.
     /// Review of #315, decision 6: a mail of one's own filed into the conversation (Bcc to oneself,
     /// a list's echo) opens it but is no reply – the follow-up "only if no reply" stands until a
     /// reply of someone else comes.
@@ -1447,6 +1444,9 @@ pub(crate) mod tests {
         assert_eq!(held(), (State::New, None), "a reply of someone else ends it");
     }
 
+    /// Review of #315: a draft in the conversation is no answer of one's own – saved or a sending
+    /// that failed – and no reply either, also one from another address (an alias); the mail
+    /// stays on "Reply later" and the follow-up stands, a catch-up too. A sent mail takes it off.
     #[tokio::test]
     async fn a_draft_is_no_answer_and_no_reply() {
         use torro_mail::MailPile;
