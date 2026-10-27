@@ -19692,7 +19692,7 @@ mod tests {
     /// API review of #315: `keep_open` by the id of a mail without an entry whose conversation has a
     /// snoozed or done entry is `unsupported` before anyone is asked – filing the mail would wake a
     /// snoozed entry on top (and may lose "only if no reply") or reopen a done one – and nothing is
-    /// filed or reopened. By the entry's own id a snoozed entry may be opened again.
+    /// filed or reopened. The mail filed into that entry acts as the entry: a snoozed one comes back.
     #[tokio::test]
     async fn a_mail_of_a_conversation_put_off_or_done_is_not_followed_up_open() {
         use crate::mail::read::tests::mail_from;
@@ -19721,6 +19721,11 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported", "put off");
         assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
         assert!(matches!(entry(&core, dir.path(), &item.id).await.state, torro_inbox::State::Snoozed { .. }));
+        // Side by side: the mail filed into that entry acts as the entry, which comes back.
+        let Response::Item { item: back } = ask(&core, Some(&app_key), snooze(&offer, true)).await else {
+            panic!("brought back")
+        };
+        assert_eq!((back.id.as_str(), back.state), (item.id.as_str(), torro_inbox::State::Seen));
         let done = Request::SetItemDone { id: item.id.clone(), done: true, dismissed: false };
         assert!(matches!(ask(&core, Some(&app_key), done).await, Response::Item { .. }));
         assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported");

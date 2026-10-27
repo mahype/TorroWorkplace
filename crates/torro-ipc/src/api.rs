@@ -3318,9 +3318,10 @@ static SNOOZE_ITEM: Command = Command {
                   `keep_open: true` with `until` follows up a mail entry without putting it off: an open one \
                   stays where it is, a snoozed one is open again (seen); it comes back on top at `until` if still \
                   open, as a reply leaves a follow-up. For undoing a cancelled follow-up or a follow-up date \
-                  set on an open entry. `unsupported` on a done entry, on one that is no mail, for a mail id \
-                  whose conversation has a snoozed or done entry (use the entry's id to bring a snoozed one \
-                  back), and without `until`; refused before an approval is asked for.",
+                  set on an open entry. A mail id filed into an entry acts as that entry (a snoozed one comes \
+                  back); a mail id without an entry of its own is `unsupported` when its conversation has a \
+                  snoozed or done entry. `unsupported` also on a done entry, on one that is no mail and without \
+                  `until`; refused before an approval is asked for.",
 };
 
 static SET_ITEM_LANE: Command = Command {
