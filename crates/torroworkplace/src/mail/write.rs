@@ -14,7 +14,9 @@
 //! before the rights are checked, so approvals and rights see what really runs.
 //!
 //! **Cache.** Flags change in the store at once and are put back when the server refuses
-//! ("optimistic"). Moves, deletions and drafts change the store as soon as the server confirmed:
+//! ("optimistic"). Until the server has the change, the account's sync leaves the flags of these
+//! messages in the store as they are ([`MailService::hold_flags`]): the server may have reported
+//! them to it before the change arrived (issue #318). Moves, deletions and drafts change the store as soon as the server confirmed:
 //! only then is the new UID known. A moved message keeps its id ([`MailStore::relocate_message`])
 //! when its new UID can be found by its `Message-ID`; otherwise it leaves the store and the next
 //! sync brings it back under a new id.
@@ -396,6 +398,10 @@ async fn flag_group(mail: &MailService, group: &[MessageRef], add: &[Flag], remo
     let store = mail.store(&first.account).await?;
     let ids: Vec<String> = group.iter().map(|message| message.id.clone()).collect();
     let (more, less) = (add.to_vec(), remove.to_vec());
+    let uids: Vec<u32> = group.iter().map(|message| message.uid).collect();
+    // Until the server has the change (or it is put back), the sync keeps the server's flags of
+    // these messages out of the store: they may be from before the change (issue #318).
+    let _held = mail.hold_flags(&first.account, &first.folder, &uids).await?;
     // Optimistic: lists show the change at once; undone below when the server refuses.
     let before = store
         .run(move |store| {
@@ -408,7 +414,6 @@ async fn flag_group(mail: &MailService, group: &[MessageRef], add: &[Flag], remo
             Ok(before)
         })
         .await?;
-    let uids: Vec<u32> = group.iter().map(|message| message.uid).collect();
     let done = async {
         let mut command = mail.command(&first.account).await?;
         open(command.session(), &first.folder_path, first.uidvalidity).await?;

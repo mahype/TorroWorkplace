@@ -18,7 +18,11 @@
 //!    decides, task M2.5); bigger than [`BODY_PREFETCH_MAX`], or older, they are fetched when
 //!    someone opens them (task M3.1). Fetched with `BODY.PEEK[]`: syncing never marks mail read.
 //! 5. Only a folder synced to the end remembers its HIGHESTMODSEQ, so an interrupted sync starts
-//!    over where it matters next time.
+//!    over where it matters next time. The same for a folder whose flags were not all taken over:
+//!    flags of messages a `mail.set_flags` is changing, or changed while the sync ran, stay as the
+//!    store has them, because the server may have reported them from before the change
+//!    ([`FlagsUnderway`](super::service::FlagsUnderway), issue #318); the next sync compares them
+//!    again.
 //! 6. Sizes the store lacks (rows from before it kept `RFC822.SIZE`, DS.1) are asked for, at most
 //!    [`SIZE_FILL_MAX`] per folder and run ([`fill_sizes`]), also for a folder that did not change.
 //!
@@ -36,6 +40,7 @@
 //! never acted on.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::PoisonError;
 
 use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
@@ -505,6 +510,8 @@ async fn sync_folder(
     let selected = lease.session().select(&target.path).await?;
     let condstore = lease.session().capabilities().has("CONDSTORE");
     let uidvalidity = selected.uid_validity;
+    // Before the flags are asked for: a flag change that ends from now on is held below.
+    mailbox.underway().lock().unwrap_or_else(PoisonError::into_inner).sync_started(&target.id);
     let known = know(store, &target.id, uidvalidity).await?;
     let unchanged = known.validity == UidValidity::Unchanged
         && condstore
@@ -539,13 +546,20 @@ async fn sync_folder(
         .filter(|state| !state.deleted && on_server.contains(&state.uid))
         .map(|state| (state.uid, state.raw_flags.clone()))
         .collect();
-    let (mut removed, flags) = store
+    let underway = mailbox.underway();
+    let (mut removed, flags, held) = store
         .run(move |store| {
             let mut removed = Vec::new();
             for uid in &gone {
                 removed.extend(store.message_id_for_uid(&folder, *uid)?);
             }
             store.delete_uids(&folder, &gone)?;
+            // Checked here, holding the store: a `mail.set_flags` notes its change before it writes
+            // the store, so it either is held now or writes after this.
+            let (held, changed): (Vec<_>, Vec<_>) = {
+                let underway = underway.lock().unwrap_or_else(PoisonError::into_inner);
+                changed.into_iter().partition(|(uid, _)| underway.held(&folder, *uid))
+            };
             let mut flagged = Vec::new();
             for (uid, flags) in &changed {
                 if store.set_flags_by_uid(&folder, *uid, flags)? {
@@ -555,7 +569,7 @@ async fn sync_folder(
             for (uid, flags) in &original_flags {
                 store.set_original_flags(&path, uidvalidity, *uid, flags)?;
             }
-            Ok((removed, flagged))
+            Ok((removed, flagged, !held.is_empty()))
         })
         .await?;
     removed.splice(0..0, known.dropped);
@@ -659,8 +673,11 @@ async fn sync_folder(
             .await?;
     }
 
-    let (folder, modseq) = (target.id.clone(), selected.highest_modseq);
-    store.run(move |store| store.set_highest_modseq(&folder, modseq)).await?;
+    // Held flags are compared again next time, so the HIGHESTMODSEQ that hid them is not kept.
+    if !held {
+        let (folder, modseq) = (target.id.clone(), selected.highest_modseq);
+        store.run(move |store| store.set_highest_modseq(&folder, modseq)).await?;
+    }
     fill_sizes(conn, store, target, uidvalidity).await
 }
 
@@ -2221,6 +2238,46 @@ mod tests {
             server.lines().iter().any(|line| line.contains("(CHANGEDSINCE ")),
             "only changed flags are asked for with CONDSTORE"
         );
+    }
+
+    /// Issue #318: while a flag change is on its way to the server, a sync that reads the server's
+    /// older flags leaves the store's alone and keeps no HIGHESTMODSEQ; once the change is done, the
+    /// next sync compares again and keeps it.
+    #[tokio::test]
+    async fn a_sync_leaves_flags_on_their_way_to_the_server_alone() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let uid = server.add("INBOX", &fake::mail("Read me", 1, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        sync_account(&mailbox).await.expect("synced");
+        let store = mailbox.store().expect("store");
+        let inbox = store.run(|db| db.folder_by_path("INBOX")).await.expect("read").expect("the inbox");
+        let modseq = |store: SharedStore, folder: String| async move {
+            store.run(move |db| db.resolve_folder(&folder)).await.expect("read").expect("there").highest_modseq
+        };
+        let synced = modseq(store.clone(), inbox.id.clone()).await;
+        assert!(synced.is_some(), "the fake offers CONDSTORE");
+        let id = all(&mailbox).await[0].id.clone();
+
+        // `mail.set_flags` holds the message, marks it read in the store, and has not reached the
+        // server yet; meanwhile the server's HIGHESTMODSEQ grows without the flag.
+        let held = mailbox.hold_flags(&inbox.id, &[uid]);
+        let read = id.clone();
+        store.run(move |db| db.set_flags(&read, &[Flag::Seen])).await.expect("marked read");
+        server.set_flags("INBOX", uid, &[]);
+        let mut changes = mailbox_events(&mailbox);
+        sync_account(&mailbox).await.expect("synced while the change is on its way");
+        assert_eq!(all(&mailbox).await[0].flags, [Flag::Seen], "the change stays");
+        assert_eq!(modseq(store.clone(), inbox.id.clone()).await, synced, "the folder is compared again next time");
+        assert!(changes.try_recv().map_or(true, |change| change.flags.is_empty()), "no flag change announced");
+
+        // The server has it now, the change is done: the next sync takes the server's flags over.
+        server.set_flags("INBOX", uid, &["\\Seen"]);
+        drop(held);
+        sync_account(&mailbox).await.expect("synced after the change");
+        assert_eq!(all(&mailbox).await[0].flags, [Flag::Seen]);
+        let kept = modseq(store.clone(), inbox.id.clone()).await;
+        assert!(kept > synced, "kept again: {kept:?} after {synced:?}");
     }
 
     /// DS.1 (#314): the sync keeps every message's size; sizes a store of before lacks are filled
