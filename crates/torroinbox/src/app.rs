@@ -4857,9 +4857,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 return self.load();
             }
             // Not changed: the load brings the row and the numbers back, and the error line says why.
-            Message::Piled(Err(err), _) => {
+            Message::Piled(Err(err), hint) => {
+                // "Remove" in "Focus & reply" that failed: the mail back at its place in the round, with
+                // its text (review of PR #327).
+                if let Some(Undo::Removed { id, place, text, since }) = hint.and_then(|hint| hint.undo)
+                    && let Some(focus) = self.focus_reply.as_mut()
+                {
+                    focus.put_back(id, place, &text, since);
+                }
                 self.error = Some(Failure::new(tr("Couldn't change the pile."), err));
-                return self.load();
+                return Task::batch([self.load(), focus_top()]);
             }
             Message::ToggleUnlessReply => self.unless_reply = !self.unless_reply,
             Message::FocusReply => return self.start_focus(),
@@ -16507,6 +16514,32 @@ mod tests {
         let _ = app.update(Message::FocusMore(round, page));
         let focus = app.focus_reply.as_ref().expect("the round");
         assert!(focus.current().is_none() && !focus.ids.contains(&ids[0]), "the end, without it");
+    }
+
+    /// Review of PR #327: a "Remove" in a round that fails – the core cannot say the pile, or cannot
+    /// take the mail off – brings the mail back to its place in the round with its text, and the error
+    /// line says why.
+    #[test]
+    fn a_failed_remove_keeps_the_reply() {
+        // Taking it off fails.
+        let (mut app, ids) = focus_window();
+        type_reply(&mut app, "Draft");
+        let _ = app.update(Message::FocusRemove);
+        let Some(Sent::Pile(_, None, _, hint)) = last_pile(&app).cloned() else { panic!("off the pile") };
+        assert_eq!(focused(&app), Some(ids[1].clone()));
+        let _ = app.update(Message::Piled(Err("offline".into()), hint));
+        assert_eq!((focused(&app), reply_text(&app).trim().to_owned()), (Some(ids[0].clone()), "Draft".to_owned()));
+        assert!(app.error.is_some(), "the error line says why");
+        // Asking for its pile fails.
+        let (mut app, ids) = focus_window();
+        app.messages.retain(|message| message.id != ids[0]);
+        app.letter = None;
+        type_reply(&mut app, "Draft");
+        let _ = app.update(Message::FocusRemove);
+        assert!(app.sent.contains(&Sent::PileOf(ids[0].clone())));
+        let _ = app.update(Message::FocusPileKnown(ids[0].clone(), 0, "Draft".into(), Err("offline".into())));
+        assert_eq!((focused(&app), reply_text(&app).trim().to_owned()), (Some(ids[0].clone()), "Draft".to_owned()));
+        assert!(app.error.is_some(), "the error line says why");
     }
 
     /// Fifth review of #315: "Remove" in a round asks the core for the pile of a mail the window knows
