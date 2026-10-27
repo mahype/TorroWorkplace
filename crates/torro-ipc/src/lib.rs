@@ -1842,8 +1842,8 @@ pub enum Request {
         /// a follow-up without the condition is in after a reply opened its conversation. For
         /// undoing "Cancel follow-up", or a new follow-up date on an entry that was open. Needs
         /// `until`; `unsupported` on a done entry, on one that is no mail, for a mail id whose
-        /// conversation has a done entry, and without `until` – refused before an approval is asked
-        /// for.
+        /// conversation has a snoozed or done entry (a snoozed one comes back by the entry's id), and
+        /// without `until` – refused before an approval is asked for.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep_open: bool,
     },

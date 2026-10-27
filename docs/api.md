@@ -505,7 +505,10 @@ offenen Eintrag) setzt mit `until` an einem Mail-Eintrag die Wiedervorlage (mit 
 zurückzustellen: Ein offener bleibt, wo er ist; ein zurückgestellter ist wieder offen, als `seen` an seinem alten Platz
 (wie `snooze_item` ohne `until`). Er kommt am Datum nach oben, wenn er dann offen ist – der Zustand, den eine Antwort
 hinterlässt (Entscheidung 6). Ohne `until`, an einem erledigten Eintrag, an einem, der keine Mail ist, und an einer
-Mail-Kennung, deren Unterhaltung schon einen erledigten Eintrag hat, ist es `unsupported`, geprüft vor der Freigabe.
+Mail-Kennung, deren Unterhaltung schon einen zurückgestellten oder erledigten Eintrag hat, ist es `unsupported`, geprüft
+vor der Freigabe: Das Ablegen der Mail weckte den Eintrag neu oben (und könnte „Only if no reply“ verlieren), statt ihn
+gesehen an seinem alten Platz zurückzuholen; das geht über die Kennung des Eintrags. Die Freigabe nennt das Zurückholen
+(„Bring … back and follow up …“).
 Ebenso `hidden` (E18.1, „Hidden“ im Mail-Fenster): `false` lässt Mails des Posteingangsordners weg, die der Mensch
 ausgeblendet hat – von einem Absender oder einer Domain (`hide_sender`, geprüft beim Lesen gegen den Absender, also
 auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr Eintrag erledigt ist, oder durch ein

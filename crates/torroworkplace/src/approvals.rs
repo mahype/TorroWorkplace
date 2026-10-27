@@ -2433,6 +2433,18 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             with_settling(trf("Mark {entry} as done", &[("entry", &entry())]), facts.item.as_ref())
         }
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
+        // A snoozed mail entry brought back with its follow-up (review of #315): the person sees that
+        // it leaves "Later", and with the condition that a reply calls it off.
+        Request::SnoozeItem { until: Some(until), unless_reply, keep_open: true, .. }
+            if is_snoozed(facts.item.as_ref()) =>
+        {
+            let args =
+                [("entry", &entry() as &dyn std::fmt::Display), ("when", &when(&EventTime::DateTime(*until), today))];
+            match unless_reply {
+                true => trf("Bring {entry} back and follow up {when} unless someone replies", &args),
+                false => trf("Bring {entry} back and follow up {when}", &args),
+            }
+        }
         // "Follow up" with its condition (task E19.1): the person sees that a reply calls it off.
         Request::SnoozeItem { until: Some(until), unless_reply: true, .. } => trf(
             "Follow up on {entry} {when} unless someone replies",
@@ -2790,6 +2802,11 @@ fn mute_effect_name(effect: MuteEffect) -> &'static str {
 /// `item` is an entry of a mail account (task E4.1).
 fn is_mail(item: Option<&Item>) -> bool {
     item.is_some_and(|item| item.source.kind == SourceKind::Mail)
+}
+
+/// `item` is put off ("Later"): a follow-up with `keep_open` brings it back (review of #315).
+fn is_snoozed(item: Option<&Item>) -> bool {
+    item.is_some_and(|item| matches!(item.state, torro_inbox::State::Snoozed { .. }))
 }
 
 /// A source for a summary: its label and its key, `"Codex" (agent:codex)`, both quoted.
@@ -4974,6 +4991,18 @@ pub(crate) mod tests {
             trf("Follow up on {entry} {when}", &[("entry", &entry), ("when", &at)])
         );
         assert_eq!(inbox_summary(&open(true), &known), follow_up, "the condition is named");
+        // A snoozed entry comes back from "Later" too: the summary says so (review of #315).
+        let mut snoozed = inbox_entry("Backup \"done\"");
+        snoozed.state = torro_inbox::State::Snoozed { until };
+        let snoozed = InboxFacts { item: Some(snoozed), ..InboxFacts::default() };
+        assert_eq!(
+            inbox_summary(&open(false), &snoozed),
+            trf("Bring {entry} back and follow up {when}", &[("entry", &entry), ("when", &at)])
+        );
+        assert_eq!(
+            inbox_summary(&open(true), &snoozed),
+            trf("Bring {entry} back and follow up {when} unless someone replies", &[("entry", &entry), ("when", &at)])
+        );
         // Task E18.2: "Show again" names the subjects the mail store holds.
         let stored = MailFacts { count: 2, subjects: vec!["Weekly \"deals\"".into()], ..MailFacts::default() };
         let mail = InboxFacts { mail: Some(stored), ..InboxFacts::default() };

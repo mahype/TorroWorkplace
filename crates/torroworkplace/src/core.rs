@@ -6649,8 +6649,9 @@ impl Core {
     /// asked for it. Its conversation's entry when it has one. Checked first as an entry of the
     /// account would be ([`Inbox::message_refusal`]: `not-found`, `forbidden`). `unsupported` when
     /// a rule of the person hides the mail from the inbox, or with `keep_open` its conversation's
-    /// entry is snoozed or done (checked before filing, so nothing is reopened), `not-found` when the
-    /// mail went meanwhile, `error` when the inbox cannot be written.
+    /// entry is snoozed or done (checked before filing, so nothing is woken or reopened; a snoozed
+    /// entry is brought back by its own id), `not-found` when the mail went meanwhile, `error` when
+    /// the inbox cannot be written.
     async fn file_to_snooze(
         &self,
         id: String,
@@ -19689,11 +19690,11 @@ mod tests {
     }
 
     /// API review of #315: `keep_open` by the id of a mail without an entry whose conversation has a
-    /// done entry is `unsupported` before anyone is asked – filing it would reopen the conversation,
-    /// which nobody asked for – and nothing is filed or reopened. A snoozed one it may open again
-    /// (review of #315, the undo of putting it off).
+    /// snoozed or done entry is `unsupported` before anyone is asked – filing the mail would wake a
+    /// snoozed entry on top (and may lose "only if no reply") or reopen a done one – and nothing is
+    /// filed or reopened. By the entry's own id a snoozed entry may be opened again.
     #[tokio::test]
-    async fn a_mail_of_a_done_conversation_is_not_followed_up_open() {
+    async fn a_mail_of_a_conversation_put_off_or_done_is_not_followed_up_open() {
         use crate::mail::read::tests::mail_from;
         use crate::mail::sync::fake;
         let dir = tempfile::tempdir().expect("temp dir");
@@ -19717,6 +19718,9 @@ mod tests {
         asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
         let (_, asking) = client(&core, asking).await;
 
+        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported", "put off");
+        assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
+        assert!(matches!(entry(&core, dir.path(), &item.id).await.state, torro_inbox::State::Snoozed { .. }));
         let done = Request::SetItemDone { id: item.id.clone(), done: true, dismissed: false };
         assert!(matches!(ask(&core, Some(&app_key), done).await, Response::Item { .. }));
         assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported");

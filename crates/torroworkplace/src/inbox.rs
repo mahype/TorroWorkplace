@@ -1082,9 +1082,8 @@ impl Inbox {
     /// when it may run. `stand_in` is the message as an entry would hold it
     /// (`crate::mail::inbox_feed::message_stand_in`, looked up in the stores the client reaches).
     /// The same checks [`Inbox::handle_message`] makes ([`check_message`]); for `inbox.snooze_item`
-    /// with `keep_open` also the entry the mail would be filed into ([`check_open_conversation`]: not
-    /// done), so what would end in `unsupported` or reopen a done conversation is refused before
-    /// anyone is asked.
+    /// with `keep_open` also the entry the mail would be filed into ([`check_open_conversation`]:
+    /// open), so what filing would wake or reopen is refused before anyone is asked.
     pub fn message_refusal(&self, request: &Request, stand_in: &Item, client: Option<&ClientInfo>) -> Option<Response> {
         let checked = check_message(request, stand_in, client, Utc::now()).and_then(|()| match request {
             Request::SnoozeItem { keep_open: true, .. } => self.with(|db| check_open_conversation(db, stand_in)),
@@ -3630,7 +3629,7 @@ fn check_message(
         }
         // Following up open needs a time (review of #315); with one the mail is filed first.
         Request::SnoozeItem { keep_open: true, until: None, .. } => {
-            Err(Failure::Unsupported("keep_open follows up an open mail entry and needs until".into()))
+            Err(Failure::Unsupported("keep_open follows up a mail entry that is not done and needs until".into()))
         }
         // "Later" for any mail (task E9.1): as for an entry of the account.
         Request::SnoozeItem { .. } => api::check_item_change(stand_in, client).map_err(Failure::Forbidden),
@@ -3644,14 +3643,15 @@ fn check_message(
 }
 
 /// `unsupported` when the conversation of the mail `stand_in` stands for already has an entry that
-/// is done: `inbox.snooze_item` with `keep_open` follows up a conversation that is not done, and
-/// filing the mail would reopen it, which nobody asked for. No entry yet is fine (filing makes an
-/// open one), and so is a snoozed one (review of #315: it is opened again, as for its entry's id).
+/// is snoozed or done: by a mail's id `inbox.snooze_item` with `keep_open` follows up an open
+/// conversation only. Filing the mail would wake a snoozed entry on top as new (and may end "only if
+/// no reply"), not bring it back seen in its old place, or reopen a done one, which nobody asked for.
+/// No entry yet is fine: filing makes an open one. A snoozed entry is brought back by its own id.
 fn check_open_conversation(db: &Connection, stand_in: &Item) -> Result<(), Failure> {
     match read_owned(db, &stand_in.source.key(), &stand_in.thread_key)? {
-        Some(entry) if matches!(entry.state, State::Done { .. }) => {
-            Err(Failure::Unsupported("keep_open needs a conversation that is not done; this one is".into()))
-        }
+        Some(entry) if !entry.state.is_open() => Err(Failure::Unsupported(
+            "keep_open by a mail id needs its conversation open; use the entry's id to bring a snoozed one back".into(),
+        )),
         _ => Ok(()),
     }
 }
