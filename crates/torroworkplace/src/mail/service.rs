@@ -668,8 +668,9 @@ impl Status {
 
 /// The flag changes of one account on their way to the server (issue #318), so a folder sync does
 /// not put back flags the server reported before such a change reached it. `mail.set_flags`
-/// changes the store first and the server after ("optimistic", [`super::write`]); a sync that
-/// read the server's flags in between would see the old ones and write them over the new.
+/// changes the store first and the server after ("optimistic", [`super::write`]), the inbox marks
+/// done mail read on the server first and in the store after ([`super::inbox_feed::set_seen`]); a
+/// sync that read the server's flags in between would write the old ones over the new.
 ///
 /// Keyed by folder id and UID. A message is **held** while a change of it is open, or when one
 /// began or ended since the sync of its folder started ([`FlagsUnderway::sync_started`]): what the
