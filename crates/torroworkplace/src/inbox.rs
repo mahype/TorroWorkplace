@@ -9157,6 +9157,34 @@ pub(crate) mod tests {
         assert!(matches!(entry_at(&inbox, &archived, at(13, 1)).state, State::Done { .. }), "archived stays");
     }
 
+    /// Review of #315, decision 6: done (archived) ends a follow-up. New mail after the date opens
+    /// the conversation by its own date, not "back" at the old one; undoing the done does not bring
+    /// the old follow-up back either.
+    #[test]
+    fn done_clears_a_follow_up() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let mail = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let undone = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(8, 1));
+        for id in [&mail, &undone] {
+            item(inbox.handle(follow_up(id, Some(at(13, 0)), false), None, at(8, 2)));
+            let done = item(inbox.handle(
+                Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
+                None,
+                at(9, 0),
+            ));
+            assert_eq!(done.follow_up, None, "done ends it");
+        }
+        filed(&inbox, &personal("m:3", "t:1", at(14, 0)), at(14, 1));
+        let opened = entry_at(&inbox, &mail, at(14, 2));
+        assert_eq!((opened.state, opened.updated, opened.follow_up), (State::New, at(14, 0), None), "by its own date");
+        let later = inbox.mail_later(&[ANNA.to_string()], at(14, 3)).expect("read");
+        assert!(later.back_of(ANNA).is_empty(), "not back");
+        item(inbox.handle(Request::SetItemDone { id: undone.clone(), done: false, dismissed: false }, None, at(14, 4)));
+        let open = entry_at(&inbox, &undone, at(14, 5));
+        assert_eq!((open.state, open.updated, open.follow_up), (State::Seen, at(8, 0), None), "undo revives nothing");
+    }
+
     /// Task E19.1: a file of schema 15 learns follow-ups. Mail put off before has none and wakes as
     /// before (decision 9); a follow-up set now wakes its entry by the new column.
     #[test]

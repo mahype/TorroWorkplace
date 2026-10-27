@@ -892,8 +892,14 @@ pub fn merge_own_mail(existing: Item, incoming: Item) -> Item {
 /// Marks the entry done at `now`, or open again: a done entry becomes [`State::Seen`] (the
 /// user has seen it), any other stays as it is. `updated` does not change, so undoing puts the
 /// entry back where it was in the list.
+///
+/// Done ends a follow-up ([`Item::follow_up`], review of #315, decision 6): an archived
+/// conversation does not come back at its date, also not once new mail or an undo opens it again
+/// after that date – it would come back at once, with the old date. Every way to done in the core
+/// (by hand, read or moved elsewhere, retired, muted) comes through here.
 pub fn set_done(item: &mut Item, done: bool, now: DateTime<Utc>) {
     if done {
+        item.follow_up = None;
         if !matches!(item.state, State::Done { .. }) {
             item.state = State::Done { at: now };
         }
@@ -1805,6 +1811,17 @@ mod tests {
         assert_eq!(merged.state, snoozed);
         let many = Item { count: u32::MAX, ..item("1", Kind::Notice) };
         assert_eq!(merge(many, item("2", Kind::Notice)).count, u32::MAX);
+    }
+
+    /// Review of #315, decision 6: done ends a follow-up; opening again does not bring it back.
+    #[test]
+    fn done_clears_a_follow_up() {
+        let held = FollowUp { at: at(20), unless_reply: false, since: at(9) };
+        let mut entry = Item { state: State::Seen, follow_up: Some(held), ..item("1", Kind::Message) };
+        set_done(&mut entry, true, at(10));
+        assert_eq!(entry.follow_up, None);
+        set_done(&mut entry, false, at(11));
+        assert_eq!((entry.state, entry.follow_up), (State::Seen, None));
     }
 
     #[test]
