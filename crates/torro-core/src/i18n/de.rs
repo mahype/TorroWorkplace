@@ -6584,6 +6584,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // format, slower" stand above.
     ("Chat may read mail in the cloud", "Chat darf Mail in der Cloud lesen"),
     ("Sorting sends mail to the cloud", "Sortieren schickt Mail in die Cloud"),
+    ("Sorting may send mail to the cloud", "Sortieren darf Mail in die Cloud schicken"),
+    ("The model that sorts now runs on this computer", "Das Modell, das jetzt sortiert, läuft auf diesem Rechner"),
     ("Keep mail here", "Mail hier behalten"),
     ("{tier} class", "Klasse {tier}"),
     ("Wait until the download for {slot} has finished", "Warte, bis der Download für {slot} fertig ist"),
