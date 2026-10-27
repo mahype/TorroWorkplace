@@ -5050,7 +5050,12 @@ fn file_mail(
                 }
             }
             if back {
-                update_item(&tx, &rules::merge_mail(existing, incoming))?;
+                // Mail of one's own opens the conversation but is no reply (review of #315).
+                let merged = match from_account(mail) {
+                    true => rules::merge_own_mail(existing, incoming),
+                    false => rules::merge_mail(existing, incoming),
+                };
+                update_item(&tx, &merged)?;
                 came_back(&tx, &id, date)?;
             } else {
                 update_item(&tx, &rules::merge(existing, incoming))?;
@@ -5067,6 +5072,14 @@ fn file_mail(
     count_report(&tx, &counted, remembering, muting.map(|(rule, _)| rule), now)?;
     tx.commit()?;
     Ok(Some(id))
+}
+
+/// `mail` was sent from its account's own address (`mail:<address>`, in any case): no reply to a
+/// follow-up "only if no reply" (review of #315).
+fn from_account(mail: &NewMail) -> bool {
+    let own = mail.account.strip_prefix(ACCOUNT_PREFIX).unwrap_or(&mail.account);
+    let sender = mail.from.as_ref().and_then(|from| from.address.as_deref());
+    sender.is_some_and(|address| address.eq_ignore_ascii_case(own))
 }
 
 /// One report of a remote source (GitHub, Nextcloud, Talk, ntfy) as its module in

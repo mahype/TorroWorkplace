@@ -881,6 +881,14 @@ pub fn merge_mail(existing: Item, incoming: Item) -> Item {
     merged
 }
 
+/// [`merge_mail`] for a new mail of the conversation sent from the account itself (review of #315,
+/// decision 6: Bcc to oneself, the echo of a mailing list): it opens the conversation like any new
+/// mail, but it is no reply, so a follow-up "only if no reply" stays as it was.
+pub fn merge_own_mail(existing: Item, incoming: Item) -> Item {
+    let follow_up = existing.follow_up;
+    Item { follow_up, ..merge_mail(existing, incoming) }
+}
+
 /// Marks the entry done at `now`, or open again: a done entry becomes [`State::Seen`] (the
 /// user has seen it), any other stays as it is. `updated` does not change, so undoing puts the
 /// entry back where it was in the list.
@@ -1876,6 +1884,18 @@ mod tests {
         let merged = merge(snoozed(true), item("2", Kind::Message));
         assert_eq!(merged.state, State::Snoozed { until: at(20) });
         assert!(merged.follow_up.is_some());
+    }
+
+    /// Review of #315, decision 6: mail of the account's own (Bcc to oneself, a list's echo) opens the
+    /// conversation like any new mail, but is no reply: a follow-up "only if no reply" stays.
+    #[test]
+    fn own_mail_keeps_a_follow_up_unless_reply() {
+        let held = FollowUp { at: at(20), unless_reply: true, since: at(9) };
+        let snoozed =
+            Item { state: State::Snoozed { until: at(20) }, follow_up: Some(held), ..item("1", Kind::Message) };
+        let merged = merge_own_mail(snoozed.clone(), item("2", Kind::Message));
+        assert_eq!((merged.state, merged.follow_up), (State::New, Some(held)), "opened, the condition stands");
+        assert_eq!(merged, Item { follow_up: Some(held), ..merge_mail(snoozed, item("2", Kind::Message)) });
     }
 
     /// Task E19.1: an open entry with a follow-up comes back at its time, a done one does not, and

@@ -1398,6 +1398,53 @@ pub(crate) mod tests {
     /// Review of #315: a draft in the conversation is no answer of one's own – saved or a sending
     /// that failed – and no reply either, also one from another address (an alias); the mail
     /// stays on "Reply later" and the follow-up stands, a catch-up too. A sent mail takes it off.
+    /// Review of #315, decision 6: a mail of one's own filed into the conversation (Bcc to oneself,
+    /// a list's echo) opens it but is no reply – the follow-up "only if no reply" stands until a
+    /// reply of someone else comes.
+    #[tokio::test]
+    async fn own_mail_keeps_a_follow_up_unless_reply() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &bernd("Offer", 5), &["\\Seen"]);
+        let reply = |subject: &str, from: &str| letter(subject, from, 1, "", Some("Offer@example.org"));
+        server.add("INBOX", &reply("Re Offer bcc", "Anna <anna@example.org>"), &[]);
+        server.add("Archive", &reply("Re Offer", "Bernd <bernd@example.com>"), &[]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
+        let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
+        let (since, until) = (Utc::now() - TimeDelta::days(4), Utc::now() + TimeDelta::hours(1));
+        let found = mail_to_snooze(&mail, Reach::Suite, &of("Offer").id).await.expect("the mail");
+        let entry = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
+        let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true };
+        assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
+        let held = || match inbox.handle(Request::GetItem { id: entry.clone() }, None, Utc::now()) {
+            Response::Item { item } => (item.state, item.follow_up.map(|follow_up| follow_up.unless_reply)),
+            other => panic!("the entry, got {other:?}"),
+        };
+        let change = |message: &torro_mail::MessageSummary, role| MailChange {
+            account: ANNA.into(),
+            folder: message.folder.clone(),
+            role,
+            new: vec![message.id.clone()],
+            flags: Vec::new(),
+            removed: Vec::new(),
+            initial: false,
+        };
+        let accounts_file = Some(accounts_file(dir.path()));
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file, decide: None };
+
+        feed.take(change(&of("Re Offer bcc"), Some(Role::Inbox)), Utc::now()).await;
+        assert_eq!(inbox.messages_of(&entry).expect("read").len(), 2, "filed into the conversation");
+        assert_eq!(held(), (State::New, Some(true)), "opened, the condition stands");
+        feed.take(change(&of("Re Offer"), None), Utc::now()).await;
+        assert_eq!(held(), (State::New, None), "a reply of someone else ends it");
+    }
+
     #[tokio::test]
     async fn a_draft_is_no_answer_and_no_reply() {
         use torro_mail::MailPile;
