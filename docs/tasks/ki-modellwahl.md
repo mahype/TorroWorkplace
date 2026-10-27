@@ -186,7 +186,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   über `cargo check --target` soweit installiert, sonst ehrlich melden.
 
 ### MW.5 Empfehlungsliste als Daten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Stufenlogik, Daten prüfen) · **Braucht:** MW.1 · **Dateien:**
   `crates/torroworkplace/assets/ai/recommendations.toml`, `crates/torroworkplace/src/account.rs`, `crates/torroworkplace/src/account/recommend.rs`
 - TOML, mit `include_str!` eingebunden wie `assets/extensions/catalog.toml`: `[[tier]]` vom stärksten zum

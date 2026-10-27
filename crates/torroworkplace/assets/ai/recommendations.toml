@@ -1,0 +1,232 @@
+# The models Torro suggests per computer (issue #325, task MW.5). Built into the core with `include_str!` and
+# checked by `src/account/recommend.rs` (and its tests that this file is valid). It changes only with a new version
+# of Torro: nothing is loaded from the network. A suggestion sets nothing; `ai.set_slot` and `ai.pull_model` do.
+#
+# Rules:
+# - `[[tier]]` from the strongest to the weakest; the first whose `when` holds is the computer's tier. `when` is a
+#   list of conditions, one of them must hold; in a condition every field given must hold:
+#   `min_memory_gb` (main memory), `min_vram_gb` (video memory of the largest card), `unified` (memory shared by
+#   processor and graphics, Apple silicon: `true` asks for it, `false` for its absence). Sizes in GB as sold
+#   (GiB); the core allows 10 % less, since systems report a little less than they have (a 12 GB card says
+#   12282 MiB). What was not measured holds no minimum. The last tier has no `when`: it takes everything else,
+#   unknown computers included. `label` is English, the core translates it (`crates/torro-core/src/i18n/de.rs`).
+# - `[[local]]`: a model that runs on this computer, per `tier` and `slot` (`chat`, `decide`); at most one per
+#   tier, slot and `provider`. `provider` is `ollama` (Torro can download it, `ai.pull_model`) or `strata` (Strata
+#   installs its models itself; suggested only while Strata serves a model whose id starts with `model`, upper and
+#   lower case alike, else the Ollama entry of the same tier). Ollama names are names of Ollama's library,
+#   never with a `/` (a namespace or another registry host). `size_bytes` is what a download loads, from Ollama's
+#   registry manifest (the sum of its layers). `open_weights = true` and a `license` from the open list
+#   (`apache-2.0`, `mit`, `qwen`, `llama`, `gemma`) are required. `decision = true` marks a decision model
+#   (`docs/kategorien.md`): it sorts mail directly; any other model for `decide` sorts through the fallback.
+#   Every tier has a model for `decide`.
+# - `[[cloud]]`: per cloud provider and slot the beginning of a model id (`model_prefix`); the first model of the
+#   account that starts with it and fits the slot. Chat a middle model, sorting the smallest. Used only where the
+#   tier has no local model for the slot or no AI server runs on this computer, providers in Torro's order.
+#
+# Looked up on 2026-10-27:
+# - Sizes from `https://registry.ollama.ai/v2/library/<name>/manifests/<tag>`: qwen3:4b 2497293931,
+#   qwen3:14b 9276198565, qwen3:32b 20201253829, nimble (= nimble:9b, Q8_0) 9527504198, nimble:9b-q4_K_M
+#   5629111625. Pages: https://ollama.com/library/qwen3/tags (2.5 GB, 9.3 GB, 20 GB),
+#   https://ollama.com/library/nimble/tags (9.3–9.5 GB, Q4_K_M 5.6 GB).
+# - Licences: nimble Apache 2.0 (https://ollama.com/library/nimble, Bespoke Labs, a decision model fine-tuned from
+#   Qwen3.5-9B, capability `decision`); Qwen3 Apache 2.0 (Qwen's release); Qwen3.6-35B-A3B Apache 2.0
+#   (https://github.com/Niko1221/Strata/blob/main/docs/MODELS.md, UD-Q4_K_XL 22.9 GB, NVIDIA and AMD cards only,
+#   32 GB of RAM).
+# - Not checked when this was written: that the Q4_K_M build of nimble keeps the capability `decision`; the id
+#   Strata serves Qwen3.6-35B-A3B under (hence the prefix); the tier thresholds on real hardware; every
+#   `[[cloud]]` prefix (taken from the providers' usual model names, not read from their lists).
+
+[[tier]]
+id = "mac_large"
+label = "Mac with large memory"
+when = [{ unified = true, min_memory_gb = 64 }]
+
+[[tier]]
+id = "gpu"
+label = "Graphics card"
+when = [{ min_vram_gb = 12, min_memory_gb = 32 }]
+
+[[tier]]
+id = "large"
+label = "Large"
+when = [{ unified = true, min_memory_gb = 32 }, { unified = false, min_memory_gb = 16 }]
+
+[[tier]]
+id = "medium"
+label = "Medium"
+when = [{ min_memory_gb = 8 }]
+
+[[tier]]
+id = "small"
+label = "Small"
+
+# Chat: Qwen3 can use tools and think; the largest that fits the tier.
+
+[[local]]
+tier = "mac_large"
+slot = "chat"
+provider = "ollama"
+model = "qwen3:32b"
+size_bytes = 20201253829
+license = "apache-2.0"
+open_weights = true
+
+[[local]]
+tier = "gpu"
+slot = "chat"
+provider = "strata"
+model = "qwen3.6-35b-a3b"
+size_bytes = 22900000000
+license = "apache-2.0"
+open_weights = true
+
+[[local]]
+tier = "gpu"
+slot = "chat"
+provider = "ollama"
+model = "qwen3:14b"
+size_bytes = 9276198565
+license = "apache-2.0"
+open_weights = true
+
+[[local]]
+tier = "large"
+slot = "chat"
+provider = "ollama"
+model = "qwen3:14b"
+size_bytes = 9276198565
+license = "apache-2.0"
+open_weights = true
+
+[[local]]
+tier = "medium"
+slot = "chat"
+provider = "ollama"
+model = "qwen3:4b"
+size_bytes = 2497293931
+license = "apache-2.0"
+open_weights = true
+
+# Sorting: the decision model nimble on every tier; below `large` its 4-bit build, which fits 8 GB.
+
+[[local]]
+tier = "mac_large"
+slot = "decide"
+provider = "ollama"
+model = "nimble"
+size_bytes = 9527504198
+license = "apache-2.0"
+open_weights = true
+decision = true
+
+[[local]]
+tier = "gpu"
+slot = "decide"
+provider = "ollama"
+model = "nimble"
+size_bytes = 9527504198
+license = "apache-2.0"
+open_weights = true
+decision = true
+
+[[local]]
+tier = "large"
+slot = "decide"
+provider = "ollama"
+model = "nimble"
+size_bytes = 9527504198
+license = "apache-2.0"
+open_weights = true
+decision = true
+
+[[local]]
+tier = "medium"
+slot = "decide"
+provider = "ollama"
+model = "nimble:9b-q4_K_M"
+size_bytes = 5629111625
+license = "apache-2.0"
+open_weights = true
+decision = true
+
+[[local]]
+tier = "small"
+slot = "decide"
+provider = "ollama"
+model = "nimble:9b-q4_K_M"
+size_bytes = 5629111625
+license = "apache-2.0"
+open_weights = true
+decision = true
+
+# Cloud, in no particular order here: the core asks the providers in Torro's order (Open First).
+
+[[cloud]]
+provider = "openrouter"
+slot = "chat"
+model_prefix = "qwen/qwen3-32b"
+
+[[cloud]]
+provider = "openrouter"
+slot = "decide"
+model_prefix = "qwen/qwen3-8b"
+
+[[cloud]]
+provider = "anthropic"
+slot = "chat"
+model_prefix = "claude-sonnet"
+
+[[cloud]]
+provider = "anthropic"
+slot = "decide"
+model_prefix = "claude-haiku"
+
+[[cloud]]
+provider = "openai"
+slot = "chat"
+model_prefix = "gpt-5-mini"
+
+[[cloud]]
+provider = "openai"
+slot = "decide"
+model_prefix = "gpt-5-nano"
+
+[[cloud]]
+provider = "gemini"
+slot = "chat"
+model_prefix = "gemini-2.5-flash"
+
+[[cloud]]
+provider = "gemini"
+slot = "decide"
+model_prefix = "gemini-2.5-flash-lite"
+
+[[cloud]]
+provider = "mistral"
+slot = "chat"
+model_prefix = "mistral-medium"
+
+[[cloud]]
+provider = "mistral"
+slot = "decide"
+model_prefix = "mistral-small"
+
+[[cloud]]
+provider = "deepseek"
+slot = "chat"
+model_prefix = "deepseek-chat"
+
+[[cloud]]
+provider = "deepseek"
+slot = "decide"
+model_prefix = "deepseek-chat"
+
+[[cloud]]
+provider = "qwen"
+slot = "chat"
+model_prefix = "qwen-plus"
+
+[[cloud]]
+provider = "qwen"
+slot = "decide"
+model_prefix = "qwen-turbo"

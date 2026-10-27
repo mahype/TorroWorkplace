@@ -36,6 +36,9 @@
 //!
 //! Task MW.4: [`hardware`] measures this computer (memory, processor, graphics card) for the
 //! recommendation of local models.
+//!
+//! Task MW.5: [`recommend`] holds the built-in list of recommended models and the rules that pick one
+//! per slot for this computer and the connected AI accounts.
 
 use std::future::Future;
 use std::path::Path;
@@ -53,6 +56,8 @@ use self::github::TokenStore;
 pub mod ai;
 pub mod hardware;
 pub mod ntfy;
+#[allow(dead_code, reason = "read by ai.recommend and ai.pull_model, tasks MW.6 and MW.7")]
+pub mod recommend;
 pub mod torromail;
 
 /// How often the sign-in is polled while the user is in the browser.

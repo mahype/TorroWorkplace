@@ -6544,4 +6544,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Only for sorting mail", "Nur zum Einordnen von E-Mails"),
     ("Answers in a fixed format, slower", "Antwortet in festem Format, langsamer"),
+    // The tiers and reasons of the recommended models (MW.5, issue #325); "Medium", "This computer" and
+    // "Needs {program}" stand above.
+    ("Mac with large memory", "Mac mit viel Arbeitsspeicher"),
+    ("Graphics card", "Grafikkarte"),
+    ("Large", "Groß"),
+    ("Small", "Klein"),
+    ("Runs on this computer and is ready", "Läuft auf diesem Rechner und ist bereit"),
+    ("Runs on this computer after a download", "Läuft nach einem Download auf diesem Rechner"),
+    ("No AI server runs on this computer", "Auf diesem Rechner läuft kein KI-Server"),
+    ("No local model fits this computer", "Kein lokales Modell passt zu diesem Rechner"),
 ];
