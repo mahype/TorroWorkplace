@@ -3315,11 +3315,12 @@ static SNOOZE_ITEM: Command = Command {
                   sent from the account itself, dated after this call, in any folder but drafts, calls it off and the date \
                   never comes; without it the date stays after a reply and brings the conversation on top once \
                   more unless it was archived, thrown away or marked as spam. `unless_reply` is for mail only, `unsupported` on any other entry. \
-                  `keep_open: true` with `until` follows up an open mail entry without putting it off (it stays \
-                  where it is and comes back on top at `until` if still open), as a reply leaves a follow-up; for \
-                  undoing a cancelled follow-up. `unsupported` on a snoozed or done entry, on one that is no \
-                  mail, for a mail id whose conversation has a snoozed or done entry, and without `until`; \
-                  refused before an approval is asked for.",
+                  `keep_open: true` with `until` follows up a mail entry without putting it off: an open one \
+                  stays where it is, a snoozed one is open again (seen); it comes back on top at `until` if still \
+                  open, as a reply leaves a follow-up. For undoing a cancelled follow-up or a follow-up date \
+                  set on an open entry. `unsupported` on a done entry, on one that is no mail, for a mail id \
+                  whose conversation has a done entry, and without `until`; refused before an approval is \
+                  asked for.",
 };
 
 static SET_ITEM_LANE: Command = Command {

@@ -923,12 +923,15 @@ pub fn follow_up(item: &mut Item, until: Option<DateTime<Utc>>, unless_reply: bo
     item.follow_up = until.map(|at| next_follow_up(item.follow_up, at, unless_reply, now));
 }
 
-/// "Follow up" on an **open** mail entry without putting it off (review of #315,
-/// `inbox.snooze_item` with `keep_open`): only its follow-up is set, as [`follow_up`] sets it
-/// (a repeated call keeps `since`); state and place in the list stay. The state a reply leaves a
-/// follow-up in (decision 6), made again by the Undo of "Cancel follow-up"; [`wake`] brings the
-/// entry on top at `until` while it is open. The caller checks that the entry is an open mail entry.
+/// "Follow up" on a mail entry without putting it off (review of #315, `inbox.snooze_item` with
+/// `keep_open`): its follow-up is set, as [`follow_up`] sets it (a repeated call keeps `since`). An
+/// open entry keeps its state and place in the list; a snoozed one is open again as [`snooze`] with
+/// `None` takes a snooze back – [`State::Seen`], `updated` as it was. The state a reply leaves a
+/// follow-up in (decision 6), made again by the Undo of "Cancel follow-up" or of putting an open
+/// entry with a follow-up off; [`wake`] brings the entry on top at `until` while it is open. The
+/// caller checks that the entry is a mail entry and not done.
 pub fn follow_up_open(item: &mut Item, until: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) {
+    snooze(item, None);
     item.follow_up = Some(next_follow_up(item.follow_up, until, unless_reply, now));
 }
 
@@ -1913,6 +1916,10 @@ mod tests {
         follow_up_open(&mut open, at(20), false, at(10));
         assert_eq!(open.follow_up.map(|held| held.since), Some(at(9)), "a repeated call keeps since");
         assert!(wake(&mut open, at(20)), "back at its time");
+        // A snoozed one is open again, as taking a snooze back leaves it.
+        let mut snoozed = Item { state: State::Snoozed { until: at(21) }, ..item("2", Kind::Message) };
+        follow_up_open(&mut snoozed, at(20), true, at(9));
+        assert_eq!((snoozed.state, snoozed.follow_up.map(|held| held.at)), (State::Seen, Some(at(20))));
     }
 
     /// Review of #315, decision 6: mail of the account's own (Bcc to oneself, a list's echo) opens the

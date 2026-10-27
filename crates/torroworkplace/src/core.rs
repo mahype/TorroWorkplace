@@ -7438,13 +7438,23 @@ impl Core {
     /// `since` (review of #315). A failure goes to the log: the mail stays on the pile, and the
     /// feed's next catch-up finds the answer.
     async fn take_off_answered(&self, mail: &[(String, String)], now: chrono::DateTime<Utc>) {
-        let Ok(piles) = self.inbox.mail_piles(&mail.iter().map(|(account, _)| account.clone()).collect::<Vec<_>>())
-        else {
-            return;
+        let accounts: Vec<String> = mail.iter().map(|(account, _)| account.clone()).collect();
+        let piles = match self.inbox.mail_piles(&accounts) {
+            Ok(piles) => piles,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the piles to look for answers: {err}");
+                return;
+            }
         };
         for (account, message) in mail {
             let Some(at) = piles.since_of(account, message) else { continue };
-            let Ok(store) = self.mail.store(account).await else { continue };
+            let store = match self.mail.store(account).await {
+                Ok(store) => store,
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: cannot read the answers in {account}: {}", err.code());
+                    continue;
+                }
+            };
             let (id, own) = (message.clone(), crate::mail::inbox_feed::own_address(account));
             let answered = store
                 .run(move |store| match store.summary(&id)? {
@@ -19679,10 +19689,11 @@ mod tests {
     }
 
     /// API review of #315: `keep_open` by the id of a mail without an entry whose conversation has a
-    /// snoozed or done entry is `unsupported` before anyone is asked – filing it would not make the
-    /// conversation open – and nothing is filed or reopened.
+    /// done entry is `unsupported` before anyone is asked – filing it would reopen the conversation,
+    /// which nobody asked for – and nothing is filed or reopened. A snoozed one it may open again
+    /// (review of #315, the undo of putting it off).
     #[tokio::test]
-    async fn a_mail_of_a_conversation_put_off_or_done_is_not_followed_up_open() {
+    async fn a_mail_of_a_done_conversation_is_not_followed_up_open() {
         use crate::mail::read::tests::mail_from;
         use crate::mail::sync::fake;
         let dir = tempfile::tempdir().expect("temp dir");
@@ -19706,11 +19717,9 @@ mod tests {
         asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
         let (_, asking) = client(&core, asking).await;
 
-        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported", "put off");
-        assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
         let done = Request::SetItemDone { id: item.id.clone(), done: true, dismissed: false };
         assert!(matches!(ask(&core, Some(&app_key), done).await, Response::Item { .. }));
-        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported", "done");
+        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported");
         assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &reply), None, "nothing filed");
@@ -19721,8 +19730,8 @@ mod tests {
     }
 
     /// Review of #315: `keep_open` by a mail's id – filed first, or through its entry – follows the
-    /// open conversation up without putting it off; on a snoozed entry it is `unsupported` before
-    /// anyone is asked.
+    /// open conversation up without putting it off; a snoozed one it opens again (the undo of
+    /// putting it off), on a done one it is `unsupported` before anyone is asked.
     #[tokio::test]
     async fn a_mail_is_followed_up_open_by_its_id() {
         use crate::mail::read::tests::mail_from;
@@ -19742,8 +19751,16 @@ mod tests {
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &id).as_deref(), Some(item.id.as_str()));
         assert!(item.state.is_open() && item.follow_up.is_some_and(|held| held.at == later), "{item:?}");
 
-        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(later), unless_reply: false, keep_open: false };
+        let tomorrow = later + chrono::TimeDelta::days(1);
+        let snooze =
+            Request::SnoozeItem { id: id.clone(), until: Some(tomorrow), unless_reply: false, keep_open: false };
         assert!(matches!(ask(&core, Some(&app_key), snooze).await, Response::Item { .. }));
+        let Response::Item { item } = ask(&core, Some(&app_key), open(later)).await else { panic!("undone") };
+        assert_eq!(item.state, torro_inbox::State::Seen, "open again, as taking a snooze back");
+        assert_eq!(item.follow_up.map(|held| held.at), Some(later), "with the follow-up it had");
+
+        let done = Request::SetItemDone { id: item.id.clone(), done: true, dismissed: false };
+        assert!(matches!(ask(&core, Some(&app_key), done).await, Response::Item { .. }));
         let mut asking = RightsTemplate::FullAccess.rights();
         asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
         let (_, asking) = client(&core, asking).await;

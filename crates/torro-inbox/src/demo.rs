@@ -1760,8 +1760,9 @@ impl InboxSource for DemoSource {
 
     /// As the core does (task E19.1): a mail entry is followed up ([`rules::follow_up`]), any other
     /// one snoozed, and `unless_reply` with `until` on one that is no mail is
-    /// [`InboxError::Unsupported`]. With `keep_open` an open mail entry only gets its follow-up
-    /// ([`rules::follow_up_open`], review of #315), anything else is [`InboxError::Unsupported`]. A
+    /// [`InboxError::Unsupported`]. With `keep_open` a mail entry that is not done gets its follow-up
+    /// without being put off, a snoozed one opened again ([`rules::follow_up_open`], review of
+    /// #315); anything else is [`InboxError::Unsupported`]. A
     /// mail message's id (`m:…`) names its entry, or – with `until` – a new one
     /// ([`Data::snooze_target`]).
     async fn snooze_item(
@@ -1782,7 +1783,8 @@ impl InboxSource for DemoSource {
         };
         let item = &mut data.items[at];
         if keep_open {
-            let (Some(until), true, true) = (until, item.source.kind == SourceKind::Mail, item.state.is_open()) else {
+            let done = matches!(item.state, State::Done { .. });
+            let (Some(until), true, false) = (until, item.source.kind == SourceKind::Mail, done) else {
                 return Err(InboxError::Unsupported);
             };
             rules::follow_up_open(item, until, unless_reply, now);
@@ -2807,8 +2809,11 @@ mod tests {
         let open = demo.snooze_item("m:w1".into(), Some(until), false, true).await.expect("kept open");
         assert!(open.state.is_open() && open.follow_up.is_some_and(|f| f.at == until), "{open:?}");
         demo.snooze_item("demo-follow-w10".into(), Some(until), false, false).await.expect("put off");
+        let reopened = demo.snooze_item("demo-follow-w10".into(), Some(until), false, true).await.expect("reopened");
+        assert_eq!((reopened.state, reopened.follow_up.map(|f| f.at)), (State::Seen, Some(until)), "a snoozed entry");
+        demo.set_item_done("demo-follow-w10".into(), true).await.expect("done");
         let refused = demo.snooze_item("demo-follow-w10".into(), Some(until), false, true).await;
-        assert_eq!(refused, Err(InboxError::Unsupported), "a snoozed entry");
+        assert_eq!(refused, Err(InboxError::Unsupported), "a done entry");
         assert_eq!(demo.snooze_item("demo-7".into(), Some(until), false, true).await, Err(InboxError::Unsupported));
         assert_eq!(demo.snooze_item("m:w1".into(), None, false, true).await, Err(InboxError::Unsupported));
     }

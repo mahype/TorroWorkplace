@@ -1836,13 +1836,14 @@ pub enum Request {
         /// which calls any follow-up off.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unless_reply: bool,
-        /// Follow up an **open** mail entry without putting it off: only its follow-up is set
-        /// (`until`, with `unless_reply`), it stays where it is and comes back on top at `until` if
-        /// it is still open then – the same state a follow-up without the condition is in after a
-        /// reply opened its conversation. For undoing "Cancel follow-up" on such an entry. Needs
-        /// `until`; `unsupported` on a snoozed or done entry, on one that is no mail, for a mail id
-        /// whose conversation has a snoozed or done entry, and without `until` – refused before an
-        /// approval is asked for.
+        /// Follow up a mail entry without putting it off: its follow-up is set (`until`, with
+        /// `unless_reply`); an open entry stays where it is, a snoozed one is open again (seen, in
+        /// its old place). It comes back on top at `until` if it is still open then – the same state
+        /// a follow-up without the condition is in after a reply opened its conversation. For
+        /// undoing "Cancel follow-up", or a new follow-up date on an entry that was open. Needs
+        /// `until`; `unsupported` on a done entry, on one that is no mail, for a mail id whose
+        /// conversation has a done entry, and without `until` – refused before an approval is asked
+        /// for.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep_open: bool,
     },

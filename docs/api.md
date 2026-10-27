@@ -500,12 +500,12 @@ keine Mail ist, ist `unsupported`, geprüft vor der Freigabe; ohne `until` zähl
 zurückgekehrte Mail aus jedem Ordner außer Archiv, Papierkorb und Spam, unabhängig vom `in:` der Suche: Eine eigene gesendete
 Mail, auf die niemand antwortete, steht oben in „All“ (verträglich, kein `v: 2`). Eine Mail des Kontos selbst in der
 Unterhaltung (Bcc an sich, Echo einer Liste) öffnet sie, ist aber keine Antwort: `unless_reply` bleibt (Review von #315).
-Das optionale Feld `keep_open` (Review von #315, für das Undo von „Cancel follow-up“) setzt mit `until` an einem
-**offenen** Mail-Eintrag nur die Wiedervorlage (mit `unless_reply`), ohne ihn zurückzustellen: Er bleibt, wo er ist, und
-kommt am Datum nach oben, wenn er dann offen ist – der Zustand, den eine Antwort hinterlässt (Entscheidung 6). Ohne
-`until`, an einem zurückgestellten oder erledigten Eintrag, an einem, der keine Mail ist, und an einer Mail-Kennung,
-deren Unterhaltung schon einen zurückgestellten oder erledigten Eintrag hat, ist es `unsupported`, geprüft vor der
-Freigabe.
+Das optionale Feld `keep_open` (Review von #315, für das Undo von „Cancel follow-up“ und von „Follow up“ an einem
+offenen Eintrag) setzt mit `until` an einem Mail-Eintrag die Wiedervorlage (mit `unless_reply`), ohne ihn
+zurückzustellen: Ein offener bleibt, wo er ist; ein zurückgestellter ist wieder offen, als `seen` an seinem alten Platz
+(wie `snooze_item` ohne `until`). Er kommt am Datum nach oben, wenn er dann offen ist – der Zustand, den eine Antwort
+hinterlässt (Entscheidung 6). Ohne `until`, an einem erledigten Eintrag, an einem, der keine Mail ist, und an einer
+Mail-Kennung, deren Unterhaltung schon einen erledigten Eintrag hat, ist es `unsupported`, geprüft vor der Freigabe.
 Ebenso `hidden` (E18.1, „Hidden“ im Mail-Fenster): `false` lässt Mails des Posteingangsordners weg, die der Mensch
 ausgeblendet hat – von einem Absender oder einer Domain (`hide_sender`, geprüft beim Lesen gegen den Absender, also
 auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr Eintrag erledigt ist, oder durch ein

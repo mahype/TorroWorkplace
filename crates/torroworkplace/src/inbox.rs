@@ -1082,8 +1082,9 @@ impl Inbox {
     /// when it may run. `stand_in` is the message as an entry would hold it
     /// (`crate::mail::inbox_feed::message_stand_in`, looked up in the stores the client reaches).
     /// The same checks [`Inbox::handle_message`] makes ([`check_message`]); for `inbox.snooze_item`
-    /// with `keep_open` also the entry the mail would be filed into ([`check_open_conversation`]), so
-    /// what would end in `unsupported` once filed is refused before anyone is asked.
+    /// with `keep_open` also the entry the mail would be filed into ([`check_open_conversation`]: not
+    /// done), so what would end in `unsupported` or reopen a done conversation is refused before
+    /// anyone is asked.
     pub fn message_refusal(&self, request: &Request, stand_in: &Item, client: Option<&ClientInfo>) -> Option<Response> {
         let checked = check_message(request, stand_in, client, Utc::now()).and_then(|()| match request {
             Request::SnoozeItem { keep_open: true, .. } => self.with(|db| check_open_conversation(db, stand_in)),
@@ -3268,7 +3269,9 @@ fn change(
 /// `unsupported` for "only if no reply" (`inbox.snooze_item` with `unless_reply`, task E19.1) on an
 /// entry that is no mail: only mail has replies. Without `until` the condition is ignored, as the
 /// follow-up is called off anyway. With `keep_open` (review of #315) `unsupported` too unless the
-/// entry is an open mail entry and `until` is given: there is nothing else to follow up open.
+/// entry is a mail entry that is not done and `until` is given: an open one is followed up as it is,
+/// a snoozed one opened again ([`rules::follow_up_open`]); a done one would be reopened by nobody's
+/// wish.
 fn check_follow_up(
     item: &Item,
     until: Option<DateTime<Utc>>,
@@ -3278,8 +3281,9 @@ fn check_follow_up(
     if unless_reply && until.is_some() && item.source.kind != SourceKind::Mail {
         return Err(Failure::Unsupported("only mail entries can wait for a reply (unless_reply)".into()));
     }
-    if keep_open && (until.is_none() || item.source.kind != SourceKind::Mail || !item.state.is_open()) {
-        return Err(Failure::Unsupported("keep_open follows up an open mail entry and needs until".into()));
+    let done = matches!(item.state, State::Done { .. });
+    if keep_open && (until.is_none() || item.source.kind != SourceKind::Mail || done) {
+        return Err(Failure::Unsupported("keep_open follows up a mail entry that is not done and needs until".into()));
     }
     Ok(())
 }
@@ -3640,13 +3644,13 @@ fn check_message(
 }
 
 /// `unsupported` when the conversation of the mail `stand_in` stands for already has an entry that
-/// is snoozed or done: `inbox.snooze_item` with `keep_open` follows up an open conversation only, and
-/// filing the mail would not change that – or reopen a done one, which nobody asked for. No entry
-/// yet is fine: filing makes an open one.
+/// is done: `inbox.snooze_item` with `keep_open` follows up a conversation that is not done, and
+/// filing the mail would reopen it, which nobody asked for. No entry yet is fine (filing makes an
+/// open one), and so is a snoozed one (review of #315: it is opened again, as for its entry's id).
 fn check_open_conversation(db: &Connection, stand_in: &Item) -> Result<(), Failure> {
     match read_owned(db, &stand_in.source.key(), &stand_in.thread_key)? {
-        Some(entry) if !entry.state.is_open() => {
-            Err(Failure::Unsupported("keep_open follows up an open mail entry; this conversation is not open".into()))
+        Some(entry) if matches!(entry.state, State::Done { .. }) => {
+            Err(Failure::Unsupported("keep_open needs a conversation that is not done; this one is".into()))
         }
         _ => Ok(()),
     }
@@ -9069,20 +9073,22 @@ pub(crate) mod tests {
         let back = entry_at(&inbox, &id, at(13, 1));
         assert_eq!((back.state, back.updated, back.follow_up), (State::New, at(13, 0), None), "back at the date");
 
-        // Snoozed, done, no mail, no time: `unsupported`, before an approval too, nothing changed.
+        // Done, no mail, no time: `unsupported`, before an approval too, nothing changed.
         let snoozed = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(8, 1));
         item(inbox.handle(follow_up(&snoozed, Some(at(20, 0)), false), None, at(8, 2)));
         let done = filed(&inbox, &personal("m:3", "t:3", at(8, 0)), at(8, 1));
         item(inbox.handle(Request::SetItemDone { id: done.clone(), done: true, dismissed: false }, None, at(8, 2)));
         let notice = posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 3)));
         let until = Some(at(20, 0));
-        let refused = [open(&snoozed, until), open(&done, until), open(&notice, until), open(&id, None)];
+        // Snoozed (the undo of putting it off): open again, with the follow-up.
+        let reopened = item(inbox.handle(open(&snoozed, Some(at(13, 0))), None, at(9, 0)));
+        assert_eq!((reopened.state, reopened.follow_up.map(|held| held.at)), (State::Seen, Some(at(13, 0))));
+        let refused = [open(&done, until), open(&notice, until), open(&id, None)];
         for request in refused {
             assert_eq!(code(&inbox.handle(request.clone(), None, at(9, 0))), "unsupported", "{request:?}");
             let before = inbox.refusal(&request, Some(&script()));
             assert_eq!(before.as_ref().map(code), Some("unsupported"), "refused before an approval: {request:?}");
         }
-        assert_eq!(entry_at(&inbox, &snoozed, at(9, 1)).state, State::Snoozed { until: at(20, 0) });
         assert!(matches!(entry_at(&inbox, &done, at(9, 1)).state, State::Done { .. }));
     }
 
