@@ -670,6 +670,18 @@ pub struct After {
     pub undo: Option<Edit>,
 }
 
+/// The follow-up an entry had before its mail was archived, deleted or moved (review of PR #327):
+/// closing the entry clears it (`rules::set_done`), so the undo sets it again once the entry is open –
+/// with `keep_open` for an entry that was open, without for one that was put off, which goes back to
+/// sleep until `at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowBack {
+    pub id: String,
+    pub at: DateTime<Utc>,
+    pub unless_reply: bool,
+    pub keep_open: bool,
+}
+
 /// What "Undo" in the hint sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Undo {
@@ -679,8 +691,9 @@ pub enum Undo {
     Mute(SourceRef, bool),
     /// Moves archived or deleted mail back where it was (`mail.move_messages`), then opens the
     /// entries `reopen` again, one by one – the core closed them when their mail left the inbox, or
-    /// the window did after archiving from an entry and with "Archive mail" (task E18.5).
-    Mail { edit: MailEdit, reopen: Vec<String> },
+    /// the window did after archiving from an entry and with "Archive mail" (task E18.5) –, then puts
+    /// back the follow-ups `follow` they had, which closing cleared (review of PR #327, [`undo_move`]).
+    Mail { edit: MailEdit, reopen: Vec<String>, follow: Vec<FollowBack> },
     /// Takes "Dismiss all" back (task E8.4): opens the entries it closed again
     /// (`inbox.set_item_done` with `false`, one by one).
     Dismissed(Vec<String>),
@@ -3651,6 +3664,30 @@ async fn round_page<S: MailSource>(
     }
 }
 
+/// The undo of moving mail ([`Undo::Mail`]), one step after the other: the mail back by `edit`,
+/// then the entries `reopen` open again – the other way round the core could close an entry once more
+/// while its mail is still away –, then each follow-up of `follow` set again on its open entry
+/// (`inbox.snooze_item`; `keep_open` keeps an open one open, without it a snoozed one goes back to
+/// sleep, review of PR #327). The first error stops it and is the answer, which the window shows.
+async fn undo_move<S: InboxSource + MailSource>(
+    inbox: Arc<S>,
+    edit: MailEdit,
+    reopen: Vec<String>,
+    follow: Vec<FollowBack>,
+) -> Result<(), String> {
+    edit.apply(inbox.clone()).await?;
+    for id in reopen {
+        inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
+    }
+    for back in follow {
+        inbox
+            .snooze_item(back.id, Some(back.at), back.unless_reply, back.keep_open)
+            .await
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
 /// The pile of the mail `id` and since when, as the core says it (fifth review of #315):
 /// `mail.get_message` names no pile, `mail.search_messages` does – so the mail's own folder is
 /// searched for mail of its day (`after:`/`before:`, one day in UTC) until it turns up. `(None, None)` when it does not: on no pile as far as the window can tell.
@@ -5660,10 +5697,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
         let reopen = if close.is_empty() { self.reopened_by_undo(&id).into_iter().collect() } else { close.clone() };
+        let (reopen, follow) = self.with_follow_backs(&id, reopen);
         let text = if action == MailAction::Junk { tr("Moved to junk") } else { mail::moved_text(delete) };
         let hint = Hint {
             text: text.to_owned(),
-            undo: Some(Undo::Mail { edit: back, reopen }),
+            undo: Some(Undo::Mail { edit: back, reopen, follow }),
             shown: Instant::now(),
             folder: None,
         };
@@ -5688,6 +5726,28 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Ok(None)
         };
         Task::perform(filed, move |result| Message::MailDone(result, ids.clone(), Some(hint.clone())))
+    }
+
+    /// `reopen` – the entries the undo of moving the message `id` opens again – with the follow-ups of
+    /// the entries the window holds that show it (review of PR #327): each with its time and condition,
+    /// kept open for an open entry, put off again for a snoozed one, which is then reopened first as
+    /// well. Done entries have none to keep.
+    fn with_follow_backs(&self, id: &str, mut reopen: Vec<String>) -> (Vec<String>, Vec<FollowBack>) {
+        let held = self.items.iter().chain(self.detail.as_ref()).chain(self.subject.as_ref());
+        let held = held.chain(&self.for_me).chain(&self.info).chain(&self.snoozed);
+        let mut follow: Vec<FollowBack> = Vec::new();
+        for item in held.filter(|item| shows_mail(item, id) && !matches!(item.state, State::Done { .. })) {
+            let Some(up) = item.follow_up else { continue };
+            if follow.iter().any(|back| back.id == item.id) {
+                continue;
+            }
+            let keep_open = item.state.is_open();
+            follow.push(FollowBack { id: item.id.clone(), at: up.at, unless_reply: up.unless_reply, keep_open });
+            if !reopen.contains(&item.id) {
+                reopen.push(item.id.clone());
+            }
+        }
+        (reopen, follow)
     }
 
     /// The entries the window holds that show the message `id` and are not done (list, panel, menu,
@@ -6435,6 +6495,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Undo::Mail {
                 edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) },
                 reopen: Vec::new(),
+                follow: Vec::new(),
             }
         });
         let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now(), folder: None });
@@ -6590,7 +6651,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
         let hint = Hint {
             text: trf("Moved to {folder}", &[("folder", &name)]),
-            undo: Some(Undo::Mail { edit: back, reopen: self.reopened_by_undo(&id).into_iter().collect() }),
+            undo: Some({
+                let (reopen, follow) = self.with_follow_backs(&id, self.reopened_by_undo(&id).into_iter().collect());
+                Undo::Mail { edit: back, reopen, follow }
+            }),
             shown: Instant::now(),
             folder: None,
         };
@@ -7955,12 +8019,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let Some(Link::Mail { message }) = self.find(id).and_then(|item| item.link.clone()) else {
             return Task::none();
         };
+        let (reopen, follow) = self.with_follow_backs(&message, vec![id.to_owned()]);
         let ids = vec![message];
         let edit = MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Junk) };
         let back = MailEdit::Move { ids, to: MoveTarget::Role(MoveRole::Inbox) };
         let hint = Hint {
             text: tr("Moved to junk").to_owned(),
-            undo: Some(Undo::Mail { edit: back, reopen: vec![id.to_owned()] }),
+            undo: Some(Undo::Mail { edit: back, reopen, follow }),
             shown: Instant::now(),
             folder: None,
         };
@@ -8679,23 +8744,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         match undo {
             Undo::Edit(edit) => self.send(edit, None),
             Undo::Mute(source, muted) => self.mute(source, muted, false),
-            Undo::Mail { edit, reopen } => {
+            Undo::Mail { edit, reopen, follow } => {
                 #[cfg(test)]
                 self.sent.push(Sent::Mail(edit.clone(), None));
                 // Coming back: the load after the move back shows them again.
                 let ids = edit.ids().to_vec();
                 self.leaving.retain(|leaving| !ids.contains(&leaving.id));
-                // First the mail back into its folder, then the entry open again: the other way
-                // round the core could close the entry once more while the mail is still away.
                 let inbox = self.inbox.clone();
-                let back = async move {
-                    edit.apply(inbox.clone()).await?;
-                    for id in reopen {
-                        inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
-                    }
-                    Ok(())
-                };
-                Task::perform(back, move |result| Message::MailEdited(result, ids.clone(), None))
+                Task::perform(undo_move(inbox, edit, reopen, follow), move |result| {
+                    Message::MailEdited(result, ids.clone(), None)
+                })
             }
             // Back into "Hidden": the load after the answer shows the row there again.
             Undo::Shown(ids) => self.set_mail_shown(ids, false, None),
@@ -14109,7 +14167,7 @@ mod tests {
         let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()], follow: Vec::new() }),
             "its entry opens again"
         );
         deliver_mail(&mut app);
@@ -14160,7 +14218,7 @@ mod tests {
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()], follow: Vec::new() }),
             "its entry opens again"
         );
         assert_eq!(cursor(&app), Some("m:w2"), "the next row takes its place");
@@ -14285,7 +14343,7 @@ mod tests {
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()], follow: Vec::new() }),
             "its entry opens again"
         );
         assert_eq!(app.menu, None);
@@ -14523,7 +14581,7 @@ mod tests {
         let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
         assert_eq!(
             hint.undo,
-            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }),
+            Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()], follow: Vec::new() }),
             "its entry opens again"
         );
         deliver_mail(&mut app);
@@ -14549,7 +14607,7 @@ mod tests {
         assert_eq!(edit, MailEdit::Delete { ids: vec!["m:w1".into()] });
         assert_eq!(hint.text, tr("Moved to Trash"));
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Inbox) };
-        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()] }));
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: vec!["demo-mail-1".into()], follow: Vec::new() }));
         deliver_mail(&mut app);
         assert!(!ids(&app).contains(&"demo-mail-1"), "its mail left the inbox: the entry is done");
 
@@ -16996,6 +17054,78 @@ mod tests {
         }
     }
 
+    /// The entry `id` as the demo holds it now.
+    fn entry_now(app: &App<DemoSource>, id: &str) -> Item {
+        block_on(app.inbox.list_items(torro_inbox::ItemFilter::default()))
+            .expect("the entries")
+            .into_iter()
+            .find(|item| item.id == id)
+            .expect("the entry")
+    }
+
+    /// Archives with `e` what the window shows under the cursor, as the core does it – the mail to the
+    /// archive, the entries closed, which clears their follow-ups –, then runs the toast's undo as its
+    /// task does ([`undo_move`]).
+    fn archive_and_undo(app: &mut App<DemoSource>, entry: &str) {
+        let _ = app.update(Message::Key(Key::E));
+        let (edit, hint) = app
+            .sent
+            .iter()
+            .rev()
+            .find_map(|sent| match sent {
+                Sent::Mail(edit @ MailEdit::Move { .. }, Some(hint)) => Some((edit.clone(), hint.clone())),
+                _ => None,
+            })
+            .expect("archived with a toast");
+        block_on(edit.apply(app.inbox.clone())).expect("moved");
+        block_on(app.inbox.set_item_done(entry.to_owned(), true)).expect("closed as the core does");
+        assert!(entry_now(app, entry).follow_up.is_none(), "closing cleared the follow-up");
+        let Some(Undo::Mail { edit, reopen, follow }) = hint.undo else { panic!("an undo") };
+        block_on(undo_move(app.inbox.clone(), edit, reopen, follow)).expect("undone");
+    }
+
+    /// Review of PR #327: "Undo" of archiving brings back the follow-up the entry had – an open entry
+    /// open with it (`keep_open`), a snoozed one snoozed until its date –, end to end through the demo.
+    #[test]
+    fn undo_of_archive_keeps_a_follow_up() {
+        // An open mail entry with its follow-up, archived from "All".
+        let mut app = mail_window(Density::Compact, &[]);
+        let (entry, message) = app
+            .for_me
+            .iter()
+            .find_map(|item| match &item.link {
+                Some(Link::Mail { message }) if item.state.is_open() => Some((item.id.clone(), message.clone())),
+                _ => None,
+            })
+            .expect("an open mail entry");
+        let at = app.now + TimeDelta::days(2);
+        block_on(app.inbox.snooze_item(entry.clone(), Some(at), true, true)).expect("open with a follow-up");
+        load(&mut app);
+        assert!(message_ids(&app).contains(&message.as_str()), "listed in All");
+        let _ = app.update(Message::SelectMail(message));
+        archive_and_undo(&mut app, &entry);
+        let back = entry_now(&app, &entry);
+        assert!(back.state.is_open(), "open again: {:?}", back.state);
+        assert_eq!(back.follow_up.map(|f| (f.at, f.unless_reply)), Some((at, true)), "with its follow-up");
+
+        // A snoozed one, archived from "Follow up".
+        let mut app = mail_window(Density::Compact, &[]);
+        let entry = app
+            .for_me
+            .iter()
+            .find(|item| matches!(item.link, Some(Link::Mail { .. })) && item.state.is_open())
+            .map(|item| item.id.clone())
+            .expect("an open mail entry");
+        block_on(app.inbox.snooze_item(entry.clone(), Some(at), true, false)).expect("followed up, put off");
+        let _ = app.update(Message::Show(View::Snoozed));
+        load(&mut app);
+        let _ = app.update(Message::Select(entry.clone()));
+        archive_and_undo(&mut app, &entry);
+        let back = entry_now(&app, &entry);
+        assert_eq!(back.state, State::Snoozed { until: at }, "put off again");
+        assert_eq!(back.follow_up.map(|f| (f.at, f.unless_reply)), Some((at, true)), "with its follow-up");
+    }
+
     /// Task E18.4: the start states of the mail window – no `--open`, `overview`, `info`, `done` and
     /// the mail entry states show All (those with the first mail of All in the reader), `archive` and
     /// `hidden` their view; the other windows stay on their overview.
@@ -18976,7 +19106,7 @@ mod tests {
         let Some(Sent::Mail(edit, Some(hint))) = app.sent.get(n - 2).cloned() else { panic!("{:?}", app.sent) };
         assert_eq!(edit, archive);
         assert_eq!(hint.text, tr("Archived"));
-        assert_eq!(hint.undo, Some(Undo::Mail { edit: back.clone(), reopen: ids.clone() }));
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back.clone(), reopen: ids.clone(), follow: Vec::new() }));
         assert_eq!(app.sent.last(), Some(&Sent::MailDone(ids.clone())), "both entries, after the move");
         deliver_filed(&mut app);
         assert!(app.find("demo-mail-2").is_none() && app.find("demo-9").is_none(), "both done");
@@ -19035,7 +19165,10 @@ mod tests {
         let ids = vec![message.to_owned()];
         let back = MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Inbox) };
         let reopen = reopen.iter().map(|id| (*id).to_owned()).collect();
-        (MailEdit::Move { ids, to: MoveTarget::Role(MoveRole::Archive) }, Some(Undo::Mail { edit: back, reopen }))
+        (
+            MailEdit::Move { ids, to: MoveTarget::Role(MoveRole::Archive) },
+            Some(Undo::Mail { edit: back, reopen, follow: Vec::new() }),
+        )
     }
 
     /// Task E18.5 (decision 5 of E18): `e` – and the Archive in the place of Done – at an open mail
@@ -19052,7 +19185,12 @@ mod tests {
             else {
                 panic!("an archive with a hint: {:?}", app.sent)
             };
-            assert_eq!((edit, hint.text.as_str(), hint.undo), (archive.clone(), tr("Archived"), undo.clone()));
+            // The follow-up the entry has at the time comes along (review of PR #327, tested on its own).
+            let without = |undo: Option<Undo>| match undo {
+                Some(Undo::Mail { edit, reopen, .. }) => Some(Undo::Mail { edit, reopen, follow: Vec::new() }),
+                other => other,
+            };
+            assert_eq!((edit, hint.text.as_str(), without(hint.undo)), (archive.clone(), tr("Archived"), undo.clone()));
             let done = Sent::MailDone(vec!["demo-mail-1".into()]);
             assert_eq!(app.sent.get(at + 1), Some(&done), "then its entry: {:?}", app.sent);
         };
@@ -19158,7 +19296,7 @@ mod tests {
             Sent::Mail(edit, Some(hint)) if *edit == archive => Some(hint.clone()),
             _ => None,
         });
-        let Some(Undo::Mail { edit: back, reopen }) = hint.as_ref().and_then(|hint| hint.undo.clone()) else {
+        let Some(Undo::Mail { edit: back, reopen, .. }) = hint.as_ref().and_then(|hint| hint.undo.clone()) else {
             panic!("{:?}", app.sent)
         };
         assert_eq!(reopen, ["demo-mail-3"], "undo opens the Info entry again");
