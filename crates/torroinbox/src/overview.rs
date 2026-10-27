@@ -596,7 +596,7 @@ fn card<'a>(item: &'a Item, rows: &Rows<'a>, deciding: bool, width: f32) -> Elem
     let inner = width - 2.0 * space::l() - 2.0 * (space::m() + size::HAIRLINE);
     let room = (inner - list::tile() - space::m()).max(0.0);
     let (title, text) = list::words(item);
-    let time = list::time_text(item, rows.view, rows.now);
+    let time = list::time_text_in(item, rows.view, rows.now, rows.bare);
     let title_room = room - typo::text_width(&time, typo::meta()) - list::cell_gap();
     let title = typo::text(typo::body_strong(), typo::ellipsize(&title, typo::body_strong(), title_room))
         .style(theme::text)

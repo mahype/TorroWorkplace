@@ -244,7 +244,7 @@ pub fn panel<'a>(
     text: &'a Selectable,
 ) -> Panel<'a, Message> {
     let path = path(item, view_name);
-    let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::l());
+    let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now, false))].spacing(space::l());
     let link = openable(item);
     if let Some(agent) = &item.agent {
         let mut rows = vec![value_row(Icon::Sparkles, agent.agent.label().to_owned())];
@@ -317,8 +317,17 @@ pub(crate) fn heading<'a>(item: &Item) -> Element<'a, Message> {
 /// Status, lane, source, what a service's traits say (task E5.15, `list::facet_words`: repository
 /// and reason, app and person, kind of conversation, topic and priority – each a row with its
 /// icon, foreign values as plain text), time and – from two on – the number of merged reports.
-pub(crate) fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
+///
+/// With `follow_up` (the mail window's panel, task E19.4) a snoozed entry says "Follow up …" with its
+/// condition ([`list::follow_up_text`]) instead of "Later until …", and an open entry that still has
+/// its date – its conversation came back after a reply (decisions 6 and 7 of E19) – gets a row with it.
+pub(crate) fn properties<'a>(item: &'a Item, now: DateTime<Utc>, follow_up: bool) -> Vec<Element<'a, Message>> {
     let (status, word) = status(item, now);
+    let unless_reply = item.follow_up.as_ref().is_some_and(|follow| follow.unless_reply);
+    let word = match item.state {
+        State::Snoozed { until } if follow_up => list::follow_up_text(until, unless_reply, now),
+        _ => word,
+    };
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
     let mut rows = vec![
         widgets::prop_row(None, row![dot, one_line_text(word)].spacing(space::s()).align_y(Alignment::Center), None),
@@ -327,6 +336,12 @@ pub(crate) fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<
     ];
     rows.extend(list::facet_words(item).into_iter().map(|(mark, word)| value_row(mark, word)));
     rows.push(value_row(Icon::Clock, when(item.updated, now)));
+    if follow_up
+        && item.state.is_open()
+        && let Some(follow) = &item.follow_up
+    {
+        rows.push(value_row(Icon::CalendarClock, list::follow_up_text(follow.at, follow.unless_reply, now)));
+    }
     if item.count > 1 {
         rows.push(value_row(Icon::Repeat, trf("{n} reports", &[("n", &item.count)])));
     }
@@ -645,11 +660,11 @@ mod tests {
     /// Task E5.15: a service's traits stand among the properties, one row each.
     #[test]
     fn a_service_shows_its_traits_as_properties() {
-        let plain = properties(&sample("demo-6"), now()).len();
-        assert_eq!(properties(&sample("demo-14"), now()).len(), plain + 2, "repository and reason");
-        assert_eq!(properties(&sample("demo-16"), now()).len(), plain + 2, "app and person");
-        assert_eq!(properties(&sample("demo-17"), now()).len() - 1, plain + 1, "kind, and two reports");
-        assert_eq!(properties(&sample("demo-18"), now()).len(), plain + 2, "topic and priority");
+        let plain = properties(&sample("demo-6"), now(), false).len();
+        assert_eq!(properties(&sample("demo-14"), now(), false).len(), plain + 2, "repository and reason");
+        assert_eq!(properties(&sample("demo-16"), now(), false).len(), plain + 2, "app and person");
+        assert_eq!(properties(&sample("demo-17"), now(), false).len() - 1, plain + 1, "kind, and two reports");
+        assert_eq!(properties(&sample("demo-18"), now(), false).len(), plain + 2, "topic and priority");
     }
 
     #[test]

@@ -38,6 +38,11 @@
 //! ([`MailByRole`]), the number on "All" comes from [`InboxClient::count_unread_in_all`], and
 //! "Show again" sends `inbox.set_mail_shown` with [`InboxClient::set_mail_shown`].
 //!
+//! The piles of the mail window (task E19.3, `docs/tasks/eingang.md` E19): [`InboxClient::set_mail_pile`]
+//! puts mail on "Reply later" or "Set aside" or takes it off, [`InboxClient::mail_in_pile`] lists a pile
+//! ([`MailInPile`]) and [`InboxClient::count_in_pile`] counts it. "All", the categories and the number on
+//! "All" ask with `pile: without`, so mail on a pile leaves them.
+//!
 //! Tasks of folder mail (task E8.1b): [`InboxClient::create_todo_from_mail`] sends
 //! `tasks.create_todo_from_mail` and answers the task in the inbox's model ([`ItemTask`]), so the
 //! window needs no calendar model of its own for the due day.
@@ -66,13 +71,14 @@ use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, Mut
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 use torro_mail::{
-    Category, CategoryGroup, Flag, Folder, InvitationAnswer, Message, MessageSummary, Order, Role, SaveTarget,
+    Category, CategoryGroup, Flag, Folder, InvitationAnswer, MailPile, Message, MessageSummary, Order, Role, SaveTarget,
 };
 use torro_pim::EventTime;
 
 use crate::assistant::EngineKind;
 use crate::mail::{
-    AttachmentPlan, Delivery, FailedFile, MailHighlight, MailIndexProgress, MailSort, MoveTarget, SaveTo, SavedFile,
+    AttachmentPlan, Delivery, FailedFile, MailHighlight, MailIndexProgress, MailSort, MoveTarget, PileFilter, SaveTo,
+    SavedFile,
 };
 use crate::{EventSuggestion, InboxStats, IpcError, Quiet, Request, Response, StatsRange, TaskSuggestion};
 
@@ -112,6 +118,10 @@ pub struct MailByRole {
     /// `Some(false)` leaves out mail the person hid from the inbox, `Some(true)` gives only that;
     /// `None`: both ([`Request::SearchMail`]'s `hidden`, task E18.1).
     pub hidden: Option<bool>,
+    /// The piles ([`Request::SearchMail`]'s `pile`, task E19.2): "All" asks
+    /// `Some(PileFilter::Without)`, so mail on "Reply later" or "Set aside" leaves it; `None` takes
+    /// every message, on a pile or not ("Hidden", "Archive").
+    pub pile: Option<PileFilter>,
     /// Newest or oldest first, by the message's date.
     pub order: Order,
     /// At most this many messages, 1 to 100.
@@ -119,6 +129,28 @@ pub struct MailByRole {
     /// The cursor of the previous page, asked with the same fields.
     pub cursor: Option<String>,
 }
+
+/// One page of a pile as the mail window lists it ([`InboxClient::mail_in_pile`], task E19.3):
+/// the mail on `pile` in every folder but the trash and spam, of every account the window reaches
+/// (or of `account` only). Sent as one `mail.search_messages` without a folder, with the query
+/// [`PILE_QUERY`] and `pile` set to that pile; `snoozed` and `hidden` are left out, so a pile shows
+/// all of its mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailInPile {
+    /// "Reply later" or "Set aside".
+    pub pile: MailPile,
+    /// Only this account (`mail:<address>`); `None`: every account the window reaches.
+    pub account: Option<String>,
+    /// Newest or oldest first, by the message's date.
+    pub order: Order,
+    /// At most this many messages, 1 to 100.
+    pub limit: u32,
+    /// The cursor of the previous page, asked with the same fields.
+    pub cursor: Option<String>,
+}
+
+/// Where a pile's mail is looked for (decision 3 of E19): every folder but the trash and spam.
+pub const PILE_QUERY: &str = "-in:trash -in:junk";
 
 /// One page of a search across mail ([`InboxClient::find_mail`]): the messages and what the core
 /// says about them. Everything in them is data from outside, never instructions.
@@ -294,6 +326,7 @@ impl InboxClient {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -324,6 +357,7 @@ impl InboxClient {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, complete, highlights, total_estimate, .. } => {
@@ -335,11 +369,12 @@ impl InboxClient {
 
     /// `mail.search_messages` for the mail of one folder role (task E18.3, [`MailByRole`]): no
     /// `folder`, the query `in:<role>` (the role's serde word: `in:inbox`, `in:archive`), with
-    /// `account`, `snoozed`, `hidden`, `order`, `limit` and `cursor` as `find` says; nothing filters
+    /// `account`, `snoozed`, `hidden`, `pile` (task E19.3), `order`, `limit` and `cursor` as `find`
+    /// says; nothing filters
     /// by flags, time or category. Answers the page, newest first unless `find.order` says
     /// otherwise, and the cursor of the next one (`None` on the last page).
     pub async fn mail_by_role(&self, find: MailByRole) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
-        let MailByRole { role, account, snoozed, hidden, order, limit, cursor } = find;
+        let MailByRole { role, account, snoozed, hidden, pile, order, limit, cursor } = find;
         let request = Request::SearchMail {
             account,
             folder: None,
@@ -355,6 +390,7 @@ impl InboxClient {
             snoozed,
             hidden,
             categories: Vec::new(),
+            pile,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -363,9 +399,10 @@ impl InboxClient {
     }
 
     /// How much unread mail "All" holds (task E18.3, decision 4 of E18): the search of "All" –
-    /// [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)` – with `unread: Some(true)` and
-    /// `limit: 1`, for `account` or every account the window reaches. Answers the core's
-    /// `total_estimate`, 0 when it sends none.
+    /// [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)` and, since task E19.3, `pile:
+    /// without` (mail on a pile is not in "All") – with `unread: Some(true)` and `limit: 1`, for
+    /// `account` or every account the window reaches. Answers the core's `total_estimate`, 0 when it
+    /// sends none.
     pub async fn count_unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
         let request = Request::SearchMail {
             account,
@@ -382,8 +419,49 @@ impl InboxClient {
             snoozed: Some(false),
             hidden: Some(false),
             categories: Vec::new(),
+            pile: Some(PileFilter::Without),
         };
         match self.ask(request).await? {
+            Response::MailMessages { total_estimate, .. } => Ok(total_estimate.unwrap_or(0)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.set_mail_pile` (task E19.2): puts the mail messages `ids` (`m:…`, 1 to 100) on `pile`
+    /// – "Reply later" or "Set aside", moving them from the other one –, or takes them off with
+    /// `None` (also the undo of putting them there). `since` puts them back with the time they had
+    /// on their pile ([`torro_mail::MessageSummary::pile_since`]): the undo of taking them off or
+    /// moving them, so a reply of one's own sent meanwhile still takes them off "Reply later"; `None`
+    /// counts as now. Nothing goes to the server. [`InboxError::NotFound`] when one of them lies in
+    /// an account the window may not see; nothing changes then.
+    pub async fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        self.ask_ok(Request::SetMailPile { ids, pile, since }).await
+    }
+
+    /// One page of a pile (task E19.3, [`MailInPile`]): `mail.search_messages` without a folder,
+    /// the query [`PILE_QUERY`] (every folder but the trash and spam), `pile` set to `find.pile`,
+    /// with `account`, `order`, `limit` and `cursor` as `find` says; `snoozed`, `hidden`, flags,
+    /// time and category filter nothing. Answers the page and the cursor of the next one (`None`
+    /// on the last page).
+    pub async fn mail_in_pile(&self, find: MailInPile) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
+        let MailInPile { pile, account, order, limit, cursor } = find;
+        match self.ask(pile_search(pile, account, limit, cursor, asked(order))).await? {
+            Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// How much mail lies on `pile` (task E19.3, the numbers in the mail window's sidebar): the
+    /// search of [`InboxClient::mail_in_pile`] with `limit: 1`, for `account` or every account the
+    /// window reaches – read and unread alike. Answers the core's `total_estimate`, 0 when it sends
+    /// none.
+    pub async fn count_in_pile(&self, pile: MailPile, account: Option<String>) -> Result<u64, InboxError> {
+        match self.ask(pile_search(pile, account, 1, None, None)).await? {
             Response::MailMessages { total_estimate, .. } => Ok(total_estimate.unwrap_or(0)),
             other => Err(unexpected(other)),
         }
@@ -743,6 +821,42 @@ fn in_role(role: Role) -> String {
     format!("in:{word}")
 }
 
+/// The `mail.search_messages` of a pile ([`InboxClient::mail_in_pile`], [`InboxClient::count_in_pile`]):
+/// no folder, [`PILE_QUERY`], only the mail on `pile`; nothing else filters.
+fn pile_search(
+    pile: MailPile,
+    account: Option<String>,
+    limit: u32,
+    cursor: Option<String>,
+    order: Option<Order>,
+) -> Request {
+    Request::SearchMail {
+        account,
+        folder: None,
+        query: Some(PILE_QUERY.to_owned()),
+        unread: None,
+        flagged: None,
+        since: None,
+        before: None,
+        limit,
+        cursor,
+        order,
+        sort: None,
+        snoozed: None,
+        hidden: None,
+        categories: Vec::new(),
+        pile: Some(only(pile)),
+    }
+}
+
+/// The search filter that gives only the mail on `pile`.
+fn only(pile: MailPile) -> PileFilter {
+    match pile {
+        MailPile::ReplyLater => PileFilter::ReplyLater,
+        MailPile::SetAside => PileFilter::SetAside,
+    }
+}
+
 /// An answer that is not the variant the request asks for.
 fn unexpected(response: Response) -> InboxError {
     InboxError::Other(format!("unexpected answer: {response:?}"))
@@ -763,7 +877,8 @@ impl InboxClient {
         }
     }
 
-    /// `mail.search_messages` filtered by `categories` (task E12.8), over every account.
+    /// `mail.search_messages` filtered by `categories` (task E12.8), over every account, without the
+    /// mail on a pile (`pile: without`, task E19.3).
     pub async fn search_by_category(
         &self,
         categories: Vec<torro_mail::Category>,
@@ -786,6 +901,8 @@ impl InboxClient {
             snoozed: None,
             hidden: None,
             categories,
+            // Task E19.3: mail on a pile leaves the categories as it leaves "All" (decision 3 of E19).
+            pile: Some(PileFilter::Without),
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -939,8 +1056,16 @@ impl InboxSource for InboxClient {
         }
     }
 
-    async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
-        self.ask_item(Request::SnoozeItem { id, until }).await
+    /// `inbox.snooze_item` with the follow-up's condition `unless_reply` (task E19.3) and
+    /// `keep_open` (review of #315).
+    async fn snooze_item(
+        &self,
+        id: String,
+        until: Option<DateTime<Utc>>,
+        unless_reply: bool,
+        keep_open: bool,
+    ) -> Result<Item, InboxError> {
+        self.ask_item(Request::SnoozeItem { id, until, unless_reply, keep_open }).await
     }
 
     async fn set_item_lane(&self, id: String, lane: Lane, remember: bool) -> Result<Item, InboxError> {
@@ -1083,6 +1208,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
@@ -1122,7 +1248,7 @@ mod tests {
                 moved: vec![format!("{id}|{scope:?}|{}|{effect:?}", until.is_some())],
                 ..Muted::default()
             }),
-            Request::SnoozeItem { id, until } => Response::Item {
+            Request::SnoozeItem { id, until, .. } => Response::Item {
                 item: Item { state: until.map_or(State::Seen, |until| State::Snoozed { until }), ..item(&id) },
             },
             Request::SetItemLane { id, lane, remember } => {
@@ -1469,9 +1595,9 @@ mod tests {
         let client = core.client();
         assert_eq!(client.set_item_done("a".into(), true).await.expect("done").state, State::Done { at: at(10) });
         assert_eq!(client.set_item_done("a".into(), false).await.expect("open").state, State::Seen);
-        let snoozed = client.snooze_item("b".into(), Some(at(15))).await.expect("snoozed");
+        let snoozed = client.snooze_item("b".into(), Some(at(15)), false, false).await.expect("snoozed");
         assert_eq!((snoozed.id.as_str(), snoozed.state), ("b", State::Snoozed { until: at(15) }));
-        assert_eq!(client.snooze_item("b".into(), None).await.expect("back").state, State::Seen);
+        assert_eq!(client.snooze_item("b".into(), None, false, false).await.expect("back").state, State::Seen);
         let moved = client.set_item_lane("c".into(), Lane::Info, true).await.expect("moved");
         assert_eq!((moved.lane, moved.title.as_str()), (Lane::Info, "remember true"));
         client.mute_source(SourceRef::script("ci"), true).await.expect("muted");
@@ -1759,8 +1885,10 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            pile: None,
             category: None,
             untrusted: true,
+            pile_since: None,
         }
     }
 
@@ -1939,12 +2067,15 @@ mod tests {
                 snoozed,
                 hidden,
                 categories,
+                pile,
             } if categories.is_empty() => {
+                // The pile only when there is one (task E19.3), so the ids before it stay as they were.
                 let id = format!(
-                    "{}|{}|{unread:?}|{snoozed:?}|{hidden:?}|{limit}|{}|{order:?}",
+                    "{}|{}|{unread:?}|{snoozed:?}|{hidden:?}|{limit}|{}|{order:?}{}",
                     account.as_deref().unwrap_or_default(),
                     query.unwrap_or_default(),
                     cursor.unwrap_or_default(),
+                    pile.map(|pile| format!("|{pile:?}")).unwrap_or_default(),
                 );
                 Response::MailMessages {
                     total_estimate: account.map(|_| 4),
@@ -1972,6 +2103,7 @@ mod tests {
             account: None,
             snoozed: Some(false),
             hidden: Some(false),
+            pile: None,
             order: Order::NewestFirst,
             limit: 50,
             cursor: None,
@@ -1984,15 +2116,20 @@ mod tests {
             account: Some("mail:anna@example.org".into()),
             snoozed: None,
             hidden: None,
+            pile: None,
             order: Order::OldestFirst,
             limit: 20,
             cursor: Some("c1".into()),
         };
         let (page, _) = client.mail_by_role(archive).await.expect("a page");
         assert_eq!(page[0].id, "mail:anna@example.org|in:archive|None|None|None|20|c1|Some(OldestFirst)");
-        let hidden = MailByRole { hidden: Some(true), snoozed: None, ..all };
+        let hidden = MailByRole { hidden: Some(true), snoozed: None, ..all.clone() };
         let (page, _) = client.mail_by_role(hidden).await.expect("a page");
         assert_eq!(page[0].id, "|in:inbox|None|None|Some(true)|50||None");
+        // Task E19.3: "All" leaves out the mail on a pile.
+        let without = MailByRole { pile: Some(PileFilter::Without), ..all };
+        let (page, _) = client.mail_by_role(without).await.expect("a page");
+        assert_eq!(page[0].id, "|in:inbox|None|Some(false)|Some(false)|50||None|Without", "the pile goes along");
 
         // The number on "All": the same search, unread only, one message, its estimate.
         assert_eq!(client.count_unread_in_all(Some("mail:anna@example.org".into())).await, Ok(4));
@@ -2007,6 +2144,7 @@ mod tests {
                     snoozed: Some(false),
                     hidden: Some(false),
                     folder: None,
+                    pile: Some(PileFilter::Without),
                     ..
                 } if query == "in:inbox" => Response::MailMessages {
                     messages: Vec::new(),
@@ -2021,7 +2159,7 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(core_seen.client().count_unread_in_all(None).await, Ok(9), "asked as \"All\" with unread");
+        assert_eq!(core_seen.client().count_unread_in_all(None).await, Ok(9), "asked as \"All\" with unread, no pile");
 
         // "Show again" and its undo.
         client.set_mail_shown(vec!["m:1".into()], true).await.expect("shown again");
@@ -2037,6 +2175,126 @@ mod tests {
             let word = serde_json::to_value(role).expect("json");
             assert_eq!(in_role(role), format!("in:{}", word.as_str().expect("a word")));
         }
+    }
+
+    /// Task E19.3: putting on a pile, a pile's page and its number, a follow-up "only if no reply"
+    /// and the categories each send their one request with the fields of E19.1 and E19.2.
+    #[tokio::test]
+    async fn piles_and_follow_ups_send_their_fields() {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let core = start({
+            let asked = asked.clone();
+            move |request| {
+                let asked = asked.clone();
+                async move {
+                    if !matches!(request, Request::Ping)
+                        && let Ok(mut asked) = asked.lock()
+                    {
+                        asked.push(request.clone());
+                    }
+                    match request {
+                        Request::Ping | Request::SetMailPile { .. } => Response::Ok,
+                        Request::SearchMail { account, .. } => Response::MailMessages {
+                            messages: vec![MessageSummary {
+                                pile: Some(MailPile::SetAside),
+                                ..summary("m:1", "f:inbox")
+                            }],
+                            cursor: Some("next".into()),
+                            source: crate::mail::MailSource::Cache,
+                            complete: true,
+                            incomplete_reason: None,
+                            highlights: Vec::new(),
+                            // An estimate for one account only, to see a missing one counts as none.
+                            total_estimate: account.map(|_| 3),
+                        },
+                        Request::SnoozeItem { id, until, unless_reply, keep_open } => Response::Item {
+                            item: Item {
+                                state: until.map_or(State::Seen, |until| State::Snoozed { until }),
+                                title: format!("unless_reply {unless_reply} keep_open {keep_open}"),
+                                ..item(&id)
+                            },
+                        },
+                        other => Response::Error { code: "error".into(), message: format!("{other:?}") },
+                    }
+                }
+            }
+        })
+        .await;
+        let client = core.client();
+        let anna = || Some("mail:anna@example.org".to_owned());
+        client.set_mail_pile(vec!["m:1".into(), "m:2".into()], Some(MailPile::ReplyLater), None).await.expect("put on");
+        client.set_mail_pile(vec!["m:1".into()], None, None).await.expect("taken off");
+        client.set_mail_pile(vec!["m:1".into()], Some(MailPile::SetAside), Some(at(9))).await.expect("undone");
+        let find = MailInPile {
+            pile: MailPile::SetAside,
+            account: anna(),
+            order: Order::OldestFirst,
+            limit: 20,
+            cursor: Some("c1".into()),
+        };
+        let (page, next) = client.mail_in_pile(find).await.expect("a page");
+        assert_eq!((page[0].pile, next.as_deref()), (Some(MailPile::SetAside), Some("next")), "the pile comes back");
+        assert_eq!(client.count_in_pile(MailPile::ReplyLater, anna()).await, Ok(3));
+        assert_eq!(client.count_in_pile(MailPile::ReplyLater, None).await, Ok(0), "no estimate counts as none");
+        let followed = client.snooze_item("m:7".into(), Some(at(15)), true, false).await.expect("followed up");
+        assert_eq!(
+            (followed.title.as_str(), followed.state),
+            ("unless_reply true keep_open false", State::Snoozed { until: at(15) })
+        );
+        client.search_by_category(vec![Category::Invoice], 50, None, Order::NewestFirst).await.expect("a page");
+
+        let search = |account: Option<String>, pile, limit, cursor: Option<&str>, order| Request::SearchMail {
+            account,
+            folder: None,
+            query: Some(PILE_QUERY.into()),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor: cursor.map(str::to_owned),
+            order,
+            sort: None,
+            snoozed: None,
+            hidden: None,
+            categories: Vec::new(),
+            pile: Some(pile),
+        };
+        let asked = asked.lock().expect("the list").clone();
+        assert_eq!(
+            asked,
+            [
+                Request::SetMailPile {
+                    ids: vec!["m:1".into(), "m:2".into()],
+                    pile: Some(MailPile::ReplyLater),
+                    since: None
+                },
+                Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None },
+                Request::SetMailPile { ids: vec!["m:1".into()], pile: Some(MailPile::SetAside), since: Some(at(9)) },
+                search(anna(), PileFilter::SetAside, 20, Some("c1"), Some(Order::OldestFirst)),
+                search(anna(), PileFilter::ReplyLater, 1, None, None),
+                search(None, PileFilter::ReplyLater, 1, None, None),
+                Request::SnoozeItem { id: "m:7".into(), until: Some(at(15)), unless_reply: true, keep_open: false },
+                Request::SearchMail {
+                    account: None,
+                    folder: None,
+                    query: None,
+                    unread: None,
+                    flagged: None,
+                    since: None,
+                    before: None,
+                    limit: 50,
+                    cursor: None,
+                    order: None,
+                    sort: None,
+                    snoozed: None,
+                    hidden: None,
+                    categories: vec![Category::Invoice],
+                    pile: Some(PileFilter::Without),
+                },
+            ]
+        );
+        assert_eq!(PILE_QUERY, "-in:trash -in:junk", "every folder but the trash and spam");
     }
 
     #[tokio::test]

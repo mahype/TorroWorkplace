@@ -306,8 +306,11 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::SetItemCategory { id: entry, .. }
         | Request::ClassifyItem { id: entry }
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
-        // Mail shown again (task E18.2) by its messages, hashed as in the mail commands.
-        Request::SetMailShown { ids, .. } => ids.iter().map(|message| format!("message:{}", hashed(message))).collect(),
+        // Mail shown again (task E18.2) or put on a pile (task E19.2) by its messages, hashed as in
+        // the mail commands.
+        Request::SetMailShown { ids, .. } | Request::SetMailPile { ids, .. } => {
+            ids.iter().map(|message| format!("message:{}", hashed(message))).collect()
+        }
         // Nothing of their own to name: a catalogue, a status, a background run.
         Request::ListCategories { .. }
         | Request::GetCategorization
@@ -1053,6 +1056,7 @@ pub(crate) mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let logged = super::ids(&search);
         assert_eq!(logged, vec!["account:mail:anna@mailbox.org".to_string(), format!("folder:{}", hashed("f:0a1b"))]);
@@ -1082,6 +1086,9 @@ pub(crate) mod tests {
         // Task E18.2: "Show again" names its mail hashed, as the mail commands do.
         let shown = super::ids(&Request::SetMailShown { ids: vec!["m:1".into(), "m:2".into()], shown: true });
         assert_eq!(shown, [format!("message:{}", hashed("m:1")), format!("message:{}", hashed("m:2"))]);
+        // Task E19.2: the piles alike, never the pile's word.
+        let piled = super::ids(&Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None });
+        assert_eq!(piled, [format!("message:{}", hashed("m:1"))]);
         let update = Request::UpdateMailAccount {
             format: None,
             id: "mail:anna@mailbox.org".into(),

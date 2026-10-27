@@ -42,6 +42,15 @@
 //! empty in a screenshot; [`DemoSource::set_mail_shown`] ("Show again") keeps the exception in
 //! memory, as the core keeps it in `shown_mail`. The demo's hidden mail is a fixed fact: hiding a
 //! sender or a conversation in the demo closes entries but hides no further mail.
+//!
+//! The piles and follow-ups of the mail window (task E19.3): two messages lie on "Reply later"
+//! ([`REPLY_LATER_MAIL`]) and one on "Set aside" ([`SET_ASIDE_MAIL`]) from the start, kept on their
+//! summaries ([`MessageSummary::pile`]), so every list names their pile and the window's "All"
+//! (`pile: without`) leaves them out. [`DemoSource::set_mail_pile`] changes them in memory,
+//! [`DemoSource::in_pile`] lists a pile, and a sent answer takes its conversation off "Reply later"
+//! as the core does ([`DemoSource::send_draft`]). Anna's sent "Re: Sunday brunch" ([`FOLLOW_UP_MAIL`])
+//! is followed up "only if no reply" ([`FOLLOW_UP_ENTRY`]); `inbox.snooze_item` follows up any
+//! message by its `m:` id, as the core does.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -51,7 +60,7 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
 use torro_mail::{
-    AttachmentInfo, Category, DateSource, Draft, FileKind, Flag, Folder, MailAddress, MailCategory, Message,
+    AttachmentInfo, Category, DateSource, Draft, FileKind, Flag, Folder, MailAddress, MailCategory, MailPile, Message,
     MessageSummary, MessageTraits, Order, Role, SaveTarget, SaveTargetSpec,
 };
 
@@ -68,6 +77,19 @@ pub const HIDDEN_MAIL: &str = "m:w14";
 
 /// The approval behind the sample approval entry; its actions name it.
 pub const APPROVAL_ID: &str = "demo-approval-1";
+
+/// The demo's mail on "Reply later" (task E19.3): Clara's "Birthday dinner on the 24th" and Tom's
+/// "Offsite: rooms are booked", both unread in an inbox.
+pub const REPLY_LATER_MAIL: [&str; 2] = ["m:p7", "m:w13"];
+
+/// The demo's mail on "Set aside" (task E19.3): the work account's "Planned maintenance on Saturday".
+pub const SET_ASIDE_MAIL: &str = "m:w5";
+
+/// The demo's sent mail followed up "only if no reply" (task E19.3): Anna's "Re: Sunday brunch".
+pub const FOLLOW_UP_MAIL: &str = "m:p4";
+
+/// The entry of the follow-up on [`FOLLOW_UP_MAIL`]: snoozed for two more days, `unless_reply`.
+pub const FOLLOW_UP_ENTRY: &str = "demo-follow-p4";
 
 #[derive(Debug)]
 struct Data {
@@ -97,6 +119,10 @@ struct Data {
     hidden_mail: BTreeSet<String>,
     /// The hidden mail shown again (`inbox.set_mail_shown`, task E18.3): the exceptions.
     shown_mail: BTreeSet<String>,
+    /// The answers sent from the demo – account, conversation and when –, so putting mail back on
+    /// "Reply later" with an older time takes it off again at once, as the core's
+    /// `take_off_answered` does (third review of #315).
+    answers: Vec<(String, String, DateTime<Utc>)>,
 }
 
 impl Data {
@@ -153,6 +179,37 @@ impl Data {
         (rule, true)
     }
 
+    /// The entry `inbox.snooze_item` with `id` changes, as the core finds it (task E19.3): the entry
+    /// `id`; for a mail message (`m:…`) the entry it was filed in, else the mail entry of its
+    /// conversation, else – only when it is put off (`until`) – a new entry made from the message
+    /// ([`rules::message_stand_in`], decision 8 of E19), kept with the id `demo-follow-<id>`. Without
+    /// `until` such a message stays without an entry and the answer is the entry it would be.
+    /// [`InboxError::NotFound`] for anything else.
+    fn snooze_target(&mut self, id: &str, until: bool) -> Result<SnoozeTarget, InboxError> {
+        if let Some(at) = self.items.iter().position(|item| item.id == id) {
+            return Ok(SnoozeTarget::Entry(at));
+        }
+        if !rules::is_message_id(id) {
+            return Err(InboxError::NotFound);
+        }
+        let summary =
+            self.mail.iter().find(|m| m.summary.id == id).map(|m| m.summary.clone()).ok_or(InboxError::NotFound)?;
+        let filed = |item: &Item| matches!(&item.link, Some(Link::Mail { message }) if message == id);
+        let of_thread = |item: &Item| {
+            item.kind == Kind::Message && item.thread_key == summary.thread_id && item.source.key() == summary.account
+        };
+        if let Some(at) = self.items.iter().position(filed).or_else(|| self.items.iter().position(of_thread)) {
+            return Ok(SnoozeTarget::Entry(at));
+        }
+        let mut stand_in = rules::message_stand_in(&summary, None, false).ok_or(InboxError::NotFound)?;
+        if !until {
+            return Ok(SnoozeTarget::StandIn(Box::new(stand_in)));
+        }
+        stand_in.id = format!("demo-follow-{}", id.trim_start_matches("m:"));
+        self.items.push(stand_in);
+        Ok(SnoozeTarget::Entry(self.items.len() - 1))
+    }
+
     /// What `inbox.list_mute_options` and `inbox.mute_item` with `id` mute by, as the core finds it
     /// (issue #123): the entry `id`; for a mail message (`m:…`) the entry it was filed in, else the
     /// message as an entry would hold it ([`rules::message_stand_in`], `true`: a stand-in, whose
@@ -174,6 +231,14 @@ impl Data {
         let stand_in = rules::message_stand_in(&message.summary, traits.list_id.as_deref(), bulk);
         stand_in.map(|item| (item, true)).ok_or(InboxError::NotFound)
     }
+}
+
+/// What `inbox.snooze_item` changes ([`Data::snooze_target`]).
+enum SnoozeTarget {
+    /// The entry at this place of [`Data::items`].
+    Entry(usize),
+    /// A message without an entry and no time to put it off to: the entry it would be, not kept.
+    StandIn(Box<Item>),
 }
 
 /// A task the demo made from an entry: the list's id, the title and the due day.
@@ -211,6 +276,7 @@ impl DemoSource {
         let mut items = sample(now);
         let mail = mail_sample(now);
         items.extend(mail_entries(&mail));
+        items.extend(follow_up_entry(&mail, now));
         let data = Data {
             items,
             muted: BTreeSet::new(),
@@ -225,6 +291,7 @@ impl DemoSource {
             draft_count: 0,
             hidden_mail: BTreeSet::from([HIDDEN_MAIL.to_owned()]),
             shown_mail: BTreeSet::new(),
+            answers: Vec::new(),
         };
         DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
     }
@@ -274,6 +341,7 @@ fn entry(now: DateTime<Utc>, n: u32, source: SourceRef, kind: Kind, title: Strin
         invite: None,
         reason: None,
         category: None,
+        follow_up: None,
     }
 }
 
@@ -614,6 +682,8 @@ struct Letter {
     /// What the mail is (task E12.8), as the demo pretends a model or a rule decided; `None`:
     /// nothing said about it, so the sidebar's group shows how that reads too.
     category: Option<MailCategory>,
+    /// The pile it lies on from the start (task E19.3); `None` for most.
+    pile: Option<MailPile>,
 }
 
 impl Letter {
@@ -634,6 +704,7 @@ impl Letter {
             pictures: &[],
             bulk: false,
             category: None,
+            pile: None,
         }
     }
 }
@@ -692,8 +763,11 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             has_attachments: files > 0,
             invite: None,
             back: None,
+            pile: letter.pile,
             category: letter.category,
             untrusted: true,
+            // The sample's piles since the mail came (decision of #315: the undo keeps this time).
+            pile_since: letter.pile.map(|_| now - TimeDelta::minutes(letter.minutes)),
         },
         cc: Vec::new(),
         reply_to: Vec::new(),
@@ -873,6 +947,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             flags: READ_FLAGGED,
             text: "On Saturday from 08:00 to 12:00 the mail and file servers are down for maintenance.",
             category: Some(MailCategory::by_model(Category::ServiceNotice, 0.93)),
+            pile: Some(MailPile::SetAside),
             ..Letter::new("m:w5", WORK, "inbox", "Planned maintenance on Saturday")
         },
         Letter {
@@ -1005,6 +1080,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             minutes: 20 * 60,
             text: "The rooms for the offsite are booked: two meeting rooms and the terrace. The agenda follows \
                    on Monday.",
+            pile: Some(MailPile::ReplyLater),
             ..Letter::new("m:w13", WORK, "inbox", "Offsite: rooms are booked")
         },
         Letter {
@@ -1020,6 +1096,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             from: ("Clara Berg", "clara@example.org"),
             minutes: 3 * 24 * 60,
             text: "Dinner for Mum’s birthday on the 24th? I would book the Italian place for seven.",
+            pile: Some(MailPile::ReplyLater),
             ..Letter::new("m:p7", PRIVATE, "inbox", "Birthday dinner on the 24th")
         },
     ];
@@ -1065,12 +1142,24 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 reason: m.traits.list_id.is_some().then_some(LaneReason::List),
                 // Demo mail gets its categories with E12.8, where the pill is built.
                 category: None,
+                follow_up: None,
             };
             // The traits the core gives new mail (task E8.6a), its list and bulk from the headers.
             let list = m.traits.list_id.as_deref();
             Item { facets: rules::facets(&entry, list, list.is_some()), ..entry }
         })
         .collect()
+}
+
+/// The follow-up on [`FOLLOW_UP_MAIL`] (task E19.3): the entry the core makes for a sent message
+/// followed up by its id (decision 8 of E19), set a few minutes after it was sent, back in two days
+/// only if nobody replies. `None` if the sample lacks the message.
+fn follow_up_entry(mail: &[Message], now: DateTime<Utc>) -> Option<Item> {
+    let message = mail.iter().find(|message| message.summary.id == FOLLOW_UP_MAIL)?;
+    let mut item = rules::message_stand_in(&message.summary, None, false)?;
+    item.id = FOLLOW_UP_ENTRY.to_owned();
+    rules::follow_up(&mut item, Some(now + TimeDelta::days(2)), true, message.summary.date + TimeDelta::minutes(5));
+    Some(item)
 }
 
 /// What a demo attachment holds when it is opened: a few lines that fit its name.
@@ -1179,6 +1268,72 @@ impl DemoSource {
         Ok(())
     }
 
+    /// `inbox.set_mail_pile` (task E19.3): puts the messages `ids` on `pile`, moving them from the
+    /// other one, or takes them off with `None`. Since when they lie there, as the core keeps it
+    /// ([`MessageSummary::pile_since`], decision of #315): `since` (the undo's time, at most now),
+    /// else now – the same pile again keeps its time, also with `since`. Put back on "Reply later"
+    /// with a `since` before an answer the demo sent in the conversation, a mail comes off at once,
+    /// as the core's `take_off_answered`. [`InboxError::NotFound`] when one of them is
+    /// unknown; nothing changes then.
+    pub fn set_mail_pile(
+        &self,
+        ids: &[String],
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        if !ids.iter().all(|id| data.mail.iter().any(|m| m.summary.id == *id)) {
+            return Err(InboxError::NotFound);
+        }
+        let answers = data.answers.clone();
+        for message in data.mail.iter_mut().map(|m| &mut m.summary).filter(|m| ids.contains(&m.id)) {
+            message.pile_since = match (pile, since) {
+                (None, _) => None,
+                // The same pile keeps its time, whatever `since` says (as the core).
+                (Some(_), _) if message.pile == pile => message.pile_since.or(Some(since.unwrap_or(now).min(now))),
+                (Some(_), Some(since)) => Some(since.min(now)),
+                (Some(_), None) => Some(now),
+            };
+            message.pile = pile;
+            // Back on "Reply later" from before an answer sent since: off at once.
+            let answered = |at: DateTime<Utc>| {
+                answers.iter().any(|(account, thread, sent)| {
+                    *account == message.account && *thread == message.thread_id && *sent > at
+                })
+            };
+            if pile == Some(MailPile::ReplyLater) && since.is_some() && message.pile_since.is_some_and(answered) {
+                message.pile = None;
+                message.pile_since = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// `mail.search_messages` of a pile (task E19.3): every message on `pile` of both accounts (or
+    /// of `account` only) in any folder but the trash and spam, in `order` by date, all of them –
+    /// the window's source pages them.
+    pub fn in_pile(&self, pile: MailPile, account: Option<&str>, order: Order) -> Vec<MessageSummary> {
+        let data = self.lock();
+        let left_out: BTreeSet<&str> = data
+            .folders
+            .iter()
+            .filter(|folder| matches!(folder.role, Some(Role::Trash | Role::Junk)))
+            .map(|folder| folder.id.as_str())
+            .collect();
+        let mut found: Vec<MessageSummary> = data
+            .mail
+            .iter()
+            .map(|m| &m.summary)
+            .filter(|m| m.pile == Some(pile) && !left_out.contains(m.folder.as_str()))
+            .filter(|m| account.is_none_or(|account| m.account == account))
+            .cloned()
+            .collect();
+        // As in `by_role`: mail of the same minute by id, so oldest first is newest first turned round.
+        found.sort_by(|a, b| order.apply(b.date.cmp(&a.date).then_with(|| b.id.cmp(&a.id))));
+        found
+    }
+
     /// `mail.list_folders`: the folders of both accounts with their unread and total numbers.
     pub fn mail_folders(&self) -> Result<Vec<Folder>, InboxError> {
         let data = self.lock();
@@ -1222,12 +1377,14 @@ impl DemoSource {
     }
 
     /// `mail.search_messages` filtered by `categories` (task E12.8): the demo's mail of one of
-    /// them, newest first.
+    /// them, newest first. Mail on a pile is left out, as the window asks with `pile: without`
+    /// (task E19.3).
     pub fn by_category(&self, categories: &[Category], limit: u32, order: Order) -> Vec<MessageSummary> {
         let data = self.lock();
         let mut found: Vec<MessageSummary> = data
             .mail
             .iter()
+            .filter(|m| m.summary.pile.is_none())
             .filter(|m| m.summary.category.is_some_and(|held| categories.contains(&held.category)))
             .map(|m| m.summary.clone())
             .collect();
@@ -1461,7 +1618,11 @@ impl DemoSource {
     /// `mail.send_draft`: the draft `id` leaves the drafts and is kept as sent.
     /// [`InboxError::NotFound`] for an unknown id, [`InboxError::Other`] for a draft without
     /// recipient (nothing is sent then).
+    ///
+    /// An answer takes the mail of its conversation off "Reply later" (task E19.3), as the core does
+    /// once the account's own mail turns up there (decision 5 of E19); "Set aside" stays.
     pub fn send_draft(&self, id: &str) -> Result<(), InboxError> {
+        let now = self.now();
         let mut data = self.lock();
         let at = data.drafts.iter().position(|draft| draft.id.as_deref() == Some(id)).ok_or(InboxError::NotFound)?;
         let draft = &data.drafts[at];
@@ -1469,6 +1630,20 @@ impl DemoSource {
             return Err(InboxError::Other(tr("The draft has no recipient.").to_owned()));
         }
         let sent = data.drafts.remove(at);
+        let answered = sent.in_reply_to.as_deref().and_then(|answered| {
+            data.mail.iter().find(|m| m.summary.id == answered).map(|m| m.summary.thread_id.clone())
+        });
+        if let Some(thread) = answered {
+            data.answers.push((sent.account.clone(), thread.clone(), now));
+            let replied =
+                data.mail.iter_mut().map(|m| &mut m.summary).filter(|m| {
+                    m.account == sent.account && m.thread_id == thread && m.pile == Some(MailPile::ReplyLater)
+                });
+            for message in replied {
+                message.pile = None;
+                message.pile_since = None;
+            }
+        }
         data.sent.push(sent);
         Ok(())
     }
@@ -1604,8 +1779,52 @@ impl InboxSource for DemoSource {
         Ok(muted)
     }
 
-    async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
-        self.change(&id, |item| rules::snooze(item, until))
+    /// As the core does (task E19.1): a mail entry is followed up ([`rules::follow_up`]), any other
+    /// one snoozed, and `unless_reply` with `until` on one that is no mail is
+    /// [`InboxError::Unsupported`]. With `keep_open` a mail entry that is not done gets its follow-up
+    /// without being put off, a snoozed one opened again ([`rules::follow_up_open`], review of
+    /// #315); anything else is [`InboxError::Unsupported`]. A
+    /// mail message's id (`m:…`) names its entry, or – with `until` – a new one
+    /// ([`Data::snooze_target`]).
+    async fn snooze_item(
+        &self,
+        id: String,
+        until: Option<DateTime<Utc>>,
+        unless_reply: bool,
+        keep_open: bool,
+    ) -> Result<Item, InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        if keep_open && until.is_none() {
+            return Err(InboxError::Unsupported);
+        }
+        // As the core: a mail filed in an entry of its own stands for that entry (a snoozed one comes
+        // back). Only a mail without one, whose conversation's entry is snoozed or done, is refused
+        // with `keep_open` – filing it would wake that entry on top or reopen a done one.
+        let filed = |item: &Item| matches!(&item.link, Some(Link::Mail { message }) if *message == id);
+        let by_mail = rules::is_message_id(&id) && !data.items.iter().any(|item| item.id == id || filed(item));
+        let at = match data.snooze_target(&id, until.is_some())? {
+            SnoozeTarget::Entry(at) => at,
+            SnoozeTarget::StandIn(item) => return Ok(*item),
+        };
+        let item = &mut data.items[at];
+        if keep_open && by_mail && !item.state.is_open() {
+            return Err(InboxError::Unsupported);
+        }
+        if keep_open {
+            let done = matches!(item.state, State::Done { .. });
+            let (Some(until), true, false) = (until, item.source.kind == SourceKind::Mail, done) else {
+                return Err(InboxError::Unsupported);
+            };
+            rules::follow_up_open(item, until, unless_reply, now);
+        } else if item.source.kind == SourceKind::Mail {
+            rules::follow_up(item, until, unless_reply, now);
+        } else if unless_reply && until.is_some() {
+            return Err(InboxError::Unsupported);
+        } else {
+            rules::snooze(item, until);
+        }
+        Ok(item.clone())
     }
 
     /// Demo mode keeps no rules, so `remember` changes nothing beyond the entry.
@@ -1884,15 +2103,16 @@ mod tests {
     #[tokio::test]
     async fn snoozed_entries_wake_when_due() {
         let demo = DemoSource::new(now());
-        let snoozed = demo.snooze_item("demo-7".into(), Some(now() + TimeDelta::hours(1))).await.expect("snooze");
+        let snoozed =
+            demo.snooze_item("demo-7".into(), Some(now() + TimeDelta::hours(1)), false, false).await.expect("snooze");
         assert_eq!(snoozed.state, State::Snoozed { until: now() + TimeDelta::hours(1) });
         assert!(!ids(&demo.list_items(open_in(Lane::Info)).await.expect("list")).contains(&"demo-7"));
         // Snoozed until a moment that has passed: woken on the next listing, at the top.
-        demo.snooze_item("demo-7".into(), Some(now() - TimeDelta::minutes(1))).await.expect("snooze");
+        demo.snooze_item("demo-7".into(), Some(now() - TimeDelta::minutes(1)), false, false).await.expect("snooze");
         let info = demo.list_items(open_in(Lane::Info)).await.expect("list");
         assert_eq!(ids(&info)[0], "demo-7");
         assert_eq!(info[0].state, State::New);
-        let back = demo.snooze_item("demo-10".into(), None).await.expect("take back");
+        let back = demo.snooze_item("demo-10".into(), None, false, false).await.expect("take back");
         assert_eq!(back.state, State::Seen);
     }
 
@@ -1949,7 +2169,7 @@ mod tests {
     async fn unknown_entries_are_not_found() {
         let demo = DemoSource::new(now());
         assert_eq!(demo.set_item_done("nope".into(), true).await, Err(InboxError::NotFound));
-        assert_eq!(demo.snooze_item("nope".into(), None).await, Err(InboxError::NotFound));
+        assert_eq!(demo.snooze_item("nope".into(), None, false, false).await, Err(InboxError::NotFound));
         assert_eq!(demo.set_item_lane("nope".into(), Lane::Info, false).await, Err(InboxError::NotFound));
         assert_eq!(demo.open_item("nope".into()).await, Err(InboxError::NotFound));
     }
@@ -2358,7 +2578,7 @@ mod tests {
             .map(|item| item.id.clone())
             .expect("the entry of m:w1");
         assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), Vec::<String>::new(), "nothing snoozed");
-        demo.snooze_item(entry, Some(now() + TimeDelta::days(1))).await.expect("snoozed");
+        demo.snooze_item(entry, Some(now() + TimeDelta::days(1)), false, false).await.expect("snoozed");
         assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), ["m:w1"]);
         assert!(!role_ids(&demo, Role::Inbox, Some(false), Some(false)).iter().any(|id| id == "m:w1"), "not in All");
     }
@@ -2492,5 +2712,179 @@ mod tests {
         let other = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
         demo.discard_draft(&other.id.expect("an id")).expect("discarded");
         assert!(demo.drafts().is_empty() && demo.sent().len() == 1);
+    }
+
+    fn pile_ids(demo: &DemoSource, pile: MailPile, account: Option<&str>) -> Vec<String> {
+        demo.in_pile(pile, account, Order::NewestFirst).into_iter().map(|m| m.id).collect()
+    }
+
+    /// Task E19.3: two messages lie on "Reply later" and one on "Set aside" from the start, each
+    /// naming its pile wherever it is listed; a pile is listed per account and leaves out the trash.
+    #[test]
+    fn the_demo_has_mail_on_both_piles() {
+        let demo = DemoSource::new(now());
+        assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w13", "m:p7"], "newest first");
+        assert_eq!(pile_ids(&demo, MailPile::SetAside, None), [SET_ASIDE_MAIL]);
+        assert_eq!(pile_ids(&demo, MailPile::ReplyLater, Some(MAIL_ACCOUNTS[1])), ["m:p7"], "one account");
+        let oldest: Vec<String> =
+            demo.in_pile(MailPile::ReplyLater, None, Order::OldestFirst).into_iter().map(|m| m.id).collect();
+        assert_eq!(oldest, ["m:p7", "m:w13"]);
+        for id in REPLY_LATER_MAIL {
+            assert_eq!(demo.get_mail(id).expect("the mail").summary.pile, Some(MailPile::ReplyLater), "{id}");
+        }
+        let inbox = demo.by_role(Role::Inbox, None, None, None, Order::NewestFirst);
+        let set_aside = inbox.iter().find(|m| m.id == SET_ASIDE_MAIL).expect("still in its folder");
+        assert_eq!(set_aside.pile, Some(MailPile::SetAside), "the summary names it");
+        // In the trash a message is on no pile's list, out of it again it is.
+        demo.move_mail_to(&[SET_ASIDE_MAIL.into()], Role::Trash).expect("deleted");
+        assert!(pile_ids(&demo, MailPile::SetAside, None).is_empty());
+        demo.move_mail_to(&[SET_ASIDE_MAIL.into()], Role::Inbox).expect("back");
+        assert_eq!(pile_ids(&demo, MailPile::SetAside, None), [SET_ASIDE_MAIL]);
+        // The categories leave pile mail out, as the window asks them.
+        let notices = demo.by_category(&[Category::ServiceNotice], 50, Order::NewestFirst);
+        assert!(!notices.iter().any(|m| m.id == SET_ASIDE_MAIL), "on a pile, not in its category");
+    }
+
+    /// Task E19.3: putting mail on a pile moves it from the other one, taking it off empties it, and
+    /// an unknown id changes nothing.
+    #[test]
+    fn mail_is_put_on_moved_between_and_taken_off_the_piles() {
+        let demo = DemoSource::new(now());
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::ReplyLater), None).expect("put on");
+        assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w1", "m:w13", "m:p7"]);
+        demo.set_mail_pile(&["m:w1".into(), "m:p7".into()], Some(MailPile::SetAside), None).expect("moved");
+        assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w13"]);
+        assert_eq!(pile_ids(&demo, MailPile::SetAside, None), ["m:w1", SET_ASIDE_MAIL, "m:p7"]);
+        demo.set_mail_pile(&["m:w1".into()], None, None).expect("taken off");
+        assert_eq!(demo.get_mail("m:w1").expect("the mail").summary.pile, None);
+        let unknown = ["m:w13".to_owned(), "m:nope".to_owned()];
+        assert_eq!(demo.set_mail_pile(&unknown, None, None), Err(InboxError::NotFound));
+        assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w13"], "nothing changed");
+    }
+
+    /// Decision of #315: the demo keeps since when a mail lies on its pile, as the core does – the
+    /// sample's piles since their mail came, now when put on, the same pile again keeps its time, an
+    /// undo's `since` (at most now) puts it back with its time, off a pile it has none.
+    #[test]
+    fn a_pile_keeps_its_time() {
+        let now = Utc::now();
+        let demo = DemoSource::new(now);
+        let since = |id: &str| demo.get_mail(id).expect("the mail").summary.pile_since;
+        let date = |id: &str| demo.get_mail(id).expect("the mail").summary.date;
+        assert_eq!(since("m:p7"), Some(date("m:p7")), "the sample's piles since their mail came");
+        assert_eq!(since("m:w1"), None, "on no pile");
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::ReplyLater), None).expect("put on");
+        let put = since("m:w1").expect("since now");
+        assert!(put >= now, "now");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::ReplyLater), None).expect("again");
+        assert_eq!(since("m:p7"), Some(date("m:p7")), "the same pile keeps its time");
+        let earlier = now - TimeDelta::days(3);
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(earlier)).expect("undone");
+        assert_eq!(since("m:w1"), Some(earlier), "the undo's time");
+        // Third review of #315: on the same pile the time stays, also when a `since` comes.
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(now - TimeDelta::days(9))).expect("same");
+        assert_eq!(since("m:w1"), Some(earlier), "the same pile keeps its time, whatever since says");
+        demo.set_mail_pile(&["m:w1".into()], None, None).expect("taken off");
+        assert_eq!(since("m:w1"), None);
+        demo.set_mail_pile(&["m:w1".into()], Some(MailPile::SetAside), Some(now + TimeDelta::days(3))).expect("ahead");
+        assert!(since("m:w1").is_some_and(|at| at <= demo.now()), "never ahead of now");
+        // Third review of #315: back on "Reply later" from before an answer sent since – off at once;
+        // from after it, it stays.
+        let before = since("m:p7").expect("on Reply later");
+        demo.set_mail_pile(&["m:p7".into()], None, None).expect("taken off");
+        let draft = Draft { in_reply_to: Some("m:p7".into()), ..draft(MAIL_ACCOUNTS[1], &["clara@example.org"]) };
+        let saved = demo.save_draft(draft).expect("saved");
+        demo.send_draft(&saved.id.expect("an id")).expect("answered");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::ReplyLater), Some(before)).expect("undone");
+        let back = demo.get_mail("m:p7").expect("the mail").summary;
+        assert_eq!((back.pile, back.pile_since), (None, None), "answered since: off at once");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::ReplyLater), Some(demo.now())).expect("after");
+        assert_eq!(demo.get_mail("m:p7").expect("the mail").summary.pile, Some(MailPile::ReplyLater), "stays");
+        demo.set_mail_pile(&["m:p7".into()], Some(MailPile::SetAside), Some(before)).expect("set aside");
+        assert_eq!(demo.get_mail("m:p7").expect("the mail").summary.pile, Some(MailPile::SetAside), "not Reply later");
+    }
+
+    /// Task E19.3, decision 5 of E19: a sent answer takes its conversation off "Reply later", never
+    /// off "Set aside", and leaves other conversations where they are.
+    #[test]
+    fn an_answer_takes_its_conversation_off_reply_later() {
+        let demo = DemoSource::new(now());
+        let answer = |to: &str, account: &str| {
+            let draft = Draft { in_reply_to: Some(to.into()), ..draft(account, &["someone@example.org"]) };
+            let saved = demo.save_draft(draft).expect("saved");
+            demo.send_draft(&saved.id.expect("an id")).expect("sent");
+        };
+        answer("m:p7", MAIL_ACCOUNTS[1]);
+        assert_eq!(pile_ids(&demo, MailPile::ReplyLater, None), ["m:w13"], "Clara answered");
+        answer(SET_ASIDE_MAIL, MAIL_ACCOUNTS[0]);
+        assert_eq!(pile_ids(&demo, MailPile::SetAside, None), [SET_ASIDE_MAIL], "set aside stays");
+    }
+
+    /// Task E19.3: the sample follows up Anna's sent mail "only if no reply", and any message can be
+    /// followed up by its id – a new entry for one without, the condition kept; an entry that is no
+    /// mail refuses the condition.
+    #[tokio::test]
+    async fn mail_is_followed_up_only_if_no_reply() {
+        let demo = DemoSource::new(now());
+        let held = demo.lock().items.iter().find(|item| item.id == FOLLOW_UP_ENTRY).cloned().expect("the entry");
+        let follow_up = held.follow_up.expect("a follow-up");
+        assert!(follow_up.unless_reply && follow_up.at > now() && follow_up.since < now());
+        assert_eq!(held.state, State::Snoozed { until: follow_up.at });
+        assert!(matches!(&held.link, Some(Link::Mail { message }) if message == FOLLOW_UP_MAIL));
+
+        let until = now() + TimeDelta::days(3);
+        let kept = demo.snooze_item("m:w10".into(), Some(until), true, false).await.expect("followed up");
+        assert_eq!((kept.id.as_str(), kept.state), ("demo-follow-w10", State::Snoozed { until }));
+        assert!(kept.follow_up.is_some_and(|follow_up| follow_up.unless_reply && follow_up.at == until));
+        let again = demo.snooze_item("m:w10".into(), None, false, false).await.expect("called off");
+        assert_eq!((again.id.as_str(), again.follow_up), ("demo-follow-w10", None), "the same entry");
+        // Anna's sent mail of a conversation with an entry follows up that entry.
+        let sent = demo.snooze_item("m:w7".into(), Some(until), true, false).await.expect("followed up");
+        assert_eq!(sent.thread_key, "t:design", "the entry of Lena's answer: {}", sent.id);
+        // Without a time a message without an entry stays without one.
+        let before = demo.lock().items.len();
+        let stand_in = demo.snooze_item("m:p6".into(), None, false, false).await.expect("the entry it would be");
+        assert_eq!((stand_in.id.as_str(), demo.lock().items.len()), ("m:p6", before));
+        // A mail entry by its message's id; an entry that is no mail refuses the condition.
+        let filed = demo.snooze_item("m:w1".into(), Some(until), false, false).await.expect("its entry");
+        assert!(filed.id.starts_with("demo-mail-") && filed.follow_up.is_some_and(|f| !f.unless_reply));
+        assert_eq!(demo.snooze_item("demo-7".into(), Some(until), true, false).await, Err(InboxError::Unsupported));
+        assert_eq!(demo.snooze_item("m:nope".into(), Some(until), false, false).await, Err(InboxError::NotFound));
+        // Review of #315: an open mail entry is followed up without being put off, as the core does.
+        demo.snooze_item("m:w1".into(), None, false, false).await.expect("called off");
+        let open = demo.snooze_item("m:w1".into(), Some(until), false, true).await.expect("kept open");
+        assert!(open.state.is_open() && open.follow_up.is_some_and(|f| f.at == until), "{open:?}");
+        demo.snooze_item("demo-follow-w10".into(), Some(until), false, false).await.expect("put off");
+        // As the core: a mail filed in its own entry stands for it – a snoozed one comes back by the
+        // mail's id as by the entry's.
+        let by_mail = demo.snooze_item("m:w10".into(), Some(until), false, true).await.expect("by its mail");
+        assert_eq!((by_mail.id.as_str(), by_mail.state), ("demo-follow-w10", State::Seen), "its own entry back");
+        demo.snooze_item("demo-follow-w10".into(), Some(until), false, false).await.expect("put off again");
+        let reopened = demo.snooze_item("demo-follow-w10".into(), Some(until), false, true).await.expect("reopened");
+        assert_eq!((reopened.state, reopened.follow_up.map(|f| f.at)), (State::Seen, Some(until)), "a snoozed entry");
+        demo.set_item_done("demo-follow-w10".into(), true).await.expect("done");
+        let refused = demo.snooze_item("demo-follow-w10".into(), Some(until), false, true).await;
+        assert_eq!(refused, Err(InboxError::Unsupported), "a done entry");
+        let by_mail = demo.snooze_item("m:w10".into(), Some(until), false, true).await;
+        assert_eq!(by_mail, Err(InboxError::Unsupported), "a done entry by its mail's id");
+        // A mail without an entry of its own (the sent "m:w7") in a conversation whose entry is snoozed
+        // or done is refused; the entry's mail ("m:w2") brings it back.
+        let design = demo
+            .lock()
+            .items
+            .iter()
+            .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == "m:w2"))
+            .map(|item| item.id.clone())
+            .expect("the design conversation's entry");
+        demo.snooze_item(design.clone(), Some(until), false, false).await.expect("put off");
+        let sent = demo.snooze_item("m:w7".into(), Some(until), false, true).await;
+        assert_eq!(sent, Err(InboxError::Unsupported), "a snoozed conversation by a mail without its own entry");
+        let back = demo.snooze_item("m:w2".into(), Some(until), false, true).await.expect("by the entry's mail");
+        assert_eq!((back.id, back.state), (design.clone(), State::Seen));
+        demo.set_item_done(design, true).await.expect("done");
+        let sent = demo.snooze_item("m:w7".into(), Some(until), false, true).await;
+        assert_eq!(sent, Err(InboxError::Unsupported), "a done conversation by a mail without its own entry");
+        assert_eq!(demo.snooze_item("demo-7".into(), Some(until), false, true).await, Err(InboxError::Unsupported));
+        assert_eq!(demo.snooze_item("m:w1".into(), None, false, true).await, Err(InboxError::Unsupported));
     }
 }

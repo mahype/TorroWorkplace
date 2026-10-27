@@ -49,6 +49,14 @@
 //! - The mail window's views of every account (task E18.3): "All", "Hidden" and "Archive" list the
 //!   mail of one folder role ([`MailSource::mail_by_role`]), the number on "All" comes from
 //!   [`MailSource::unread_in_all`], and "Show again" is [`MailSource::set_mail_shown`].
+//! - The piles (task E19.3): [`MailSource::set_mail_pile`] puts mail on "Reply later" or "Set aside"
+//!   or takes it off, [`MailSource::mail_in_pile`] lists a pile and [`MailSource::count_in_pile`] counts
+//!   it; "All" asks [`MailSource::mail_by_role`] with `pile: without`. "Focus & reply" answers with
+//!   [`MailSource::send_reply`], built as the compose window builds a reply ([`send_reply_through`]).
+//! - "Focus & reply" (task E19.5, decision 10 of E19): [`FocusReply`] is the round through "Reply
+//!   later" – the pile's mail as listed when it started, the place, the reply typed –, [`focus_page`]
+//!   draws it in place of list and reader: the mail's head and text in the reading column, under a line
+//!   the field and Send · Skip · Remove from Reply later · Open in compose window.
 //!
 //! **Mail is foreign text** (`untrusted`). Its HTML comes cleaned by the core (no scripts, no
 //! forms, legacy attributes as CSS) and is drawn without JavaScript; a click on one of its links
@@ -57,17 +65,20 @@
 //! addresses in it are listed under it as "Links" that open only on a click. An attachment is fetched by the core into its attachment folder and opened with the
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
 
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
+use iced::keyboard;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, mouse_area, responsive, row, rule, scrollable, svg};
+use iced::widget::{center, column, container, mouse_area, responsive, row, rule, scrollable, svg, text_editor};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{AttachmentClick, MailAppearance, MailFormat};
+use torro_core::shortcuts::System;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::panel;
@@ -83,19 +94,23 @@ use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
 use torro_ipc::inbox::CategoryInfo;
-use torro_ipc::inbox::{CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, SaveTargets, SavedAttachments};
+use torro_ipc::inbox::{
+    CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, MailInPile, SaveTargets, SavedAttachments,
+};
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
-    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget, PlannedPlace, SaveTo, SavedFile,
+    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget, PileFilter, PlannedPlace, SaveTo,
+    SavedFile,
 };
 use torro_ipc::{Request, Response};
 use torro_mail::{
-    AttachmentInfo, CategoryGroup, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, Message as Mail,
-    MessageSummary, Order, Role,
+    AttachmentInfo, CategoryGroup, Draft, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, MailPile,
+    Message as Mail, MessageSummary, Order, Role,
 };
 
 use crate::app::{INBOX, Message, View};
+use crate::compose::{self, ComposeError, ComposeSource};
 use crate::detail;
 use crate::keys::Command as Key;
 use crate::list::{self, Look};
@@ -273,14 +288,17 @@ pub trait MailSource: Send + Sync {
     /// `mail.search_messages` without a folder and with the query `in:<role>` (task E18.3,
     /// [`InboxClient::mail_by_role`]): the mail in the folders of `find.role` of every account the
     /// window reaches (or of `find.account`), leaving out or giving only snoozed and hidden mail as
-    /// `find.snoozed` and `find.hidden` say, at most `find.limit` in `find.order` from
-    /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields).
-    /// "All" is [`Role::Inbox`] with `snoozed` and `hidden` `Some(false)`, "Hidden" [`Role::Inbox`]
-    /// with `hidden` `Some(true)`, "Archive" [`Role::Archive`]. The page has no highlights.
+    /// `find.snoozed` and `find.hidden` say and, by `find.pile` (task E19.3), leaving out or giving
+    /// only mail on a pile, at most `find.limit` in `find.order` from `find.cursor` on (the
+    /// [`MailPage::next`] of the page before, asked with the same fields). "All" is [`Role::Inbox`]
+    /// with `snoozed` and `hidden` `Some(false)` and `pile` `Some(PileFilter::Without)`, "Hidden"
+    /// [`Role::Inbox`] with `hidden` `Some(true)`, "Archive" [`Role::Archive`]. The page has no
+    /// highlights.
     fn mail_by_role(&self, find: MailByRole) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// The number on "All" (task E18.3, decision 4 of E18): `mail.search_messages` as "All" asks it
-    /// – [`Role::Inbox`], `snoozed` and `hidden` `Some(false)` – with `unread: Some(true)` and
+    /// – [`Role::Inbox`], `snoozed` and `hidden` `Some(false)`, no mail on a pile (task E19.3) – with
+    /// `unread: Some(true)` and
     /// `limit: 1`, for `account` (`mail:<address>`) or every account the window reaches
     /// ([`InboxClient::count_unread_in_all`]). Answers the core's `total_estimate`, 0 without one.
     fn unread_in_all(&self, account: Option<String>) -> impl Future<Output = Result<u64, InboxError>> + Send;
@@ -291,6 +309,113 @@ pub trait MailSource: Send + Sync {
     /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing is
     /// remembered then. `Ok` also when there was nothing to remember.
     fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `inbox.set_mail_pile` (task E19.3, [`InboxClient::set_mail_pile`]): puts the mail `ids` (`m:…`,
+    /// 1 to 100) on `pile` – "Reply later" or "Set aside"; a message lies on at most one, so this moves
+    /// it from the other –, or takes them off with `None` (also the undo, with the pile each lay on
+    /// before, [`MessageSummary::pile`]). `since` puts them on with the time they lay there before
+    /// ([`MessageSummary::pile_since`], the undo of taking them off or moving them, decision of #315);
+    /// `None` counts as now. Kept only in the core, nothing goes to the server.
+    /// [`InboxError::NotFound`] when one of them is not mail the window may see; nothing changes then.
+    fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// One page of a pile (task E19.3, [`InboxClient::mail_in_pile`]): the mail on `find.pile` in
+    /// every folder but the trash and spam, of every account the window reaches (or of
+    /// `find.account`), whether snoozed or hidden or not, at most `find.limit` in `find.order` from
+    /// `find.cursor` on (the [`MailPage::next`] of the page before, asked with the same fields). Every
+    /// message carries its pile. The page has no highlights.
+    fn mail_in_pile(&self, find: MailInPile) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
+
+    /// How much mail lies on `pile` (task E19.3, [`InboxClient::count_in_pile`]), read and unread, for
+    /// `account` (`mail:<address>`) or every account the window reaches: the number beside the pile
+    /// in the sidebar. The core's `total_estimate`, 0 without one.
+    fn count_in_pile(
+        &self,
+        pile: MailPile,
+        account: Option<String>,
+    ) -> impl Future<Output = Result<u64, InboxError>> + Send;
+
+    /// Answers the message `id` with `text` ("Focus & reply", tasks E19.3 and E19.5), as the compose
+    /// window answers it ([`send_reply_through`]): to the sender (`Reply-To:` first), from the account
+    /// the mail came to, `Re:` before the subject, `text` above the quoted mail, formatted for an
+    /// account that writes HTML; `mail.save_draft`, then `mail.send_draft`. The pile is not touched:
+    /// the window takes the mail off "Reply later" afterwards (the core does too once the sent copy
+    /// turns up). Errors as the core maps them; [`InboxError::Other`] with the reason when there is
+    /// no account to write from, no one to answer, or the server refused (the saved draft stays in
+    /// the drafts folder then).
+    fn send_reply(&self, id: String, text: String) -> impl Future<Output = Result<(), InboxError>> + Send;
+}
+
+/// What "Focus & reply" sends for the message `id` (task E19.3, [`MailSource::send_reply`]): the
+/// reply the compose window opens with ([`compose::opening`] with [`compose::Kind::Reply`], the account
+/// of [`compose::pick_sender`]), `text` typed above the quote, saved and then sent through `source`.
+/// A send whose outcome is unknown ([`Delivery::Unknown`]) counts as sent, as in the compose window:
+/// it is never sent again by itself.
+pub async fn send_reply_through<S: ComposeSource>(source: &S, id: String, text: &str) -> Result<(), InboxError> {
+    let senders = source.senders().await.map_err(inbox_error)?;
+    let message = source.get_mail(id.clone()).await.map_err(inbox_error)?;
+    let own: Vec<String> = senders.iter().map(|sender| sender.address.to_lowercase()).collect();
+    let opened = compose::opening(&compose::Kind::Reply(id), Some(&message), &own);
+    let sender = compose::pick_sender(&senders, None, Some(&message))
+        .and_then(|at| senders.get(at))
+        .ok_or_else(|| InboxError::Other(tr("No mail account yet.").to_owned()))?;
+    // Checked before saving, so a reply that cannot go leaves no draft behind.
+    if opened.to.is_empty() && opened.cc.is_empty() {
+        return Err(InboxError::Other(tr("Add at least one recipient.").to_owned()));
+    }
+    let saved = source.save_draft(reply_draft(sender, opened, text)).await.map_err(inbox_error)?;
+    let draft = saved.id.ok_or_else(|| InboxError::Other("the draft was saved without an id".into()))?;
+    source.send_draft(draft).await.map_err(inbox_error)?;
+    Ok(())
+}
+
+/// The draft of an answer as the compose window would save it: `text` above `opened`'s quoted mail,
+/// from `sender`; with the marks as HTML when the account writes formatted mail, the quote staying
+/// someone else's text ([`torro_mail::markup::to_html`]).
+fn reply_draft(sender: &compose::Sender, opened: compose::Opening, text: &str) -> Draft {
+    let body = format!("{}{}", text.trim().replace("\r\n", "\n"), opened.body);
+    let html = sender
+        .html
+        .then(|| torro_mail::markup::to_html(&body, opened.history.as_deref()))
+        .filter(|markup| !markup.is_empty());
+    Draft {
+        id: None,
+        account: sender.account.clone(),
+        to: opened.to,
+        cc: opened.cc,
+        bcc: Vec::new(),
+        subject: opened.subject,
+        body: html.as_deref().map_or(body, torro_mail::html::to_text),
+        html,
+        in_reply_to: opened.in_reply_to,
+        attachments: Vec::new(),
+    }
+}
+
+/// A compose call's error as the mail window's calls report it.
+fn inbox_error(err: ComposeError) -> InboxError {
+    match err {
+        ComposeError::Offline => InboxError::Offline,
+        ComposeError::NotFound => InboxError::NotFound,
+        ComposeError::Forbidden => InboxError::Forbidden,
+        ComposeError::Other(message) => InboxError::Other(message),
+    }
+}
+
+/// Whether a message on `pile` is one that `filter` asks for, as the core reads `mail.search_messages`'
+/// `pile` (task E19.2): `None` every message, `Without` none on a pile, a pile only its mail.
+fn pile_matches(filter: Option<PileFilter>, pile: Option<MailPile>) -> bool {
+    match filter {
+        None => true,
+        Some(PileFilter::Without) => pile.is_none(),
+        Some(PileFilter::ReplyLater) => pile == Some(MailPile::ReplyLater),
+        Some(PileFilter::SetAside) => pile == Some(MailPile::SetAside),
+    }
 }
 
 /// One page of a folder ([`MailSource::search_mail`]) or of a search ([`MailSource::find_mail`]).
@@ -379,6 +504,28 @@ impl MailSource for InboxClient {
 
     async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
         InboxClient::set_mail_shown(self, ids, shown).await
+    }
+
+    async fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        InboxClient::set_mail_pile(self, ids, pile, since).await
+    }
+
+    async fn mail_in_pile(&self, find: MailInPile) -> Result<MailPage, InboxError> {
+        let (messages, next) = InboxClient::mail_in_pile(self, find).await?;
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn count_in_pile(&self, pile: MailPile, account: Option<String>) -> Result<u64, InboxError> {
+        InboxClient::count_in_pile(self, pile, account).await
+    }
+
+    async fn send_reply(&self, id: String, text: String) -> Result<(), InboxError> {
+        send_reply_through(self, id, &text).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -524,11 +671,12 @@ impl MailSource for DemoSource {
         crate::search::demo_index(self)
     }
 
-    /// The demo's mail of the role ([`DemoSource::by_role`]) a page at a time; the cursor is the
-    /// place of the next page, as in the demo's folders.
+    /// The demo's mail of the role ([`DemoSource::by_role`]) with the piles `find.pile` asks for, a
+    /// page at a time; the cursor is the place of the next page, as in the demo's folders.
     async fn mail_by_role(&self, find: MailByRole) -> Result<MailPage, InboxError> {
-        let found =
+        let mut found =
             DemoSource::by_role(self, find.role, find.account.as_deref(), find.snoozed, find.hidden, find.order);
+        found.retain(|message| pile_matches(find.pile, message.pile));
         let mut page = demo_page(found, find.limit, find.cursor.as_deref())?;
         for message in &mut page.messages {
             message.invite = demo_invite(&message.id, message.date);
@@ -536,15 +684,46 @@ impl MailSource for DemoSource {
         Ok(page)
     }
 
-    /// The unread mail of what "All" lists, counted exactly.
+    /// The unread mail of what "All" lists, counted exactly: none on a pile.
     async fn unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
         let all =
             DemoSource::by_role(self, Role::Inbox, account.as_deref(), Some(false), Some(false), Order::NewestFirst);
-        Ok(all.iter().filter(|message| !message.flags.contains(&Flag::Seen)).count() as u64)
+        let unread = |message: &&MessageSummary| message.pile.is_none() && !message.flags.contains(&Flag::Seen);
+        Ok(all.iter().filter(unread).count() as u64)
     }
 
     async fn set_mail_shown(&self, ids: Vec<String>, shown: bool) -> Result<(), InboxError> {
         DemoSource::set_mail_shown(self, &ids, shown)
+    }
+
+    async fn set_mail_pile(
+        &self,
+        ids: Vec<String>,
+        pile: Option<MailPile>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        DemoSource::set_mail_pile(self, &ids, pile, since)
+    }
+
+    /// The demo's pile ([`DemoSource::in_pile`]) a page at a time, as its roles.
+    async fn mail_in_pile(&self, find: MailInPile) -> Result<MailPage, InboxError> {
+        let found = DemoSource::in_pile(self, find.pile, find.account.as_deref(), find.order);
+        let mut page = demo_page(found, find.limit, find.cursor.as_deref())?;
+        for message in &mut page.messages {
+            message.invite = demo_invite(&message.id, message.date);
+        }
+        Ok(page)
+    }
+
+    /// The demo's pile counted exactly.
+    async fn count_in_pile(&self, pile: MailPile, account: Option<String>) -> Result<u64, InboxError> {
+        Ok(DemoSource::in_pile(self, pile, account.as_deref(), Order::NewestFirst).len() as u64)
+    }
+
+    /// Built and sent as for the core; the demo keeps the answer as sent and takes the conversation
+    /// off "Reply later", as the core does ([`DemoSource::send_draft`]).
+    async fn send_reply(&self, id: String, text: String) -> Result<(), InboxError> {
+        send_reply_through(self, id, &text).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -796,6 +975,29 @@ impl MailSource for crate::empty::EmptySource {
     /// No mail is hidden, so there is nothing to remember – as the core answers then.
     async fn set_mail_shown(&self, _ids: Vec<String>, _shown: bool) -> Result<(), InboxError> {
         Ok(())
+    }
+
+    /// There is no mail to put on a pile.
+    async fn set_mail_pile(
+        &self,
+        _ids: Vec<String>,
+        _pile: Option<MailPile>,
+        _since: Option<DateTime<Utc>>,
+    ) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn mail_in_pile(&self, _find: MailInPile) -> Result<MailPage, InboxError> {
+        Ok(MailPage::of(Vec::new(), None))
+    }
+
+    async fn count_in_pile(&self, _pile: MailPile, _account: Option<String>) -> Result<u64, InboxError> {
+        Ok(0)
+    }
+
+    /// There is no mail to answer.
+    async fn send_reply(&self, _id: String, _text: String) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
     }
 }
 
@@ -1291,6 +1493,11 @@ struct Filing {
     archive: bool,
     /// The account has a Trash and the message lies outside it.
     delete: bool,
+    /// The message can be followed up: it lies outside the archive, the trash and spam
+    /// ([`follows_up`]).
+    follow_up: bool,
+    /// The message can go on a pile: it lies outside the trash and spam ([`takes_piles`]).
+    piles: bool,
 }
 
 impl Filing {
@@ -1303,8 +1510,28 @@ impl Filing {
         Filing {
             archive: has(Role::Archive) && lies_in != Some(Role::Archive),
             delete: has(Role::Trash) && lies_in != Some(Role::Trash),
+            follow_up: !matches!(lies_in, Some(Role::Archive | Role::Trash | Role::Junk)),
+            piles: !matches!(lies_in, Some(Role::Trash | Role::Junk)),
         }
     }
+}
+
+/// Whether a mail in the folder `folder` (a [`Folder::id`]) can go on "Reply later" or "Set aside"
+/// (review of PR #327): not in the trash or spam, whose mail a pile leaves out (decision 3 of E19); the
+/// archive can – setting archived mail aside is the main case. A folder not known, as one without a
+/// role, can.
+pub fn takes_piles(folders: &[Folder], folder: &str) -> bool {
+    let role = folders.iter().find(|held| held.id == folder).and_then(|held| held.role);
+    !matches!(role, Some(Role::Trash | Role::Junk))
+}
+
+/// Whether a mail in the folder `folder` (a [`Folder::id`]) can be followed up (decision of #315):
+/// not in the archive, the trash or spam – archived counts as done (decision 6 of E19), so a
+/// follow-up there would never come back in the mail window. A folder not known, as one without a
+/// role, can.
+pub fn follows_up(folders: &[Folder], folder: &str) -> bool {
+    let role = folders.iter().find(|held| held.id == folder).and_then(|held| held.role);
+    !matches!(role, Some(Role::Archive | Role::Trash | Role::Junk))
 }
 
 /// The hint after archiving (`delete: false`) or deleting.
@@ -1493,6 +1720,13 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Hidden => (Icon::EyeOff, tr("No hidden mail."), tr("Mail you hide from the inbox shows up here.")),
             View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
+            // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
+            View::ReplyLater => (
+                Icon::MessageSquareReply,
+                tr("Nothing to reply to later."),
+                tr("Press W on a mail to answer it later."),
+            ),
+            View::SetAside => (Icon::Bookmark, tr("Nothing set aside."), tr("Press B on a mail to set it aside.")),
             _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
@@ -2381,7 +2615,9 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
     if let Some(entry) = entry {
-        body = body.push(widgets::prop_section(tr("Properties"), detail::properties(entry.item, reading.now)));
+        // "Follow up" in the mail window's words (task E19.4).
+        let properties = detail::properties(entry.item, reading.now, true);
+        body = body.push(widgets::prop_section(tr("Properties"), properties));
     }
     body.push(panel::bleed(line())).extend(panel_letter(reading)).spacing(space::l()).into()
 }
@@ -2688,13 +2924,16 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///
 /// 1. **Reply** (the main group: a red icon collapsed, Reply strong expanded – decision A): Reply
 ///    (`r`), Reply all, Forward (`f`) – [`Message::Mail`].
-/// 2. **File**: Archive (`e`, task E18.5: in the place of the entry's former Done – mail is
-///    archived, never done) where the account has the folder and the mail does not lie in it
-///    already, as in rows ([`filing_actions`]; an entry's mail lies in its account's inbox while it
-///    loads); for an `entry` then Later… (`s`, `AskSnooze`, not for a done entry) and "Move to Info"
-///    or "Move to For me" (`l`, `AskLane`); Delete (`#`) on the same rule as Archive; last "Save
-///    attachments (n)" for a loaded mail with attachments (task M12.6, `AskSaveAttachments`: the menu
-///    of "Save all").
+/// 2. **File** ([`file_items`], task E19.4): Archive (`e`, task E18.5: in the place of the entry's
+///    former Done – mail is archived, never done) where the account has the folder and the mail does
+///    not lie in it already, as in rows ([`filing_actions`]; an entry's mail lies in its account's
+///    inbox while it loads); Reply later (`w`) and Set aside (`b`, [`Message::Pile`]) but for mail in
+///    the trash or spam ([`takes_piles`]) – for a mail on one of them "Remove from Reply later" or
+///    "Remove from Set aside" in its place, with the same key, wherever it lies; Follow up… (`s`, `AskSnooze`) for every mail but one in the archive, the trash or spam
+///    ([`follows_up`]) – its entry's when it has an open one, else the mail's own id (decision 8 of
+///    E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
+///    `AskLane`); Delete (`#`) on the same rule as Archive; last "Save attachments (n)" for a loaded
+///    mail with attachments (task M12.6, `AskSaveAttachments`: the menu of "Save all").
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
 ///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
@@ -2713,7 +2952,7 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 /// check of File, Torro's task, Mark's flag – in the attention colour while the mail is flagged –,
 /// the bell and "…". A click on it sends its first item; Delete is marked `danger` and never that
 /// click – a File whose first item would be Delete opens its card instead. Each group registers its icon in `anchors.rail`, each item that opens a
-/// menu or dialog its row in the matching anchor of `anchors` (Later `snooze`, "Move to …" `lane`,
+/// menu or dialog its row in the matching anchor of `anchors` (Follow up… `snooze`, "Move to …" `lane`,
 /// Task `task`, Event `event`, Category… `category`, Mute… `hide`); pass the window's anchors made
 /// with [`detail::Anchors::with_rail`], so those menus hang at the group's icon while the row is not
 /// on screen. `folders` are every account's folders, for Archive and Delete. The same groups are the
@@ -2747,7 +2986,11 @@ pub fn action_groups<'a>(
     groups.into_iter().filter(|group| !group.items.is_empty()).collect()
 }
 
-/// The items of the rail's group "File" ([`action_groups`]).
+/// The items of the rail's group "File" ([`action_groups`]), in this order (task E19.4): Archive ·
+/// Reply later · Set aside · Follow up… · "Move to …" · Delete · Save attachments (n). The piles
+/// follow [`MessageSummary::pile`]: on one, its item is "Remove from …" with the same key, in every
+/// view; they wait for the mail's headers, which say its pile. Follow up… stands once the mail's
+/// account is known (its headers or its entry), as Archive and Delete.
 fn file_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
@@ -2763,14 +3006,35 @@ fn file_items<'a>(
     };
     let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
     // First, so a click on the group's icon archives, as it marked an entry done before.
-    if filing.is_some_and(|filing| filing.archive) {
+    let archive = filing.is_some_and(|filing| filing.archive);
+    if archive {
         items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "E", mail(MailAction::Archive)));
     }
+    // Always in their place, so the rail does not jump once the mail's headers are in; off until then.
+    // Without Archive a click on the group's icon opens its card rather than putting the mail on a
+    // pile – the pattern of Delete, which is never that click either (`RailGroup::first_press`).
+    // Not for mail in the trash or spam (review of PR #327) – but "Remove from …" for one that lies on
+    // a pile, wherever it is.
+    let takes = filing.is_none_or(|filing| filing.piles);
+    let on = reading.summary().and_then(|summary| summary.pile);
+    let piles = pile_items(reading).into_iter().zip([MailPile::ReplyLater, MailPile::SetAside]);
+    let piles = piles.filter(|(_, pile)| takes || on == Some(*pile)).map(|(item, _)| item);
+    items.extend(piles.map(|item| if archive { item } else { item.danger() }));
+    // Every mail can be followed up (decision 8 of E19): an open entry by its own id, any other mail –
+    // a folder's, a done entry's – by the mail's id, of which the core makes the entry. Not mail in the
+    // archive, the trash or spam (decision of #315): the folder of the mail shown decides.
+    if filing.is_some_and(|filing| filing.follow_up) {
+        let follow = match entry {
+            Some(ReaderEntry { item, .. }) if !matches!(item.state, State::Done { .. }) => item.id.clone(),
+            _ => reading.id.to_owned(),
+        };
+        let follow = RailItem::new(Icon::CalendarClock, tr("Follow up…"), "S", Some(Message::AskSnooze(follow)));
+        // Without Archive not what a click on the group's icon does either, also while the piles are
+        // off as the headers load: the click always opens the card (second review of #315).
+        let follow = if archive { follow } else { follow.danger() };
+        items.push(follow.at(&anchors.snooze));
+    }
     if let Some(ReaderEntry { item, .. }) = entry {
-        if !matches!(item.state, State::Done { .. }) {
-            let later = RailItem::new(Icon::Clock, tr("Later…"), "S", Some(Message::AskSnooze(item.id.clone())));
-            items.push(later.at(&anchors.snooze));
-        }
         let lane = crate::app::other_lane(item.lane);
         let move_to = Some(Message::AskLane(item.id.clone()));
         items.push(RailItem::new(crate::app::lane_icon(lane), lane_word(lane), "L", move_to).at(&anchors.lane));
@@ -2787,6 +3051,29 @@ fn file_items<'a>(
         items.push(RailItem::new(Icon::Download, words, "", save).at(&anchors.save_rail));
     }
     items
+}
+
+/// "Reply later" (`w`) and "Set aside" (`b`) for the mail in `reading` (task E19.4): each puts it on
+/// its pile ([`Message::Pile`]); for the pile it lies on "Remove from Reply later" or "Remove from Set
+/// aside" instead, which takes it off. Off, without their keys, while the mail's headers are not in –
+/// which pile it lies on is not known yet.
+fn pile_items<'a>(reading: &Reading<'_>) -> [RailItem<'a, Message>; 2] {
+    let known = reading.summary();
+    let on = known.and_then(|summary| summary.pile);
+    let pile = |pile: MailPile| known.map(|_| Message::Pile(reading.id.to_owned(), (on != Some(pile)).then_some(pile)));
+    let key = |key: &'static str| if known.is_some() { key } else { "" };
+    let reply = match on {
+        Some(MailPile::ReplyLater) => tr("Remove from Reply later"),
+        _ => tr("Reply later"),
+    };
+    let aside = match on {
+        Some(MailPile::SetAside) => tr("Remove from Set aside"),
+        _ => tr("Set aside"),
+    };
+    [
+        RailItem::new(Icon::MessageSquareReply, reply, key("W"), pile(MailPile::ReplyLater)),
+        RailItem::new(Icon::Bookmark, aside, key("B"), pile(MailPile::SetAside)),
+    ]
 }
 
 /// The items of the rail's group "Torro" ([`action_groups`]): what Torro adds to the mail, as the
@@ -3746,6 +4033,579 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+// ----- "Focus & reply" (task E19.5) -------------------------------------------------------------
+
+/// The id of the reply field of "Focus & reply" (task E19.5): the window puts the keyboard there
+/// when a round starts, so the first reply can be typed at once.
+pub const FOCUS_FIELD: &str = "focus-reply";
+
+/// The id of the scrolling mail of "Focus & reply": the window scrolls it back to the top when
+/// another mail shows.
+pub const FOCUS_MAIL: &str = "focus-mail";
+
+/// How many lines the reply field of "Focus & reply" shows empty, and how many it grows to before
+/// it scrolls – never more than [`FIELD_SHARE`] of the page, so the mail above keeps its room.
+const FIELD_LINES: f32 = 4.0;
+const FIELD_MAX_LINES: f32 = 10.0;
+const FIELD_SHARE: f32 = 0.4;
+
+/// "Focus & reply" (task E19.5, decision 10 of E19): one round through the pile "Reply later", a
+/// mail at a time with a field to answer it under the mail.
+///
+/// [`FocusReply::ids`] are the pile's mail as the view listed it when the round started, in its
+/// order. A mail answered ([`FocusReply::answered`]) or taken off the pile
+/// ([`FocusReply::take_current`]) leaves the round, so [`FocusReply::at`] then already points at the
+/// next one; a skipped one stays on the pile and in the round ([`FocusReply::step`]), the arrows go
+/// back to it. `at == ids.len()` is the end of the round: nothing left to reply to in it.
+///
+/// What is typed belongs to its mail: [`FocusReply::reply`] is the field of the mail shown, the
+/// replies typed to the others wait until their mail shows again – skipping and ↑/↓ lose nothing.
+/// While a reply is on its way ([`FocusReply::sending`]) nothing moves, so the answer always
+/// belongs to the mail shown. [`FocusReply::keep`] and [`FocusReply::restore`] carry a round over
+/// the hint "Reply discarded." and its undo.
+#[derive(Debug, Clone, Default)]
+pub struct FocusReply {
+    /// The mail of the round (`m:…`), in the order of the pile when it started.
+    pub ids: Vec<String>,
+    /// The place of the mail shown in [`FocusReply::ids`]; `ids.len()` at the end.
+    pub at: usize,
+    /// What is typed into the field for the mail shown.
+    pub reply: text_editor::Content,
+    /// What was typed for the other mails of the round, by id; only replies with text.
+    kept: HashMap<String, text_editor::Content>,
+    /// The reply is on its way (`MailSource::send_reply`): "Sending…", the field and the buttons
+    /// take nothing until the answer.
+    pub sending: bool,
+    /// Why the last send failed (the core's words); the text stays in the field to send again.
+    pub error: Option<String>,
+    /// When the reply now on its way went out, for the window's time limit (`App` gives up after
+    /// `SEND_TIMEOUT`, fifth review of #315); `None` while nothing is on its way.
+    pub sending_since: Option<std::time::Instant>,
+    /// The number of the send on its way (the window counts its sends, review of PR #327): only its
+    /// answer counts for the round; `None` while nothing is on its way.
+    pub send: Option<u64>,
+    /// The last send had no answer in time ([`FocusReply::give_up`]): under the field "No answer yet
+    /// – check Sent before sending again.", the text stays.
+    pub timed_out: bool,
+    /// Every mail that was ever in the round – answered, taken off or skipped –, so the next page
+    /// of the pile adds only mail the round has not had ([`FocusReply::extend`], decision of #315).
+    seen: HashSet<String>,
+    /// The pile may hold more than the round has: at its end the window loads the next page
+    /// ([`FocusReply::wants_more`]); `false` once the pile had nothing new.
+    pub more: bool,
+    /// The next page is on its way; the end of the round shows loading until it is in.
+    pub loading: bool,
+    /// Why the next page could not be loaded; the end of the round says so with "Retry".
+    pub load_error: Option<String>,
+    /// How much mail lay on the pile when the round started (`count_in_pile`, the sidebar's number),
+    /// less what left it since: the `{total}` of "{n} of {total}"; `None` when not known.
+    pub total: Option<usize>,
+    /// Which round this is, set by the window for every round it starts or brings back: the answer
+    /// of a next page carries it and counts only for its own round (third review of #315).
+    pub round: u64,
+    /// The pile and since when of the mail the round loaded itself ([`FocusReply::extend`]), which the
+    /// window lists nowhere: "Remove" and its undo find them here (third review of #315).
+    piles: HashMap<String, (Option<MailPile>, Option<DateTime<Utc>>)>,
+}
+
+/// A round of "Focus & reply" as the undo of "Reply discarded." keeps it ([`FocusReply::keep`]):
+/// its mail, the place and the text typed for each mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusKept {
+    pub ids: Vec<String>,
+    pub at: usize,
+    /// The replies with text, by the id of their mail.
+    pub texts: Vec<(String, String)>,
+    /// Why the reply to the mail at `at` could not be sent, when the round comes back for it
+    /// (a send that failed after its round was closed, second review of #315).
+    pub error: Option<String>,
+    /// Every mail the round had – the one on its way too –, so the round that comes back never takes
+    /// one of them in again (third review of #315: no second send).
+    pub seen: Vec<String>,
+    /// The pile's number as the round counted it ([`FocusReply::total`]).
+    pub total: Option<usize>,
+    /// The piles of the mail the round loaded itself ([`FocusReply::pile_of`]).
+    pub piles: Vec<(String, Option<MailPile>, Option<DateTime<Utc>>)>,
+}
+
+impl FocusReply {
+    /// A round through `ids`, at the first, with an empty field.
+    pub fn new(ids: Vec<String>) -> FocusReply {
+        let seen = ids.iter().cloned().collect();
+        FocusReply { ids, seen, ..FocusReply::default() }
+    }
+
+    /// A round through the pile (decision of #315): `ids` as loaded, `more` when the pile has
+    /// further pages, `total` the pile's number when it is known.
+    pub fn of_pile(ids: Vec<String>, more: bool, total: Option<usize>) -> FocusReply {
+        FocusReply { more, total, ..FocusReply::new(ids) }
+    }
+
+    /// Whether the window should load the next page now: at the end of the round, with more on the
+    /// pile, nothing on its way and no error waiting for "Retry".
+    pub fn wants_more(&self) -> bool {
+        self.current().is_none() && self.more && !self.loading && self.load_error.is_none()
+    }
+
+    /// The mail the round has had, for the next page ([`FocusReply::extend`]).
+    pub fn seen(&self) -> &HashSet<String> {
+        &self.seen
+    }
+
+    /// The next page is in: `found` – the pile's mail the round has not had yet, in the pile's order
+    /// – go at the end of the round with their piles ([`FocusReply::pile_of`]), and the first of them
+    /// shows when the round stood at its end; `more` says whether the pile has still further pages.
+    pub fn extend(&mut self, found: Vec<MessageSummary>, more: bool) {
+        let at_end = self.current().is_none();
+        for message in found {
+            if self.seen.insert(message.id.clone()) {
+                self.piles.insert(message.id.clone(), (message.pile, message.pile_since));
+                self.ids.push(message.id);
+            }
+        }
+        self.more = more;
+        self.loading = false;
+        self.load_error = None;
+        if at_end {
+            self.arrive();
+        }
+    }
+
+    /// The pile and since when of `id`, when the round loaded it itself ([`FocusReply::extend`]);
+    /// `None` for mail the window lists.
+    pub fn pile_of(&self, id: &str) -> Option<(Option<MailPile>, Option<DateTime<Utc>>)> {
+        self.piles.get(id).copied()
+    }
+
+    /// `id` now lies on `pile` since `since`, where the round keeps its pile.
+    pub fn set_pile(&mut self, id: &str, pile: Option<MailPile>, since: Option<DateTime<Utc>>) {
+        if let Some(held) = self.piles.get_mut(id) {
+            *held = (pile, since);
+        }
+    }
+
+    /// The mail shown; `None` at the end of the round.
+    pub fn current(&self) -> Option<&str> {
+        self.ids.get(self.at).map(String::as_str)
+    }
+
+    /// "{n} of {total}" of the mail shown, from 1; `None` at the end. The total is the pile's, as far
+    /// as it is known – never less than the round holds.
+    pub fn position(&self) -> Option<(usize, usize)> {
+        let total = self.total.unwrap_or(0).max(self.ids.len());
+        self.current().map(|_| (self.at + 1, total))
+    }
+
+    /// One mail less on the pile, for the total.
+    fn left_pile(&mut self) {
+        self.total = self.total.map(|total| total.saturating_sub(1));
+    }
+
+    /// Whether [`FocusReply::step`] can go that way: forward from every mail – after the last one to
+    /// the end –, back from any place after the first, also from the end. Never while sending.
+    pub fn can_step(&self, forward: bool) -> bool {
+        match (self.sending, forward) {
+            (true, _) => false,
+            (false, true) => self.at < self.ids.len(),
+            (false, false) => self.at > 0 && !self.ids.is_empty(),
+        }
+    }
+
+    /// The next (`forward`: "Skip", ↓, `j`) or the previous mail; `false` when it could not go there
+    /// ([`FocusReply::can_step`]). The mail left stays on the pile with what was typed for it; the
+    /// field shows what was typed for the next one, empty at first.
+    pub fn step(&mut self, forward: bool) -> bool {
+        if !self.can_step(forward) {
+            return false;
+        }
+        self.leave();
+        self.at = if forward { self.at + 1 } else { (self.at - 1).min(self.ids.len() - 1) };
+        self.arrive();
+        true
+    }
+
+    /// "Remove from Reply later": the mail shown leaves the round with what was typed for it, the
+    /// next one shows; its id for the window to take it off the pile. `None` at the end and while
+    /// sending.
+    ///
+    /// Returns the mail's id and what was typed for it, so its undo can put both back
+    /// ([`FocusReply::put_back`], second review of #315).
+    pub fn take_current(&mut self) -> Option<(String, String)> {
+        if self.sending || self.current().is_none() {
+            return None;
+        }
+        let text = self.reply.text();
+        let id = self.ids.remove(self.at);
+        self.left_pile();
+        self.arrive();
+        Some((id, text))
+    }
+
+    /// The undo of "Remove from Reply later": `id` back into the round at `place` (as far as the
+    /// round still reaches), shown, with `text` in its field, back on "Reply later" since `since`
+    /// ([`FocusReply::pile_of`], fourth review of #315). Nothing while sending.
+    pub fn put_back(&mut self, id: String, place: usize, text: &str, since: Option<DateTime<Utc>>) {
+        if self.sending || self.ids.contains(&id) {
+            return;
+        }
+        self.leave();
+        let place = place.min(self.ids.len());
+        self.seen.insert(id.clone());
+        self.piles.insert(id.clone(), (Some(MailPile::ReplyLater), since));
+        self.total = self.total.map(|total| total + 1);
+        self.ids.insert(place, id);
+        self.at = place;
+        self.reply = text_editor::Content::with_text(text);
+        self.error = None;
+    }
+
+    /// The reply to `id` was sent: it leaves the round, and the mail after it shows with its own
+    /// field. Only for the mail shown, the one whose reply is on its way (fourth review of #315: the
+    /// round stays while it is, `App::close_focus`); any other id changes nothing.
+    pub fn answered(&mut self, id: &str) {
+        if self.current() != Some(id) {
+            return;
+        }
+        self.sending = false;
+        self.sending_since = None;
+        self.send = None;
+        self.ids.remove(self.at);
+        self.kept.remove(id);
+        self.left_pile();
+        self.arrive();
+    }
+
+    /// The reply to `id` could not be sent, for `why`: it stays in the field, "Send" tries again.
+    /// Only for the mail shown, as [`FocusReply::answered`].
+    pub fn failed(&mut self, id: &str, why: String) {
+        if self.current() != Some(id) {
+            return;
+        }
+        self.sending = false;
+        self.sending_since = None;
+        self.send = None;
+        self.error = Some(why);
+    }
+
+    /// The reply on its way had no answer in time (fifth review of #315): the round lets go – nothing
+    /// on its way, the text stays in the field, a note says to look in Sent before sending again.
+    /// Nothing while nothing is on its way.
+    pub fn give_up(&mut self) {
+        if !self.sending {
+            return;
+        }
+        self.sending = false;
+        self.sending_since = None;
+        self.send = None;
+        self.timed_out = true;
+        self.error = None;
+    }
+
+    /// Whether "Send" goes: a mail shown, something typed, nothing on its way.
+    pub fn can_send(&self) -> bool {
+        !self.sending && self.current().is_some() && !self.reply.text().trim().is_empty()
+    }
+
+    /// Whether anything typed would be lost with the round: the field or a reply kept for another mail.
+    pub fn has_text(&self) -> bool {
+        !self.keep().texts.is_empty()
+    }
+
+    /// The round as the undo of "Reply discarded." keeps it: mail, place, every reply with text, what
+    /// it had, its count and its piles. A round is never left while a reply is on its way (fourth
+    /// review of #315), so nothing kept is on its way.
+    pub fn keep(&self) -> FocusKept {
+        let shown = self.current().map(|id| (id.to_owned(), self.reply.text()));
+        let kept = self.kept.iter().map(|(id, reply)| (id.clone(), reply.text()));
+        let mut texts: Vec<(String, String)> =
+            shown.into_iter().chain(kept).filter(|(_, text)| !text.trim().is_empty()).collect();
+        texts.sort();
+        let ids = self.ids.clone();
+        let mut seen: Vec<String> = self.seen.iter().cloned().collect();
+        seen.sort();
+        let mut piles: Vec<_> = self.piles.iter().map(|(id, (pile, since))| (id.clone(), *pile, *since)).collect();
+        piles.sort_by(|a, b| a.0.cmp(&b.0));
+        FocusKept { ids, at: self.at, texts, error: None, seen, total: self.total, piles }
+    }
+
+    /// The round `kept` back, at its place with its replies, its count, the piles it loaded and the
+    /// error it came back for; nothing on its way. What lies on the pile beyond it shows up again at
+    /// its end (`more`) – never mail it had before (third review of #315).
+    pub fn restore(kept: FocusKept) -> FocusReply {
+        let kept_texts = kept.texts.into_iter().map(|(id, text)| (id, text_editor::Content::with_text(&text)));
+        let piles = kept.piles.into_iter().map(|(id, pile, since)| (id, (pile, since))).collect();
+        let mut focus = FocusReply {
+            at: kept.at,
+            kept: kept_texts.collect(),
+            more: true,
+            total: kept.total,
+            piles,
+            ..FocusReply::new(kept.ids)
+        };
+        focus.seen.extend(kept.seen);
+        focus.at = focus.at.min(focus.ids.len());
+        focus.arrive();
+        focus.error = kept.error;
+        focus
+    }
+
+    /// Keeps what was typed for the mail shown before another one shows.
+    fn leave(&mut self) {
+        let reply = std::mem::take(&mut self.reply);
+        if let Some(id) = self.current().map(str::to_owned)
+            && !reply.text().trim().is_empty()
+        {
+            self.kept.insert(id, reply);
+        }
+    }
+
+    /// The field of the mail now shown: what was typed for it, else empty; no error of another mail.
+    fn arrive(&mut self) {
+        let id = self.current().map(str::to_owned);
+        self.reply = id.and_then(|id| self.kept.remove(&id)).unwrap_or_default();
+        self.error = None;
+        self.timed_out = false;
+    }
+}
+
+/// What [`focus_page`] draws.
+#[derive(Debug, Clone, Copy)]
+pub struct FocusPage<'a> {
+    /// The round.
+    pub focus: &'a FocusReply,
+    /// The mail shown, as the reader reads it (`App::reading`): its head while the whole of it loads,
+    /// then its text or HTML. `None` while the window holds none yet.
+    pub reading: Option<Reading<'a>>,
+    /// A narrow window: the page's padding at the sides instead of the reading padding, which would
+    /// leave the mail a strip there.
+    pub narrow: bool,
+}
+
+/// "Focus & reply" (task E19.5) in place of list and reader, in every layout from narrow to wide
+/// alike: in the reading column ([`size::reading_max`], at the left under the header as the reader's
+/// mail stands)
+///
+/// 1. scrolling, the mail as the reader shows it: its head ([`head`]: subject, sender, invitation,
+///    task), a line and its text or HTML ([`letter`]);
+/// 2. fixed under a line from edge to edge, so it is at hand however long the mail is: the field
+///    ("Write a reply…", the shortcut "send" of the compose window sends, Escape leaves the field),
+///    why the last send failed, and the row Send (primary; "Sending…" while on its way) · Skip
+///    (secondary) · Remove from Reply later (ghost; only its icon when the words do not fit) · at
+///    the right the compose window for this reply ("Open in compose window": Cc, attachments,
+///    format).
+///
+/// No action rail: the round does one thing. At the end of what is loaded the page shows loading
+/// while the next page of the pile comes (or its error with "Retry", decision of #315); at the end
+/// of the round it says "Nothing left
+/// to reply to." with the way back ([`focus_done`]).
+pub fn focus_page<'a>(page: FocusPage<'a>) -> Element<'a, Message> {
+    let Some(id) = page.focus.current() else {
+        // The end of what is loaded: the next page while the pile has more (decision of #315), its
+        // error with "Retry", and only then the end of the round.
+        return match &page.focus.load_error {
+            Some(_) => widgets::error_state(tr("Couldn't load more messages."), Message::FocusLoad),
+            None if page.focus.more => widgets::loading(),
+            None => focus_done(),
+        };
+    };
+    responsive(move |bounds| {
+        let pad = focus_padding(page.narrow);
+        let width = (bounds.width - pad.left - pad.right).max(0.0).min(size::reading_max());
+        let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
+        let mut mail = column![].spacing(layout::section_gap()).width(width);
+        if let Some(reading) = &page.reading {
+            mail = mail.push(head(reading, None, width)).push(line());
+        }
+        mail = mail.push(focus_letter(page.reading, width));
+        let mail = scrollable(container(mail).padding(Padding { bottom: layout::section_gap(), ..pad }))
+            .id(FOCUS_MAIL)
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill);
+        let reply = container(focus_reply(page.focus, id, width, bounds.height)).padding(Padding {
+            top: space::l(),
+            bottom: space::l(),
+            ..pad
+        });
+        column![mail, line(), reply].height(Fill).into()
+    })
+    .into()
+}
+
+/// The padding around the page of "Focus & reply": the page's above and below, at the sides the
+/// reading padding as in the reader – the page's in a narrow window.
+fn focus_padding(narrow: bool) -> Padding {
+    let sides = if narrow { layout::page_padding().left } else { layout::reading_padding().left };
+    Padding { left: sides, right: sides, ..layout::page_padding() }
+}
+
+/// The mail under its head in "Focus & reply", `width` wide: its text or HTML ([`letter`]); while
+/// it loads, or after an error, a quiet line says so, as in the reader.
+fn focus_letter<'a>(reading: Option<Reading<'a>>, width: f32) -> Element<'a, Message> {
+    let Some(reading) = reading else { return note(tr("Loading the message…")) };
+    match reading.loaded {
+        None => note(tr("Loading the message…")),
+        Some(Err(why)) => {
+            let what = typo::text(typo::body(), tr("Couldn't load the message.")).style(theme::text_2);
+            let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+            column![what, why].spacing(space::xs()).into()
+        }
+        Some(Ok(_)) => letter(&reading).width(width).into(),
+    }
+}
+
+/// The field, why the last send failed and the buttons of "Focus & reply" ([`focus_page`]) for the
+/// mail `id`, `width` wide on a page `height` high: the field grows with the reply up to
+/// [`FIELD_MAX_LINES`], never over [`FIELD_SHARE`] of the page. While sending the field takes no
+/// typing, so what goes is what shows.
+fn focus_reply<'a>(focus: &'a FocusReply, id: &'a str, width: f32, height: f32) -> Element<'a, Message> {
+    let most = field_height(FIELD_MAX_LINES).min(height * FIELD_SHARE);
+    let mut field = text_editor(&focus.reply)
+        .id(FOCUS_FIELD)
+        .placeholder(tr("Write a reply…"))
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
+        .padding(style::INPUT_PADDING)
+        .min_height(field_height(FIELD_LINES).min(most))
+        .max_height(most)
+        .wrapping(Wrapping::WordOrGlyph)
+        .style(style::text_editor)
+        .key_binding(focus_binding);
+    if !focus.sending {
+        field = field.on_action(Message::FocusEdit);
+    }
+    let mut block = column![field].spacing(space::m()).width(width);
+    if let Some(why) = &focus.error {
+        block = block.push(send_failure(Some(tr("Couldn't send the message.")), why));
+    } else if focus.timed_out {
+        block = block.push(send_failure(None, tr("No answer yet – check Sent before sending again.")));
+    }
+    block.push(focus_buttons(focus, id, width)).into()
+}
+
+/// The height of the reply field for `lines` lines of `typo::body()` inside its padding.
+fn field_height(lines: f32) -> f32 {
+    let body = typo::body();
+    lines * body.line_height.to_absolute(body.size).0 + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
+}
+
+/// The keys of the reply field: the shortcut "send" of the compose window sends
+/// (`compose::is_send`: Ctrl + Enter, on macOS also ⌘ + Enter and ⇧⌘D) instead of starting a new
+/// line. Escape leaves the field – captured, as a sequence is (Iced passes a lone `Unfocus` on), so
+/// the window's Escape does not also end the round with the text typed: a second Escape does, and
+/// `j`/`k` walk the round meanwhile. Everything else as in any field.
+fn focus_binding(press: text_editor::KeyPress) -> Option<text_editor::Binding<Message>> {
+    if !matches!(press.status, text_editor::Status::Focused { .. }) {
+        return text_editor::Binding::from_key_press(press);
+    }
+    if compose::is_send(System::current(), &press.key, press.physical_key, press.modifiers) {
+        return Some(text_editor::Binding::Custom(Message::FocusSend));
+    }
+    if matches!(press.key.as_ref(), keyboard::Key::Named(keyboard::key::Named::Escape)) {
+        return Some(text_editor::Binding::Sequence(vec![text_editor::Binding::Unfocus]));
+    }
+    text_editor::Binding::from_key_press(press)
+}
+
+/// Why the reply could not be sent, under the field: the alert in the error colour, what happened
+/// (`what`, when there is a headline) and the core's words or the note, as the window's error line
+/// says it.
+fn send_failure<'a>(what: Option<&'a str>, why: &'a str) -> Element<'a, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+    let what = what.map(|what| typo::text(typo::meta(), what).style(theme::text_2));
+    let why = typo::text(typo::meta(), why).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+    row![alert, column(what.map(Element::from)).push(why).spacing(space::xs()).width(Fill)]
+        .spacing(space::s())
+        .align_y(Alignment::Start)
+        .into()
+}
+
+/// The row under the reply field: Send (primary, the shortcut in its tooltip; off while nothing is
+/// typed, "Sending…" while on its way), Skip (secondary, `J`), Remove from Reply later (ghost, `W`)
+/// and at the right "Open in compose window" (`SquarePen`) for the mail `id`. In a row narrower than
+/// all words – the wider of "Send" and "Sending…", four gaps – Remove shows its icon with the words
+/// as tooltip. Nothing takes a click while sending.
+///
+/// The compose window starts from the mail alone (`--reply <id>`, no text of its own): the reply typed
+/// here stays here, and the tooltip says so, rather than putting mail text on a command line.
+fn focus_buttons<'a>(focus: &'a FocusReply, id: &'a str, width: f32) -> Element<'a, Message> {
+    let idle = !focus.sending;
+    let send = if focus.sending {
+        widgets::busy_button(tr("Sending…"), style::button::primary)
+    } else {
+        let send = focus.can_send().then_some(Message::FocusSend);
+        let button = widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, send);
+        key_tip(button, tr("Send"), compose::send_keys())
+    };
+    let skip = widgets::text_button(None, tr("Skip"), style::button::secondary, idle.then_some(Message::FocusSkip));
+    let skip = key_tip(skip, tr("Skip"), "J");
+    let words = tr("Remove from Reply later");
+    let remove = idle.then_some(Message::FocusRemove);
+    let send_width = widgets::text_button_width(true, tr("Send")).max(widgets::text_button_width(true, tr("Sending…")));
+    let all = send_width
+        + widgets::text_button_width(false, tr("Skip"))
+        + widgets::text_button_width(true, words)
+        + size::control_sm()
+        + 4.0 * space::s();
+    let remove = if all <= width {
+        widgets::text_button(Some(Icon::X), words, style::button::ghost, remove)
+    } else {
+        widgets::compact_button(Icon::X, words, style::button::ghost, remove)
+    };
+    let remove = key_tip(remove, words, "W");
+    let compose = idle.then(|| Message::Mail(MailAction::Reply, id.to_owned()));
+    let compose = widgets::icon_button(Icon::SquarePen, tr("Open in compose window (your text stays here)"), compose);
+    row![send, skip, remove, iced::widget::space::horizontal(), compose]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// `content` with a tooltip below it: `label` and its key as [`widgets::kbd`], on the card the
+/// suite's tooltips have (menu surface, after a short delay) – as the buttons of a row's action bar
+/// name their key. `widgets::with_tooltip` takes words only.
+fn key_tip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: &'a str,
+    key: impl iced::widget::text::IntoFragment<'a>,
+) -> Element<'a, Message> {
+    let words =
+        row![typo::text(typo::caption(), label).style(theme::text_2).wrapping(Wrapping::None), widgets::kbd(key)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+    let card = container(words)
+        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::s()])
+        .style(style::container::menu);
+    iced::widget::tooltip(content, card, iced::widget::tooltip::Position::Bottom)
+        .gap(space::xs())
+        .delay(std::time::Duration::from_millis(TIP_DELAY_MS))
+        .into()
+}
+
+/// The delay of the suite's tooltips (`widgets::with_tooltip`), for [`key_tip`].
+const TIP_DELAY_MS: u64 = 500;
+
+/// The end of a round of "Focus & reply", built as an empty state (`list::empty_state`): the check in
+/// `text_3`, "Nothing left to reply to." and – `space::l()` under it – the way back to the pile
+/// ("Back to Reply later", as Escape and the header's "‹ Reply later").
+fn focus_done<'a>() -> Element<'a, Message> {
+    let mark =
+        icon::icon(Icon::CircleCheck, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let back = widgets::text_button(
+        Some(Icon::ChevronLeft),
+        tr("Back to Reply later"),
+        style::button::secondary,
+        Some(Message::FocusClose),
+    );
+    let title = typo::text(typo::body_strong(), tr("Nothing left to reply to.")).align_x(Alignment::Center);
+    let words = column![title, back].spacing(space::l()).align_x(Alignment::Center);
+    let content = column![mark, words].spacing(space::m()).align_x(Alignment::Center).max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -3759,6 +4619,69 @@ mod tests {
 
     /// The click of a reading in the tests: open, the default.
     static OPEN: AttachmentClick = AttachmentClick::Open;
+
+    /// Task E19.5 and its review: a round of "Focus & reply" – skipping keeps a mail in the round and
+    /// what was typed for it, taking it off or answering it drops it and shows the next; an answer to a
+    /// mail before the one shown keeps the one shown; nothing moves while sending; ↑ comes back from
+    /// the end; `keep` and `restore` carry the round with every reply.
+    #[test]
+    fn a_round_of_focus_and_reply() {
+        let ids = |focus: &FocusReply| focus.ids.join(" ");
+        let mut focus = FocusReply::new(["a", "b", "c", "d"].map(String::from).to_vec());
+        assert_eq!((focus.current(), focus.position()), (Some("a"), Some((1, 4))));
+        assert!(!focus.can_send() && !focus.has_text(), "nothing typed");
+        focus.reply = text_editor::Content::with_text("Thanks!");
+        assert!(focus.can_send() && focus.has_text());
+        assert!(focus.step(true));
+        assert_eq!((focus.current(), focus.reply.text().trim()), (Some("b"), ""), "b has its own field");
+        assert!(focus.has_text(), "a's reply is kept");
+        assert!(focus.step(false));
+        assert_eq!(focus.reply.text().trim(), "Thanks!", "back at a, its reply is there");
+        assert!(focus.step(true));
+        focus.reply = text_editor::Content::with_text("Maybe");
+        assert_eq!(focus.take_current(), Some(("b".to_owned(), "Maybe".to_owned())), "with its text");
+        assert_eq!((focus.current(), ids(&focus)), (Some("c"), "a c d".to_owned()));
+        // Its undo puts it back at its place with its text (second review of #315).
+        focus.put_back("b".into(), 1, "Maybe", None);
+        assert_eq!(
+            (focus.current(), focus.reply.text().trim(), ids(&focus)),
+            (Some("b"), "Maybe", "a b c d".to_owned())
+        );
+        // Back on "Reply later" for the round (fourth review of #315).
+        assert_eq!(focus.pile_of("b"), Some((Some(MailPile::ReplyLater), None)));
+        assert!(focus.take_current().is_some());
+        // An answer or an error counts only for the mail shown (fourth review of #315).
+        focus.answered("a");
+        assert_eq!((focus.current(), ids(&focus)), (Some("c"), "a c d".to_owned()), "a is not shown");
+        focus.reply = text_editor::Content::with_text("On it");
+        let kept = focus.keep();
+        assert_eq!(
+            kept,
+            FocusKept {
+                ids: vec!["a".into(), "c".into(), "d".into()],
+                at: 1,
+                texts: vec![("a".into(), "Thanks!".into()), ("c".into(), "On it".into())],
+                error: None,
+                seen: ["a", "b", "c", "d"].map(String::from).to_vec(),
+                total: None,
+                piles: vec![("b".into(), Some(MailPile::ReplyLater), None)],
+            }
+        );
+        focus.sending = true;
+        assert!(!focus.step(true) && !focus.step(false) && focus.take_current().is_none(), "nothing moves");
+        focus.failed("a", "elsewhere".into());
+        assert!(focus.sending && focus.error.is_none(), "another mail's error changes nothing");
+        focus.answered("c");
+        assert_eq!((focus.current(), focus.sending, ids(&focus)), (Some("d"), false, "a d".to_owned()));
+        focus.failed("d", "offline".into());
+        assert_eq!(focus.error.as_deref(), Some("offline"));
+        assert!(focus.step(true));
+        assert_eq!((focus.current(), focus.position(), focus.error.as_deref()), (None, None, None), "the end");
+        assert!(!focus.can_step(true) && focus.step(false));
+        assert_eq!(focus.current(), Some("d"), "back from the end");
+        let back = FocusReply::restore(kept);
+        assert_eq!((back.current(), back.reply.text().trim(), back.sending), (Some("c"), "On it", false));
+    }
 
     fn folders() -> Vec<Folder> {
         DemoSource::new(now()).mail_folders().expect("folders")
@@ -3941,7 +4864,8 @@ mod tests {
     /// Task E14.3: for a mail entry the rail holds Reply, File, Torro, Mark, Mute and More in this
     /// order, Mute and More at the foot, Reply in the accent; every item sends what its button or key
     /// sent before and shows its key; a click on a group's icon sends its first item. Task E18.5: File
-    /// has no Done – Archive (`e`) stands in its place.
+    /// has no Done – Archive (`e`) stands in its place. Task E19.4: Reply later (`w`), Set aside (`b`)
+    /// and Follow up… (`s`) after Archive, in the place of Later….
     #[test]
     fn an_entrys_rail_holds_every_group_with_the_messages_of_before() {
         let item = mail_entry();
@@ -3959,7 +4883,9 @@ mod tests {
                         tr("File").to_owned(),
                         vec![
                             trc("action", "Archive").to_owned(),
-                            tr("Later…").to_owned(),
+                            tr("Reply later").to_owned(),
+                            tr("Set aside").to_owned(),
+                            tr("Follow up…").to_owned(),
                             move_to.clone(),
                             tr("Delete").to_owned(),
                             // The budget's sheet (task M12.6).
@@ -3987,8 +4913,11 @@ mod tests {
                 Some(Message::AskHide(id)) => id == item.id,
                 _ => false,
             };
-            assert!(matches!(sends(&groups, file, tr("Later…")), Some(Message::AskSnooze(_))));
-            assert!(entry(sends(&groups, file, tr("Later…"))));
+            assert!(matches!(sends(&groups, file, tr("Follow up…")), Some(Message::AskSnooze(_))));
+            assert!(entry(sends(&groups, file, tr("Follow up…"))), "the entry's follow-up");
+            let pile = |sent: Option<Message>, wanted| matches!(sent, Some(Message::Pile(id, pile)) if id == "m:w1" && pile == wanted);
+            assert!(pile(sends(&groups, file, tr("Reply later")), Some(MailPile::ReplyLater)));
+            assert!(pile(sends(&groups, file, tr("Set aside")), Some(MailPile::SetAside)));
             assert!(
                 matches!(sends(&groups, file, &move_to), Some(Message::AskLane(_)))
                     && entry(sends(&groups, file, &move_to))
@@ -4014,7 +4943,7 @@ mod tests {
                 keys,
                 [
                     vec!["R", "", "F"],
-                    vec!["E", "S", "L", "#", ""],
+                    vec!["E", "W", "B", "S", "L", "#", ""],
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
@@ -4042,7 +4971,7 @@ mod tests {
             assert_eq!(
                 anchored,
                 [
-                    tr("Later…").to_owned(),
+                    tr("Follow up…").to_owned(),
                     move_to,
                     trf("Save attachments ({n})", &[("n", &1)]),
                     tr("Task").to_owned(),
@@ -4063,7 +4992,7 @@ mod tests {
 
     /// Task E14.3: a done entry is not put off – and, mail being archived (task E18.5), neither done nor
     /// opened again from the rail; "Re-categorize" only with a decision model; an entry that cannot be
-    /// muted has no group "Mute".
+    /// muted has no group "Mute". Task E19.4: its mail is followed up by the mail's own id.
     #[test]
     fn a_done_entry_reopens_and_the_model_adds_recategorize() {
         let item = Item { state: State::Done { at: now() }, ..mail_entry() };
@@ -4075,9 +5004,22 @@ mod tests {
             let file = &group(&groups, tr("File")).items;
             let words: Vec<&str> = file.iter().map(|i| i.label.as_ref()).collect();
             let save = trf("Save attachments ({n})", &[("n", &1)]);
-            assert_eq!(words, [trc("action", "Archive"), lane_word(Lane::Info).as_str(), tr("Delete"), save.as_str()]);
+            let lane = lane_word(Lane::Info);
+            assert_eq!(
+                words,
+                [
+                    trc("action", "Archive"),
+                    tr("Reply later"),
+                    tr("Set aside"),
+                    tr("Follow up…"),
+                    lane.as_str(),
+                    tr("Delete"),
+                    save.as_str()
+                ]
+            );
             assert!(file.iter().all(|i| i.label != tr("Reopen") && i.label != tr("Done")), "no Done, no Reopen");
-            assert!(file.iter().all(|i| i.label != tr("Later…")), "a done entry is not put off");
+            let follow = sends(&groups, tr("File"), tr("Follow up…"));
+            assert!(matches!(follow, Some(Message::AskSnooze(id)) if id == "m:w1"), "the mail, not the done entry");
             assert!(groups.iter().all(|g| g.label != tr("Mute")), "nothing to mute: no group");
             let more = &group(&groups, tr("More")).items;
             assert!(more.iter().all(|i| i.label != tr("Close")), "the panel has its ✕");
@@ -4091,9 +5033,10 @@ mod tests {
         });
     }
 
-    /// Task E14.3: a folder's message has no Done, Later, "Move to …", Event or Category – Task makes
-    /// a task of the message, the bell mutes its own traits, `e` archives it; in the trash it has no
-    /// Delete, in an account without an archive folder no Archive.
+    /// Task E14.3: a folder's message has no Done, "Move to …", Event or Category – Task makes a task
+    /// of the message, the bell mutes its own traits, `e` archives it; in the trash it has no Delete, in
+    /// an account without an archive folder no Archive. Task E19.4: it goes on the piles and is followed
+    /// up by its own id.
     #[test]
     fn a_folders_message_files_as_its_account_allows() {
         let folders = folders();
@@ -4105,10 +5048,19 @@ mod tests {
             let save = trf("Save attachments ({n})", &[("n", &1)]);
             assert_eq!(
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
-                strings(&[trc("action", "Archive"), tr("Delete"), &save])
+                strings(&[
+                    trc("action", "Archive"),
+                    tr("Reply later"),
+                    tr("Set aside"),
+                    tr("Follow up…"),
+                    tr("Delete"),
+                    &save
+                ])
             );
-            assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder (task E18.5)");
-            assert!(matches!(file[2].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
+            let keys: Vec<&str> = file.iter().map(|i| i.key).collect();
+            assert_eq!(keys, ["E", "W", "B", "S", "#", ""], "`e` archives in a folder (task E18.5)");
+            assert!(matches!(file[3].press(), Some(Message::AskSnooze(id)) if id == "m:w1"), "by the mail's id");
+            assert!(matches!(file[5].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
@@ -4120,15 +5072,115 @@ mod tests {
             let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
             let groups = action_groups(reading, None, &no_archive, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            assert_eq!(file, strings(&[tr("Delete"), &save]));
-            assert!(group(&groups, tr("File")).first_press().is_none(), "Delete first: a click opens the card");
+            assert_eq!(file, strings(&[tr("Reply later"), tr("Set aside"), tr("Follow up…"), tr("Delete"), &save]));
+            // Review of #315: the click opens the card rather than putting the mail on a pile.
+            assert!(group(&groups, tr("File")).first_press().is_none(), "no pile and never Delete by a click");
+        });
+        // Without the archive and the piles' items the click never deletes (finding 8).
+        reading_of("m:w1", MailFormat::Html, false, |reading| {
+            let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
+            let loading = Reading { summary: None, ..*reading };
+            let item = mail_entry();
+            let entry = Some(ReaderEntry { item: &item, hide: true });
+            let groups = action_groups(&loading, entry, &no_archive, true, false, &detail::Anchors::default());
+            let file = group(&groups, tr("File"));
+            // Review of #315: in their place but off, without keys, until the headers say the pile.
+            let piles: Vec<_> =
+                file.items.iter().filter(|i| [tr("Reply later"), tr("Set aside")].contains(&&*i.label)).collect();
+            assert_eq!(piles.len(), 2, "the piles keep their place");
+            assert!(piles.iter().all(|i| i.press().is_none() && i.key.is_empty()), "off while the headers load");
+            // Second review of #315: nor does the click open "Follow up" – it opens the card.
+            assert!(file.items.iter().any(|i| i.label == tr("Follow up…") && i.press().is_some()));
+            assert!(file.first_press().is_none(), "the click opens the card");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
             let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
+            // No follow-up in the trash (decision of #315), and no piles (review of PR #327).
             assert_eq!(file, strings(&[trc("action", "Archive")]));
         });
+    }
+
+    /// Decision of #315: no "Follow up…" for mail in the archive, the trash or spam – archived counts as
+    /// done (decision 6 of E19), a follow-up there would never come back; in the inbox and in Sent it
+    /// stands. The folder of the mail shown decides.
+    #[test]
+    fn no_follow_up_on_archived_deleted_or_spam_mail() {
+        let folders = folders();
+        for (id, offered) in [("m:w9", false), ("m:w12", false), ("m:w11", false), ("m:w1", true), ("m:w7", true)] {
+            reading_of(id, MailFormat::Html, true, |reading| {
+                let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
+                let file = group(&groups, tr("File"));
+                let follow = file.items.iter().any(|item| item.label == tr("Follow up…"));
+                assert_eq!(follow, offered, "{id}");
+                assert_eq!(follows_up(&folders, &reading.summary().expect("headers").folder), offered, "{id}");
+            });
+        }
+    }
+
+    /// Review of PR #327: no "Reply later" or "Set aside" for mail in the trash or spam; in the archive,
+    /// the inbox and Sent they stand ("Set aside" for archived mail is the main case). A mail in the
+    /// trash that lies on a pile still offers "Remove from …".
+    #[test]
+    fn no_piles_for_deleted_or_spam_mail() {
+        let folders = folders();
+        let piles = |groups: &[RailGroup<'_, Message>]| -> Vec<String> {
+            group(groups, tr("File"))
+                .items
+                .iter()
+                .map(|item| item.label.to_string())
+                .filter(|label| {
+                    label.contains(tr("Reply later"))
+                        || label.contains(trc("pile", "Set aside"))
+                        || label == tr("Set aside")
+                })
+                .collect()
+        };
+        for (id, offered) in [("m:w12", false), ("m:w11", false), ("m:w9", true), ("m:w1", true), ("m:w7", true)] {
+            reading_of(id, MailFormat::Html, true, |reading| {
+                let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
+                let expected = if offered { strings(&[tr("Reply later"), tr("Set aside")]) } else { Vec::new() };
+                assert_eq!(piles(&groups), expected, "{id}");
+                assert_eq!(takes_piles(&folders, &reading.summary().expect("headers").folder), offered, "{id}");
+            });
+        }
+        // In the trash, but on "Set aside": only its "Remove from Set aside".
+        reading_of("m:w12", MailFormat::Html, true, |reading| {
+            let Some(Ok(mail)) = reading.loaded else { panic!("loaded") };
+            let mut mail = mail.clone();
+            mail.summary.pile = Some(MailPile::SetAside);
+            let loaded = Ok(mail.clone());
+            let piled = Reading { summary: Some(&mail.summary), loaded: Some(&loaded), ..*reading };
+            let groups = action_groups(&piled, None, &folders, true, false, &detail::Anchors::default());
+            assert_eq!(piles(&groups), strings(&[tr("Remove from Set aside")]));
+            assert!(matches!(sends(&groups, tr("File"), tr("Remove from Set aside")), Some(Message::Pile(_, None))));
+        });
+    }
+
+    /// Task E19.4 (decision 4 of E19): a mail on a pile says so in File – "Remove from Reply later"
+    /// (the demo's `m:p7`) or "Remove from Set aside" (`m:w5`) with the same key takes it off; the
+    /// other pile's item moves it there.
+    #[test]
+    fn a_mail_on_a_pile_is_taken_off_with_its_key() {
+        let folders = folders();
+        for (id, on, off, other, moved) in [
+            ("m:p7", tr("Remove from Reply later"), "W", tr("Set aside"), MailPile::SetAside),
+            ("m:w5", tr("Remove from Set aside"), "B", tr("Reply later"), MailPile::ReplyLater),
+        ] {
+            reading_of(id, MailFormat::Text, true, |reading| {
+                let groups = action_groups(reading, None, &folders, true, false, &detail::Anchors::default());
+                let file = &group(&groups, tr("File")).items;
+                let item = file.iter().find(|i| i.label == on).expect("Remove from …");
+                assert_eq!(item.key, off, "{id}: the pile's own key");
+                assert!(matches!(item.press(), Some(Message::Pile(sent, None)) if sent == id), "{id}: off the pile");
+                let move_to = sends(&groups, tr("File"), other);
+                assert!(
+                    matches!(move_to, Some(Message::Pile(sent, Some(pile))) if sent == id && pile == moved),
+                    "{id}"
+                );
+            });
+        }
     }
 
     /// Task E14.3: "More" offers the other view of a mail with HTML (`v`), the other colours while the
@@ -4182,7 +5234,13 @@ mod tests {
             let loading = Reading { summary: None, ..*reading };
             let groups = action_groups(&loading, None, &folders, false, false, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
-            assert_eq!(titles, strings(&[tr("Reply"), tr("Torro"), tr("Mute")]), "only what needs no headers");
+            // File keeps its piles' places, off (review of #315); the rest needs the headers.
+            assert_eq!(
+                titles,
+                strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mute")]),
+                "only what needs no headers"
+            );
+            assert!(group(&groups, tr("File")).items.iter().all(|i| i.press().is_none()), "File is off");
         });
     }
 
@@ -4838,6 +5896,7 @@ mod tests {
                 account: None,
                 snoozed: (role == Role::Inbox).then_some(false),
                 hidden,
+                pile: (role == Role::Inbox).then_some(PileFilter::Without),
                 order: Order::NewestFirst,
                 limit,
                 cursor,
@@ -4857,6 +5916,7 @@ mod tests {
             account: None,
             snoozed: None,
             hidden: None,
+            pile: None,
             order: Order::NewestFirst,
             limit: 1,
             cursor: Some("x".into()),
@@ -4883,6 +5943,88 @@ mod tests {
         assert_eq!(unread(None), unread_shown + 1, "the unread newsletter counts again");
         show(false).expect("undone");
         assert_eq!(by_role(Role::Inbox, Some(false), 50, None).messages, all);
+    }
+
+    /// Task E19.3: the demo's piles are listed a page at a time and counted, "All" and its number
+    /// leave them out, putting mail on the other pile moves it and taking it off brings it back.
+    #[test]
+    fn the_demo_lists_and_counts_its_piles_and_all_leaves_them_out() {
+        use iced::futures::executor::block_on;
+        let demo = DemoSource::new(now());
+        let pile = |pile, account: Option<&str>, limit, cursor: Option<String>| {
+            let find =
+                MailInPile { pile, account: account.map(str::to_owned), order: Order::NewestFirst, limit, cursor };
+            block_on(MailSource::mail_in_pile(&demo, find)).expect("a page")
+        };
+        let ids = |page: MailPage| page.messages.into_iter().map(|message| message.id).collect::<Vec<_>>();
+        let count = |which, account: Option<&str>| {
+            block_on(MailSource::count_in_pile(&demo, which, account.map(str::to_owned))).expect("a number")
+        };
+        let all = || {
+            let find = MailByRole {
+                role: Role::Inbox,
+                account: None,
+                snoozed: Some(false),
+                hidden: Some(false),
+                pile: Some(PileFilter::Without),
+                order: Order::NewestFirst,
+                limit: 50,
+                cursor: None,
+            };
+            ids(block_on(MailSource::mail_by_role(&demo, find)).expect("a page"))
+        };
+        let unread = || block_on(MailSource::unread_in_all(&demo, None)).expect("a number");
+
+        let first = pile(MailPile::ReplyLater, None, 1, None);
+        assert_eq!(first.next.as_deref(), Some("1"), "a page at a time");
+        assert!(first.messages.iter().all(|message| message.pile == Some(MailPile::ReplyLater)), "named");
+        assert_eq!(ids(first), ["m:w13"]);
+        assert_eq!(ids(pile(MailPile::ReplyLater, None, 1, Some("1".into()))), ["m:p7"]);
+        assert_eq!(ids(pile(MailPile::SetAside, Some(demo::MAIL_ACCOUNTS[0]), 50, None)), [demo::SET_ASIDE_MAIL]);
+        assert!(ids(pile(MailPile::SetAside, Some(demo::MAIL_ACCOUNTS[1]), 50, None)).is_empty(), "one account");
+        assert_eq!((count(MailPile::ReplyLater, None), count(MailPile::SetAside, None)), (2, 1));
+        assert_eq!(count(MailPile::ReplyLater, Some(demo::MAIL_ACCOUNTS[1])), 1);
+        let on_piles = [demo::REPLY_LATER_MAIL[0], demo::REPLY_LATER_MAIL[1], demo::SET_ASIDE_MAIL];
+        assert!(!all().iter().any(|id| on_piles.contains(&id.as_str())), "not in All");
+        let unread_before = unread();
+
+        // Moved to the other pile, taken off: back in "All", its unread mail counted again.
+        let put = |ids: &[&str], to| {
+            block_on(MailSource::set_mail_pile(&demo, ids.iter().map(|id| (*id).to_owned()).collect(), to, None))
+        };
+        put(&["m:p7"], Some(MailPile::SetAside)).expect("moved");
+        assert_eq!((count(MailPile::ReplyLater, None), count(MailPile::SetAside, None)), (1, 2));
+        put(&["m:p7"], None).expect("taken off");
+        assert!(all().iter().any(|id| id == "m:p7"), "in All again");
+        assert_eq!(unread(), unread_before + 1, "Clara's unread mail counts again");
+        put(&["m:w1"], Some(MailPile::ReplyLater)).expect("put on");
+        assert!(!all().iter().any(|id| id == "m:w1"));
+        assert_eq!(put(&["m:nope"], None), Err(InboxError::NotFound));
+    }
+
+    /// Task E19.3: "Focus & reply" sends what the compose window would – to the sender, from the
+    /// account the mail came to, `Re:`, the text above the quote, formatted for the demo's accounts –
+    /// and the demo takes the conversation off "Reply later" as the core does.
+    #[test]
+    fn the_demo_sends_a_reply_as_the_compose_window_builds_it() {
+        use iced::futures::executor::block_on;
+        let demo = DemoSource::new(now());
+        block_on(MailSource::send_reply(&demo, "m:p7".into(), "  Yes, book it!\n".into())).expect("sent");
+        let sent = demo.sent();
+        assert_eq!(sent.len(), 1, "saved and sent, no draft left: {:?}", demo.drafts());
+        let reply = &sent[0];
+        assert_eq!(reply.account, demo::MAIL_ACCOUNTS[1], "from the account it came to");
+        assert_eq!(reply.to.iter().map(|to| to.address.as_str()).collect::<Vec<_>>(), ["clara@example.org"]);
+        assert_eq!(
+            (reply.subject.as_str(), reply.in_reply_to.as_deref()),
+            ("Re: Birthday dinner on the 24th", Some("m:p7"))
+        );
+        assert!(reply.body.starts_with("Yes, book it!\n"), "the text first: {}", reply.body);
+        assert!(reply.body.contains("> Dinner for Mum’s birthday"), "then the quote: {}", reply.body);
+        assert!(reply.html.is_some(), "the demo writes formatted mail");
+        let left = block_on(MailSource::count_in_pile(&demo, MailPile::ReplyLater, None)).expect("a number");
+        assert_eq!(left, 1, "answered, off the pile");
+        assert_eq!(block_on(MailSource::send_reply(&demo, "m:nope".into(), "Hi".into())), Err(InboxError::NotFound));
     }
 
     /// Task E8.3b: the smart view keeps the invitations not over yet, the soonest first; the demo's

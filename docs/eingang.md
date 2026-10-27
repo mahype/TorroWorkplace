@@ -376,10 +376,11 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
-- **Seitenleiste des Mail-Fensters** (E18.4): oben **All** (der Posteingang aller gezeigten Konten, mit der Zahl
-  ungelesener Mails), **Later** und **Hidden**, darunter Categories, Smart views und **Folders** mit Archive (nur wenn
-  ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**. Das Mail-Fenster startet in
-  „All“.
+- **Seitenleiste des Mail-Fensters** (E18.4, E19.4): oben **All** (der Posteingang aller gezeigten Konten, mit der
+  Zahl ungelesener Mails), **Reply later** und **Set aside** (die beiden Stapel, mit der Zahl ihrer Mails),
+  **Follow up** (ohne Zahl, an der Stelle des früheren „Later“) und **Hidden**, darunter Categories, Smart views und
+  **Folders** mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**.
+  Das Mail-Fenster startet in „All“.
 
 ### Dichte
 
@@ -419,7 +420,8 @@ Design „Torro“ zeigt **kompakt**.
   keinen Archivordner, sagt das Fenster „This account has no archive folder.“ und ändert nichts; Zeilen und
   Aktionsleiste bieten „Archive“ dann gar nicht erst an. Einträge, die keine Mail sind, behalten „Done“, „Done today“
   der Zentrale behält „Reopen“.
-- **Later** (vertagen) gibt es überall, **Task** auf jeder Nachricht und jeder Mail, auch in Ordnern.
+- **Later** (vertagen) gibt es überall, im Mail-Fenster als **Follow up** neben **Reply later** und **Set aside** (E19,
+  siehe „Später für jede Mail“), **Task** auf jeder Nachricht und jeder Mail, auch in Ordnern.
 - **Freigaben** haben weder ✕ noch Later: Sie warten auf Ja oder Nein, das darf nicht versehentlich verschwinden.
 - **Go to window / Open** holt das Fenster nach vorn und aktiviert es: bei Agenten das Terminal der Sitzung (E2.4,
   am Mac E8.9), bei App-Quellen das Fenster der App.
@@ -433,13 +435,14 @@ Tasten. Unten im Leser stehen nur die Anhänge als Chips. Zentrale und App Feed 
 aus E9.4.
 
 - **Gruppen** in dieser Reihenfolge, jede nur mit dem, was für die Mail geht; leere Gruppen fallen weg:
-  **Reply** (Reply, Reply all, Forward; Icon in der Akzentfarbe), **File** (Archive mit `e`, Later…, Move to Info
-  bzw. For me, Delete – kein Done und kein Reopen mehr, E18.5), **Torro** (Task, Event, Category…, Re-categorize nur
-  mit Entscheidungsmodell),
+  **Reply** (Reply, Reply all, Forward; Icon in der Akzentfarbe), **File** (Archive mit `e`, Reply later mit `w`, Set
+  aside mit `b`, Follow up… mit `s`, Move to Info bzw. For me, Delete, Save attachments – kein Done und kein Reopen
+  mehr, E18.5; liegt die Mail auf einem Stapel, steht an seiner Stelle „Remove from Reply later“ bzw. „Remove from Set
+  aside“ mit derselben Taste, E19.4), **Torro** (Task, Event, Category…, Re-categorize nur mit Entscheidungsmodell),
   **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…) und **More** (Show as text bzw. HTML,
   Light bzw. Dark colours, Copy text, im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
-  Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Later, Move to, Event, Category. Ein Klick auf
-  das Icon von File archiviert. In „Hidden“ steht in Mute zuerst „Show again“ (E18.4).
+  Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Move to, Event, Category, aber Follow up… (E19,
+  Entscheidung 8). Ein Klick auf das Icon von File archiviert. In „Hidden“ steht in Mute zuerst „Show again“ (E18.4).
 - **Eingeklappt** (Breite der eingeklappten Seitenleiste): ein Icon je Gruppe, ein Klick tut die erste Aktion der
   Gruppe, Hover öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile, für alle Gruppen
   gleich breit. **Ausgeklappt** (Breite der Seitenleiste): alle Gruppen offen mit Namen, als Spalte im Layout; die Mail
@@ -447,7 +450,7 @@ aus E9.4.
 - **Umschalten** nur im breiten Fenster: Knopf `panel-right` oben in der Leiste („Expand actions“ / „Collapse
   actions“) oder Taste `]`, wie `[` für die Seitenleiste. Gemerkt je Fensterart und Ausschnitt in `ui.json`, nicht über
   die API. In Mittel und Schmal steht die Mail im Paneel, die Leiste dort bleibt eingeklappt und hat keinen Knopf.
-- **Menüs und Dialoge** einer Aktion (Later, Move to, Task, Event, Category, Mute) öffnen links neben ihrer Zeile,
+- **Menüs und Dialoge** einer Aktion (Follow up, Move to, Task, Event, Category, Mute) öffnen links neben ihrer Zeile,
   eingeklappt neben dem Icon ihrer Gruppe; auch über die Taste geöffnet hängen sie an der Leiste.
 - **Einladungen:** Accept, Maybe, Decline bleiben als Karte im Kopf der Mail.
 - **Nur Oberfläche:** Jede Aktion schickt dieselbe Nachricht wie zuvor Befehlsleiste, Pillen und Fuß und damit
@@ -593,13 +596,81 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
   meldet etwa ein Agent dieselbe Sache noch einmal, bleibt sie zurückgestellt.
 - **Regel verbirgt die Mail:** Dann gibt es keinen Eintrag zum Zurückstellen, die Antwort ist `unsupported`.
 - **All, Later, Hidden** (E18, Issue #301): „All“ zeigt die Mails des Posteingangs aller gezeigten Konten mit
-  `snoozed: false` und `hidden: false`, „Later“ die zurückgestellten Einträge, „Hidden“ die Mails, die der Kern aus
-  „All“ heraushält. Was ausgeblendet ist, entscheidet nur der Kern, über das Feld `hidden` von `mail.search_messages`,
+  `snoozed: false` und `hidden: false`, „Later“ (seit E19 „Follow up“) die zurückgestellten Einträge, „Hidden“ die
+  Mails, die der Kern aus „All“ heraushält. Was ausgeblendet ist, entscheidet nur der Kern, über das Feld `hidden` von `mail.search_messages`,
   genau wie `snoozed`: Er nimmt die Mails schon in die Abfrage auf, damit Seiten und Cursor stimmen.
 - **Show again** (Entscheidungen 10 und 11 in E18): In „Hidden“ holt „Show again“ (`inbox.set_mail_shown`) genau diese
   eine Mail nach „All“ zurück. Die Regel, die sie ausblendet, bleibt; weitere und neue Mail des Absenders bleibt
   ausgeblendet, und der Eintrag der Mail bleibt erledigt. „Undo“ nimmt die Ausnahme zurück. Wer die Regel loswerden
   will, entfernt sie in der Steuerzentrale.
+
+#### Reply later, Set aside, Follow up (E19, Issue #315, entschieden 2026-10-26)
+
+Im Mail-Fenster ersetzen drei Aktionen „Later“, nach dem Vorbild von HEY (Reply Later, Set Aside, Bubble Up). Zentrale
+und App Feed behalten „Later“ für alle Quellen, ohne „Only if no reply“; eine Mail auf Wiedervorlage steht dort unter
+„Later“, und der Eintrag einer Mail auf einem Stapel bleibt, wie er ist. Aufgaben:
+[E19](tasks/eingang.md#e19-mail-fenster-reply-later-set-aside-und-follow-up-statt-later-issue-315-plan-2026-10-26).
+
+| Aktion | Taste | Icon | Deutsch | Wirkung |
+|---|---|---|---|---|
+| **Reply later** | `w` | `MessageSquareReply` | Später beantworten | legt die Mail auf den Stapel zum Beantworten, ohne Datum |
+| **Set aside** | `b` | `Bookmark` | Beiseitelegen (Stapel: Beiseitegelegt) | legt die Mail auf den Stapel zum Nachschlagen, ohne Datum |
+| **Follow up…** | `s` | `CalendarClock` | Wiedervorlage… | holt die Unterhaltung an einem Datum wieder nach oben, auf Wunsch nur ohne Antwort |
+
+- **Stapel je Mail, Wiedervorlage je Unterhaltung** (Entscheidung 1): Die Stapel merkt sich der Kern je Mail in der
+  Tabelle `mail_piles` (Schema 16), unabhängig vom Eintrag; eine beiseitegelegte Bordkarte bleibt, auch wenn ihr
+  Eintrag erledigt und nach 30 Tagen entfernt ist. „Follow up“ bleibt der Zustand `snoozed` des Eintrags, also der
+  ganzen Unterhaltung; eine heute zurückgestellte Mail ist eine Wiedervorlage ohne Bedingung, ohne Migration
+  (Entscheidung 9).
+- **Nur lokal** (Entscheidung 2): kein IMAP-Schlagwort, andere Geräte sehen die Stapel nicht.
+- **Mail auf einem Stapel verschwindet wie bei HEY** (Entscheidung 3) aus „All“, den Kategorien, den Smart views „With
+  attachments“ und „Invitations“ und aus der Zahl ungelesener an „All“ (`mail.search_messages` mit `pile: without`);
+  Ordner, Suche und Zentrale zeigen sie weiter. Ein Stapel listet seine Mails aus jedem Ordner außer Papierkorb und
+  Spam (`pile: reply_later` bzw. `set_aside`), die Seitenleiste zählt sie.
+- **Eine Mail liegt auf höchstens einem Stapel** (Entscheidung 4): erneut legen verlegt sie, `inbox.set_mail_pile`
+  mit `None` nimmt sie herunter. Jede Aktion zeigt einen Hinweis mit Undo, der den vorigen Stapel wiederherstellt. Die
+  Zeile verlässt nur Listen, die Stapel-Mail weglassen; in Ordnern und in der Suche bleibt sie stehen. Jede Mail sagt,
+  auf welchem Stapel sie liegt (`MessageSummary::pile`); liegt sie auf einem, heißt sein Knopf „Remove from Reply
+  later“ bzw. „Remove from Set aside“.
+- **„Reply later“ räumt sich selbst ab** (Entscheidung 5): Taucht in der Unterhaltung eine eigene Mail auf (Absender =
+  Adresse des Kontos), egal in welchem Ordner und von welchem Programm gesendet, nimmt der Kern die Mail vom Stapel,
+  auch beim Abgleich. **In der Umsetzung entschieden:** nur Mails, die vor der eigenen Antwort aufgelegt wurden
+  (`Inbox::answered` vergleicht die Zeit des Auflegens mit dem Datum der Antwort); wer eine schon beantwortete Mail
+  danach wieder auflegt, behält sie dort. „Set aside“ bleibt, bis man es herunternimmt. Verworfen: `\Answered` –
+  nicht jedes Programm setzt es.
+- **Antwort während einer Wiedervorlage** (Entscheidung 6): Neue Mail in der Unterhaltung zeigt sich sofort. Ohne
+  Bedingung bleibt das Datum stehen und holt die Unterhaltung dort noch einmal nach oben, wenn ihr Eintrag dann offen
+  ist. Mit **„Only if no reply“** (`inbox.snooze_item` mit `unless_reply`, `Item::follow_up`) entfällt das Datum, sobald
+  eine Mail eines anderen in der Unterhaltung ankommt – auch eine schon gelesene oder in einem anderen Ordner; die
+  Unterhaltung steht dann ohne „Back“ wieder in „All“.
+- **Wiedervorlage außerhalb des Posteingangs** (in der Umsetzung entschieden, Fix zu E19.1, im Review von #315 auf
+  offene Einträge ausgedehnt): Ein Eintrag mit stehender Wiedervorlage, zurückgestellt oder offen, wartet, solange eine
+  Mail seiner Unterhaltung irgendwo außer in Archiv, Papierkorb oder Spam liegt – auch die eigene gesendete Mail, auf
+  die keiner antwortet. Offen ist er, wenn eine Antwort eine Wiedervorlage ohne Bedingung geöffnet hat; liest der
+  Mensch die Antwort, bleibt das Datum darum stehen und holt die Unterhaltung zurück (Entscheidungen 6 und 7).
+  Archiviert, gelöscht oder als Spam markiert, ist sie erledigt und kommt nicht wieder. Für zurückgestellte Mail ohne
+  Wiedervorlage gilt weiter die Regel aus E9.1 (erledigt, sobald keine Mail mehr im Posteingang liegt). Kommt sie
+  zurück, steht sie oben in „All“, auch wenn sie nicht im Posteingang liegt (Entscheidung 8) – nur Mail aus Archiv,
+  Papierkorb und Spam nicht. Ein Entwurf zählt weder als eigene Antwort („Reply later“) noch als fremde Antwort
+  („Only if no reply“): gespeichert oder nach einem gescheiterten Senden ist er nicht gesendet.
+- **Ansicht „Follow up“ ohne Zahl** (Entscheidung 7) an der Stelle von „Later“: die zurückgestellten Mail-Einträge mit
+  Datum und „Cancel follow-up“. Eine Wiedervorlage, deren Unterhaltung nach einer Antwort schon wieder in „All“ steht,
+  zeigt ihr Datum dort in der Leiste der Mail und steht nicht zusätzlich in „Follow up“.
+- **Follow up an jeder Mail** (Entscheidung 8), auch ohne Eintrag und an eigener gesendeter Mail (`inbox.snooze_item`
+  mit `m:`-Id). Menü und Datumswahl haben den Schalter „Only if no reply“.
+- **„Focus & reply“** (Entscheidung 10, E19.5): Der Primärknopf in der Kopfleiste von „Reply later“ (aus bei leerem
+  Stapel) geht den Stapel Mail für Mail durch, an der Stelle von Liste und Leser, in jeder Größe gleich gebaut: Kopf
+  und Text der Mail wie im Leser in der Lesespalte, darunter fest ein einfaches Antwortfeld mit **Send** (über
+  `mail.save_draft` und `mail.send_draft` wie das Schreibfenster, an den Absender, `Re:` und Zitat; die Sende-Taste
+  des Schreibfensters sendet auch hier), **Skip** (die Mail bleibt liegen), **Remove from Reply later** und **Open in
+  compose window** (Cc, Anhänge, Format). Nach dem Senden nimmt das Fenster die Mail sofort vom Stapel, sagt „Sent.“
+  und zeigt die nächste; ein Fehler bleibt mit dem Text im Feld. Die Kopfleiste zeigt „‹ Reply later“ (Escape),
+  „{n} of {total}“ und ↑ ↓; ohne Fokus im Feld gehen `j`/`k` zur nächsten bzw. vorigen Mail. Am Ende: „Nothing left to
+  reply to.“ mit „Back to Reply later“. Keine Aktionsleiste. Verworfen: alle Mails untereinander wie bei HEY – das
+  Issue will Mail für Mail, und eine Mail mit Feld passt in jede Größenklasse.
+- **Drei Wege:** Oberfläche wie oben (Leiste der Mail, Kontextmenü der Zeile, Tasten, Seitenleiste und Menü); API
+  `inbox.set_mail_pile` (Write), `mail.search_messages` mit `pile`, `inbox.snooze_item` mit `unless_reply`; MCP
+  `inbox_set_mail_pile`, die anderen über das Schema ihres Requests. „Focus & reply“ braucht keinen eigenen Befehl.
 
 ### Später, vorgemerkt
 

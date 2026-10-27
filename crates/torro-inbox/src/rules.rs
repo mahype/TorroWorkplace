@@ -21,8 +21,8 @@ use torro_core::i18n::{tr, trf};
 use torro_mail::{Category, CategorySource, MailCategory, Order};
 
 use crate::item::{
-    AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
-    RuleEffect, Sender, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
+    AgentKind, Facet, FacetKey, FollowUp, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption,
+    MuteScope, Rule, RuleEffect, Sender, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
 };
 
 /// Days a done entry is kept before [`expired`] says it goes.
@@ -696,6 +696,7 @@ pub fn message_stand_in(summary: &torro_mail::MessageSummary, list: Option<&str>
         reason: None,
         // The stand-in speaks for the message, so it shows the message's own category (E12.1).
         category: summary.category,
+        follow_up: None,
     };
     item.facets = facets(&item, list, bulk);
     Some(item)
@@ -822,7 +823,8 @@ fn is_web(url: &str) -> bool {
 /// urgency, texts, agent, link, actions, `untrusted`) and its `updated`; counts one more report.
 /// A done or seen entry is new again, so a matter that comes back is not missed; a snoozed one
 /// stays snoozed, the user put it off on purpose. What the entry is stays what it is unless the
-/// report knows better ([`kept_category`]).
+/// report knows better ([`kept_category`]). A follow-up ([`Item::follow_up`]) is the person's and
+/// stays; [`merge_mail`] decides what a reply does to it.
 pub fn merge(existing: Item, incoming: Item) -> Item {
     let state = match existing.state {
         State::Snoozed { until } => State::Snoozed { until },
@@ -837,6 +839,7 @@ pub fn merge(existing: Item, incoming: Item) -> Item {
         received: existing.received,
         count: existing.count.saturating_add(1),
         state,
+        follow_up: existing.follow_up,
         ..incoming
     }
 }
@@ -864,19 +867,39 @@ fn stronger_category(held: Option<MailCategory>, incoming: Option<MailCategory>)
 /// `docs/tasks/eingang.md`, E9): as [`merge`], but a snoozed conversation opens again
 /// ([`State::New`]), as a reply brings a conversation back from "Later" in mail programs. Other
 /// sources keep [`merge`]: a report again of a matter the person put off stays put off.
+///
+/// A follow-up "only if no reply" ([`Item::follow_up`], task E19.1) ends with it; one without the
+/// condition stays and brings the conversation on top once more at its time ([`wake`]).
 pub fn merge_mail(existing: Item, incoming: Item) -> Item {
     let mut merged = merge(existing, incoming);
     if matches!(merged.state, State::Snoozed { .. }) {
         merged.state = State::New;
+        if merged.follow_up.is_some_and(|follow_up| follow_up.unless_reply) {
+            merged.follow_up = None;
+        }
     }
     merged
+}
+
+/// [`merge_mail`] for a new mail of the conversation sent from the account itself (review of #315,
+/// decision 6: Bcc to oneself, the echo of a mailing list): it opens the conversation like any new
+/// mail, but it is no reply, so a follow-up "only if no reply" stays as it was.
+pub fn merge_own_mail(existing: Item, incoming: Item) -> Item {
+    let follow_up = existing.follow_up;
+    Item { follow_up, ..merge_mail(existing, incoming) }
 }
 
 /// Marks the entry done at `now`, or open again: a done entry becomes [`State::Seen`] (the
 /// user has seen it), any other stays as it is. `updated` does not change, so undoing puts the
 /// entry back where it was in the list.
+///
+/// Done ends a follow-up ([`Item::follow_up`], review of #315, decision 6): an archived
+/// conversation does not come back at its date, also not once new mail or an undo opens it again
+/// after that date – it would come back at once, with the old date. Every way to done in the core
+/// (by hand, read or moved elsewhere, retired, muted) comes through here.
 pub fn set_done(item: &mut Item, done: bool, now: DateTime<Utc>) {
     if done {
+        item.follow_up = None;
         if !matches!(item.state, State::Done { .. }) {
             item.state = State::Done { at: now };
         }
@@ -895,6 +918,57 @@ pub fn snooze(item: &mut Item, until: Option<DateTime<Utc>>) {
     }
 }
 
+/// "Follow up" on a mail entry at `now` (task E19.1, `inbox.snooze_item` on mail): with `until` as
+/// [`snooze`], and the entry keeps [`FollowUp`] with `at: until`, `unless_reply` and `since: now`;
+/// set again with the same time and condition (a repeated call), it keeps its `since`, so a reply
+/// that came between the calls still counts. Without `until` as `snooze(item, None)` and the
+/// follow-up is called off, also a standing one of an open entry (one without the condition, after a
+/// reply opened it). [`snooze`] stays for every other source.
+pub fn follow_up(item: &mut Item, until: Option<DateTime<Utc>>, unless_reply: bool, now: DateTime<Utc>) {
+    snooze(item, until);
+    item.follow_up = until.map(|at| next_follow_up(item.follow_up, at, unless_reply, now));
+}
+
+/// "Follow up" on a mail entry without putting it off (review of #315, `inbox.snooze_item` with
+/// `keep_open`): its follow-up is set, as [`follow_up`] sets it (a repeated call keeps `since`). An
+/// open entry keeps its state and place in the list; a snoozed one is open again as [`snooze`] with
+/// `None` takes a snooze back – [`State::Seen`], `updated` as it was. The state a reply leaves a
+/// follow-up in (decision 6), made again by the Undo of "Cancel follow-up" or of putting an open
+/// entry with a follow-up off; [`wake`] brings the entry on top at `until` while it is open. The
+/// caller checks that the entry is a mail entry and not done.
+pub fn follow_up_open(item: &mut Item, until: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) {
+    snooze(item, None);
+    item.follow_up = Some(next_follow_up(item.follow_up, until, unless_reply, now));
+}
+
+/// The follow-up at `at` with `unless_reply` set at `now`: `held` itself when it is the same (a
+/// repeated call keeps its `since`), else a new one counting replies from `now`.
+fn next_follow_up(held: Option<FollowUp>, at: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) -> FollowUp {
+    match held {
+        Some(held) if held.at == at && held.unless_reply == unless_reply => held,
+        _ => FollowUp { at, unless_reply, since: now },
+    }
+}
+
+/// A reply came at `at` into the conversation of the mail entry `item` (task E19.1, decision 6): mail
+/// in the conversation not from the account itself, in any folder, read or not. A follow-up "only if
+/// no reply" set before `at` is called off, and a snoozed entry is open again ([`State::Seen`],
+/// `updated` as it was: the reply itself puts it on top when it is filed). Returns whether the entry
+/// changed; anything else – no follow-up, one without the condition, a reply from before it was set
+/// – leaves it as it is.
+pub fn reply_came(item: &mut Item, at: DateTime<Utc>) -> bool {
+    match item.follow_up {
+        Some(follow_up) if follow_up.unless_reply && follow_up.since < at => {
+            item.follow_up = None;
+            if matches!(item.state, State::Snoozed { .. }) {
+                item.state = State::Seen;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Moves the entry to `lane`. It is urgent only in [`Lane::ForMe`] and only if its kind is
 /// ([`placement`]): an entry the user moved to "Info" does not interrupt any more. The reason it
 /// stood where it was ([`Item::reason`]) no longer holds and is cleared; a caller moving it by a
@@ -906,16 +980,23 @@ pub fn set_lane(item: &mut Item, lane: Lane) {
 }
 
 /// Wakes the entry if it is snoozed until `now` or earlier: [`State::New`] with `updated` at the
-/// time it was due, so it comes back at the top. Returns whether it woke.
+/// time it was due, so it comes back at the top. An open entry (new or seen) whose follow-up
+/// ([`Item::follow_up`], task E19.1) is due comes back the same way: a reply opened it before, and
+/// the follow-up had no condition. A done entry never does. Waking clears the follow-up. Returns
+/// whether it woke.
 pub fn wake(item: &mut Item, now: DateTime<Utc>) -> bool {
-    match item.state {
-        State::Snoozed { until } if until <= now => {
-            item.state = State::New;
-            item.updated = until;
-            true
-        }
-        _ => false,
-    }
+    let due = match item.state {
+        State::Snoozed { until } if until <= now => until,
+        State::New | State::Seen => match item.follow_up {
+            Some(follow_up) if follow_up.at <= now => follow_up.at,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    item.state = State::New;
+    item.updated = due;
+    item.follow_up = None;
+    true
 }
 
 /// The entry was done [`KEEP_DONE_DAYS`] or more before `now` and is removed.
@@ -1041,6 +1122,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
@@ -1223,8 +1305,10 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            pile: None,
             category: None,
             untrusted: true,
+            pile_since: None,
         }
     }
 
@@ -1729,6 +1813,17 @@ mod tests {
         assert_eq!(merge(many, item("2", Kind::Notice)).count, u32::MAX);
     }
 
+    /// Review of #315, decision 6: done ends a follow-up; opening again does not bring it back.
+    #[test]
+    fn done_clears_a_follow_up() {
+        let held = FollowUp { at: at(20), unless_reply: false, since: at(9) };
+        let mut entry = Item { state: State::Seen, follow_up: Some(held), ..item("1", Kind::Message) };
+        set_done(&mut entry, true, at(10));
+        assert_eq!(entry.follow_up, None);
+        set_done(&mut entry, false, at(11));
+        assert_eq!((entry.state, entry.follow_up), (State::Seen, None));
+    }
+
     #[test]
     fn done_and_open_again() {
         let mut entry = item("1", Kind::Notice);
@@ -1778,6 +1873,123 @@ mod tests {
         assert!(!wake(&mut entry, at(13)), "wakes once");
         let mut open = item("2", Kind::Notice);
         assert!(!wake(&mut open, at(13)));
+    }
+
+    /// Task E19.1: a follow-up is set with its time, its condition and since when, kept as it was
+    /// when set again alike, and called off without a time.
+    #[test]
+    fn a_follow_up_is_set_and_called_off() {
+        let mut entry = item("1", Kind::Message);
+        follow_up(&mut entry, Some(at(20)), true, at(9));
+        assert_eq!(entry.state, State::Snoozed { until: at(20) });
+        assert_eq!(entry.follow_up, Some(FollowUp { at: at(20), unless_reply: true, since: at(9) }));
+        follow_up(&mut entry, Some(at(20)), true, at(10));
+        assert_eq!(entry.follow_up.map(|held| held.since), Some(at(9)), "a repeated call keeps since");
+        follow_up(&mut entry, Some(at(21)), true, at(10));
+        assert_eq!(entry.follow_up, Some(FollowUp { at: at(21), unless_reply: true, since: at(10) }));
+        follow_up(&mut entry, Some(at(21)), false, at(11));
+        assert_eq!(entry.follow_up, Some(FollowUp { at: at(21), unless_reply: false, since: at(11) }));
+        follow_up(&mut entry, None, false, at(12));
+        assert_eq!((entry.state, entry.follow_up), (State::Seen, None));
+        // A standing follow-up of an open entry (a reply opened it) is called off too.
+        let held = FollowUp { at: at(20), unless_reply: false, since: at(9) };
+        let mut open = Item { follow_up: Some(held), ..item("2", Kind::Message) };
+        follow_up(&mut open, None, true, at(12));
+        assert_eq!((open.state, open.follow_up), (State::New, None));
+    }
+
+    /// Task E19.1, decision 6: new mail in the conversation ends a follow-up "only if no reply" and
+    /// keeps one without the condition; both open the entry.
+    #[test]
+    fn new_mail_ends_only_a_follow_up_unless_reply() {
+        let snoozed = |unless_reply| Item {
+            state: State::Snoozed { until: at(20) },
+            follow_up: Some(FollowUp { at: at(20), unless_reply, since: at(9) }),
+            ..item("1", Kind::Message)
+        };
+        let merged = merge_mail(snoozed(true), item("2", Kind::Message));
+        assert_eq!((merged.state, merged.follow_up), (State::New, None));
+        let merged = merge_mail(snoozed(false), item("2", Kind::Message));
+        assert_eq!(merged.state, State::New);
+        assert_eq!(
+            merged.follow_up,
+            Some(FollowUp { at: at(20), unless_reply: false, since: at(9) }),
+            "the date stays"
+        );
+        // A report of another source keeps the entry put off, follow-up and all.
+        let merged = merge(snoozed(true), item("2", Kind::Message));
+        assert_eq!(merged.state, State::Snoozed { until: at(20) });
+        assert!(merged.follow_up.is_some());
+    }
+
+    /// Review of #315: an open entry gets its follow-up and stays as it is; a repeated call keeps
+    /// since when replies count.
+    #[test]
+    fn an_open_entry_is_followed_up_without_being_put_off() {
+        let mut open = Item { state: State::Seen, ..item("1", Kind::Message) };
+        follow_up_open(&mut open, at(20), false, at(9));
+        assert_eq!((open.state, open.updated), (State::Seen, at(8)), "it stays where it is");
+        assert_eq!(open.follow_up, Some(FollowUp { at: at(20), unless_reply: false, since: at(9) }));
+        follow_up_open(&mut open, at(20), false, at(10));
+        assert_eq!(open.follow_up.map(|held| held.since), Some(at(9)), "a repeated call keeps since");
+        assert!(wake(&mut open, at(20)), "back at its time");
+        // A snoozed one is open again, as taking a snooze back leaves it.
+        let mut snoozed = Item { state: State::Snoozed { until: at(21) }, ..item("2", Kind::Message) };
+        follow_up_open(&mut snoozed, at(20), true, at(9));
+        assert_eq!((snoozed.state, snoozed.follow_up.map(|held| held.at)), (State::Seen, Some(at(20))));
+    }
+
+    /// Review of #315, decision 6: mail of the account's own (Bcc to oneself, a list's echo) opens the
+    /// conversation like any new mail, but is no reply: a follow-up "only if no reply" stays.
+    #[test]
+    fn own_mail_keeps_a_follow_up_unless_reply() {
+        let held = FollowUp { at: at(20), unless_reply: true, since: at(9) };
+        let snoozed =
+            Item { state: State::Snoozed { until: at(20) }, follow_up: Some(held), ..item("1", Kind::Message) };
+        let merged = merge_own_mail(snoozed.clone(), item("2", Kind::Message));
+        assert_eq!((merged.state, merged.follow_up), (State::New, Some(held)), "opened, the condition stands");
+        assert_eq!(merged, Item { follow_up: Some(held), ..merge_mail(snoozed, item("2", Kind::Message)) });
+    }
+
+    /// Task E19.1: an open entry with a follow-up comes back at its time, a done one does not, and
+    /// waking clears the follow-up.
+    #[test]
+    fn an_open_entry_comes_back_at_its_follow_up() {
+        let held = Some(FollowUp { at: at(12), unless_reply: false, since: at(9) });
+        let mut open = Item { state: State::Seen, follow_up: held, ..item("1", Kind::Message) };
+        assert!(!wake(&mut open, at(11)));
+        assert!(wake(&mut open, at(12)));
+        assert_eq!((open.state, open.updated, open.follow_up), (State::New, at(12), None));
+        assert!(!wake(&mut open, at(13)), "comes back once");
+        let mut done = Item { state: State::Done { at: at(10) }, follow_up: held, ..item("2", Kind::Message) };
+        assert!(!wake(&mut done, at(13)), "archived before the date");
+        assert_eq!(done.state, State::Done { at: at(10) });
+        let mut snoozed = Item { state: State::Snoozed { until: at(12) }, follow_up: held, ..item("3", Kind::Message) };
+        assert!(wake(&mut snoozed, at(12)));
+        assert_eq!((snoozed.state, snoozed.follow_up), (State::New, None));
+    }
+
+    /// Task E19.1: a reply after the follow-up was set calls one "only if no reply" off and opens a
+    /// snoozed entry; one from before, or a follow-up without the condition, changes nothing.
+    #[test]
+    fn a_reply_calls_off_a_follow_up_unless_reply() {
+        let snoozed = |unless_reply| Item {
+            state: State::Snoozed { until: at(20) },
+            follow_up: Some(FollowUp { at: at(20), unless_reply, since: at(9) }),
+            ..item("1", Kind::Message)
+        };
+        let mut before = snoozed(true);
+        assert!(!reply_came(&mut before, at(8)), "a reply from before");
+        assert!(!reply_came(&mut before, at(9)), "not after since");
+        assert_eq!(before, snoozed(true));
+        let mut after = snoozed(true);
+        assert!(reply_came(&mut after, at(10)));
+        assert_eq!((after.state, after.follow_up, after.updated), (State::Seen, None, at(8)));
+        let mut without = snoozed(false);
+        assert!(!reply_came(&mut without, at(10)));
+        assert_eq!(without, snoozed(false));
+        let mut plain = item("2", Kind::Message);
+        assert!(!reply_came(&mut plain, at(10)));
     }
 
     #[test]

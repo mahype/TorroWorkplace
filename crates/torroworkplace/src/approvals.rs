@@ -2278,8 +2278,9 @@ pub struct InboxFacts {
     /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
     /// held across the awaits of asking for an approval, deep in the stack.
     pub sort_rule: Option<Box<torro_inbox::SortRule>>,
-    /// For `inbox.set_mail_shown` (task E18.2): the messages as the mail store holds them, looked
-    /// up by the ids the command runs with (`crate::mail::write::facts`), as for `mail.set_flags`.
+    /// For `inbox.set_mail_shown` (task E18.2) and `inbox.set_mail_pile` (task E19.2): the messages
+    /// as the mail store holds them, looked up by the ids the command runs with
+    /// (`crate::mail::write::facts`), as for `mail.set_flags`.
     pub mail: Option<MailFacts>,
 }
 
@@ -2432,6 +2433,28 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             with_settling(trf("Mark {entry} as done", &[("entry", &entry())]), facts.item.as_ref())
         }
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
+        // A snoozed mail entry brought back with its follow-up (review of #315): the person sees that
+        // it leaves "Later", and with the condition that a reply calls it off.
+        Request::SnoozeItem { until: Some(until), unless_reply, keep_open: true, .. }
+            if is_snoozed(facts.item.as_ref()) =>
+        {
+            let args =
+                [("entry", &entry() as &dyn std::fmt::Display), ("when", &when(&EventTime::DateTime(*until), today))];
+            match unless_reply {
+                true => trf("Bring {entry} back and follow up {when} unless someone replies", &args),
+                false => trf("Bring {entry} back and follow up {when}", &args),
+            }
+        }
+        // "Follow up" with its condition (task E19.1): the person sees that a reply calls it off.
+        Request::SnoozeItem { until: Some(until), unless_reply: true, .. } => trf(
+            "Follow up on {entry} {when} unless someone replies",
+            &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
+        ),
+        // An open mail entry followed up without being put off (review of #315): it stays.
+        Request::SnoozeItem { until: Some(until), keep_open: true, .. } => trf(
+            "Follow up on {entry} {when}",
+            &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
+        ),
         Request::SnoozeItem { until: Some(until), .. } => trf(
             "Snooze {entry} until {when}",
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
@@ -2443,6 +2466,16 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         }
         Request::SetMailShown { ids, shown: false } => {
             trf("Hide {messages} from the inbox again", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
+        // The piles (task E19.2): the subjects the mail store holds, as for "Show again".
+        Request::SetMailPile { ids, pile: Some(torro_mail::MailPile::ReplyLater), .. } => {
+            trf("Put {messages} on Reply later", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
+        Request::SetMailPile { ids, pile: Some(torro_mail::MailPile::SetAside), .. } => {
+            trf("Set {messages} aside", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
+        }
+        Request::SetMailPile { ids, pile: None, .. } => {
+            trf("Take {messages} off their pile", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
         }
         // Filing a mail by hand and keeping that for its sender (task E12.4). The sender comes
         // from the stored entry (`InboxFacts`), never from the request.
@@ -2769,6 +2802,11 @@ fn mute_effect_name(effect: MuteEffect) -> &'static str {
 /// `item` is an entry of a mail account (task E4.1).
 fn is_mail(item: Option<&Item>) -> bool {
     item.is_some_and(|item| item.source.kind == SourceKind::Mail)
+}
+
+/// `item` is put off ("Later"): a follow-up with `keep_open` brings it back (review of #315).
+fn is_snoozed(item: Option<&Item>) -> bool {
+    item.is_some_and(|item| matches!(item.state, torro_inbox::State::Snoozed { .. }))
 }
 
 /// A source for a summary: its label and its key, `"Codex" (agent:codex)`, both quoted.
@@ -4888,6 +4926,7 @@ pub(crate) mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
@@ -4925,8 +4964,45 @@ pub(crate) mod tests {
         let done = |done| inbox_summary(&Request::SetItemDone { id: "e1".into(), done, dismissed: false }, &known);
         assert_eq!(done(true), trf("Mark {entry} as done", &[("entry", &entry)]));
         assert_eq!(done(false), trf("Open {entry} again", &[("entry", &entry)]));
-        let snooze = inbox_summary(&Request::SnoozeItem { id: "e1".into(), until: None }, &InboxFacts::default());
-        assert_eq!(snooze, trf("Stop snoozing {entry}", &[("entry", &unknown)]));
+        let snooze =
+            |until, unless_reply| Request::SnoozeItem { id: "e1".into(), until, unless_reply, keep_open: false };
+        assert_eq!(
+            inbox_summary(&snooze(None, false), &InboxFacts::default()),
+            trf("Stop snoozing {entry}", &[("entry", &unknown)])
+        );
+        // Task E19.1: "only if no reply" says so; without `until` there is nothing to wait for.
+        let until = Utc::now() + chrono::TimeDelta::days(400);
+        let follow_up = inbox_summary(&snooze(Some(until), true), &known);
+        let today = Local::now().date_naive();
+        let at = when(&EventTime::DateTime(until), today);
+        assert_eq!(
+            follow_up,
+            trf("Follow up on {entry} {when} unless someone replies", &[("entry", &entry), ("when", &at)])
+        );
+        assert_eq!(
+            inbox_summary(&snooze(None, true), &InboxFacts::default()),
+            trf("Stop snoozing {entry}", &[("entry", &unknown)])
+        );
+        // Review of #315: following up an open entry without putting it off says so.
+        let open =
+            |unless_reply| Request::SnoozeItem { id: "e1".into(), until: Some(until), unless_reply, keep_open: true };
+        assert_eq!(
+            inbox_summary(&open(false), &known),
+            trf("Follow up on {entry} {when}", &[("entry", &entry), ("when", &at)])
+        );
+        assert_eq!(inbox_summary(&open(true), &known), follow_up, "the condition is named");
+        // A snoozed entry comes back from "Later" too: the summary says so (review of #315).
+        let mut snoozed = inbox_entry("Backup \"done\"");
+        snoozed.state = torro_inbox::State::Snoozed { until };
+        let snoozed = InboxFacts { item: Some(snoozed), ..InboxFacts::default() };
+        assert_eq!(
+            inbox_summary(&open(false), &snoozed),
+            trf("Bring {entry} back and follow up {when}", &[("entry", &entry), ("when", &at)])
+        );
+        assert_eq!(
+            inbox_summary(&open(true), &snoozed),
+            trf("Bring {entry} back and follow up {when} unless someone replies", &[("entry", &entry), ("when", &at)])
+        );
         // Task E18.2: "Show again" names the subjects the mail store holds.
         let stored = MailFacts { count: 2, subjects: vec!["Weekly \"deals\"".into()], ..MailFacts::default() };
         let mail = InboxFacts { mail: Some(stored), ..InboxFacts::default() };
@@ -4944,6 +5020,20 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&shown(true), &InboxFacts::default()),
             trf("Show {messages} in the inbox again", &[("messages", &unknown_mail)])
+        );
+        // Task E19.2: the piles alike, each with its own words.
+        let pile = |pile| Request::SetMailPile { ids: vec!["m:1".into(), "m:2".into()], pile, since: None };
+        assert_eq!(
+            inbox_summary(&pile(Some(torro_mail::MailPile::ReplyLater)), &mail),
+            trf("Put {messages} on Reply later", &[("messages", &messages)])
+        );
+        assert_eq!(
+            inbox_summary(&pile(Some(torro_mail::MailPile::SetAside)), &mail),
+            trf("Set {messages} aside", &[("messages", &messages)])
+        );
+        assert_eq!(
+            inbox_summary(&pile(None), &InboxFacts::default()),
+            trf("Take {messages} off their pile", &[("messages", &unknown_mail)])
         );
 
         let rule = |effect| InboxFacts {

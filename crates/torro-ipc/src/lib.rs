@@ -1816,6 +1816,11 @@ pub enum Request {
     /// the mail from the inbox. Without `until` such a message stays without an entry and the
     /// answer is the entry it would be, not snoozed. A client needs read access to the message's
     /// account, else `not-found`.
+    ///
+    /// On a mail entry it is a follow-up (task E19.1, [`torro_inbox::rules::follow_up`],
+    /// [`torro_inbox::Item::follow_up`]): new mail in the conversation opens it early; without
+    /// `unless_reply` the date stays and brings the conversation on top once more if its entry is
+    /// still open then.
     #[serde(rename = "inbox.snooze_item")]
     SnoozeItem {
         /// The entry's id, or a mail message's id (`m:…`).
@@ -1823,6 +1828,28 @@ pub enum Request {
         /// When it comes back (RFC 3339); leave out to stop snoozing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         until: Option<DateTime<Utc>>,
+        /// Follow up only if nobody replies by `until` (task E19.1): a reply – mail in the
+        /// conversation, not sent from the account itself, dated after this call, in any folder but
+        /// drafts, read or not – calls the follow-up off, and the conversation stays where the reply
+        /// put it without coming back at `until`. Before it comes back the core looks for such a reply
+        /// once more (within a minute of `until`), so one that reached the mail late still counts.
+        /// Without it a reply opens the conversation, and `until` brings it on top once more unless
+        /// it was archived, thrown away or marked as spam; marking the entry done ends any follow-up.
+        /// Only for mail entries and mail ids (`m:…`); on any other entry `unsupported`, refused
+        /// before an approval is asked for. Ignored without `until`, which calls any follow-up off.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unless_reply: bool,
+        /// Follow up a mail entry without putting it off: its follow-up is set (`until`, with
+        /// `unless_reply`); an open entry stays where it is, a snoozed one is open again (seen, in
+        /// its old place). It comes back on top at `until` if it is still open then – the same state
+        /// a follow-up without the condition is in after a reply opened its conversation. For
+        /// undoing "Cancel follow-up", or a new follow-up date on an entry that was open. A mail id
+        /// filed into an entry acts as that entry (a snoozed one comes back); a mail id without an
+        /// entry of its own is `unsupported` when its conversation has a snoozed or done entry. Needs
+        /// `until`; `unsupported` also on a done entry, on one that is no mail and without `until` –
+        /// refused before an approval is asked for.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_open: bool,
     },
     /// Moves the entry to `lane` ([`torro_inbox::rules::set_lane`]). With `remember` the core also
     /// keeps the lane for later notices of the entry's source (a rule, `inbox.list_rules`); that
@@ -2197,6 +2224,43 @@ pub enum Request {
         /// `true` shows them in "All" again, `false` takes that back.
         shown: bool,
     },
+    /// Puts mail on a pile or takes it off (task E19.2, decisions 1 to 5 of E19 in
+    /// `docs/tasks/eingang.md`): `pile` puts the mail messages `ids` (`m:…`) on "Reply later" or
+    /// "Set aside", without `pile` they come off. A message lies on at most one pile: putting it on
+    /// the other moves it, putting it on the same again changes nothing (it keeps the time it was
+    /// put there). While it lies there `mail.search_messages` with `pile: without` leaves it out
+    /// ("All", the categories, the smart views) and `pile: reply_later` / `set_aside` lists it;
+    /// every message of a search names its pile ([`torro_mail::MessageSummary::pile`]). Kept only
+    /// in the core: nothing goes to the server, the message and its inbox entry stay as they are.
+    /// "Reply later" clears itself: once a mail from the account's own address turns up in the
+    /// message's conversation after it was put there (in any folder, sent by any program; a draft is
+    /// not sent and never counts), the core
+    /// takes it off. "Set aside" stays until taken off.
+    ///
+    /// Mail in the trash or in spam goes on no pile: with `pile`, `unsupported` for the whole call
+    /// as soon as one id lies in a folder with that role, checked before an approval is asked for;
+    /// archived mail may. Taking mail off (`pile` left out) works wherever it lies.
+    ///
+    /// Mail of several accounts may go in one call. Answered with [`Response::Ok`]; `not-found`
+    /// for the whole call, with nothing changed, as soon as one id is in no account whose mail the
+    /// caller reads (`mail_accounts`) and whose inbox entries it sees (the account among
+    /// `inbox_sources`), checked before an approval is asked for; `error` for no id, more than
+    /// [`mail::MAX_IDS`] or an id over [`mail::MAX_ID_BYTES`] bytes. Write access to `inbox`: it
+    /// changes only where the inbox shows the mail.
+    #[serde(rename = "inbox.set_mail_pile")]
+    SetMailPile {
+        /// The mail messages' ids (`m:…`), 1 to 100.
+        ids: Vec<String>,
+        /// `reply_later` or `set_aside`; leave out to take the mail off its pile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pile: Option<torro_mail::MailPile>,
+        /// Since when the mail lies on `pile`: for undo, which puts mail back with the time it had
+        /// (`pile_since` of mail_search_messages) instead of now, so a reply of one's own sent
+        /// meanwhile still takes it off "Reply later" – the core looks for one at once. At most now: a later time counts as now. Ignored without `pile`, and for mail that
+        /// lies on that pile already (it keeps its time). Leave out for now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<DateTime<Utc>>,
+    },
     /// The lasting rules: lanes remembered for sources, muted sources, hidden senders and domains
     /// and muted traits that have not ended ([`Response::Rules`]), only of sources the client may
     /// see. With each rule how many reports and entries it caught since it was made, as far as the
@@ -2427,8 +2491,10 @@ pub enum Request {
         sort: Option<MailSort>,
         /// "Later" (task E9.1): `false` leaves out messages whose inbox entry is snoozed now and
         /// puts messages that came back from it (their `back`) by the time
-        /// they came back instead of their date (not with `sort: relevance`); `true` gives only the
-        /// snoozed ones. Left out: every message, by date. Filtered before paging, so pages and
+        /// they came back instead of their date (not with `sort: relevance`); such mail comes from any
+        /// folder but archive, trash and spam whatever `in:` the query says (a `folder` still holds),
+        /// and `total_estimate` does not count it from other folders. `true` gives only the snoozed
+        /// ones. Left out: every message, by date. Filtered before paging, so pages and
         /// `cursor` hold; a cursor belongs to this field as well. Only for accounts whose inbox
         /// entries the caller sees (read access to `inbox`, the account among `inbox_sources`);
         /// for the others nothing counts as snoozed.
@@ -2452,6 +2518,14 @@ pub enum Request {
         /// `cursor` hold; a cursor belongs to this field as well.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         categories: Vec<torro_mail::Category>,
+        /// The piles (task E19.2, `inbox.set_mail_pile`): `without` leaves out mail on "Reply later"
+        /// or "Set aside" (what "All" lists), `reply_later` or `set_aside` gives only the mail on that
+        /// pile. Left out: every message, on a pile or not. Filtered before paging, so pages and
+        /// `cursor` hold; a cursor belongs to this field as well. With `snoozed` and `hidden` all
+        /// hold. Like `snoozed` only for accounts whose inbox entries the caller sees; for the others
+        /// nothing lies on a pile, so a pile gives none of their mail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pile: Option<mail::PileFilter>,
     },
     /// How far the core's search index of each mail account is ([`Response::MailIndexStatus`],
     /// issue #136): how many messages it keeps, how many of them have their text in the index,

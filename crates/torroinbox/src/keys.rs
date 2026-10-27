@@ -12,7 +12,9 @@
 //!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
 //!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all in the list (archive in an opened mail), `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
-//!    reader between HTML and text (task M9.7; the app decides whether it has HTML); in a menu of choices the digits pick
+//!    reader between HTML and text (task M9.7; the app decides whether it has HTML); `w` puts the mail on
+//!    "Reply later" and `b` on "Set aside" (task E19.4; again on its pile, it takes it off – the app
+//!    decides); in a menu of choices the digits pick
 //!    its entries; `[` collapses the sidebar and `]` the mail's action rail (task E14.3); in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
@@ -33,6 +35,12 @@
 //! The hub's "Act now" (task E8.5) is one list of sections, so it takes the keys of the list
 //! ([`Focus::List`]): `j`/`k` walk Decide, Agents and To sort, `l` moves an entry to the other lane.
 //! `s` on an approval opens no snooze menu – an approval waits for yes or no.
+//!
+//! "Focus & reply" (task E19.5, [`Focus::Replying`]) shows one mail of "Reply later" at a time with a
+//! field under it: while the field has the keyboard it takes every key (the shortcut "send" sends,
+//! Escape leaves the field); without it `j`/`k` (and ↓/↑) go to the next or previous mail, `w` takes
+//! the mail shown off "Reply later", `u` undoes and `[` folds the sidebar – no key acts on the list
+//! hidden behind it.
 //!
 //! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
 //! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
@@ -102,6 +110,10 @@ pub enum Key {
     F,
     /// `v`.
     V,
+    /// `w` (task E19.4).
+    W,
+    /// `b` (task E19.4).
+    B,
     /// The hash sign (Shift + 3 on many keyboards: Shift does not stop it).
     Hash,
     /// Delete or Backspace (the key Mac keyboards call "delete", issue #118). A text field that has
@@ -146,14 +158,19 @@ pub enum Focus {
     /// A question waits for its answer (task E10.1: "Delete permanently?"): `Enter` confirms, Escape
     /// (the app's) cancels, nothing of the list.
     Question,
+    /// "Focus & reply" (task E19.5) stands in place of the list, its field without the keyboard:
+    /// `j`/`k` (↓/↑) go to the next or previous mail ([`Command::Next`], [`Command::Previous`]),
+    /// `u` undoes, `w` takes the mail shown off "Reply later", `[` folds the sidebar; nothing of the
+    /// list, which is hidden.
+    Replying,
 }
 
 /// What a key does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// Move the cursor to the next row.
+    /// Move the cursor to the next row; in "Focus & reply" the next mail (task E19.5).
     Next,
-    /// Move the cursor to the previous row.
+    /// Move the cursor to the previous row; in "Focus & reply" the previous mail.
     Previous,
     /// The overview: the cursor to the column at the left (`h`, ←).
     ColumnLeft,
@@ -211,6 +228,12 @@ pub enum Command {
     SwitchView,
     /// Take the first suggestion under the search field (issue #136).
     Complete,
+    /// Put the mail under the cursor on "Reply later", or take it off when it lies there (task E19.4,
+    /// `w`; the mail window only).
+    ReplyLater,
+    /// Put the mail under the cursor on "Set aside", or take it off when it lies there (task E19.4,
+    /// `b`; the mail window only).
+    SetAside,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
     /// The bell's menu: "For" one step longer (→, `true`) or shorter (←).
@@ -399,6 +422,8 @@ pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Opt
         Name::Character("a") => Key::A,
         Name::Character("f") => Key::F,
         Name::Character("v") => Key::V,
+        Name::Character("w") => Key::W,
+        Name::Character("b") => Key::B,
         Name::Character("#") => Key::Hash,
         Name::Named(named @ (Named::Delete | Named::Backspace)) => {
             let pressed = if named == Named::Delete { shortcuts::Key::Delete } else { shortcuts::Key::Backspace };
@@ -425,7 +450,11 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::Overview, Key::Left | Key::H) => Some(Command::ColumnLeft),
         (Focus::Overview, Key::Right | Key::L) => Some(Command::ColumnRight),
         (Focus::Overview, key) => command(Focus::List, key),
-        (Focus::List | Focus::Elsewhere, Key::Sidebar) => Some(Command::Sidebar),
+        (Focus::List | Focus::Elsewhere | Focus::Replying, Key::Sidebar) => Some(Command::Sidebar),
+        (Focus::Replying, Key::Down) => Some(Command::Next),
+        (Focus::Replying, Key::Up) => Some(Command::Previous),
+        (Focus::Replying, Key::U) => Some(Command::Undo),
+        (Focus::Replying, Key::W) => Some(Command::ReplyLater),
         (Focus::List | Focus::Elsewhere, Key::Actions) => Some(Command::Actions),
         (Focus::List, Key::Down) => Some(Command::Next),
         (Focus::List, Key::Up) => Some(Command::Previous),
@@ -446,6 +475,8 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::Slash) => Some(Command::Search),
         (Focus::List, Key::Tab) => Some(Command::Complete),
         (Focus::List, Key::V) => Some(Command::SwitchView),
+        (Focus::List, Key::W) => Some(Command::ReplyLater),
+        (Focus::List, Key::B) => Some(Command::SetAside),
         (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
         (Focus::Mute, Key::Right) => Some(Command::MuteFor { longer: true }),
@@ -521,6 +552,8 @@ mod tests {
             (Name::Named(Named::Backspace), Command::Delete),
             (char("/"), Command::Search),
             (char("v"), Command::SwitchView),
+            (char("w"), Command::ReplyLater),
+            (char("b"), Command::SetAside),
             (char("["), Command::Sidebar),
         ] {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
@@ -528,6 +561,43 @@ mod tests {
         }
         assert_eq!(command(Focus::MailDetail, Key::A), Some(Command::Archive));
         assert_eq!(command(Focus::MailDetail, Key::R), Some(Command::Reply));
+    }
+
+    /// Task E19.4: `w` and `b` put the mail on its pile from the list and – through the fallback – from
+    /// the reader, never inside an open menu or dialog.
+    #[test]
+    fn w_and_b_put_mail_on_its_piles() {
+        for focus in [Focus::List, Focus::MailDetail, Focus::Overview] {
+            assert_eq!(command(focus, Key::W), Some(Command::ReplyLater), "{focus:?}");
+            assert_eq!(command(focus, Key::B), Some(Command::SetAside), "{focus:?}");
+        }
+        for focus in [Focus::Choices, Focus::Mute, Focus::Picker, Focus::Task, Focus::Elsewhere, Focus::Question] {
+            assert_eq!(command(focus, Key::W), None, "{focus:?}");
+            assert_eq!(command(focus, Key::B), None, "{focus:?}");
+        }
+    }
+
+    /// Task E19.5: in "Focus & reply" – its field without the keyboard – `j`/`k` and ↓/↑ go to the
+    /// next or previous mail, `u` undoes, `[` folds the sidebar; the keys of the hidden list do nothing.
+    #[test]
+    fn focus_and_reply_walks_with_j_and_k() {
+        let none = Modifiers::empty();
+        for (key, wanted) in [
+            (char("j"), Command::Next),
+            (Name::Named(Named::ArrowDown), Command::Next),
+            (char("k"), Command::Previous),
+            (Name::Named(Named::ArrowUp), Command::Previous),
+            (char("u"), Command::Undo),
+            (char("["), Command::Sidebar),
+        ] {
+            let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
+            assert_eq!(command(Focus::Replying, key), Some(wanted), "{key:?}");
+        }
+        // `w` takes the mail shown off "Reply later" (review of #315).
+        assert_eq!(command(Focus::Replying, Key::W), Some(Command::ReplyLater));
+        for key in [Key::E, Key::B, Key::S, Key::R, Key::Enter, Key::Delete, Key::Slash, Key::Digit(1)] {
+            assert_eq!(command(Focus::Replying, key), None, "{key:?}");
+        }
     }
 
     /// Task E14.3: `]` expands or collapses the mail's action rail – also typed with AltGr (Ctrl +

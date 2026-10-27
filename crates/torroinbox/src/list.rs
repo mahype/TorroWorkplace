@@ -562,9 +562,14 @@ fn rows_span(items: &[Item], index: usize, height: impl Fn(&Item) -> f32, head: 
     Some((if first { top - head } else { top }, top + height(item) + strip))
 }
 
-/// The list, scrolling; the empty state of the view when there are no entries.
+/// The list, scrolling; the empty state of the view when there are no entries – "Follow up" of the
+/// mail window (its rows are bare, [`Rows::bare`]) has its own ([`follow_up_empty`], task E19.4).
 pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     if data.items.is_empty() {
+        if data.rows.bare && *data.rows.view == View::Snoozed {
+            let (title, hint) = follow_up_empty();
+            return empty_state(Icon::CalendarClock, title, hint);
+        }
         let (title, hint) = empty_text(data.rows.view);
         return empty_state(data.rows.view.icon(), title, hint);
     }
@@ -1210,7 +1215,7 @@ impl<'a> MailLines<'a> {
         MailLines {
             name,
             domain,
-            time: time_text(item, rows.view, rows.now),
+            time: time_text_in(item, rows.view, rows.now, rows.bare),
             marks: Vec::new(),
             subject: one_line(&item.title),
             new: item.state == State::New,
@@ -1436,7 +1441,7 @@ pub(crate) fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) ->
 fn notice_rows<'a>(look: ListLook, item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let room = words_room(width);
     let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
-    let time = time_text(item, rows.view, rows.now);
+    let time = time_text_in(item, rows.view, rows.now, rows.bare);
     let count = (item.count > 1).then(|| item.count.to_string());
     let title_room = room - end_width(&time, typo::meta()) - count.as_deref().map_or(0.0, pill_width);
     let (title, text) = words(item);
@@ -1461,8 +1466,10 @@ fn notice_rows<'a>(look: ListLook, item: &'a Item, rows: &Rows<'a>, width: f32) 
 pub(crate) fn notice_line<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
     let count = (item.count > 1).then(|| item.count.to_string());
-    let columns =
-        LineColumns::of(width, typo::text_width(&time_text(item, rows.view, rows.now), typo::meta().tabular()));
+    let columns = LineColumns::of(
+        width,
+        typo::text_width(&time_text_in(item, rows.view, rows.now, rows.bare), typo::meta().tabular()),
+    );
     let shown = notice_line_words(item, rows, columns);
     let tile = container(source_tile(item)).align_y(iced::Center);
     let cells = line_cells(columns, shown, tile.into(), (typo::body(), theme::text_2), level, count, None, (&[], None));
@@ -1479,7 +1486,7 @@ fn notice_line_words(item: &Item, rows: &Rows<'_>, columns: LineColumns) -> Line
     let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
     let count = (item.count > 1).then(|| item.count.to_string());
     let (title, text) = words(item);
-    let time = time_text(item, rows.view, rows.now);
+    let time = time_text_in(item, rows.view, rows.now, rows.bare);
     LineWords::of(
         columns,
         (&item.source.label(), typo::body(), None),
@@ -1800,10 +1807,16 @@ pub fn plain(text: &str) -> String {
     text.chars().filter(|&c| c == '\n' || (!c.is_control() && !is_direction_control(c))).collect()
 }
 
-/// The time at the end of a row: until when a snoozed entry sleeps ("until Wed, 14 Oct",
-/// [`wake_text`]), when it was done in "Done", otherwise when it last changed ([`stamp`]).
-pub fn time_text(item: &Item, view: &View, now: DateTime<Utc>) -> String {
+/// The time at the end of a row in the mail window (`mail_window`, `Rows::bare`) or another: until
+/// when a snoozed entry sleeps ("until Wed, 14 Oct", [`wake_text`]), when it was done in "Done",
+/// otherwise when it last changed ([`stamp`]). Only the mail window tells a follow-up's condition,
+/// "until Wed, 14 Oct, only if no reply" (decision 12 of E19, review of PR #327); the hub, the App Feed
+/// and the notifications tell the time alone, as before #315.
+pub fn time_text_in(item: &Item, view: &View, now: DateTime<Utc>, mail_window: bool) -> String {
     match (view, &item.state) {
+        (_, State::Snoozed { until }) if mail_window && item.follow_up.is_some_and(|follow| follow.unless_reply) => {
+            trf("until {time}, only if no reply", &[("time", &wake_text(*until, now))])
+        }
         (_, State::Snoozed { until }) => trf("until {time}", &[("time", &wake_text(*until, now))]),
         (View::Done, State::Done { at }) => stamp(*at, now),
         _ => stamp(item.updated, now),
@@ -1849,6 +1862,24 @@ pub fn wake_text(until: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// When the mail window follows a conversation up (task E19.4), for its hint and its panel: "Follow
+/// up 18:30" today, else with the short date ([`wake_text`]); with `unless_reply` the whole sentence
+/// "Follow up 18:30, only if no reply" (one text to translate, never pieces). The hub and the App
+/// Feed say "Later until …".
+pub fn follow_up_text(until: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) -> String {
+    let time = wake_text(until, now);
+    if unless_reply {
+        trf("Follow up {time}, only if no reply", &[("time", &time)])
+    } else {
+        trf("Follow up {time}", &[("time", &time)])
+    }
+}
+
+/// What the empty state of the mail window's "Follow up" says (task E19.4).
+pub fn follow_up_empty() -> (&'static str, &'static str) {
+    (tr("No follow-ups."), tr("Conversations you follow up on wait here until their day."))
+}
+
 /// What the empty state of `view` says: what shows up here, and when.
 pub fn empty_text(view: &View) -> (&'static str, &'static str) {
     match view {
@@ -1869,7 +1900,9 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::Search(_)
         | View::All
         | View::Hidden
-        | View::Archive => (tr("No messages here."), tr("Mail in this folder shows up here.")),
+        | View::Archive
+        | View::ReplyLater
+        | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),
         // Task E12.8: a category the person filtered by holds nothing at the moment.
         View::Category(_) => (tr("No mail of this kind."), tr("Mail sorted into it shows up here.")),
     }
@@ -1931,12 +1964,35 @@ mod tests {
         let snoozed = by_id("demo-10");
         let State::Snoozed { until } = snoozed.state else { panic!("demo-10 is snoozed") };
         let until = trf("until {time}", &[("time", &wake_text(until, now()))]);
-        assert_eq!(time_text(snoozed, &View::Snoozed, now()), until, "until when, not only a date");
+        assert_eq!(time_text_in(snoozed, &View::Snoozed, now(), false), until, "until when, not only a date");
         let done = by_id("demo-11");
         let State::Done { at } = done.state else { panic!("demo-11 is done") };
-        assert_eq!(time_text(done, &View::Done, now()), stamp(at, now()), "when it was done");
+        assert_eq!(time_text_in(done, &View::Done, now(), false), stamp(at, now()), "when it was done");
         let waiting = by_id("demo-1");
-        assert_eq!(time_text(waiting, &View::ForMe, now()), stamp(waiting.updated, now()));
+        assert_eq!(time_text_in(waiting, &View::ForMe, now(), false), stamp(waiting.updated, now()));
+    }
+
+    /// Review of #315: a follow-up only if no reply says so in its row, and the hint says it as one
+    /// sentence – never pieces glued together.
+    #[test]
+    fn a_follow_up_only_if_no_reply_says_so_in_whole_sentences() {
+        let items = demo::sample(now());
+        let snoozed = items.iter().find(|i| i.id == "demo-10").expect("in the sample");
+        let State::Snoozed { until } = snoozed.state else { panic!("demo-10 is snoozed") };
+        let time = wake_text(until, now());
+        let follow = torro_inbox::item::FollowUp { at: until, unless_reply: true, since: now() };
+        let only = Item { follow_up: Some(follow), ..snoozed.clone() };
+        let plain = trf("until {time}", &[("time", &time)]);
+        // Only the mail window tells the condition (decision 12 of E19, review of PR #327).
+        assert_eq!(
+            time_text_in(&only, &View::Snoozed, now(), true),
+            trf("until {time}, only if no reply", &[("time", &time)])
+        );
+        assert_eq!(time_text_in(&only, &View::Snoozed, now(), false), plain, "not the hub, the App Feed");
+        let any = Item { follow_up: Some(torro_inbox::item::FollowUp { unless_reply: false, ..follow }), ..only };
+        assert_eq!(time_text_in(&any, &View::Snoozed, now(), true), plain);
+        assert_eq!(follow_up_text(until, true, now()), trf("Follow up {time}, only if no reply", &[("time", &time)]));
+        assert_eq!(follow_up_text(until, false, now()), trf("Follow up {time}", &[("time", &time)]));
     }
 
     #[test]
@@ -2707,7 +2763,7 @@ mod tests {
         let shown = notice_line_words(&notice, &rows, columns);
         assert_eq!(shown.who, notice.source.label(), "the source where a mail has its sender");
         assert_eq!((shown.title, shown.preview), (title, text), "title and text");
-        assert_eq!(shown.time, time_text(&notice, &view, now()));
+        assert_eq!(shown.time, time_text_in(&notice, &view, now(), false));
     }
 
     /// Issue #291: lines and rows build in every look and width, chosen or not.

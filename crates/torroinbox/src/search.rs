@@ -861,8 +861,10 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            pile: None,
             untrusted: true,
             category: None,
+            pile_since: None,
         };
         let jonas = who("Jonas", "jonas@example.org");
         let messages = [

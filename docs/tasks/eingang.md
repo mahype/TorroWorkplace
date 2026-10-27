@@ -4281,6 +4281,326 @@ Nicht parallel zu E17 (#300): E17.2 und E18.4 ändern `sidebar`, `nav_menu` und 
   ausgeklappt, hell und dunkel, Standard und Console). Abschließend die Prüfbefehle aus `docs/issue-workflow.md`
   (`cargo fmt --all`, Clippy, `cargo test --workspace`, `TORRO_LANG=de cargo test --workspace`).
 
+## E19 Mail-Fenster: „Reply later“, „Set aside“ und „Follow up“ statt „Later“ (Issue #315, Plan 2026-10-26)
+
+Im Mail-Fenster ersetzen drei Aktionen „Later“, nach dem Vorbild von HEY (Reply Later, Set Aside, Bubble Up): **Reply
+later** legt eine Mail auf einen Stapel zum Beantworten, ohne Datum; **Set aside** legt sie auf einen Stapel zum
+Nachschlagen, ohne Datum; **Follow up** holt ihre Unterhaltung an einem Datum wieder nach oben, auf Wunsch nur, wenn bis
+dahin keine Antwort kam. „Reply later“ hat eine Abarbeiten-Ansicht „Focus & reply“. Hub und Benachrichtigungen behalten
+„Later“. Konzept: [eingang.md](../eingang.md), Abschnitt „Später für jede Mail“. Regeln: [CLAUDE.md](../../CLAUDE.md),
+Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`, Requests: Skill `torro-api`.
+
+**Drei Wege:**
+
+- **Oberfläche:** Leiste der Mail (Gruppe File), Kontextmenü der Zeile, Tasten `w`, `b`, `s`, Seitenleiste und Menü
+  des Mail-Fensters (Reply later und Set aside mit Zahl, Follow up ohne), Ansichten der beiden Stapel und „Follow up“,
+  „Focus & reply“.
+- **API:** `Request::SetMailPile` · `inbox.set_mail_pile` · Zugriff Write, neu (E19.2). `Request::SearchMail` ·
+  `mail.search_messages` · Read, neues optionales Feld `pile` für die Stapel, ihre Zahlen und „All“ ohne sie (E19.2).
+  `Request::SnoozeItem` · `inbox.snooze_item` · Write, neues optionales Feld `unless_reply`; `Item` bekommt
+  `follow_up` (E19.1). Antworten in „Focus & reply“ gehen über `mail.save_draft` und `mail.send_draft` wie das
+  Schreibfenster, kein neuer Request.
+- **MCP:** neues Tool `inbox_set_mail_pile`; `mail_search_messages` bekommt `pile` und `inbox_snooze_item`
+  `unless_reply` über das Schema des Requests. Nichts davon betrifft Schlüssel, Rechte oder Freigaben: kein `Never`.
+
+Entschieden am 2026-10-26 (Planung #315):
+
+1. **Stapel je Mail, Wiedervorlage je Unterhaltung.** Die Stapel merkt sich der Eingang je Mail in einer eigenen Tabelle
+   (`mail_piles`), unabhängig vom Eintrag; „Follow up“ bleibt der Zustand `snoozed` des Eintrags, also der ganzen
+   Unterhaltung. Verworfen: Stapel als Zustand des Eintrags – Einträge werden erledigt und nach 30 Tagen entfernt, eine
+   beiseitegelegte Bordkarte muss bleiben, und „All“ listet Mails, keine Einträge (E18, Entscheidung 1).
+2. **Nur lokal im Dienst** (in der Planung entschieden): kein IMAP-Schlagwort, andere Geräte sehen die Stapel nicht.
+   Verworfen für jetzt: `$ReplyLater` auf dem Server – Arbeit in Abgleich und `torro-mail-imap`, und nicht jeder Server
+   nimmt eigene Schlagwörter an.
+3. **Mail auf einem Stapel verschwindet wie bei HEY** (in der Planung entschieden) aus „All“, den Kategorien und den
+   Smart views „With attachments“ und „Invitations“, und aus der Zahl ungelesener an „All“; Ordner, Suche und Hub zeigen
+   sie weiter. Ein Stapel listet seine Mails aus jedem Ordner außer Papierkorb und Spam. Verworfen: Mail bleibt mit
+   Zeichen stehen – dann wäre der Stapel nur eine zweite Sicht.
+4. **Eine Mail liegt auf höchstens einem Stapel**; erneut legen verlegt sie. Jede Aktion zeigt einen Hinweis mit Undo.
+   Die Zeile verlässt nur Listen, die Stapel-Mail weglassen („All“, Kategorien, Smart views, die Stapel selbst); in
+   Ordnern und in der Suche bleibt sie stehen. Jede Mail sagt, auf welchem Stapel sie liegt (`MessageSummary::pile`);
+   liegt sie auf einem, heißt sein Knopf „Remove from Reply later“ bzw. „Remove from Set aside“.
+5. **„Reply later“ räumt sich selbst ab:** Taucht nach dem Auflegen eine eigene Mail (Absender = Adresse des Kontos) in
+   der Unterhaltung auf, egal in welchem Ordner und von welchem Programm gesendet, nimmt der Kern die Mail vom Stapel.
+   „Focus & reply“ nimmt sie nach dem Senden sofort herunter. „Set aside“ bleibt, bis man es herunternimmt. Verworfen:
+   `\Answered` – nicht jedes Programm setzt es.
+6. **Antwort während einer Wiedervorlage** (in der Planung entschieden, wie HEY): Neue Mail in der Unterhaltung zeigt
+   sich sofort (wie heute, `rules::merge_mail`). Ohne Bedingung bleibt das Datum stehen und holt die Unterhaltung dort
+   noch einmal nach oben, wenn ihr Eintrag dann offen ist (nicht archiviert). Mit „Only if no reply“ entfällt das Datum,
+   sobald eine Mail eines anderen in der Unterhaltung ankommt – auch eine, die schon gelesen ankommt oder in einem
+   anderen Ordner landet und darum nicht abgelegt wird; die Unterhaltung steht dann ohne „Back“ wieder in „All“.
+7. **Ansicht „Follow up“ ohne Zahl** (in der Planung entschieden) an der Stelle von „Later“: die zurückgestellten
+   Mail-Einträge mit Datum und „Cancel follow-up“. Eine Wiedervorlage, deren Unterhaltung nach einer Antwort schon
+   wieder in „All“ steht (Entscheidung 6), zeigt ihr Datum dort in der Leiste der Mail und steht nicht zusätzlich in
+   „Follow up“. Verworfen: ein zweiter Listentyp für offene Einträge mit Datum – dieselbe Mail an zwei Stellen.
+8. **Follow up an jeder Mail**, auch ohne Eintrag und an eigener gesendeter Mail (`inbox.snooze_item` mit `m:`-Id). Kommt
+   eine Mail zurück, die nicht im Posteingang liegt, steht sie trotzdem oben in „All“. Verworfen: nur Mail im
+   Posteingang – dann ginge der Hauptfall von „Only if no reply“ nicht, die eigene Mail, auf die keiner antwortet.
+9. **Heute zurückgestellte Mail wird Wiedervorlage ohne Bedingung**, ohne Migration: Es ist derselbe Zustand; ein
+   Eintrag ohne `follow_up` verhält sich wie bisher.
+10. **„Focus & reply“ zeigt Mail für Mail** den Stapel mit einem einfachen Antwortfeld darunter: Send, Skip (bleibt
+    liegen), Remove from Reply later, Open in compose window (Cc, Anhänge, Format). Verworfen: alle Mails untereinander
+    wie bei HEY – das Issue will Mail für Mail, und eine Mail mit Feld passt in jede Größenklasse.
+11. **Wörter, Tasten, Icons:** Reply later `w` (Icon `MessageSquareReply`, neu), Set aside `b` (Icon `Bookmark`, neu),
+    Follow up… `s` wie bisher Later (Icon `CalendarClock`). Seitenleiste: All · Reply later · Set aside · Follow up ·
+    Hidden. Deutsch: „Später beantworten“, „Beiseitelegen“ (Aktion) und „Beiseitegelegt“ (Stapel,
+    `trc("pile", "Set aside")`), „Wiedervorlage“.
+12. **Hub und Benachrichtigungen unverändert:** „Later“ für alle Quellen, ohne „Only if no reply“; eine Mail auf
+    Wiedervorlage steht dort unter „Later“. Der Eintrag einer Mail auf einem Stapel bleibt, wie er ist.
+
+```
+E19.1 ── E19.2 ── E19.3 ── E19.4 ── E19.5
+```
+
+E19.1 und E19.2 ändern dasselbe Schema (`SCHEMA_V16`, noch nicht ausgeliefert) und dieselben Stellen im Katalog: nicht
+parallel.
+
+**Nach dem Review (2026-10-27):**
+
+- `Request::SetMailPile` hat das optionale Feld `since`: Ein Undo legt die Mail mit ihrer alten Zeit zurück (höchstens
+  jetzt), und der Kern sucht sofort nach einer eigenen Antwort seither.
+- `MessageSummary::pile_since` sagt, seit wann eine Mail auf ihrem Stapel liegt; gefüllt wie `pile`.
+- `Request::SnoozeItem` hat das optionale Feld `keep_open`: Es setzt die Wiedervorlage eines Mail-Eintrags, ohne ihn
+  zurückzustellen (ein zurückgestellter wird wieder `seen`). Es dient dem Undo von „Cancel follow-up“ und von „Follow
+  up“ an einem offenen Eintrag.
+- `rules::merge_own_mail`: Eine Mail des Kontos selbst öffnet die Unterhaltung, lässt „Only if no reply“ aber stehen.
+- Außerdem: Erledigt beendet jede Wiedervorlage. Eine fällige mit „Only if no reply“ wacht erst auf, wenn der Mail-Feed
+  im Speicher keine Antwort fand. Stapel vergessen Mail, die es nicht mehr gibt. Entwürfe zählen nie als Antwort.
+
+### E19.1 Kern: Wiedervorlage mit „Only if no reply“
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-inbox/src/item.rs`, `crates/torro-inbox/src/rules.rs`,
+  `crates/torroworkplace/src/inbox.rs`, `crates/torroworkplace/src/core.rs`,
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torroworkplace/src/mail/store.rs`,
+  `crates/torroworkplace/src/mail/read.rs`, `crates/torroworkplace/src/mail/query.rs`,
+  `crates/torroworkplace/src/approvals.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`,
+  `crates/torroworkplace/src/mcp.rs` (nur Test), `crates/torro-core/src/i18n/de.rs`, `docs/api.md`,
+  `docs/api-reference.md`; nur `unless_reply` bzw. `follow_up: None` nachziehen, wo `Request::SnoozeItem { … }` oder
+  `Item { … }` vollständig gebaut wird: `crates/torro-ipc/src/inbox.rs`, `crates/torro-inbox/src/source.rs`,
+  `crates/torro-inbox/src/demo.rs`, `crates/torroworkplace/src/audit.rs`, `crates/torroworkplace/src/daemon.rs`,
+  `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/inbox_notify.rs`,
+  `crates/torroworkplace/src/assistant/data_rule.rs`, `crates/torroworkplace/src/assistant/model.rs`,
+  `crates/torroinbox/src/mail.rs`, `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/search.rs`
+- `torro-inbox/src/item.rs`: `pub struct FollowUp { at: DateTime<Utc>, unless_reply: bool, since: DateTime<Utc> }`
+  (Serialize, Deserialize, JsonSchema, Copy) und `Item::follow_up: Option<FollowUp>` (serde default,
+  `skip_serializing_if`). Doc-Kommentar: nur Mail-Einträge; wann die Unterhaltung wieder nach oben kommt, ob nur ohne
+  Antwort, seit wann gezählt wird; bleibt nach einer Antwort ohne Bedingung stehen (Entscheidungen 6 und 9).
+- `rules.rs`: neue `pub fn follow_up(item, until: Option<DateTime<Utc>>, unless_reply: bool, now)`: mit `until` wie
+  `snooze` und `follow_up = Some { at: until, unless_reply, since: now }`; ohne `until` wie `snooze(item, None)` und
+  `follow_up = None` (bricht auch eine stehende Wiedervorlage eines offenen Eintrags ab). `merge_mail`: eine
+  Wiedervorlage mit `unless_reply` fällt weg, eine ohne bleibt (Zustand `New` wie bisher). `wake`: zusätzlich ein
+  offener Eintrag (`New`/`Seen`) mit `follow_up.at <= now` → `New`, `updated = at`, `true`; jedes Aufwachen leert
+  `follow_up`. Neue `pub fn reply_came(item, at) -> bool`: Wiedervorlage mit `unless_reply` und `since < at` → `follow_up
+  = None`, ein `Snoozed`-Eintrag wird `Seen` (ohne `updated` zu ändern). `snooze` bleibt für andere Quellen.
+- `core.rs`: `with_entry_id` reicht `unless_reply` durch (sonst verlöre eine `m:`-Id die Bedingung still).
+  `unless_reply: true` an einem Eintrag, der keine Mail ist, lehnt `Core::handle_client` **vor** der Freigabe mit
+  `unsupported` ab (nach dem Muster der Prüfung von `SetMailShown` dort), damit `Confirm::OnEveryChange` nichts
+  freigeben lässt, was ohnehin scheitert.
+- `torro-ipc/src/lib.rs`: `Request::SnoozeItem` bekommt `unless_reply: bool` (`#[serde(default, skip_serializing_if =
+  "std::ops::Not::not")]`), Doc-Kommentar: nur für Mail-Einträge und `m:`-Ids, sonst `unsupported`; was eine Antwort
+  ist (Mail in der Unterhaltung, nicht vom Konto selbst, nach dem Zurückstellen, in jedem Ordner).
+- `torroworkplace/src/inbox.rs`: `SCHEMA_V16` mit `ALTER TABLE items ADD COLUMN follow_up TEXT` (Zeitpunkt `at` oder
+  NULL), `SCHEMA_VERSION` 16, Migration nach dem Muster der vorigen; `write_item` schreibt die Spalte. Handler
+  `Request::SnoozeItem`: für `SourceKind::Mail` `rules::follow_up`, sonst `rules::snooze` und mit `unless_reply`
+  `unsupported`; `until: None` mit `unless_reply: true` ignoriert die Bedingung (bricht ab wie ohne). `wake_due`: auch offene Einträge mit `follow_up <= now`, beide notieren `came_back`. Neue
+  `Inbox::reply_came(account, thread, at, now)`: der Mail-Eintrag mit `thread_key = thread` des Kontos, `rules::reply_came`,
+  speichern. `Inbox::mail_later`: Mails eines offenen Eintrags, der aus einer Wiedervorlage zurückkam, sind `back` wie
+  heute (nachsehen, dass `woken` dafür genügt).
+- `mail/store.rs`: `MailStore::thread_of(id) -> Option<String>` (falls es nicht schon eine Abfrage für `thread_id` je
+  Id gibt). `mail/inbox_feed.rs`: neue `Feed::note_replies(account, change)` für **jede** Änderung mit `new` (jeder Ordner,
+  auch `initial`): je neuer Mail, die nicht vom Konto selbst ist, `Inbox::reply_came(account, thread_id, date, now)`.
+  Aufrufen, wo der Feed eine `MailChange` bekommt, vor dem Ablegen des Posteingangs; `Feed::catch_up` prüft je Konto die
+  Wiedervorlagen mit `unless_reply` über `MailStore::replies_after(thread, since, own)`.
+- Rückkehr aus anderen Ordnern (Entscheidung 8): `mail/read.rs`, `LaterView::queries` bei `snoozed: Some(false)`: die
+  zweite Abfrage (`only: back`) ohne die `in:`-Bedingungen der Suche, damit eine gesendete Mail, die zurückkam, in „All“
+  (`in:inbox`) oben steht; dafür `query::Query::without_folders()` (lässt Klauseln weg, die nur aus `Test::In`
+  bestehen). Zählung (`counting`) bleibt.
+- Katalog `SNOOZE_ITEM`: ein Satz zu `unless_reply` (was als Antwort zählt; ohne bleibt das Datum nach einer Antwort
+  und holt die Unterhaltung noch einmal nach oben, solange sie offen ist; nur Mail, sonst `unsupported`).
+  `SEARCH_MESSAGES`: Mail, die aus einer Wiedervorlage zurückkam, kommt bei `snoozed: false` aus jedem Ordner mit.
+  `docs/api.md` beim Absatz zu `snooze_item`. `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md`
+  mitcommitten.
+- `approvals.rs`, `inbox_summary`: `SnoozeItem` mit `unless_reply` eigener Text `trf("Follow up on {entry} {when} unless
+  someone replies", …)` (Platzhalter `{entry}` und `{when}` wie im vorhandenen Arm). Übersetzung → „Wiedervorlage für
+  {entry} {when}, falls niemand antwortet“.
+- **Abnahme:** Regeltests: `follow_up` setzt und leert; `merge_mail` mit und ohne `unless_reply`; `wake` holt einen
+  offenen Eintrag mit fälligem Datum nach oben, einen erledigten nicht; `reply_came` vor und nach `since`. Kern-Tests:
+  Mail-Eintrag mit `unless_reply`, Antwort im Posteingang → kommt am Datum nicht wieder; Antwort schon gelesen bzw. in
+  einem anderen Ordner (`MailChange` mit `role: None`) → Eintrag `Seen`, kein `back`, kommt am Datum nicht wieder; eigene
+  Mail in der Unterhaltung zählt nicht; ohne Bedingung: Antwort öffnet, Datum bleibt, am Datum `New` mit `back`;
+  archiviert vor dem Datum → nicht; `unless_reply` an einem Agenten-Eintrag → `unsupported`, mit
+  `Confirm::OnEveryChange` ohne Freigabe; `m:`-Id mit `unless_reply` behält die Bedingung; gesendete Mail mit `m:`-Id
+  zurückgestellt und aufgewacht → in `in:inbox` mit `snoozed: false` oben; Migration V15 → V16. MCP-Test:
+  `inbox_snooze_item` mit `"unless_reply": true` baut `Request::SnoozeItem { unless_reply: true, .. }`.
+
+### E19.2 Kern: Stapel „Reply later“ und „Set aside“
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E19.1 · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/mail.rs`,
+  `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/inbox.rs`, `crates/torroworkplace/src/core.rs`,
+  `crates/torroworkplace/src/mail/read.rs`, `crates/torroworkplace/src/mail/store.rs`,
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torroworkplace/src/mail/write.rs` (Fakten der Freigabe),
+  `crates/torroworkplace/src/approvals.rs`, `crates/torroworkplace/src/audit.rs`, `crates/torroworkplace/src/daemon.rs`,
+  `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/mcp.rs`, `crates/torro-mail/src/message.rs`,
+  `crates/torro-mail/src/lib.rs` (Export), `crates/torro-core/src/i18n/de.rs`, `docs/api.md`, `docs/api-reference.md`;
+  nur das Feld `pile: None` nachziehen, wo `Request::SearchMail { … }` oder `MessageSummary { … }` vollständig gebaut
+  wird: `crates/torro-ipc/src/inbox.rs`, `crates/torroinbox/src/empty.rs`, `crates/torroinbox/src/search.rs`,
+  `crates/torro-inbox/src/rules.rs`, `crates/torroworkplace/src/mail/save.rs`, `crates/torroworkplace/src/mail/backup.rs`
+  (dazu `inbox.rs` und `store.rs` von oben)
+- Typen (serde snake_case, JsonSchema): `pub enum MailPile { ReplyLater, SetAside }` in `torro-mail/src/message.rs`
+  (aus `torro_mail` exportiert), `pub enum PileFilter { Without, ReplyLater, SetAside }` in `torro-ipc/src/mail.rs` neben
+  `MailSort`. `MessageSummary::pile: Option<MailPile>` (serde default, `skip_serializing_if`), nach dem Muster von
+  `back`: `mail.search_messages` füllt es für Konten in `later_accounts` (dafür `MailPiles` bei jeder Suche lesen; ohne
+  das Feld `pile` darf ein Lesefehler wie bei `snoozed` nur ins Protokoll), sonst `None`.
+- `Request::SetMailPile { ids: Vec<String>, pile: Option<MailPile> }`, serde `inbox.set_mail_pile`, Antwort
+  `Response::Ok`. Doc-Kommentar: legt die Mails (`m:…`) auf den Stapel oder nimmt sie ohne `pile` herunter; eine Mail
+  liegt auf höchstens einem Stapel; nichts geht an den Server; „Reply later“ räumt eine eigene Mail in der Unterhaltung
+  ab (Entscheidung 5); `not-found` für den ganzen Aufruf, sobald eine Id außer Reichweite ist. **Reichweite, Grenzen,
+  Freigabe, Protokoll genau wie `Request::SetMailShown`** (E18.2): `message_ids`, `limit_refusal` (1 bis `MAX_IDS`),
+  Prüfung vor der Freigabe in `Core::handle_client` mit derselben Funktion (`Core::shown_mail_of` umbenennen in
+  `reachable_mail_of` und für beide nutzen), die Fakten der Freigabe (`core.rs`, Arm `Area::Inbox`: `facts.mail =
+  mail::write::facts(…)` auch für `SetMailPile`; `mail::write::facts` ebenso), `handle_within_as`/`inbox_request`,
+  `out_of_reach` in `pim.rs`,
+  `audit::ids` als `message:<hash>`, `approvals::inbox_summary` mit den Betreffen, `daemon.rs` `describe` nur mit der
+  Anzahl. Texte: `trf("Put {messages} on Reply later", …)`, `trf("Set {messages} aside", …)`, `trf("Take {messages} off
+  their pile", …)`.
+- `Request::SearchMail` bekommt `pile: Option<PileFilter>` (serde default, `skip_serializing_if`): `without` lässt Mail
+  auf einem Stapel weg, `reply_later`/`set_aside` gibt nur diesen Stapel; vor dem Seitenschnitt, ein Cursor gehört auch
+  zu diesem Feld; wie `snoozed` nur für Konten, deren Einträge der Aufrufer sieht (sonst liegt nichts auf einem Stapel).
+- Speicher: `SCHEMA_V16` aus E19.1 bekommt `mail_piles(account TEXT, message TEXT, pile TEXT, at TEXT, PRIMARY
+  KEY(account, message))`. `Inbox::set_mail_pile(&[(account, message)], pile, now)` (setzen: neue Zeile oder anderer
+  Stapel mit `at = now`, derselbe Stapel noch einmal behält `at`, damit ein wiederholter Aufruf das Abräumen nicht
+  verschiebt; ohne `pile` löschen), `Inbox::mail_piles(accounts) -> MailPiles` (`of(account, pile)`, `all_of(account)`),
+  `Inbox::reply_later_of(account) -> Vec<(message, at)>`. Beim Entfernen eines Kontos gehen seine Zeilen wie die von
+  `shown_mail`.
+- `mail/read.rs`: `MailPiles` nur lesen, wenn `pile` gefragt ist, für `later_accounts`; in `LaterView` aufnehmen
+  (`queries` und `counting`): `without` erweitert `except`, ein Stapel setzt `only` (Schnittmenge mit einem schon
+  gesetzten `only`). Mit `snoozed` und `hidden` gelten alle.
+- Abräumen (Entscheidung 5): `Feed::note_replies` aus E19.1 nimmt für jede neue Mail **vom** Konto selbst die Mails von
+  `reply_later_of(account)` herunter, die in derselben Unterhaltung liegen (`MailStore::thread_of`) und vor dem Datum
+  der neuen Mail aufgelegt wurden. `Feed::catch_up` ebenso über `MailStore::sent_after(thread, after, own) -> u32`
+  (neu, Gegenstück zu `replies_after`).
+- Katalog `SET_MAIL_PILE`: `Area::Inbox`, `Access::Write`, `Mcp::Tool`; in `Request::operation`, `CATALOGUE` und
+  `samples()`. Beschreibung: was die zwei Stapel sind, dass eine Mail auf einem liegt, ohne `pile` herunter, Abräumen
+  durch eine eigene Antwort, nichts auf dem Server, `not-found` for mail of accounts this key may not see.
+  `SEARCH_MESSAGES` um `pile` ergänzen. `mcp.rs`: `"inbox.set_mail_pile"` in die Liste der wiederholbaren Befehle. Im Test
+  mit der Namensliste der Inbox-Befehle in `api.rs` eintragen. `docs/api.md`: Absatz zu `hidden` und Bereichstabelle
+  (`set_mail_pile` unter Write). `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md` mitcommitten.
+- Übersetzungen der drei Freigabe-Texte in `de.rs`: „{messages} auf „Später beantworten“ legen“, „{messages}
+  beiseitelegen“, „{messages} von ihrem Stapel nehmen“.
+- **Abnahme:** Kern-Tests: auflegen → `pile: without` ohne, `reply_later` nur mit der Mail, jede Mail einer Suche trägt
+  ihren `pile`; verlegen nach `set_aside`; derselbe Stapel zweimal behält `at`;
+  herunternehmen; Seiten und Cursor stimmen mit `pile`, `snoozed` und `hidden` zusammen; eigene Mail in der
+  Unterhaltung (Gesendet, `MailChange`) nimmt sie von „Reply later“, nicht von „Set aside“, eine fremde nicht; Mail
+  eines Kontos außerhalb von `mail_accounts` bzw. `inbox_sources` → `not-found`, nichts gemerkt, mit
+  `Confirm::OnEveryChange` keine Freigabe; 0 und `MAX_IDS + 1` Ids → `error`; Freigabe-Text nennt die Betreffe aus dem
+  Mail-Speicher.
+  MCP-Test: `inbox_set_mail_pile` mit `{"ids": ["m:1"], "pile": "reply_later"}` baut `Request::SetMailPile`. Rechte-
+  Tabellentest und Vertragstest des Katalogs laufen mit.
+
+### E19.3 Client, Quellen und Demo
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E19.2 · **Dateien:** `crates/torro-ipc/src/inbox.rs`, `crates/torroinbox/src/mail.rs`,
+  `crates/torroinbox/src/empty.rs`, `crates/torroinbox/src/compose.rs` (nur Sichtbarkeit), `crates/torroinbox/src/app.rs`
+  (nur Aufrufer von `snooze_item`), `crates/torro-inbox/src/demo.rs`
+- `torro-ipc/src/inbox.rs`: `InboxClient::snooze_item(id, until, unless_reply: bool)`; `MailByRole` bekommt `pile:
+  Option<PileFilter>`; `count_unread_in_all` und `search_by_category` schicken `pile: Some(PileFilter::Without)`.
+  Neu: `set_mail_pile(ids, pile: Option<MailPile>) -> Result<(), InboxError>`, `mail_in_pile(find: MailInPile)` (Seite
+  eines Stapels: `pile`, `account`, `order`, `limit`, `cursor`; Query `-in:trash -in:junk`) und `count_in_pile(pile,
+  account: Option<String>) -> Result<u64, InboxError>` (dieselbe Suche mit `limit: 1`, `total_estimate`, fehlt sie: 0).
+- `torroinbox/src/mail.rs`, Trait `MailSource`: `set_mail_pile`, `mail_in_pile`, `count_in_pile` wie oben und
+  `send_reply(id, text) -> Result<(), InboxError>` (für „Focus & reply“): Mail holen, Antwort wie das Schreibfenster
+  bauen (`compose::opening` mit `Kind::Reply`, Zitat, Absender über `compose::pick_sender`), `mail.save_draft`, dann
+  `mail.send_draft`. Dafür in `compose.rs` nur die nötigen Helfer `pub(crate)` machen. Umsetzen für `InboxClient`,
+  `DemoSource` und `crate::empty::EmptySource`.
+- `torro-inbox/src/demo.rs`: zwei Demo-Mails auf „Reply later“, eine auf „Set aside“ (fest im Datensatz, aus „All“
+  verschwunden, mit `pile` an ihren Zusammenfassungen), `set_mail_pile` ändert den Demo-Zustand, `send_reply` gelingt und nimmt die Mail vom Stapel, ein
+  zurückgestellter Demo-Eintrag hat `follow_up` mit `unless_reply: true`.
+- **Abnahme:** Client-Tests (Muster der vorhandenen `Request::SearchMail`-Tests in `inbox.rs`): `set_mail_pile`,
+  `mail_in_pile`, `count_in_pile`, `snooze_item` mit `unless_reply` bauen die Requests wie oben; „All“ und Kategorien
+  schicken `pile: without`. Demo-Tests: Stapel listen und zählen, „All“ ohne sie, verlegen, herunternehmen,
+  `send_reply`.
+
+### E19.4 Mail-Fenster: Aktionen, Seitenleiste, Ansichten
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E19.3 · **Dateien:** `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/mail.rs`,
+  `crates/torroinbox/src/keys.rs`, `crates/torroinbox/src/list.rs`, `crates/torroinbox/src/detail.rs`,
+  `crates/torro-gui/src/icon.rs`, `crates/torro-gui/assets/icons/message-square-reply.svg`,
+  `crates/torro-gui/assets/icons/bookmark.svg`, `crates/torro-core/src/i18n/de.rs`
+- Icons: `MessageSquareReply` und `Bookmark` aus Lucide 0.469.0, Strich 1.75, in `Icon::ALL`.
+- `View`: neue Fälle `ReplyLater` und `SetAside` (`mail.*` only, `is_mail` true, `filter` None, `listing`
+  `"reply-later"`/`"set-aside"`, `--open`-Wörter ebenso, Name `tr("Reply later")` bzw. `trc("pile", "Set aside")`, Icons
+  wie Entscheidung 11). `Kind::view_name`/`view_icon`: im Mail-Fenster `View::Snoozed` als `tr("Follow up")` mit
+  `CalendarClock`; Hub und Benachrichtigungen behalten „Later“.
+- `fetch_with_accounts`/`more_mail`: die Stapel über `MailSource::mail_in_pile` mit `mail_accounts`; „All“ mit `pile:
+  without`; „With attachments“ und „Invitations“ statt `search_mail` je Posteingangsordner über `mail_by_role`
+  (`Role::Inbox`, `account` des Ordners, `pile: without`, `snoozed`/`hidden` None wie bisher). Für `Kind::Mail` die
+  Zahlen beider Stapel über `count_in_pile` je gezeigtem Konto (neue Felder in `Loaded`/`App`; ein Fehler lässt die Zahl
+  weg).
+- `nav_entries` (`Kind::Mail`) und das Menü: All (ungelesen) · Reply later (Zahl) · Set aside (Zahl) · Follow up (ohne)
+  · Hidden.
+- **Aktionen** (neue `Message::Pile(id, Option<MailPile>)`, `App::pile_mail`: `set_mail_pile`, Zeile mit `take_out`
+  heraus, nur in Listen, die Stapel-Mail weglassen (Entscheidung 4), sonst `pile` der Zeile aktualisieren; Hinweis
+  `tr("On Reply later.")` / `tr("Set aside.")` / `tr("Off the pile.")` mit Undo, das den vorigen Stapel aus
+  `MessageSummary::pile` wiederherstellt; Zahlen nachziehen; Fehler bringt die Zeile zurück): `mail::file_items` in dieser Reihenfolge Archive ·
+  Reply later (`W`) · Set aside (`B`) · Follow up… (`S`) · Move to… · Delete · Save attachments; liegt die Mail auf
+  einem Stapel (`MessageSummary::pile`), steht statt seines Items „Remove from Reply later“ bzw. „Remove from Set aside“
+  (gleiche Taste), in jeder Ansicht. Kontextmenü der
+  Zeile über dieselben Gruppen. `mail::message_buttons` (Einladung): „Later“ → `tr("Follow up")` mit `CalendarClock`.
+  `keys.rs`: `Key::W`, `Key::B`, `Command::ReplyLater`, `Command::SetAside` in `Focus::List` (im Leser über den
+  Rückfall); `App::run` in Ansichten von Mail für die Mail unter dem Cursor.
+- **Follow up…** an jeder Mail (Entscheidung 8): ohne Eintrag öffnet `s` bzw. das Item das Menü für die `m:`-Id (die
+  Mail-Id statt `subject` merken), `Edit::Snooze` bekommt `unless_reply` und schickt sie an `snooze_item`. Im
+  Mail-Fenster: Menütitel `tr("Follow up")`, unter den Zeiten eine Zeile `tr("Only if no reply")` (`Icon::SquareCheck` /
+  `Icon::Square`, schaltet ein App-Feld, Menü bleibt offen); der Picker mit Titel `tr("Follow up on")`, Knopf
+  `tr("Follow up")` und demselben Schalter als `widgets::choice_chip`; „Bring back now“ heißt `tr("Cancel follow-up")`
+  und steht auch an einem offenen Eintrag mit `follow_up` (Entscheidung 7). Wo Zeilen, Paneel und Hinweise des
+  Mail-Fensters „Later until {time}“ zeigen (`App`, `detail.rs`, `list.rs`): `trf("Follow up {time}", …)`, mit
+  `unless_reply` dahinter `tr("only if no reply")`.
+- Übersetzungen in `de.rs`: Reply later → Später beantworten; Set aside → Beiseitelegen, `trc("pile", "Set aside")` →
+  Beiseitegelegt; Follow up → Wiedervorlage; Follow up… → Wiedervorlage…; Follow up on → Wiedervorlage am; Follow up
+  {time} → Wiedervorlage {time}; only if no reply → nur ohne Antwort; Only if no reply → Nur ohne Antwort; Cancel
+  follow-up → Wiedervorlage aufheben; Remove from Reply later → Aus „Später beantworten“ nehmen; Remove from Set aside →
+  Zurück aus „Beiseitegelegt“; On Reply later. → Auf „Später beantworten“.; Set aside. → Beiseitegelegt.; Off the
+  pile. → Vom Stapel genommen.
+- **Abnahme:** App-Tests (vorhandene Tests mit `tr("Later")` im Mail-Fenster umstellen, Hub-Tests bleiben):
+  Seitenleiste und Menü zeigen All · Reply later · Set aside · Follow up · Hidden, Zahlen aus `count_in_pile`, „Later“
+  fehlt; die Stapel fragen `mail_in_pile` und laden nach; `w`/`b` und die Items schicken `set_mail_pile`, nehmen die
+  Zeile heraus, Undo stellt den vorigen Zustand her; in einem Ordner bleibt die Zeile stehen; an einer Mail mit `pile` „Remove from …“; `s` an einer Mail ohne
+  Eintrag schickt `snooze_item` mit der `m:`-Id; der Schalter „Only if no reply“ landet als `unless_reply: true`;
+  „Cancel follow-up“ schickt `until: None`; im Hub heißt es weiter `tr("Later")`. Vergleiche mit `tr(…)`.
+
+### E19.5 „Focus & reply“, Doku, Sichtprüfung
+- [ ] erledigt (umgesetzt; es fehlt nur die Sichtprüfung mit `torro-design-review`)
+- **Modell:** Opus · **Braucht:** E19.4 · **Dateien:** `crates/torroinbox/src/app.rs`, `crates/torroinbox/src/mail.rs`,
+  `crates/torroinbox/src/keys.rs`, `crates/torroinbox/src/compose.rs` (nur Sichtbarkeit der Sende-Taste),
+  `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md`
+- In „Reply later“ trägt die Kopfleiste den Primärknopf `tr("Focus & reply")` (Icon `MessageSquareReply`, aus bei leerem
+  Stapel); `--open focus`. Zustand `App::focus_reply: Option<FocusReply>` (Ids des Stapels beim Start, Stelle, Inhalt
+  des Felds als `text_editor::Content`, sendet gerade). Die Ansicht ersetzt Liste und Leser: Kopfleiste „‹ Reply later“
+  (Escape), `trf("{n} of {total}", …)`, vorige/nächste (`ChevronUp`/`ChevronDown`); darunter in der Lesespalte
+  (`size::reading_max()`) Kopf und Text der Mail wie im Leser (`mail::head`, `letter`), eine `LINE`, das Feld
+  (Platzhalter `tr("Write a reply…")`) und eine Reihe: `tr("Send")` primär (`widgets::busy_button` mit
+  `tr("Sending…")`), `tr("Skip")` secondary, `tr("Remove from Reply later")` ghost, Icon-Knopf `SquarePen` mit Tooltip
+  `tr("Open in compose window")` (`Compose::Reply`). Keine Aktionsleiste. Breit, Mittel und Schmal gleich gebaut; Mini
+  und Leiste bleiben Anzeigen.
+- Senden: `MailSource::send_reply`, danach `set_mail_pile([id], None)`, Hinweis `tr("Sent.")`, nächste Mail; ein Fehler
+  bleibt mit dem Text im Feld, nochmal versuchen geht. Skip geht weiter, die Mail bleibt liegen. Am Ende `empty_state`
+  `tr("Nothing left to reply to.")` mit `tr("Back to Reply later")`. Die Sende-Taste der Vorlage (`compose::is_send`)
+  sendet auch hier; ohne Fokus im Feld gehen `j`/`k` zur nächsten/vorigen Mail.
+- `docs/eingang.md`: Abschnitt „Später für jede Mail“ um die drei Aktionen ergänzen (Entscheidungen 1–12: Stapel je
+  Mail, Wiedervorlage je Unterhaltung, „Only if no reply“, Abräumen, „Follow up“-Ansicht, „Focus & reply“, Hub
+  unverändert), die Zeile zur Seitenleiste des Mail-Fensters und „Aktionsleiste der Mail“ (Items von File) anpassen.
+- Übersetzungen in `de.rs`: Focus & reply → Fokus & Antworten; {n} of {total} → {n} von {total}; Write a reply… →
+  Antwort schreiben…; Skip → Überspringen; Sent. → Gesendet.; Nothing left to reply to. → Nichts mehr zu beantworten.;
+  Back to Reply later → Zurück zu „Später beantworten“; Open in compose window → Im Schreibfenster öffnen; „Send“ und
+  „Sending…“ stehen schon dort.
+- **Abnahme:** App-Tests: „Focus & reply“ zeigt die erste Mail des Stapels mit Feld, Skip geht weiter und lässt sie
+  liegen, Send schickt `send_reply` und `set_mail_pile(…, None)` und geht weiter, ein Fehler bleibt im Feld, Remove
+  nimmt herunter, das Ende zeigt den Leerzustand, Escape führt zurück. Sichtprüfung mit `torro-design-review` in allen
+  Größenklassen (`torroinbox --view mail --demo`, `--open reply-later`, `set-aside`, `snoozed`, `focus`, `menu`,
+  Leiste eingeklappt und ausgeklappt, hell und dunkel, Standard und Console). Abschließend die Prüfbefehle aus
+  `docs/issue-workflow.md` (`cargo fmt --all`, Clippy, `cargo test --workspace`, `TORRO_LANG=de cargo test --workspace`).
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur

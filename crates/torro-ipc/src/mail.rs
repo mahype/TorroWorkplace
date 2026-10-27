@@ -328,6 +328,18 @@ pub enum MailSort {
     Relevance,
 }
 
+/// Which mail `mail.search_messages` takes by its pile (`pile`, task E19.2, [`torro_mail::MailPile`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PileFilter {
+    /// Leaves out mail on either pile: what "All", the categories and the smart views list.
+    Without,
+    /// Only mail on "Reply later".
+    ReplyLater,
+    /// Only mail on "Set aside".
+    SetAside,
+}
+
 /// Why a page of `mail.search_messages` may lack matches (`incomplete_reason`, issue #136).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -608,11 +620,12 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::MailBackupCreate { file_name: Some(file_name), .. } if !valid_backup_filename(file_name) => {
             refuse(tr("Backup file name must be a plain .zip name or absolute app path.").into())
         }
-        // "Show again" (task E18.2) names mail as `mail.set_flags` does.
+        // "Show again" (task E18.2) and the piles (task E19.2) name mail as `mail.set_flags` does.
         Request::SetMailFlags { ids, .. }
         | Request::MoveMail { ids, .. }
         | Request::DeleteMail { ids, .. }
-        | Request::SetMailShown { ids, .. } => {
+        | Request::SetMailShown { ids, .. }
+        | Request::SetMailPile { ids, .. } => {
             if ids.is_empty() {
                 return refuse("name at least one message in ids".into());
             }
@@ -726,7 +739,8 @@ impl Request {
 
     /// Every message id a request names, in order: `id`/`ids` (also of `mail.list_save_targets` and
     /// `mail.save_attachments`), a draft's own id, the message it answers and the messages it
-    /// forwards parts of, the mail shown again (`inbox.set_mail_shown`, task E18.2). Empty for every
+    /// forwards parts of, the mail shown again (`inbox.set_mail_shown`, task E18.2) or put on a pile
+    /// (`inbox.set_mail_pile`, task E19.2). Empty for every
     /// other request. If one of
     /// them is in an account the caller does not reach, the whole call is `not-found` (checked
     /// before anything is read).
@@ -741,7 +755,8 @@ impl Request {
             Request::SetMailFlags { ids, .. }
             | Request::MoveMail { ids, .. }
             | Request::DeleteMail { ids, .. }
-            | Request::SetMailShown { ids, .. } => ids.iter().map(String::as_str).collect(),
+            | Request::SetMailShown { ids, .. }
+            | Request::SetMailPile { ids, .. } => ids.iter().map(String::as_str).collect(),
             Request::SaveDraft { draft } => {
                 let parts = draft.attachments.iter().filter_map(|attachment| match attachment {
                     DraftAttachment::MailPart { message, .. } => Some(message.as_str()),
@@ -776,6 +791,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         }
     }
 
@@ -985,6 +1001,12 @@ mod tests {
         assert_eq!(limit_refusal(&shown(ids(MAX_IDS))), None);
         assert!(refused(&shown(vec!["m:".to_string() + &"x".repeat(MAX_ID_BYTES)])));
         assert_eq!(shown(ids(2)).message_ids(), ["m:0", "m:1"]);
+        // Task E19.2: the piles alike, also without a pile (taking off).
+        let pile = |ids| Request::SetMailPile { ids, pile: None, since: None };
+        assert!(refused(&pile(ids(0))) && refused(&pile(ids(MAX_IDS + 1))));
+        assert_eq!(limit_refusal(&pile(ids(MAX_IDS))), None);
+        assert!(refused(&pile(vec!["m:".to_string() + &"x".repeat(MAX_ID_BYTES)])));
+        assert_eq!(pile(ids(2)).message_ids(), ["m:0", "m:1"]);
 
         assert!(refused(&search(0, None)) && refused(&search(MAX_LIMIT + 1, None)));
         assert_eq!(limit_refusal(&search(MAX_LIMIT, Some("ä".repeat(MAX_QUERY_CHARS)))), None, "characters, not bytes");

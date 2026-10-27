@@ -1909,14 +1909,21 @@ impl<S: ComposeSource + 'static> Window<S> {
 }
 
 /// The keys of the shortcut "send" shown in the tooltip of "Send", in the system's preset
-/// (`torro_core::shortcuts`, tasks E10.1, E10.1b): "Ctrl+Enter", "Shift+Cmd+D" on macOS.
-fn send_keys() -> String {
+/// (`torro_core::shortcuts`, tasks E10.1, E10.1b): "Ctrl+Enter", "Shift+Cmd+D" on macOS. Also the
+/// tooltip of "Send" in the mail window's "Focus & reply" (task E19.5).
+pub(crate) fn send_keys() -> String {
     Preset::default().hint(shortcuts::Command::Send, System::current()).unwrap_or_default()
 }
 
 /// Whether `key` held with `modifiers` is the shortcut "send" on `system` (tasks E10.1, E10.1b):
-/// Ctrl + Enter, on macOS also ⇧⌘D (Apple Mail), ⌘ + Enter or Ctrl + Enter.
-fn is_send(system: System, key: &Key, physical_key: keyboard::key::Physical, modifiers: keyboard::Modifiers) -> bool {
+/// Ctrl + Enter, on macOS also ⇧⌘D (Apple Mail), ⌘ + Enter or Ctrl + Enter. The reply field of the
+/// mail window's "Focus & reply" sends with it too (task E19.5).
+pub(crate) fn is_send(
+    system: System,
+    key: &Key,
+    physical_key: keyboard::key::Physical,
+    modifiers: keyboard::Modifiers,
+) -> bool {
     keys::shortcut_on(system, key, physical_key, modifiers) == Some(shortcuts::Command::Send)
 }
 

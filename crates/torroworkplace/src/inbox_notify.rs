@@ -230,7 +230,12 @@ pub fn request(answer: Answer, popup: &Popup, now: DateTime<Utc>) -> Option<Requ
         Answer::Archive => Some(Request::MoveMail { ids: messages()?, to: MoveTarget::Role(MoveRole::Archive) }),
         Answer::MarkRead => Some(Request::SetMailFlags { ids: messages()?, add: vec![Flag::Seen], remove: Vec::new() }),
         Answer::Done => Some(Request::SetItemDone { id: popup.entry()?.to_string(), done: true, dismissed: false }),
-        Answer::Snooze => Some(Request::SnoozeItem { id: popup.entry()?.to_string(), until: Some(now + SNOOZE_FOR) }),
+        Answer::Snooze => Some(Request::SnoozeItem {
+            id: popup.entry()?.to_string(),
+            until: Some(now + SNOOZE_FOR),
+            unless_reply: false,
+            keep_open: false,
+        }),
         Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string(), target: None }),
     }
 }
@@ -932,6 +937,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
@@ -1213,7 +1219,12 @@ mod tests {
         assert_eq!(request(Answer::Done, &popup, now), Some(done));
         assert_eq!(
             request(Answer::Snooze, &popup, now),
-            Some(Request::SnoozeItem { id: "a".into(), until: Some(now + TimeDelta::hours(1)) })
+            Some(Request::SnoozeItem {
+                id: "a".into(),
+                until: Some(now + TimeDelta::hours(1)),
+                unless_reply: false,
+                keep_open: false
+            })
         );
         let open = Some(Request::OpenApp { app: "torroinbox".into(), target: None });
         assert_eq!(request(Answer::Open, &popup, now), open);
@@ -1394,7 +1405,9 @@ mod tests {
         show_all(popups.clone(), &desktop, &send);
         assert_eq!(*desktop.shown.lock().expect("lock"), popups);
         let sent = sent.lock().expect("lock");
-        let [Request::SnoozeItem { id, until: Some(until) }] = sent.as_slice() else { panic!("one snooze: {sent:?}") };
+        let [Request::SnoozeItem { id, until: Some(until), .. }] = sent.as_slice() else {
+            panic!("one snooze: {sent:?}")
+        };
         assert_eq!(id, "a");
         assert!(*until >= before + SNOOZE_FOR, "an hour from the answer");
     }

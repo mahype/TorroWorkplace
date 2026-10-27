@@ -747,6 +747,8 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.mute_item",
     // Showing the same mail again, or taking that back again, changes nothing more (task E18.2).
     "inbox.set_mail_shown",
+    // The same pile again keeps the mail where it is and since when (task E19.2).
+    "inbox.set_mail_pile",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
@@ -2214,8 +2216,29 @@ mod tests {
         // Task E18.2: "Show again" for one mail, onto its request.
         let shown = call("inbox_set_mail_shown", json!({"ids": ["m:1"], "shown": true}));
         assert_eq!(shown, Ok(Request::SetMailShown { ids: vec!["m:1".into()], shown: true }));
+        // Task E19.2: a pile by its word, off without one.
+        let pile = call("inbox_set_mail_pile", json!({"ids": ["m:1"], "pile": "reply_later"}));
+        let reply_later = Some(torro_mail::MailPile::ReplyLater);
+        assert_eq!(pile, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: reply_later, since: None }));
+        let off = call("inbox_set_mail_pile", json!({"ids": ["m:1"]}));
+        assert_eq!(off, Ok(Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None }));
+        // Review of #315: undo with the time the mail had on its pile.
+        let undo = json!({"ids": ["m:1"], "pile": "reply_later", "since": "2026-10-16T08:00:00Z"});
+        let undo = call("inbox_set_mail_pile", undo);
+        assert!(matches!(undo, Ok(Request::SetMailPile { since: Some(_), .. })), "{undo:?}");
         let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
-        assert!(matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_) }) if id == "m:1"), "{later:?}");
+        assert!(
+            matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_), unless_reply: false, keep_open: false }) if id == "m:1"),
+            "{later:?}"
+        );
+        // Review of #315: following up an open entry without putting it off.
+        let open = json!({"id": "m:1", "until": "2026-10-16T08:00:00Z", "keep_open": true});
+        let open = call("inbox_snooze_item", open);
+        assert!(matches!(open, Ok(Request::SnoozeItem { keep_open: true, unless_reply: false, .. })), "{open:?}");
+        // Task E19.1: "Only if no reply" comes through the request's schema.
+        let follow_up = json!({"id": "m:1", "until": "2026-10-16T08:00:00Z", "unless_reply": true});
+        let follow_up = call("inbox_snooze_item", follow_up);
+        assert!(matches!(follow_up, Ok(Request::SnoozeItem { unless_reply: true, .. })), "{follow_up:?}");
         let get = call("mail_get_message", json!({"id": "m:1", "include_body": true}));
         assert_eq!(get, Ok(Request::GetMail { id: "m:1".into(), include_body: true, include_html: false }), "no HTML");
         let html = call("mail_get_message", json!({"id": "m:1", "include_body": true, "include_html": true}));
@@ -3369,6 +3392,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         };
         let listed = result_of(Response::Items { items: vec![entry("a", true), entry("b", false)] });
         let items = &listed.structured_content.expect("structured")["items"];

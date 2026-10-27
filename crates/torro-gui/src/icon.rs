@@ -202,6 +202,10 @@ pub enum Icon {
     FileType,
     /// "None" in the menu of a server's folder: no folder chosen (issue #303).
     FolderX,
+    /// "Reply later" in the mail window (task E19.4): a pile of mail to answer.
+    MessageSquareReply,
+    /// "Set aside" in the mail window (task E19.4): a pile of mail to look up again.
+    Bookmark,
 }
 
 impl Icon {
@@ -319,6 +323,8 @@ impl Icon {
         Icon::Sheet,
         Icon::FileType,
         Icon::FolderX,
+        Icon::MessageSquareReply,
+        Icon::Bookmark,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -446,6 +452,8 @@ impl Icon {
             Icon::Sheet => include_bytes!("../assets/icons/sheet.svg"),
             Icon::FileType => include_bytes!("../assets/icons/file-type.svg"),
             Icon::FolderX => include_bytes!("../assets/icons/folder-x.svg"),
+            Icon::MessageSquareReply => include_bytes!("../assets/icons/message-square-reply.svg"),
+            Icon::Bookmark => include_bytes!("../assets/icons/bookmark.svg"),
         }
     }
 }

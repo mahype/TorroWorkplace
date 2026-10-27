@@ -125,6 +125,17 @@ impl Query {
         self.terms().any(|term| matches!(term.test, Test::Text { .. }))
     }
 
+    /// The query without the clauses that only ask for folders (`in:` alone, or several joined by
+    /// `OR`), every other clause as it is (task E19.1). For the mail back from a follow-up with
+    /// `snoozed: false`: it stands on top of "All" (`in:inbox`) also when it lies elsewhere, a sent
+    /// mail nobody answered. A clause mixing `in:` with another test stays whole, and so does one
+    /// that leaves a folder out (`-in:trash`): that narrows, it never asks for a place.
+    pub fn without_folders(&self) -> Query {
+        let folders_only =
+            |clause: &Clause| clause.any.iter().all(|term| !term.negated && matches!(term.test, Test::In(_)));
+        Query { clauses: self.clauses.iter().filter(|clause| !folders_only(clause)).cloned().collect() }
+    }
+
     /// It needs the texts of messages (words anywhere, or attachment names), which are indexed
     /// after the headers: while the index is not complete, it may miss matches.
     pub fn needs_texts(&self) -> bool {
@@ -443,5 +454,22 @@ mod tests {
         assert!(headers.has_words() && !headers.needs_texts(), "headers are indexed from the start");
         assert!(parse("filename:pdf").expect("parses").needs_texts());
         assert!(!parse("is:unread in:inbox").expect("parses").has_words());
+    }
+
+    /// Task E19.1: only clauses that ask for folders go; the rest stays as it was.
+    #[test]
+    fn without_folders_drops_only_what_asks_for_a_folder() {
+        let query = parse("in:inbox offer in:sent OR in:archive -in:trash in:inbox OR is:unread").expect("parses");
+        assert_eq!(
+            query.without_folders(),
+            Query {
+                clauses: vec![
+                    Clause { any: vec![word("offer")] },
+                    Clause { any: vec![not(test(Test::In("trash".into())))] },
+                    Clause { any: vec![test(Test::In("inbox".into())), test(Test::Unread(true))] },
+                ]
+            }
+        );
+        assert!(parse("in:inbox").expect("parses").without_folders().is_empty());
     }
 }

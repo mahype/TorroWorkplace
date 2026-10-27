@@ -306,10 +306,12 @@ impl ReadMessage {
                 // Read from the calendar part by the core, which keeps it in its store (task E8.3b).
                 invite: None,
                 back: None,
+                pile: None,
                 // Decided by the core when it files the mail, not while the MIME is parsed
                 // (task E12.1); the store keeps it.
                 category: None,
                 untrusted: true,
+                pile_since: None,
             },
             cc: self.cc,
             reply_to: self.reply_to,

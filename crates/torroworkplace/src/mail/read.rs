@@ -46,6 +46,11 @@
 //! by one (task E18.2, `inbox.set_mail_shown`) is never hidden, like the mail of an open entry;
 //! which of some messages are hidden now says [`hidden_now`], with the same rules.
 //!
+//! **Piles** (task E19.2, `pile`): the inbox says which mail lies on "Reply later" or "Set aside"
+//! ([`Inbox::mail_piles`]), read for every search for the same accounts as "Later", so every message
+//! names its pile (`MessageSummary::pile`). `without` leaves that mail out by id (`except`), a pile
+//! keeps only its mail (`only`), both before the page is cut, with `snoozed` and `hidden` as well.
+//!
 //! **Attachments** go to the managed folder (`AttachmentCache`), at most
 //! [`ATTACHMENT_MAX_BYTES`], under a cleaned file name, so a name from outside never picks the
 //! path.
@@ -70,9 +75,9 @@ use torro_core::i18n::tr;
 use torro_inbox::SourceRef;
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area};
-use torro_ipc::mail::{IncompleteReason, MailHighlight, MailSort, MailSource};
+use torro_ipc::mail::{IncompleteReason, MailHighlight, MailSort, MailSource, PileFilter};
 use torro_ipc::{Request, mail::limit_refusal};
-use torro_mail::{Invite, MailAddress, Message, MessageSummary, Order};
+use torro_mail::{Invite, MailAddress, MailPile, Message, MessageSummary, Order};
 use torro_mail_imap::imap::Session;
 use torro_mail_imap::mime::{self, MimeError, ReadMessage};
 
@@ -83,7 +88,7 @@ use super::service::{MailError, MailService, SharedStore};
 #[cfg(doc)]
 use super::store::BODY_RETENTION_DAYS;
 use super::store::{Body, FolderRef, Hiding, MessageRef, SearchQuery};
-use crate::inbox::{Inbox, MailHidden, MailLater};
+use crate::inbox::{Inbox, MailHidden, MailLater, MailPiles};
 use crate::pim::Reach;
 
 /// The largest attachment `mail.get_attachment` hands out: 50 MiB.
@@ -142,6 +147,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
             snoozed,
             hidden,
             categories,
+            pile,
         } => {
             let (order, sort) = (order.unwrap_or_default(), sort.unwrap_or_default());
             let search = Search {
@@ -159,6 +165,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
                 snoozed,
                 hidden,
                 categories,
+                pile,
             };
             // Boxed: the core's request match awaits this deep in the stack already.
             Box::pin(search_messages(mail, inbox, reach, search, Utc::now())).await
@@ -264,25 +271,37 @@ pub struct Search {
     /// "Hidden" (task E18.1): `false` without the mail hidden from the inbox folder, `true` that
     /// mail only, `None` all of it.
     pub hidden: Option<bool>,
+    /// The piles (task E19.2): `without` leaves out mail on a pile, a pile keeps only its mail,
+    /// `None` all of it.
+    pub pile: Option<PileFilter>,
 }
 
-/// What a search makes of "Later" (task E9.1) and "Hidden" (task E18.1): the inbox's word on the
-/// stores in scope and the search's `snoozed` and `hidden`.
+/// What a search makes of "Later" (task E9.1), "Hidden" (task E18.1) and the piles (task E19.2):
+/// the inbox's word on the stores in scope and the search's `snoozed`, `hidden` and `pile`.
 struct LaterView {
     later: MailLater,
     snoozed: Option<bool>,
     /// What is hidden; empty when the search does not ask (`hidden` is `None`).
     mail_hidden: MailHidden,
     hidden: Option<bool>,
+    /// Which mail lies on a pile: read for every search, as every message names its pile.
+    piles: MailPiles,
+    pile: Option<PileFilter>,
 }
 
 impl LaterView {
     /// The queries for the store of `account`: the page is merged from all of them. One query
     /// except with `snoozed: false`, which fetches the mail back from Later apart (none when
-    /// there is none), so it is found whatever its date.
+    /// there is none), so it is found whatever its date – and wherever it lies (task E19.1,
+    /// decision 8): that query drops the `in:` of the search ([`query::Query::without_folders`]),
+    /// so a sent mail back from a follow-up stands on top of "All" (`in:inbox`) as well. Mail in the
+    /// archive, the trash or spam is left out there ([`anywhere_not_dealt_with`]): archived or thrown
+    /// away, it is not back.
+    ///
+    /// The pile (task E19.2) narrows each of them alike ([`LaterView::piled`]).
     fn queries(&self, account: &str, query: &SearchQuery) -> Vec<SearchQuery> {
         let query = &SearchQuery { hidden: self.hiding(account), ..query.clone() };
-        match self.snoozed {
+        let queries = match self.snoozed {
             None => vec![query.clone()],
             Some(true) => vec![SearchQuery { only: Some(self.later.snoozed_of(account)), ..query.clone() }],
             Some(false) => {
@@ -291,21 +310,46 @@ impl LaterView {
                 except.extend(back.iter().cloned());
                 let mut queries = vec![SearchQuery { except, ..query.clone() }];
                 if !back.is_empty() {
-                    queries.push(SearchQuery { only: Some(back), ..query.clone() });
+                    let anywhere = anywhere_not_dealt_with(&query.query);
+                    queries.push(SearchQuery { only: Some(back), query: anywhere, ..query.clone() });
                 }
                 queries
             }
-        }
+        };
+        queries.into_iter().map(|query| self.piled(account, query)).collect()
     }
 
     /// The query that counts the matches in the store of `account`.
     fn counting(&self, account: &str, query: &SearchQuery) -> SearchQuery {
         let query = &SearchQuery { hidden: self.hiding(account), ..query.clone() };
-        match self.snoozed {
+        let query = match self.snoozed {
             None => query.clone(),
             Some(true) => SearchQuery { only: Some(self.later.snoozed_of(account)), ..query.clone() },
             Some(false) => SearchQuery { except: self.later.snoozed_of(account), ..query.clone() },
-        }
+        };
+        self.piled(account, query)
+    }
+
+    /// `query` for the store of `account` as the search's `pile` says (task E19.2): `without` leaves
+    /// the mail on either pile out (`except`), a pile keeps only its mail (`only`, within what
+    /// `only` kept already). By id, before the page is cut, so pages and cursor hold. An account the
+    /// inbox did not speak for has nothing on a pile: a pile then finds none of its mail.
+    fn piled(&self, account: &str, mut query: SearchQuery) -> SearchQuery {
+        let pile = match self.pile {
+            None => return query,
+            Some(PileFilter::Without) => {
+                query.except.extend(self.piles.all_of(account));
+                return query;
+            }
+            Some(PileFilter::ReplyLater) => MailPile::ReplyLater,
+            Some(PileFilter::SetAside) => MailPile::SetAside,
+        };
+        let on = self.piles.of(account, pile);
+        query.only = Some(match query.only.take() {
+            Some(only) => only.into_iter().filter(|id| on.contains(id)).collect(),
+            None => on,
+        });
+        query
     }
 
     /// What the store of `account` leaves out or keeps as hidden (task E18.1); `None` without
@@ -337,6 +381,18 @@ impl LaterView {
     }
 }
 
+/// `query` without what it asks of folders ([`Query::without_folders`]), but never in the archive,
+/// the trash or spam (task E19.1, review of #315): where the mail back from Later is looked for with
+/// `snoozed: false`. Mail there was dealt with, as the mail feed's `settle` holds it too.
+fn anywhere_not_dealt_with(query: &Query) -> Query {
+    let mut anywhere = query.without_folders();
+    for role in ["archive", "trash", "junk"] {
+        let term = query::Term { negated: true, test: query::Test::In(role.into()) };
+        anywhere.clauses.push(query::Clause { any: vec![term] });
+    }
+    anywhere
+}
+
 /// Which of `messages` (pairs of account `mail:<address>` and message `m:…`) are hidden from their
 /// inbox folder at `now` (task E18.2), as `mail.search_messages` with `hidden: true` would list
 /// them ([`LaterView::hiding`]): for "Show again", which remembers only mail hidden now. Mail shown
@@ -354,7 +410,14 @@ pub(crate) async fn hidden_now(
     }
     let accounts: Vec<String> = by_account.keys().map(|account| account.to_string()).collect();
     let mail_hidden = inbox.mail_hidden(&accounts, now)?;
-    let view = LaterView { later: MailLater::default(), snoozed: None, mail_hidden, hidden: Some(true) };
+    let view = LaterView {
+        later: MailLater::default(),
+        snoozed: None,
+        mail_hidden,
+        hidden: Some(true),
+        piles: MailPiles::default(),
+        pile: None,
+    };
     let mut hidden = Vec::new();
     for (account, ids) in by_account {
         let store = mail.store(account).await.map_err(|err| err.to_string())?;
@@ -445,7 +508,21 @@ pub async fn search_messages(
             failed("cannot read which mail is hidden")
         })?,
     };
-    let view = LaterView { later, snoozed: search.snoozed, mail_hidden, hidden: search.hidden };
+    // Every message names its pile (task E19.2): read for every search; only one that asks for
+    // `pile` fails without it, the others come without, as for `snoozed`.
+    let piles = match inbox.mail_piles(&accounts) {
+        Ok(piles) => piles,
+        Err(err) if search.pile.is_none() => {
+            eprintln!("torroworkplace: mail: cannot read the piles of mail: {err}");
+            MailPiles::default()
+        }
+        Err(err) => {
+            eprintln!("torroworkplace: mail: cannot read the piles of mail: {err}");
+            return Err(failed("cannot read which mail lies on a pile"));
+        }
+    };
+    let view =
+        LaterView { later, snoozed: search.snoozed, mail_hidden, hidden: search.hidden, piles, pile: search.pile };
     let limit = search.limit as usize;
     let mut page = ranked_page(&stores, &query, &view, offset, limit + 1).await?;
     let more = page.len() > limit;
@@ -508,6 +585,8 @@ async fn ranked_page(
     }
     for (summary, _) in &mut all {
         summary.back = view.later.back_at(&summary.account, &summary.id);
+        summary.pile = view.piles.pile_of(&summary.account, &summary.id);
+        summary.pile_since = view.piles.since_of(&summary.account, &summary.id);
     }
     match query.relevance {
         // Stable: the same rank keeps each store's own order (newest first among equals).
@@ -1189,6 +1268,7 @@ pub(crate) mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         }
     }
 
@@ -1211,6 +1291,7 @@ pub(crate) mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         }
     }
 
@@ -1905,7 +1986,12 @@ pub(crate) mod tests {
         assert!(matches!(inbox.handle(mute(&entries["Talk"], MuteScope::Conversation), None, now), Response::Muted(_)));
         let sender = Request::HideSender { id: entries["News new"].clone(), scope: HideScope::Sender };
         assert!(matches!(inbox.handle(sender, None, now), Response::Hidden(_)));
-        let later = Request::SnoozeItem { id: entries["Plain 2"].clone(), until: Some(now + Duration::hours(1)) };
+        let later = Request::SnoozeItem {
+            id: entries["Plain 2"].clone(),
+            until: Some(now + Duration::hours(1)),
+            unless_reply: false,
+            keep_open: false,
+        };
         assert!(matches!(inbox.handle(later, None, now), Response::Item { .. }));
         let weekly = summary("Weekly").id;
         let stand_in = crate::mail::inbox_feed::message_stand_in(&service, Reach::Suite, &weekly).await.expect("mail");

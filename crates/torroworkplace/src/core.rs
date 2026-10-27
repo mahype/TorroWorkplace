@@ -1019,7 +1019,10 @@ fn with_entry_id(request: Request, entry: String) -> Request {
     match request {
         Request::ListMuteOptions { .. } => Request::ListMuteOptions { id: entry },
         Request::MuteItem { scope, until, effect, .. } => Request::MuteItem { id: entry, scope, until, effect },
-        Request::SnoozeItem { until, .. } => Request::SnoozeItem { id: entry, until },
+        // The condition goes with it: an `m:` id must not lose "only if no reply" (task E19.1).
+        Request::SnoozeItem { until, unless_reply, keep_open, .. } => {
+            Request::SnoozeItem { id: entry, until, unless_reply, keep_open }
+        }
         Request::SetItemCategory { category, remember, .. } => {
             Request::SetItemCategory { id: entry, category, remember }
         }
@@ -2851,10 +2854,17 @@ impl Core {
         {
             return Ok(refused);
         }
-        // "Show again" (task E18.2): every mail in an account the client reads and whose entries it
-        // sees, as for the changing mail commands; so a foreign id opens no approval.
-        if let Request::SetMailShown { ids, .. } = &request
-            && let Err(refused) = self.shown_mail_of(ids, Reach::Client(&rights)).await
+        // "Show again" (task E18.2) and the piles (task E19.2): every mail in an account the client
+        // reads and whose entries it sees, as for the changing mail commands; so a foreign id opens
+        // no approval.
+        if let Request::SetMailShown { ids, .. } | Request::SetMailPile { ids, .. } = &request
+            && let Err(refused) = self.reachable_mail_of(ids, Reach::Client(&rights)).await
+        {
+            return Ok(refused);
+        }
+        // No pile for mail in the trash or in spam (review of #315): refused before anyone is asked.
+        if let Request::SetMailPile { ids, pile: Some(_), .. } = &request
+            && let Some(refused) = self.unpileable(ids, Reach::Client(&rights)).await
         {
             return Ok(refused);
         }
@@ -3628,8 +3638,9 @@ impl Core {
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
-                // "Show again" (task E18.2): the subjects as the mail store holds them.
-                if let Request::SetMailShown { .. } = &request {
+                // "Show again" (task E18.2) and the piles (task E19.2): the subjects as the mail
+                // store holds them.
+                if let Request::SetMailShown { .. } | Request::SetMailPile { .. } = &request {
                     facts.mail = crate::mail::write::facts(&self.mail, &request).await;
                 }
                 // The calendar of an event by the name the core caches (task E8.5b).
@@ -4647,6 +4658,7 @@ impl Core {
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
             | Request::SetMailShown { .. }
+            | Request::SetMailPile { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }
             | Request::ListCategories { .. }
@@ -6086,11 +6098,11 @@ impl Core {
             Ok((_, Some(stand_in))) if pin.is_some_and(|pin| !pin.holds(&stand_in)) => return entry_conflict(),
             // "Later" for a mail without an entry (task E9.1): filed first, then its entry is put
             // off below. The pin held for the message; the entry is new or its conversation's.
-            Ok((Request::SnoozeItem { id, until: Some(until) }, Some(stand_in))) => {
+            Ok((Request::SnoozeItem { id, until: Some(until), unless_reply, keep_open }, Some(stand_in))) => {
                 // Boxed: looking the mail up would grow this poll frame, deep in the stack already
                 // when an approved command runs it.
-                match Box::pin(self.file_to_snooze(id, stand_in, until, client, reach)).await {
-                    Ok(entry) => (Request::SnoozeItem { id: entry, until: Some(until) }, None),
+                match Box::pin(self.file_to_snooze(id, stand_in, until, keep_open, client, reach)).await {
+                    Ok(entry) => (Request::SnoozeItem { id: entry, until: Some(until), unless_reply, keep_open }, None),
                     Err(refused) => return *refused,
                 }
             }
@@ -6178,6 +6190,8 @@ impl Core {
             Request::ClassifyItem { id } => Box::pin(self.classify_item(&id, client)).await,
             // "Show again" names mail, not entries (task E18.2): the core looks it up in the stores.
             request @ Request::SetMailShown { .. } => Box::pin(self.set_mail_shown(request, reach)).await,
+            // The piles name mail too (task E19.2).
+            request @ Request::SetMailPile { .. } => Box::pin(self.set_mail_pile(request, reach)).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
                 if let Some(pin) = pin
@@ -6640,17 +6654,20 @@ impl Core {
     /// ([`Inbox::file_mail`], lane by the rules), whatever the account's `notify` says – the person
     /// asked for it. Its conversation's entry when it has one. Checked first as an entry of the
     /// account would be ([`Inbox::message_refusal`]: `not-found`, `forbidden`). `unsupported` when
-    /// a rule of the person hides the mail from the inbox, `not-found` when the mail went meanwhile,
-    /// `error` when the inbox cannot be written.
+    /// a rule of the person hides the mail from the inbox, or with `keep_open` its conversation's
+    /// entry is snoozed or done (checked before filing, so nothing is woken or reopened; a snoozed
+    /// entry is brought back by its own id), `not-found` when the mail went meanwhile, `error` when
+    /// the inbox cannot be written.
     async fn file_to_snooze(
         &self,
         id: String,
         stand_in: torro_inbox::Item,
         until: chrono::DateTime<Utc>,
+        keep_open: bool,
         client: Option<&torro_ipc::ClientInfo>,
         reach: Reach<'_>,
     ) -> Result<String, Box<Response>> {
-        let request = Request::SnoozeItem { id: id.clone(), until: Some(until) };
+        let request = Request::SnoozeItem { id: id.clone(), until: Some(until), unless_reply: false, keep_open };
         if let Some(refused) = self.inbox.message_refusal(&request, &stand_in, client) {
             return Err(Box::new(refused));
         }
@@ -7323,31 +7340,71 @@ impl Core {
         }
     }
 
-    /// The mail `ids` of `inbox.set_mail_shown` (task E18.2) as pairs of account (`mail:<address>`)
-    /// and message (`m:…`), in their order, looked up in the stores of the accounts `reach` reads
-    /// ([`crate::mail::write::locate`]). For a client each account must also be one whose inbox
-    /// entries it sees (the source among `inbox_sources`, [`torro_ipc::api::Rights::reaches_source`]),
-    /// as for `inbox.snooze_item` with a mail's id. Else `not-found` for the whole call, the same
-    /// answer as for a mail that does not exist. Checked before an approval is asked for and again
-    /// when the command runs.
-    async fn shown_mail_of(&self, ids: &[String], reach: Reach<'_>) -> Result<Vec<(String, String)>, Response> {
+    /// The mail `ids` of `inbox.set_mail_shown` (task E18.2) or `inbox.set_mail_pile` (task E19.2)
+    /// as pairs of account (`mail:<address>`) and message (`m:…`), in their order, looked up in the
+    /// stores of the accounts `reach` reads ([`crate::mail::write::locate`]). For a client each
+    /// account must be one it reads – read access to `mail` and the account in `mail_accounts`
+    /// ([`reads_mail`]; review of #315: write access to `inbox` alone must not tell which mail ids
+    /// exist) – and whose inbox entries it sees (the source among `inbox_sources`,
+    /// [`torro_ipc::api::Rights::reaches_source`]), as for `inbox.snooze_item` with a mail's id. Else
+    /// `not-found` for the whole call, the same answer as for a mail that does not exist: what a key
+    /// may not see is not there for it. Checked before an approval is asked for and again when the
+    /// command runs. The app key reaches every account.
+    async fn reachable_mail_of(&self, ids: &[String], reach: Reach<'_>) -> Result<Vec<(String, String)>, Response> {
+        let not_found = || refusal("not-found", tr("No such message.").into());
+        if let Reach::Client(rights) = reach
+            && !rights.area(Area::Mail).allows(Access::Read)
+        {
+            return Err(not_found());
+        }
         let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
         let found = crate::mail::write::locate(&self.mail, reach, &wanted).await.map_err(|err| err.response())?;
         let sees = |account: &str| match reach {
             Reach::Suite => true,
             Reach::Client(rights) => {
-                account.parse::<torro_inbox::SourceRef>().is_ok_and(|source| rights.reaches_source(&source))
+                reads_mail(reach, account)
+                    && account.parse::<torro_inbox::SourceRef>().is_ok_and(|source| rights.reaches_source(&source))
             }
         };
         if found.iter().any(|message| !sees(&message.account)) {
-            return Err(refusal("not-found", tr("No such message.").into()));
+            return Err(not_found());
         }
         Ok(found.into_iter().map(|message| (message.account, message.id)).collect())
     }
 
+    /// `unsupported` when one of the mail `ids` (in reach, [`Core::reachable_mail_of`] checked that)
+    /// lies in a folder with the role trash or junk (review of #315): thrown away or spam, it goes
+    /// on no pile – the mail window does not offer it there, and the API keeps to the same. Archived
+    /// mail may. Only for putting mail on a pile; taking it off works wherever it lies, so mail that
+    /// went to the trash afterwards still comes off. `None` when every mail may go on a pile, also
+    /// when a store cannot be read (the command finds that out itself).
+    async fn unpileable(&self, ids: &[String], reach: Reach<'_>) -> Option<Response> {
+        let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let found = crate::mail::write::locate(&self.mail, reach, &wanted).await.ok()?;
+        let mut accounts: Vec<&str> = found.iter().map(|message| message.account.as_str()).collect();
+        accounts.sort_unstable();
+        accounts.dedup();
+        for account in accounts {
+            let Ok(store) = self.mail.store(account).await else { continue };
+            let bins = store.run(|store| store.folders()).await.ok().unwrap_or_default();
+            let bin = |folder: &str| {
+                bins.iter().any(|held| {
+                    held.id == folder && matches!(held.role, Some(torro_mail::Role::Trash | torro_mail::Role::Junk))
+                })
+            };
+            if found.iter().any(|message| message.account == account && bin(&message.folder)) {
+                return Some(refusal(
+                    "unsupported",
+                    "mail in the trash or in spam goes on no pile; move it out first".into(),
+                ));
+            }
+        }
+        None
+    }
+
     /// `inbox.set_mail_shown` (task E18.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
     /// also for the app key, which comes here without the client's checks), the mail in reach
-    /// ([`Core::shown_mail_of`]), then with `shown` the exception for the mail that is hidden now
+    /// ([`Core::reachable_mail_of`]), then with `shown` the exception for the mail that is hidden now
     /// ([`crate::mail::read::hidden_now`]) – a mail that is not hidden gets none –, without it the
     /// exception taken back. Nothing else changes. `error` when the inbox cannot be read or written.
     async fn set_mail_shown(&self, request: Request, reach: Reach<'_>) -> Response {
@@ -7357,7 +7414,7 @@ impl Core {
         let Request::SetMailShown { ids, shown } = request else {
             return refusal("error", "only inbox.set_mail_shown is answered here".into());
         };
-        let mail = match self.shown_mail_of(&ids, reach).await {
+        let mail = match self.reachable_mail_of(&ids, reach).await {
             Ok(mail) => mail,
             Err(refused) => return refused,
         };
@@ -7377,6 +7434,84 @@ impl Core {
             Err(err) => {
                 eprintln!("torroworkplace: inbox: cannot keep the mail shown again: {err}");
                 refusal("error", "the inbox cannot be written".into())
+            }
+        }
+    }
+
+    /// `inbox.set_mail_pile` (task E19.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
+    /// also for the app key, which comes here without the client's checks), the mail in reach
+    /// ([`Core::reachable_mail_of`], `not-found` for the whole call), then the mail put on `pile` or
+    /// taken off ([`Inbox::set_mail_pile`]). Nothing else changes, nothing goes to the server.
+    /// `error` when the inbox cannot be written.
+    async fn set_mail_pile(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
+            return refused;
+        }
+        let Request::SetMailPile { ids, pile, since } = request else {
+            return refusal("error", "only inbox.set_mail_pile is answered here".into());
+        };
+        let mail = match self.reachable_mail_of(&ids, reach).await {
+            Ok(mail) => mail,
+            Err(refused) => return refused,
+        };
+        if pile.is_some()
+            && let Some(refused) = self.unpileable(&ids, reach).await
+        {
+            return refused;
+        }
+        // Undo puts mail back with the time it had (review of #315), never later than now.
+        let now = Utc::now();
+        let at = since.map_or(now, |since| since.min(now));
+        if let Err(err) = self.inbox.set_mail_pile(&mail, pile, at) {
+            eprintln!("torroworkplace: inbox: cannot keep the pile of mail: {err}");
+            return refusal("error", "the inbox cannot be written".into());
+        }
+        // An answer of one's own sent since then was missed while the mail lay elsewhere: it takes
+        // the mail off "Reply later" now, as the mail feed would have (decision 5).
+        if pile == Some(torro_mail::MailPile::ReplyLater) && since.is_some() {
+            self.take_off_answered(&mail, now).await;
+        }
+        Response::Ok
+    }
+
+    /// Takes those of `mail` (pairs of account and message) off "Reply later" whose conversation holds
+    /// a mail of one's own dated after they were put there ([`crate::mail::store::MailStore::sent_after`],
+    /// [`Inbox::answered`] with `now`, which is after). For an Undo of `inbox.set_mail_pile` with
+    /// `since` (review of #315). A failure goes to the log: the mail stays on the pile, and the
+    /// feed's next catch-up finds the answer.
+    async fn take_off_answered(&self, mail: &[(String, String)], now: chrono::DateTime<Utc>) {
+        let accounts: Vec<String> = mail.iter().map(|(account, _)| account.clone()).collect();
+        let piles = match self.inbox.mail_piles(&accounts) {
+            Ok(piles) => piles,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the piles to look for answers: {err}");
+                return;
+            }
+        };
+        for (account, message) in mail {
+            let Some(at) = piles.since_of(account, message) else { continue };
+            let store = match self.mail.store(account).await {
+                Ok(store) => store,
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: cannot read the answers in {account}: {}", err.code());
+                    continue;
+                }
+            };
+            let (id, own) = (message.clone(), crate::mail::inbox_feed::own_address(account));
+            let answered = store
+                .run(move |store| match store.summary(&id)? {
+                    Some(summary) => Ok(store.sent_after(&summary.thread_id, at, &own)? > 0),
+                    None => Ok(false),
+                })
+                .await;
+            match answered {
+                Ok(true) => {
+                    if let Err(err) = self.inbox.answered(account, std::slice::from_ref(message), now) {
+                        eprintln!("torroworkplace: inbox: cannot take mail off its pile in {account}: {err}");
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => eprintln!("torroworkplace: inbox: cannot read the answers in {account}: {err}"),
             }
         }
     }
@@ -16156,6 +16291,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).map(torro_pim::EventTime::Date);
         let task = task_from_entry(&item, "work".into(), Some("  Fix the deploy ".into()), due, None);
@@ -16242,8 +16378,8 @@ mod tests {
         let later = Utc::now() + chrono::TimeDelta::hours(1);
         for request in [
             Request::SetItemDone { id: kept.clone(), done: false, dismissed: false },
-            Request::SnoozeItem { id: kept.clone(), until: Some(later) },
-            Request::SnoozeItem { id: kept.clone(), until: None },
+            Request::SnoozeItem { id: kept.clone(), until: Some(later), unless_reply: false, keep_open: false },
+            Request::SnoozeItem { id: kept.clone(), until: None, unless_reply: false, keep_open: false },
             Request::SetItemLane { id: kept.clone(), lane: torro_inbox::Lane::Info, remember: false },
             Request::HideSender { id: kept.clone(), scope: torro_inbox::HideScope::Conversation },
             Request::MuteItem {
@@ -16593,6 +16729,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         };
         let (start, end) =
             (torro_pim::EventTime::DateTime(at), torro_pim::EventTime::DateTime(at + chrono::TimeDelta::hours(1)));
@@ -18498,6 +18635,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -18592,6 +18730,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories,
+            pile: None,
         };
         let messages = |answer: Response| -> Vec<torro_mail::MessageSummary> {
             let Response::MailMessages { messages, .. } = answer else { panic!("a page, got {answer:?}") };
@@ -18763,6 +18902,7 @@ mod tests {
                 snoozed: None,
                 hidden: None,
                 categories: Vec::new(),
+                pile: None,
             };
             let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
             messages
@@ -18862,6 +19002,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -18940,6 +19081,7 @@ mod tests {
             snoozed,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let page = |response: Response| match response {
             Response::MailMessages { messages, cursor, total_estimate, .. } => (messages, cursor, total_estimate),
@@ -18979,11 +19121,12 @@ mod tests {
         let (_, stranger) = client(&core, stranger).await;
         // Whole seconds: the inbox keeps times to the microsecond.
         let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
-        let later = Request::SnoozeItem { id: offer.clone(), until: Some(until) };
+        let later =
+            Request::SnoozeItem { id: offer.clone(), until: Some(until), unless_reply: false, keep_open: false };
         assert_eq!(code(&ask(&core, Some(&stranger), later.clone()).await), "not-found");
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer), None, "nothing was filed for it");
         // Taking back what never went to later stores nothing either.
-        let back_now = Request::SnoozeItem { id: offer.clone(), until: None };
+        let back_now = Request::SnoozeItem { id: offer.clone(), until: None, unless_reply: false, keep_open: false };
         let Response::Item { item } = ask(&core, Some(&app_key), back_now).await else { panic!("the mail as it is") };
         assert!(!matches!(item.state, torro_inbox::State::Snoozed { .. }));
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer), None);
@@ -19062,6 +19205,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -19070,9 +19214,157 @@ mod tests {
         let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
         let hide = Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Hide };
         assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Muted(_)));
-        let later = Request::SnoozeItem { id: id.clone(), until: Some(Utc::now() + chrono::TimeDelta::hours(1)) };
+        let later = Request::SnoozeItem {
+            id: id.clone(),
+            until: Some(Utc::now() + chrono::TimeDelta::hours(1)),
+            unless_reply: false,
+            keep_open: false,
+        };
         assert_eq!(code(&ask(&core, Some(&app_key), later).await), "unsupported");
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &id), None);
+    }
+
+    /// Task E19.1: "only if no reply" on an entry that is no mail is `unsupported`, before anyone
+    /// is asked to approve it; without the condition, or without a time, it is put off as before.
+    #[tokio::test]
+    async fn only_mail_waits_for_a_reply() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, hook_key) = core
+            .clients
+            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), Rights::hook())
+            .await
+            .expect("added");
+        let waiting = Request::PostItem {
+            kind: torro_inbox::Kind::AgentWaiting,
+            title: "ignored".into(),
+            body: None,
+            link: None,
+            lane: None,
+            thread_key: Some("claude-code:s1".into()),
+            agent: Some(torro_inbox::AgentInfo {
+                agent: AgentKind::ClaudeCode,
+                session: "s1".into(),
+                project: None,
+                branch: None,
+                pids: Vec::new(),
+                title: None,
+            }),
+        };
+        let Response::Posted { id: Some(id) } = ask(&core, Some(&hook_key), waiting).await else {
+            panic!("a hook's post answers with its id");
+        };
+        let until = Utc::now() + chrono::TimeDelta::hours(1);
+        let follow_up =
+            |until, unless_reply| Request::SnoozeItem { id: id.clone(), until, unless_reply, keep_open: false };
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+        assert_eq!(code(&ask(&core, Some(&asking), follow_up(Some(until), true)).await), "unsupported");
+        assert!(core.approvals.list(None, Utc::now()).await.expect("approvals").is_empty(), "nobody was asked");
+        assert_eq!(code(&ask(&core, Some(&app_key), follow_up(Some(until), true)).await), "unsupported");
+        assert_eq!(entry(&core, dir.path(), &id).await.state, torro_inbox::State::New, "nothing changed");
+        // Without the condition it waits for the person as any change does.
+        waits(ask(&core, Some(&asking), follow_up(Some(until), false)).await);
+        let Response::Item { item } = ask(&core, Some(&app_key), follow_up(Some(until), false)).await else {
+            panic!("put off")
+        };
+        assert_eq!((item.state, item.follow_up), (torro_inbox::State::Snoozed { until }, None), "no follow-up");
+        // Without a time there is nothing to wait for: taken back as ever.
+        let Response::Item { item } = ask(&core, Some(&app_key), follow_up(None, true)).await else {
+            panic!("taken back")
+        };
+        assert_eq!(item.state, torro_inbox::State::Seen);
+    }
+
+    /// Task E19.1, decision 8: "Follow up" on a mail of one's own by its id keeps "only if no
+    /// reply", filed or not yet, and the sent mail stands on top of "All" (`in:inbox` with
+    /// `snoozed: false`) when it comes back, though it is not in the inbox folder.
+    #[tokio::test]
+    async fn a_sent_mail_followed_up_comes_back_on_top_of_all() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake;
+        use torro_inbox::item::FollowUp;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &fake::mail("Mail 1", 1, None), &[]);
+        let date = (Utc::now() - chrono::TimeDelta::days(3)).to_rfc2822();
+        let question = format!(
+            "From: Anna <anna@example.org>\r\nTo: bernd@example.com\r\nSubject: Question\r\nDate: {date}\r\n\
+             Message-ID: <Question@example.org>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nAny news?\r\n"
+        );
+        server.add("Sent", &question, &["\\Seen"]);
+        // An older mail of the conversation, thrown away: it never comes back on top.
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
+        server.add("Trash", &fake::mail("Re Question", 4, Some("Question@example.org")), &["\\Seen"]);
+        // And one archived: dealt with, it is not back either.
+        server.add("Archive", &fake::mail("Re Question archived", 4, Some("Question@example.org")), &["\\Seen"]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let search = |query: Option<&str>| Request::SearchMail {
+            account: None,
+            folder: None,
+            query: query.map(str::to_string),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: Some(false),
+            hidden: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let page = |response: Response| match response {
+            Response::MailMessages { messages, .. } => messages,
+            other => panic!("a page, got {other:?}"),
+        };
+        let subjects = |messages: &[torro_mail::MessageSummary]| -> Vec<String> {
+            messages.iter().map(|message| message.subject.clone()).collect()
+        };
+        let every = page(ask(&core, Some(&app_key), search(None)).await);
+        let sent = every.iter().find(|message| message.subject == "Question").expect("synced").id.clone();
+        let trashed = every.iter().find(|message| message.subject == "Re Question").expect("synced").id.clone();
+        let archived =
+            every.iter().find(|message| message.subject == "Re Question archived").expect("synced").id.clone();
+
+        // Whole seconds: the inbox keeps times to the microsecond.
+        let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
+        let follow_up =
+            |until| Request::SnoozeItem { id: sent.clone(), until: Some(until), unless_reply: true, keep_open: false };
+        // Not filed yet: filed first, then followed up with the condition.
+        let Response::Item { item } = ask(&core, Some(&app_key), follow_up(until)).await else { panic!("filed") };
+        assert_eq!(item.follow_up.map(|held| (held.at, held.unless_reply)), Some((until, true)));
+        // Filed now: the id names its entry, and the condition goes with it.
+        let later = until + chrono::TimeDelta::hours(1);
+        let Response::Item { item } = ask(&core, Some(&app_key), follow_up(later)).await else { panic!("again") };
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &sent).as_deref(), Some(item.id.as_str()));
+        assert!(matches!(item.follow_up, Some(FollowUp { unless_reply: true, at, .. }) if at == later));
+        // The thrown-away and the archived mail join the entry, as filed with it.
+        for id in [&trashed, &archived] {
+            let joining =
+                Request::SnoozeItem { id: id.clone(), until: Some(later), unless_reply: true, keep_open: false };
+            let Response::Item { item: joined } = ask(&core, Some(&app_key), joining).await else { panic!("joined") };
+            assert_eq!(joined.id, item.id, "one conversation");
+        }
+        assert_eq!(subjects(&page(ask(&core, Some(&app_key), search(Some("in:inbox"))).await)), ["Mail 1"]);
+
+        // "Only if no reply": the feed looks for a reply, finds none and wakes it (review of #315).
+        crate::mail::inbox_feed::wake_follow_ups(&core.inbox, &core.mail, later + chrono::TimeDelta::minutes(1)).await;
+        let all = page(ask(&core, Some(&app_key), search(Some("in:inbox"))).await);
+        assert_eq!(subjects(&all), ["Question", "Mail 1"], "the sent mail on top of All, not the trash or archive");
+        assert_eq!(all[0].back, Some(later));
+        // Other words of the search still hold for it.
+        assert_eq!(subjects(&page(ask(&core, Some(&app_key), search(Some("in:inbox offer"))).await)).len(), 0);
     }
 
     // ----- "Show again" (task E18.2) -----
@@ -19106,6 +19398,7 @@ mod tests {
             snoozed: None,
             hidden: Some(hidden),
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(core, Some(key), search).await else { panic!("a page") };
         messages.into_iter().map(|message| message.subject).collect()
@@ -19128,6 +19421,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(core, Some(key), search).await else { panic!("a page") };
         messages.into_iter().map(|message| (message.subject.clone(), message)).collect()
@@ -19298,6 +19592,459 @@ mod tests {
         assert!(exceptions().is_empty());
     }
 
+    // ----- "Reply later" and "Set aside" (task E19.2) -----
+
+    /// A search of the inbox folder (`in:inbox`) as "All" and the piles ask for it.
+    fn pile_search(
+        pile: Option<torro_ipc::mail::PileFilter>,
+        snoozed: Option<bool>,
+        hidden: Option<bool>,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Request {
+        Request::SearchMail {
+            account: None,
+            folder: None,
+            query: Some("in:inbox".into()),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor,
+            order: None,
+            sort: None,
+            snoozed,
+            hidden,
+            categories: Vec::new(),
+            pile,
+        }
+    }
+
+    /// Every page of `search` (built with a cursor) as `key` sees it: the subjects in order, and
+    /// the `total_estimate` of the first page.
+    async fn every_page(
+        core: &Core,
+        key: &Key,
+        search: impl Fn(Option<String>) -> Request,
+    ) -> (Vec<String>, Option<u64>) {
+        let (mut subjects, mut cursor, mut total) = (Vec::new(), None, None);
+        loop {
+            let first = cursor.is_none();
+            let Response::MailMessages { messages, cursor: next, total_estimate, .. } =
+                ask(core, Some(key), search(cursor)).await
+            else {
+                panic!("a page")
+            };
+            if first {
+                total = total_estimate;
+            }
+            subjects.extend(messages.into_iter().map(|message| message.subject));
+            match next {
+                Some(next) => cursor = Some(next),
+                None => return (subjects, total),
+            }
+        }
+    }
+
+    /// Task E19.2, decisions 3 and 4: mail on a pile leaves "All" (`pile: without`) and stands on
+    /// its pile alone; every message of a search names its pile; the other pile moves it, the same
+    /// pile again keeps since when, without a pile it comes back. Pages and cursor hold with `pile`,
+    /// `snoozed` and `hidden` together.
+    #[tokio::test]
+    async fn mail_on_a_pile_leaves_all_and_stands_on_its_pile() {
+        use crate::mail::read::tests::{filing, mail_from};
+        use torro_inbox::item::HideScope;
+        use torro_ipc::mail::PileFilter;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        for (subject, days) in [("A", 1), ("B", 2), ("C", 3), ("D", 4), ("E", 5), ("G", 7), ("H", 8)] {
+            server.add("INBOX", &mail_from(subject, days, &format!("{subject}@example.org"), None), &[]);
+        }
+        server.add("INBOX", &mail_from("F", 6, "news@shop.example", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let id = |subject: &str| mail[subject].id.clone();
+        let pile = |subjects: &[&str], pile| Request::SetMailPile {
+            ids: subjects.iter().map(|subject| id(subject)).collect(),
+            pile,
+            since: None,
+        };
+        let subjects = |response: Response| match response {
+            Response::MailMessages { messages, .. } => messages,
+            other => panic!("a page, got {other:?}"),
+        };
+        let one = |filter| pile_search(filter, None, None, 50, None);
+
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], Some(MailPile::ReplyLater))).await, Response::Ok);
+        let all: Vec<String> = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::Without))).await)
+            .into_iter()
+            .map(|m| m.subject)
+            .collect();
+        assert_eq!(all, ["B", "C", "D", "E", "F", "G", "H"], "A left All");
+        let reply_later = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::ReplyLater))).await);
+        assert_eq!(
+            reply_later.iter().map(|m| (m.subject.as_str(), m.pile)).collect::<Vec<_>>(),
+            [("A", Some(MailPile::ReplyLater))]
+        );
+        assert!(subjects(ask(&core, Some(&app_key), one(Some(PileFilter::SetAside))).await).is_empty());
+        // Every search names the pile, also one that does not ask for it.
+        let every = subjects(ask(&core, Some(&app_key), one(None)).await);
+        assert_eq!(every.len(), 8);
+        assert!(every.iter().all(|m| m.pile == (m.subject == "A").then_some(MailPile::ReplyLater)), "{every:?}");
+
+        // The same pile again keeps since when, so a reply of one's own still counts from then.
+        let since = core.inbox.reply_later_of(ANNA_MAIL).expect("read");
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], Some(MailPile::ReplyLater))).await, Response::Ok);
+        assert_eq!(core.inbox.reply_later_of(ANNA_MAIL).expect("read"), since);
+        // The other pile moves it.
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], Some(MailPile::SetAside))).await, Response::Ok);
+        assert!(subjects(ask(&core, Some(&app_key), one(Some(PileFilter::ReplyLater))).await).is_empty());
+        let set_aside = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::SetAside))).await);
+        assert_eq!(
+            set_aside.iter().map(|m| (m.subject.as_str(), m.pile)).collect::<Vec<_>>(),
+            [("A", Some(MailPile::SetAside))]
+        );
+        // Off: back in All.
+        assert_eq!(ask(&core, Some(&app_key), pile(&["A"], None)).await, Response::Ok);
+        let back = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::Without))).await);
+        assert_eq!(back.first().map(|m| (m.subject.as_str(), m.pile)), Some(("A", None)));
+
+        // Pages and cursor with all three: B and D on Reply later, C set aside, B also snoozed, F
+        // hidden by its sender.
+        assert_eq!(ask(&core, Some(&app_key), pile(&["B", "D"], Some(MailPile::ReplyLater))).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), pile(&["C"], Some(MailPile::SetAside))).await, Response::Ok);
+        let until = Some(Utc::now() + chrono::TimeDelta::hours(1));
+        let snooze = Request::SnoozeItem { id: id("B"), until, unless_reply: false, keep_open: false };
+        assert!(matches!(ask(&core, Some(&app_key), snooze).await, Response::Item { .. }));
+        let news = core.inbox.file_mail(&filing(&mail["F"]), torro_mail::Notify::All, Utc::now());
+        let hide = Request::HideSender { id: news.expect("filed").expect("an entry"), scope: HideScope::Sender };
+        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Hidden(_)));
+        let all = |cursor| pile_search(Some(PileFilter::Without), Some(false), Some(false), 2, cursor);
+        assert_eq!(every_page(&core, &app_key, all).await, (["A", "E", "G", "H"].map(String::from).to_vec(), Some(4)));
+        let replying = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(false), Some(false), 1, cursor);
+        assert_eq!(every_page(&core, &app_key, replying).await, (vec!["D".to_string()], Some(1)), "B is snoozed");
+        let snoozed = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(true), None, 1, cursor);
+        assert_eq!(every_page(&core, &app_key, snoozed).await, (vec!["B".to_string()], Some(1)));
+        let aside = |cursor| pile_search(Some(PileFilter::SetAside), None, Some(false), 1, cursor);
+        assert_eq!(every_page(&core, &app_key, aside).await, (vec!["C".to_string()], Some(1)));
+    }
+
+    /// API review of #315: `keep_open` by the id of a mail without an entry whose conversation has a
+    /// snoozed or done entry is `unsupported` before anyone is asked – filing the mail would wake a
+    /// snoozed entry on top (and may lose "only if no reply") or reopen a done one – and nothing is
+    /// filed or reopened. The mail filed into that entry acts as the entry: a snoozed one comes back.
+    #[tokio::test]
+    async fn a_mail_of_a_conversation_put_off_or_done_is_not_followed_up_open() {
+        use crate::mail::read::tests::mail_from;
+        use crate::mail::sync::fake;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Offer", 3, "bernd@example.com", None), &[]);
+        server.add("INBOX", &fake::mail("Re Offer", 2, Some("Offer@example.org")), &["\\Seen"]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let (offer, reply) = (mail["Offer"].id.clone(), mail["Re Offer"].id.clone());
+        let until = Utc::now() + chrono::TimeDelta::hours(1);
+        let snooze = |id: &str, keep_open| Request::SnoozeItem {
+            id: id.into(),
+            until: Some(until),
+            unless_reply: false,
+            keep_open,
+        };
+        let Response::Item { item } = ask(&core, Some(&app_key), snooze(&offer, false)).await else {
+            panic!("put off")
+        };
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+
+        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported", "put off");
+        assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
+        assert!(matches!(entry(&core, dir.path(), &item.id).await.state, torro_inbox::State::Snoozed { .. }));
+        // Side by side: the mail filed into that entry acts as the entry, which comes back.
+        let Response::Item { item: back } = ask(&core, Some(&app_key), snooze(&offer, true)).await else {
+            panic!("brought back")
+        };
+        assert_eq!((back.id.as_str(), back.state), (item.id.as_str(), torro_inbox::State::Seen));
+        let done = Request::SetItemDone { id: item.id.clone(), done: true, dismissed: false };
+        assert!(matches!(ask(&core, Some(&app_key), done).await, Response::Item { .. }));
+        assert_eq!(code(&ask(&core, Some(&asking), snooze(&reply, true)).await), "unsupported");
+        assert_eq!(code(&ask(&core, Some(&app_key), snooze(&reply, true)).await), "unsupported");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &reply), None, "nothing filed");
+        assert!(
+            matches!(entry(&core, dir.path(), &item.id).await.state, torro_inbox::State::Done { .. }),
+            "not reopened"
+        );
+    }
+
+    /// Review of #315: `keep_open` by a mail's id – filed first, or through its entry – follows the
+    /// open conversation up without putting it off; a snoozed one it opens again (the undo of
+    /// putting it off), on a done one it is `unsupported` before anyone is asked.
+    #[tokio::test]
+    async fn a_mail_is_followed_up_open_by_its_id() {
+        use crate::mail::read::tests::mail_from;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Offer", 2, "bernd@example.com", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let id = ids_by_subject(&core, &app_key).await["Offer"].id.clone();
+        let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
+        let open =
+            |until| Request::SnoozeItem { id: id.clone(), until: Some(until), unless_reply: false, keep_open: true };
+        let Response::Item { item } = ask(&core, Some(&app_key), open(until)).await else { panic!("filed") };
+        assert!(item.state.is_open(), "{:?}", item.state);
+        assert_eq!(item.follow_up.map(|held| held.at), Some(until));
+        let later = until + chrono::TimeDelta::hours(1);
+        let Response::Item { item } = ask(&core, Some(&app_key), open(later)).await else { panic!("again") };
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &id).as_deref(), Some(item.id.as_str()));
+        assert!(item.state.is_open() && item.follow_up.is_some_and(|held| held.at == later), "{item:?}");
+
+        let tomorrow = later + chrono::TimeDelta::days(1);
+        let snooze =
+            Request::SnoozeItem { id: id.clone(), until: Some(tomorrow), unless_reply: false, keep_open: false };
+        assert!(matches!(ask(&core, Some(&app_key), snooze).await, Response::Item { .. }));
+        let Response::Item { item } = ask(&core, Some(&app_key), open(later)).await else { panic!("undone") };
+        assert_eq!(item.state, torro_inbox::State::Seen, "open again, as taking a snooze back");
+        assert_eq!(item.follow_up.map(|held| held.at), Some(later), "with the follow-up it had");
+
+        let done = Request::SetItemDone { id: item.id.clone(), done: true, dismissed: false };
+        assert!(matches!(ask(&core, Some(&app_key), done).await, Response::Item { .. }));
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+        assert_eq!(code(&ask(&core, Some(&asking), open(later)).await), "unsupported");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+    }
+
+    /// Review of #315: Undo puts mail back on its pile with the time it had (`since`, at most now);
+    /// every message of a search names since when it lies there; a reply of one's own sent between
+    /// takes it off "Reply later" at once. Without a pile `since` counts for nothing.
+    #[tokio::test]
+    async fn a_pile_keeps_its_time_on_undo() {
+        use crate::mail::read::tests::mail_from;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        for subject in ["Offer", "Plan"] {
+            server.add("INBOX", &mail_from(subject, 5, "bernd@example.com", None), &["\\Seen"]);
+        }
+        let date = (Utc::now() - chrono::TimeDelta::days(1)).to_rfc2822();
+        let answer = format!(
+            "From: Anna <anna@example.org>\r\nTo: bernd@example.com\r\nSubject: Re Offer\r\nDate: {date}\r\n\
+             Message-ID: <Re-Offer@example.org>\r\nIn-Reply-To: <Offer@example.org>\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nYes\r\n"
+        );
+        server.add("Sent", &answer, &["\\Seen"]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let (offer, plan) = (mail["Offer"].id.clone(), mail["Plan"].id.clone());
+        let put = |id: &str, pile, since| Request::SetMailPile { ids: vec![id.into()], pile, since };
+        let lying = |subject: &'static str| {
+            let core = &core;
+            let app_key = &app_key;
+            async move {
+                let search = pile_search(None, None, None, 10, None);
+                let Response::MailMessages { messages, .. } = ask(core, Some(app_key), search).await else {
+                    panic!("a page")
+                };
+                let message = messages.into_iter().find(|message| message.subject == subject).expect("listed");
+                (message.pile, message.pile_since)
+            }
+        };
+        // Whole seconds: the inbox keeps times to the microsecond.
+        let first = chrono::SubsecRound::trunc_subsecs(Utc::now() - chrono::TimeDelta::days(4), 0);
+
+        // Undo of "Remove from Reply later": back with its time.
+        assert_eq!(ask(&core, Some(&app_key), put(&plan, Some(MailPile::ReplyLater), Some(first))).await, Response::Ok);
+        assert_eq!(lying("Plan").await, (Some(MailPile::ReplyLater), Some(first)));
+        // A time to come counts as now.
+        let soon = Utc::now() + chrono::TimeDelta::days(1);
+        assert_eq!(ask(&core, Some(&app_key), put(&plan, Some(MailPile::SetAside), Some(soon))).await, Response::Ok);
+        let (pile, since) = lying("Plan").await;
+        assert_eq!(pile, Some(MailPile::SetAside));
+        assert!(since.is_some_and(|since| since > first && since <= Utc::now()), "{since:?}");
+        // Without a pile `since` counts for nothing.
+        assert_eq!(ask(&core, Some(&app_key), put(&plan, None, Some(first))).await, Response::Ok);
+        assert_eq!(lying("Plan").await, (None, None));
+
+        // Answered between the first time and the Undo: off "Reply later" at once.
+        assert_eq!(
+            ask(&core, Some(&app_key), put(&offer, Some(MailPile::ReplyLater), Some(first))).await,
+            Response::Ok
+        );
+        assert_eq!(lying("Offer").await, (None, None), "the answer came after it was put there");
+        // Put there now, after the answer: it stays.
+        assert_eq!(ask(&core, Some(&app_key), put(&offer, Some(MailPile::ReplyLater), None)).await, Response::Ok);
+        assert_eq!(lying("Offer").await.0, Some(MailPile::ReplyLater));
+    }
+
+    /// Review of #315: a key that may change the inbox but not read mail learns nothing of mail ids
+    /// from `inbox.set_mail_pile` or `inbox.set_mail_shown` – a mail there and one that is not get
+    /// the same answer, before anyone is asked, and nothing is kept. The app key still may.
+    #[tokio::test]
+    async fn piles_and_show_again_need_mail_read() {
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &crate::mail::read::tests::mail_from("Offer", 2, "news@shop.example", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let id = ids_by_subject(&core, &app_key).await["Offer"].id.clone();
+        let mut no_mail = RightsTemplate::FullAccess.rights();
+        no_mail.areas.remove(&Area::Mail);
+        no_mail.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, no_mail) = client(&core, no_mail).await;
+        let requests = |id: &str| {
+            [
+                Request::SetMailPile { ids: vec![id.into()], pile: Some(MailPile::ReplyLater), since: None },
+                Request::SetMailShown { ids: vec![id.into()], shown: true },
+            ]
+        };
+        for (known, unknown) in requests(&id).into_iter().zip(requests("m:unknown")) {
+            let (known, unknown) = (ask(&core, Some(&no_mail), known).await, ask(&core, Some(&no_mail), unknown).await);
+            assert_eq!(code(&known), "not-found", "{known:?}");
+            assert_eq!(known, unknown, "a mail there answers as one that is not");
+        }
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        assert!(core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL).is_empty());
+        assert!(core.inbox.mail_hidden(&[ANNA_MAIL.into()], Utc::now()).expect("read").shown_of(ANNA_MAIL).is_empty());
+        let pile = Request::SetMailPile { ids: vec![id], pile: Some(MailPile::ReplyLater), since: None };
+        assert_eq!(ask(&core, Some(&app_key), pile).await, Response::Ok, "the app key may");
+    }
+
+    /// Review of #315: mail in the trash or in spam goes on no pile, by the API either – the whole
+    /// call is `unsupported`, before anyone is asked –; archived mail does, and mail that went to
+    /// the trash after it was put there still comes off.
+    #[tokio::test]
+    async fn no_piles_for_deleted_or_spam_mail() {
+        use crate::mail::read::tests::mail_from;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
+        server.add_folder("Junk", "\\HasNoChildren \\Junk", 16);
+        for (folder, subject) in [("INBOX", "Kept"), ("Trash", "Thrown"), ("Junk", "Spam"), ("Archive", "Filed")] {
+            server.add(folder, &mail_from(subject, 2, "bernd@example.com", None), &["\\Seen"]);
+        }
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let store = core.mail.store(ANNA_MAIL).await.expect("the store");
+        let every = crate::mail::store::SearchQuery::default();
+        let mail = store.run(move |store| store.search(&every, 50, 0)).await.expect("read");
+        let id = |subject: &str| mail.iter().find(|m| m.subject == subject).expect("synced").id.clone();
+        let put = |ids: Vec<String>, pile| Request::SetMailPile { ids, pile, since: None };
+        let piled = || core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL);
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+
+        for subject in ["Thrown", "Spam"] {
+            let with_kept = put(vec![id("Kept"), id(subject)], Some(MailPile::ReplyLater));
+            assert_eq!(code(&ask(&core, Some(&asking), with_kept.clone()).await), "unsupported", "{subject}");
+            assert_eq!(code(&ask(&core, Some(&app_key), with_kept).await), "unsupported", "{subject}");
+        }
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        assert!(piled().is_empty(), "the whole call is refused");
+        assert_eq!(ask(&core, Some(&app_key), put(vec![id("Filed")], Some(MailPile::SetAside))).await, Response::Ok);
+        assert_eq!(piled(), [id("Filed")], "archived mail may");
+
+        // Put there in the inbox, then thrown away: it still comes off.
+        assert_eq!(ask(&core, Some(&app_key), put(vec![id("Kept")], Some(MailPile::ReplyLater))).await, Response::Ok);
+        let kept = id("Kept");
+        store
+            .run(move |store| {
+                let trash = store.folder_by_role(torro_mail::Role::Trash)?.expect("a trash folder");
+                store.relocate_message(&kept, &trash.id, 15, 9)?;
+                Ok(())
+            })
+            .await
+            .expect("thrown away");
+        assert_eq!(ask(&core, Some(&app_key), put(vec![id("Kept")], None)).await, Response::Ok);
+        waits(ask(&core, Some(&asking), put(vec![id("Filed")], None)).await);
+        assert_eq!(piled(), [id("Filed")]);
+    }
+
+    /// Task E19.2: the piles keep to the accounts a key reads and whose entries it sees – checked
+    /// before anyone is asked –, to their limits, name the subjects in their approval and run once
+    /// allowed; a key that does not see the entries sees no pile in a search.
+    #[tokio::test]
+    async fn piles_keep_to_reach_limits_and_approvals() {
+        use crate::mail::read::tests::mail_from;
+        use torro_ipc::mail::PileFilter;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Quarterly offer", 2, "news@shop.example", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let id = ids_by_subject(&core, &app_key).await["Quarterly offer"].id.clone();
+        let pile = |ids: Vec<String>| Request::SetMailPile { ids, pile: Some(MailPile::ReplyLater), since: None };
+        let piled = || core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL);
+
+        // An account outside `mail_accounts`, or whose entries the key does not see: `not-found`,
+        // nothing kept, nobody asked – also where every change waits for a person.
+        let mut stranger = RightsTemplate::FullAccess.rights();
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        stranger.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, stranger) = client(&core, stranger).await;
+        assert_eq!(code(&ask(&core, Some(&stranger), pile(vec![id.clone()])).await), "not-found");
+        let mut blind = RightsTemplate::FullAccess.rights();
+        blind.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        blind.inbox_sources = Selection::Only(Vec::new());
+        blind.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, blind) = client(&core, blind).await;
+        assert_eq!(code(&ask(&core, Some(&blind), pile(vec![id.clone()])).await), "not-found");
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, reader) = client(&core, reader).await;
+        let with_foreign = pile(vec![id.clone(), "m:unknown".into()]);
+        assert_eq!(code(&ask(&core, Some(&reader), with_foreign.clone()).await), "not-found", "the whole call");
+        assert_eq!(code(&ask(&core, Some(&app_key), with_foreign).await), "not-found");
+        assert!(piled().is_empty(), "nothing kept");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+
+        // The limits, for clients and the app key alike.
+        let many = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
+        for key in [&reader, &app_key] {
+            assert_eq!(code(&ask(&core, Some(key), pile(Vec::new())).await), "error");
+            assert_eq!(code(&ask(&core, Some(key), pile(many(torro_ipc::mail::MAX_IDS + 1))).await), "error");
+        }
+
+        // Waiting for a person: the summary names the subject from the store, and allowed it runs.
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+        let approval = waits(ask(&core, Some(&asking), pile(vec![id.clone()])).await);
+        assert!(approval.summary.contains("Quarterly offer"), "{}", approval.summary);
+        assert!(piled().is_empty(), "not before it is allowed");
+        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true };
+        assert!(!matches!(core.handle(decide).await, Response::Error { .. }));
+        crate::mail::service::tests::eventually("piled", || async { !piled().is_empty() }).await;
+        assert_eq!(piled(), std::slice::from_ref(&id));
+
+        // A key that reads the mail but does not see its entries sees no pile.
+        let mut unseeing = RightsTemplate::FullAccess.rights();
+        unseeing.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        unseeing.inbox_sources = Selection::Only(Vec::new());
+        let (_, unseeing) = client(&core, unseeing).await;
+        let core = &core;
+        let search = |key, filter| async move {
+            match ask(core, Some(key), pile_search(filter, None, None, 10, None)).await {
+                Response::MailMessages { messages, .. } => messages,
+                other => panic!("a page, got {other:?}"),
+            }
+        };
+        assert_eq!(search(&reader, None).await[0].pile, Some(MailPile::ReplyLater));
+        assert_eq!(search(&unseeing, None).await[0].pile, None);
+        assert_eq!(search(&unseeing, Some(PileFilter::Without)).await.len(), 1, "nothing lies on a pile for it");
+        assert!(search(&unseeing, Some(PileFilter::ReplyLater)).await.is_empty());
+        // A client may take it off.
+        let off = Request::SetMailPile { ids: vec![id], pile: None, since: None };
+        assert_eq!(ask(core, Some(&reader), off).await, Response::Ok);
+        assert!(piled().is_empty());
+    }
+
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
     /// hashed ids, never the words searched, a folder's name or an attachment's file name. Task
     /// M8.1: nor the HTML, a link or picture it names, or a part's content id.
@@ -19350,6 +20097,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
@@ -21591,6 +22339,7 @@ mod tests {
             snoozed: None,
             hidden: None,
             categories: Vec::new(),
+            pile: None,
         };
         let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };
         let ids: Vec<String> = messages.iter().map(|message| message.id.clone()).collect();

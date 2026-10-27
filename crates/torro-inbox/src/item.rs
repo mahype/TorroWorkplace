@@ -108,6 +108,31 @@ pub struct Item {
     /// confidence, not a fact (`docs/ki.md`, principle 5); the app marks it as one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<torro_mail::MailCategory>,
+    /// The follow-up of a mail entry (task E19.1, "Follow up" in the mail window): when its
+    /// conversation comes back on top, and whether only if nobody replied by then. Set by
+    /// [`crate::rules::follow_up`] (`inbox.snooze_item` on a mail entry), never taken from a poster;
+    /// `None` for every other entry, for mail put off before E19.1 (it behaves as a follow-up without
+    /// a condition, decision 9) and once it came back or was called off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<FollowUp>,
+}
+
+/// When a mail entry's conversation comes back ([`Item::follow_up`], task E19.1).
+///
+/// **Only mail entries** have one. While the entry is [`State::Snoozed`], `at` is the same time as
+/// its `until`. A reply ([`crate::rules::reply_came`]: mail in the conversation, not from the account
+/// itself, dated after `since`, in any folder) calls a follow-up with `unless_reply` off: the entry
+/// is open again without coming back at `at` (decision 6). One without `unless_reply` stays after a
+/// reply opened the conversation, and brings it on top once more at `at` if its entry is open then
+/// (not done) ([`crate::rules::wake`]). Waking clears it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FollowUp {
+    /// When the conversation comes back on top.
+    pub at: DateTime<Utc>,
+    /// Only if nobody replied by `at`: a reply calls the follow-up off.
+    pub unless_reply: bool,
+    /// When the follow-up was set: only replies dated after it count.
+    pub since: DateTime<Utc>,
 }
 
 /// Why an entry stands in its lane ([`Item::reason`], issue #128). The first three name the

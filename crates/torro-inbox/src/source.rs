@@ -68,12 +68,24 @@ pub trait InboxSource: Send + Sync {
         effect: MuteEffect,
     ) -> impl Future<Output = Result<Muted, InboxError>> + Send;
 
-    /// Puts the entry off until `until`, or takes it back with `None` ([`rules::snooze`]).
-    /// Returns it as stored; errors as [`InboxSource::set_item_done`].
+    /// Puts the entry off until `until`, or takes it back with `None` ([`rules::snooze`]). `id` may
+    /// also be a mail message's id (`m:…`): its entry, or the entry the core makes for it.
+    ///
+    /// On a mail entry it is a follow-up ([`rules::follow_up`], task E19.1): with `unless_reply`
+    /// it comes back at `until` only if nobody replied by then ([`crate::item::FollowUp`]); `None`
+    /// calls any follow-up off. `unless_reply` on an entry that is no mail is
+    /// [`InboxError::Unsupported`]; it is ignored without `until`. With `keep_open` (review of #315,
+    /// the Undo of "Cancel follow-up" or of a follow-up date on an open entry) a mail entry gets its
+    /// follow-up without being put off: an open one stays as it is, a snoozed one is open again
+    /// ([`rules::follow_up_open`]); [`InboxError::Unsupported`] without `until`, on a done entry and
+    /// on one that is no mail. Returns the entry as stored; other errors as
+    /// [`InboxSource::set_item_done`].
     fn snooze_item(
         &self,
         id: String,
         until: Option<DateTime<Utc>>,
+        unless_reply: bool,
+        keep_open: bool,
     ) -> impl Future<Output = Result<Item, InboxError>> + Send;
 
     /// Moves the entry to `lane` ([`rules::set_lane`]). With `remember` the core also keeps the
@@ -318,6 +330,7 @@ mod tests {
             invite: None,
             reason: None,
             category: None,
+            follow_up: None,
         }
     }
 
