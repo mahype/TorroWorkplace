@@ -573,8 +573,10 @@ pub enum Edit {
     /// Put off until `until`; `None` takes a snoozed entry back. In the mail window it is "Follow up"
     /// (task E19.4): `id` may be a mail's own id (`m:…`, decision 8 of E19), and with `unless_reply`
     /// the conversation comes back only if nobody replied by then; the hub and the App Feed always
-    /// send `false`.
-    Snooze { id: String, until: Option<DateTime<Utc>>, unless_reply: bool },
+    /// send `false`. With `keep_open` an open mail entry only gets its follow-up and stays where it
+    /// is (`inbox.snooze_item` with `keep_open`, the undo of "Cancel follow-up" at an open entry,
+    /// decision of #315); always `false` but in such an undo.
+    Snooze { id: String, until: Option<DateTime<Utc>>, unless_reply: bool, keep_open: bool },
     /// Move to `lane`; with `remember` also later entries of the same source (a rule in the core).
     Lane { id: String, lane: Lane, remember: bool },
     /// Dismiss a notification (task E8.4, the ✕, `x`): done like [`Edit::Done`], but sent as
@@ -601,15 +603,17 @@ impl Edit {
             Edit::Done { done, .. } => Edit::Done { id, done: !done },
             Edit::Dismiss { .. } => Edit::Done { id, done: false },
             Edit::Snooze { .. } => {
-                // An entry that was not put off stays so: the core has no request for "open with a
-                // follow-up", and `until` would hide it until then (second review of #315).
-                let until = match before.state {
-                    State::Snoozed { until } => Some(until),
-                    State::New | State::Seen | State::Done { .. } => None,
+                // A snoozed entry back to its time; an open one that kept its follow-up (decision 7 of
+                // E19) back to that follow-up and open (`keep_open`, decision of #315); a done one and
+                // one without a follow-up stay as they were, with none.
+                let (until, keep_open) = match (before.state, before.follow_up) {
+                    (State::Snoozed { until }, _) => (Some(until), false),
+                    (State::New | State::Seen, Some(follow)) => (Some(follow.at), true),
+                    (State::New | State::Seen | State::Done { .. }, _) => (None, false),
                 };
                 // The condition it had (task E19.4), so "Undo" puts the follow-up back as it was.
                 let unless_reply = until.is_some() && before.follow_up.is_some_and(|follow| follow.unless_reply);
-                Edit::Snooze { id, until, unless_reply }
+                Edit::Snooze { id, until, unless_reply, keep_open }
             }
             Edit::Lane { .. } => Edit::Lane { id, lane: before.lane, remember: false },
         }
@@ -641,7 +645,9 @@ impl Edit {
     pub async fn apply<S: InboxSource>(self, inbox: Arc<S>) -> Result<Item, String> {
         let result = match self {
             Edit::Done { id, done } => inbox.set_item_done(id, done).await,
-            Edit::Snooze { id, until, unless_reply } => inbox.snooze_item(id, until, unless_reply, false).await,
+            Edit::Snooze { id, until, unless_reply, keep_open } => {
+                inbox.snooze_item(id, until, unless_reply, keep_open).await
+            }
             Edit::Lane { id, lane, remember } => inbox.set_item_lane(id, lane, remember).await,
             Edit::Dismiss { id } => inbox.dismiss_item(id).await,
         };
@@ -4381,8 +4387,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::PickConfirm => {
                 let at = self.pick.at();
                 if let Some(id) = self.snooze_id().filter(|_| at > self.now) {
-                    let edit =
-                        Edit::Snooze { id, until: Some(at), unless_reply: self.follows_up() && self.unless_reply };
+                    let edit = Edit::Snooze {
+                        id,
+                        until: Some(at),
+                        unless_reply: self.follows_up() && self.unless_reply,
+                        keep_open: false,
+                    };
                     return self.edit(edit);
                 }
             }
@@ -8378,7 +8388,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // A follow-up of a mail without an entry (task E19.4, decision 8 of E19): the core makes
             // its entry, and "Undo" calls the follow-up off again.
             None if matches!(edit, Edit::Snooze { .. }) && self.mail_subject.as_deref() == Some(edit.id()) => {
-                let undo = Edit::Snooze { id: edit.id().to_owned(), until: None, unless_reply: false };
+                let undo =
+                    Edit::Snooze { id: edit.id().to_owned(), until: None, unless_reply: false, keep_open: false };
                 After { text: tr("Brought back").to_owned(), undo: Some(undo) }
             }
             None => return Task::none(),
@@ -8601,7 +8612,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let [later, tomorrow, next_week] = snooze_times(self.now);
         let snooze = |icon, label: &str, until| Choice {
             when: Some(wake_short(until, self.now)),
-            ..Choice::new(icon, label, Message::Edit(Edit::Snooze { id: id.clone(), until: Some(until), unless_reply }))
+            ..Choice::new(
+                icon,
+                label,
+                Message::Edit(Edit::Snooze { id: id.clone(), until: Some(until), unless_reply, keep_open: false }),
+            )
         };
         let mut choices = vec![
             snooze(Icon::Clock, tr("Later today"), later),
@@ -8625,7 +8640,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let snoozed = item.is_some_and(|item| matches!(item.state, State::Snoozed { .. }));
         let dated = mail && item.is_some_and(|item| item.follow_up.is_some());
         if snoozed || dated {
-            let wake = Message::Edit(Edit::Snooze { id: id.clone(), until: None, unless_reply: false });
+            let wake =
+                Message::Edit(Edit::Snooze { id: id.clone(), until: None, unless_reply: false, keep_open: false });
             choices.push(match mail {
                 true => Choice::new(Icon::X, tr("Cancel follow-up"), wake),
                 false => Choice::new(Icon::Inbox, tr("Bring back now"), wake),
@@ -12611,8 +12627,12 @@ mod tests {
         }
         let choices = app.choices();
         assert_eq!(choices[0].label, tr("In 5 min"));
-        let soon =
-            Edit::Snooze { id: "demo-2".into(), until: Some(app.now + TimeDelta::minutes(5)), unless_reply: false };
+        let soon = Edit::Snooze {
+            id: "demo-2".into(),
+            until: Some(app.now + TimeDelta::minutes(5)),
+            unless_reply: false,
+            keep_open: false,
+        };
         assert!(matches!(&choices[0].message, Message::Edit(edit) if *edit == soon), "snoozes the entry for 5 min");
         assert_eq!(choices.len(), 5, "and the usual ones after it");
     }
@@ -12628,8 +12648,8 @@ mod tests {
         let _ = press(&mut app, Key::E);
         assert!(app.sent.is_empty(), "e does not reach the list behind the menu");
         let _ = press(&mut app, Key::Digit(2));
-        let snooze = Edit::Snooze { id: "demo-2".into(), until: Some(tomorrow), unless_reply: false };
-        let back = Edit::Snooze { id: "demo-2".into(), until: None, unless_reply: false };
+        let snooze = Edit::Snooze { id: "demo-2".into(), until: Some(tomorrow), unless_reply: false, keep_open: false };
+        let back = Edit::Snooze { id: "demo-2".into(), until: None, unless_reply: false, keep_open: false };
         let text = trf("Later until {time}", &[("time", &list::wake_text(tomorrow, app.now))]);
         assert_eq!(app.sent.last(), Some(&Sent::Edit(snooze, Some(After { text, undo: Some(back.clone()) }))));
         assert!(app.menu.is_none(), "the menu closes");
@@ -12652,7 +12672,10 @@ mod tests {
         assert_eq!(app.choices().last().map(|c| c.label.clone()), Some(tr("Bring back now").to_owned()));
         let _ = press(&mut app, Key::Digit(1));
         let Some(Sent::Edit(_, Some(after))) = app.sent.last() else { panic!("an edit with a hint") };
-        assert_eq!(after.undo, Some(Edit::Snooze { id: "demo-10".into(), until: Some(old), unless_reply: false }));
+        assert_eq!(
+            after.undo,
+            Some(Edit::Snooze { id: "demo-10".into(), until: Some(old), unless_reply: false, keep_open: false })
+        );
         let _ = press(&mut app, Key::S);
         let _ = press(&mut app, Key::Digit(5));
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Snooze { until: None, .. }, _))), "Unsnooze");
@@ -15704,10 +15727,13 @@ mod tests {
         // "Only if no reply" first (review of #315): Tomorrow is the third.
         let _ = app.update(Message::Key(Key::Digit(3)));
         match app.sent.last() {
-            Some(Sent::Edit(Edit::Snooze { id: sent, until, unless_reply }, Some(after))) => {
+            Some(Sent::Edit(Edit::Snooze { id: sent, until, unless_reply, keep_open: false }, Some(after))) => {
                 assert_eq!((sent, *until, *unless_reply), (&id, Some(tomorrow), false));
                 assert_eq!(after.text, list::follow_up_text(tomorrow, false, app.now));
-                assert_eq!(after.undo, Some(Edit::Snooze { id: id.clone(), until: None, unless_reply: false }));
+                assert_eq!(
+                    after.undo,
+                    Some(Edit::Snooze { id: id.clone(), until: None, unless_reply: false, keep_open: false })
+                );
             }
             other => panic!("a follow-up of the mail, not {other:?}"),
         }
@@ -15781,8 +15807,12 @@ mod tests {
         let _ = app.update(last.message);
         match app.sent.last() {
             Some(Sent::Edit(edit, Some(after))) => {
-                assert_eq!(edit, &Edit::Snooze { id: item.id.clone(), until: None, unless_reply: false });
-                let back = Edit::Snooze { id: item.id.clone(), until: Some(follow.at), unless_reply: true };
+                assert_eq!(
+                    edit,
+                    &Edit::Snooze { id: item.id.clone(), until: None, unless_reply: false, keep_open: false }
+                );
+                let back =
+                    Edit::Snooze { id: item.id.clone(), until: Some(follow.at), unless_reply: true, keep_open: false };
                 assert_eq!(after.undo, Some(back), "Undo with its condition");
             }
             other => panic!("cancelled, not {other:?}"),
@@ -15796,23 +15826,72 @@ mod tests {
         assert_eq!(properties, detail::properties(&open, app.now, false).len() + 1, "its date in the panel");
     }
 
-    /// Second review of #315: an open entry that kept its follow-up is not put off by an undo – the core
-    /// has no "open with a follow-up", and `until` would hide it until then (or bring a date in the
-    /// past): "Undo" at an open entry sends `until: None`, whatever its follow-up says.
+    /// Decision of #315: "Undo" at an open entry that kept its follow-up puts that follow-up back and
+    /// keeps the entry open (`keep_open`) – of "Cancel follow-up" and of "Follow up → Tomorrow" alike;
+    /// a snoozed entry goes back to its time as before; a done one and one without a follow-up get
+    /// `until: None`.
     #[test]
-    fn undo_at_an_open_entry_sends_until_none() {
+    fn undo_at_an_open_entry_restores_its_follow_up() {
         let app = mail_window(Density::Compact, &[]);
         let at = app.now + TimeDelta::days(2);
         let follow = torro_inbox::item::FollowUp { at, unless_reply: true, since: app.now };
         let open = app.for_me.first().cloned().map(|item| Item { state: State::New, follow_up: Some(follow), ..item });
         let open = open.expect("an entry");
-        let none = Edit::Snooze { id: open.id.clone(), until: None, unless_reply: false };
-        assert_eq!(none.after(&open, app.now).undo, Some(none.clone()), "Cancel follow-up");
+        let id = || open.id.clone();
+        let back = Edit::Snooze { id: id(), until: Some(at), unless_reply: true, keep_open: true };
+        let none = Edit::Snooze { id: id(), until: None, unless_reply: false, keep_open: false };
+        assert_eq!(none.after(&open, app.now).undo, Some(back.clone()), "Cancel follow-up");
         let tomorrow =
-            Edit::Snooze { id: open.id.clone(), until: Some(app.now + TimeDelta::days(1)), unless_reply: false };
-        assert_eq!(tomorrow.undo(&open), none, "Follow up → Tomorrow");
-        let done = Item { state: State::Done { at: app.now }, ..open };
+            Edit::Snooze { id: id(), until: Some(app.now + TimeDelta::days(1)), unless_reply: false, keep_open: false };
+        assert_eq!(tomorrow.undo(&open), back, "Follow up → Tomorrow");
+        let seen = Item { state: State::Seen, ..open.clone() };
+        assert_eq!(tomorrow.undo(&seen), back, "seen is open too");
+        let done = Item { state: State::Done { at: app.now }, ..open.clone() };
         assert_eq!(tomorrow.undo(&done), none, "never a date for a done entry");
+        let plain = Item { follow_up: None, ..open.clone() };
+        assert_eq!(tomorrow.undo(&plain), none, "none without a follow-up");
+        let snoozed = Item { state: State::Snoozed { until: at }, ..open.clone() };
+        let again = Edit::Snooze { id: id(), until: Some(at), unless_reply: true, keep_open: false };
+        assert_eq!(none.undo(&snoozed), again, "a snoozed entry back to its time, put off");
+    }
+
+    /// Decision of #315, through the demo: "Cancel follow-up" at an open mail entry that kept its
+    /// follow-up, then "Undo" – the entry is open again with its follow-up, not put off.
+    #[test]
+    fn undo_of_cancel_follow_up_keeps_an_open_entry_open() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let id = app
+            .for_me
+            .iter()
+            .find(|item| matches!(item.link, Some(Link::Mail { .. })) && item.state.is_open())
+            .map(|item| item.id.clone())
+            .expect("an open mail entry");
+        let at = app.now + TimeDelta::days(2);
+        // An open entry with its follow-up, as a reply leaves it (decision 7 of E19).
+        let held = block_on(app.inbox.snooze_item(id.clone(), Some(at), true, true)).expect("followed up, open");
+        assert!(held.state.is_open() && held.follow_up.is_some());
+        load(&mut app);
+        let _ = app.update(Message::AskSnooze(id.clone()));
+        let cancel = app.choices().into_iter().find(|choice| choice.label == tr("Cancel follow-up")).expect("Cancel");
+        let _ = app.update(cancel.message);
+        deliver(&mut app);
+        let after = |app: &App<DemoSource>| {
+            block_on(app.inbox.list_items(torro_inbox::ItemFilter::default()))
+                .expect("the entries")
+                .into_iter()
+                .find(|item| item.id == id)
+                .expect("the entry")
+        };
+        assert!(after(&app).follow_up.is_none(), "cancelled");
+        let _ = app.update(Message::Undo);
+        deliver(&mut app);
+        let item = after(&app);
+        assert!(item.state.is_open(), "still open, not put off: {:?}", item.state);
+        assert_eq!(
+            item.follow_up.map(|follow| (follow.at, follow.unless_reply)),
+            Some((at, true)),
+            "its follow-up back"
+        );
     }
 
     /// Review of #315: `mail.get_message` names no pile (only the search does), so the reader takes the
