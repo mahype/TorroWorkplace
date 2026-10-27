@@ -269,8 +269,9 @@ impl AiProvider {
     }
 
     /// The provider's own models have open weights (DeepSeek, Qwen, Kimi, GLM, MiniMax, and Strata,
-    /// which serves open models only; Mistral in part), so the same model could also run on a server of one's own. OpenRouter lists open
-    /// models of many makers and says so per model ([`AiModel::open_weights`]).
+    /// which serves open models only; Mistral in part), so the same model could also run on a server
+    /// of one's own. OpenRouter lists open models of many makers and says so per model
+    /// ([`AiModel::open_weights`]).
     pub fn open_weights(self) -> bool {
         matches!(
             self,

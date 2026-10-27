@@ -2775,8 +2775,8 @@ static FIND_LOCAL_SERVERS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Looks for AI servers running on this computer (Ollama at localhost:11434, LM Studio at \
-                  localhost:1234, Strata at 127.0.0.1:8080) and returns each that answers with its address, number of models and the AI \
-                  account already connected there. Connecting one is done by a person in Torro Workplace.",
+                  localhost:1234, Strata at 127.0.0.1:8080) and returns each that answers with its address, \
+                  number of models and the AI account already connected there. Connecting one is done by a person in Torro Workplace.",
 };
 
 static GET_SETTINGS: Command = Command {
