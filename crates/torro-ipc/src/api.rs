@@ -3314,7 +3314,11 @@ static SNOOZE_ITEM: Command = Command {
                   follow-up: `unless_reply: true` waits only if nobody replies – a mail in the conversation not \
                   sent from the account itself, dated after this call, in any folder but drafts, calls it off and the date \
                   never comes; without it the date stays after a reply and brings the conversation on top once \
-                  more unless it was archived, thrown away or marked as spam. `unless_reply` is for mail only, `unsupported` on any other entry.",
+                  more unless it was archived, thrown away or marked as spam. `unless_reply` is for mail only, `unsupported` on any other entry. \
+                  `keep_open: true` with `until` follows up an open mail entry without putting it off (it stays \
+                  where it is and comes back on top at `until` if still open), as a reply leaves a follow-up; for \
+                  undoing a cancelled follow-up. `unsupported` on a snoozed or done entry, on one that is no \
+                  mail and without `until`.",
 };
 
 static SET_ITEM_LANE: Command = Command {
@@ -4946,7 +4950,7 @@ mod tests {
             },
             Request::ResolveItems { thread_key: "backup".into() },
             Request::SetItemDone { id: "i1".into(), done: true, dismissed: true },
-            Request::SnoozeItem { id: "i1".into(), until: Some(now), unless_reply: true },
+            Request::SnoozeItem { id: "i1".into(), until: Some(now), unless_reply: true, keep_open: true },
             Request::SetItemLane { id: "i1".into(), lane: Lane::Info, remember: false },
             Request::MuteSource { source: SourceRef::script("backup"), muted: true },
             Request::AiAssignments,

@@ -2228,9 +2228,13 @@ mod tests {
         assert!(matches!(undo, Ok(Request::SetMailPile { since: Some(_), .. })), "{undo:?}");
         let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
         assert!(
-            matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_), unless_reply: false }) if id == "m:1"),
+            matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_), unless_reply: false, keep_open: false }) if id == "m:1"),
             "{later:?}"
         );
+        // Review of #315: following up an open entry without putting it off.
+        let open = json!({"id": "m:1", "until": "2026-10-16T08:00:00Z", "keep_open": true});
+        let open = call("inbox_snooze_item", open);
+        assert!(matches!(open, Ok(Request::SnoozeItem { keep_open: true, unless_reply: false, .. })), "{open:?}");
         // Task E19.1: "Only if no reply" comes through the request's schema.
         let follow_up = json!({"id": "m:1", "until": "2026-10-16T08:00:00Z", "unless_reply": true});
         let follow_up = call("inbox_snooze_item", follow_up);

@@ -920,10 +920,25 @@ pub fn snooze(item: &mut Item, until: Option<DateTime<Utc>>) {
 /// reply opened it). [`snooze`] stays for every other source.
 pub fn follow_up(item: &mut Item, until: Option<DateTime<Utc>>, unless_reply: bool, now: DateTime<Utc>) {
     snooze(item, until);
-    item.follow_up = until.map(|at| match item.follow_up {
+    item.follow_up = until.map(|at| next_follow_up(item.follow_up, at, unless_reply, now));
+}
+
+/// "Follow up" on an **open** mail entry without putting it off (review of #315,
+/// `inbox.snooze_item` with `keep_open`): only its follow-up is set, as [`follow_up`] sets it
+/// (a repeated call keeps `since`); state and place in the list stay. The state a reply leaves a
+/// follow-up in (decision 6), made again by the Undo of "Cancel follow-up"; [`wake`] brings the
+/// entry on top at `until` while it is open. The caller checks that the entry is an open mail entry.
+pub fn follow_up_open(item: &mut Item, until: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) {
+    item.follow_up = Some(next_follow_up(item.follow_up, until, unless_reply, now));
+}
+
+/// The follow-up at `at` with `unless_reply` set at `now`: `held` itself when it is the same (a
+/// repeated call keeps its `since`), else a new one counting replies from `now`.
+fn next_follow_up(held: Option<FollowUp>, at: DateTime<Utc>, unless_reply: bool, now: DateTime<Utc>) -> FollowUp {
+    match held {
         Some(held) if held.at == at && held.unless_reply == unless_reply => held,
         _ => FollowUp { at, unless_reply, since: now },
-    });
+    }
 }
 
 /// A reply came at `at` into the conversation of the mail entry `item` (task E19.1, decision 6): mail
@@ -1885,6 +1900,19 @@ mod tests {
         let merged = merge(snoozed(true), item("2", Kind::Message));
         assert_eq!(merged.state, State::Snoozed { until: at(20) });
         assert!(merged.follow_up.is_some());
+    }
+
+    /// Review of #315: an open entry gets its follow-up and stays as it is; a repeated call keeps
+    /// since when replies count.
+    #[test]
+    fn an_open_entry_is_followed_up_without_being_put_off() {
+        let mut open = Item { state: State::Seen, ..item("1", Kind::Message) };
+        follow_up_open(&mut open, at(20), false, at(9));
+        assert_eq!((open.state, open.updated), (State::Seen, at(8)), "it stays where it is");
+        assert_eq!(open.follow_up, Some(FollowUp { at: at(20), unless_reply: false, since: at(9) }));
+        follow_up_open(&mut open, at(20), false, at(10));
+        assert_eq!(open.follow_up.map(|held| held.since), Some(at(9)), "a repeated call keeps since");
+        assert!(wake(&mut open, at(20)), "back at its time");
     }
 
     /// Review of #315, decision 6: mail of the account's own (Bcc to oneself, a list's echo) opens the

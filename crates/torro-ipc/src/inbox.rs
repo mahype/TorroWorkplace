@@ -1056,14 +1056,16 @@ impl InboxSource for InboxClient {
         }
     }
 
-    /// `inbox.snooze_item` with the follow-up's condition `unless_reply` (task E19.3).
+    /// `inbox.snooze_item` with the follow-up's condition `unless_reply` (task E19.3) and
+    /// `keep_open` (review of #315).
     async fn snooze_item(
         &self,
         id: String,
         until: Option<DateTime<Utc>>,
         unless_reply: bool,
+        keep_open: bool,
     ) -> Result<Item, InboxError> {
-        self.ask_item(Request::SnoozeItem { id, until, unless_reply }).await
+        self.ask_item(Request::SnoozeItem { id, until, unless_reply, keep_open }).await
     }
 
     async fn set_item_lane(&self, id: String, lane: Lane, remember: bool) -> Result<Item, InboxError> {
@@ -1593,9 +1595,9 @@ mod tests {
         let client = core.client();
         assert_eq!(client.set_item_done("a".into(), true).await.expect("done").state, State::Done { at: at(10) });
         assert_eq!(client.set_item_done("a".into(), false).await.expect("open").state, State::Seen);
-        let snoozed = client.snooze_item("b".into(), Some(at(15)), false).await.expect("snoozed");
+        let snoozed = client.snooze_item("b".into(), Some(at(15)), false, false).await.expect("snoozed");
         assert_eq!((snoozed.id.as_str(), snoozed.state), ("b", State::Snoozed { until: at(15) }));
-        assert_eq!(client.snooze_item("b".into(), None, false).await.expect("back").state, State::Seen);
+        assert_eq!(client.snooze_item("b".into(), None, false, false).await.expect("back").state, State::Seen);
         let moved = client.set_item_lane("c".into(), Lane::Info, true).await.expect("moved");
         assert_eq!((moved.lane, moved.title.as_str()), (Lane::Info, "remember true"));
         client.mute_source(SourceRef::script("ci"), true).await.expect("muted");
@@ -2205,10 +2207,10 @@ mod tests {
                             // An estimate for one account only, to see a missing one counts as none.
                             total_estimate: account.map(|_| 3),
                         },
-                        Request::SnoozeItem { id, until, unless_reply } => Response::Item {
+                        Request::SnoozeItem { id, until, unless_reply, keep_open } => Response::Item {
                             item: Item {
                                 state: until.map_or(State::Seen, |until| State::Snoozed { until }),
-                                title: format!("unless_reply {unless_reply}"),
+                                title: format!("unless_reply {unless_reply} keep_open {keep_open}"),
                                 ..item(&id)
                             },
                         },
@@ -2234,8 +2236,11 @@ mod tests {
         assert_eq!((page[0].pile, next.as_deref()), (Some(MailPile::SetAside), Some("next")), "the pile comes back");
         assert_eq!(client.count_in_pile(MailPile::ReplyLater, anna()).await, Ok(3));
         assert_eq!(client.count_in_pile(MailPile::ReplyLater, None).await, Ok(0), "no estimate counts as none");
-        let followed = client.snooze_item("m:7".into(), Some(at(15)), true).await.expect("followed up");
-        assert_eq!((followed.title.as_str(), followed.state), ("unless_reply true", State::Snoozed { until: at(15) }));
+        let followed = client.snooze_item("m:7".into(), Some(at(15)), true, false).await.expect("followed up");
+        assert_eq!(
+            (followed.title.as_str(), followed.state),
+            ("unless_reply true keep_open false", State::Snoozed { until: at(15) })
+        );
         client.search_by_category(vec![Category::Invoice], 50, None, Order::NewestFirst).await.expect("a page");
 
         let search = |account: Option<String>, pile, limit, cursor: Option<&str>, order| Request::SearchMail {
@@ -2269,7 +2274,7 @@ mod tests {
                 search(anna(), PileFilter::SetAside, 20, Some("c1"), Some(Order::OldestFirst)),
                 search(anna(), PileFilter::ReplyLater, 1, None, None),
                 search(None, PileFilter::ReplyLater, 1, None, None),
-                Request::SnoozeItem { id: "m:7".into(), until: Some(at(15)), unless_reply: true },
+                Request::SnoozeItem { id: "m:7".into(), until: Some(at(15)), unless_reply: true, keep_open: false },
                 Request::SearchMail {
                     account: None,
                     folder: None,

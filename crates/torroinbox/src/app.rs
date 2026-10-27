@@ -641,7 +641,7 @@ impl Edit {
     pub async fn apply<S: InboxSource>(self, inbox: Arc<S>) -> Result<Item, String> {
         let result = match self {
             Edit::Done { id, done } => inbox.set_item_done(id, done).await,
-            Edit::Snooze { id, until, unless_reply } => inbox.snooze_item(id, until, unless_reply).await,
+            Edit::Snooze { id, until, unless_reply } => inbox.snooze_item(id, until, unless_reply, false).await,
             Edit::Lane { id, lane, remember } => inbox.set_item_lane(id, lane, remember).await,
             Edit::Dismiss { id } => inbox.dismiss_item(id).await,
         };
@@ -18141,7 +18141,7 @@ mod tests {
 
         // The mail window's "Later": a snoozed mail entry.
         let mut app = mail_window(Density::Compact, &[]);
-        block_on(app.inbox.snooze_item("demo-mail-1".into(), Some(app.now + TimeDelta::days(1)), false))
+        block_on(app.inbox.snooze_item("demo-mail-1".into(), Some(app.now + TimeDelta::days(1)), false, false))
             .expect("snoozed");
         let _ = app.update(Message::Show(View::Snoozed));
         load(&mut app);

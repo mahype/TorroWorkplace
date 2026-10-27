@@ -55,6 +55,7 @@ impl InboxSource for EmptySource {
         _id: String,
         _until: Option<DateTime<Utc>>,
         _unless_reply: bool,
+        _keep_open: bool,
     ) -> Result<Item, InboxError> {
         Err(InboxError::NotFound)
     }
@@ -149,7 +150,7 @@ mod tests {
         assert_eq!(block_on(source.list_items(ItemFilter::default())), Ok(Vec::new()));
         assert_eq!(block_on(source.list_sources()), Ok(Vec::new()));
         assert_eq!(block_on(source.set_item_done("x".into(), true)), Err(InboxError::NotFound));
-        assert_eq!(block_on(source.snooze_item("x".into(), None, false)), Err(InboxError::NotFound));
+        assert_eq!(block_on(source.snooze_item("x".into(), None, false, false)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.set_item_lane("x".into(), Lane::Info, false)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.mute_source(SourceRef::suite(), true)), Err(InboxError::Offline));
         assert_eq!(block_on(source.hide_sender("x".into(), HideScope::Sender)), Err(InboxError::NotFound));

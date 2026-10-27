@@ -1289,7 +1289,8 @@ pub(crate) mod tests {
         for subject in ["Offer", "Plan", "Trip"] {
             let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
             let entry = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
-            let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true };
+            let request =
+                Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true, keep_open: false };
             assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
             followed.insert(subject, entry);
         }
@@ -1420,7 +1421,8 @@ pub(crate) mod tests {
         let (since, until) = (Utc::now() - TimeDelta::days(4), Utc::now() + TimeDelta::hours(1));
         let found = mail_to_snooze(&mail, Reach::Suite, &of("Offer").id).await.expect("the mail");
         let entry = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
-        let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true };
+        let request =
+            Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true, keep_open: false };
         assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
         let held = || match inbox.handle(Request::GetItem { id: entry.clone() }, None, Utc::now()) {
             Response::Item { item } => (item.state, item.follow_up.map(|follow_up| follow_up.unless_reply)),
@@ -1476,7 +1478,8 @@ pub(crate) mod tests {
         let found = mail_to_snooze(&mail, Reach::Suite, &of("Plan").id).await.expect("the mail");
         let plan = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
         let until = Utc::now() + TimeDelta::hours(1);
-        let request = Request::SnoozeItem { id: plan.clone(), until: Some(until), unless_reply: true };
+        let request =
+            Request::SnoozeItem { id: plan.clone(), until: Some(until), unless_reply: true, keep_open: false };
         assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
         let pile_of =
             |subject: &str| inbox.mail_piles(&[ANNA.to_string()]).expect("read").pile_of(ANNA, &of(subject).id);
@@ -1528,7 +1531,8 @@ pub(crate) mod tests {
         for subject in ["Offer", "Plan"] {
             let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
             let entry = inbox.file_mail(&found, Notify::All, since).expect("filed").expect("an entry");
-            let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: false };
+            let request =
+                Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: false, keep_open: false };
             assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
             // The reply comes and opens it, as the feed files it.
             let reply = mail_to_snooze(&mail, Reach::Suite, &of(&format!("Re {subject}")).id).await.expect("reply");
@@ -1614,7 +1618,8 @@ pub(crate) mod tests {
         for subject in ["Question", "Put off before"] {
             let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
             let entry = inbox.file_mail(&found, Notify::All, Utc::now()).expect("filed").expect("an entry");
-            let request = Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true };
+            let request =
+                Request::SnoozeItem { id: entry.clone(), until: Some(until), unless_reply: true, keep_open: false };
             assert!(matches!(inbox.handle(request, None, Utc::now()), Response::Item { .. }));
             entries.insert(subject, entry);
         }
@@ -1710,7 +1715,7 @@ pub(crate) mod tests {
         }
         let until = Utc::now() + TimeDelta::hours(1);
         inbox.handle(
-            Request::SnoozeItem { id: filed[0].clone(), until: Some(until), unless_reply: false },
+            Request::SnoozeItem { id: filed[0].clone(), until: Some(until), unless_reply: false, keep_open: false },
             None,
             Utc::now(),
         );

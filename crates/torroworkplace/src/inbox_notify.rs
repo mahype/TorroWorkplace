@@ -234,6 +234,7 @@ pub fn request(answer: Answer, popup: &Popup, now: DateTime<Utc>) -> Option<Requ
             id: popup.entry()?.to_string(),
             until: Some(now + SNOOZE_FOR),
             unless_reply: false,
+            keep_open: false,
         }),
         Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string(), target: None }),
     }
@@ -1218,7 +1219,12 @@ mod tests {
         assert_eq!(request(Answer::Done, &popup, now), Some(done));
         assert_eq!(
             request(Answer::Snooze, &popup, now),
-            Some(Request::SnoozeItem { id: "a".into(), until: Some(now + TimeDelta::hours(1)), unless_reply: false })
+            Some(Request::SnoozeItem {
+                id: "a".into(),
+                until: Some(now + TimeDelta::hours(1)),
+                unless_reply: false,
+                keep_open: false
+            })
         );
         let open = Some(Request::OpenApp { app: "torroinbox".into(), target: None });
         assert_eq!(request(Answer::Open, &popup, now), open);

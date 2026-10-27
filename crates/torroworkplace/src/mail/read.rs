@@ -1990,6 +1990,7 @@ pub(crate) mod tests {
             id: entries["Plain 2"].clone(),
             until: Some(now + Duration::hours(1)),
             unless_reply: false,
+            keep_open: false,
         };
         assert!(matches!(inbox.handle(later, None, now), Response::Item { .. }));
         let weekly = summary("Weekly").id;

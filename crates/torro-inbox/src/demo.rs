@@ -1744,22 +1744,33 @@ impl InboxSource for DemoSource {
 
     /// As the core does (task E19.1): a mail entry is followed up ([`rules::follow_up`]), any other
     /// one snoozed, and `unless_reply` with `until` on one that is no mail is
-    /// [`InboxError::Unsupported`]. A mail message's id (`m:…`) names its entry, or – with `until` –
-    /// a new one ([`Data::snooze_target`]).
+    /// [`InboxError::Unsupported`]. With `keep_open` an open mail entry only gets its follow-up
+    /// ([`rules::follow_up_open`], review of #315), anything else is [`InboxError::Unsupported`]. A
+    /// mail message's id (`m:…`) names its entry, or – with `until` – a new one
+    /// ([`Data::snooze_target`]).
     async fn snooze_item(
         &self,
         id: String,
         until: Option<DateTime<Utc>>,
         unless_reply: bool,
+        keep_open: bool,
     ) -> Result<Item, InboxError> {
         let now = self.now();
         let mut data = self.lock();
+        if keep_open && until.is_none() {
+            return Err(InboxError::Unsupported);
+        }
         let at = match data.snooze_target(&id, until.is_some())? {
             SnoozeTarget::Entry(at) => at,
             SnoozeTarget::StandIn(item) => return Ok(*item),
         };
         let item = &mut data.items[at];
-        if item.source.kind == SourceKind::Mail {
+        if keep_open {
+            let (Some(until), true, true) = (until, item.source.kind == SourceKind::Mail, item.state.is_open()) else {
+                return Err(InboxError::Unsupported);
+            };
+            rules::follow_up_open(item, until, unless_reply, now);
+        } else if item.source.kind == SourceKind::Mail {
             rules::follow_up(item, until, unless_reply, now);
         } else if unless_reply && until.is_some() {
             return Err(InboxError::Unsupported);
@@ -2046,15 +2057,15 @@ mod tests {
     async fn snoozed_entries_wake_when_due() {
         let demo = DemoSource::new(now());
         let snoozed =
-            demo.snooze_item("demo-7".into(), Some(now() + TimeDelta::hours(1)), false).await.expect("snooze");
+            demo.snooze_item("demo-7".into(), Some(now() + TimeDelta::hours(1)), false, false).await.expect("snooze");
         assert_eq!(snoozed.state, State::Snoozed { until: now() + TimeDelta::hours(1) });
         assert!(!ids(&demo.list_items(open_in(Lane::Info)).await.expect("list")).contains(&"demo-7"));
         // Snoozed until a moment that has passed: woken on the next listing, at the top.
-        demo.snooze_item("demo-7".into(), Some(now() - TimeDelta::minutes(1)), false).await.expect("snooze");
+        demo.snooze_item("demo-7".into(), Some(now() - TimeDelta::minutes(1)), false, false).await.expect("snooze");
         let info = demo.list_items(open_in(Lane::Info)).await.expect("list");
         assert_eq!(ids(&info)[0], "demo-7");
         assert_eq!(info[0].state, State::New);
-        let back = demo.snooze_item("demo-10".into(), None, false).await.expect("take back");
+        let back = demo.snooze_item("demo-10".into(), None, false, false).await.expect("take back");
         assert_eq!(back.state, State::Seen);
     }
 
@@ -2111,7 +2122,7 @@ mod tests {
     async fn unknown_entries_are_not_found() {
         let demo = DemoSource::new(now());
         assert_eq!(demo.set_item_done("nope".into(), true).await, Err(InboxError::NotFound));
-        assert_eq!(demo.snooze_item("nope".into(), None, false).await, Err(InboxError::NotFound));
+        assert_eq!(demo.snooze_item("nope".into(), None, false, false).await, Err(InboxError::NotFound));
         assert_eq!(demo.set_item_lane("nope".into(), Lane::Info, false).await, Err(InboxError::NotFound));
         assert_eq!(demo.open_item("nope".into()).await, Err(InboxError::NotFound));
     }
@@ -2520,7 +2531,7 @@ mod tests {
             .map(|item| item.id.clone())
             .expect("the entry of m:w1");
         assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), Vec::<String>::new(), "nothing snoozed");
-        demo.snooze_item(entry, Some(now() + TimeDelta::days(1)), false).await.expect("snoozed");
+        demo.snooze_item(entry, Some(now() + TimeDelta::days(1)), false, false).await.expect("snoozed");
         assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), ["m:w1"]);
         assert!(!role_ids(&demo, Role::Inbox, Some(false), Some(false)).iter().any(|id| id == "m:w1"), "not in All");
     }
@@ -2733,22 +2744,31 @@ mod tests {
         assert!(matches!(&held.link, Some(Link::Mail { message }) if message == FOLLOW_UP_MAIL));
 
         let until = now() + TimeDelta::days(3);
-        let kept = demo.snooze_item("m:w10".into(), Some(until), true).await.expect("followed up");
+        let kept = demo.snooze_item("m:w10".into(), Some(until), true, false).await.expect("followed up");
         assert_eq!((kept.id.as_str(), kept.state), ("demo-follow-w10", State::Snoozed { until }));
         assert!(kept.follow_up.is_some_and(|follow_up| follow_up.unless_reply && follow_up.at == until));
-        let again = demo.snooze_item("m:w10".into(), None, false).await.expect("called off");
+        let again = demo.snooze_item("m:w10".into(), None, false, false).await.expect("called off");
         assert_eq!((again.id.as_str(), again.follow_up), ("demo-follow-w10", None), "the same entry");
         // Anna's sent mail of a conversation with an entry follows up that entry.
-        let sent = demo.snooze_item("m:w7".into(), Some(until), true).await.expect("followed up");
+        let sent = demo.snooze_item("m:w7".into(), Some(until), true, false).await.expect("followed up");
         assert_eq!(sent.thread_key, "t:design", "the entry of Lena's answer: {}", sent.id);
         // Without a time a message without an entry stays without one.
         let before = demo.lock().items.len();
-        let stand_in = demo.snooze_item("m:p6".into(), None, false).await.expect("the entry it would be");
+        let stand_in = demo.snooze_item("m:p6".into(), None, false, false).await.expect("the entry it would be");
         assert_eq!((stand_in.id.as_str(), demo.lock().items.len()), ("m:p6", before));
         // A mail entry by its message's id; an entry that is no mail refuses the condition.
-        let filed = demo.snooze_item("m:w1".into(), Some(until), false).await.expect("its entry");
+        let filed = demo.snooze_item("m:w1".into(), Some(until), false, false).await.expect("its entry");
         assert!(filed.id.starts_with("demo-mail-") && filed.follow_up.is_some_and(|f| !f.unless_reply));
-        assert_eq!(demo.snooze_item("demo-7".into(), Some(until), true).await, Err(InboxError::Unsupported));
-        assert_eq!(demo.snooze_item("m:nope".into(), Some(until), false).await, Err(InboxError::NotFound));
+        assert_eq!(demo.snooze_item("demo-7".into(), Some(until), true, false).await, Err(InboxError::Unsupported));
+        assert_eq!(demo.snooze_item("m:nope".into(), Some(until), false, false).await, Err(InboxError::NotFound));
+        // Review of #315: an open mail entry is followed up without being put off, as the core does.
+        demo.snooze_item("m:w1".into(), None, false, false).await.expect("called off");
+        let open = demo.snooze_item("m:w1".into(), Some(until), false, true).await.expect("kept open");
+        assert!(open.state.is_open() && open.follow_up.is_some_and(|f| f.at == until), "{open:?}");
+        demo.snooze_item("demo-follow-w10".into(), Some(until), false, false).await.expect("put off");
+        let refused = demo.snooze_item("demo-follow-w10".into(), Some(until), false, true).await;
+        assert_eq!(refused, Err(InboxError::Unsupported), "a snoozed entry");
+        assert_eq!(demo.snooze_item("demo-7".into(), Some(until), false, true).await, Err(InboxError::Unsupported));
+        assert_eq!(demo.snooze_item("m:w1".into(), None, false, true).await, Err(InboxError::Unsupported));
     }
 }

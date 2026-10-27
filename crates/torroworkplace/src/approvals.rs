@@ -2438,6 +2438,11 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             "Follow up on {entry} {when} unless someone replies",
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
         ),
+        // An open mail entry followed up without being put off (review of #315): it stays.
+        Request::SnoozeItem { until: Some(until), keep_open: true, .. } => trf(
+            "Follow up on {entry} {when}",
+            &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
+        ),
         Request::SnoozeItem { until: Some(until), .. } => trf(
             "Snooze {entry} until {when}",
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
@@ -4942,7 +4947,8 @@ pub(crate) mod tests {
         let done = |done| inbox_summary(&Request::SetItemDone { id: "e1".into(), done, dismissed: false }, &known);
         assert_eq!(done(true), trf("Mark {entry} as done", &[("entry", &entry)]));
         assert_eq!(done(false), trf("Open {entry} again", &[("entry", &entry)]));
-        let snooze = |until, unless_reply| Request::SnoozeItem { id: "e1".into(), until, unless_reply };
+        let snooze =
+            |until, unless_reply| Request::SnoozeItem { id: "e1".into(), until, unless_reply, keep_open: false };
         assert_eq!(
             inbox_summary(&snooze(None, false), &InboxFacts::default()),
             trf("Stop snoozing {entry}", &[("entry", &unknown)])
@@ -4960,6 +4966,14 @@ pub(crate) mod tests {
             inbox_summary(&snooze(None, true), &InboxFacts::default()),
             trf("Stop snoozing {entry}", &[("entry", &unknown)])
         );
+        // Review of #315: following up an open entry without putting it off says so.
+        let open =
+            |unless_reply| Request::SnoozeItem { id: "e1".into(), until: Some(until), unless_reply, keep_open: true };
+        assert_eq!(
+            inbox_summary(&open(false), &known),
+            trf("Follow up on {entry} {when}", &[("entry", &entry), ("when", &at)])
+        );
+        assert_eq!(inbox_summary(&open(true), &known), follow_up, "the condition is named");
         // Task E18.2: "Show again" names the subjects the mail store holds.
         let stored = MailFacts { count: 2, subjects: vec!["Weekly \"deals\"".into()], ..MailFacts::default() };
         let mail = InboxFacts { mail: Some(stored), ..InboxFacts::default() };

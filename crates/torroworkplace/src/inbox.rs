@@ -758,9 +758,10 @@ impl Inbox {
             Request::SetItemLane { id, remember: true, .. } => {
                 remembered_sender(&changeable(db, id, Some(client))?.item).map(drop)
             }
-            // Nobody is asked to approve "only if no reply" on an entry that is no mail (task E19.1).
-            Request::SnoozeItem { id, until, unless_reply: true } => {
-                check_follow_up(&changeable(db, id, Some(client))?.item, *until, true)
+            // Nobody is asked to approve "only if no reply" on an entry that is no mail (task E19.1),
+            // nor following up without putting off what is no open mail entry (review of #315).
+            Request::SnoozeItem { id, until, unless_reply, keep_open } if *unless_reply || *keep_open => {
+                check_follow_up(&changeable(db, id, Some(client))?.item, *until, *unless_reply, *keep_open)
             }
             Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
                 changeable(db, id, Some(client)).map(drop)
@@ -2362,17 +2363,21 @@ fn answer(
             let closed = if dismissed { Count::Dismissed } else { Count::Done };
             Ok(Response::Item { item: set_done(db, &id, done, closed, client, now)? })
         }
-        Request::SnoozeItem { id, until, unless_reply } => {
+        Request::SnoozeItem { id, until, unless_reply, keep_open } => {
             let tx = db.transaction()?;
             let mut stored = changeable(&tx, &id, client)?;
-            check_follow_up(&stored.item, until, unless_reply)?;
-            // A mail entry follows up (task E19.1); every other source is put off as before.
-            match stored.item.source.kind {
-                SourceKind::Mail => rules::follow_up(&mut stored.item, until, unless_reply, now),
+            check_follow_up(&stored.item, until, unless_reply, keep_open)?;
+            // A mail entry follows up (task E19.1), an open one with `keep_open` without being put
+            // off (review of #315); every other source is put off as before.
+            match (stored.item.source.kind, until) {
+                (SourceKind::Mail, Some(until)) if keep_open => {
+                    rules::follow_up_open(&mut stored.item, until, unless_reply, now)
+                }
+                (SourceKind::Mail, _) => rules::follow_up(&mut stored.item, until, unless_reply, now),
                 _ => rules::snooze(&mut stored.item, until),
             }
             update_item(&tx, &stored.item)?;
-            if until.is_some() {
+            if until.is_some() && !keep_open {
                 count(&tx, &stored.item, Count::Snoozed, now)?;
             }
             tx.commit()?;
@@ -3256,10 +3261,19 @@ fn change(
 
 /// `unsupported` for "only if no reply" (`inbox.snooze_item` with `unless_reply`, task E19.1) on an
 /// entry that is no mail: only mail has replies. Without `until` the condition is ignored, as the
-/// follow-up is called off anyway.
-fn check_follow_up(item: &Item, until: Option<DateTime<Utc>>, unless_reply: bool) -> Result<(), Failure> {
+/// follow-up is called off anyway. With `keep_open` (review of #315) `unsupported` too unless the
+/// entry is an open mail entry and `until` is given: there is nothing else to follow up open.
+fn check_follow_up(
+    item: &Item,
+    until: Option<DateTime<Utc>>,
+    unless_reply: bool,
+    keep_open: bool,
+) -> Result<(), Failure> {
     if unless_reply && until.is_some() && item.source.kind != SourceKind::Mail {
         return Err(Failure::Unsupported("only mail entries can wait for a reply (unless_reply)".into()));
+    }
+    if keep_open && (until.is_none() || item.source.kind != SourceKind::Mail || !item.state.is_open()) {
+        return Err(Failure::Unsupported("keep_open follows up an open mail entry and needs until".into()));
     }
     Ok(())
 }
@@ -3603,6 +3617,10 @@ fn check_message(
         Request::MuteItem { scope, until, .. } => {
             api::check_item_change(stand_in, client).map_err(Failure::Forbidden)?;
             check_mute(stand_in, *scope, *until, now).map(drop)
+        }
+        // Following up open needs a time (review of #315); with one the mail is filed first.
+        Request::SnoozeItem { keep_open: true, until: None, .. } => {
+            Err(Failure::Unsupported("keep_open follows up an open mail entry and needs until".into()))
         }
         // "Later" for any mail (task E9.1): as for an entry of the account.
         Request::SnoozeItem { .. } => api::check_item_change(stand_in, client).map_err(Failure::Forbidden),
@@ -5954,7 +5972,7 @@ pub(crate) mod tests {
         let inbox = inbox_in(dir.path());
         let id = posted(inbox.handle(notice("Nightly build is flaky", None), Some(&script()), at(8, 0)));
         let snoozed = item(inbox.handle(
-            Request::SnoozeItem { id: id.clone(), until: Some(at(13, 0)), unless_reply: false },
+            Request::SnoozeItem { id: id.clone(), until: Some(at(13, 0)), unless_reply: false, keep_open: false },
             None,
             at(8, 1),
         ));
@@ -5968,20 +5986,25 @@ pub(crate) mod tests {
 
         // Listing wakes too, without waiting for the daemon.
         inbox.handle(
-            Request::SnoozeItem { id: id.clone(), until: Some(at(14, 0)), unless_reply: false },
+            Request::SnoozeItem { id: id.clone(), until: Some(at(14, 0)), unless_reply: false, keep_open: false },
             None,
             at(13, 2),
         );
         let listed = items(inbox.handle(all(), None, at(14, 0)));
         assert_eq!(listed[0].state, State::New);
         let back = item(inbox.handle(
-            Request::SnoozeItem { id: id.clone(), until: Some(at(20, 0)), unless_reply: false },
+            Request::SnoozeItem { id: id.clone(), until: Some(at(20, 0)), unless_reply: false, keep_open: false },
             None,
             at(14, 1),
         ));
         assert_eq!(back.state, State::Snoozed { until: at(20, 0) });
         assert_eq!(
-            item(inbox.handle(Request::SnoozeItem { id, until: None, unless_reply: false }, None, at(14, 2))).state,
+            item(inbox.handle(
+                Request::SnoozeItem { id, until: None, unless_reply: false, keep_open: false },
+                None,
+                at(14, 2)
+            ))
+            .state,
             State::Seen
         );
     }
@@ -6121,7 +6144,7 @@ pub(crate) mod tests {
         for request in [
             Request::GetItem { id: id.clone() },
             Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
-            Request::SnoozeItem { id: id.clone(), until: None, unless_reply: false },
+            Request::SnoozeItem { id: id.clone(), until: None, unless_reply: false, keep_open: false },
             Request::SetItemLane { id: id.clone(), lane: Lane::ForMe, remember: false },
             Request::MuteSource { source: source.clone(), muted: true },
         ] {
@@ -6351,7 +6374,7 @@ pub(crate) mod tests {
             );
             for request in [
                 Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
-                Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)), unless_reply: false },
+                Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)), unless_reply: false, keep_open: false },
                 Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: false },
                 mute.clone(),
             ] {
@@ -7064,7 +7087,8 @@ pub(crate) mod tests {
         };
         let done = Request::SetItemDone { id: id_of("a"), done: true, dismissed: true };
         assert!(matches!(inbox.handle(done, None, at(10, 0)), Response::Item { .. }));
-        let snooze = Request::SnoozeItem { id: id_of("b"), until: Some(at(10, 5)), unless_reply: false };
+        let snooze =
+            Request::SnoozeItem { id: id_of("b"), until: Some(at(10, 5)), unless_reply: false, keep_open: false };
         assert!(matches!(inbox.handle(snooze, None, at(10, 0)), Response::Item { .. }));
         let mut answers = inbox.reminder_answers().expect("read");
         answers.sort_by(|x, y| x.0.cmp(&y.0));
@@ -7269,7 +7293,7 @@ pub(crate) mod tests {
         for_me_notice(&inbox, "Build failed again", "build", at(8, 1));
         assert!(wrote(), "a merge");
         inbox.handle(
-            Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)), unless_reply: false },
+            Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)), unless_reply: false, keep_open: false },
             None,
             at(8, 2),
         );
@@ -7335,7 +7359,11 @@ pub(crate) mod tests {
         }
         posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 10)));
         let snoozed = for_me_notice(&inbox, "Later", "later", at(8, 11));
-        inbox.handle(Request::SnoozeItem { id: snoozed, until: Some(at(12, 0)), unless_reply: false }, None, at(8, 11));
+        inbox.handle(
+            Request::SnoozeItem { id: snoozed, until: Some(at(12, 0)), unless_reply: false, keep_open: false },
+            None,
+            at(8, 11),
+        );
         let done = for_me_notice(&inbox, "Done", "done", at(8, 12));
         inbox.handle(Request::SetItemDone { id: done, done: true, dismissed: false }, None, at(8, 12));
 
@@ -8293,7 +8321,7 @@ pub(crate) mod tests {
         let report = shared("files_sharing:file:7", &["n1", "n2"], at(8, 0));
         let id = filed_remote(&inbox, &report, at(8, 0));
         inbox.handle(
-            Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false },
+            Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false, keep_open: false },
             None,
             at(8, 1),
         );
@@ -8470,7 +8498,8 @@ pub(crate) mod tests {
         assert_eq!(code(&inbox.handle(done(&id, false), Some(&reader), at(9, 0))), "forbidden", "when it runs");
         assert_eq!(code(&inbox.entry_for_task(&id, Some(&reader), at(9, 0)).expect_err("refused")), "forbidden");
         assert!(entry(&inbox, &id).state.is_open(), "nothing changed");
-        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false };
+        let snooze =
+            Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false, keep_open: false };
         assert!(inbox.refusal(&snooze, Some(&reader)).is_none(), "the rest as for any entry");
         // Deleting a Nextcloud notification needs nothing beyond the inbox.
         assert!(inbox.refusal(&done(&cloud, false), Some(&reader)).is_none());
@@ -8793,7 +8822,8 @@ pub(crate) mod tests {
         let refused = inbox.entry_for_task(&id, Some(&reader), at(9, 1)).expect_err("refused");
         assert_eq!(code(&refused), "forbidden");
         assert_eq!(item(get(&inbox, &id, None)).state, State::New, "nothing changed");
-        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false };
+        let snooze =
+            Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)), unless_reply: false, keep_open: false };
         assert!(inbox.refusal(&snooze, Some(&reader)).is_none(), "the rest as for any entry");
 
         let writer = with_mail(Some(Level::Write), Selection::Only(vec![ANNA.into()]));
@@ -8972,7 +9002,7 @@ pub(crate) mod tests {
 
     /// `inbox.snooze_item` for `id` until `until`, with or without "only if no reply".
     fn follow_up(id: &str, until: Option<DateTime<Utc>>, unless_reply: bool) -> Request {
-        Request::SnoozeItem { id: id.into(), until, unless_reply }
+        Request::SnoozeItem { id: id.into(), until, unless_reply, keep_open: false }
     }
 
     /// The entry `id` as the app key reads it at `now`.
@@ -9003,6 +9033,38 @@ pub(crate) mod tests {
         assert_eq!(entry_at(&inbox, &notice, at(8, 6)).state, State::New, "nothing changed");
         let put_off = item(inbox.handle(follow_up(&notice, Some(at(13, 0)), false), None, at(8, 6)));
         assert_eq!((put_off.state, put_off.follow_up), (State::Snoozed { until: at(13, 0) }, None));
+    }
+
+    /// Review of #315: `keep_open` follows up an open mail entry without putting it off – the Undo
+    /// of "Cancel follow-up" –, and it comes back at the date; anything else is `unsupported`, also
+    /// before an approval.
+    #[test]
+    fn an_open_mail_entry_is_followed_up_without_being_put_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let open = |id: &str, until| Request::SnoozeItem { id: id.into(), until, unless_reply: false, keep_open: true };
+        let kept = item(inbox.handle(open(&id, Some(at(13, 0))), None, at(9, 0)));
+        assert_eq!((kept.state, kept.updated), (State::New, at(8, 0)), "not put off");
+        assert_eq!(kept.follow_up, Some(FollowUp { at: at(13, 0), unless_reply: false, since: at(9, 0) }));
+        let back = entry_at(&inbox, &id, at(13, 1));
+        assert_eq!((back.state, back.updated, back.follow_up), (State::New, at(13, 0), None), "back at the date");
+
+        // Snoozed, done, no mail, no time: `unsupported`, before an approval too, nothing changed.
+        let snoozed = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(8, 1));
+        item(inbox.handle(follow_up(&snoozed, Some(at(20, 0)), false), None, at(8, 2)));
+        let done = filed(&inbox, &personal("m:3", "t:3", at(8, 0)), at(8, 1));
+        item(inbox.handle(Request::SetItemDone { id: done.clone(), done: true, dismissed: false }, None, at(8, 2)));
+        let notice = posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 3)));
+        let until = Some(at(20, 0));
+        let refused = [open(&snoozed, until), open(&done, until), open(&notice, until), open(&id, None)];
+        for request in refused {
+            assert_eq!(code(&inbox.handle(request.clone(), None, at(9, 0))), "unsupported", "{request:?}");
+            let before = inbox.refusal(&request, Some(&script()));
+            assert_eq!(before.as_ref().map(code), Some("unsupported"), "refused before an approval: {request:?}");
+        }
+        assert_eq!(entry_at(&inbox, &snoozed, at(9, 1)).state, State::Snoozed { until: at(20, 0) });
+        assert!(matches!(entry_at(&inbox, &done, at(9, 1)).state, State::Done { .. }));
     }
 
     /// Task E19.1, decision 6: a reply calls a follow-up "only if no reply" off – the entry is open,
@@ -9217,7 +9279,7 @@ pub(crate) mod tests {
         };
         let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
         filed(&inbox, &personal("m:2", "t:2", at(8, 30)), at(8, 31));
-        let snooze = |until| Request::SnoozeItem { id: id.clone(), until, unless_reply: false };
+        let snooze = |until| Request::SnoozeItem { id: id.clone(), until, unless_reply: false, keep_open: false };
         item(inbox.handle(snooze(Some(at(18, 0))), None, at(9, 0)));
         let later = inbox.mail_later(&accounts, at(9, 1)).expect("read");
         assert_eq!((later.snoozed_of(ANNA), later.back_of(ANNA)), (vec!["m:1".to_string()], Vec::new()));
@@ -9293,7 +9355,8 @@ pub(crate) mod tests {
         let anna = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
         let bernd = NewMail { account: "mail:bernd@example.com".into(), ..personal("m:2", "t:2", at(8, 0)) };
         let bernd = filed(&inbox, &bernd, at(8, 2));
-        let snoozed = Request::SnoozeItem { id: bernd.clone(), until: Some(at(20, 0)), unless_reply: false };
+        let snoozed =
+            Request::SnoozeItem { id: bernd.clone(), until: Some(at(20, 0)), unless_reply: false, keep_open: false };
         inbox.handle(snoozed, None, at(8, 3));
         let notice = posted(inbox.handle(notice("Backup done", None), Some(&script()), at(8, 4)));
 
@@ -9348,7 +9411,7 @@ pub(crate) mod tests {
         let news = filed(&inbox, &from("m:1", "News@Shop.example"), at(9, 0));
         let snoozed = filed(&inbox, &from("m:2", "news@shop.example"), at(9, 0));
         inbox.handle(
-            Request::SnoozeItem { id: snoozed.clone(), until: Some(at(20, 0)), unless_reply: false },
+            Request::SnoozeItem { id: snoozed.clone(), until: Some(at(20, 0)), unless_reply: false, keep_open: false },
             None,
             at(9, 1),
         );
@@ -10064,7 +10127,11 @@ pub(crate) mod tests {
 
         inbox.opened(&a, None, now);
         inbox.opened(&a, None, now);
-        inbox.handle(Request::SnoozeItem { id: b, until: Some(at(20, 0)), unless_reply: false }, None, now);
+        inbox.handle(
+            Request::SnoozeItem { id: b, until: Some(at(20, 0)), unless_reply: false, keep_open: false },
+            None,
+            now,
+        );
         inbox.handle(done(&c, false), None, at(10, 20));
         inbox.handle(done(&c, false), None, at(10, 21));
         inbox.handle(done(&d, true), None, now);

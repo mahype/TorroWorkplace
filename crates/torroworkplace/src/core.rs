@@ -1020,7 +1020,9 @@ fn with_entry_id(request: Request, entry: String) -> Request {
         Request::ListMuteOptions { .. } => Request::ListMuteOptions { id: entry },
         Request::MuteItem { scope, until, effect, .. } => Request::MuteItem { id: entry, scope, until, effect },
         // The condition goes with it: an `m:` id must not lose "only if no reply" (task E19.1).
-        Request::SnoozeItem { until, unless_reply, .. } => Request::SnoozeItem { id: entry, until, unless_reply },
+        Request::SnoozeItem { until, unless_reply, keep_open, .. } => {
+            Request::SnoozeItem { id: entry, until, unless_reply, keep_open }
+        }
         Request::SetItemCategory { category, remember, .. } => {
             Request::SetItemCategory { id: entry, category, remember }
         }
@@ -6090,11 +6092,11 @@ impl Core {
             Ok((_, Some(stand_in))) if pin.is_some_and(|pin| !pin.holds(&stand_in)) => return entry_conflict(),
             // "Later" for a mail without an entry (task E9.1): filed first, then its entry is put
             // off below. The pin held for the message; the entry is new or its conversation's.
-            Ok((Request::SnoozeItem { id, until: Some(until), unless_reply }, Some(stand_in))) => {
+            Ok((Request::SnoozeItem { id, until: Some(until), unless_reply, keep_open }, Some(stand_in))) => {
                 // Boxed: looking the mail up would grow this poll frame, deep in the stack already
                 // when an approved command runs it.
                 match Box::pin(self.file_to_snooze(id, stand_in, until, client, reach)).await {
-                    Ok(entry) => (Request::SnoozeItem { id: entry, until: Some(until), unless_reply }, None),
+                    Ok(entry) => (Request::SnoozeItem { id: entry, until: Some(until), unless_reply, keep_open }, None),
                     Err(refused) => return *refused,
                 }
             }
@@ -6656,7 +6658,7 @@ impl Core {
         client: Option<&torro_ipc::ClientInfo>,
         reach: Reach<'_>,
     ) -> Result<String, Box<Response>> {
-        let request = Request::SnoozeItem { id: id.clone(), until: Some(until), unless_reply: false };
+        let request = Request::SnoozeItem { id: id.clone(), until: Some(until), unless_reply: false, keep_open: false };
         if let Some(refused) = self.inbox.message_refusal(&request, &stand_in, client) {
             return Err(Box::new(refused));
         }
@@ -16322,8 +16324,8 @@ mod tests {
         let later = Utc::now() + chrono::TimeDelta::hours(1);
         for request in [
             Request::SetItemDone { id: kept.clone(), done: false, dismissed: false },
-            Request::SnoozeItem { id: kept.clone(), until: Some(later), unless_reply: false },
-            Request::SnoozeItem { id: kept.clone(), until: None, unless_reply: false },
+            Request::SnoozeItem { id: kept.clone(), until: Some(later), unless_reply: false, keep_open: false },
+            Request::SnoozeItem { id: kept.clone(), until: None, unless_reply: false, keep_open: false },
             Request::SetItemLane { id: kept.clone(), lane: torro_inbox::Lane::Info, remember: false },
             Request::HideSender { id: kept.clone(), scope: torro_inbox::HideScope::Conversation },
             Request::MuteItem {
@@ -19065,11 +19067,12 @@ mod tests {
         let (_, stranger) = client(&core, stranger).await;
         // Whole seconds: the inbox keeps times to the microsecond.
         let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
-        let later = Request::SnoozeItem { id: offer.clone(), until: Some(until), unless_reply: false };
+        let later =
+            Request::SnoozeItem { id: offer.clone(), until: Some(until), unless_reply: false, keep_open: false };
         assert_eq!(code(&ask(&core, Some(&stranger), later.clone()).await), "not-found");
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer), None, "nothing was filed for it");
         // Taking back what never went to later stores nothing either.
-        let back_now = Request::SnoozeItem { id: offer.clone(), until: None, unless_reply: false };
+        let back_now = Request::SnoozeItem { id: offer.clone(), until: None, unless_reply: false, keep_open: false };
         let Response::Item { item } = ask(&core, Some(&app_key), back_now).await else { panic!("the mail as it is") };
         assert!(!matches!(item.state, torro_inbox::State::Snoozed { .. }));
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer), None);
@@ -19161,6 +19164,7 @@ mod tests {
             id: id.clone(),
             until: Some(Utc::now() + chrono::TimeDelta::hours(1)),
             unless_reply: false,
+            keep_open: false,
         };
         assert_eq!(code(&ask(&core, Some(&app_key), later).await), "unsupported");
         assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &id), None);
@@ -19198,7 +19202,8 @@ mod tests {
             panic!("a hook's post answers with its id");
         };
         let until = Utc::now() + chrono::TimeDelta::hours(1);
-        let follow_up = |until, unless_reply| Request::SnoozeItem { id: id.clone(), until, unless_reply };
+        let follow_up =
+            |until, unless_reply| Request::SnoozeItem { id: id.clone(), until, unless_reply, keep_open: false };
         let mut asking = RightsTemplate::FullAccess.rights();
         asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
         let (_, asking) = client(&core, asking).await;
@@ -19280,7 +19285,8 @@ mod tests {
 
         // Whole seconds: the inbox keeps times to the microsecond.
         let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
-        let follow_up = |until| Request::SnoozeItem { id: sent.clone(), until: Some(until), unless_reply: true };
+        let follow_up =
+            |until| Request::SnoozeItem { id: sent.clone(), until: Some(until), unless_reply: true, keep_open: false };
         // Not filed yet: filed first, then followed up with the condition.
         let Response::Item { item } = ask(&core, Some(&app_key), follow_up(until)).await else { panic!("filed") };
         assert_eq!(item.follow_up.map(|held| (held.at, held.unless_reply)), Some((until, true)));
@@ -19291,7 +19297,8 @@ mod tests {
         assert!(matches!(item.follow_up, Some(FollowUp { unless_reply: true, at, .. }) if at == later));
         // The thrown-away and the archived mail join the entry, as filed with it.
         for id in [&trashed, &archived] {
-            let joining = Request::SnoozeItem { id: id.clone(), until: Some(later), unless_reply: true };
+            let joining =
+                Request::SnoozeItem { id: id.clone(), until: Some(later), unless_reply: true, keep_open: false };
             let Response::Item { item: joined } = ask(&core, Some(&app_key), joining).await else { panic!("joined") };
             assert_eq!(joined.id, item.id, "one conversation");
         }
@@ -19654,7 +19661,7 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), pile(&["B", "D"], Some(MailPile::ReplyLater))).await, Response::Ok);
         assert_eq!(ask(&core, Some(&app_key), pile(&["C"], Some(MailPile::SetAside))).await, Response::Ok);
         let until = Some(Utc::now() + chrono::TimeDelta::hours(1));
-        let snooze = Request::SnoozeItem { id: id("B"), until, unless_reply: false };
+        let snooze = Request::SnoozeItem { id: id("B"), until, unless_reply: false, keep_open: false };
         assert!(matches!(ask(&core, Some(&app_key), snooze).await, Response::Item { .. }));
         let news = core.inbox.file_mail(&filing(&mail["F"]), torro_mail::Notify::All, Utc::now());
         let hide = Request::HideSender { id: news.expect("filed").expect("an entry"), scope: HideScope::Sender };
@@ -19667,6 +19674,37 @@ mod tests {
         assert_eq!(every_page(&core, &app_key, snoozed).await, (vec!["B".to_string()], Some(1)));
         let aside = |cursor| pile_search(Some(PileFilter::SetAside), None, Some(false), 1, cursor);
         assert_eq!(every_page(&core, &app_key, aside).await, (vec!["C".to_string()], Some(1)));
+    }
+
+    /// Review of #315: `keep_open` by a mail's id – filed first, or through its entry – follows the
+    /// open conversation up without putting it off; on a snoozed entry it is `unsupported` before
+    /// anyone is asked.
+    #[tokio::test]
+    async fn a_mail_is_followed_up_open_by_its_id() {
+        use crate::mail::read::tests::mail_from;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Offer", 2, "bernd@example.com", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let id = ids_by_subject(&core, &app_key).await["Offer"].id.clone();
+        let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
+        let open =
+            |until| Request::SnoozeItem { id: id.clone(), until: Some(until), unless_reply: false, keep_open: true };
+        let Response::Item { item } = ask(&core, Some(&app_key), open(until)).await else { panic!("filed") };
+        assert!(item.state.is_open(), "{:?}", item.state);
+        assert_eq!(item.follow_up.map(|held| held.at), Some(until));
+        let later = until + chrono::TimeDelta::hours(1);
+        let Response::Item { item } = ask(&core, Some(&app_key), open(later)).await else { panic!("again") };
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &id).as_deref(), Some(item.id.as_str()));
+        assert!(item.state.is_open() && item.follow_up.is_some_and(|held| held.at == later), "{item:?}");
+
+        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(later), unless_reply: false, keep_open: false };
+        assert!(matches!(ask(&core, Some(&app_key), snooze).await, Response::Item { .. }));
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+        assert_eq!(code(&ask(&core, Some(&asking), open(later)).await), "unsupported");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
     }
 
     /// Review of #315: Undo puts mail back on its pile with the time it had (`since`, at most now);

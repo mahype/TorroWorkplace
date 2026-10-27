@@ -1836,6 +1836,14 @@ pub enum Request {
         /// which calls any follow-up off.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unless_reply: bool,
+        /// Follow up an **open** mail entry without putting it off (review of #315): only its
+        /// follow-up is set (`until`, with `unless_reply`), it stays where it is and comes back on
+        /// top at `until` if it is still open then – the state a reply leaves a follow-up in
+        /// (decision 6). For the Undo of "Cancel follow-up" on such an entry. Needs `until`;
+        /// `unsupported` on a snoozed or done entry, on one that is no mail and without `until`,
+        /// refused before an approval is asked for.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_open: bool,
     },
     /// Moves the entry to `lane` ([`torro_inbox::rules::set_lane`]). With `remember` the core also
     /// keeps the lane for later notices of the entry's source (a rule, `inbox.list_rules`); that

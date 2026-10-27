@@ -74,13 +74,17 @@ pub trait InboxSource: Send + Sync {
     /// On a mail entry it is a follow-up ([`rules::follow_up`], task E19.1): with `unless_reply`
     /// it comes back at `until` only if nobody replied by then ([`crate::item::FollowUp`]); `None`
     /// calls any follow-up off. `unless_reply` on an entry that is no mail is
-    /// [`InboxError::Unsupported`]; it is ignored without `until`. Returns the entry as stored;
-    /// other errors as [`InboxSource::set_item_done`].
+    /// [`InboxError::Unsupported`]; it is ignored without `until`. With `keep_open` (review of #315,
+    /// the Undo of "Cancel follow-up") an **open** mail entry only gets its follow-up and is not put
+    /// off ([`rules::follow_up_open`]); [`InboxError::Unsupported`] without `until`, on a snoozed or
+    /// done entry and on one that is no mail. Returns the entry as stored; other errors as
+    /// [`InboxSource::set_item_done`].
     fn snooze_item(
         &self,
         id: String,
         until: Option<DateTime<Utc>>,
         unless_reply: bool,
+        keep_open: bool,
     ) -> impl Future<Output = Result<Item, InboxError>> + Send;
 
     /// Moves the entry to `lane` ([`rules::set_lane`]). With `remember` the core also keeps the
