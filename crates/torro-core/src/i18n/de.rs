@@ -6508,4 +6508,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Back to Reply later", "Zurück zu „Später beantworten“"),
     ("Open in compose window (your text stays here)", "Im Schreibfenster öffnen (dein Text bleibt hier)"),
     ("Reply discarded.", "Antwort verworfen."),
+    (
+        "No answer yet – check Sent before sending again.",
+        "Noch keine Antwort – sieh in „Gesendet“ nach, bevor du nochmal sendest.",
+    ),
+    ("No longer on Reply later.", "Nicht mehr auf „Später beantworten“."),
 ];

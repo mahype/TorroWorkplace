@@ -4060,6 +4060,12 @@ pub struct FocusReply {
     pub sending: bool,
     /// Why the last send failed (the core's words); the text stays in the field to send again.
     pub error: Option<String>,
+    /// When the reply now on its way went out, for the window's time limit (`App` gives up after
+    /// `SEND_TIMEOUT`, fifth review of #315); `None` while nothing is on its way.
+    pub sending_since: Option<std::time::Instant>,
+    /// The last send had no answer in time ([`FocusReply::give_up`]): under the field "No answer yet
+    /// – check Sent before sending again.", the text stays.
+    pub timed_out: bool,
     /// Every mail that was ever in the round – answered, taken off or skipped –, so the next page
     /// of the pile adds only mail the round has not had ([`FocusReply::extend`], decision of #315).
     seen: HashSet<String>,
@@ -4240,6 +4246,7 @@ impl FocusReply {
             return;
         }
         self.sending = false;
+        self.sending_since = None;
         self.ids.remove(self.at);
         self.kept.remove(id);
         self.left_pile();
@@ -4253,7 +4260,21 @@ impl FocusReply {
             return;
         }
         self.sending = false;
+        self.sending_since = None;
         self.error = Some(why);
+    }
+
+    /// The reply on its way had no answer in time (fifth review of #315): the round lets go – nothing
+    /// on its way, the text stays in the field, a note says to look in Sent before sending again.
+    /// Nothing while nothing is on its way.
+    pub fn give_up(&mut self) {
+        if !self.sending {
+            return;
+        }
+        self.sending = false;
+        self.sending_since = None;
+        self.timed_out = true;
+        self.error = None;
     }
 
     /// Whether "Send" goes: a mail shown, something typed, nothing on its way.
@@ -4319,6 +4340,7 @@ impl FocusReply {
         let id = self.current().map(str::to_owned);
         self.reply = id.and_then(|id| self.kept.remove(&id)).unwrap_or_default();
         self.error = None;
+        self.timed_out = false;
     }
 }
 
@@ -4432,7 +4454,9 @@ fn focus_reply<'a>(focus: &'a FocusReply, id: &'a str, width: f32, height: f32) 
     }
     let mut block = column![field].spacing(space::m()).width(width);
     if let Some(why) = &focus.error {
-        block = block.push(send_failure(why));
+        block = block.push(send_failure(Some(tr("Couldn't send the message.")), why));
+    } else if focus.timed_out {
+        block = block.push(send_failure(None, tr("No answer yet – check Sent before sending again.")));
     }
     block.push(focus_buttons(focus, id, width)).into()
 }
@@ -4462,13 +4486,14 @@ fn focus_binding(press: text_editor::KeyPress) -> Option<text_editor::Binding<Me
 }
 
 /// Why the reply could not be sent, under the field: the alert in the error colour, what happened
-/// and the core's words, as the window's error line says it.
-fn send_failure<'a>(why: &'a str) -> Element<'a, Message> {
+/// (`what`, when there is a headline) and the core's words or the note, as the window's error line
+/// says it.
+fn send_failure<'a>(what: Option<&'a str>, why: &'a str) -> Element<'a, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
-    let what = typo::text(typo::meta(), tr("Couldn't send the message.")).style(theme::text_2);
+    let what = what.map(|what| typo::text(typo::meta(), what).style(theme::text_2));
     let why = typo::text(typo::meta(), why).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
-    row![alert, column![what, why].spacing(space::xs()).width(Fill)]
+    row![alert, column(what.map(Element::from)).push(why).spacing(space::xs()).width(Fill)]
         .spacing(space::s())
         .align_y(Alignment::Start)
         .into()
