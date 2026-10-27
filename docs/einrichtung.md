@@ -160,7 +160,7 @@ Notifications, Nextcloud Talk, GitHub (Reviews, Erwähnungen), Mail. Dazu „Sub
 
 Zwei Gruppen, dann die Verwendung:
 
-- **On this computer:** beim Öffnen sucht der Kern Ollama und LM Studio. Gefundene mit Zahl der
+- **On this computer:** beim Öffnen sucht der Kern Ollama, LM Studio und Strata. Gefundene mit Zahl der
   Modelle und „Connect“ (ohne Schlüssel), andere grau „Not running“. Dazu „Other local server“
   (vLLM, llama.cpp, LocalAI: Adresse).
 - **Cloud:** eine Zeile je Anbieter mit Name, Sitz und „Add key“. Ein Klick klappt in der Zeile ein
@@ -177,6 +177,7 @@ models only unless you change it.“
 | Gruppe | Anbieter | Protokoll | Sitz | Hinweis |
 |---|---|---|---|---|
 | Lokal | Ollama, LM Studio | OpenAI-kompatibel | dieser Rechner | gibt es (KI.1a) |
+| Lokal | [Strata](https://github.com/Niko1221/Strata) (`http://127.0.0.1:8080/v1`) | OpenAI-kompatibel | dieser Rechner | offene Gewichte; erkannt an `/health` (#322) |
 | Lokal | Other local server (vLLM, llama.cpp, LocalAI) | OpenAI-kompatibel | dieser Rechner/Netz | gibt es als `openai_compatible` |
 | Selbst gehostet | Nextcloud Assistant | Nextcloud TaskProcessing | eigener Server | später, ohne neuen Schlüssel ([ki.md](ki.md), offen 3) |
 | Offene Modelle | OpenRouter | OpenAI-kompatibel | USA | gibt es |
