@@ -70,6 +70,10 @@ pub enum Open {
     /// The detail page of the demo's AI account (OpenRouter, task KI.1a) with its models, as the
     /// demo lists them (task S.31, [`demo_models`]): search, "Show closed models" and switches.
     AiDetail,
+    /// The AI section's group "Models" (issue #325, task MW.8) with Ollama on this computer
+    /// ([`demo_ollama`]): the suggestion for *Chat* downloading (its "Use suggestion" pressed, waiting
+    /// for the download that runs), the one for *Sorting* ready, and *Sorting* in the cloud.
+    AiModels,
     /// The detail page of the demo's ntfy account (task E5.14): its topics and its login.
     NtfyDetail,
     /// The ntfy account's page with the dialog of its first topic (rename, unsubscribe).
@@ -210,7 +214,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 107] = [
+    pub const ALL: [(&'static str, Open); 108] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -248,6 +252,7 @@ impl Open {
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
         ("account-detail-ai", Open::AiDetail),
+        ("ai-models", Open::AiModels),
         ("ntfy-detail", Open::NtfyDetail),
         ("ntfy-topic", Open::NtfyTopic),
         ("ntfy-login", Open::NtfyLogin),
@@ -1064,8 +1069,15 @@ pub fn demo_data() -> Data {
                     model: Some("qwen/qwen3-32b".into()),
                     effort: Some(torro_core::ai::Effort::High),
                 }),
-                decide: None,
+                // Issue #325: mail is sorted in the cloud, by a chat model through the fallback, so the
+                // group "Models" says where mail goes and the data rule shows the permission with "Stop".
+                decide: Some(torro_core::ai::SlotModel {
+                    engine: DEMO_OPENROUTER.into(),
+                    model: Some("qwen/qwen3-235b-a22b".into()),
+                    effort: None,
+                }),
             },
+            decide_mail_to_cloud: Some(true),
             ..Settings::default()
         },
         apps: Some(apps),
@@ -1757,11 +1769,24 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                 account: None,
             }],
         }),
-        // The models of an AI account (task S.31), the same for every account; a switch is
-        // taken, nothing is stored.
+        // The models of an AI account (task S.31), the same for every account but Ollama (task MW.8); a
+        // switch is taken, nothing is stored.
+        Request::AiModels { account, .. } if account == DEMO_OLLAMA => {
+            Some(Response::AiModels { account: account.clone(), models: demo_ollama_models() })
+        }
         Request::AiModels { account, .. } => {
             Some(Response::AiModels { account: account.clone(), models: demo_models() })
         }
+        // The slots (task MW.8): a suggestion for this computer, a download that runs, a slot taken.
+        Request::AiRecommend => Some(Response::AiRecommendation { recommendation: demo_recommendation(data) }),
+        Request::PullAiModel { account, model } => {
+            Some(Response::AiPulls { pulls: vec![demo_pull(account, model, torro_ipc::AiPullState::Running)] })
+        }
+        Request::AiPulls => Some(Response::AiPulls { pulls: demo_pulls(data, torro_ipc::AiPullState::Running) }),
+        Request::CancelAiPull { .. } => {
+            Some(Response::AiPulls { pulls: demo_pulls(data, torro_ipc::AiPullState::Cancelled) })
+        }
+        Request::SetAiSlot { .. } => Some(Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() }),
         Request::SetModelEnabled { .. } => Some(Response::Ok),
         Request::ConnectAi { key, .. } if key.expose() == "wrong" => {
             let refused = AiError::Auth;
@@ -1987,6 +2012,147 @@ pub fn demo_models() -> Vec<AiModel> {
         },
         AiModel { open_weights: Some(false), ..model("openai/gpt-5", "GPT-5", 400_000, true, false) },
     ]
+}
+
+/// The id of the demo's AI account in the cloud.
+pub const DEMO_OPENROUTER: &str = "ai:openrouter@openrouter.ai";
+
+/// The id of the demo's Ollama on this computer ([`demo_ollama`], task MW.8).
+pub const DEMO_OLLAMA: &str = "ai:ollama@localhost:11434";
+
+/// Ollama on this computer as an AI account (task MW.8, `--open ai-models`): the suggestions then run
+/// there, one after a download. Not in [`demo_data`] itself: the add-account dialog's demo finds Ollama
+/// unconnected.
+pub fn demo_ollama(data: &mut Data) {
+    data.accounts.push(AccountInfo {
+        id: DEMO_OLLAMA.into(),
+        kind: "ai".into(),
+        label: "Ollama".into(),
+        state: AccountState::Connected {
+            server: "http://localhost:11434/v1".into(),
+            login_name: String::new(),
+            last_sync: Some(Utc::now()),
+            problem: None,
+        },
+        collections: Vec::new(),
+        scopes: None,
+        mail: None,
+        ntfy: None,
+        services: None,
+    });
+}
+
+/// The demo's account `engine` runs on this computer: its Ollama.
+pub fn demo_is_local(engine: &str) -> bool {
+    engine == DEMO_OLLAMA
+}
+
+/// The models of the demo's Ollama (task MW.8): Qwen3 on, and the decision model nimble downloaded but
+/// off, as Ollama lists it (`nimble:latest`).
+pub fn demo_ollama_models() -> Vec<AiModel> {
+    vec![
+        AiModel {
+            tools: Some(true),
+            remote: Some(false),
+            context: Some(40_960),
+            reasoning: Some(true),
+            enabled: true,
+            ..AiModel::named("qwen3:8b")
+        },
+        AiModel { tools: Some(false), decision: Some(true), remote: Some(false), ..AiModel::named("nimble:latest") },
+    ]
+}
+
+/// What the demo suggests (task MW.8) on a computer with a graphics card: with its Ollama Qwen3 14B for
+/// *Chat* after a download and nimble for *Sorting*, ready; without it the chat in the cloud and
+/// *Sorting* waiting for Ollama.
+fn demo_recommendation(data: &Data) -> torro_ipc::AiRecommendation {
+    use torro_core::ai::AiSlot;
+    use torro_core::ai::hardware::{Gpu, Hardware};
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let ollama = data.accounts.iter().any(|account| account.id == DEMO_OLLAMA);
+    let local =
+        |slot, engine: Option<&str>, model: &str, download: Option<u64>, reason: String| torro_ipc::SlotSuggestion {
+            slot,
+            engine: engine.map(str::to_string),
+            provider: AiProvider::Ollama,
+            model: Some(model.into()),
+            local: true,
+            seat: torro_core::ai::Seat::ThisComputer.label().into(),
+            download_bytes: download,
+            by_chat: false,
+            reason,
+        };
+    let slots = match ollama {
+        true => vec![
+            local(
+                AiSlot::Chat,
+                Some(DEMO_OLLAMA),
+                "qwen3:14b",
+                Some(9_276_198_565),
+                tr("Runs on this computer after a download").into(),
+            ),
+            local(
+                AiSlot::Decide,
+                Some(DEMO_OLLAMA),
+                "nimble:latest",
+                None,
+                tr("Runs on this computer and is ready").into(),
+            ),
+        ],
+        false => vec![
+            torro_ipc::SlotSuggestion {
+                slot: AiSlot::Chat,
+                engine: Some(DEMO_OPENROUTER.into()),
+                provider: AiProvider::OpenRouter,
+                model: Some("qwen/qwen3-235b-a22b".into()),
+                local: false,
+                seat: AiProvider::OpenRouter.seat().label().into(),
+                download_bytes: None,
+                by_chat: false,
+                reason: tr("No AI server runs on this computer").into(),
+            },
+            local(
+                AiSlot::Decide,
+                None,
+                "nimble",
+                Some(9_527_504_198),
+                trf("Needs {program}", &[("program", &AiProvider::Ollama.name())]),
+            ),
+        ],
+    };
+    torro_ipc::AiRecommendation {
+        hardware: Hardware {
+            cpu: Some("AMD Ryzen 9 7950X".into()),
+            memory_bytes: Some(64 * GIB),
+            gpu: Some(Gpu { name: Some("GeForce RTX 4070".into()), vram_bytes: Some(12 * GIB) }),
+            unified_memory: false,
+        },
+        tier: "gpu".into(),
+        tier_label: tr("Graphics card").into(),
+        slots,
+    }
+}
+
+/// The demo's download of `model` into `account` in `state`: 41 % of Qwen3 14B.
+fn demo_pull(account: &str, model: &str, state: torro_ipc::AiPullState) -> torro_ipc::AiPull {
+    torro_ipc::AiPull {
+        id: "p1".into(),
+        account: account.into(),
+        model: model.into(),
+        state,
+        completed: Some(3_803_241_411),
+        total: Some(9_276_198_565),
+        error: None,
+    }
+}
+
+/// The downloads of the demo's run: with its Ollama the one of Qwen3 14B, in `state`; else none.
+fn demo_pulls(data: &Data, state: torro_ipc::AiPullState) -> Vec<torro_ipc::AiPull> {
+    match data.accounts.iter().any(|account| account.id == DEMO_OLLAMA) {
+        true => vec![demo_pull(DEMO_OLLAMA, "qwen3:14b", state)],
+        false => Vec::new(),
+    }
 }
 
 /// TorroMail's id of the demo account whose keychain entry cannot be read.

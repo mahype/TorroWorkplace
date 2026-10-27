@@ -242,7 +242,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   zweiter Start → `busy`, Konto nicht lokal → `unsupported`, Name nicht in der Liste → `unsupported`).
 
 ### MW.8 Oberfläche: Steuerzentrale › AI und Assistant
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Oberfläche mit mehreren Requests nacheinander) · **Braucht:** MW.3, MW.6, MW.7 · **Dateien:**
   `crates/torroworkplace/src/ui/{accounts,mod,launch}.rs` (`Data`, Demo-Daten und `--open`-Zustände der Steuerzentrale),
   `crates/torro-settings-ui/src/assistant/general.rs`, `crates/torro-core/src/i18n/de.rs`
