@@ -2761,7 +2761,8 @@ static LIST_ASSIGNMENTS: Command = Command {
     description: "Lists which AI account and model each function of the suite uses (`docs/ki.md`): the \
                   function's key (`inbox.categorize`), the words a person reads for it, the account \
                   (`ai:…`), the model, the effort and whether it is switched on. Functions nobody set up are \
-                  listed with empty fields, so the list is the whole truth. `needs_decision` marks a function \
+                  listed with empty fields and `enabled: false`, so the list is the whole truth: that means no \
+                  exception of their own, not that they are off; they use their slot. `needs_decision` marks a function \
                   that only works with a model that decides instead of writing. `slots` lists the two slots \
                   (`chat`, `decide`) with their label, account, model and effort (absent while empty) and \
                   `mail_to_cloud`, whether mail may leave this computer for that slot; a function without an \
