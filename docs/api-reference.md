@@ -596,7 +596,7 @@ Creates a contact in the address book `book` with the fields sent (name, mail ad
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `book` | string | ja |  |
-| `fields` | object | ja | What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring. Every field is optional: a field not sent stays as it is. To empty a field, send it empty (`""`, `[]`). `birthday` and `anniversary` are dates as [`PartialDate`] writes them. |
+| `fields` | object | ja | What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring. Every field is optional: a field not sent stays as it is. To empty a field, send it empty (`""`, `[]`). For a change a list sent replaces the whole list; `contacts.add_to_contact` adds its values to the list instead. `birthday` and `anniversary` are dates as [`PartialDate`] writes them. |
 | `fields.addresses` | array<object> | nein |  |
 | `fields.addresses[].kind` | string | nein, Standard `"other"` | The kind of a value: `home`, `work`, `mobile`, `fax`, `other`, or a label of the person's own. |
 | `fields.addresses[].pref` | boolean | nein | The preferred one of its field (vCard `PREF`). Values a client adds with `contacts.add_to_contact` never get it. |
@@ -640,7 +640,7 @@ Adds to a contact without changing anything it holds: new mail addresses, number
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `fields` | object | ja | What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring. Every field is optional: a field not sent stays as it is. To empty a field, send it empty (`""`, `[]`). `birthday` and `anniversary` are dates as [`PartialDate`] writes them. |
+| `fields` | object | ja | What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring. Every field is optional: a field not sent stays as it is. To empty a field, send it empty (`""`, `[]`). For a change a list sent replaces the whole list; `contacts.add_to_contact` adds its values to the list instead. `birthday` and `anniversary` are dates as [`PartialDate`] writes them. |
 | `fields.addresses` | array<object> | nein |  |
 | `fields.addresses[].kind` | string | nein, Standard `"other"` | The kind of a value: `home`, `work`, `mobile`, `fax`, `other`, or a label of the person's own. |
 | `fields.addresses[].pref` | boolean | nein | The preferred one of its field (vCard `PREF`). Values a client adds with `contacts.add_to_contact` never get it. |
@@ -681,12 +681,12 @@ Adds to a contact without changing anything it holds: new mail addresses, number
 
 Zugriff `delete` · MCP-Tool `contacts_update_contact`
 
-Replaces the fields sent of a contact; what it held there is overwritten for good, so it needs full access and usually a person's approval. Send only the fields that change, with the `etag` of get_contact; a newer version on the server fails with `conflict`. To only add something, use add_to_contact.
+Replaces the fields sent of a contact; what it held there is overwritten for good, so it needs full access and usually a person's approval. Send only the fields that change, with the `etag` of get_contact; a newer version on the server fails with `conflict`. A list sent (`emails`, `phones`, `addresses`, `urls`, `impps`, `groups`) replaces the whole list: send every value that stays. To only add something, use add_to_contact.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `etag` | string | ja |  |
-| `fields` | object | ja | What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring. Every field is optional: a field not sent stays as it is. To empty a field, send it empty (`""`, `[]`). `birthday` and `anniversary` are dates as [`PartialDate`] writes them. |
+| `fields` | object | ja | What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring. Every field is optional: a field not sent stays as it is. To empty a field, send it empty (`""`, `[]`). For a change a list sent replaces the whole list; `contacts.add_to_contact` adds its values to the list instead. `birthday` and `anniversary` are dates as [`PartialDate`] writes them. |
 | `fields.addresses` | array<object> | nein |  |
 | `fields.addresses[].kind` | string | nein, Standard `"other"` | The kind of a value: `home`, `work`, `mobile`, `fax`, `other`, or a label of the person's own. |
 | `fields.addresses[].pref` | boolean | nein | The preferred one of its field (vCard `PREF`). Values a client adds with `contacts.add_to_contact` never get it. |

@@ -2675,8 +2675,9 @@ static UPDATE_CONTACT: Command = Command {
     mcp: Mcp::Tool,
     description: "Replaces the fields sent of a contact; what it held there is overwritten for good, so it needs \
                   full access and usually a person's approval. Send only the fields that change, with the `etag` \
-                  of get_contact; a newer version on the server fails with `conflict`. To only add something, \
-                  use add_to_contact.",
+                  of get_contact; a newer version on the server fails with `conflict`. A list sent (`emails`, \
+                  `phones`, `addresses`, `urls`, `impps`, `groups`) replaces the whole list: send every value that \
+                  stays. To only add something, use add_to_contact.",
 };
 
 static SET_FAVORITE: Command = Command {

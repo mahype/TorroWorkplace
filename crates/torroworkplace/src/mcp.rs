@@ -136,8 +136,8 @@ const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, task
                             its AI accounts, settings and apps of this desktop. Every tool is checked against the rights a person granted this agent's \
                             key: `forbidden` means the rights do not cover it, and its message says what is missing (ask the person to change them in \
                             Torro Workplace, Settings › MCP clients; for a key the assistant lent to this agent, in the \
-                            assistant window under Access), `not-found` also stands for calendars and task lists \
-                            this agent may not see. GitHub filter lists show only issues and pull requests of the \
+                            assistant window under Access), `not-found` also stands for calendars, task lists, \
+                            address books and contacts this agent may not see. GitHub filter lists show only issues and pull requests of the \
                             repositories granted to this agent. Commands the person wants to approve first (always \
                             the admin tools for accounts and settings, often deleting) wait for their decision: \
                             the tool waits up to a minute, then answers `pending` with the approval's id; ask \

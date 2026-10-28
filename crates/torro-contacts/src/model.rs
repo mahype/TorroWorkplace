@@ -531,7 +531,8 @@ impl Birthday {
 /// What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring.
 ///
 /// Every field is optional: a field not sent stays as it is. To empty a field, send it empty
-/// (`""`, `[]`). `birthday` and `anniversary` are dates as [`PartialDate`] writes them.
+/// (`""`, `[]`). For a change a list sent replaces the whole list; `contacts.add_to_contact` adds
+/// its values to the list instead. `birthday` and `anniversary` are dates as [`PartialDate`] writes them.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ContactFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
