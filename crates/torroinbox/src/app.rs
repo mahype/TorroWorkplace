@@ -255,6 +255,11 @@ use crate::{detail, list};
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
 pub const INBOX: AppId = AppId::INBOX;
 
+/// The key under which `ui.json` keeps the width of the expanded sidebar beside the windows' split
+/// widths (issue #376, `ui_state::split_from`): one width for every window of the app, as the
+/// sidebar is the same navigation in each.
+const SIDEBAR_SPLIT: &str = "sidebar";
+
 /// The name `ui.json` keeps for the sidebar's "Sources" while it is unfolded (issue #121).
 const SOURCES_KEY: &str = "sidebar.sources";
 
@@ -2728,6 +2733,9 @@ pub struct App<S> {
     /// The divider between the wide mail window's list and reader (issue #130): the width the person
     /// dragged the list to, remembered in `ui.json` under the density's key.
     split: Split,
+    /// The right edge of the expanded sidebar beside the content (issue #376): the width the person
+    /// dragged it to, remembered in `ui.json` for every window of the app ([`SIDEBAR_SPLIT`]).
+    side: Split,
     /// The mail's action rail in the wide mail window (task E14.3, `widgets::action_rail`): collapsed
     /// or expanded as the person chose with its button or `]`, remembered in `ui.json` under the
     /// window's key ([`Launch::window_key`]). Medium and narrow windows always draw it collapsed.
@@ -2976,6 +2984,10 @@ pub enum Message {
     Split(SplitEvent),
     /// The list's width remembered for this window in `ui.json`, loaded at start (none: the default).
     StoredSplit(Option<f32>),
+    /// The right edge of the expanded sidebar (issue #376): grabbed, dragged, released, reset.
+    SidebarWidth(SplitEvent),
+    /// The sidebar's width remembered in `ui.json`, loaded at start (none: the default).
+    StoredSidebarWidth(Option<f32>),
     /// The button at the top of the mail's action rail, or `]` (task E14.3): expand or collapse the
     /// rail of the wide mail window and remember it.
     ToggleActions,
@@ -3938,6 +3950,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             order: Order::default(),
             order_chosen: false,
             split: Split::default(),
+            side: Split::default(),
             actions: RailMode::default(),
             actions_chosen: false,
             rail_open: None,
@@ -3967,6 +3980,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             ui_state::load_pinned_mail_folders_task(INBOX).map(Message::StoredPinnedFolders),
             order,
             split,
+            // Every window has the sidebar (issue #376).
+            ui_state::load_split_task(INBOX, SIDEBAR_SPLIT.to_owned()).map(Message::StoredSidebarWidth),
             // The first load waits for a core that is still starting (issue #206).
             {
                 let suite = app.suite.clone();
@@ -4078,6 +4093,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         if self.split.dragging {
             subscriptions.push(split::release().map(|()| Message::Split(SplitEvent::Release)));
+        }
+        // The same for the sidebar's edge (issue #376).
+        if self.side.dragging {
+            subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
         }
         Subscription::batch(subscriptions)
     }
@@ -4650,6 +4669,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 // A width dragged before the file answered wins.
                 if self.split == Split::default() {
                     self.split = Split::with(stored);
+                }
+            }
+            Message::SidebarWidth(event) => {
+                // The demo stores nothing.
+                if self.side.update(event, self.sidebar_limits()) && !self.launch.demo {
+                    return ui_state::save_split_task(INBOX, SIDEBAR_SPLIT.to_owned(), self.side.chosen);
+                }
+            }
+            Message::StoredSidebarWidth(stored) => {
+                // A width dragged before the file answered wins.
+                if self.side == Split::default() {
+                    self.side = Split::with(stored);
                 }
             }
             Message::StoredOrder(stored) => {
@@ -5353,7 +5384,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn hub_layout(&self) -> hub::Layout {
         let class = self.class();
         let chrome = match shell::sidebar_mode(class, self.sidebar) {
-            Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
+            Some(SidebarMode::Expanded) => self.sidebar_room() + layout::inset(),
             Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
             None => 0.0,
         };
@@ -5385,7 +5416,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn board_width(&self) -> f32 {
         let class = self.class();
         let chrome = match shell::sidebar_mode(class, self.sidebar) {
-            Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
+            Some(SidebarMode::Expanded) => self.sidebar_room() + layout::inset(),
             Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
             None => 0.0,
         };
@@ -9052,11 +9083,26 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// of the reader beside it). An estimate from the window's size, as [`App::card_width`] needs it.
     fn content_width(&self) -> f32 {
         let chrome = match shell::sidebar_mode(self.class(), self.sidebar) {
-            Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
+            Some(SidebarMode::Expanded) => self.sidebar_room() + layout::inset(),
             Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
             None => 0.0,
         };
         self.size.width - chrome
+    }
+
+    /// What the right edge of the expanded sidebar moves in (issue #376, `shell::sidebar_limits`): the
+    /// content keeps room for a list and a reader of at least `split::min_pane()`, the divider between
+    /// them and the mail's collapsed action rail with its gap (`mail::reader`), so the widest sidebar
+    /// still leaves the wide mail window usable.
+    fn sidebar_limits(&self) -> Limits {
+        let rest = 2.0 * split::min_pane() + split::handle_width() + space::xs() + RailMode::Collapsed.width();
+        shell::sidebar_limits(self.size.width, rest)
+    }
+
+    /// The width of the expanded sidebar beside the content now: the one the person dragged it to,
+    /// else `size::sidebar()`, inside [`App::sidebar_limits`].
+    fn sidebar_room(&self) -> f32 {
+        self.side.width(self.sidebar_limits())
     }
 
     /// What the divider between the wide mail window's list and reader moves in (issue #130): the
@@ -9488,6 +9534,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let overlay = self.settings_dialog(class).or(frame.overlay);
             return shell::shell(class, sidebar, frame.header, frame.body, None)
                 .rail(rail)
+                .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(overlay)
                 .into();
@@ -9629,6 +9676,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let placed = panel::place(class, page, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
                 .rail(rail)
+                .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
                 .into();
@@ -9643,6 +9691,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let placed = panel::place(class, body, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
                 .rail(rail)
+                .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
                 .into();
@@ -9688,6 +9737,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         });
         shell::shell(class, sidebar, header, placed.body, side)
             .rail(rail)
+            .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(placed.overlay)
             .into()
@@ -17838,6 +17888,115 @@ mod tests {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
         }
+    }
+
+    /// Issue #376: the right edge of the expanded sidebar drags its width – between three quarters and
+    /// twice the default, leaving list and reader their least –, the content and the list's divider
+    /// follow it, a double click goes back to the default, and what `ui.json` remembers counts only
+    /// until the person drags. The rail and the smaller layouts keep their widths, and `[` twice
+    /// brings back the width chosen.
+    #[test]
+    fn the_sidebars_edge_drags_its_width() {
+        let mut app = mail_window(Density::Comfortable, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let limits = app.sidebar_limits();
+        assert_eq!(app.sidebar_room(), size::sidebar(), "the default");
+        assert_eq!(app.content_width(), WIDE.width - size::sidebar() - layout::inset());
+        let _ = app.update(Message::StoredSidebarWidth(Some(300.0)));
+        assert_eq!(app.sidebar_room(), 300.0, "as remembered");
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Grab));
+        assert!(app.side.dragging);
+        let _ = app.view();
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(360.0)));
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
+        assert_eq!((app.side.chosen, app.side.dragging), (Some(360.0), false));
+        assert_eq!(app.content_width(), WIDE.width - 360.0 - layout::inset(), "the content follows");
+        let rail = space::xs() + app.rail_mode(SizeClass::Wide).width();
+        assert_eq!(app.split_limits().total, app.content_width() - rail, "and the list's divider with it");
+        let _ = app.update(Message::StoredSidebarWidth(Some(280.0)));
+        assert_eq!(app.side.chosen, Some(360.0), "a late answer of the file loses");
+
+        // Bounded at both ends.
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Grab));
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(10.0)));
+        assert_eq!(app.sidebar_room(), 0.75 * size::sidebar(), "never narrower than three quarters");
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(WIDE.width)));
+        assert_eq!(app.sidebar_room(), 2.0 * size::sidebar(), "never wider than twice the default");
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
+        assert_eq!(app.side.chosen, Some(limits.clamp(WIDE.width)));
+        // A narrower wide window clamps the width chosen, so list and reader keep their least.
+        let _ = app.update(Message::Resized(Size::new(1100.0, 900.0)));
+        assert_eq!(app.class(), SizeClass::Wide);
+        let least = 2.0 * split::min_pane() + split::handle_width() + rail;
+        assert!(app.content_width() >= least, "{} leaves list and reader {least}", app.content_width());
+        assert!(app.sidebar_room() < 2.0 * size::sidebar(), "the window clamps the sidebar");
+        let _ = app.view();
+        let _ = app.update(Message::Resized(WIDE));
+
+        // `[` folds to the rail and back to the width chosen; medium and narrow keep theirs.
+        let _ = app.update(Message::ToggleSidebar);
+        assert_eq!(app.content_width(), WIDE.width - shell::rail() - layout::inset(), "the rail keeps its width");
+        let _ = app.view();
+        let _ = app.update(Message::ToggleSidebar);
+        assert_eq!(app.sidebar_room(), 2.0 * size::sidebar(), "back to the width chosen");
+        let _ = app.update(Message::Resized(MEDIUM));
+        assert_eq!(app.content_width(), MEDIUM.width - shell::rail() - layout::inset(), "medium: the rail");
+        let _ = app.update(Message::Resized(NARROW));
+        assert_eq!(app.content_width(), NARROW.width, "narrow: the whole window");
+        let _ = app.update(Message::Resized(WIDE));
+
+        // The double click goes back to the default.
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Reset));
+        assert_eq!((app.side.chosen, app.sidebar_room()), (None, size::sidebar()));
+
+        // Every size draws, while dragging as well.
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Grab));
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
+        assert!(!app.side.dragging);
+    }
+
+    /// Issue #376: the other windows of the app have the same sidebar with the same width.
+    #[test]
+    fn every_window_follows_the_sidebars_width() {
+        for words in [&[][..], &["--view", "notifications"][..]] {
+            let mut app = loaded(words);
+            let _ = app.update(Message::Resized(WIDE));
+            let before = (app.content_width(), app.board_width());
+            let _ = app.update(Message::StoredSidebarWidth(Some(400.0)));
+            assert_eq!(app.content_width(), before.0 - (400.0 - size::sidebar()), "{words:?}");
+            assert_eq!(app.board_width(), (before.1 - (400.0 - size::sidebar())).max(0.0), "{words:?}");
+            let _ = app.view();
+        }
+    }
+
+    /// Issue #376: the sidebar's edge drags in every built-in design, bounded by that design's
+    /// sidebar. Holds [`DESIGN`] and puts the standard back at the end.
+    #[test]
+    fn the_sidebars_edge_drags_in_every_design() {
+        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for id in torro_core::design::BUILT_IN_IDS {
+            design::set(torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design"));
+            let mut app = mail_window(Density::Compact, &[]);
+            let _ = app.update(Message::Resized(WIDE));
+            assert_eq!(app.sidebar_room(), size::sidebar(), "{id}: the default");
+            let _ = app.update(Message::SidebarWidth(SplitEvent::Grab));
+            let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(0.0)));
+            assert_eq!(app.sidebar_room(), 0.75 * size::sidebar(), "{id}: the least");
+            assert!(app.sidebar_room() > shell::rail(), "{id}: wider than the rail");
+            let _ = app.view();
+            let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(WIDE.width)));
+            assert_eq!(app.sidebar_room(), 2.0 * size::sidebar(), "{id}: the most");
+            let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+        design::set(torro_core::design::Design::standard());
     }
 
     /// Task E8.11 (finding 4): the wide mail window keeps the reader's column while nothing is open,
