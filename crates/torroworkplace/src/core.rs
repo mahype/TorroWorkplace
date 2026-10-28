@@ -2035,13 +2035,26 @@ pub struct Core {
     /// computer measured beforehand in tests ([`Measured`], [`Core::with_probe`]) – no test reads
     /// the real hardware.
     probe: Box<dyn Probe>,
-    /// What [`Core::probe`] measured, at the first `ai.recommend` of this run and kept for the rest
-    /// of it: memory and cards do not change while the service runs, and measuring may ask tools
-    /// that take a moment (`nvidia-smi`).
-    hardware: tokio::sync::OnceCell<torro_core::ai::hardware::Hardware>,
+    /// What [`Core::probe`] measured, at the first `ai.recommend` of this run, and when: memory and
+    /// cards do not change while the service runs, and measuring may ask tools that take a moment
+    /// (`nvidia-smi`). Kept for the run, except a measurement without any graphics on a computer
+    /// without shared memory: a driver that answered too late looks the same, so that one is
+    /// measured again after [`REMEASURE_WITHOUT_GPU`] (PR review of #325).
+    hardware: tokio::sync::Mutex<Option<(torro_core::ai::hardware::Hardware, std::time::Instant)>>,
     /// The downloads of models into Ollama on this computer since the core started (task MW.7,
     /// `ai.pull_model`, `ai.list_pulls`, `ai.cancel_pull`), in memory only.
     pulls: crate::account::pull::Pulls,
+}
+
+/// How long a measurement that found no graphics card counts ([`Core::hardware`]): long enough that
+/// the Models page asks no tool on every look, short enough that a card whose driver answered too
+/// late is found while the service runs.
+const REMEASURE_WITHOUT_GPU: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether a measurement of `age` still counts ([`Core::hardware`]): for the run, unless it found no
+/// graphics on a computer without shared memory and is older than [`REMEASURE_WITHOUT_GPU`].
+fn still_counts(hardware: &torro_core::ai::hardware::Hardware, age: std::time::Duration) -> bool {
+    hardware.unified_memory || hardware.gpu.is_some() || age < REMEASURE_WITHOUT_GPU
 }
 
 /// A computer measured beforehand: the probe of a core in tests ([`Core::new`] under `cfg(test)`),
@@ -2119,7 +2132,7 @@ impl Core {
             web_consents: std::sync::Mutex::new(HashMap::new()),
             // Tests never measure the computer they run on (`Core::with_probe`).
             probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
-            hardware: tokio::sync::OnceCell::new(),
+            hardware: tokio::sync::Mutex::new(None),
             pulls: crate::account::pull::Pulls::default(),
         };
         let allowed = core.allowed_folders();
@@ -2435,7 +2448,7 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_probe(mut self, probe: impl Probe + 'static) -> Core {
         self.probe = Box::new(probe);
-        self.hardware = tokio::sync::OnceCell::new();
+        self.hardware = tokio::sync::Mutex::new(None);
         self
     }
 
@@ -5446,7 +5459,9 @@ impl Core {
             {
                 return refused;
             }
-            lets_mail_out = sorts_mail && elsewhere;
+            // Only Sorting's permission comes with a choice: whether the chat reads mail elsewhere stays
+            // its own switch (issue #325), whatever function might once belong to it.
+            lets_mail_out = sorts_mail && elsewhere && function.slot() == torro_core::ai::AiSlot::Decide;
             // The switches (task S.24, #231): a model that is off is not assigned, as no module
             // offers it. Only while the assignment is on, so a person can still switch it off.
             // Without a model named at an account here only the models here count: one on elsewhere
@@ -5489,10 +5504,24 @@ impl Core {
             Ok(list) => list,
             Err(err) => return Response::Error { code: "error".into(), message: err.to_string() },
         };
-        let hardware = self.hardware.get_or_init(|| self.probe.measure()).await;
+        let hardware = self.measured_hardware().await;
         let accounts = self.ai.connected().await;
         let mail = !self.mail.accounts_in(reach).await.is_empty();
-        Response::AiRecommendation { recommendation: recommend::suggest(hardware, list, &accounts, mail) }
+        Response::AiRecommendation { recommendation: recommend::suggest(&hardware, list, &accounts, mail) }
+    }
+
+    /// This computer as [`Core::probe`] measures it, kept as [`Core::hardware`] says. The lock is held
+    /// while measuring, so two pages asking at once measure once.
+    async fn measured_hardware(&self) -> torro_core::ai::hardware::Hardware {
+        let mut held = self.hardware.lock().await;
+        if let Some((hardware, at)) = held.as_ref()
+            && still_counts(hardware, at.elapsed())
+        {
+            return hardware.clone();
+        }
+        let hardware = self.probe.measure().await;
+        *held = Some((hardware.clone(), std::time::Instant::now()));
+        hardware
     }
 
     /// `ai.set_slot` (issue #325, task MW.2): puts `wanted` in `slot`, or empties it with `None`,
@@ -23186,6 +23215,19 @@ mod tests {
             let hardware = self.hardware.clone();
             Box::pin(async move { hardware })
         }
+    }
+
+    /// PR review of #325: a measurement that found no graphics card is taken again after a while – a
+    /// driver that answered too late looks the same –, any other counts for the run.
+    #[test]
+    fn a_measurement_without_graphics_is_taken_again_after_a_while() {
+        let hour = std::time::Duration::from_secs(3600);
+        assert!(still_counts(&large_pc(), hour), "a card was found");
+        let mac = torro_core::ai::hardware::Hardware { unified_memory: true, gpu: None, ..large_pc() };
+        assert!(still_counts(&mac, hour), "shared memory");
+        let without = torro_core::ai::hardware::Hardware { gpu: None, ..large_pc() };
+        assert!(still_counts(&without, std::time::Duration::from_secs(60)), "not yet");
+        assert!(!still_counts(&without, REMEASURE_WITHOUT_GPU), "measured again");
     }
 
     /// A computer of the tier `large` (task MW.5): 32 GB of memory, no graphics card.

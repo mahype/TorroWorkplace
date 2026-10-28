@@ -106,9 +106,11 @@ async fn cards() -> Vec<Gpu> {
     Vec::new()
 }
 
-/// How long `nvidia-smi` may take; a hanging driver must not hold up the recommendation.
+/// How long `nvidia-smi` may take; a hanging driver must not hold up the recommendation. The first
+/// call after boot can take a few seconds while the driver loads; a measurement that found no card
+/// is taken again later (`Core::hardware`).
 #[cfg(any(target_os = "linux", windows))]
-const NVIDIA_SMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const NVIDIA_SMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The NVIDIA cards as `nvidia-smi` lists them; none when it is missing, fails or hangs.
 #[cfg(any(target_os = "linux", windows))]

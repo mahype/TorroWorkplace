@@ -135,7 +135,8 @@ und `decide`, in der Oberfläche „Chat“ und „Sorting“):
 Torro misst den Rechner und schlägt je Platz ein Modell vor; herunterladen kann es das auf Wunsch. Ein Vorschlag
 setzt nie etwas von selbst.
 
-- **Messen** (`account/hardware.rs`, einmal je Lauf des Kerns): Arbeitsspeicher und Prozessor über `sysinfo`.
+- **Messen** (`account/hardware.rs`, einmal je Lauf des Kerns; fand es auf einem Rechner ohne gemeinsamen
+  Speicher keine Grafikkarte, nach zehn Minuten noch einmal, weil ein zu spät antwortender Treiber genauso aussieht): Arbeitsspeicher und Prozessor über `sysinfo`.
   Grafikkarte: Apple Silicon mit gemeinsamem Speicher ohne eigenen VRAM, sonst `nvidia-smi` (Linux, Windows),
   `/sys/class/drm` (Linux, AMD) und die Gerätedaten der Registry (Windows ohne NVIDIA). Die größte Karte zählt.
   Was sich nicht messen lässt, bleibt leer; das Messen liefert nie einen Fehler.
@@ -152,7 +153,8 @@ setzt nie etwas von selbst.
 - **Die Liste ist Daten, keine Abfrage:** `recommendations.toml` ist in den Kern eingebunden und ändert sich nur
   mit einer neuen Version von Torro; es gibt keinen Abruf aus dem Netz. Jedes lokale Modell hat offene Gewichte
   und eine Lizenz aus einer offenen Liste (`apache-2.0`, `mit`, `qwen`, `llama`, `gemma`). Jede Stufe hat ein
-  Modell für *Sortieren*.
+  Modell für *Sortieren*: ab `medium` das Entscheidermodell `nimble`, auf `small` `qwen3:4b` über den Ersatzweg,
+  weil `nimble` mit 5,6 GB dort nicht passt.
 - **Herunterladen** (`ai.pull_model`): nur Modelle, die die Liste als lokale Ollama-Modelle führt, nur in Ollama
   auf diesem Rechner, mit der Größe aus dem Vorschlag (`download_bytes`). Ein freier Name, der einen fremden
   Registry-Host nennt, wird abgewiesen. Ollama lädt im Hintergrund; `ai.list_pulls` zeigt den Stand,
