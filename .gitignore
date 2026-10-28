@@ -7,5 +7,4 @@ __pycache__/
 .claude/worktrees/
 .claude/settings.local.json
 .worktrees/
-scripts/worktree.local.env
 .tbd/
