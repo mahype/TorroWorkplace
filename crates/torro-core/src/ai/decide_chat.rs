@@ -11,8 +11,9 @@
 //! system message. A model that cannot call tools may answer with the same object as text.
 //!
 //! **How the answer is read** ([`read`]): strictly, as everything a model says is data. The arguments
-//! of the call to [`TOOL`], else one JSON object in the text; nothing readable, or an answer cut off at
-//! its length, is [`AiError::Format`]. An option that was not offered or a value of the wrong kind
+//! of the call to [`TOOL`], else one JSON object in the text (also a call to it written as text);
+//! nothing readable, an object that names none of the questions, or an answer cut off at its length,
+//! is [`AiError::Format`] – the mail then keeps no category, so a later run asks again. An option that was not offered or a value of the wrong kind
 //! drops its question – never a guess, never a made-up option. A chat model gives no confidence:
 //! each answer counts as sure (1.0), and the reply is marked [`DecisionReply::by_chat`], so the caller
 //! keeps no confidence for it either.
@@ -65,8 +66,8 @@ pub fn request(asked: &DecisionRequest, effort: Option<Effort>) -> ChatRequest {
 }
 
 /// The answers in `reply` to the questions of `asked`, or [`AiError::Format`] when there is nothing
-/// to read: no call to [`TOOL`] whose arguments are a JSON object and no JSON object in the text, or an
-/// answer cut off at its length ([`Finish::Length`]). Each answer is checked against its question; one
+/// to read: no call to [`TOOL`] whose arguments are a JSON object and no JSON object in the text, an
+/// object that names none of the questions, or an answer cut off at its length ([`Finish::Length`]). Each answer is checked against its question; one
 /// that does not fit is left out (the caller then says `other`), the rest is kept. Always
 /// [`DecisionReply::by_chat`], every answer as sure as 1.0.
 pub fn read(reply: &ChatReply, asked: &DecisionRequest) -> Result<DecisionReply, AiError> {
@@ -81,13 +82,35 @@ pub fn read(reply: &ChatReply, asked: &DecisionRequest) -> Result<DecisionReply,
         Some(call) => serde_json::from_str::<Value>(&call.arguments).ok(),
         None => object_in(&reply.text),
     };
-    let object = written.as_ref().and_then(Value::as_object).ok_or_else(unreadable)?;
+    let object = written.as_ref().and_then(Value::as_object).map(unwrapped).ok_or_else(unreadable)?;
+    // An object that names none of the questions answered nothing (PR review of #325): kept as an
+    // answer, the mail would get `other` for good and never be asked again.
+    if !asked.questions.keys().any(|name| object.contains_key(name)) {
+        return Err(unreadable());
+    }
     let answers = asked
         .questions
         .iter()
         .filter_map(|(name, question)| Some((name.clone(), answer_of(question, object.get(name)?)?)))
         .collect();
     Ok(DecisionReply { answers, usage: reply.usage, by_chat: true })
+}
+
+/// The answer's object out of a call to [`TOOL`] a model wrote as text – `{"name": "answer",
+/// "arguments": {…}}`, the arguments also as a string of JSON –, else `object` itself.
+fn unwrapped(object: &Map<String, Value>) -> Map<String, Value> {
+    let arguments = match object.get("name").and_then(Value::as_str) {
+        Some(TOOL) => object.get("arguments").or_else(|| object.get("parameters")),
+        _ => None,
+    };
+    let inner = match arguments {
+        Some(Value::String(text)) => serde_json::from_str::<Value>(text).ok(),
+        other => other.cloned(),
+    };
+    match inner {
+        Some(Value::Object(inner)) => inner,
+        _ => object.clone(),
+    }
 }
 
 /// The system message: how to answer, then each question with its instructions and what its answer
@@ -159,7 +182,13 @@ fn answer_of(question: &Question, value: &Value) -> Option<Answer> {
         }
         Question::Noul { .. } => value.as_bool().map(|yes| Answer::Noul(if yes { 1.0 } else { 0.0 })),
         Question::Score { levels, .. } => {
-            let level = value.as_u64().filter(|level| *level < levels.len() as u64)?;
+            // `2.0` is the level 2 too; `1.5` is no level.
+            let level = value
+                .as_u64()
+                .or_else(|| {
+                    value.as_f64().filter(|level| level.fract() == 0.0 && *level >= 0.0).map(|level| level as u64)
+                })
+                .filter(|level| *level < levels.len() as u64)?;
             Some(Answer::Score { score: level as f32, confidence: 1.0 })
         }
     }
@@ -323,6 +352,23 @@ mod tests {
         assert_eq!(answered.score("urgency"), Some(0.0));
     }
 
+    /// PR review of #325: a model that writes its call to the tool as text, arguments as an object or
+    /// as a string of JSON, is read like the call.
+    #[test]
+    fn a_call_written_as_text_is_read_like_the_call() {
+        let texts = [
+            r#"{"name": "answer", "arguments": {"category": "invoice", "needs_reply": true, "urgency": 2.0}}"#,
+            r#"{"name": "answer", "arguments": "{\"category\": \"invoice\", \"needs_reply\": true, \"urgency\": 2}"}"#,
+            r#"{"name": "answer", "parameters": {"category": "invoice", "needs_reply": true, "urgency": 2}}"#,
+        ];
+        for text in texts {
+            let answered = read(&by_text(text), &asked()).expect("an answer");
+            assert_eq!(answered.choice("category"), Some(("invoice", 1.0)), "{text}");
+            assert_eq!(answered.noul("needs_reply"), Some(1.0), "{text}");
+            assert_eq!(answered.score("urgency"), Some(2.0), "{text}");
+        }
+    }
+
     #[test]
     fn an_option_that_was_not_offered_drops_its_question_only() {
         let answered = read(&by_tool(r#"{"category": "spam", "needs_reply": true}"#), &asked()).expect("an answer");
@@ -353,6 +399,11 @@ mod tests {
         for text in ["", "It is an invoice.", "[\"invoice\"]", "{not json}"] {
             assert!(matches!(read(&by_text(text), &asked()), Err(AiError::Format(_))), "{text:?}");
         }
+        // An object that names no question answered nothing: refused, so a later run asks again.
+        for text in [r#"{"kind": "invoice"}"#, "{}", r#"{"name": "answer", "arguments": {}}"#] {
+            assert!(matches!(read(&by_text(text), &asked()), Err(AiError::Format(_))), "{text:?}");
+        }
+        assert!(matches!(read(&by_tool("{}"), &asked()), Err(AiError::Format(_))), "an empty call");
         // Another tool is no answer; the text beside it is not read when it holds none either.
         let other = ChatReply {
             tool_calls: vec![ToolCall { id: "c".into(), name: "calendar_list_events".into(), arguments: "{}".into() }],

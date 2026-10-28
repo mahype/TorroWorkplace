@@ -195,9 +195,10 @@ Die Auswahl (`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ei
 
 - Die Fragen gehen als ein Werkzeug `answer` (`torro_core::ai::decide_chat`): die Kategorie als Auswahl der
   angebotenen Namen, ob eine Antwort erwartet wird, als Ja/Nein, die Dringlichkeit als Zahl.
-- Die Antwort wird **streng gelesen**: die Argumente des Werkzeugaufrufs, sonst ein JSON-Objekt im Text. Eine
-  nicht angebotene Option oder ein falscher Typ lässt die Frage weg, eine abgeschnittene Antwort ist ein Fehler.
-  Nichts wird erfunden.
+- Die Antwort wird **streng gelesen**: die Argumente des Werkzeugaufrufs, sonst ein JSON-Objekt im Text (auch ein
+  als Text geschriebener Aufruf von `answer`). Eine nicht angebotene Option oder ein falscher Typ lässt die Frage
+  weg. Eine abgeschnittene Antwort oder ein Objekt, das keine der Fragen nennt, ist ein Fehler: Die Mail bekommt
+  dann keine Kategorie, ein späterer Lauf fragt noch einmal. Nichts wird erfunden.
 - Das Chat-Modell gibt **keine Konfidenz**. Seine Kategorie gilt ohne Schwellwert und ohne Zahl; was es nicht
   sinnvoll beantwortet, wird `other`.
 - Der Text der Mail bleibt im Zaun `<message>` wie bisher; die Anweisungen stehen nur im System-Text.
