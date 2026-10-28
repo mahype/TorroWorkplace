@@ -8,6 +8,8 @@
 //! Reading   "Show mail as" and "Mail colors" for the reader
 //! Attachments  what a click on an attachment does, the Downloads folder, the save targets
 //!              (task M12.7, [`attachments`])
+//! Categorization  sorting by a model, the sorting rules and the categories
+//! Filters   saved searches that move, mark or file new mail in the inbox (issue #339, [`filters`])
 //! ```
 //!
 //! Task E10.3 adds a third section, "Keyboard shortcuts"; it is not built here.
@@ -31,9 +33,10 @@ use crate::{Action, Data, Page, Section};
 pub mod attachments;
 mod backup;
 mod editor;
+pub mod filters;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 5] = [
+pub const SECTIONS: [Section; 6] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: ACCOUNTS_SECTION, icon: Icon::Mail, label: "Accounts" },
     Section { id: "reading", icon: Icon::MailOpen, label: "Reading" },
@@ -42,12 +45,26 @@ pub const SECTIONS: [Section; 5] = [
     Section { id: ATTACHMENTS_SECTION, icon: Icon::Paperclip, label: "Attachments" },
     // What incoming mail is sorted into (task E12.10, `docs/kategorien.md`).
     Section { id: "categorization", icon: Icon::Tag, label: "Categorization" },
+    // Saved searches with what to do with new mail (issue #339); "Create filter…" at a mail and
+    // at the search field open a new one here ([`new_filter`]).
+    Section { id: FILTERS_SECTION, icon: Icon::Filter, label: "Filters" },
     Section { id: "storage", icon: Icon::Archive, label: "Storage & index" },
 ];
 
 /// The id of the section "Attachments": what `--settings attachments` takes and where "Manage save
 /// targets…" leads.
 pub const ATTACHMENTS_SECTION: &str = "attachments";
+
+/// The id of the section "Filters" (issue #339): what `--settings filters` takes and where "Create
+/// filter…" leads.
+pub const FILTERS_SECTION: &str = "filters";
+
+/// The message that opens a new filter's page in "Filters" with `query` and `account` filled in
+/// (`None`: every account) and asks what it finds – what torroinbox sends after opening the
+/// section for "Create filter…" (`from:<address>`) and "Create filter from search…".
+pub fn new_filter(query: String, account: Option<String>) -> Message {
+    Message::Filters(filters::Message::New { query, account })
+}
 
 /// The id of the section "Accounts", whose account page has a menu of its own (task DS.6).
 pub const ACCOUNTS_SECTION: &str = "accounts";
@@ -96,6 +113,9 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::ListCategories { account: None },
         // The sorting rules (task E15.5), listed and edited under Categorization.
         torro_ipc::Request::ListSortRules,
+        // "Filters" (issue #339): the filters, and the folders a filter can move mail into.
+        torro_ipc::Request::ListMailFilters,
+        torro_ipc::Request::MailFolders { account: None },
     ]
 }
 
@@ -109,6 +129,8 @@ pub struct State {
     pub storage: storage::State,
     /// Attachments: the editor of a save target while it is open (task M12.7).
     pub attachments: attachments::State,
+    /// Filters: the open filter's page and the question of "Apply" (issue #339).
+    pub filters: filters::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -119,6 +141,7 @@ pub enum Message {
     Categorization(categorization::Message),
     Storage(storage::Message),
     Attachments(attachments::Message),
+    Filters(filters::Message),
 }
 
 /// What a section's widget reported, and what the host is to do about it.
@@ -134,6 +157,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAct
             Action::Open(ACCOUNTS_SECTION)
         }
         Message::Storage(message) => storage::update(&mut state.storage, message, data),
+        Message::Filters(message) => filters::update(&mut state.filters, message, data),
     }
 }
 
@@ -144,6 +168,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
         "reading" => wrap(Page::new(reading::view(data)), Message::Reading),
         "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         "storage" => wrap(storage::page(&state.storage, data), Message::Storage),
+        FILTERS_SECTION => wrap(filters::page(&state.filters, data), Message::Filters),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
         _ => wrap(accounts::page(&state.accounts, data), Message::Accounts),
     }
@@ -193,8 +218,19 @@ pub fn escape(state: &State) -> Option<Message> {
         .map(|message| Message::Categorization(categorization::Message::Editor(message)))
 }
 
-/// The answer of a one-off preview request for the currently selected sorting scope.
+/// What Escape means while "Filters" shows: a filter's page goes back to the list, asking first when
+/// something typed would go (issue #339). `None` on the list, which lets the window close the
+/// settings.
+pub fn filters_escape(state: &State) -> Option<Message> {
+    filters::escape(&state.filters).map(Message::Filters)
+}
+
+/// The answer of a one-off request: a preview of the selected sorting scope, or a filter's preview
+/// or run (issue #339). A filter's answer goes to "Filters" only.
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+    if filters::answered(&mut state.filters, answer) {
+        return;
+    }
     categorization::answered(&mut state.categorization, answer);
     storage::answered(&mut state.storage, answer);
 }
@@ -2223,10 +2259,11 @@ mod tests {
     #[test]
     fn the_sections_are_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization", "storage"]);
+        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization", "filters", "storage"]);
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
         assert_eq!(SECTIONS[2].name(), tr("Attachments"), "task M12.7");
         assert_eq!(SECTIONS[3].name(), tr("Categorization"), "task E12.10");
+        assert_eq!(SECTIONS[4].name(), tr("Filters"), "issue #339");
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {
             assert!(host.open(id), "{id}");
@@ -2251,6 +2288,8 @@ mod tests {
                 torro_ipc::Request::PreviewClearCategories,
                 torro_ipc::Request::ListCategories { account: None },
                 torro_ipc::Request::ListSortRules,
+                torro_ipc::Request::ListMailFilters,
+                torro_ipc::Request::MailFolders { account: None },
             ]
         );
     }

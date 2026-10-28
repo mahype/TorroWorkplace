@@ -866,6 +866,76 @@ impl Demo {
         ]
     }
 
+    /// The mail filters (`mail.list_filters`, issue #339): a newsletter archived and read for every
+    /// account, bills of the sample account filed under "Bills", and one switched off whose
+    /// category is no longer in the catalogue, so the list shows "Unknown category".
+    fn mail_filters(&self) -> Vec<torro_mail::MailFilter> {
+        use torro_mail::{Category, CustomCategory, FilterFile, MailFilter};
+        let created = chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap_or_default();
+        let filter = |id: &str, query: &str| MailFilter {
+            id: id.into(),
+            query: query.into(),
+            account: None,
+            file: None,
+            mark_read: false,
+            category: None,
+            enabled: true,
+            created,
+        };
+        vec![
+            MailFilter { file: Some(FilterFile::Archive), mark_read: true, ..filter("f1", "from:news@shop.example") },
+            MailFilter {
+                account: Some(format!("mail:{MAIL_ADDRESS}")),
+                file: Some(FilterFile::Folder { id: "f:demo-archive".into() }),
+                category: Some(Category::Invoice),
+                ..filter("f2", "from:billing@shop.example has:attachment")
+            },
+            MailFilter {
+                category: CustomCategory::new(9).map(Category::Custom),
+                enabled: false,
+                ..filter("f3", "subject:\"weekly digest\"")
+            },
+        ]
+    }
+
+    /// What a filter's search finds in the sample inbox (`mail.preview_filter`): twelve mails, the
+    /// three newest of them.
+    fn mail_filter_preview(&self, account: Option<&str>) -> Response {
+        let account = account.map_or_else(|| format!("mail:{MAIL_ADDRESS}"), str::to_string);
+        let message = |at: u32, from: &str, subject: &str| torro_mail::MessageSummary {
+            id: format!("m:demo-filter-{at}"),
+            account: account.clone(),
+            folder: "f:demo-inbox".into(),
+            thread_id: format!("t:demo-filter-{at}"),
+            from: Some(torro_mail::MailAddress { name: None, address: from.into() }),
+            to: vec![torro_mail::MailAddress { name: None, address: MAIL_ADDRESS.into() }],
+            subject: subject.into(),
+            date: Utc.with_ymd_and_hms(2026, 10, 20 - at, 8, 30, 0).single().unwrap_or_default(),
+            snippet: String::new(),
+            flags: Vec::new(),
+            has_attachments: false,
+            invite: None,
+            back: None,
+            category: None,
+            pile: None,
+            pile_since: None,
+            untrusted: true,
+        };
+        Response::MailFilterPreview {
+            count: 12,
+            messages: vec![
+                message(0, "news@shop.example", "Autumn sale: 30% off"),
+                message(1, "news@shop.example", "New in store this week"),
+                message(2, "news@shop.example", "Your weekly picks"),
+            ],
+        }
+    }
+
+    /// The folders of the sample account (`mail.list_folders`), as its statistics hold them.
+    fn mail_folders(&self) -> Vec<Folder> {
+        self.mail_stats().into_iter().flat_map(|account| account.folders).map(|folder| folder.folder).collect()
+    }
+
     /// The save targets as `mail.list_save_targets` answers them, with the Downloads folder.
     fn save_targets_answer(&self) -> Response {
         let downloads = self.settings.mail_attachments.downloads.clone();
@@ -1088,6 +1158,47 @@ impl Backend for Demo {
             Request::RemoveSaveTarget { .. } => {
                 self.note(request);
                 self.save_targets_answer()
+            }
+            // The mail filters (issue #339): a change is answered as stored and noted; the next
+            // load shows the sample filters again.
+            Request::ListMailFilters => Response::MailFilters { filters: self.mail_filters() },
+            Request::MailFolders { .. } => Response::MailFolders { folders: self.mail_folders() },
+            Request::PreviewMailFilter { account, .. } => self.mail_filter_preview(account.as_deref()),
+            Request::CreateMailFilter { query, account, file, mark_read, category, enabled } => {
+                let filter = torro_mail::MailFilter {
+                    id: "f4".into(),
+                    query: query.clone(),
+                    account: account.clone(),
+                    file: file.clone(),
+                    mark_read: *mark_read,
+                    category: *category,
+                    enabled: *enabled,
+                    created: Utc::now(),
+                };
+                self.note(request);
+                Response::MailFilter { filter }
+            }
+            Request::UpdateMailFilter { id, query, account, file, mark_read, category, enabled } => {
+                let filter = torro_mail::MailFilter {
+                    id: id.clone(),
+                    query: query.clone(),
+                    account: account.clone(),
+                    file: file.clone(),
+                    mark_read: *mark_read,
+                    category: *category,
+                    enabled: enabled.unwrap_or(true),
+                    created: Utc::now(),
+                };
+                self.note(request);
+                Response::MailFilter { filter }
+            }
+            Request::RemoveMailFilter { .. } => {
+                self.note(request);
+                Response::MailFilters { filters: self.mail_filters() }
+            }
+            Request::ApplyMailFilter { .. } => {
+                self.note(request);
+                Response::MailFilterApplied { applied: 12, failed: 0, more: false }
             }
             Request::ListRules => {
                 let (rules, hits) = self.rules();
