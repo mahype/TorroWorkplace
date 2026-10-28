@@ -82,8 +82,7 @@
 //! **Mail is never hidden** (issue #339): `inbox.hide_sender`, `inbox.set_mail_shown` and the view
 //! "Hidden" are gone, filters (`crate::mail::filters`) move such mail where it can be found again.
 //! Muting a mail entry or message with `hide` is `unsupported` ([`rules::may_mute_with`]); the rules
-//! that hid mail are
-//! removed.
+//! that hid mail were removed and what they hid let back ([`SCHEMA_V17`]).
 //!
 //! **Muting by traits** (task E8.6a, `inbox.list_mute_options`, `inbox.mute_item`, [`mute_item`]):
 //! every report gets the traits of its source from the core ([`rules::facets`]: account, sender,
@@ -180,7 +179,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -561,6 +560,25 @@ CREATE TABLE mail_piles (
     at TEXT NOT NULL,
     PRIMARY KEY (account, message)
 );
+";
+
+/// From schema version 16 to 17 (issue #339, filters instead of "Hidden"): mail is never hidden any
+/// more, and what was hidden comes back. Nothing is turned into a filter.
+///
+/// - The rules that hid mail go: every rule of a mail account (`source` `mail:<address>`) with the
+///   effect `muted` that names a sender or domain (`sender`, a domain as `@<domain>`, task E3.10) or
+///   a trait (`facet`, task E8.6a, muted with `hide`). A whole account muted (`inbox.mute_source`,
+///   neither) stays, and so do the rules of every other source: the hub hides those as before.
+/// - `muted_mail` forgets the catches of the rules gone (its `rule` names one no longer there).
+/// - `items.hidden` is cleared for the entries of mail accounts, so nothing marks their mail hidden.
+/// - `shown_mail` ("Show again") goes: there is nothing to show again.
+///
+/// The mail itself was never touched by hiding, so every message stands in its folder's list again.
+const SCHEMA_V17: &str = "
+DELETE FROM rules WHERE effect = 'muted' AND instr(source, 'mail:') = 1 AND (sender <> '' OR facet <> '');
+DELETE FROM muted_mail WHERE rule IS NOT NULL AND rule NOT IN (SELECT id FROM rules);
+UPDATE items SET hidden = NULL WHERE instr(source, 'mail:') = 1;
+DROP TABLE shown_mail;
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -3924,6 +3942,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 16 {
         tx.execute_batch(SCHEMA_V16)?;
+    }
+    if version < 17 {
+        tx.execute_batch(SCHEMA_V17)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -9591,6 +9612,83 @@ pub(crate) mod tests {
         let hidden =
             muted(inbox.handle(mute(&backup, MuteScope::Conversation, None, MuteEffect::Hide), None, at(8, 5)));
         assert_eq!(hidden.done, [backup]);
+    }
+
+    /// Issue #339, [`SCHEMA_V17`]: a file of schema 16 forgets what hid mail – the rules of mail
+    /// accounts that hid a sender, a domain or a trait, what they kept away (`muted_mail.rule`), the
+    /// marks on mail entries (`items.hidden`) and "Show again" (`shown_mail`) –, and keeps a whole
+    /// account muted, a remembered lane and the rules of every other source.
+    #[test]
+    fn a_file_of_schema_16_forgets_what_hid_mail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let talk = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let news = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(8, 1));
+        let backup = posted(inbox.handle(notice("Backup done", None), Some(&script()), at(8, 2)));
+        let anna = SourceRef::mail("anna@example.org");
+        let kept = |id: &str, source: &SourceRef, effect, sender: Option<&str>, domain: Option<&str>, facet| Rule {
+            id: id.into(),
+            source: source.clone(),
+            sender: sender.map(String::from),
+            domain: domain.map(String::from),
+            effect,
+            created: at(7, 0),
+            facet,
+            until: None,
+        };
+        let list = Facet { key: FacetKey::List, value: "<news.example>".into() };
+        let client = Facet { key: FacetKey::Client, value: "backup".into() };
+        let rules = [
+            kept("a", &anna, RuleEffect::Muted, Some("news@shop.example"), None, None),
+            kept("b", &anna, RuleEffect::Muted, None, Some("shop.example"), None),
+            kept("c", &anna, RuleEffect::Muted, None, None, Some(list)),
+            kept("d", &anna, RuleEffect::Muted, None, None, None),
+            kept("e", &anna, RuleEffect::Lane { lane: Lane::Info }, Some("bob@example.org"), None, None),
+            kept("f", &SourceRef::script("ci"), RuleEffect::Muted, None, None, Some(client)),
+        ];
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "CREATE TABLE shown_mail (account TEXT NOT NULL, message TEXT NOT NULL, at TEXT NOT NULL,
+                         PRIMARY KEY (account, message));
+                     PRAGMA user_version = 16;",
+                )?;
+                for rule in rules {
+                    insert_rule(db, rule)?;
+                }
+                db.execute("UPDATE items SET hidden = '' WHERE id = ?1", params![talk])?;
+                db.execute("UPDATE items SET hidden = 'c' WHERE id = ?1", params![news])?;
+                db.execute("UPDATE items SET hidden = 'f' WHERE id = ?1", params![backup])?;
+                db.execute(
+                    "INSERT INTO muted_mail (account, message, at, rule) VALUES (?1, 'm:7', ?2, 'c'), (?1, 'm:8', ?2, NULL)",
+                    params![ANNA, stamp(at(7, 30))],
+                )?;
+                db.execute("INSERT INTO shown_mail (account, message, at) VALUES (?1, 'm:2', ?2)", params![ANNA, stamp(at(7, 40))])?;
+                Ok(())
+            })
+            .expect("back to schema 16");
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        let ids: Vec<String> = rules_of(&inbox).into_iter().map(|rule| rule.id).collect();
+        assert_eq!(ids, ["d", "e", "f"], "only what hid mail went");
+        drop(inbox);
+
+        let db = Connection::open(file_in(dir.path())).expect("opens");
+        let hidden = |id: &str| -> Option<String> {
+            db.query_row("SELECT hidden FROM items WHERE id = ?1", params![id], |row| row.get(0)).expect("an entry")
+        };
+        assert_eq!((hidden(&talk), hidden(&news)), (None, None), "mail entries carry no mark");
+        assert_eq!(hidden(&backup).as_deref(), Some("f"), "other sources keep theirs");
+        let mut statement = db.prepare("SELECT message FROM muted_mail ORDER BY message").expect("prepared");
+        let caught: Vec<String> =
+            statement.query_map([], |row| row.get(0)).expect("read").collect::<Result<_, _>>().expect("rows");
+        assert_eq!(caught, ["m:8"], "only the catch of the rule gone went");
+        let shown: i64 = db
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'shown_mail'", [], |row| row.get(0))
+            .expect("counted");
+        assert_eq!(shown, 0, "no more Show again");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
