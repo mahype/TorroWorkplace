@@ -1786,7 +1786,10 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         Request::CancelAiPull { .. } => {
             Some(Response::AiPulls { pulls: demo_pulls(data, torro_ipc::AiPullState::Cancelled) })
         }
-        Request::SetAiSlot { .. } => Some(Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() }),
+        // Assignments too, so a chain of "Use suggestion" that takes an exception back does not hang.
+        Request::SetAiSlot { .. } | Request::AiAssignments | Request::SetAiAssignment { .. } => {
+            Some(Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() })
+        }
         Request::SetModelEnabled { .. } => Some(Response::Ok),
         Request::ConnectAi { key, .. } if key.expose() == "wrong" => {
             let refused = AiError::Auth;

@@ -2842,7 +2842,7 @@ static PULL_MODEL: Command = Command {
                   approval. Follow it with ai_list_pulls; once `done`, ai_list_models lists the model, and \
                   ai_set_slot can put it in a slot. `not-found` for an unknown account; `unsupported` for \
                   another account or a model not suggested; `busy` while the same model downloads already; `offline` when Ollama does not \
-                  answer.",
+                  answer, unless the download was cancelled meanwhile: then the list with it `cancelled`.",
 };
 
 static LIST_PULLS: Command = Command {

@@ -1788,7 +1788,7 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `ai_pull_model`
 
-Downloads a model into Ollama on this computer, in the background; returns the downloads as ai_list_pulls does. Only Ollama on this computer, and only a model ai_recommend suggests as a local Ollama model; its size is the suggestion's `download_bytes`. Needs the person's approval. Follow it with ai_list_pulls; once `done`, ai_list_models lists the model, and ai_set_slot can put it in a slot. `not-found` for an unknown account; `unsupported` for another account or a model not suggested; `busy` while the same model downloads already; `offline` when Ollama does not answer.
+Downloads a model into Ollama on this computer, in the background; returns the downloads as ai_list_pulls does. Only Ollama on this computer, and only a model ai_recommend suggests as a local Ollama model; its size is the suggestion's `download_bytes`. Needs the person's approval. Follow it with ai_list_pulls; once `done`, ai_list_models lists the model, and ai_set_slot can put it in a slot. `not-found` for an unknown account; `unsupported` for another account or a model not suggested; `busy` while the same model downloads already; `offline` when Ollama does not answer, unless the download was cancelled meanwhile: then the list with it `cancelled`.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
