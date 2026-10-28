@@ -6410,7 +6410,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "No MCP servers yet. Each one you add in the control centre under MCP servers gets its own level here.",
         "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, bekommt hier eine eigene Stufe.",
     ),
-    // The mail window: All, Later, Hidden and Folders, "Show again" (E18.4, issue #301)
+    // The mail window: Unfiltered (once All), Later, Hidden and Folders, "Show again" (E18.4, issue #301, #337)
     ("Show again", "Wieder anzeigen"),
     ("Back in Unfiltered.", "Wieder in „Ungefiltert“."),
     ("Couldn't show the mail again.", "Die Mail konnte nicht wieder angezeigt werden."),

@@ -1229,9 +1229,10 @@ pub fn sidebar_group_in<'a, M: Clone + 'a>(
 }
 
 /// The gap before a group of the sidebar that has no title (issue #337, the piles of the mail
-/// window): expanded only the space a [`sidebar_group_in`] leaves above its title, so the rows stand
-/// apart from those before without a word that would say nothing new; in the rail the same line as a
-/// group's title there.
+/// window): expanded a step more than the space a [`sidebar_group_in`] leaves above its title
+/// (`space::l()`, "group to group 16–24"), since no title marks where the group starts – so the rows
+/// stand apart from those before without a word that would say nothing new; in the rail the same
+/// line as a group's title there.
 ///
 /// ```ignore
 /// items.push(widgets::sidebar_gap_in(mode));
@@ -1242,7 +1243,7 @@ pub fn sidebar_gap_in<'a, M: 'a>(mode: SidebarMode) -> Element<'a, M> {
         SidebarMode::Rail => {
             container(rule::horizontal(LINE).style(style::rule)).padding([space::s(), space::xs()]).into()
         }
-        SidebarMode::Expanded => blank().height(space::m()).into(),
+        SidebarMode::Expanded => blank().height(space::l()).into(),
     }
 }
 
