@@ -6,4 +6,4 @@ argument-hint: Optionaler PR-Titel
 
 # Pull Request (Synonym)
 
-`pr` ist nur ein kürzerer Name. Lies `.claude/skills/pullrequest/SKILL.md` und folge ihm vollständig, mit diesen Argumenten: `$ARGUMENTS`
+`pr` ist nur ein kürzerer Name. Starte den Skill `enon-tools:pullrequest` aus dem Plugin enon-tools und folge ihm vollständig, mit diesen Argumenten: `$ARGUMENTS`
