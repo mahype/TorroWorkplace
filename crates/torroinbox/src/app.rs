@@ -9485,7 +9485,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// there; the arms for them only keep the matches whole).
     ///
     /// The settings (task S.20), while they are open, take the header and the content area instead;
-    /// the sidebar stays with the app switcher above it, and what is open behind them – the panel,
+    /// the app sidebar becomes a rail so the settings have room, and what is open behind them – the panel,
     /// a search – is kept and comes back with the content area. Pressing the app switcher there
     /// shows entries again ([`shows_entries`]), so the only layer over the settings is the host's
     /// own section menu.
@@ -9496,6 +9496,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
+            let settings_rail = matches!(class, SizeClass::Wide | SizeClass::Medium)
+                .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
             // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
             // The app switcher cannot be open at the same time: every `Message::Switcher` shows
             // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
@@ -9504,7 +9506,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // menu cannot be open with it, as a click next to that menu only closes it.
             let overlay = self.settings_dialog(class).or(frame.overlay);
             return shell::shell(class, sidebar, frame.header, frame.body, None)
-                .rail(rail)
+                .rail(settings_rail)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(overlay)
                 .into();
@@ -18917,14 +18919,24 @@ mod tests {
         for words in [vec![], vec!["--view", "mail"], vec!["--view", "notifications"]] {
             let mut app = overview_at(&words);
             let _ = app.update(Message::OpenSettings);
+            if app.launch.kind == Kind::Mail {
+                let data = block_on(torro_settings_ui::load(
+                    Arc::new(torro_settings_ui::demo::Demo::new()),
+                    settings_mail::wanted(),
+                ));
+                let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+            }
             for size in [(1600.0, 1000.0), (1100.0, 800.0), (800.0, 600.0), (480.0, 900.0), (360.0, 700.0)] {
                 let _ = app.update(Message::Resized(Size::new(size.0, size.1)));
                 let _ = app.view();
             }
             // The sections of the open window, and only those, answer to `Host::open`.
-            let pane = app.settings.as_mut().expect("open");
             for section in app.launch.kind.settings_sections() {
-                assert!(pane.host.open(section.id), "{}", section.id);
+                assert!(app.settings.as_mut().expect("open").host.open(section.id), "{}", section.id);
+                for size in [(1600.0, 1000.0), (800.0, 600.0), (360.0, 700.0)] {
+                    let _ = app.update(Message::Resized(Size::new(size.0, size.1)));
+                    let _ = app.view();
+                }
             }
         }
     }

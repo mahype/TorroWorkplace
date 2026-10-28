@@ -35,7 +35,7 @@ use torro_ipc::{Request, SettingKey};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
 use torro_mail::{Category, CategoryGroup, CategoryIcon};
 
-use crate::parts::{chevron, choice, field, picker, pressable, row_frame, setting_row, switch};
+use crate::parts::{choice, field, picker, pressable, row_frame, setting_row, switch};
 use crate::{Action, Data};
 
 /// The id of the name field of a category's page: "Save" with a mistake in it goes there.
@@ -895,8 +895,12 @@ pub fn rules_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message>
         if !rule.enabled {
             detail = trf("Off · {rule}", &[("rule", &detail)]);
         }
-        let row = setting_row(None, category, Some(detail), chevron());
-        rows.push(pressable(row, Some(Message::EditRule(rule.id.clone()))));
+        rows.push(setting_row(
+            None,
+            category,
+            Some(detail),
+            widgets::icon_button(Icon::SquarePen, tr("Edit rule"), Some(Message::EditRule(rule.id.clone()))),
+        ));
         if matches!(&state.form, Some(Form::Rule(form)) if form.id.as_deref() == Some(rule.id.as_str())) {
             rows.push(inline_rule(state, data));
         }

@@ -992,9 +992,12 @@ pub mod accounts {
                     .spacing(space::xs());
                     let sync_col = typo::text(typo::meta(), sync_label.clone()).style(theme::text_2);
                     if room.width < 680.0 {
-                        row_frame(column![name_col, inventory, sync_col].spacing(space::m()), false)
+                        container(column![name_col, inventory, sync_col].spacing(space::m()))
+                            .width(Length::Fill)
+                            .padding([space::m(), space::l()])
+                            .into()
                     } else {
-                        row_frame(
+                        container(
                             row![
                                 name_col.width(Length::FillPortion(3)),
                                 container(inventory).width(Length::FillPortion(5)),
@@ -1003,8 +1006,10 @@ pub mod accounts {
                             ]
                             .spacing(space::l())
                             .align_y(Alignment::Center),
-                            false,
                         )
+                        .width(Length::Fill)
+                        .padding([space::m(), space::l()])
+                        .into()
                     }
                 });
                 pressable(entry.into(), Some(Message::Open(id)))
@@ -1310,7 +1315,7 @@ pub mod accounts {
             widgets::mail_coverage_legend(),
             typo::text(
                 typo::meta(),
-                trf("Disk space used here: {size}", &[("size", &format_bytes(stats.database_bytes))]),
+                trf("Local database incl. headers and index: {size}", &[("size", &format_bytes(stats.database_bytes))]),
             )
             .style(theme::text_2),
         ]
@@ -2933,7 +2938,7 @@ pub mod storage {
         body = body.push(
             typo::text(
                 typo::meta(),
-                trf("Disk space used here: {size}", &[("size", &format_bytes(stats.database_bytes))]),
+                trf("Local database incl. headers and index: {size}", &[("size", &format_bytes(stats.database_bytes))]),
             )
             .style(theme::text_2),
         );
@@ -3439,6 +3444,8 @@ pub mod categorization {
         folders: Vec<String>,
         period: Period,
         again: bool,
+        /// The bulk operation stays compact until the person chooses to set its scope.
+        job_expanded: bool,
         preview: Option<CategoryJobPreview>,
         preview_error: Option<String>,
         pending_scope: Option<CategoryJobScope>,
@@ -3476,6 +3483,7 @@ pub mod categorization {
         CatchUp(bool),
         /// "Sort again" (task E15.5): the whole window anew, after new rules or descriptions.
         SortAgain,
+        ShowJob(bool),
         /// Change the scope of the explicit sorting job and refresh its preview.
         AllAccounts,
         ToggleAccount(String),
@@ -3575,6 +3583,10 @@ pub mod categorization {
             }
             Message::ControlClear(id, action) => Action::send(Request::ControlClearCategories { id, action }),
             Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
+            Message::ShowJob(show) => {
+                state.job_expanded = show;
+                Action::None
+            }
             // Switching on without a model named would store an assignment the core throws away
             // (no account, nothing to ask): the first model that can decide is taken, which is
             // what the switch means. Nothing offered, nothing to switch on.
@@ -3709,6 +3721,32 @@ pub mod categorization {
 
     fn job_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         use iced::widget::column;
+        if !state.job_expanded {
+            let status = data.category_job.as_ref().map(|job| job_state_label(job.state).to_string());
+            let title = status.map_or_else(
+                || tr("Sort existing emails").to_string(),
+                |status| trf("Sort existing emails · {status}", &[("status", &status)]),
+            );
+            let detail = data.category_job.as_ref().map_or_else(
+                || tr("Choose time span, accounts and folders when needed.").to_string(),
+                |job| {
+                    let done: u64 = job.accounts.iter().map(|account| account.processed).sum();
+                    let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
+                    trf("{done} of {total}", &[("done", &done), ("total", &total)])
+                },
+            );
+            let compact = widgets::group(
+                tr("Existing emails"),
+                vec![setting_row(
+                    None,
+                    title,
+                    Some(detail),
+                    widgets::text_button(None, tr("Set up…"), style::button::secondary, Some(Message::ShowJob(true))),
+                )],
+                None,
+            );
+            return column![compact, clear_group(state, data)].spacing(layout::section_gap()).into();
+        }
         let all_accounts = state.all_accounts || state.accounts.is_empty();
         let mut account_rows: Vec<Element<'a, Message>> =
             vec![choice(tr("All mail accounts").to_string(), all_accounts, Message::AllAccounts)];
@@ -3806,7 +3844,10 @@ pub mod categorization {
                     .to_string(),
             ),
         );
-        let mut page = column![accounts, folders, period, summary].spacing(layout::section_gap());
+        let close =
+            widgets::text_button(None, tr("Close selection"), style::button::ghost, Some(Message::ShowJob(false)));
+        let mut page =
+            column![row_frame(close, false), accounts, folders, period, summary].spacing(layout::section_gap());
         if let Some(job) = &data.category_job {
             let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
             let processed: u64 = job.accounts.iter().map(|account| account.processed).sum();
