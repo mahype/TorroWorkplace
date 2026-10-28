@@ -6555,6 +6555,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Ready", "Bereit"),
     ("Downloads first", "Wird zuerst heruntergeladen"),
     ("No AI server runs on this computer", "Auf diesem Rechner läuft kein KI-Server"),
+    ("No server here offers a model for this computer", "Kein Server hier bietet ein Modell für diesen Rechner"),
     ("No local model fits this computer", "Kein lokales Modell passt zu diesem Rechner"),
     // Downloading models into Ollama (MW.7, issue #325); "There is no AI account {id}." stands above.
     (

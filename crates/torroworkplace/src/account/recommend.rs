@@ -351,8 +351,10 @@ pub fn tier_of<'a>(hardware: &Hardware, list: &'a List) -> &'a Tier {
 ///    list's name with `download_bytes` while it does not list it (or its list could not be read).
 /// 3. A cloud model: providers in the order of [`AiProvider::ALL`], the first account with a `[[cloud]]` entry
 ///    for the slot whose list holds a model with that beginning that fits the slot (chat: `tools` not
-///    `false`; sorting: [`AiModel::can_decide`]); an account whose list could not be read with `model: None`.
-///    The reason says whether the tier has no local model for the slot or no AI server runs here.
+///    `false`; sorting: [`AiModel::can_decide`]) – of several, the one named exactly so, else the shortest
+///    id (`gemini-2.5-flash` never takes `gemini-2.5-flash-lite`); an account whose list could not be read
+///    with `model: None`. The reason says whether the tier has no local model for the slot, no AI server
+///    runs here, or the servers here offer none of the tier's models (a Strata without it, no Ollama).
 /// 4. The tier's Ollama model without an account (`engine: None`), with its size and the reason "Needs
 ///    Ollama".
 ///
@@ -397,7 +399,12 @@ fn suggest_slot(list: &List, tier: &str, slot: AiSlot, accounts: &[Connected]) -
         });
     }
     let has_local = list.local_for(tier, slot, AiProvider::Strata).is_some() || ollama.is_some();
-    if let Some(cloud) = cloud_suggestion(list, slot, accounts, has_local) {
+    let reason = match (has_local, accounts.iter().any(|account| account.local)) {
+        (false, _) => tr("No local model fits this computer"),
+        (true, false) => tr("No AI server runs on this computer"),
+        (true, true) => tr("No server here offers a model for this computer"),
+    };
+    if let Some(cloud) = cloud_suggestion(list, slot, accounts, reason) {
         return Some(cloud);
     }
     ollama.map(|entry| SlotSuggestion {
@@ -426,23 +433,17 @@ fn local_suggestion(entry: &Local, engine: Option<&str>, model: &str, download_b
     }
 }
 
-/// The cloud model for `slot` ([`suggest`], step 3). `has_local`: the tier has a local model for the slot,
-/// so only the missing server sends it to the cloud.
-fn cloud_suggestion(list: &List, slot: AiSlot, accounts: &[Connected], has_local: bool) -> Option<SlotSuggestion> {
+/// The cloud model for `slot` ([`suggest`], step 3), with `reason`: why no local model is suggested.
+fn cloud_suggestion(list: &List, slot: AiSlot, accounts: &[Connected], reason: &'static str) -> Option<SlotSuggestion> {
     let (account, model) = AiProvider::ALL.into_iter().find_map(|provider| {
         let entry = list.cloud.iter().find(|entry| entry.provider == provider && entry.slot == slot)?;
         accounts.iter().filter(|account| account.provider == provider && !account.local).find_map(|account| {
             match &account.models {
                 None => Some((account, None)),
-                Some(models) => models
-                    .iter()
-                    .find(|model| model.id.starts_with(&entry.model_prefix) && fits(model, slot))
-                    .map(|model| (account, Some(model))),
+                Some(models) => best_of(models, &entry.model_prefix, slot).map(|model| (account, Some(model))),
             }
         })
     })?;
-    let reason =
-        if has_local { tr("No AI server runs on this computer") } else { tr("No local model fits this computer") };
     Some(SlotSuggestion {
         slot,
         engine: Some(account.id.clone()),
@@ -455,6 +456,16 @@ fn cloud_suggestion(list: &List, slot: AiSlot, accounts: &[Connected], has_local
         by_chat: slot == AiSlot::Decide && model.is_none_or(AiModel::decides_by_chat),
         reason: reason.to_string(),
     })
+}
+
+/// The model of `models` for a `[[cloud]]` entry with `prefix` that fits `slot`: the one whose id is `prefix`,
+/// else the shortest id that starts with it – the plain model before its variants (`-lite`, `:nitro`); of
+/// equally long ones the first listed.
+fn best_of<'a>(models: &'a [AiModel], prefix: &str, slot: AiSlot) -> Option<&'a AiModel> {
+    models
+        .iter()
+        .filter(|model| model.id.starts_with(prefix) && fits(model, slot))
+        .min_by_key(|model| (model.id != prefix, model.id.len()))
 }
 
 /// `model` can take `slot`: chat needs tools (not known to lack them), sorting [`AiModel::can_decide`].
@@ -755,6 +766,57 @@ mod tests {
             account("ai:openrouter", AiProvider::OpenRouter, false, Some(vec![model("meta/llama", None, None)]));
         let got = suggest(&Hardware::default(), builtin(), &[none_fits, anthropic], false);
         assert_eq!(slot(&got, AiSlot::Chat).expect("chat").engine.as_deref(), Some("ai:anthropic"));
+    }
+
+    /// Review of #325 (F7): a Strata here without the tier's model and no Ollama sends the slot to the cloud
+    /// with the reason that no server here offers a model, not that none runs.
+    #[test]
+    fn a_strata_without_the_model_says_no_server_here_offers_one() {
+        let strata = account(STRATA, AiProvider::Strata, true, Some(vec![model("other-model", Some(true), None)]));
+        let anthropic = account(
+            "ai:anthropic",
+            AiProvider::Anthropic,
+            false,
+            Some(vec![model("claude-sonnet-4-5", Some(true), None)]),
+        );
+        let got = suggest(&pc(64 * GIB_U64, Some(12282 * MIB)), builtin(), &[strata, anthropic], false);
+        let chat = slot(&got, AiSlot::Chat).expect("chat");
+        assert_eq!(chat.engine.as_deref(), Some("ai:anthropic"));
+        assert_eq!(chat.reason, tr("No server here offers a model for this computer"));
+    }
+
+    /// Review of #325 (F7): of several models with the entry's beginning, the one named exactly so, else
+    /// the shortest – `gemini-2.5-flash` never takes `gemini-2.5-flash-lite`, whatever the order.
+    #[test]
+    fn the_cloud_model_named_exactly_goes_before_its_variants() {
+        let gemini = |ids: &[&str]| {
+            let models = ids.iter().map(|id| model(id, Some(true), None)).collect();
+            account("ai:gemini", AiProvider::Gemini, false, Some(models))
+        };
+        let chat_of = |ids: &[&str]| {
+            let got = suggest(&pc(64 * GIB_U64, None), builtin(), &[gemini(ids)], false);
+            slot(&got, AiSlot::Chat).and_then(|chat| chat.model.clone())
+        };
+        let chat_prefix = builtin()
+            .cloud
+            .iter()
+            .find(|entry| entry.provider == AiProvider::Gemini && entry.slot == AiSlot::Chat)
+            .map(|entry| entry.model_prefix.clone())
+            .expect("a Gemini entry for chat");
+        assert_eq!(chat_prefix, "gemini-2.5-flash");
+        assert_eq!(chat_of(&["gemini-2.5-flash-lite", "gemini-2.5-flash"]).as_deref(), Some("gemini-2.5-flash"));
+        let variants = ["gemini-2.5-flash-lite-preview", "gemini-2.5-flash-001"];
+        assert_eq!(chat_of(&variants).as_deref(), Some("gemini-2.5-flash-001"), "the shortest");
+        assert_eq!(
+            best_of(
+                &[model("x-long", None, None), model("x-b", None, None), model("x-a", None, None)],
+                "x",
+                AiSlot::Chat
+            )
+            .map(|model| model.id.as_str()),
+            Some("x-b"),
+            "equally long: the first listed"
+        );
     }
 
     #[test]

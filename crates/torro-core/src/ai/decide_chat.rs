@@ -33,6 +33,10 @@ pub const TOOL: &str = "answer";
 /// read half ([`read`]).
 pub const MAX_TOKENS: u32 = 1_024;
 
+/// The closing tag of the fence a caller draws around text from outside (`torroworkplace::categorize`).
+/// A state that ends with it keeps it when it is cut ([`cut`]): the fence never stays open.
+pub const FENCE_END: &str = "</message>";
+
 /// What the model is told before the questions: how to answer, and that the user's message is data.
 const HOW: &str = "You sort data for a program. Answer only by calling the tool \"answer\" once, with a value \
 for every question below. If you cannot call tools, reply with one JSON object with the same fields and nothing \
@@ -169,9 +173,23 @@ fn object_in(text: &str) -> Option<Value> {
     value.is_object().then_some(value)
 }
 
-/// `text` cut to [`systemone::STATE_MAX`] characters at a character boundary.
-fn cut(text: &str) -> &str {
-    match text.char_indices().nth(systemone::STATE_MAX) {
+/// `text` cut to [`systemone::STATE_MAX`] characters at a character boundary. A `text` that ends with the
+/// fence's closing tag ([`FENCE_END`], after white space) is cut inside the fence and closed again, so the
+/// cut never takes the closing tag away (review of #325): what came from outside stays fenced in.
+fn cut(text: &str) -> String {
+    if text.chars().count() <= systemone::STATE_MAX {
+        return text.to_string();
+    }
+    let Some(inside) = text.trim_end().strip_suffix(FENCE_END) else {
+        return first_chars(text, systemone::STATE_MAX).to_string();
+    };
+    let room = systemone::STATE_MAX.saturating_sub(FENCE_END.chars().count() + 1);
+    format!("{}\n{FENCE_END}", first_chars(inside, room).trim_end())
+}
+
+/// The first `most` characters of `text`, at a character boundary.
+fn first_chars(text: &str, most: usize) -> &str {
+    match text.char_indices().nth(most) {
         Some((at, _)) => &text[..at],
         None => text,
     }
@@ -267,6 +285,19 @@ mod tests {
     fn a_long_state_is_cut_like_for_a_decision_model() {
         let chat = request(&DecisionRequest { state: "ä".repeat(systemone::STATE_MAX + 10), ..asked() }, None);
         assert_eq!(chat.messages[1].content.chars().count(), systemone::STATE_MAX);
+    }
+
+    /// Review of #325 (F8): a fenced state that is too long is cut inside its fence, which is closed
+    /// again – the closing tag is never what the cut takes away.
+    #[test]
+    fn a_long_fenced_state_keeps_its_closing_tag() {
+        let state = format!("Received: today\n\n<message>\nSubject: {}\n</message>", "ü".repeat(systemone::STATE_MAX));
+        let chat = request(&DecisionRequest { state, ..asked() }, None);
+        let user = &chat.messages[1].content;
+        assert!(user.ends_with("\n</message>"), "the fence is closed");
+        assert_eq!(user.matches("</message>").count(), 1);
+        assert!(user.chars().count() <= systemone::STATE_MAX);
+        assert!(user.starts_with("Received: today\n\n<message>\nSubject: üü"), "the beginning stays");
     }
 
     #[test]

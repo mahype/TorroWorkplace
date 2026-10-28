@@ -73,8 +73,11 @@ impl fmt::Display for PullError {
 /// Where the task of a running download stands, apart from [`AiPull::state`]: what cancelling it has to do.
 #[derive(Debug)]
 enum Phase {
-    /// The request is on its way; there is no task yet. Cancelling ends the download, and the task, once
-    /// there, is aborted at once ([`Pulls::streaming`]).
+    /// The request is on its way; there is no task yet. Cancelling marks the download `cancelled` but
+    /// keeps this phase until the request is back (review of #325): the model stays taken, so no second
+    /// start of it runs beside the first POST ([`Pulls::reserve`]). Then the task, once there, is aborted
+    /// at once ([`Pulls::streaming`]), and a request that failed leaves it listed as cancelled
+    /// ([`Pulls::forget`], [`Pulls::end`]).
     Starting,
     /// The task reads the stream; cancelling aborts it.
     Streaming(tokio::task::AbortHandle),
@@ -155,13 +158,15 @@ impl Pulls {
             let Some(entry) = entries.iter_mut().find(|entry| entry.pull.id == id) else {
                 return Err(PullError::NotFound(trf("There is no download {id}.", &[("id", &id)])));
             };
-            match std::mem::replace(&mut entry.phase, Phase::Ended) {
+            match &entry.phase {
+                // The request is still on its way: the phase holds the model until it is back.
                 Phase::Starting => entry.pull.state = AiPullState::Cancelled,
                 Phase::Streaming(task) => {
                     task.abort();
+                    entry.phase = Phase::Ended;
                     entry.pull.state = AiPullState::Cancelled;
                 }
-                kept @ (Phase::Finishing | Phase::Ended) => entry.phase = kept,
+                Phase::Finishing | Phase::Ended => {}
             }
         }
         Ok(self.list())
@@ -171,10 +176,12 @@ impl Pulls {
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// A new running download of `model` into `account`, its id; [`PullError::Busy`] while one runs.
+    /// A new running download of `model` into `account`, its id; [`PullError::Busy`] while one runs – or
+    /// while the request of one cancelled in [`Phase::Starting`] is still on its way.
     fn reserve(&self, account: &str, model: &str) -> Result<String, PullError> {
         let mut entries = self.entries();
-        let same = |entry: &Entry| running(entry) && entry.pull.account == account && entry.pull.model == model;
+        let held = |entry: &Entry| running(entry) || matches!(entry.phase, Phase::Starting);
+        let same = |entry: &Entry| held(entry) && entry.pull.account == account && entry.pull.model == model;
         if entries.iter().any(same) {
             return Err(PullError::Busy);
         }
@@ -192,9 +199,14 @@ impl Pulls {
         Ok(id)
     }
 
-    /// Takes back the download `id` that never reached Ollama.
+    /// Takes back the download `id` that never reached Ollama. One cancelled while its request was on the
+    /// way stays listed as `cancelled`, as the answer to `ai.cancel_pull` said; it only lets the model go.
     fn forget(&self, id: &str) {
-        self.entries().retain(|entry| entry.pull.id != id);
+        let mut entries = self.entries();
+        match entries.iter_mut().find(|entry| entry.pull.id == id) {
+            Some(entry) if entry.pull.state == AiPullState::Cancelled => entry.phase = Phase::Ended,
+            _ => entries.retain(|entry| entry.pull.id != id),
+        }
     }
 
     /// The task of `id` reads the stream now. When the download was cancelled while its request was on the
@@ -203,6 +215,10 @@ impl Pulls {
         let mut entries = self.entries();
         let Some(entry) = entries.iter_mut().find(|entry| entry.pull.id == id) else { return task.abort() };
         match entry.phase {
+            Phase::Starting if entry.pull.state == AiPullState::Cancelled => {
+                task.abort();
+                entry.phase = Phase::Ended;
+            }
             Phase::Starting => entry.phase = Phase::Streaming(task),
             Phase::Ended if entry.pull.state == AiPullState::Cancelled => task.abort(),
             _ => {}
@@ -228,10 +244,17 @@ impl Pulls {
         }
     }
 
-    /// Ends `id` as done (`Ok`) or failed with the sentence in `Err` – unless it ended before (cancelled).
+    /// Ends `id` as done (`Ok`) or failed with the sentence in `Err` – unless it ended before (cancelled);
+    /// one cancelled while its request was on the way only lets the model go.
     fn end(&self, id: &str, outcome: Result<(), String>) {
         let mut entries = self.entries();
-        let Some(entry) = entries.iter_mut().find(|entry| entry.pull.id == id && running(entry)) else { return };
+        let Some(entry) = entries.iter_mut().find(|entry| entry.pull.id == id) else { return };
+        if !running(entry) {
+            if matches!(entry.phase, Phase::Starting) {
+                entry.phase = Phase::Ended;
+            }
+            return;
+        }
         entry.phase = Phase::Ended;
         match outcome {
             Ok(()) => entry.pull.state = AiPullState::Done,
@@ -592,5 +615,37 @@ mod tests {
         // took one pull only and is gone now).
         assert_eq!(pulls.start(&ai, &account.id, "qwen3:4b").await, Err(PullError::Offline));
         assert_eq!(pulls.list().len(), 1);
+    }
+
+    /// Review of #325 (F6): cancelled while its request is on the way, a download keeps the model until the
+    /// request is back – no second start beside the first POST –, and stays listed as `cancelled` when the
+    /// request then fails, is refused or reaches Ollama (whose task is aborted at once).
+    #[tokio::test]
+    async fn a_download_cancelled_while_starting_holds_the_model_until_its_request_is_back() {
+        let pulls = Pulls::default();
+        let state = |id: &str| pulls.list().into_iter().find(|pull| pull.id == id).map(|pull| pull.state);
+
+        // The request fails (`send` errs): listed as cancelled, the model free again.
+        let id = pulls.reserve("ai:ollama@localhost:11434", "nimble").expect("reserved");
+        assert_eq!(pulls.cancel(&id).expect("cancelled")[0].state, AiPullState::Cancelled);
+        assert_eq!(pulls.reserve("ai:ollama@localhost:11434", "nimble"), Err(PullError::Busy), "the POST is out");
+        pulls.forget(&id);
+        assert_eq!(state(&id), Some(AiPullState::Cancelled), "still listed as the cancel answered");
+        let second = pulls.reserve("ai:ollama@localhost:11434", "nimble").expect("free again");
+
+        // Ollama refuses it: the same.
+        pulls.cancel(&second).expect("cancelled");
+        pulls.end(&second, Err(pull::server_failed()));
+        assert_eq!(state(&second), Some(AiPullState::Cancelled), "not failed: the person cancelled it");
+        let third = pulls.reserve("ai:ollama@localhost:11434", "nimble").expect("free again");
+
+        // Ollama takes it: the task is aborted at once, and the model is free.
+        pulls.cancel(&third).expect("cancelled");
+        let task = tokio::spawn(std::future::pending::<()>());
+        pulls.streaming(&third, task.abort_handle());
+        assert!(task.await.expect_err("aborted").is_cancelled());
+        assert_eq!(state(&third), Some(AiPullState::Cancelled));
+        assert!(pulls.reserve("ai:ollama@localhost:11434", "nimble").is_ok());
+        assert_eq!(pulls.list().len(), 4);
     }
 }
