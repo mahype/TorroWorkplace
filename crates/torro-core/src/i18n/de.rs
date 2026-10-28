@@ -4418,9 +4418,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Let {engine} ({model}) do “{function}” (runs elsewhere)",
         "„{function}“ von {engine} ({model}) erledigen lassen (rechnet anderswo)",
     ),
+    ("Let “{function}” follow {slot} again ({engine})", "„{function}“ wieder dem Platz {slot} überlassen ({engine})"),
     (
-        "Let “{function}” use the model for {slot} again",
-        "„{function}“ wieder mit dem Modell für {slot} erledigen lassen",
+        "Let “{function}” follow {slot} again: {engine} ({model}), runs on this computer",
+        "„{function}“ wieder dem Platz {slot} überlassen: {engine} ({model}), rechnet auf diesem Computer",
+    ),
+    (
+        "Let “{function}” follow {slot} again: {engine} ({model}), runs elsewhere",
+        "„{function}“ wieder dem Platz {slot} überlassen: {engine} ({model}), rechnet anderswo",
     ),
     // The two slots of models (issue #325) and their approvals.
     ("Chat", "Chat"),

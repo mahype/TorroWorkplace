@@ -135,8 +135,8 @@ und `decide`, in der Oberfläche „Chat“ und „Sorting“):
 Torro misst den Rechner und schlägt je Platz ein Modell vor; herunterladen kann es das auf Wunsch. Ein Vorschlag
 setzt nie etwas von selbst.
 
-- **Messen** (`account/hardware.rs`, einmal je Lauf des Kerns; fand es auf einem Rechner ohne gemeinsamen
-  Speicher keine Grafikkarte, nach zehn Minuten noch einmal, weil ein zu spät antwortender Treiber genauso aussieht): Arbeitsspeicher und Prozessor über `sysinfo`.
+- **Messen** (`account/hardware.rs`, mit gemeinsamem Speicher einmal je Lauf des Kerns, sonst nach zehn Minuten
+  wieder, weil ein zu spät antwortender Treiber wie keine oder eine kleinere Karte aussieht): Arbeitsspeicher und Prozessor über `sysinfo`.
   Grafikkarte: Apple Silicon mit gemeinsamem Speicher ohne eigenen VRAM, sonst `nvidia-smi` (Linux, Windows),
   `/sys/class/drm` (Linux, AMD) und die Gerätedaten der Registry (Windows ohne NVIDIA). Die größte Karte zählt.
   Was sich nicht messen lässt, bleibt leer; das Messen liefert nie einen Fehler.
@@ -199,8 +199,9 @@ Die Auswahl (`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ei
   angebotenen Namen, ob eine Antwort erwartet wird, als Ja/Nein, die Dringlichkeit als Zahl.
 - Die Antwort wird **streng gelesen**: die Argumente des Werkzeugaufrufs, sonst ein JSON-Objekt im Text (auch ein
   als Text geschriebener Aufruf von `answer`). Eine nicht angebotene Option oder ein falscher Typ lässt die Frage
-  weg. Eine abgeschnittene Antwort oder ein Objekt, das keine der Fragen nennt, ist ein Fehler: Die Mail bekommt
-  dann keine Kategorie, ein späterer Lauf fragt noch einmal. Nichts wird erfunden.
+  weg. Eine abgeschnittene Antwort oder ein Objekt, das keine der Fragen brauchbar beantwortet, ist ein Fehler: Die
+  Mail bekommt dann keine Kategorie und zählt in einem Sortierauftrag als fehlgeschlagen; der Auftrag läuft weiter,
+  ein späterer Lauf fragt noch einmal. Nichts wird erfunden.
 - Das Chat-Modell gibt **keine Konfidenz**. Seine Kategorie gilt ohne Schwellwert und ohne Zahl; was es nicht
   sinnvoll beantwortet, wird `other`.
 - Der Text der Mail bleibt im Zaun `<message>` wie bisher; die Anweisungen stehen nur im System-Text.

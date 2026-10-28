@@ -462,8 +462,8 @@ fn state_of(content: &Content) -> String {
 /// A chat model's answer ([`DecisionReply::by_chat`], task MW.3) is not measured – it gives no
 /// confidence – and the category keeps none. Its reply was read before
 /// (`torro_core::ai::decide_chat::read`): a category it left out or answered with something not
-/// offered was dropped there, which is `other` here, since the model did answer; an object that
-/// answered no question was refused there, so it never comes here.
+/// offered was dropped there, which is `other` here, since the model answered another question; an
+/// object that answered none usably was refused there, so it never comes here.
 pub fn read(reply: &DecisionReply, offered: &[Offer]) -> Option<Decided> {
     let (needs_reply, urgency) = side_answers(reply);
     let said = reply.choice(CATEGORY);
@@ -824,19 +824,25 @@ mod tests {
         assert!(decided.category.is_suggestion());
         assert_eq!((decided.needs_reply, decided.urgency), (Some(true), Some(2)));
 
-        for wrong in [r#"{"category": "nonsense", "needs_reply": false}"#, r#"{"category": 7}"#, r#"{"urgency": 1}"#] {
+        for wrong in [
+            r#"{"category": "nonsense", "needs_reply": false}"#,
+            r#"{"category": 7, "urgency": 1}"#,
+            r#"{"urgency": 1}"#,
+        ] {
             let decided = read(&by_chat(wrong, &asked), &defaults()).expect("the model answered");
             assert_eq!((decided.category.category, decided.category.confidence), (Category::Other, None), "{wrong}");
         }
-        // An object that answers no question is no answer (PR review of #325): no category is kept,
-        // so a later run asks again.
-        let call = torro_core::ai::ToolCall {
-            id: "call_1".into(),
-            name: torro_core::ai::decide_chat::TOOL.into(),
-            arguments: "{}".into(),
-        };
-        let reply = torro_core::ai::ChatReply { tool_calls: vec![call], ..Default::default() };
-        assert!(torro_core::ai::decide_chat::read(&reply, &asked).is_err());
+        // An object that answers no question usably is no answer (PR review of #325): no category is
+        // kept, so a later run asks again.
+        for nothing in ["{}", r#"{"category": 7}"#] {
+            let call = torro_core::ai::ToolCall {
+                id: "call_1".into(),
+                name: torro_core::ai::decide_chat::TOOL.into(),
+                arguments: nothing.into(),
+            };
+            let reply = torro_core::ai::ChatReply { tool_calls: vec![call], ..Default::default() };
+            assert!(torro_core::ai::decide_chat::read(&reply, &asked).is_err(), "{nothing}");
+        }
     }
 
     /// Task MW.3, security rule 5: the mail's own closing tag stays inside the fence also on the way
@@ -1059,7 +1065,8 @@ mod tests {
         assert_eq!(decided.needs_reply, Some(true));
         assert_eq!(script.asked.lock().expect("lock").len(), 2);
 
-        let nameless = by_chat(r#"{"group": "nonsense"}"#, &group_request("qwen3:8b", &content(), &groups));
+        let nameless =
+            by_chat(r#"{"group": "nonsense", "needs_reply": false}"#, &group_request("qwen3:8b", &content(), &groups));
         let script =
             Script { replies: std::sync::Mutex::new(vec![nameless]), asked: std::sync::Mutex::new(Vec::new()) };
         let decided = decide("qwen3:8b", &content(), &catalogue, |request| script.ask(request)).await.expect("asked");

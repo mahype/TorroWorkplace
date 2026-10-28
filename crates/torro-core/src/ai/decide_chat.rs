@@ -12,13 +12,15 @@
 //!
 //! **How the answer is read** ([`read`]): strictly, as everything a model says is data. The arguments
 //! of the call to [`TOOL`], else one JSON object in the text (also a call to it written as text);
-//! nothing readable, an object that names none of the questions, or an answer cut off at its length,
-//! is [`AiError::Format`] – the mail then keeps no category, so a later run asks again. An option that was not offered or a value of the wrong kind
+//! nothing readable, an object that answers none of the questions, or an answer cut off at its
+//! length, is [`AiError::Format`] – the mail then keeps no category, so a later run asks again. An option that was not offered or a value of the wrong kind
 //! drops its question – never a guess, never a made-up option. A chat model gives no confidence:
 //! each answer counts as sure (1.0), and the reply is marked [`DecisionReply::by_chat`], so the caller
 //! keeps no confidence for it either.
 //!
 //! Pure, without a network, like [`super::systemone`]; the core sends it.
+
+use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
@@ -67,7 +69,8 @@ pub fn request(asked: &DecisionRequest, effort: Option<Effort>) -> ChatRequest {
 
 /// The answers in `reply` to the questions of `asked`, or [`AiError::Format`] when there is nothing
 /// to read: no call to [`TOOL`] whose arguments are a JSON object and no JSON object in the text, an
-/// object that names none of the questions, or an answer cut off at its length ([`Finish::Length`]). Each answer is checked against its question; one
+/// object that answers none of the questions usably, or an answer cut off at its length
+/// ([`Finish::Length`]). Each answer is checked against its question; one
 /// that does not fit is left out (the caller then says `other`), the rest is kept. Always
 /// [`DecisionReply::by_chat`], every answer as sure as 1.0.
 pub fn read(reply: &ChatReply, asked: &DecisionRequest) -> Result<DecisionReply, AiError> {
@@ -83,16 +86,16 @@ pub fn read(reply: &ChatReply, asked: &DecisionRequest) -> Result<DecisionReply,
         None => object_in(&reply.text),
     };
     let object = written.as_ref().and_then(Value::as_object).map(unwrapped).ok_or_else(unreadable)?;
-    // An object that names none of the questions answered nothing (PR review of #325): kept as an
-    // answer, the mail would get `other` for good and never be asked again.
-    if !asked.questions.keys().any(|name| object.contains_key(name)) {
-        return Err(unreadable());
-    }
-    let answers = asked
+    let answers: BTreeMap<String, Answer> = asked
         .questions
         .iter()
         .filter_map(|(name, question)| Some((name.clone(), answer_of(question, object.get(name)?)?)))
         .collect();
+    // An object that answers none of the questions said nothing (PR review of #325): kept as an
+    // answer, the mail would get `other` for good and never be asked again.
+    if answers.is_empty() {
+        return Err(unreadable());
+    }
     Ok(DecisionReply { answers, usage: reply.usage, by_chat: true })
 }
 
@@ -374,19 +377,18 @@ mod tests {
         let answered = read(&by_tool(r#"{"category": "spam", "needs_reply": true}"#), &asked()).expect("an answer");
         assert_eq!(answered.choice("category"), None, "never made up");
         assert_eq!(answered.noul("needs_reply"), Some(1.0), "the others stay");
-        // Spelt otherwise is not offered either.
-        let answered = read(&by_tool(r#"{"category": "Invoice"}"#), &asked()).expect("an answer");
-        assert!(answered.answers.is_empty());
+        // Spelt otherwise is not offered either – and with nothing else answered, nothing was said.
+        assert!(matches!(read(&by_tool(r#"{"category": "Invoice"}"#), &asked()), Err(AiError::Format(_))));
     }
 
     #[test]
     fn a_value_of_the_wrong_kind_drops_its_question() {
-        let reply = by_tool(r#"{"category": 3, "needs_reply": "yes", "urgency": 1.5}"#);
-        let answered = read(&reply, &asked()).expect("an object, so an answer");
-        assert!(answered.answers.is_empty(), "{:?}", answered.answers);
-        let out_of_scale = read(&by_tool(r#"{"urgency": 3}"#), &asked()).expect("an answer");
+        let reply = by_tool(r#"{"category": 3, "needs_reply": "yes", "urgency": 1.5, "x": 1}"#);
+        // Nothing usable is no answer (PR review of #325), as an object without the questions.
+        assert!(matches!(read(&reply, &asked()), Err(AiError::Format(_))));
+        let out_of_scale = read(&by_tool(r#"{"needs_reply": true, "urgency": 3}"#), &asked()).expect("an answer");
         assert_eq!(out_of_scale.score("urgency"), None, "no level 3");
-        let below = read(&by_tool(r#"{"urgency": -1}"#), &asked()).expect("an answer");
+        let below = read(&by_tool(r#"{"needs_reply": true, "urgency": -1}"#), &asked()).expect("an answer");
         assert_eq!(below.score("urgency"), None);
     }
 
@@ -399,8 +401,9 @@ mod tests {
         for text in ["", "It is an invoice.", "[\"invoice\"]", "{not json}"] {
             assert!(matches!(read(&by_text(text), &asked()), Err(AiError::Format(_))), "{text:?}");
         }
-        // An object that names no question answered nothing: refused, so a later run asks again.
-        for text in [r#"{"kind": "invoice"}"#, "{}", r#"{"name": "answer", "arguments": {}}"#] {
+        // An object that answers no question said nothing: refused, so a later run asks again.
+        let nulls = r#"{"category": null, "needs_reply": null, "urgency": null}"#;
+        for text in [r#"{"kind": "invoice"}"#, "{}", r#"{"name": "answer", "arguments": {}}"#, nulls] {
             assert!(matches!(read(&by_text(text), &asked()), Err(AiError::Format(_))), "{text:?}");
         }
         assert!(matches!(read(&by_tool("{}"), &asked()), Err(AiError::Format(_))), "an empty call");

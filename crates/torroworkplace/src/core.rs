@@ -1446,8 +1446,7 @@ async fn category_job_run(
             if current().is_none() {
                 break;
             }
-            let mut changed = false;
-            let mut asked = false;
+            let (mut changed, mut asked, mut unread) = (false, false, false);
             let facts = match mail.sorting_facts(&account.account, &message).await {
                 Ok(facts) => facts,
                 Err(err) => {
@@ -1488,6 +1487,13 @@ async fn category_job_run(
                         {
                             Ok(Ok(answer)) => answer.map(|answer| (answer.category, Some(answer))),
                             Ok(Err(DecideError::NothingToChoose)) => None,
+                            // One mail the model gave no readable answer for (PR review of #325): it
+                            // keeps no category and counts as failed, so a later run asks again; the
+                            // run goes on – one odd mail must not hold up all after it.
+                            Ok(Err(DecideError::Ai(torro_core::ai::AiError::Format(_)))) => {
+                                unread = true;
+                                None
+                            }
                             Ok(Err(err)) => {
                                 category_job_error(&inbox, &id, generation, &account.account, &err.to_line());
                                 break;
@@ -1547,6 +1553,7 @@ async fn category_job_run(
                     progress.cursor = seq;
                     progress.processed += 1;
                     progress.changed += u64::from(changed);
+                    progress.failed += u64::from(unread);
                 }
             });
             if asked {
@@ -2037,24 +2044,24 @@ pub struct Core {
     probe: Box<dyn Probe>,
     /// What [`Core::probe`] measured, at the first `ai.recommend` of this run, and when: memory and
     /// cards do not change while the service runs, and measuring may ask tools that take a moment
-    /// (`nvidia-smi`). Kept for the run, except a measurement without any graphics on a computer
-    /// without shared memory: a driver that answered too late looks the same, so that one is
-    /// measured again after [`REMEASURE_WITHOUT_GPU`] (PR review of #325).
+    /// (`nvidia-smi`). Kept for the run with shared memory (Apple silicon asks no tool); otherwise
+    /// measured again after [`REMEASURE`] (PR review of #325): a driver that answered too late looks
+    /// like no card, or leaves a small one the largest.
     hardware: tokio::sync::Mutex<Option<(torro_core::ai::hardware::Hardware, std::time::Instant)>>,
     /// The downloads of models into Ollama on this computer since the core started (task MW.7,
     /// `ai.pull_model`, `ai.list_pulls`, `ai.cancel_pull`), in memory only.
     pulls: crate::account::pull::Pulls,
 }
 
-/// How long a measurement that found no graphics card counts ([`Core::hardware`]): long enough that
-/// the Models page asks no tool on every look, short enough that a card whose driver answered too
-/// late is found while the service runs.
-const REMEASURE_WITHOUT_GPU: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How long a measurement without shared memory counts ([`Core::hardware`]): long enough that the
+/// Models page asks no tool on every look, short enough that a card whose driver answered too late is
+/// found while the service runs.
+const REMEASURE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// Whether a measurement of `age` still counts ([`Core::hardware`]): for the run, unless it found no
-/// graphics on a computer without shared memory and is older than [`REMEASURE_WITHOUT_GPU`].
+/// Whether a measurement of `age` still counts ([`Core::hardware`]): for the run with shared memory,
+/// else until it is [`REMEASURE`] old.
 fn still_counts(hardware: &torro_core::ai::hardware::Hardware, age: std::time::Duration) -> bool {
-    hardware.unified_memory || hardware.gpu.is_some() || age < REMEASURE_WITHOUT_GPU
+    hardware.unified_memory || age < REMEASURE
 }
 
 /// A computer measured beforehand: the probe of a core in tests ([`Core::new`] under `cfg(test)`),
@@ -3949,6 +3956,21 @@ impl Core {
                 let known = self.ai.described(account, model).await;
                 Facts {
                     name: self.ai.label_of(account).await,
+                    model: known.map(|(name, here)| crate::approvals::KnownModel { name, here }),
+                    ..Facts::default()
+                }
+            }
+            // An exception taken back: what its slot holds, which then does the function (PR review of
+            // #325) – the account always named (by its id where it is gone), nothing for an empty slot.
+            Request::SetAiAssignment { function, engine: None, .. } => {
+                let held = self.settings.current().ai_slots.get(function.slot()).cloned();
+                let Some(held) = held else { return Facts::default() };
+                let known = match &held.model {
+                    Some(model) => self.ai.described(&held.engine, model).await,
+                    None => None,
+                };
+                Facts {
+                    name: Some(self.ai.label_of(&held.engine).await.unwrap_or_else(|| held.engine.clone())),
                     model: known.map(|(name, here)| crate::approvals::KnownModel { name, here }),
                     ..Facts::default()
                 }
@@ -9028,6 +9050,11 @@ impl Core {
             // the handler's: it answers `not-found`, so a client learns nothing of a run it cannot see.
             Request::ControlCategoryJob { id, action: torro_ipc::inbox::CategoryJobControl::Resume } => {
                 let Ok(Some(job)) = self.inbox.category_job(Some(id)) else { return Ok(false) };
+                // One that cannot resume (complete, or running) is the handler's too: it says why.
+                use torro_ipc::inbox::CategoryJobState::{Cancelled, Failed, Paused};
+                if !matches!(job.state, Paused | Failed | Cancelled) {
+                    return Ok(false);
+                }
                 let reached = self.mail.accounts_in(reach).await;
                 if !job.scope.accounts.iter().all(|account| reached.contains(account)) {
                     return Ok(false);
@@ -23222,17 +23249,30 @@ mod tests {
         }
     }
 
-    /// PR review of #325: a measurement that found no graphics card is taken again after a while – a
-    /// driver that answered too late looks the same –, any other counts for the run.
-    #[test]
-    fn a_measurement_without_graphics_is_taken_again_after_a_while() {
+    /// PR review of #325: off Apple silicon a measurement is taken again after a while – a driver that
+    /// answered too late looks like no card, or leaves a small one the largest –; with shared memory it
+    /// counts for the run. `ai.recommend` then really asks the probe again.
+    #[tokio::test]
+    async fn a_measurement_is_taken_again_after_a_while() {
         let hour = std::time::Duration::from_secs(3600);
-        assert!(still_counts(&large_pc(), hour), "a card was found");
         let mac = torro_core::ai::hardware::Hardware { unified_memory: true, gpu: None, ..large_pc() };
         assert!(still_counts(&mac, hour), "shared memory");
-        let without = torro_core::ai::hardware::Hardware { gpu: None, ..large_pc() };
-        assert!(still_counts(&without, std::time::Duration::from_secs(60)), "not yet");
-        assert!(!still_counts(&without, REMEASURE_WITHOUT_GPU), "measured again");
+        assert!(still_counts(&large_pc(), std::time::Duration::from_secs(60)), "not yet");
+        assert!(!still_counts(&large_pc(), REMEASURE), "measured again");
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = Counting { hardware: large_pc(), calls: Arc::clone(&calls) };
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new()).with_probe(probe);
+        core.handle(Request::AiRecommend).await;
+        core.handle(Request::AiRecommend).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "kept meanwhile");
+        let old = std::time::Instant::now().checked_sub(REMEASURE).expect("a moment that long ago");
+        if let Some((_, at)) = core.hardware.lock().await.as_mut() {
+            *at = old;
+        }
+        core.handle(Request::AiRecommend).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "measured again");
     }
 
     /// A computer of the tier `large` (task MW.5): 32 GB of memory, no graphics card.

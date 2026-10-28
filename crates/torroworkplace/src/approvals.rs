@@ -1306,6 +1306,28 @@ fn assignment_summary(
     }
 }
 
+/// [`summary`] for an exception taken back: the function follows its slot again, which holds the account
+/// `facts.name` and the model `facts.model` (the core looked them up); without an account in the slot,
+/// no model does the function.
+fn follow_summary(function: torro_core::ai::AiFunction, facts: &Facts) -> String {
+    let (function, slot) = (function.label(), function.slot().label());
+    let Some(engine) = facts.name.as_deref().map(quote) else {
+        return trf("Let no model do “{function}” any more", &[("function", &function)]);
+    };
+    let Some(known) = &facts.model else {
+        let words: [(&str, &dyn std::fmt::Display); 3] =
+            [("function", &function), ("slot", &slot), ("engine", &engine)];
+        return trf("Let “{function}” follow {slot} again ({engine})", &words);
+    };
+    let name = quote(&known.name);
+    let words: [(&str, &dyn std::fmt::Display); 4] =
+        [("function", &function), ("slot", &slot), ("engine", &engine), ("model", &name)];
+    match known.here {
+        true => trf("Let “{function}” follow {slot} again: {engine} ({model}), runs on this computer", &words),
+        false => trf("Let “{function}” follow {slot} again: {engine} ({model}), runs elsewhere", &words),
+    }
+}
+
 /// What `request` would do, in words, for the person who decides: `Delete event "Team meeting" on
 /// Tue, 14 Oct 09:00 from "Work"`. In the core's language.
 ///
@@ -1336,11 +1358,9 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::SetAiAssignment { function, enabled: false, engine: Some(_), .. } => {
             trf("Let no model do “{function}” any more", &[("function", &function.label())])
         }
-        // Taken back, the function follows its slot again (issue #325).
-        Request::SetAiAssignment { function, engine: None, .. } => trf(
-            "Let “{function}” use the model for {slot} again",
-            &[("function", &function.label()), ("slot", &function.slot().label())],
-        ),
+        // Taken back, the function follows its slot again (issue #325), with what the slot holds as the
+        // core names it (PR review of #325): mail may go elsewhere then; an empty slot does nothing.
+        Request::SetAiAssignment { function, engine: None, .. } => follow_summary(*function, facts),
         // Which models the suite may use (task S.24): account, model and place from the core's list.
         Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
         // Which model a slot gets (issue #325): account, model and place from the core's list.
@@ -3790,11 +3810,26 @@ pub(crate) mod tests {
             summary(&effortful, &known(true)),
             trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("Low"))])
         );
+        // Taken back: what the slot holds then sorts, as the core names it; an empty slot sorts nothing.
         let slot: &dyn std::fmt::Display = &AiSlot::Decide.label();
         for enabled in [true, false] {
+            let back = set(None, None, enabled);
+            let four: [(&str, &dyn std::fmt::Display); 4] =
+                [("function", label), ("slot", slot), ("engine", &"Ollama"), ("model", &"Nimble")];
             assert_eq!(
-                summary(&set(None, None, enabled), &Facts::default()),
-                trf("Let “{function}” use the model for {slot} again", &[("function", label), ("slot", slot)])
+                summary(&back, &known(false)),
+                trf("Let “{function}” follow {slot} again: {engine} ({model}), runs elsewhere", &four)
+            );
+            assert_eq!(
+                summary(&back, &known(true)),
+                trf("Let “{function}” follow {slot} again: {engine} ({model}), runs on this computer", &four)
+            );
+            let three: [(&str, &dyn std::fmt::Display); 3] =
+                [("function", label), ("slot", slot), ("engine", &"Ollama")];
+            assert_eq!(summary(&back, &unknown), trf("Let “{function}” follow {slot} again ({engine})", &three));
+            assert_eq!(
+                summary(&back, &Facts::default()),
+                trf("Let no model do “{function}” any more", &[("function", label)])
             );
         }
     }
