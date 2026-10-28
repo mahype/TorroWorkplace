@@ -14,7 +14,7 @@ die Kategorie nichts.
 Englischer Schlüssel ist maßgeblich, die deutsche Beschriftung steht in
 `crates/torro-core/src/i18n/de.rs`. Fünf Gruppen, 23 Kategorien.
 
-### Gruppe `waiting_for_me` – Wartet auf mich
+### Gruppe `waiting_for_me` – Persönlich
 
 | Schlüssel | Deutsch | Was es ist | Erkannt durch |
 |---|---|---|---|
