@@ -939,6 +939,9 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             minutes: 26 * 60,
             flags: READ,
             text: "Lunch next week? Tuesday or Wednesday would suit me best.",
+            // A model too unsure to tell (issue #338): such mail stands in "Unsorted", to be looked
+            // through on purpose, not under unwanted mail.
+            category: Some(MailCategory::by_model(Category::Other, 0.45)),
             ..Letter::new("m:w4", WORK, "inbox", "Lunch next week?")
         },
         Letter {

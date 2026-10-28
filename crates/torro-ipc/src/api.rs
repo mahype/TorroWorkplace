@@ -3345,7 +3345,7 @@ static LIST_CATEGORIES: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, \
-                  `info`, `junk`), the words a person reads for both, its monochrome `icon` in the group's colour, \
+                  `info`, `junk` for unwanted mail, `unsorted`), the words a person reads for both, its monochrome `icon` in the group's colour, \
                   how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder \
                   only, so mail thrown away, marked as spam \
                   or sent by the person is counted nowhere. The counts cover only mail accounts this key may read \
@@ -3475,7 +3475,7 @@ static CREATE_CATEGORY: Command = Command {
     area: Area::Inbox,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Makes a mail category of the person's own in one of the four groups and returns it; its key is \
+    description: "Makes a mail category of the person's own in one of the five groups and returns it; its key is \
                   `custom_<n>` and never changes. `icon` chooses a monochrome category icon; the group supplies \
                   its colour. `description` says what belongs there, with examples and \
                   exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. \

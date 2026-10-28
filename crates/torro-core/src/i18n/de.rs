@@ -4335,12 +4335,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Open Mail", "E-Mail öffnen"),
     // Categories of incoming mail (E12.1, docs/kategorien.md). All under the context
     // "category": several of these English words already mean something else in the suite
-    // ("Task" the to-do, "Order" the sort order, "Event" the calendar event, "Junk" the folder).
-    // The four groups first, then the catalogue in its order.
+    // ("Task" the to-do, "Order" the sort order, "Event" the calendar event). The five groups
+    // first, then the catalogue in its order. The category Spam stays "Spam" so it does not read
+    // like its group "Unerwünscht" (#338).
     ("category|Waiting for me", "Wartet auf mich"),
     ("category|Paper trail", "Belege"),
     ("category|Info", "Zur Info"),
-    ("category|Junk", "Technik und Müll"),
+    ("category|Unwanted", "Unerwünscht"),
+    ("category|Unsorted", "Nicht eingeordnet"),
     ("category|Request", "Anfrage"),
     ("category|Task", "Auftrag"),
     ("category|Approval", "Freigabe"),
@@ -4361,7 +4363,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("category|Event", "Veranstaltung"),
     ("category|Not delivered", "Unzustellbar"),
     ("category|Auto-reply", "Abwesenheit"),
-    ("category|Spam", "Unerwünscht"),
+    ("category|Spam", "Spam"),
     ("category|Phishing", "Betrug"),
     ("category|Other", "Sonstiges"),
     ("Category {n}", "Kategorie {n}"),

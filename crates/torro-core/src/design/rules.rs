@@ -124,7 +124,7 @@ fn colours(mode: Mode, p: &Palette, problems: &mut Vec<DesignError>) {
     controls.extend(chart.into_iter().zip(p.chart));
     controls.push(("chart_other", p.chart_other));
     // The dot and the border of a category pill are marks on the panel too (task E12.7).
-    let category = ["category[1]", "category[2]", "category[3]", "category[4]"];
+    let category = ["category[1]", "category[2]", "category[3]", "category[4]", "category[5]"];
     controls.extend(category.into_iter().zip(p.category));
     for (name, fg) in controls {
         let ratio = fg.contrast(p.panel);

@@ -24,7 +24,7 @@ use std::borrow::Cow;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The four groups of [`Category`], in the order the sidebar lists them.
+/// The five groups of [`Category`], in the order the sidebar lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CategoryGroup {
@@ -32,10 +32,13 @@ pub enum CategoryGroup {
     WaitingForMe,
     /// Nothing to do now, but needed later – tax, a complaint, bookkeeping.
     PaperTrail,
-    /// To read when the person wants: newsletters, offers, service notices.
+    /// To read when the person wants: newsletters, offers, service notices, out-of-office replies.
     Info,
-    /// Technical mail and rubbish: bounces, out-of-office, spam, phishing.
+    /// Unwanted mail: spam and attempts to deceive (phishing). The key stays `junk`.
     Junk,
+    /// Mail no other group fits, or where it is unclear what it is: what the model was unsure
+    /// about lands here, to be looked through on purpose.
+    Unsorted,
 }
 
 /// The monochrome icon shown for a mail category. Its colour comes from the category's group.
@@ -142,17 +145,23 @@ impl CategoryIcon {
 
 impl CategoryGroup {
     /// Every group, in the order of the catalogue.
-    pub const ALL: [CategoryGroup; 4] =
-        [CategoryGroup::WaitingForMe, CategoryGroup::PaperTrail, CategoryGroup::Info, CategoryGroup::Junk];
+    pub const ALL: [CategoryGroup; 5] = [
+        CategoryGroup::WaitingForMe,
+        CategoryGroup::PaperTrail,
+        CategoryGroup::Info,
+        CategoryGroup::Junk,
+        CategoryGroup::Unsorted,
+    ];
 
     /// How the group is written on the wire and in the API: `waiting_for_me`, `paper_trail`,
-    /// `info`, `junk` (the serde name).
+    /// `info`, `junk`, `unsorted` (the serde name).
     pub fn key(self) -> &'static str {
         match self {
             CategoryGroup::WaitingForMe => "waiting_for_me",
             CategoryGroup::PaperTrail => "paper_trail",
             CategoryGroup::Info => "info",
             CategoryGroup::Junk => "junk",
+            CategoryGroup::Unsorted => "unsorted",
         }
     }
 
@@ -294,6 +303,7 @@ impl Category {
         Category::Security,
         Category::Personal,
         Category::Invitation,
+        Category::Bounce,
         // Paper trail
         Category::Invoice,
         Category::Receipt,
@@ -308,11 +318,11 @@ impl Category {
         Category::ServiceNotice,
         Category::Social,
         Category::EventInvite,
-        // Junk
-        Category::Bounce,
         Category::AutoReply,
+        // Unwanted (key `junk`)
         Category::Spam,
         Category::Phishing,
+        // Unsorted
         Category::Other,
     ];
 
@@ -417,7 +427,8 @@ impl Category {
             | Category::Approval
             | Category::Security
             | Category::Personal
-            | Category::Invitation => CategoryGroup::WaitingForMe,
+            | Category::Invitation
+            | Category::Bounce => CategoryGroup::WaitingForMe,
             Category::Invoice
             | Category::Receipt
             | Category::Order
@@ -429,10 +440,10 @@ impl Category {
             | Category::Promotion
             | Category::ServiceNotice
             | Category::Social
-            | Category::EventInvite => CategoryGroup::Info,
-            Category::Bounce | Category::AutoReply | Category::Spam | Category::Phishing | Category::Other => {
-                CategoryGroup::Junk
-            }
+            | Category::EventInvite
+            | Category::AutoReply => CategoryGroup::Info,
+            Category::Spam | Category::Phishing => CategoryGroup::Junk,
+            Category::Other => CategoryGroup::Unsorted,
             Category::Custom(_) => return None,
         })
     }
@@ -616,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_has_twenty_three_categories_split_over_four_groups_without_a_duplicate() {
+    fn the_catalogue_has_twenty_three_categories_split_over_five_groups_without_a_duplicate() {
         assert_eq!(Category::BUILT_IN.len(), 23);
         let mut seen = std::collections::HashSet::new();
         for category in Category::BUILT_IN {
@@ -632,6 +643,23 @@ mod tests {
             from_groups.extend(of_group);
         }
         assert_eq!(from_groups, Category::BUILT_IN.to_vec(), "the groups together are the catalogue, in its order");
+    }
+
+    /// Issue #338: "technical mail and rubbish" is gone. A bounce waits for the person (an address
+    /// to correct), an out-of-office reply is to read, only spam and phishing stay unwanted, and
+    /// what nothing else fits has a group of its own, the last one.
+    #[test]
+    fn bounces_wait_auto_replies_inform_and_other_mail_stands_apart() {
+        assert_eq!(Category::Bounce.default_group(), Some(CategoryGroup::WaitingForMe));
+        assert_eq!(Category::AutoReply.default_group(), Some(CategoryGroup::Info));
+        assert_eq!(CategoryGroup::Junk.default_categories(), [Category::Spam, Category::Phishing]);
+        assert_eq!(CategoryGroup::Unsorted.default_categories(), [Category::Other]);
+        assert_eq!(CategoryGroup::ALL.last(), Some(&CategoryGroup::Unsorted));
+        assert_eq!(CategoryGroup::Junk.key(), "junk", "the key stays, only the name changes");
+        assert_eq!(CategoryGroup::from_key("unsorted"), Some(CategoryGroup::Unsorted));
+        let mut sorted = CategoryGroup::ALL;
+        sorted.sort();
+        assert_eq!(sorted, CategoryGroup::ALL, "the derived order is the sidebar's");
     }
 
     #[test]

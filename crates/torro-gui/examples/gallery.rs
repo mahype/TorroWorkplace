@@ -2660,11 +2660,12 @@ impl Gallery {
 }
 
 fn categories() -> Element<'static, Msg> {
-    let groups: [(Icon, &str, &str); 4] = [
+    let groups: [(Icon, &str, &str); 5] = [
         (Icon::Inbox, "Waiting for me", "Request"),
         (Icon::Archive, "Paper trail", "Invoice"),
         (Icon::Info, "Info", "Newsletter"),
-        (Icon::ShieldAlert, "Junk", "Phishing"),
+        (Icon::ShieldAlert, "Unwanted", "Phishing"),
+        (Icon::CircleDashed, "Unsorted", "Other"),
     ];
     let mut rows = column![].spacing(space::l());
     for (at, (mark, group, label)) in groups.into_iter().enumerate() {

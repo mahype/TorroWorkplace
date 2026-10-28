@@ -3902,8 +3902,8 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
 /// What a mail is, as a pill in the list, the reader and the panel (task E12.7,
 /// `docs/kategorien.md`): the category's monochrome icon and words, tinted by its group's colour.
 ///
-/// `group` is the index of `torro_mail::CategoryGroup` (0 waiting for me, 3 junk) and picks the
-/// colour out of [`theme::Palette::category`]; a larger index falls back to the last. The colour
+/// `group` is the index of `torro_mail::CategoryGroup` (0 waiting for me, 3 unwanted, 4 unsorted)
+/// and picks the colour out of [`theme::Palette::category`]; a larger index falls back to the last. The colour
 /// belongs to the group; the icon and words belong to the category.
 ///
 /// `suggested` marks a category a model chose (`docs/ki.md`, principle 5): the sparkles the suite
@@ -3917,7 +3917,7 @@ pub fn category_pill<'a, M: 'a>(
     label: impl IntoFragment<'a>,
     suggested: bool,
 ) -> Element<'a, M> {
-    let at = group.min(3);
+    let at = category_index(group);
     let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
     if suggested {
         content = content.push(sparkle(pill_icon()));
@@ -3941,9 +3941,18 @@ pub fn category_pill<'a, M: 'a>(
 /// colour, `edge` wide. The words belong in its tooltip – a row's marks are icons, so
 /// the whole pill ([`category_pill`]) stays for the reader and the card, where there is room.
 pub fn category_mark<'a, M: 'a>(which: Icon, group: usize, edge: f32) -> Element<'a, M> {
-    let at = group.min(3);
+    let at = category_index(group);
     icon(which, edge).style(move |t, _| svg::Style { color: Some(palette(t).category[at]) }).into()
 }
+
+/// The colour of group `group` in [`theme::Palette::category`]: a larger index than the palette
+/// holds takes its last colour.
+fn category_index(group: usize) -> usize {
+    group.min(CATEGORY_COLOURS - 1)
+}
+
+/// How many group colours [`theme::Palette::category`] holds, one per `torro_mail::CategoryGroup`.
+const CATEGORY_COLOURS: usize = 5;
 
 /// The icon of a category in its group's colour ([`category_pill`]).
 fn category_icon<'a, M: 'a>(which: Icon, group: usize) -> Element<'a, M> {
@@ -5921,13 +5930,13 @@ mod tests {
         assert!(matches!(&typed, Msg::Query(text) if text == "mo"), "{typed:?}");
     }
 
-    /// Task E12.7: the four group colours stand out on the panel in both modes, stay apart from
+    /// Task E12.7, issue #338: the five group colours stand out on the panel in both modes, stay apart from
     /// one another, and there is one per group – no more.
     #[test]
     fn the_category_colours_are_visible_and_distinct() {
         let standard = torro_core::design::ColorScheme::standard();
         for (mode, p) in [("light", &standard.colors.light), ("dark", &standard.colors.dark)] {
-            assert_eq!(p.category.len(), 4, "one colour per group, not per category");
+            assert_eq!(p.category.len(), CATEGORY_COLOURS, "one colour per group, not per category");
             for (at, colour) in p.category.iter().enumerate() {
                 let ratio = colour.contrast(p.panel);
                 assert!(ratio >= 3.0, "{mode} category[{at}] is {ratio:.2}:1 on the panel");
