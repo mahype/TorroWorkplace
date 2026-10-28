@@ -93,6 +93,9 @@ struct Entry {
     phase: Phase,
 }
 
+/// How many ended downloads [`Pulls`] keeps listed (PR review of #325); a new start lets the oldest go.
+const KEEP_ENDED: usize = 20;
+
 /// The downloads of this run ([`Pulls::start`], [`Pulls::list`], [`Pulls::cancel`]). Cheap to clone: every
 /// clone holds the same downloads, so a download's task updates what the core lists.
 #[derive(Debug, Clone, Default)]
@@ -194,6 +197,14 @@ impl Pulls {
             error: None,
         };
         entries.push(Entry { pull, phase: Phase::Starting });
+        // The oldest ended ones go, so a long run does not hold every download it ever saw.
+        let ended = entries.iter().filter(|entry| matches!(entry.phase, Phase::Ended)).count();
+        let mut over = ended.saturating_sub(KEEP_ENDED);
+        entries.retain(|entry| {
+            let gone = over > 0 && matches!(entry.phase, Phase::Ended);
+            over -= usize::from(gone);
+            !gone
+        });
         Ok(id)
     }
 
@@ -667,6 +678,25 @@ mod tests {
         assert_eq!(state(&third), Some(AiPullState::Cancelled));
         assert!(pulls.reserve("ai:ollama@localhost:11434", "nimble").is_ok());
         assert_eq!(pulls.list().len(), 4);
+    }
+
+    /// PR review of #325: only the last [`KEEP_ENDED`] ended downloads stay listed; one that runs stays.
+    #[test]
+    fn only_the_last_ended_downloads_stay_listed() {
+        let pulls = Pulls::default();
+        let account = "ai:ollama@localhost:11434";
+        let first = pulls.reserve(account, "nimble").expect("reserved");
+        pulls.end(&first, Ok(()));
+        let running = pulls.reserve(account, "qwen3:4b").expect("reserved");
+        for _ in 0..KEEP_ENDED + 5 {
+            let id = pulls.reserve(account, "nimble").expect("reserved");
+            pulls.end(&id, Err("no".into()));
+        }
+        let listed = pulls.list();
+        assert!(listed.iter().any(|pull| pull.id == running), "the running one stays");
+        assert!(!listed.iter().any(|pull| pull.id == first), "the oldest ended one went");
+        let ended = listed.iter().filter(|pull| pull.state != AiPullState::Running).count();
+        assert!(ended <= KEEP_ENDED + 1, "{ended}");
     }
 
     /// A request that does not reach Ollama, not cancelled: `offline`, and nothing is listed.

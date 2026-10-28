@@ -86,7 +86,9 @@ fn named(text: &str) -> Option<String> {
 #[cfg(target_os = "linux")]
 async fn cards() -> Vec<Gpu> {
     let mut cards = nvidia_smi().await;
-    cards.extend(read_drm(Path::new("/sys/class/drm")));
+    // Reading sysfs is a blocking read like any file (review of #325).
+    let drm = tokio::task::spawn_blocking(|| read_drm(Path::new("/sys/class/drm")));
+    cards.extend(drm.await.unwrap_or_default());
     cards
 }
 
