@@ -923,6 +923,9 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
                    Subject: Design review on Thursday\n\n> Can we move the design review to Thursday?",
             // Written in Outlook: a text part and an HTML part (task M9.7).
             html: Some(OUTLOOK_REPLY_HTML),
+            // A model too unsure to tell (issue #338): such mail stands in "Unsorted", to be looked
+            // through on purpose, not under unwanted mail.
+            category: Some(MailCategory::by_model(Category::Other, 0.45)),
             ..Letter::new("m:w2", WORK, "inbox", "Re: Design review on Thursday")
         },
         Letter {
@@ -1081,9 +1084,6 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             text: "The rooms for the offsite are booked: two meeting rooms and the terrace. The agenda follows \
                    on Monday.",
             pile: Some(MailPile::ReplyLater),
-            // A model too unsure to tell (issue #338): such mail stands in "Unsorted", to be looked
-            // through on purpose, not under unwanted mail.
-            category: Some(MailCategory::by_model(Category::Other, 0.45)),
             ..Letter::new("m:w13", WORK, "inbox", "Offsite: rooms are booked")
         },
         Letter {
