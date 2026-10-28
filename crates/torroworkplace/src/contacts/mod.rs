@@ -14,6 +14,7 @@
 //!   them, and the core takes them out of every client's rights.
 
 pub mod photo;
+pub mod service;
 pub mod store;
 pub mod sync;
 
@@ -25,6 +26,7 @@ use std::time::Duration;
 
 use torro_contacts::{Changes, ContactsError, ContactsProvider, RemoteBook, RemoteCard, Stored, SyncToken};
 use torro_core::AppId;
+use torro_core::i18n::tr;
 use torro_core::paths::AppPaths;
 use torro_pim_caldav::CalDavClient;
 
@@ -141,7 +143,9 @@ impl ContactsService {
 
     /// The store, or `error` when there is none.
     pub(crate) fn store(&self) -> Result<&Mutex<Store>, ContactsError> {
-        self.store.as_ref().ok_or_else(|| ContactsError::Other("The contacts on this device cannot be opened.".into()))
+        self.store
+            .as_ref()
+            .ok_or_else(|| ContactsError::Other(tr("The contacts on this device cannot be opened.").into()))
     }
 
     pub(crate) fn previews(&self) -> &Previews {
@@ -162,11 +166,6 @@ impl ContactsService {
     /// The contacts server of `account`.
     pub(crate) async fn remote(&self, account: &str) -> Option<Remote> {
         self.remotes().await.into_iter().find(|(id, _)| id == account).map(|(_, remote)| remote)
-    }
-
-    /// The ids of the accounts with a contacts server.
-    pub(crate) async fn accounts(&self) -> Vec<String> {
-        self.remotes().await.into_iter().map(|(id, _)| id).collect()
     }
 
     /// A refused password: the calendar service checks for a remote wipe.
@@ -219,6 +218,7 @@ impl ContactsService {
     }
 
     /// Whether `account` has address books on this device.
+    #[cfg(test)]
     pub fn has_books(&self, account: &str) -> bool {
         self.store
             .as_ref()

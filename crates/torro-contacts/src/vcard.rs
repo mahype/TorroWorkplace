@@ -970,6 +970,15 @@ pub fn set_photo(raw: &str, photo: Option<&Photo>) -> String {
     edit.finish()
 }
 
+/// `raw` with the `UID` `uid`, every other line as it was: a copy of a card that must not take the
+/// place of the original (`contacts.resolve_conflict` keeping both).
+pub fn set_uid(raw: &str, uid: &str) -> String {
+    let Ok(doc) = Doc::parse(raw) else { return raw.to_string() };
+    let mut edit = Edit::new(doc);
+    edit.set_single("UID", Some(escape(uid)), &[]);
+    edit.finish()
+}
+
 /// A fresh `UID`: a random UUID (version 4), `8-4-4-4-12` hex digits.
 pub fn new_uid() -> Result<String, String> {
     let mut bytes = [0u8; 16];
@@ -1183,6 +1192,14 @@ mod tests {
             new_vcard(&uid, &ContactFields { birthday: Some("soon".into()), ..ContactFields::default() }, Version::V3),
             Err(FieldsError::BadDate("birthday"))
         );
+    }
+
+    #[test]
+    fn a_copy_gets_its_own_uid_and_nothing_else_changes() {
+        let raw = fixture("nextcloud.vcf");
+        let copy = set_uid(&raw, "copy-1");
+        assert_eq!(read(&copy).expect("card").uid, "copy-1");
+        assert_eq!(only_in(&raw, &copy).len(), 1);
     }
 
     #[test]

@@ -31,7 +31,7 @@ pub fn with<T>(store: &Mutex<Store>, work: impl FnOnce(&Store) -> Result<T, Stor
     let store = store.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     work(&store).map_err(|err| {
         eprintln!("torroworkplace: contacts: {err}");
-        ContactsError::Other("The contacts on this device cannot be read or written.".into())
+        ContactsError::Other(torro_core::i18n::tr("The contacts on this device cannot be read or written.").into())
     })
 }
 
@@ -359,10 +359,13 @@ pub mod fake {
         Changes, ContactsError, ContactsProvider, Entry, Listing, RemoteBook, RemoteCard, Stored, SyncToken,
     };
 
+    /// A book of the fake server: name, writable, hidden, and its cards (href → (etag, vcard)).
+    pub type Book = (String, bool, bool, BTreeMap<String, (String, String)>);
+
     #[derive(Debug, Default)]
     pub struct State {
         /// Book href → (name, writable, hidden, cards: href → (etag, vcard)).
-        pub books: BTreeMap<String, (String, bool, bool, BTreeMap<String, (String, String)>)>,
+        pub books: BTreeMap<String, Book>,
         pub version: u64,
         pub offline: bool,
         pub refuse_auth: bool,

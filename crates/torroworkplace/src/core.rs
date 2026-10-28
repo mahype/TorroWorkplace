@@ -4176,6 +4176,20 @@ impl Core {
                 design: value.as_str().map(|id| self.settings.design_suggestions(id)).unwrap_or_default(),
                 ..Facts::default()
             },
+            // A contact and its book from the store, by the contact's id (issue #351).
+            request @ (Request::CreateContact { .. }
+            | Request::AddToContact { .. }
+            | Request::UpdateContact { .. }
+            | Request::SetContactFavorite { .. }
+            | Request::AddContactToGroup { .. }
+            | Request::RemoveContactFromGroup { .. }
+            | Request::MarkContactUsed { .. }
+            | Request::SetContactPhoto { .. }
+            | Request::MoveContact { .. }
+            | Request::DeleteContact { .. }
+            | Request::ResolveContactConflict { .. }) => {
+                Facts { contact: self.contacts.facts(request).map(Box::new), ..Facts::default() }
+            }
             request => self.pim.facts(request).await,
         }
     }
@@ -4441,6 +4455,10 @@ impl Core {
     /// client sees ([`PimService::sees_collection`]): in its selection, shown, and a filter list
     /// only with access to `github` and inside its repositories.
     async fn out_of_reach(&self, reach: Reach<'_>, request: &Request) -> Option<String> {
+        // Address books outside the client's rights, and contacts in them (issue #351).
+        if let Some(outside) = self.contacts.out_of_reach(reach, request) {
+            return Some(outside);
+        }
         match (reach, request) {
             (reach @ Reach::Client(_), Request::SetCollectionShown { collection, .. }) => {
                 (!self.pim.sees_collection(reach, collection).await).then(|| collection.clone())
@@ -5257,8 +5275,9 @@ impl Core {
                 Ok(entries) => Response::Catalog { entries },
                 Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
             },
-            // Contacts (`docs/kontakte.md`, issue #351): the commands come with the store.
-            Request::ListAddressBooks { .. }
+            // Contacts (`docs/kontakte.md`, issue #351); a client's reach was checked before
+            // (`Core::out_of_reach`).
+            request @ (Request::ListAddressBooks { .. }
             | Request::ListContacts { .. }
             | Request::GetContact { .. }
             | Request::GetContactPhoto { .. }
@@ -5274,10 +5293,7 @@ impl Core {
             | Request::SetContactPhoto { .. }
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
-            | Request::ResolveContactConflict { .. } => Response::Error {
-                code: "unsupported".into(),
-                message: tr("Contacts are not available yet.").into(),
-            },
+            | Request::ResolveContactConflict { .. }) => Box::pin(self.contacts.handle(request, reach)).await,
             // The other commands (task MA.5). A client's rights were checked before (`handle_client`,
             // `run_approved`); what a server shows and offers depends on who asks, and a client never reaches
             // what only a person does (point 10), whatever came before.
@@ -7864,6 +7880,15 @@ impl Core {
                     || !account.collections.is_empty()
             });
         }
+        // Contacts (issue #351): an account offers them when the caller reaches one of its books.
+        for account in &mut accounts {
+            if self.contacts.reaches_any_book(reach, &account.id) {
+                let services = account.services.get_or_insert_with(Vec::new);
+                if !services.contains(&torro_ipc::ServerService::Contacts) {
+                    services.push(torro_ipc::ServerService::Contacts);
+                }
+            }
+        }
         others.extend(github);
         others.extend(self.ai.infos().await);
         // The topics' names are passwords on a public server: only the app key sees them (task E5.12).
@@ -10090,6 +10115,10 @@ fn no_collection(collection: &str) -> Response {
 /// `no repository …` (task G.9b), for anything else [`no_collection`].
 fn not_reached(request: &Request, outside: &str) -> Response {
     match request {
+        // Never the id back: it may be a contact that exists in a book the client does not see.
+        request if request.operation().area() == torro_ipc::api::Area::Contacts => {
+            crate::contacts::service::error_response(&torro_contacts::ContactsError::NotFound)
+        }
         Request::DescribeGithubRepo { .. } => crate::pim::no_repo(outside),
         // A mail link to an account the client may not read (task E8.7a); account ids hold no `/`.
         Request::SaveTodo { .. } if outside.starts_with(torro_mail::ACCOUNT_PREFIX) && !outside.contains('/') => {
@@ -27601,5 +27630,84 @@ mod tests {
         let far = "x".repeat(torro_ipc::SUGGESTION_LOCATION_MAX + 1);
         assert_eq!(code(&extras_refusal(Some(&far), None).expect("refused")), "error");
         assert_eq!(extras_refusal(Some("Room 2"), Some("ok")), None);
+    }
+
+    /// Issue #351: a client sees contacts only in the address books of its rights – by list, search
+    /// and id alike, also as the target of a move –; overwriting waits for a person with a summary
+    /// from the store; the log holds no name and no search.
+    #[tokio::test]
+    async fn contacts_stay_within_the_books_of_a_client_and_out_of_the_log() {
+        use torro_contacts::{ContactFields, Keep};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = Arc::new(crate::contacts::sync::fake::Server::default());
+        let work = server.add_book("contacts", true, false);
+        let private = server.add_book("privat", true, false);
+        server.put_card(&work, "anna", "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:anna\r\nFN:Anna Berg\r\nEND:VCARD\r\n");
+        server.put_card(
+            &private,
+            "secret",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:secret\r\nFN:Secret Person\r\nEND:VCARD\r\n",
+        );
+        let account = "nextcloud:anna@cloud.example.org";
+        let contacts =
+            crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(account.into(), server)]);
+        contacts.sync_all().await;
+        let core = audited(dir.path()).with_contacts(contacts);
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.address_books = Selection::Only(vec![format!("{account}/contacts")]);
+        let (_, key) = client(&core, rights).await;
+        let (anna, secret) = (format!("{account}/contacts/anna"), format!("{account}/privat/secret"));
+        let listed = ask(
+            &core,
+            Some(&key),
+            Request::ListContacts {
+                book: None,
+                group: None,
+                favorites: false,
+                recent: false,
+                query: Some("Person".into()),
+                limit: None,
+                cursor: None,
+            },
+        )
+        .await;
+        assert_eq!(
+            listed,
+            Response::Contacts(torro_contacts::ContactPage::default()),
+            "a search finds nothing outside"
+        );
+        assert_eq!(code(&ask(&core, Some(&key), Request::GetContact { id: secret.clone() }).await), "not-found");
+        let Response::Contact { contact } = ask(&core, Some(&key), Request::GetContact { id: anna.clone() }).await
+        else {
+            panic!("anna is in reach")
+        };
+        let etag = contact.etag.clone().expect("etag");
+        let move_out =
+            Request::MoveContact { id: anna.clone(), etag: etag.clone(), to_book: format!("{account}/privat") };
+        assert_eq!(code(&ask(&core, Some(&key), move_out).await), "not-found");
+        let created = ask(
+            &core,
+            Some(&key),
+            Request::CreateContact {
+                book: format!("{account}/contacts"),
+                fields: ContactFields { display_name: Some("Max Neu".into()), ..ContactFields::default() },
+            },
+        )
+        .await;
+        assert!(matches!(created, Response::Contact { .. }), "creating waits for nobody: {created:?}");
+        let update = Request::UpdateContact {
+            id: anna.clone(),
+            etag: etag.clone(),
+            fields: ContactFields { org: Some("Acme".into()), ..ContactFields::default() },
+        };
+        let pending = waits(ask(&core, Some(&key), update).await);
+        assert!(pending.summary.contains("Anna Berg") && pending.summary.contains("Acme"), "{}", pending.summary);
+        let resolve = Request::ResolveContactConflict { id: anna.clone(), keep: Keep::Mine, etag };
+        waits(ask(&core, Some(&key), resolve).await);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log");
+        for secret_word in ["Anna", "Berg", "Person", "Max", "Acme"] {
+            assert!(!log.contains(secret_word), "{secret_word} in the log: {log}");
+        }
+        assert!(audit_lines(dir.path()).iter().any(|line| line.command == "contacts.get_contact"));
     }
 }
