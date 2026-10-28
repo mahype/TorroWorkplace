@@ -2710,7 +2710,7 @@ pub fn slot_choices(state: &State, data: &Data, slot: AiSlot) -> (Vec<SlotChoice
     let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
     let several = accounts.len() > 1;
     let label = |account: Option<&AccountInfo>, model: Option<&AiModel>, id: &str| {
-        let mut parts = vec![model.map_or_else(|| id.to_string(), |model| model.name.clone())];
+        let mut parts = vec![shown_id(model.map_or(id, |model| model.name.as_str()))];
         if several && let Some(account) = account {
             parts.push(account.label.clone());
         }
@@ -2808,7 +2808,7 @@ fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion, stacked:
             .models
             .get(engine)
             .and_then(|models| models.iter().find(|model| same_model(&model.id, id)))
-            .map_or_else(|| shown_id(id), |model| model.name.clone()),
+            .map_or_else(|| shown_id(id), |model| shown_id(&model.name)),
         (None, Some(id)) => shown_id(id),
         (_, None) => suggestion.provider.name().to_string(),
     };
@@ -2855,7 +2855,8 @@ fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion, stacked:
     models_row(room(), label, Some(detail.join(" · ")), false, Some(control), stacked)
 }
 
-/// A model's id as a person reads it where no list names it: Ollama's default tag `:latest` left out.
+/// A model's name as a person reads it: Ollama's default tag `:latest` left out – Ollama lists a model
+/// pulled without a tag by its id, so its name carries the tag too.
 fn shown_id(id: &str) -> String {
     id.strip_suffix(":latest").unwrap_or(id).to_string()
 }
@@ -5491,6 +5492,15 @@ mod tests {
         data.accounts.retain(|account| account.id != DEMO_OLLAMA);
         let (one, _) = slot_choices(&state, &data, AiSlot::Chat);
         assert!(one.iter().any(|choice| choice.label == "Qwen3 235B A22B"), "one account: no account name");
+    }
+
+    /// Design review of #325: a model Ollama lists by an id with `:latest` reads without that tag; any
+    /// other tag stays, it says which build.
+    #[test]
+    fn the_default_tag_is_left_out_of_names() {
+        assert_eq!(shown_id("nimble:latest"), "nimble");
+        assert_eq!(shown_id("nimble:9b-q4_K_M"), "nimble:9b-q4_K_M");
+        assert_eq!(shown_id("Qwen3 235B A22B"), "Qwen3 235B A22B");
     }
 
     /// The line under a slot's name: a model the account lists off (or lacks) says so with the alert,
