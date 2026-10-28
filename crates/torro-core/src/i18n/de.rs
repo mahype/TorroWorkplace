@@ -6744,4 +6744,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose an account first", "Wähle zuerst ein Konto"),
     ("Choose a folder", "Ordner wählen"),
     ("No category", "Keine Kategorie"),
+    ("Create filter…", "Filter erstellen…"),
+    ("Create filter from search…", "Filter aus der Suche erstellen…"),
 ];

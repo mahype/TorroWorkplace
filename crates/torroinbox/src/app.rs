@@ -2330,6 +2330,7 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
         CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
         ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
         settings_mail::ACCOUNTS_SECTION => settings_mail::accounts_escape(state).map(SettingsMessage::Mail),
+        settings_mail::FILTERS_SECTION => settings_mail::filters_escape(state).map(SettingsMessage::Mail),
         _ => None,
     }
 }
@@ -3083,6 +3084,13 @@ pub enum Message {
     SearchFilter(QuickFilter),
     /// "Clear filters": the operators of the quick filters out of the field, the words stay.
     ClearSearchFilters,
+    /// "Create filter…" at a mail (`from:<address>`) or "Create filter from search…" in the menu of
+    /// the search field (issue #339): Settings › Filters with a new filter's page filled in. In the
+    /// mail window only; elsewhere the mail window comes forward.
+    CreateFilter {
+        query: String,
+        account: Option<String>,
+    },
     /// The timer of a search that waits ([`search::TICK`]): it runs once it is due.
     SearchTick(Instant),
     /// A suggestion under the field: this query in the field, searched for soon.
@@ -4982,6 +4990,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let query = search::without_filters(&self.search, today());
                 return self.filter_search(query);
             }
+            Message::CreateFilter { query, account } => {
+                self.close_menus();
+                // The settings take the content area: not over a reply on its way.
+                if self.holds_round() {
+                    return Task::none();
+                }
+                // The filters are the mail window's settings; elsewhere that window comes forward.
+                if self.launch.kind != Kind::Mail {
+                    return self.update(Message::OpenApp(Kind::Mail.app().window_class.to_string()));
+                }
+                let open = self.open_settings(Some(settings_mail::FILTERS_SECTION));
+                let filled = SettingsMessage::Mail(settings_mail::new_filter(query, account));
+                return Task::batch([open, self.update(Message::SettingsPage(filled))]);
+            }
             Message::SearchTick(now) => {
                 if self.search_due.is_some_and(|due| now >= due) {
                     return self.run_search();
@@ -6775,6 +6797,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.suggesting = false;
         self.found = Found::default();
         self.highlights.clear();
+    }
+
+    /// "Create filter from search…" (issue #339): the words of the field as a new filter, for the
+    /// account the search looks at when it looks at "This account", else for every account.
+    /// `None` while the field is empty.
+    fn filter_from_search(&self) -> Option<Message> {
+        let query = self.search.trim();
+        if query.is_empty() {
+            return None;
+        }
+        let account = match self.view.search().map(|search| &search.scope) {
+            Some(Scope::Account(account)) => Some(account.clone()),
+            _ => None,
+        };
+        Some(Message::CreateFilter { query: query.to_owned(), account })
     }
 
     /// The scopes the bar offers: from a folder, its account and the folder itself.
@@ -10652,6 +10689,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !set.is_empty() {
             let clear = MenuItem::new(Mark::Icon(Icon::X), tr("Clear filters"), Message::ClearSearchFilters);
             list = list.push(menu_line()).push(widgets::menu_item(clear));
+        }
+        // What is searched for now as a lasting filter (issue #339), once there is something to keep.
+        if let Some(create) = self.filter_from_search() {
+            let item = MenuItem::new(Mark::Icon(Icon::Filter), tr("Create filter from search…"), create);
+            list = list.push(menu_line()).push(widgets::menu_item(item));
         }
         container(list).width(size::sidebar()).padding(style::MENU_INSET).style(style::container::menu).into()
     }
@@ -18835,7 +18877,10 @@ mod tests {
             (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
             // Mail settings include attachments (task M12.7), categorization and storage controls.
-            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization", "storage"]),
+            (
+                vec!["--view", "mail"],
+                vec!["accounts", "reading", "attachments", "categorization", "filters", "storage"],
+            ),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
@@ -18957,6 +19002,45 @@ mod tests {
         let _ = app.update(Message::OpenSettings);
         assert_eq!(accounts(&app), before, "the backup page remains after closing the settings");
         assert!(before.contains("demo-job"), "{before}");
+    }
+
+    /// Issue #339: "Create filter…" opens Settings › Filters with a new filter's page filled in,
+    /// which asks what it finds; Escape goes back to the list first (asking, as something is typed).
+    #[test]
+    fn create_filter_opens_the_filled_in_page() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::CreateFilter { query: "from:anna@example.org".into(), account: None });
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, settings_mail::FILTERS_SECTION);
+        let SettingsState::Mail(state) = &pane.sections else { panic!("the mail window has mail settings") };
+        assert!(state.filters.is_open(), "the new filter's page");
+        let name =
+            settings_mail::page(state, pane.host.data(), settings_mail::FILTERS_SECTION).sub_page.map(|(name, _)| name);
+        assert_eq!(name, Some(tr("New filter").to_owned()));
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_some(), "Escape asks before the typed search goes");
+    }
+
+    /// Issue #339: "Create filter from search…" only with words in the field; with the account the
+    /// search looks at when it looks at "This account", else for every account.
+    #[test]
+    fn a_filter_from_the_search_takes_its_words_and_account() {
+        let mut app = in_folder("f:work-inbox");
+        assert!(app.filter_from_search().is_none(), "nothing typed, nothing to keep");
+        let folder = app.view.folder().cloned().expect("a folder");
+        let _ = app.update(Message::SearchInput("  budget  ".into()));
+        let _ = app.update(Message::Search);
+        assert!(matches!(
+            app.filter_from_search(),
+            Some(Message::CreateFilter { query, account: None }) if query == "budget"
+        ));
+        let _ = app.update(Message::SearchScope(Scope::Account(folder.account.clone())));
+        assert!(matches!(
+            app.filter_from_search(),
+            Some(Message::CreateFilter { query, account: Some(account) }) if query == "budget" && account == folder.account
+        ));
+        let _ = app.update(Message::SearchScope(Scope::Folder(folder.clone())));
+        assert!(matches!(app.filter_from_search(), Some(Message::CreateFilter { account: None, .. })));
     }
 
     /// Task M12.7: "Manage save targets…" opens Settings › Attachments; the editor of a target lies

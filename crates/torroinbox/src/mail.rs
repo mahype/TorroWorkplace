@@ -2917,8 +2917,9 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    #339).
 /// 6. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
 ///    then Show as text or Show as HTML (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`,
-///    while the HTML shows), and with `close` (the reader; the panel has its ✕) Close (Escape,
-///    `CloseDetail`).
+///    while the HTML shows), "Create filter…" for the loaded mail's sender (issue #339,
+///    `CreateFilter` with `from:<address>`), and with `close` (the reader; the panel has its ✕)
+///    Close (Escape, `CloseDetail`).
 ///
 /// A group without items is left out (Mark and More while the mail loads, Mute for an entry that
 /// cannot be muted). Every group has its fixed icon, as design D draws it (finding 8): Reply, the
@@ -2953,7 +2954,9 @@ pub fn action_groups<'a>(
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
         RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
-        RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), close)).foot().at(&rail.more),
+        RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), filter_sender(reading), close))
+            .foot()
+            .at(&rail.more),
     ];
     groups.into_iter().filter(|group| !group.items.is_empty()).collect()
 }
@@ -3106,9 +3109,17 @@ fn mute_items<'a>(
     vec![RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide)]
 }
 
+/// The sender a filter of "Create filter…" (issue #339) is made for: the address of the loaded mail's
+/// `From:`; `None` while it loads and for a mail without one.
+fn filter_sender<'r>(reading: &Reading<'r>) -> Option<&'r str> {
+    let Some(Ok(mail)) = reading.loaded else { return None };
+    mail.summary.from.as_ref().map(|from| from.address.as_str()).filter(|address| !address.is_empty())
+}
+
 /// The items of the rail's group "More" ([`action_groups`]) for `tools`: the other view of a mail
-/// with HTML, the other colours while its HTML shows, "Copy text", and with `close` Close.
-fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
+/// with HTML, the other colours while its HTML shows, "Copy text", "Create filter…" for the mail's
+/// `sender` (issue #339: Settings › Filters with `from:<address>`), and with `close` Close.
+fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
     // First, so a click on "…" copies the text (decision D): the safest of the group.
     if tools.copy {
@@ -3136,6 +3147,10 @@ fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
             items.push(RailItem::new(Icon::Sun, tr("Light colours"), "", Some(Message::MailColors(Scheme::Light))));
         }
         None => {}
+    }
+    if let Some(address) = sender {
+        let create = Message::CreateFilter { query: format!("from:{address}"), account: None };
+        items.push(RailItem::new(Icon::Filter, tr("Create filter…"), "", Some(create)));
     }
     if close {
         items.push(RailItem::new(Icon::X, tr("Close"), "Esc", Some(Message::CloseDetail)));
@@ -4871,7 +4886,7 @@ mod tests {
                     (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
                     (tr("Mark").to_owned(), mark_words(reading)),
                     (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
-                    (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Close")])),
+                    (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Create filter…"), tr("Close")])),
                 ]
             );
             let feet: Vec<bool> = groups.iter().map(|group| group.foot).collect();
@@ -4902,6 +4917,12 @@ mod tests {
             assert!(mail(sends(&groups, file, tr("Delete")), MailAction::Delete));
             assert!(matches!(sends(&groups, torro, tr("Task")), Some(Message::AskTask(_))));
             assert!(matches!(sends(&groups, torro, tr("Event")), Some(Message::AskEvent(_))));
+            // Issue #339: a filter for the sender, in Settings › Filters.
+            let sender = &reading.summary().and_then(|summary| summary.from.as_ref()).expect("a sender").address;
+            assert!(matches!(
+                sends(&groups, tr("More"), tr("Create filter…")),
+                Some(Message::CreateFilter { query, account: None }) if query == format!("from:{sender}")
+            ));
             assert!(matches!(sends(&groups, torro, tr("Category…")), Some(Message::AskCategory(_))));
             for word in [tr("Task"), tr("Event"), tr("Category…")] {
                 assert!(entry(sends(&groups, torro, word)), "{word}");
@@ -4923,7 +4944,7 @@ mod tests {
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
-                    vec!["", "Esc"]
+                    vec!["", "", "Esc"]
                 ]
             );
             // A click on a group's icon does its first item; its icon is that item's.
@@ -5176,6 +5197,12 @@ mod tests {
             })
         };
         let item = |word: &str, key, message: Message| (word.to_owned(), key, format!("{:?}", Some(message)));
+        // Issue #339: "Create filter…" for the loaded mail's sender, before Close.
+        let create = |reading: &Reading<'_>| {
+            let sender = &reading.summary().and_then(|summary| summary.from.as_ref()).expect("a sender").address;
+            let message = Message::CreateFilter { query: format!("from:{sender}"), account: None };
+            item(tr("Create filter…"), "", message)
+        };
         reading_of("m:p2", MailFormat::Html, true, |reading| {
             assert_eq!(
                 more(reading, true),
@@ -5183,6 +5210,7 @@ mod tests {
                     item(tr("Copy text"), "", Message::CopyText),
                     item(tr("Show as text"), "V", Message::ShowMailAs(MailFormat::Text)),
                     item(tr("Dark colours"), "", Message::MailColors(Scheme::Dark)),
+                    create(reading),
                     item(tr("Close"), "Esc", Message::CloseDetail),
                 ])
             );
@@ -5197,12 +5225,17 @@ mod tests {
                 Some(vec![
                     item(tr("Copy text"), "", Message::CopyText),
                     item(tr("Show as HTML"), "V", Message::ShowMailAs(MailFormat::Html)),
+                    create(reading),
                 ]),
                 "no colours for the text"
             );
         });
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert_eq!(more(reading, false), Some(vec![item(tr("Copy text"), "", Message::CopyText)]), "a text mail");
+            assert_eq!(
+                more(reading, false),
+                Some(vec![item(tr("Copy text"), "", Message::CopyText), create(reading)]),
+                "a text mail"
+            );
         });
         reading_of("m:w1", MailFormat::Html, false, |reading| {
             assert_eq!(more(reading, false), None, "nothing to show while it loads");
