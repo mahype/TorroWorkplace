@@ -197,16 +197,31 @@ fn registry_cards() -> Vec<Gpu> {
         .filter_map(|name| class.open_subkey_with_flags(name, KEY_READ).ok())
         .map(|adapter| {
             let name = adapter.get_value::<String, _>("DriverDesc").ok().and_then(|text| named(&text));
-            // `qwMemorySize` is a QWORD; older drivers only write the DWORD `MemorySize`, capped at 4 GB.
+            // `qwMemorySize` is a QWORD; older drivers only write `MemorySize`, capped at 4 GB – as a
+            // DWORD or as four bytes of binary data, so it is read as its bytes.
             let vram_bytes = adapter
                 .get_value::<u64, _>("HardwareInformation.qwMemorySize")
                 .ok()
-                .or_else(|| adapter.get_value::<u32, _>("HardwareInformation.MemorySize").ok().map(u64::from))
+                .or_else(|| {
+                    let raw = adapter.get_raw_value("HardwareInformation.MemorySize").ok()?;
+                    memory_size(&raw.bytes)
+                })
                 .filter(|&bytes| bytes > 0);
             Gpu { name, vram_bytes }
         })
         .filter(|card| card.name.is_some() || card.vram_bytes.is_some())
         .collect()
+}
+
+/// A memory size the registry holds as its bytes (`REG_DWORD`, `REG_QWORD` or `REG_BINARY`): four
+/// or eight bytes, little-endian; `None` for any other length.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn memory_size(bytes: &[u8]) -> Option<u64> {
+    match *bytes {
+        [a, b, c, d] => Some(u64::from(u32::from_le_bytes([a, b, c, d]))),
+        [a, b, c, d, e, f, g, h] => Some(u64::from_le_bytes([a, b, c, d, e, f, g, h])),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -311,5 +326,14 @@ mod tests {
         let pc = hardware(None, None, false, nvidia("nvidia-smi-two.csv"));
         assert_eq!(pc.gpu, Some(card("NVIDIA GeForce RTX 4090", Some(24564 * MIB))));
         assert_eq!(hardware(None, None, false, Vec::new()), Hardware::default());
+    }
+
+    /// PR review of #325: `MemorySize` as four bytes of binary data reads like the DWORD.
+    #[test]
+    fn a_memory_size_reads_from_four_or_eight_bytes() {
+        assert_eq!(memory_size(&(2048 * MIB as u32).to_le_bytes()), Some(2048 * MIB));
+        assert_eq!(memory_size(&(12282 * MIB).to_le_bytes()), Some(12282 * MIB));
+        assert_eq!(memory_size(&[1, 2, 3]), None);
+        assert_eq!(memory_size(&[]), None);
     }
 }
