@@ -733,7 +733,9 @@ mod tests {
         let got = suggest(&pc(4 * GIB_U64, None), builtin(), std::slice::from_ref(&ollama), true);
         assert!(slot(&got, AiSlot::Chat).is_none(), "no local chat model, no cloud account");
         let decide = slot(&got, AiSlot::Decide).expect("sorting");
-        assert_eq!(decide.download_bytes, Some(5_629_111_625), "the list could not be read: download");
+        // nimble's 5.6 GB would not fit below 8 GB (PR review of #325): a small chat model sorts.
+        assert_eq!((decide.model.as_deref(), decide.by_chat), (Some("qwen3:4b"), true));
+        assert_eq!(decide.download_bytes, Some(2_497_293_931), "the list could not be read: download");
 
         let mistral = account("ai:mistral", AiProvider::Mistral, false, None);
         let got = suggest(&pc(4 * GIB_U64, None), builtin(), &[ollama, mistral], true);

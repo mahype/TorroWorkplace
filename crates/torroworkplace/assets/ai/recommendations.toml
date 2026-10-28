@@ -108,7 +108,8 @@ size_bytes = 2497293931
 license = "apache-2.0"
 open_weights = true
 
-# Sorting: the decision model nimble on every tier; below `large` its 4-bit build, which fits 8 GB.
+# Sorting: the decision model nimble from `medium` up, there its 4-bit build, which fits 8 GB. `small` (below 8 GB,
+# or not measured) sorts with qwen3:4b through the fallback: nimble's 5.6 GB would not fit (PR review of #325).
 
 [[local]]
 tier = "mac_large"
@@ -154,11 +155,10 @@ decision = true
 tier = "small"
 slot = "decide"
 provider = "ollama"
-model = "nimble:9b-q4_K_M"
-size_bytes = 5629111625
+model = "qwen3:4b"
+size_bytes = 2497293931
 license = "apache-2.0"
 open_weights = true
-decision = true
 
 # Cloud, in no particular order here: the core asks the providers in Torro's order (Open First).
 
