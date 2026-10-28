@@ -1,0 +1,45 @@
+{
+  "board": {
+    "nummer": 2,
+    "owner": "mahype",
+    "projectId": "PVT_kwHOAAogkc4BnVbb",
+    "status": {
+      "feldId": "PVTSSF_lAHOAAogkc4BnVbbzhl6iAM",
+      "optionen": {
+        "Todo": "b915817a",
+        "Awaiting Approval": "ace82355",
+        "In Progress": "3729d683",
+        "In Review": "6d849e15",
+        "Done": "e88920ec"
+      }
+    },
+    "needsFeedbackFrom": null
+  },
+  "typen": [
+    {
+      "name": "Feature",
+      "id": null,
+      "praefix": "feature"
+    },
+    {
+      "name": "Bug",
+      "id": null,
+      "praefix": "bug"
+    },
+    {
+      "name": "Task",
+      "id": null,
+      "praefix": "task"
+    },
+    {
+      "name": "Update",
+      "id": null,
+      "praefix": "update"
+    },
+    {
+      "name": "Docs",
+      "id": null,
+      "praefix": "docs"
+    }
+  ]
+}

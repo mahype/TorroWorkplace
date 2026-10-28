@@ -2,28 +2,34 @@
 
 Eine Suite kleiner Desktop-Apps um einen Kern. Zuerst entsteht der Kern `torroworkplace`: ein
 Dienst mit Tray-Icon, der Workspaces des Tiling-Managers als Vorlagen speichert und lädt.
-Konzept: `docs/core.md`. Aufgaben: `docs/tasks/`.
+Konzept: `docs/core.md`. Arbeit läuft über GitHub-Issues; `docs/tasks/` ist die Bestandsaufnahme.
 
 ## Arbeitsweise
 
-- Arbeite immer **genau eine Aufgabe** aus `docs/tasks/` ab. Ändere nur die Dateien, die die
-  Aufgabe nennt. Brauchst du mehr, halte an und frag nach.
+- Arbeite immer **genau ein Issue** ab: Die Aufgabe ist das Issue mit seinem freigegebenen Plan. Ändere
+  nur die Dateien, die der Plan nennt. Brauchst du mehr, halte an und frag nach.
+- **Issues gehen immer vor.** `docs/tasks/` ist eine Bestandsaufnahme dessen, was wir gern machen möchten;
+  daraus entstehen bei Bedarf Issues, und dann gilt das Issue mit seinem Plan, nicht der Eintrag. Pläne
+  schreiben keine Aufgaben nach `docs/tasks/`.
 - Schnittstellen (Typen, Traits, Funktionssignaturen), die schon im Code stehen, sind
   festgelegt. Ändere sie nicht stillschweigend; wenn eine nicht passt, frag nach.
 - `apps/workspace-setups/` ist nur **Referenz** (Python). Lies es, um zu verstehen, wie etwas
   funktioniert; übersetze es nicht Zeile für Zeile und ändere dort nichts.
-- Hake die Aufgabe in `docs/tasks/` ab (`- [x]`), wenn ihre Abnahme erfüllt ist.
-- Ausnahmen von „genau eine Aufgabe“: `issue-small` und `quick-fix` (siehe unten); dort ist die
-  Issue- bzw. Kurzbeschreibung die Aufgabe.
+- Nur bei Plänen vor #360 mit Aufgaben aus `docs/tasks/`: jede Aufgabe nach dem Skill `torro-task`
+  abarbeiten und abhaken (`- [x]`), wenn ihre Abnahme erfüllt ist.
+- Ohne Plan: Bei `issue-small` ist die Issue-Beschreibung die Aufgabe, bei `quick-fix` die
+  Kurzbeschreibung (siehe unten).
 
 ## Issue-Workflow
 
-Änderungen laufen über GitHub-Issues, mit denselben Skills wie im Enon-Projekt:
-`issue-create` → `issue-plan` → `issue-approve` (nur Menschen) → `issue-implement` → `pr-review`
-(→ `pr-triage`); Abkürzungen `issue-small` und `quick-fix`, PR mit `pullrequest` (Synonym `pr`).
-Konfiguration (Labels, Board, Worktrees, Herdr): `docs/issue-workflow.md`. Namen von Issues,
-Branches, Commits und PRs: `docs/git-workflow.md`. KI-Agenten setzen nie `approved`, approven und
-mergen nie.
+Änderungen laufen über GitHub-Issues, mit den Skills des Plugins **enon-tools** (dieselben wie im
+Enon-Projekt): `issue-create` → `issue-plan` → `issue-approve` (nur Menschen) → `issue-implement` →
+`pr-review` (→ `pr-triage`) → `worktree-cleanup`; Abkürzungen `issue-small` und `quick-fix`, PR mit
+`pullrequest` (Synonym `pr` im Repo). Board und Typen: `.enon-tools/konventionen.json`.
+**Regeln des Repos** für diese Skills (Prüfen, Ergänzungen je Skill, Grenzen für `issue-small` und
+`quick-fix`): [`docs/issue-workflow.md`](docs/issue-workflow.md). Namen von Issues, Branches, Commits
+und PRs: [`docs/git-workflow.md`](docs/git-workflow.md). KI-Agenten setzen nie `approved`, approven
+und mergen nie.
 
 ## Jede Funktion dreimal: Oberfläche, API, MCP
 
@@ -34,8 +40,8 @@ und Agenten über MCP. Die Logik steht nur im Dienst.
   nichts selbst, sie schicken Requests.
 - Jeder Request hat einen Eintrag im Befehlskatalog (`torro-ipc`, `api.rs`): Name, Bereich,
   Zugriff, MCP-Tool oder `Never`. `Never` nur für die Liste „Was nie nach außen geht“ in `api.md`.
-- **Planung:** Jede neue Funktion in `docs/tasks/` nennt Oberfläche, API-Befehl und MCP-Tool,
-  oder begründet, warum ein Weg fehlt. Request und Katalogeintrag kommen in die erste Aufgabe.
+- **Planung:** Jeder Plan einer neuen Funktion nennt Oberfläche, API-Befehl und MCP-Tool, oder
+  begründet, warum ein Weg fehlt. Request und Katalogeintrag kommen in den ersten Schritt.
 - Geheimnisse verlassen den Dienst auf keinem Weg. Agenten verwalten nie Schlüssel, Rechte oder
   Freigaben.
 - Wer einen Request anfasst, lädt den Skill `torro-api`. Nach jeder Funktion prüft der Agent
@@ -51,8 +57,9 @@ cargo test --workspace
 
 Alle drei müssen ohne Fehler durchlaufen. Melde ehrlich, was nicht geht.
 
-GitHub Actions läuft nur bei Releases (Tags), jede Minute kostet Geld. Die CI läuft deshalb lokal:
-`scripts/ci-local.sh` (dieselben Schritte wie `ci.yml`). Einmal pro Klon `git config core.hooksPath .githooks`,
+GitHub Actions läuft nur bei Releases (Tags), jede Minute kostet Geld. Einzige Ausnahme ist die Action
+„Phasen-Labels“ des Plugins (`enon-phasen-labels.yml`, einige Sekunden je geschlossenem Issue).
+Die CI läuft deshalb lokal: `scripts/ci-local.sh` (dieselben Schritte wie `ci.yml`). Einmal pro Klon `git config core.hooksPath .githooks`,
 dann prüft `pre-commit` Format und Design, `pre-push` alles. Starte keine Workflows auf GitHub von Hand.
 
 ## Code
@@ -83,5 +90,5 @@ dann prüft `pre-commit` Format und Design, `pre-push` alles. Starte keine Workf
 
 ## Commits
 
-Conventional Commits auf Englisch, z. B. `feat(torro-wm): parse hyprland clients #188`. Ein Commit pro
-Aufgabe, die Issue-Nummer in jeder Message (Ausnahme: `quick-fix`).
+Conventional Commits auf Englisch, z. B. `feat(torro-wm): parse hyprland clients #188`. Commits nach
+Zweck getrennt, die Issue-Nummer in jeder Message (Ausnahme: `quick-fix`).
