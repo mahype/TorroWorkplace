@@ -5218,6 +5218,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "„{model}“ von {account} anschalten (rechnet auf diesem Rechner)",
     ),
     ("Turned off in Settings › AI", "Abgeschaltet unter Einstellungen › KI"),
+    ("Turned off at {account}", "Abgeschaltet bei {account}"),
     ("Turned off in {area}", "Abgeschaltet in {area}"),
     (
         "Turning the assistant on or off and what it may use are set under Access.",
