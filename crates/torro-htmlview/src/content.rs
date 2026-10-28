@@ -307,6 +307,20 @@ impl Content {
         }
     }
 
+    /// Whether the mail paints a background of its own (on `html`, on `body` or on a wrapper around the
+    /// whole mail): the app lets such a mail fill its place from edge to edge, while a mail without one
+    /// stands in a reading column. Styles the mail first when that has not happened yet.
+    pub fn has_own_background(&self) -> bool {
+        let Ok(mut inner) = self.inner.try_borrow_mut() else { return false };
+        if let Some(plain) = inner.plain {
+            return !plain;
+        }
+        // Before the first layout the styles are not there yet: look at them now, but leave the answer
+        // for the layout to find out for itself.
+        inner.doc.resolve(0.0);
+        own_background(&inner.doc)
+    }
+
     /// Whether pictures are still on their way (or arrived and are not drawn yet).
     pub fn is_loading(&self) -> bool {
         let inner = self.inner.borrow();

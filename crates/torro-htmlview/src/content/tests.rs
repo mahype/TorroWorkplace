@@ -405,3 +405,13 @@ fn the_scale_sets_device_pixels_not_the_layout() {
     let snapshot = content.snapshot(500.0, 2.0, Scheme::Light, 0.0, 100.0);
     assert_eq!((snapshot.width, snapshot.height), (1000, 200));
 }
+
+#[test]
+fn a_mail_tells_whether_it_has_a_background_of_its_own() {
+    assert!(!content(PLAIN).has_own_background(), "a black box is not the mail's background");
+    assert!(content(&format!("<body style=\"background:#fc0\">{PLAIN}</body>")).has_own_background());
+    assert!(content(WRAPPED).has_own_background(), "a wrapper's colour counts");
+    let laid_out = content(WRAPPED);
+    laid_out.snapshot(300.0, 1.0, Scheme::Light, 0.0, 40.0);
+    assert!(laid_out.has_own_background(), "also after the first layout");
+}
