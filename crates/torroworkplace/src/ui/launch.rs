@@ -1068,6 +1068,8 @@ pub fn demo_data() -> Data {
         apps: Some(apps),
         approvals: demo_approvals(now),
         engines: demo_engines(),
+        ai_deciders: Vec::new(),
+        ai_deciders_from: vec!["ai:openrouter@openrouter.ai".into()],
         screens: demo_screens(),
         extensions: super::connections::Listing::Entries(demo_extensions()),
         catalog: super::connections::Listing::Entries(demo_catalog()),

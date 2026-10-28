@@ -4445,6 +4445,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Regeln werden von oben nach unten geprüft. Die erste passende Regel gilt; erst danach nutzt das Modell die Kategoriebeschreibungen.",
     ),
     ("Sort mail into categories", "E-Mails in Kategorien einordnen"),
+    ("No suitable decision model connected", "Noch kein geeignetes Entscheidungsmodell verbunden"),
+    ("Checking decision models…", "Entscheidungsmodelle werden geprüft…"),
+    (
+        "Connect a decision model here, or choose one later in Mail settings.",
+        "Verbinde hier ein Entscheidungsmodell oder wähle es später in den Mail-Einstellungen.",
+    ),
+    ("Use model sorting", "Mit Modell einsortieren"),
+    ("Recommended; you can turn this off later.", "Empfohlen; du kannst dies später ausschalten."),
+    ("Decision model", "Entscheidungsmodell"),
+    (
+        "Rules are checked first; the model uses category descriptions only when no rule matches.",
+        "Zuerst gelten die Regeln. Nur wenn keine passt, nutzt das Modell die Kategoriebeschreibungen.",
+    ),
     (
         "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved \
          or deleted, and you can change any category by hand.",
