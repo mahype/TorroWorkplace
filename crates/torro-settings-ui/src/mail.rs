@@ -2122,6 +2122,31 @@ pub mod accounts {
             assert_eq!(policy.since_date.as_deref(), Some("2024-01-01"));
         }
 
+        #[test]
+        fn storage_saves_attachment_retention_with_the_offline_strategy() {
+            use torro_ipc::mail::MailCacheMode;
+
+            let data = data();
+            let mut state = crate::mail::State::default();
+            let _: Action<AppAction> = crate::mail::update(
+                &mut state,
+                crate::mail::Message::Accounts(Message::Open("mail:anna@example.org".into())),
+                &data,
+            );
+            let choice = |message| crate::mail::Message::Accounts(Message::Storage(message));
+            assert_eq!(crate::mail::update(&mut state, choice(storage::Message::Retention(7)), &data), Action::None);
+            let _: Action<AppAction> =
+                crate::mail::update(&mut state, choice(storage::Message::Select(MailCacheMode::AllOffline)), &data);
+            let Action::Send(requests) = crate::mail::update(&mut state, choice(storage::Message::Apply), &data) else {
+                panic!("policy and cache job sent together");
+            };
+            assert_eq!(requests.len(), 2);
+            let Request::SetMailCachePolicy { policy } = &requests[0] else { panic!("policy first") };
+            assert_eq!(policy.mode, MailCacheMode::AllOffline);
+            assert_eq!(policy.attachment_retention_days, 7);
+            assert!(matches!(requests[1], Request::StartMailCacheJob { .. }));
+        }
+
         /// DS.7: "Show account" in Storage & index opens the account at "Overview"; an account
         /// already open keeps what is typed and only goes back to "Overview".
         #[test]
@@ -2658,6 +2683,7 @@ pub mod storage {
     pub struct State {
         pub(super) account: Option<String>,
         pending_mode: Option<MailCacheMode>,
+        pending_retention: Option<u32>,
         date_input: Option<String>,
         size_input: Option<String>,
         estimate: Option<MailCacheEstimate>,
@@ -2696,6 +2722,7 @@ pub mod storage {
         if state.account.as_deref() != Some(account) {
             state.account = Some(account.to_string());
             state.pending_mode = None;
+            state.pending_retention = None;
             state.date_input = None;
             state.size_input = None;
             state.error = None;
@@ -2748,6 +2775,7 @@ pub mod storage {
                 }
                 let mut policy = current;
                 policy.mode = mode;
+                policy.attachment_retention_days = state.pending_retention.unwrap_or(policy.attachment_retention_days);
                 policy.prefetch_attachments = false;
                 if mode == MailCacheMode::SinceDate {
                     let legacy =
@@ -2778,6 +2806,7 @@ pub mod storage {
                 }
                 let account = account.to_string();
                 state.pending_mode = None;
+                state.pending_retention = None;
                 state.estimate = None;
                 state.cleanup_preview = None;
                 Action::Send(vec![
@@ -2786,11 +2815,9 @@ pub mod storage {
                 ])
             }
             Message::Retention(days) => {
-                let Some(account) = selected(state, data) else { return Action::None };
-                let mut policy = policy(data, account);
-                policy.attachment_retention_days = days;
-                policy.prefetch_attachments = false;
-                Action::send(Request::SetMailCachePolicy { policy })
+                state.pending_retention = Some(days);
+                state.error = None;
+                Action::None
             }
             Message::Job(action) => {
                 let Some(account) = selected(state, data).map(str::to_string) else { return Action::None };
@@ -3024,6 +3051,21 @@ pub mod storage {
         }
         let running =
             data.mail_cache_jobs.iter().any(|job| job.account == account && job.state == MailCacheJobState::Running);
+        let retention = Retention::from_days(state.pending_retention.unwrap_or(current.attachment_retention_days));
+        let mut retention_options = Retention::ALL.to_vec();
+        if matches!(retention, Retention::Other(_)) {
+            retention_options.push(retention);
+        }
+        rows.push(row_frame(
+            row![
+                typo::text(typo::body(), tr("Keep downloaded attachments")),
+                blank::horizontal(),
+                picker(retention_options, retention, |choice| Message::Retention(choice.days())),
+            ]
+            .spacing(space::m())
+            .align_y(iced::Alignment::Center),
+            false,
+        ));
         rows.push(row_frame(
             row![
                 blank::horizontal(),
@@ -3034,31 +3076,15 @@ pub mod storage {
             ],
             false,
         ));
-        let strategy = widgets::group(
-            tr("Which content stays offline?"),
-            rows,
-            Some(tr("Headers of all known emails stay on this device.").to_string()),
-        );
-        let retention = Retention::from_days(current.attachment_retention_days);
-        let mut retention_options = Retention::ALL.to_vec();
-        if matches!(retention, Retention::Other(_)) {
-            retention_options.push(retention);
-        }
-        let attachments = widgets::group(
-            tr("Attachments"),
-            vec![row_frame(
-                row![
-                    typo::text(typo::body(), tr("Keep downloaded attachments")),
-                    blank::horizontal(),
-                    picker(retention_options, retention, |choice| Message::Retention(choice.days())),
-                ]
-                .spacing(space::m())
-                .align_y(iced::Alignment::Center),
-                false,
-            )],
-            None,
-        );
-        let mut content = column![strategy, attachments].spacing(layout::section_gap());
+        let note = if chosen == MailCacheMode::MaxSize {
+            tr(
+                "The limit includes offline mail and downloaded attachments; headers and the search index use additional space.",
+            )
+        } else {
+            tr("Headers of all known emails stay on this device.")
+        };
+        let strategy = widgets::group(tr("Which content stays offline?"), rows, Some(note.to_string()));
+        let mut content = column![strategy].spacing(layout::section_gap());
         if let Some(job) =
             data.mail_cache_jobs.iter().find(|job| job.account == account && job.state == MailCacheJobState::Running)
         {

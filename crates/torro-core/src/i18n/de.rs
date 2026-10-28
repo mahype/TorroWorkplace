@@ -6551,6 +6551,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Mail inventory", "Mailbestand"),
     ("Disk space used here: {size}", "Speicherplatz auf diesem Gerät: {size}"),
     ("Local database incl. headers and index: {size}", "Lokale Datenbank inkl. Kopfzeilen und Index: {size}"),
+    (
+        "The limit includes offline mail and downloaded attachments; headers and the search index use additional space.",
+        "Die Grenze gilt für Offline-Mails und geladene Anhänge; Kopfzeilen und Suchindex brauchen zusätzlich Platz.",
+    ),
     ("Online", "Online"),
     ("{n} emails offline", "{n} E-Mails offline lesbar"),
     ("Online and on this device", "Online und auf diesem Gerät"),
