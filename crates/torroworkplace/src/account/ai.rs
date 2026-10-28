@@ -333,10 +333,12 @@ impl OpenAiCompatible {
     /// effort of its own. Only for Ollama, where it was tried (0.40.11); every other server gets the turn
     /// as [`Provider::chat`] sends it, since an effort it does not know may be refused.
     async fn chat_without_thinking(&self, request: &ChatRequest) -> Result<ChatReply, AiError> {
-        let mut body = openai::chat_body_for(self.provider, request, true);
-        if self.provider == AiProvider::Ollama && request.effort.is_none() {
-            body["reasoning_effort"] = json!(NO_THINKING);
+        // Every other server through `chat`, so OpenAI keeps its Responses API.
+        if self.provider != AiProvider::Ollama || request.effort.is_some() {
+            return self.chat(request, &mut |_| {}).await;
         }
+        let mut body = openai::chat_body_for(self.provider, request, true);
+        body["reasoning_effort"] = json!(NO_THINKING);
         self.completions(&body, &mut |_| {}).await
     }
 
@@ -2026,6 +2028,23 @@ pub(crate) mod tests {
             ai.connect(AiProvider::OpenAiCompatible, Some(&other.url("/v1")), Secret::default()).await.expect("server");
         ai.chat_to_decide(&compatible.id, &ask_calendar()).await.expect("an answer without the field");
         assert_eq!(plain.calls_async().await, 1);
+
+        // OpenAI keeps its Responses API, as every chat turn there.
+        let server = MockServer::start_async().await;
+        let responses = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/responses");
+                then.status(200).json_body(json!({
+                    "status":"completed",
+                    "output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"answer",
+                        "arguments":"{\"category\":\"invoice\"}"}]
+                }));
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        let reply = openai.chat_without_thinking(&ask_calendar()).await.expect("an answer through responses");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(responses.calls_async().await, 1);
     }
 
     #[tokio::test]
