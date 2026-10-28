@@ -917,16 +917,10 @@ fn describe(request: &Request) -> String {
         Request::SnoozeItem { id, .. } => format!("snooze inbox item {id}"),
         Request::SetItemLane { id, .. } => format!("move inbox item {id}"),
         Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
-        // Never the address or the domain: they would name who writes to the person.
-        Request::HideSender { id, scope: torro_inbox::HideScope::Conversation } => format!("hide inbox item {id}"),
-        Request::HideSender { id, .. } => format!("hide the sender of inbox item {id}"),
         // Never the trait or its value: they would name who writes to the person.
         Request::ListMuteOptions { id } => format!("mute options of inbox item {id}"),
         Request::MuteItem { id, .. } => format!("mute by inbox item {id}"),
-        // Never the ids: they would let lines be matched with a mailbox (task E18.2).
-        Request::SetMailShown { ids, shown: true } => format!("show {} mails again", ids.len()),
-        Request::SetMailShown { ids, shown: false } => format!("hide {} mails again", ids.len()),
-        // Only the count, as above (task E19.2).
+        // Only the count: the ids would let lines be matched with a mailbox (task E19.2).
         Request::SetMailPile { ids, pile: Some(_), .. } => format!("put {} mails on a pile", ids.len()),
         Request::SetMailPile { ids, pile: None, .. } => format!("take {} mails off their pile", ids.len()),
         Request::ListRules => "inbox rules".into(),

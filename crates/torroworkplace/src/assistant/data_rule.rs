@@ -170,8 +170,7 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
         // one, with the line naming the mail in its description (task E8.5b); an AI's suggestion of a task or
         // event retells the entry (issue #120). They work on entries of
         // every source, Talk and Nextcloud too, so they stay home also with mail let out.
-        Request::HideSender { .. }
-        | Request::CreateTaskFromItem { .. }
+        Request::CreateTaskFromItem { .. }
         | Request::CreateEventFromItem { .. }
         | Request::SuggestTaskFromItem { .. }
         | Request::SuggestEventFromItem { .. }

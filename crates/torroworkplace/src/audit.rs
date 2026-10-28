@@ -299,16 +299,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
         | Request::SetItemLane { id: entry, .. }
-        | Request::HideSender { id: entry, .. }
         // The entry only, never the trait muted or its value (task E8.6a).
         | Request::ListMuteOptions { id: entry }
         // The entry only, never the category it was filed under (task E12.4).
         | Request::SetItemCategory { id: entry, .. }
         | Request::ClassifyItem { id: entry }
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
-        // Mail shown again (task E18.2) or put on a pile (task E19.2) by its messages, hashed as in
-        // the mail commands.
-        Request::SetMailShown { ids, .. } | Request::SetMailPile { ids, .. } => {
+        // Mail put on a pile (task E19.2) by its messages, hashed as in the mail commands.
+        Request::SetMailPile { ids, .. } => {
             ids.iter().map(|message| format!("message:{}", hashed(message))).collect()
         }
         // Nothing of their own to name: a catalogue, a status, a background run.
@@ -1109,7 +1107,6 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -1138,12 +1135,10 @@ pub(crate) mod tests {
         let expected = [format!("folder:{}", hashed("f:9")), format!("message:{}", hashed("m:1"))];
         assert_eq!(moved[..2], expected, "{moved:?}");
         assert_eq!(moved.len(), 3);
-        // Task E18.2: "Show again" names its mail hashed, as the mail commands do.
-        let shown = super::ids(&Request::SetMailShown { ids: vec!["m:1".into(), "m:2".into()], shown: true });
-        assert_eq!(shown, [format!("message:{}", hashed("m:1")), format!("message:{}", hashed("m:2"))]);
-        // Task E19.2: the piles alike, never the pile's word.
-        let piled = super::ids(&Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None });
-        assert_eq!(piled, [format!("message:{}", hashed("m:1"))]);
+        // Task E19.2: the piles name their mail hashed, as the mail commands do, never the pile's word.
+        let piled =
+            super::ids(&Request::SetMailPile { ids: vec!["m:1".into(), "m:2".into()], pile: None, since: None });
+        assert_eq!(piled, [format!("message:{}", hashed("m:1")), format!("message:{}", hashed("m:2"))]);
         let update = Request::UpdateMailAccount {
             format: None,
             id: "mail:anna@mailbox.org".into(),

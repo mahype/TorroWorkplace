@@ -3092,10 +3092,9 @@ impl Core {
         {
             return Ok(refused);
         }
-        // "Show again" (task E18.2) and the piles (task E19.2): every mail in an account the client
-        // reads and whose entries it sees, as for the changing mail commands; so a foreign id opens
-        // no approval.
-        if let Request::SetMailShown { ids, .. } | Request::SetMailPile { ids, .. } = &request
+        // The piles (task E19.2): every mail in an account the client reads and whose entries it
+        // sees, as for the changing mail commands; so a foreign id opens no approval.
+        if let Request::SetMailPile { ids, .. } = &request
             && let Err(refused) = self.reachable_mail_of(ids, Reach::Client(&rights)).await
         {
             return Ok(refused);
@@ -3902,9 +3901,8 @@ impl Core {
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
-                // "Show again" (task E18.2) and the piles (task E19.2): the subjects as the mail
-                // store holds them.
-                if let Request::SetMailShown { .. } | Request::SetMailPile { .. } = &request {
+                // The piles (task E19.2): the subjects as the mail store holds them.
+                if let Request::SetMailPile { .. } = &request {
                     facts.mail = crate::mail::write::facts(&self.mail, &request).await;
                 }
                 // The calendar of an event by the name the core caches (task E8.5b).
@@ -4968,10 +4966,8 @@ impl Core {
             | Request::SnoozeItem { .. }
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
-            | Request::HideSender { .. }
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
-            | Request::SetMailShown { .. }
             | Request::SetMailPile { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }
@@ -6739,9 +6735,7 @@ impl Core {
                 Box::pin(self.remove_category(category, replacement, reach)).await
             }
             Request::ClassifyItem { id } => Box::pin(self.classify_item(&id, client)).await,
-            // "Show again" names mail, not entries (task E18.2): the core looks it up in the stores.
-            request @ Request::SetMailShown { .. } => Box::pin(self.set_mail_shown(request, reach)).await,
-            // The piles name mail too (task E19.2).
+            // The piles name mail, not entries (task E19.2): the core looks it up in the stores.
             request @ Request::SetMailPile { .. } => Box::pin(self.set_mail_pile(request, reach)).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
@@ -7905,7 +7899,7 @@ impl Core {
         }
     }
 
-    /// The mail `ids` of `inbox.set_mail_shown` (task E18.2) or `inbox.set_mail_pile` (task E19.2)
+    /// The mail `ids` of `inbox.set_mail_pile` (task E19.2)
     /// as pairs of account (`mail:<address>`) and message (`m:…`), in their order, looked up in the
     /// stores of the accounts `reach` reads ([`crate::mail::write::locate`]). For a client each
     /// account must be one it reads – read access to `mail` and the account in `mail_accounts`
@@ -7965,42 +7959,6 @@ impl Core {
             }
         }
         None
-    }
-
-    /// `inbox.set_mail_shown` (task E18.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
-    /// also for the app key, which comes here without the client's checks), the mail in reach
-    /// ([`Core::reachable_mail_of`]), then with `shown` the exception for the mail that is hidden now
-    /// ([`crate::mail::read::hidden_now`]) – a mail that is not hidden gets none –, without it the
-    /// exception taken back. Nothing else changes. `error` when the inbox cannot be read or written.
-    async fn set_mail_shown(&self, request: Request, reach: Reach<'_>) -> Response {
-        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
-            return refused;
-        }
-        let Request::SetMailShown { ids, shown } = request else {
-            return refusal("error", "only inbox.set_mail_shown is answered here".into());
-        };
-        let mail = match self.reachable_mail_of(&ids, reach).await {
-            Ok(mail) => mail,
-            Err(refused) => return refused,
-        };
-        let now = Utc::now();
-        let mail = match shown {
-            false => mail,
-            true => match crate::mail::read::hidden_now(&self.mail, &self.inbox, &mail, now).await {
-                Ok(hidden) => hidden,
-                Err(err) => {
-                    eprintln!("torroworkplace: inbox: cannot read which mail is hidden: {err}");
-                    return refusal("error", "cannot read which mail is hidden".into());
-                }
-            },
-        };
-        match self.inbox.set_mail_shown(&mail, shown, now) {
-            Ok(()) => Response::Ok,
-            Err(err) => {
-                eprintln!("torroworkplace: inbox: cannot keep the mail shown again: {err}");
-                refusal("error", "the inbox cannot be written".into())
-            }
-        }
     }
 
     /// `inbox.set_mail_pile` (task E19.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
@@ -17297,7 +17255,6 @@ mod tests {
             Request::SnoozeItem { id: kept.clone(), until: Some(later), unless_reply: false, keep_open: false },
             Request::SnoozeItem { id: kept.clone(), until: None, unless_reply: false, keep_open: false },
             Request::SetItemLane { id: kept.clone(), lane: torro_inbox::Lane::Info, remember: false },
-            Request::HideSender { id: kept.clone(), scope: torro_inbox::HideScope::Conversation },
             Request::MuteItem {
                 id: kept.clone(),
                 scope: torro_inbox::item::MuteScope::Conversation,
@@ -18034,104 +17991,6 @@ mod tests {
         );
     }
 
-    /// Task E3.10: hiding a sender takes the admin switch, waits for the person with a summary from
-    /// the inbox, and runs only on the entry as the person saw it.
-    #[tokio::test]
-    async fn hiding_a_sender_needs_the_admin_switch_and_the_person() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        let app_key = crate::clients::tests::app_key(dir.path());
-        let mail = |message: &str| crate::inbox::NewMail {
-            account: "mail:anna@example.org".into(),
-            message: message.into(),
-            thread: "t:1".into(),
-            subject: "Weekly news".into(),
-            snippet: "Autumn sale".into(),
-            from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
-            bulk: Some(torro_inbox::LaneReason::Bulk),
-            list: None,
-            github: None,
-            date: Utc::now(),
-            invite: false,
-            auto_submitted: None,
-            junk: false,
-            category: None,
-        };
-        let id =
-            core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
-        let reading_mail = |admin| {
-            let mut rights = RightsTemplate::FullAccess.rights();
-            rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin });
-            rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
-            rights.mail_accounts = Selection::All;
-            rights
-        };
-        let hide = || Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Domain };
-        let (_, writer) = client(&core, reading_mail(false)).await;
-        assert_eq!(code(&ask(&core, Some(&writer), hide()).await), "forbidden", "write rights are not enough");
-        let sender = Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Sender };
-        assert_eq!(code(&ask(&core, Some(&writer), sender).await), "forbidden", "nor for a sender");
-
-        let (_, admin) = client(&core, reading_mail(true)).await;
-        let asked = waits(ask(&core, Some(&admin), hide()).await);
-        assert_eq!(asked.command, "inbox.hide_sender");
-        assert_eq!(
-            asked.summary,
-            trf(
-                "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
-                &[("domain", &"\"shop.example\"")]
-            )
-        );
-        // A reply came in while the person looked: what they allowed is not what would run.
-        core.inbox.file_mail(&mail("m:2"), torro_mail::Notify::All, Utc::now()).expect("filed");
-        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
-        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
-        assert_eq!(code(&response), "conflict");
-        assert_eq!(
-            ask(&core, Some(&app_key), Request::ListRules).await,
-            Response::Rules { rules: vec![], hits: vec![] }
-        );
-
-        let asked = waits(ask(&core, Some(&admin), hide()).await);
-        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
-        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
-        let Response::Hidden(hidden) = *response else { panic!("hiding answers what it hid") };
-        assert_eq!(hidden.rule.and_then(|rule| rule.domain).as_deref(), Some("shop.example"));
-    }
-
-    /// Task E3.11: hiding one conversation keeps no rule, so write rights cover it – no admin switch.
-    #[tokio::test]
-    async fn hiding_a_conversation_needs_write_rights_only() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        let mail = crate::inbox::NewMail {
-            account: "mail:anna@example.org".into(),
-            message: "m:1".into(),
-            thread: "t:1".into(),
-            subject: "Lunch?".into(),
-            snippet: "Tuesday?".into(),
-            from: Some(torro_inbox::Sender { name: "Bernd".into(), address: Some("bernd@example.com".into()) }),
-            bulk: None,
-            list: None,
-            github: None,
-            date: Utc::now(),
-            invite: false,
-            auto_submitted: None,
-            junk: false,
-            category: None,
-        };
-        let id = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
-        let mut rights = RightsTemplate::FullAccess.rights();
-        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: false });
-        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
-        rights.mail_accounts = Selection::All;
-        let (_, writer) = client(&core, rights).await;
-        let conversation = Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Conversation };
-        let answer = ask(&core, Some(&writer), conversation).await;
-        let Response::Hidden(hidden) = answer else { panic!("write rights hide a conversation: {answer:?}") };
-        assert_eq!((hidden.rule, hidden.done), (None, vec![id]));
-    }
-
     /// Task E8.6a: muting by a trait is a rule – admin switch and the person, with the trait named
     /// from the inbox and the approval pinned to the entry; the conversation hidden for good is not.
     #[tokio::test]
@@ -18166,21 +18025,25 @@ mod tests {
             rights
         };
         let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
-        let by_sender = || Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Hide };
+        let by_sender = || Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Info };
         let (_, writer) = client(&core, reading_mail(false)).await;
         assert_eq!(code(&ask(&core, Some(&writer), by_sender()).await), "forbidden", "write rights are not enough");
-        let only_this =
+        // Issue #339: mail is never hidden, not even one conversation.
+        let hide =
             Request::MuteItem { id: id.clone(), scope: MuteScope::Conversation, until: None, effect: MuteEffect::Hide };
+        assert_eq!(code(&ask(&core, Some(&writer), hide).await), "unsupported");
+        let only_this =
+            Request::MuteItem { id: id.clone(), scope: MuteScope::Conversation, until: None, effect: MuteEffect::Info };
         let answer = ask(&core, Some(&writer), only_this).await;
-        let Response::Muted(hidden) = answer else { panic!("write rights hide one conversation: {answer:?}") };
-        assert_eq!((hidden.rule, hidden.done), (None, vec![id.clone()]));
+        let Response::Muted(moved) = answer else { panic!("write rights move one conversation: {answer:?}") };
+        assert_eq!(moved.rule, None, "no rule");
 
         let (_, admin) = client(&core, reading_mail(true)).await;
         let asked = waits(ask(&core, Some(&admin), by_sender()).await);
         assert_eq!(asked.command, "inbox.mute_item");
         let what = format!("\"{}\"", trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
         let what = trf("{what} in every mail account", &[("what", &what)]);
-        let effect = tr("hidden");
+        let effect = tr("only Info");
         assert_eq!(asked.summary, trf("Mute {what} for good ({effect})", &[("what", &what), ("effect", &effect)]));
         // A new mail came in while the person looked: what they allowed is not what would run.
         core.inbox.file_mail(&mail("m:2"), torro_mail::Notify::All, Utc::now()).expect("filed");
@@ -18198,7 +18061,7 @@ mod tests {
         let Response::Muted(muted) = *response else { panic!("muting answers what it changed") };
         let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
         assert_eq!(facet.value, "news@shop.example", "the entry's value");
-        assert_eq!(muted.done, [id]);
+        assert!(muted.done.is_empty(), "nothing closed: {:?}", muted.done);
     }
 
     #[tokio::test]
@@ -19552,7 +19415,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -19647,7 +19509,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories,
             pile: None,
         };
@@ -19819,7 +19680,6 @@ mod tests {
                 order: None,
                 sort: None,
                 snoozed: None,
-                hidden: None,
                 categories: Vec::new(),
                 pile: None,
             };
@@ -19919,7 +19779,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -19937,9 +19796,12 @@ mod tests {
             id: id.into(),
             scope: MuteScope::Conversation,
             until: Some(Utc::now() + chrono::TimeDelta::days(7)),
-            effect: MuteEffect::Hide,
+            effect: MuteEffect::Info,
         };
         assert_eq!(code(&ask(&core, Some(&app_key), conversation(&id)).await), "error", "no entry to close");
+        // Issue #339: a message is never hidden, whatever it is muted by.
+        let hide = Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Hide };
+        assert_eq!(code(&ask(&core, Some(&app_key), hide).await), "unsupported");
         assert_eq!(code(&ask(&core, Some(&app_key), conversation("m:nope")).await), "not-found");
 
         let by_sender = || Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Info };
@@ -19998,7 +19860,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -20092,13 +19953,12 @@ mod tests {
         assert_eq!(messages[3].back, None);
     }
 
-    /// Task E9.1: a mail a rule of the person hides from the inbox cannot go to "Later": there is
-    /// no entry to put off.
+    /// Task E9.1: a mail a rule of the person keeps from the inbox – its account muted; mail is no
+    /// longer hidden by sender, issue #339 – cannot go to "Later": there is no entry to put off.
     #[tokio::test]
-    async fn a_hidden_mail_does_not_go_to_later() {
+    async fn a_muted_mail_does_not_go_to_later() {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
         use crate::mail::sync::fake;
-        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(MAIL_PASSWORD).await;
         server.add("INBOX", &fake::mail("Hello", 1, None), &[]);
@@ -20122,7 +19982,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -20130,9 +19989,8 @@ mod tests {
             panic!("a page")
         };
         let id = messages[0].id.clone();
-        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
-        let hide = Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Hide };
-        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Muted(_)));
+        let mute = Request::MuteSource { source: torro_inbox::SourceRef::mail("anna@example.org"), muted: true };
+        assert_eq!(ask(&core, Some(&app_key), mute).await, Response::Ok);
         let later = Request::SnoozeItem {
             id: id.clone(),
             until: Some(Utc::now() + chrono::TimeDelta::hours(1)),
@@ -20239,7 +20097,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: Some(false),
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -20299,30 +20156,6 @@ mod tests {
         (core(dir).with_mail(mail), crate::clients::tests::app_key(dir))
     }
 
-    /// The subjects of "All" (`hidden: Some(false)`) or "Hidden" (`Some(true)`) of the inbox
-    /// folder, newest first, as `key` sees them.
-    async fn shown_subjects(core: &Core, key: &Key, hidden: bool) -> Vec<String> {
-        let search = Request::SearchMail {
-            account: None,
-            folder: None,
-            query: Some("in:inbox".into()),
-            unread: None,
-            flagged: None,
-            since: None,
-            before: None,
-            limit: 50,
-            cursor: None,
-            order: None,
-            sort: None,
-            snoozed: None,
-            hidden: Some(hidden),
-            categories: Vec::new(),
-            pile: None,
-        };
-        let Response::MailMessages { messages, .. } = ask(core, Some(key), search).await else { panic!("a page") };
-        messages.into_iter().map(|message| message.subject).collect()
-    }
-
     /// The ids of the inbox folder's mail by subject.
     async fn ids_by_subject(core: &Core, key: &Key) -> std::collections::BTreeMap<String, torro_mail::MessageSummary> {
         let search = Request::SearchMail {
@@ -20338,177 +20171,11 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
         let Response::MailMessages { messages, .. } = ask(core, Some(key), search).await else { panic!("a page") };
         messages.into_iter().map(|message| (message.subject.clone(), message)).collect()
-    }
-
-    /// Task E18.2, decisions 10 and 11: "Show again" brings back this one mail – of a hidden sender,
-    /// of a hidden conversation, of a mail without an entry hidden by its list –, the rule stays and
-    /// further and new mail stays hidden; Undo hides it again; a mail that is not hidden gets no
-    /// exception; the entry stays done; hiding it again holds again.
-    #[tokio::test]
-    async fn a_hidden_mail_is_shown_again_and_hidden_again() {
-        use crate::mail::read::tests::{filing, mail_from};
-        use torro_inbox::item::{FacetKey, HideScope, MuteEffect, MuteScope};
-        let dir = tempfile::tempdir().expect("temp dir");
-        let server = FakeImap::start(MAIL_PASSWORD).await;
-        server.add("INBOX", &mail_from("News old", 6, "news@shop.example", None), &["\\Seen"]);
-        server.add("INBOX", &mail_from("News other", 5, "news@shop.example", None), &[]);
-        server.add("INBOX", &mail_from("Talk", 4, "bob@example.org", None), &[]);
-        server.add("INBOX", &mail_from("Plain", 3, "carl@example.org", None), &[]);
-        server.add("INBOX", &mail_from("Weekly", 2, "list@lists.example", Some("weekly.lists.example")), &["\\Seen"]);
-        let (core, app_key) = shown_core(dir.path(), &server).await;
-        let mail = ids_by_subject(&core, &app_key).await;
-        let id = |subject: &str| mail[subject].id.clone();
-        let entry = |subject: &str| {
-            core.inbox.file_mail(&filing(&mail[subject]), torro_mail::Notify::All, Utc::now()).expect("filed")
-        };
-        let shown = |subjects: &[&str], shown: bool| Request::SetMailShown {
-            ids: subjects.iter().map(|subject| id(subject)).collect(),
-            shown,
-        };
-        let exceptions = || core.inbox.mail_hidden(&[ANNA_MAIL.into()], Utc::now()).expect("read").shown_of(ANNA_MAIL);
-
-        // A sender hidden: its older mail without an entry comes back alone.
-        let other = entry("News other").expect("an entry");
-        let hide = Request::HideSender { id: other.clone(), scope: HideScope::Sender };
-        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Hidden(_)));
-        assert_eq!(shown_subjects(&core, &app_key, true).await, ["News other", "News old"]);
-        assert_eq!(ask(&core, Some(&app_key), shown(&["News old"], true)).await, Response::Ok);
-        assert_eq!(shown_subjects(&core, &app_key, true).await, ["News other"], "the rule stays");
-        assert!(shown_subjects(&core, &app_key, false).await.contains(&"News old".to_string()));
-        server.add("INBOX", &mail_from("News new", 0, "news@shop.example", None), &[]);
-        core.mail.sync_all(Reach::Suite).await.expect("synced again");
-        assert_eq!(shown_subjects(&core, &app_key, true).await, ["News new", "News other"], "new mail stays hidden");
-        // Undo.
-        assert_eq!(ask(&core, Some(&app_key), shown(&["News old"], false)).await, Response::Ok);
-        assert_eq!(shown_subjects(&core, &app_key, true).await, ["News new", "News other", "News old"]);
-        assert!(exceptions().is_empty());
-
-        // A mail that is not hidden gets no exception: a rule made later hides it.
-        assert_eq!(ask(&core, Some(&app_key), shown(&["Plain"], true)).await, Response::Ok);
-        assert!(exceptions().is_empty(), "nothing remembered");
-        let plain = entry("Plain").expect("an entry");
-        let hide = Request::HideSender { id: plain, scope: HideScope::Sender };
-        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Hidden(_)));
-        assert!(shown_subjects(&core, &app_key, true).await.contains(&"Plain".to_string()));
-
-        // A conversation hidden: back in "All", its entry stays done; hidden again, it is hidden again.
-        let talk = entry("Talk").expect("an entry");
-        let mute = || Request::MuteItem {
-            id: talk.clone(),
-            scope: MuteScope::Conversation,
-            until: None,
-            effect: MuteEffect::Hide,
-        };
-        assert!(matches!(ask(&core, Some(&app_key), mute()).await, Response::Muted(_)));
-        assert!(shown_subjects(&core, &app_key, true).await.contains(&"Talk".to_string()));
-        assert_eq!(ask(&core, Some(&app_key), shown(&["Talk"], true)).await, Response::Ok);
-        assert!(shown_subjects(&core, &app_key, false).await.contains(&"Talk".to_string()));
-        let get = Request::GetItem { id: talk.clone() };
-        let Response::Item { item } = ask(&core, Some(&app_key), get).await else { panic!("the entry") };
-        assert!(matches!(item.state, torro_inbox::State::Done { .. }), "{:?}", item.state);
-        assert!(matches!(ask(&core, Some(&app_key), mute()).await, Response::Muted(_)));
-        assert!(shown_subjects(&core, &app_key, true).await.contains(&"Talk".to_string()), "hidden again");
-        assert!(!shown_subjects(&core, &app_key, false).await.contains(&"Talk".to_string()));
-
-        // A mail without an entry hidden by its list, over its own id.
-        let by_list = || Request::MuteItem {
-            id: id("Weekly"),
-            scope: MuteScope::Facet { key: FacetKey::List, nth: 0 },
-            until: None,
-            effect: MuteEffect::Hide,
-        };
-        assert!(matches!(ask(&core, Some(&app_key), by_list()).await, Response::Muted(_)));
-        assert!(shown_subjects(&core, &app_key, true).await.contains(&"Weekly".to_string()));
-        assert_eq!(ask(&core, Some(&app_key), shown(&["Weekly", "News other"], true)).await, Response::Ok);
-        let all = shown_subjects(&core, &app_key, false).await;
-        assert!(all.contains(&"Weekly".to_string()) && all.contains(&"News other".to_string()), "{all:?}");
-        assert!(matches!(ask(&core, Some(&app_key), by_list()).await, Response::Muted(_)));
-        let all = shown_subjects(&core, &app_key, false).await;
-        assert!(!all.contains(&"Weekly".to_string()), "hidden again: {all:?}");
-        assert!(all.contains(&"News other".to_string()), "another mail shown again stays: {all:?}");
-        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &id("Weekly")), None, "still without an entry");
-
-        // Decided with the person: the done entry of a hidden conversation outlives the 30 days of
-        // done entries, so its mail stays in "Hidden".
-        let later = Utc::now() + chrono::TimeDelta::days(torro_inbox::rules::KEEP_DONE_DAYS + 1);
-        core.inbox.tend(later, true).expect("cleaned up");
-        let hidden = shown_subjects(&core, &app_key, true).await;
-        assert!(hidden.contains(&"Talk".to_string()) && hidden.contains(&"Weekly".to_string()), "{hidden:?}");
-    }
-
-    /// Task E18.2: "Show again" keeps to the accounts a key reads and whose entries it sees – checked
-    /// before anyone is asked –, to its limits, names the subjects in its approval and runs once
-    /// allowed; the log names hashed ids only.
-    #[tokio::test]
-    async fn showing_mail_again_keeps_to_reach_limits_and_approvals() {
-        use crate::mail::read::tests::{filing, mail_from};
-        use torro_inbox::item::HideScope;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let server = FakeImap::start(MAIL_PASSWORD).await;
-        server.add("INBOX", &mail_from("Quarterly offer", 2, "news@shop.example", None), &[]);
-        let (core, app_key) = shown_core(dir.path(), &server).await;
-        let mail = ids_by_subject(&core, &app_key).await;
-        let id = mail["Quarterly offer"].id.clone();
-        let entry = core.inbox.file_mail(&filing(&mail["Quarterly offer"]), torro_mail::Notify::All, Utc::now());
-        let hide = Request::HideSender { id: entry.expect("filed").expect("an entry"), scope: HideScope::Sender };
-        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Hidden(_)));
-        let shown = |ids: Vec<String>| Request::SetMailShown { ids, shown: true };
-        let exceptions = || core.inbox.mail_hidden(&[ANNA_MAIL.into()], Utc::now()).expect("read").shown_of(ANNA_MAIL);
-
-        // An account outside `mail_accounts`, or whose entries the key does not see: `not-found`,
-        // nothing remembered, nobody asked – also where every change waits for a person.
-        let mut stranger = RightsTemplate::FullAccess.rights();
-        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
-        stranger.confirm = torro_ipc::api::Confirm::OnEveryChange;
-        let (_, stranger) = client(&core, stranger).await;
-        assert_eq!(code(&ask(&core, Some(&stranger), shown(vec![id.clone()])).await), "not-found");
-        let mut blind = RightsTemplate::FullAccess.rights();
-        blind.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
-        blind.inbox_sources = Selection::Only(Vec::new());
-        blind.confirm = torro_ipc::api::Confirm::OnEveryChange;
-        let (_, blind) = client(&core, blind).await;
-        assert_eq!(code(&ask(&core, Some(&blind), shown(vec![id.clone()])).await), "not-found");
-        let mut reader = RightsTemplate::FullAccess.rights();
-        reader.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
-        let (_, reader) = client(&core, reader).await;
-        let with_foreign = shown(vec![id.clone(), "m:unknown".into()]);
-        assert_eq!(code(&ask(&core, Some(&reader), with_foreign.clone()).await), "not-found", "the whole call");
-        assert_eq!(code(&ask(&core, Some(&app_key), with_foreign).await), "not-found");
-        assert!(exceptions().is_empty(), "nothing remembered");
-        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
-
-        // The limits, for clients and the app key alike.
-        let many = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
-        for key in [&reader, &app_key] {
-            assert_eq!(code(&ask(&core, Some(key), shown(Vec::new())).await), "error");
-            assert_eq!(code(&ask(&core, Some(key), shown(many(torro_ipc::mail::MAX_IDS + 1))).await), "error");
-        }
-
-        // Waiting for a person: the summary names the subject from the store, and allowed it runs.
-        let mut asking = RightsTemplate::FullAccess.rights();
-        asking.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
-        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
-        let (_, asking) = client(&core, asking).await;
-        let approval = waits(ask(&core, Some(&asking), shown(vec![id.clone()])).await);
-        assert!(approval.summary.contains("Quarterly offer"), "{}", approval.summary);
-        assert!(exceptions().is_empty(), "not before it is allowed");
-        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true };
-        assert!(!matches!(core.handle(decide).await, Response::Error { .. }));
-        crate::mail::service::tests::eventually("shown", || async { !exceptions().is_empty() }).await;
-        assert_eq!(exceptions(), std::slice::from_ref(&id));
-        assert!(shown_subjects(&core, &app_key, false).await.contains(&"Quarterly offer".to_string()));
-        // A client may take it back.
-        assert_eq!(
-            ask(&core, Some(&reader), Request::SetMailShown { ids: vec![id], shown: false }).await,
-            Response::Ok
-        );
-        assert!(exceptions().is_empty());
     }
 
     // ----- "Reply later" and "Set aside" (task E19.2) -----
@@ -20517,7 +20184,6 @@ mod tests {
     fn pile_search(
         pile: Option<torro_ipc::mail::PileFilter>,
         snoozed: Option<bool>,
-        hidden: Option<bool>,
         limit: u32,
         cursor: Option<String>,
     ) -> Request {
@@ -20534,7 +20200,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed,
-            hidden,
             categories: Vec::new(),
             pile,
         }
@@ -20568,12 +20233,11 @@ mod tests {
 
     /// Task E19.2, decisions 3 and 4: mail on a pile leaves "All" (`pile: without`) and stands on
     /// its pile alone; every message of a search names its pile; the other pile moves it, the same
-    /// pile again keeps since when, without a pile it comes back. Pages and cursor hold with `pile`,
-    /// `snoozed` and `hidden` together.
+    /// pile again keeps since when, without a pile it comes back. Pages and cursor hold with `pile`
+    /// and `snoozed` together.
     #[tokio::test]
     async fn mail_on_a_pile_leaves_all_and_stands_on_its_pile() {
-        use crate::mail::read::tests::{filing, mail_from};
-        use torro_inbox::item::HideScope;
+        use crate::mail::read::tests::mail_from;
         use torro_ipc::mail::PileFilter;
         use torro_mail::MailPile;
         let dir = tempfile::tempdir().expect("temp dir");
@@ -20594,7 +20258,7 @@ mod tests {
             Response::MailMessages { messages, .. } => messages,
             other => panic!("a page, got {other:?}"),
         };
-        let one = |filter| pile_search(filter, None, None, 50, None);
+        let one = |filter| pile_search(filter, None, 50, None);
 
         assert_eq!(ask(&core, Some(&app_key), pile(&["A"], Some(MailPile::ReplyLater))).await, Response::Ok);
         let all: Vec<String> = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::Without))).await)
@@ -20630,23 +20294,20 @@ mod tests {
         let back = subjects(ask(&core, Some(&app_key), one(Some(PileFilter::Without))).await);
         assert_eq!(back.first().map(|m| (m.subject.as_str(), m.pile)), Some(("A", None)));
 
-        // Pages and cursor with all three: B and D on Reply later, C set aside, B also snoozed, F
-        // hidden by its sender.
+        // Pages and cursor with both: B and D on Reply later, C set aside, B also snoozed.
         assert_eq!(ask(&core, Some(&app_key), pile(&["B", "D"], Some(MailPile::ReplyLater))).await, Response::Ok);
         assert_eq!(ask(&core, Some(&app_key), pile(&["C"], Some(MailPile::SetAside))).await, Response::Ok);
         let until = Some(Utc::now() + chrono::TimeDelta::hours(1));
         let snooze = Request::SnoozeItem { id: id("B"), until, unless_reply: false, keep_open: false };
         assert!(matches!(ask(&core, Some(&app_key), snooze).await, Response::Item { .. }));
-        let news = core.inbox.file_mail(&filing(&mail["F"]), torro_mail::Notify::All, Utc::now());
-        let hide = Request::HideSender { id: news.expect("filed").expect("an entry"), scope: HideScope::Sender };
-        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Hidden(_)));
-        let all = |cursor| pile_search(Some(PileFilter::Without), Some(false), Some(false), 2, cursor);
-        assert_eq!(every_page(&core, &app_key, all).await, (["A", "E", "G", "H"].map(String::from).to_vec(), Some(4)));
-        let replying = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(false), Some(false), 1, cursor);
+        let all = |cursor| pile_search(Some(PileFilter::Without), Some(false), 2, cursor);
+        let all_of = every_page(&core, &app_key, all).await;
+        assert_eq!(all_of, (["A", "E", "F", "G", "H"].map(String::from).to_vec(), Some(5)));
+        let replying = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(false), 1, cursor);
         assert_eq!(every_page(&core, &app_key, replying).await, (vec!["D".to_string()], Some(1)), "B is snoozed");
-        let snoozed = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(true), None, 1, cursor);
+        let snoozed = |cursor| pile_search(Some(PileFilter::ReplyLater), Some(true), 1, cursor);
         assert_eq!(every_page(&core, &app_key, snoozed).await, (vec!["B".to_string()], Some(1)));
-        let aside = |cursor| pile_search(Some(PileFilter::SetAside), None, Some(false), 1, cursor);
+        let aside = |cursor| pile_search(Some(PileFilter::SetAside), None, 1, cursor);
         assert_eq!(every_page(&core, &app_key, aside).await, (vec!["C".to_string()], Some(1)));
     }
 
@@ -20765,7 +20426,7 @@ mod tests {
             let core = &core;
             let app_key = &app_key;
             async move {
-                let search = pile_search(None, None, None, 10, None);
+                let search = pile_search(None, None, 10, None);
                 let Response::MailMessages { messages, .. } = ask(core, Some(app_key), search).await else {
                     panic!("a page")
                 };
@@ -20801,10 +20462,10 @@ mod tests {
     }
 
     /// Review of #315: a key that may change the inbox but not read mail learns nothing of mail ids
-    /// from `inbox.set_mail_pile` or `inbox.set_mail_shown` – a mail there and one that is not get
-    /// the same answer, before anyone is asked, and nothing is kept. The app key still may.
+    /// from `inbox.set_mail_pile` – a mail there and one that is not get the same answer, before
+    /// anyone is asked, and nothing is kept. The app key still may.
     #[tokio::test]
-    async fn piles_and_show_again_need_mail_read() {
+    async fn piles_need_mail_read() {
         use torro_mail::MailPile;
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(MAIL_PASSWORD).await;
@@ -20815,20 +20476,14 @@ mod tests {
         no_mail.areas.remove(&Area::Mail);
         no_mail.confirm = torro_ipc::api::Confirm::OnEveryChange;
         let (_, no_mail) = client(&core, no_mail).await;
-        let requests = |id: &str| {
-            [
-                Request::SetMailPile { ids: vec![id.into()], pile: Some(MailPile::ReplyLater), since: None },
-                Request::SetMailShown { ids: vec![id.into()], shown: true },
-            ]
-        };
-        for (known, unknown) in requests(&id).into_iter().zip(requests("m:unknown")) {
-            let (known, unknown) = (ask(&core, Some(&no_mail), known).await, ask(&core, Some(&no_mail), unknown).await);
-            assert_eq!(code(&known), "not-found", "{known:?}");
-            assert_eq!(known, unknown, "a mail there answers as one that is not");
-        }
+        let request =
+            |id: &str| Request::SetMailPile { ids: vec![id.into()], pile: Some(MailPile::ReplyLater), since: None };
+        let known = ask(&core, Some(&no_mail), request(&id)).await;
+        let unknown = ask(&core, Some(&no_mail), request("m:unknown")).await;
+        assert_eq!(code(&known), "not-found", "{known:?}");
+        assert_eq!(known, unknown, "a mail there answers as one that is not");
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
         assert!(core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL).is_empty());
-        assert!(core.inbox.mail_hidden(&[ANNA_MAIL.into()], Utc::now()).expect("read").shown_of(ANNA_MAIL).is_empty());
         let pile = Request::SetMailPile { ids: vec![id], pile: Some(MailPile::ReplyLater), since: None };
         assert_eq!(ask(&core, Some(&app_key), pile).await, Response::Ok, "the app key may");
     }
@@ -20949,7 +20604,7 @@ mod tests {
         let (_, unseeing) = client(&core, unseeing).await;
         let core = &core;
         let search = |key, filter| async move {
-            match ask(core, Some(key), pile_search(filter, None, None, 10, None)).await {
+            match ask(core, Some(key), pile_search(filter, None, 10, None)).await {
                 Response::MailMessages { messages, .. } => messages,
                 other => panic!("a page, got {other:?}"),
             }
@@ -21014,7 +20669,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -22151,14 +21805,15 @@ mod tests {
         assert!(on_server(&server, "Drafts").contains(&"Lunch, and bring Eve".to_string()), "the draft stays");
     }
 
-    /// Tasks E3.10, E3.11: hiding a conversation or a sender is no "done" – the mail stays unread
-    /// and in the inbox folder on the server, nothing is stored there at all – and the hidden
-    /// sender's next mail becomes no entry.
+    /// Task E8.6a, issue #339: muting a mail conversation or its domain is no "done" – the mail stays
+    /// unread and in the inbox folder on the server, nothing is stored there at all –, hiding it is
+    /// `unsupported`, and the muted domain's next mail still becomes an entry, in "Info".
     #[tokio::test]
-    async fn hiding_a_sender_leaves_the_mail_untouched_and_files_no_more_of_it() {
+    async fn muting_mail_leaves_it_untouched_and_hides_none_of_it() {
         use crate::account::github::tests::{MemoryTokens, accounts_file};
         use crate::mail::service::tests::{PASSWORD, eventually, mail_account, service_in, store_accounts};
         use crate::mail::sync::fake::FakeImap;
+        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
 
         let letter = |subject: &str, from: &str| {
             let date = Utc::now().to_rfc2822();
@@ -22220,14 +21875,18 @@ mod tests {
                 .collect::<Vec<String>>()
         };
 
-        // One conversation (task E3.11): out of the inbox, the mail unread on the server.
+        // One conversation: never hidden, moved to "Info" for good, the mail unread on the server.
         let lunch = server.add("INBOX", &letter("Lunch", "Bernd <bernd@example.com>"), &[]);
         eventually("filed", || async { listed().await.len() == 1 }).await;
         let id = entry("Lunch").await.id;
-        let hide = Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Conversation };
-        let Response::Hidden(hidden) = core.handle(hide).await else { panic!("hiding answers what it hid") };
-        assert_eq!((hidden.rule, hidden.done), (None, vec![id]));
-        assert!(matches!(entry("Lunch").await.state, torro_inbox::State::Done { .. }), "out of the inbox");
+        let mute = |id: &str, scope, effect| Request::MuteItem { id: id.into(), scope, until: None, effect };
+        let hide = mute(&id, MuteScope::Conversation, MuteEffect::Hide);
+        assert_eq!(code(&core.handle(hide).await), "unsupported", "mail is never hidden");
+        let Response::Muted(muted) = core.handle(mute(&id, MuteScope::Conversation, MuteEffect::Info)).await else {
+            panic!("muting answers what it changed")
+        };
+        assert_eq!((muted.rule, muted.done), (None, Vec::new()));
+        assert!(entry("Lunch").await.state.is_open(), "still in the inbox");
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(server.flags("INBOX", lunch).is_empty(), "the conversation's mail is still unread");
         assert!(untouched().is_empty(), "nothing changed on the server: {:?}", untouched());
@@ -22235,10 +21894,13 @@ mod tests {
         let sale = server.add("INBOX", &letter("Autumn sale", "Shop <news@shop.example>"), &[]);
         eventually("filed", || async { listed().await.len() == 2 }).await;
         let id = entry("Autumn sale").await.id;
-        let hide = Request::HideSender { id, scope: torro_inbox::item::HideScope::Domain };
-        let Response::Hidden(hidden) = core.handle(hide).await else { panic!("hiding answers what it hid") };
-        assert_eq!(hidden.rule.and_then(|rule| rule.domain).as_deref(), Some("shop.example"));
-        assert!(matches!(entry("Autumn sale").await.state, torro_inbox::State::Done { .. }), "out of the inbox");
+        let domain = MuteScope::Facet { key: FacetKey::Domain, nth: 0 };
+        let Response::Muted(muted) = core.handle(mute(&id, domain, MuteEffect::Info)).await else {
+            panic!("muting answers what it changed")
+        };
+        let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
+        assert_eq!(facet.value, "shop.example");
+        assert!(entry("Autumn sale").await.state.is_open(), "still in the inbox");
 
         // Nothing went to the server: no flag stored, nothing moved, and it stays so.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -22247,10 +21909,8 @@ mod tests {
 
         server.add("INBOX", &letter("Winter sale", "Shop <deals@shop.example>"), &[]);
         server.add("INBOX", &letter("Hello", "Bernd <bernd@example.com>"), &[]);
-        eventually("the other sender's mail filed", || async { listed().await.len() == 3 }).await;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let titles: Vec<String> = listed().await.into_iter().map(|item| item.title).collect();
-        assert!(!titles.contains(&"Winter sale".to_string()), "the hidden domain's mail is no entry: {titles:?}");
+        eventually("both filed", || async { listed().await.len() == 4 }).await;
+        assert_eq!(entry("Winter sale").await.lane, torro_inbox::Lane::Info, "the muted domain's mail in Info");
     }
 
     /// Tasks made of mail (task E8.7a): a fake IMAP server with Anna's mail, a fake CalDAV server
@@ -23257,7 +22917,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };

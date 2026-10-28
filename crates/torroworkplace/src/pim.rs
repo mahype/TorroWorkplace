@@ -1254,15 +1254,14 @@ impl PimService {
             | Request::SnoozeItem { .. }
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
-            | Request::HideSender { .. }
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }
             | Request::GetStats { .. }
             | Request::GetQuiet => return None,
-            // Mail by its ids, checked in the core by account and inbox source (tasks E18.2, E19.2).
-            Request::SetMailShown { .. } | Request::SetMailPile { .. } => return None,
+            // Mail by its ids, checked in the core by account and inbox source (task E19.2).
+            Request::SetMailPile { .. } => return None,
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
             // task M2.1).
             Request::ConnectMail { .. }

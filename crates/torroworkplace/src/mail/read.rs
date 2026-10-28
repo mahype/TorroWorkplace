@@ -39,17 +39,10 @@
 //! (`MessageSummary::back`), so it stands on top of "All" as if it had just arrived; every search
 //! fills `back`.
 //!
-//! **Hidden** (task E18.1, `hidden`): the inbox says what the person hid ([`Inbox::mail_hidden`]):
-//! senders and domains, checked against each message's sender in the store, and messages by id.
-//! The store applies it to mail of the inbox folder only (`Hiding`), before the page is cut, for
-//! the same accounts as "Later"; it is read only when a search asks for it. Mail shown again one
-//! by one (task E18.2, `inbox.set_mail_shown`) is never hidden, like the mail of an open entry;
-//! which of some messages are hidden now says [`hidden_now`], with the same rules.
-//!
 //! **Piles** (task E19.2, `pile`): the inbox says which mail lies on "Reply later" or "Set aside"
 //! ([`Inbox::mail_piles`]), read for every search for the same accounts as "Later", so every message
 //! names its pile (`MessageSummary::pile`). `without` leaves that mail out by id (`except`), a pile
-//! keeps only its mail (`only`), both before the page is cut, with `snoozed` and `hidden` as well.
+//! keeps only its mail (`only`), both before the page is cut, with `snoozed` as well.
 //!
 //! **Attachments** go to the managed folder (`AttachmentCache`), at most
 //! [`ATTACHMENT_MAX_BYTES`], under a cleaned file name, so a name from outside never picks the
@@ -87,8 +80,8 @@ use super::query::{self, Field, Query};
 use super::service::{MailError, MailService, SharedStore};
 #[cfg(doc)]
 use super::store::BODY_RETENTION_DAYS;
-use super::store::{Body, FolderRef, Hiding, MessageRef, SearchQuery};
-use crate::inbox::{Inbox, MailHidden, MailLater, MailPiles};
+use super::store::{Body, FolderRef, MessageRef, SearchQuery};
+use crate::inbox::{Inbox, MailLater, MailPiles};
 use crate::pim::Reach;
 
 /// The largest attachment `mail.get_attachment` hands out: 50 MiB.
@@ -145,7 +138,6 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
             order,
             sort,
             snoozed,
-            hidden,
             categories,
             pile,
         } => {
@@ -163,7 +155,6 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
                 order,
                 sort,
                 snoozed,
-                hidden,
                 categories,
                 pile,
             };
@@ -268,22 +259,16 @@ pub struct Search {
     /// "Later" (task E9.1): `false` without the snoozed mail and with mail back from it on top,
     /// `true` the snoozed mail only, `None` all of it by date.
     pub snoozed: Option<bool>,
-    /// "Hidden" (task E18.1): `false` without the mail hidden from the inbox folder, `true` that
-    /// mail only, `None` all of it.
-    pub hidden: Option<bool>,
     /// The piles (task E19.2): `without` leaves out mail on a pile, a pile keeps only its mail,
     /// `None` all of it.
     pub pile: Option<PileFilter>,
 }
 
-/// What a search makes of "Later" (task E9.1), "Hidden" (task E18.1) and the piles (task E19.2):
-/// the inbox's word on the stores in scope and the search's `snoozed`, `hidden` and `pile`.
+/// What a search makes of "Later" (task E9.1) and the piles (task E19.2): the inbox's word on the
+/// stores in scope and the search's `snoozed` and `pile`.
 struct LaterView {
     later: MailLater,
     snoozed: Option<bool>,
-    /// What is hidden; empty when the search does not ask (`hidden` is `None`).
-    mail_hidden: MailHidden,
-    hidden: Option<bool>,
     /// Which mail lies on a pile: read for every search, as every message names its pile.
     piles: MailPiles,
     pile: Option<PileFilter>,
@@ -300,7 +285,6 @@ impl LaterView {
     ///
     /// The pile (task E19.2) narrows each of them alike ([`LaterView::piled`]).
     fn queries(&self, account: &str, query: &SearchQuery) -> Vec<SearchQuery> {
-        let query = &SearchQuery { hidden: self.hiding(account), ..query.clone() };
         let queries = match self.snoozed {
             None => vec![query.clone()],
             Some(true) => vec![SearchQuery { only: Some(self.later.snoozed_of(account)), ..query.clone() }],
@@ -321,7 +305,6 @@ impl LaterView {
 
     /// The query that counts the matches in the store of `account`.
     fn counting(&self, account: &str, query: &SearchQuery) -> SearchQuery {
-        let query = &SearchQuery { hidden: self.hiding(account), ..query.clone() };
         let query = match self.snoozed {
             None => query.clone(),
             Some(true) => SearchQuery { only: Some(self.later.snoozed_of(account)), ..query.clone() },
@@ -352,25 +335,6 @@ impl LaterView {
         query
     }
 
-    /// What the store of `account` leaves out or keeps as hidden (task E18.1); `None` without
-    /// `hidden`. An account the inbox did not speak for (a client that does not see its entries)
-    /// hides nothing: `true` then finds none of its mail.
-    fn hiding(&self, account: &str) -> Option<Hiding> {
-        let hidden = self.hidden?;
-        let mail = &self.mail_hidden;
-        if !mail.holds_for(account) {
-            return Some(Hiding { hidden, ..Hiding::default() });
-        }
-        Some(Hiding {
-            hidden,
-            senders: mail.senders.iter().cloned().collect(),
-            domains: mail.domains.iter().cloned().collect(),
-            ids: mail.hidden_of(account),
-            // Shown again (task E18.2): not hidden, whatever hides it, sender and domain too.
-            never: mail.open_of(account).into_iter().chain(mail.shown_of(account)).collect(),
-        })
-    }
-
     /// Where `summary` sorts by date: when it came back from Later with `snoozed: false`, else its
     /// date.
     fn sorts_at(&self, summary: &MessageSummary) -> DateTime<Utc> {
@@ -391,42 +355,6 @@ fn anywhere_not_dealt_with(query: &Query) -> Query {
         anywhere.clauses.push(query::Clause { any: vec![term] });
     }
     anywhere
-}
-
-/// Which of `messages` (pairs of account `mail:<address>` and message `m:…`) are hidden from their
-/// inbox folder at `now` (task E18.2), as `mail.search_messages` with `hidden: true` would list
-/// them ([`LaterView::hiding`]): for "Show again", which remembers only mail hidden now. Mail shown
-/// again already is not hidden. The caller checked that it may see them; a message its store no
-/// longer holds is not hidden. `Err` holds the message for the log.
-pub(crate) async fn hidden_now(
-    mail: &MailService,
-    inbox: &Inbox,
-    messages: &[(String, String)],
-    now: DateTime<Utc>,
-) -> Result<Vec<(String, String)>, String> {
-    let mut by_account: std::collections::BTreeMap<&str, Vec<String>> = std::collections::BTreeMap::new();
-    for (account, message) in messages {
-        by_account.entry(account).or_default().push(message.clone());
-    }
-    let accounts: Vec<String> = by_account.keys().map(|account| account.to_string()).collect();
-    let mail_hidden = inbox.mail_hidden(&accounts, now)?;
-    let view = LaterView {
-        later: MailLater::default(),
-        snoozed: None,
-        mail_hidden,
-        hidden: Some(true),
-        piles: MailPiles::default(),
-        pile: None,
-    };
-    let mut hidden = Vec::new();
-    for (account, ids) in by_account {
-        let store = mail.store(account).await.map_err(|err| err.to_string())?;
-        let limit = u32::try_from(ids.len()).unwrap_or(u32::MAX);
-        let query = SearchQuery { only: Some(ids), hidden: view.hiding(account), ..SearchQuery::default() };
-        let found = store.run(move |store| store.search(&query, limit, 0)).await.map_err(|err| err.to_string())?;
-        hidden.extend(found.into_iter().map(|summary| (account.to_string(), summary.id)));
-    }
-    Ok(hidden)
 }
 
 /// How deep a search pages: a page starts at most at the 10 000th match. Paging deeper would
@@ -481,7 +409,6 @@ pub async fn search_messages(
         relevance,
         only: None,
         except: Vec::new(),
-        hidden: None,
         categories: search.categories.clone(),
         // Filtering by category lists the inbox only (task E12.8): a reply of one's own and mail
         // thrown away keep their category, and the sidebar counts them nowhere either.
@@ -500,14 +427,6 @@ pub async fn search_messages(
             return Err(failed("cannot read which mail waits for later"));
         }
     };
-    // Only asked with `hidden` (task E18.1): without it nothing depends on what is hidden.
-    let mail_hidden = match search.hidden {
-        None => MailHidden::default(),
-        Some(_) => inbox.mail_hidden(&accounts, now).map_err(|err| {
-            eprintln!("torroworkplace: mail: cannot read which mail is hidden: {err}");
-            failed("cannot read which mail is hidden")
-        })?,
-    };
     // Every message names its pile (task E19.2): read for every search; only one that asks for
     // `pile` fails without it, the others come without, as for `snoozed`.
     let piles = match inbox.mail_piles(&accounts) {
@@ -521,8 +440,7 @@ pub async fn search_messages(
             return Err(failed("cannot read which mail lies on a pile"));
         }
     };
-    let view =
-        LaterView { later, snoozed: search.snoozed, mail_hidden, hidden: search.hidden, piles, pile: search.pile };
+    let view = LaterView { later, snoozed: search.snoozed, piles, pile: search.pile };
     let limit = search.limit as usize;
     let mut page = ranked_page(&stores, &query, &view, offset, limit + 1).await?;
     let more = page.len() > limit;
@@ -1266,7 +1184,6 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         }
@@ -1289,7 +1206,6 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         }
@@ -1894,7 +1810,7 @@ pub(crate) mod tests {
         );
     }
 
-    // ----- "Hidden" (task E18.1) -----
+    // ----- Mail of the inbox folder -----
 
     /// A mail `days_ago` days old from `from` with `subject`, with a `List-Id` when `list` is given.
     pub(crate) fn mail_from(subject: &str, days_ago: i64, from: &str, list: Option<&str>) -> String {
@@ -1931,15 +1847,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// `query` with `hidden` and `snoozed`, a page of `limit` from `cursor`.
-    fn hiding(query: &str, hidden: Option<bool>, snoozed: Option<bool>, limit: u32, cursor: Option<String>) -> Request {
-        let mut request = search(Some(query), limit, cursor);
-        if let Request::SearchMail { hidden: wanted, snoozed: later, .. } = &mut request {
-            (*wanted, *later) = (hidden, snoozed);
-        }
-        request
-    }
-
     /// The subjects and the count of a first page.
     fn counted(response: Response) -> (Vec<String>, Option<u64>) {
         let Response::MailMessages { messages, total_estimate, .. } = response else {
@@ -1948,113 +1855,53 @@ pub(crate) mod tests {
         (messages.into_iter().map(|message| message.subject).collect(), total_estimate)
     }
 
-    /// Task E18.1: `hidden: false` leaves out mail of the inbox folder that is hidden – a conversation
-    /// (until it opens again), every mail of a hidden sender (also older mail without an entry), a
-    /// mail without an entry hidden by its list –, `true` gives only that; mail moved to the archive is
-    /// hidden no more; pages and cursor hold with `snoozed`; a key that does not see the account's
-    /// entries learns nothing of it.
+    /// Issue #339: no mail is hidden any more. A done entry and a conversation moved to "Info" keep
+    /// their mail in the inbox folder's list, hiding a mail entry is `unsupported`, and a search that
+    /// still sends `hidden` (as before the issue) lists the same as one without.
     #[tokio::test]
-    async fn hidden_mail_leaves_all_and_stands_in_hidden() {
-        use torro_inbox::item::{FacetKey, HideScope, MuteEffect, MuteScope};
+    async fn no_mail_is_hidden_and_an_old_hidden_is_ignored() {
+        use torro_inbox::item::{MuteEffect, MuteScope};
 
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
         server.add("INBOX", &mail_from("Talk", 1, "bob@example.org", None), &[]);
-        server.add("INBOX", &mail_from("News new", 2, "news@shop.example", None), &[]);
-        for n in 1..=3 {
-            server.add("INBOX", &mail_from(&format!("Plain {n}"), 2 + n, "carl@example.org", None), &[]);
-        }
-        server.add("INBOX", &mail_from("Weekly", 7, "list@lists.example", Some("weekly.lists.example")), &["\\Seen"]);
-        server.add("INBOX", &mail_from("News old", 10, "news@shop.example", None), &["\\Seen"]);
+        server.add("INBOX", &mail_from("News", 2, "news@shop.example", None), &[]);
+        server.add("INBOX", &mail_from("Weekly", 3, "list@lists.example", Some("weekly.lists.example")), &["\\Seen"]);
         server.add("Archive", &mail_from("Kept", 0, "dora@example.org", None), &["\\Seen"]);
         let service = synced(dir.path(), &server).await;
         let inbox = crate::inbox::tests::inbox_in(dir.path());
         let now = Utc::now();
-        let ask = |reach: Reach<'static>, request: Request| {
+        let ask = |request: Request| {
             let (service, inbox) = (&service, &inbox);
-            async move { super::answer(service, inbox, reach, request).await }
+            async move { super::answer(service, inbox, Reach::Suite, request).await }
         };
-        let Response::MailMessages { messages, .. } = ask(Reach::Suite, search(Some("in:inbox"), 100, None)).await
-        else {
+        let Response::MailMessages { messages, .. } = ask(search(Some("in:inbox"), 100, None)).await else {
             panic!("a page")
         };
         let summary = |subject: &str| messages.iter().find(|m| m.subject == subject).expect("synced").clone();
-        let mut entries = std::collections::BTreeMap::new();
-        for subject in ["Talk", "News new", "Plain 1", "Plain 2", "Plain 3"] {
-            let filed = inbox.file_mail(&filing(&summary(subject)), torro_mail::Notify::All, now);
-            entries.insert(subject, filed.expect("filed").expect("an entry"));
-        }
-        let mute = |id: &str, scope| Request::MuteItem { id: id.into(), scope, until: None, effect: MuteEffect::Hide };
-        assert!(matches!(inbox.handle(mute(&entries["Talk"], MuteScope::Conversation), None, now), Response::Muted(_)));
-        let sender = Request::HideSender { id: entries["News new"].clone(), scope: HideScope::Sender };
-        assert!(matches!(inbox.handle(sender, None, now), Response::Hidden(_)));
-        let later = Request::SnoozeItem {
-            id: entries["Plain 2"].clone(),
-            until: Some(now + Duration::hours(1)),
-            unless_reply: false,
-            keep_open: false,
+        let entry = |subject: &str| {
+            inbox.file_mail(&filing(&summary(subject)), torro_mail::Notify::All, now).expect("filed").expect("an entry")
         };
-        assert!(matches!(inbox.handle(later, None, now), Response::Item { .. }));
-        let weekly = summary("Weekly").id;
-        let stand_in = crate::mail::inbox_feed::message_stand_in(&service, Reach::Suite, &weekly).await.expect("mail");
-        let by_list = mute(&weekly, MuteScope::Facet { key: FacetKey::List, nth: 0 });
-        assert!(matches!(inbox.handle_message(by_list, &stand_in, None, now), Response::Muted(_)));
+        let (talk, news) = (entry("Talk"), entry("News"));
+        let hide = Request::MuteItem {
+            id: talk.clone(),
+            scope: MuteScope::Conversation,
+            until: None,
+            effect: MuteEffect::Hide,
+        };
+        assert!(matches!(inbox.handle(hide, None, now), Response::Error { code, .. } if code == "unsupported"));
+        let info =
+            Request::MuteItem { id: talk, scope: MuteScope::Conversation, until: None, effect: MuteEffect::Info };
+        assert!(matches!(inbox.handle(info, None, now), Response::Muted(_)));
+        let done = Request::SetItemDone { id: news, done: true, dismissed: false };
+        assert!(matches!(inbox.handle(done, None, now), Response::Item { .. }));
 
-        let all = |hidden, snoozed| hiding("in:inbox", hidden, snoozed, 10, None);
-        assert_eq!(
-            counted(ask(Reach::Suite, all(Some(false), None)).await),
-            (vec!["Plain 1".into(), "Plain 2".into(), "Plain 3".into()], Some(3))
-        );
-        let hidden = counted(ask(Reach::Suite, all(Some(true), None)).await);
-        assert_eq!(hidden, (vec!["Talk".into(), "News new".into(), "Weekly".into(), "News old".into()], Some(4)));
-        assert_eq!(counted(ask(Reach::Suite, all(None, None)).await).1, Some(7), "without `hidden` as before");
-        // With "Later": both hold.
-        assert_eq!(
-            counted(ask(Reach::Suite, all(Some(false), Some(false))).await),
-            (vec!["Plain 1".into(), "Plain 3".into()], Some(2))
-        );
-        assert_eq!(counted(ask(Reach::Suite, all(Some(false), Some(true))).await).0, ["Plain 2"]);
-        assert_eq!(counted(ask(Reach::Suite, all(Some(true), Some(false))).await).0, hidden.0);
-        let (mut paged, mut cursor) = (Vec::new(), None);
-        loop {
-            let (subjects, next, _) =
-                page(ask(Reach::Suite, hiding("in:inbox", Some(true), Some(false), 1, cursor)).await);
-            paged.extend(subjects);
-            match next {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
+        let every = counted(ask(search(Some("in:inbox"), 10, None)).await);
+        assert_eq!(every, (vec!["Talk".into(), "News".into(), "Weekly".into()], Some(3)));
+        for hidden in [true, false] {
+            let old = serde_json::json!({"method": "mail.search_messages", "query": "in:inbox", "limit": 10, "hidden": hidden});
+            let old: Request = serde_json::from_value(old).expect("a search of before still reads");
+            assert_eq!(counted(ask(old).await), every, "`hidden: {hidden}` is ignored");
         }
-        assert_eq!(paged, hidden.0, "page by page without gaps or doubles");
-
-        // Moved to the archive, the older mail of the hidden sender is there, hidden no more.
-        let old = summary("News old").id;
-        let store = service.store(ANNA).await.expect("store");
-        store
-            .run(move |store| {
-                let archive = store.folder_by_path("Archive")?.expect("archive");
-                store.relocate_message(&old, &archive.id, archive.uidvalidity.unwrap_or_default(), 99)
-            })
-            .await
-            .expect("moved");
-        let archived = counted(ask(Reach::Suite, hiding("in:archive", Some(false), None, 10, None)).await).0;
-        assert_eq!(archived, ["Kept", "News old"]);
-        assert!(!counted(ask(Reach::Suite, all(Some(true), None)).await).0.contains(&"News old".to_string()));
-
-        // Open again (Undo), the conversation is back in "All".
-        let reopen = Request::SetItemDone { id: entries["Talk"].clone(), done: false, dismissed: false };
-        assert!(matches!(inbox.handle(reopen, None, now), Response::Item { .. }));
-        assert_eq!(counted(ask(Reach::Suite, all(Some(false), None)).await).0[0], "Talk");
-
-        // A key that does not see the account's entries: nothing hidden, nothing in "Hidden".
-        let mut rights = RightsTemplate::FullAccess.rights();
-        rights
-            .areas
-            .insert(Area::Inbox, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::NoAccess, admin: false });
-        let client = Reach::Client(&rights);
-        let nothing = super::answer(&service, &inbox, client, all(Some(true), None)).await;
-        assert_eq!(counted(nothing), (Vec::new(), Some(0)));
-        let everything = super::answer(&service, &inbox, client, all(Some(false), None)).await;
-        assert_eq!(counted(everything).1, Some(6));
     }
 }

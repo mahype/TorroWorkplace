@@ -48,7 +48,7 @@ use torro_core::paths::AppPaths;
 use torro_core::text::is_format;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
-use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceKind, SourceRef};
+use torro_inbox::{Item, Lane, Link, Rule, RuleEffect, SourceKind, SourceRef};
 use torro_ipc::api::{Area, Mcp, Rights};
 use torro_ipc::assistant::Mode;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
@@ -2451,7 +2451,7 @@ pub struct InboxFacts {
     /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
     /// held across the awaits of asking for an approval, deep in the stack.
     pub sort_rule: Option<Box<torro_inbox::SortRule>>,
-    /// For `inbox.set_mail_shown` (task E18.2) and `inbox.set_mail_pile` (task E19.2): the messages
+    /// For `inbox.set_mail_pile` (task E19.2): the messages
     /// as the mail store holds them, looked up by the ids the command runs with
     /// (`crate::mail::write::facts`), as for `mail.set_flags`.
     pub mail: Option<MailFacts>,
@@ -2633,14 +2633,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
         ),
         Request::SnoozeItem { until: None, .. } => trf("Stop snoozing {entry}", &[("entry", &entry())]),
-        // "Show again" (task E18.2): the subjects the mail store holds, never the client's words.
-        Request::SetMailShown { ids, shown: true } => {
-            trf("Show {messages} in the inbox again", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
-        }
-        Request::SetMailShown { ids, shown: false } => {
-            trf("Hide {messages} from the inbox again", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
-        }
-        // The piles (task E19.2): the subjects the mail store holds, as for "Show again".
+        // The piles (task E19.2): the subjects the mail store holds, never the client's words.
         Request::SetMailPile { ids, pile: Some(torro_mail::MailPile::ReplyLater), .. } => {
             trf("Put {messages} on Reply later", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
         }
@@ -2808,25 +2801,6 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         }
         Request::MuteSource { source, muted: false } => {
             trf("Unmute {source} in the Notification Hub", &[("source", &source_name(source))])
-        }
-        // The sender or domain as the inbox holds it for the entry, never as the client says (task
-        // E3.10); a rule holds for every mail account (task E3.11).
-        Request::HideSender { scope, .. } => {
-            let target = facts.item.as_ref().and_then(|item| torro_inbox::rules::hide_target(item, *scope));
-            match (scope, target) {
-                (HideScope::Conversation, _) => {
-                    trf("Hide {entry} from the Notification Hub; the mail stays unread", &[("entry", &entry())])
-                }
-                (HideScope::Sender, Some(sender)) => trf(
-                    "Hide mail from {sender} in every mail account; the mail stays unread",
-                    &[("sender", &format!("\"{}\"", quote(&sender)))],
-                ),
-                (HideScope::Domain, Some(domain)) => trf(
-                    "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
-                    &[("domain", &format!("\"{}\"", quote(&domain)))],
-                ),
-                (_, None) => trf("Hide the sender of {entry} in the Notification Hub", &[("entry", &entry())]),
-            }
         }
         // The trait and its value as the inbox holds them for the entry, never as the client says
         // (task E8.6a): a trait holds for every source of the kind.
@@ -5454,25 +5428,11 @@ pub(crate) mod tests {
             inbox_summary(&open(true), &snoozed),
             trf("Bring {entry} back and follow up {when} unless someone replies", &[("entry", &entry), ("when", &at)])
         );
-        // Task E18.2: "Show again" names the subjects the mail store holds.
+        // Task E19.2: the piles name the subjects the mail store holds, each with its own words.
         let stored = MailFacts { count: 2, subjects: vec!["Weekly \"deals\"".into()], ..MailFacts::default() };
         let mail = InboxFacts { mail: Some(stored), ..InboxFacts::default() };
-        let shown = |shown| Request::SetMailShown { ids: vec!["m:1".into(), "m:2".into()], shown };
         let messages = trf("{n} messages, among them {subject}", &[("n", &2), ("subject", &"\"Weekly 'deals'\"")]);
-        assert_eq!(
-            inbox_summary(&shown(true), &mail),
-            trf("Show {messages} in the inbox again", &[("messages", &messages)])
-        );
-        assert_eq!(
-            inbox_summary(&shown(false), &mail),
-            trf("Hide {messages} from the inbox again", &[("messages", &messages)])
-        );
         let unknown_mail = trf("{n} unknown messages", &[("n", &2)]);
-        assert_eq!(
-            inbox_summary(&shown(true), &InboxFacts::default()),
-            trf("Show {messages} in the inbox again", &[("messages", &unknown_mail)])
-        );
-        // Task E19.2: the piles alike, each with its own words.
         let pile = |pile| Request::SetMailPile { ids: vec!["m:1".into(), "m:2".into()], pile, since: None };
         assert_eq!(
             inbox_summary(&pile(Some(torro_mail::MailPile::ReplyLater)), &mail),
@@ -5563,31 +5523,7 @@ pub(crate) mod tests {
             )
         );
 
-        // Hiding (tasks E3.10, E3.11): named from the entry, never from the request; a sender or
-        // domain in every mail account, a conversation with its mail left unread.
-        let hide = |scope| Request::HideSender { id: "e1".into(), scope };
-        assert_eq!(
-            inbox_summary(&hide(HideScope::Conversation), &mail),
-            trf("Hide {entry} from the Notification Hub; the mail stays unread", &[("entry", &news)])
-        );
-        assert_eq!(
-            inbox_summary(&hide(HideScope::Sender), &mail),
-            trf(
-                "Hide mail from {sender} in every mail account; the mail stays unread",
-                &[("sender", &"\"news@shop.example\"")]
-            )
-        );
-        assert_eq!(
-            inbox_summary(&hide(HideScope::Domain), &mail),
-            trf(
-                "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
-                &[("domain", &"\"shop.example\"")]
-            )
-        );
-        assert_eq!(
-            inbox_summary(&hide(HideScope::Domain), &InboxFacts::default()),
-            trf("Hide the sender of {entry} in the Notification Hub", &[("entry", &unknown)])
-        );
+        // Rules that hid a sender or domain before issue #339 are named when removed.
         let hidden = |sender: Option<&str>, domain: Option<&str>| InboxFacts {
             rule: Some(Rule {
                 id: "r3".into(),
