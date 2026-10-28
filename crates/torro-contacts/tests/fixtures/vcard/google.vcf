@@ -1,0 +1,14 @@
+BEGIN:VCARD
+VERSION:3.0
+FN:Maria Lopez
+N:Lopez;Maria;;;
+NICKNAME:Mari
+EMAIL;TYPE=INTERNET;TYPE=HOME:maria.lopez@example.com
+TEL;TYPE=CELL:+34 612 345 678
+ADR;TYPE=WORK:;;Calle Mayor 10;Madrid;;28013;Spain
+URL:https://maria.example.com
+CATEGORIES:myContacts,Family
+NOTE:Long note that is folded because it is longer than seventy-five octets
+  in a single line.
+UID:google-3a9f
+END:VCARD

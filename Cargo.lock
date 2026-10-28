@@ -6950,6 +6950,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-contacts"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "torro-core"
 version = "0.1.0"
 dependencies = [
