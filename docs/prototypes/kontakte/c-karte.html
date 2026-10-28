@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Contacts – Entwurf C: Karte zuerst</title>
+<!-- Entwurf C „Karte zuerst“ (Stufe KO4 aus docs/kontakte.md): Wer wohnt wo? Die Karte füllt das Fenster, Kontakte sind Pins,
+     nahe beieinander werden sie zu Haufen. Links schwebt die Liste dessen, was im Ausschnitt liegt; ein Pin öffnet eine
+     kleine Karte mit den Schnellaktionen. Die Karte hier ist gezeichnet; im Produkt sind es OSM-Kacheln vom Kern
+     (offline Übersicht aus PMTiles, Details online), Ortssuche nur mit Zustimmung.
+     Zustände: ?open=cluster (Haufen offen) · consent (Ortssuche ist aus) · lookup (Suche läuft) · list (nur Liste, Mittel/Schmal)
+     ?size=l|m|s  ?theme=light -->
+<link rel="stylesheet" href="kontakte.css">
+<script src="icons.js"></script>
+<script src="kontakte.js"></script>
+<style>
+.seg a{color:var(--text3)} .seg a.on{color:var(--text)}
+.mapwrap{flex:1;position:relative;overflow:hidden;background:var(--m-land);min-height:0}
+.mapwrap svg.base{position:absolute;left:0;top:0;overflow:visible}
+.ov{position:absolute;inset:0;pointer-events:none}
+.ov>*{pointer-events:auto}
+.lbl{position:absolute;transform:translate(-50%,6px);font-size:12px;line-height:16px;color:var(--m-label);white-space:nowrap;text-shadow:0 0 3px var(--m-land),0 0 3px var(--m-land);pointer-events:none}
+.lbl.city{color:var(--m-city);font-weight:500}
+.lbl.sea{font-style:italic;letter-spacing:.2em;text-transform:none}
+.pinav{position:absolute;transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center}
+.pinav .av{box-shadow:0 0 0 2px var(--panel),0 2px 8px rgba(0,0,0,.35)}
+.pinav::after{content:"";width:2px;height:8px;background:var(--panel);margin-top:0}
+.pinav.sel .av{box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--text),0 4px 12px rgba(0,0,0,.45)}
+.pinav .tag{position:absolute;top:calc(100% + 2px);left:50%;transform:translateX(-50%);background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);padding:0 6px;font:500 12px/18px Inter,sans-serif;white-space:nowrap;box-shadow:var(--shadow)}
+.cl{position:absolute;transform:translate(-50%,-50%);width:44px;height:44px;border-radius:50%;background:var(--selected);border:1px solid var(--line-selected);box-shadow:0 0 0 5px color-mix(in srgb,var(--selected) 55%,transparent),0 2px 10px rgba(0,0,0,.35);display:grid;place-items:center;font:600 14px/1 "Inter Tabular",Inter,sans-serif;color:var(--text)}
+.cl.s{width:36px;height:36px}
+.fl{position:absolute;background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow)}
+.listcard{left:16px;top:16px;max-height:calc(100% - 32px);width:344px;display:flex;flex-direction:column;overflow:hidden}
+.listcard .hd{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--line)}
+.listcard .rows{flex:1;overflow:auto}
+.lr{display:flex;align-items:center;gap:12px;height:52px;padding:0 16px;border-bottom:1px solid var(--line)}
+.lr:hover{background:var(--hover)} .lr.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
+.lr .sub{font-size:13px;line-height:18px;color:var(--text3)}
+.lr .d{font-size:13px;color:var(--text3);flex:none}
+.pop{width:320px;padding:16px;display:block}
+.pop .row{display:flex;gap:12px;align-items:center}
+.pop .btns{display:flex;gap:6px;margin-top:14px}
+.pop .btns .btn{flex:1;justify-content:center;padding:0 8px}
+.pop .line{display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:13px;line-height:18px;color:var(--text2)}
+.pop .line svg{color:var(--text3);margin-top:1px}
+.pop .foot{display:flex;align-items:center;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--text3)}
+.zoom{right:16px;bottom:56px;display:flex;flex-direction:column;padding:2px}
+.zoom .iconbtn{width:36px;height:36px}
+.zoom .hline{margin:0 4px}
+.stat{right:16px;top:16px;width:300px;padding:12px 16px}
+.stat .bar{height:4px;border-radius:2px;background:var(--line-strong);margin:8px 0;overflow:hidden}
+.stat .bar i{display:block;height:100%;background:var(--ok)}
+.attr{position:absolute;left:376px;bottom:0;padding:0 8px;background:color-mix(in srgb,var(--panel) 80%,transparent);font-size:11px;line-height:18px;color:var(--text2);border-radius:var(--r) var(--r) 0 0}
+.consent{left:50%;top:16px;transform:translateX(-50%);margin-left:172px;width:460px;padding:16px}
+.consent .btns{display:flex;gap:8px;margin-top:14px}
+.clpop{width:280px;padding:4px}
+html[data-size="m"] .listcard,html[data-size="s"] .listcard{max-height:none;top:auto;left:0;right:0;bottom:0;width:auto;height:44%;border-radius:var(--r) var(--r) 0 0;border-left:0;border-right:0}
+html[data-size="m"] .attr,html[data-size="s"] .attr{left:0;bottom:44%}
+html[data-size="m"] .stat,html[data-size="s"] .stat{display:none}
+html[data-size="m"] .zoom,html[data-size="s"] .zoom{bottom:calc(44% + 32px)}
+html[data-size="s"] .pop{display:none}
+</style></head>
+<body>
+<div class="app" id="app"></div>
+<script>
+const open=document.documentElement.dataset.open;
+const felix=CONTACTS.find(c=>c.n==='Felix Brandt');
+const located=CONTACTS.filter(c=>c.x>0);
+const hh=located.filter(c=>c.city==='Hamburg'), hus=located.filter(c=>c.city==='Husum');
+const singles=located.filter(c=>c.city!=='Hamburg'&&c.city!=='Husum');
+const consentPins=['Felix Brandt','Jonas Keller','Paul Lehmann'];
+const PLACES=[['Hamburg',330,388,1],['Kiel',351,195,1],['Lübeck',433,307,1],['Bremen',150,505,1],['Schwerin',540,367,1],['Rostock',651,252,1],['Hannover',289,683,1],['Flensburg',246,80,1],['Husum',189,158,0],['Lüneburg',390,462,0],['Cuxhaven',112,326,0],['Heide',200,222,0],['Neumünster',320,258,0],['Stade',250,372,0],['Wismar',512,330,0],['Sylt',108,84,0]];
+function mapSvg(){
+  return `<svg class="base" id="base" viewBox="0 0 800 700" preserveAspectRatio="xMinYMin meet">
+  <rect x="-3000" y="-3000" width="6800" height="7000" fill="var(--m-water)"/>
+  <path fill="var(--m-land)" d="M190,0 L300,0 L310,30 L290,60 L270,72 L285,82 L300,100 L330,120 L345,160 L350,180 L345,186 L365,196 L378,186 L410,185 L430,205 L445,215 L440,250 L452,285 L480,290 L510,300 L520,300 L545,285 L580,290 L620,262 L650,240 L680,235 L720,215 L1800,190 L1800,1200 L-1500,1200 L-1500,430 L0,420 L30,400 L70,370 L110,330 L125,310 L130,302 L115,280 L110,260 L112,230 L115,200 L120,175 L125,170 L115,150 L150,140 L160,150 L170,120 L175,100 L190,90 L195,60 L190,30 Z"/>
+  <ellipse cx="150" cy="78" rx="7" ry="22" fill="var(--m-land)"/><ellipse cx="438" cy="207" rx="15" ry="9" fill="var(--m-land)"/>
+  <g fill="var(--m-green)"><ellipse cx="400" cy="520" rx="70" ry="40"/><ellipse cx="520" cy="440" rx="50" ry="30"/><ellipse cx="260" cy="560" rx="60" ry="30"/><ellipse cx="560" cy="250" rx="35" ry="20"/><ellipse cx="300" cy="230" rx="30" ry="16"/><ellipse cx="620" cy="540" rx="80" ry="40"/><ellipse cx="200" cy="640" rx="50" ry="22"/></g>
+  <g fill="none" stroke="var(--m-water)" stroke-linecap="round"><path d="M118,298 C160,330 250,350 330,387 C400,420 460,470 520,480 S700,540 1000,560" stroke-width="12"/><path d="M135,330 C170,420 150,470 150,505 C150,560 190,620 240,720" stroke-width="5"/><path d="M350,190 L300,215 L240,235 L180,255 L130,290" stroke-width="3"/><path d="M450,330 C500,360 560,380 600,420 S700,500 760,640" stroke-width="4"/></g>
+  <ellipse cx="338" cy="378" rx="9" ry="5" fill="var(--m-water)"/><ellipse cx="570" cy="372" rx="22" ry="8" fill="var(--m-water)"/>
+  <g fill="none" stroke="var(--m-road)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M246,80 L260,150 L290,220 L310,300 L330,387 L300,470 L289,683"/><path d="M433,307 L395,345 L330,387 L240,430 L150,505"/><path d="M330,387 L420,380 L540,367 L640,330"/><path d="M351,195 L330,260 L310,300"/><path d="M433,307 L500,330 L560,370"/><path d="M540,367 L600,330 L672,252"/><path d="M150,505 L220,560 L289,683"/><path d="M330,387 L350,450 L390,462 L420,540 L430,683"/></g>
+  <g fill="none" stroke="var(--m-road2)" stroke-width="1.4"><path d="M260,150 L350,195"/><path d="M366,196 L420,260 L433,307"/><path d="M200,222 L310,300"/><path d="M110,330 L200,420 L240,430"/><path d="M540,367 L520,440 L430,483"/></g></svg>`;
+}
+function build(){
+  const wrap=document.getElementById('mw'); if(!wrap) return;
+  const W=wrap.clientWidth,H=wrap.clientHeight,s=H/700,lc=innerWidth>=1024?376:0,ox=lc+(W-lc-800*s)/2;
+  const svg=document.getElementById('base'); svg.setAttribute('width',800*s); svg.setAttribute('height',700*s); svg.style.left=ox+'px';
+  const P=(x,y)=>`left:${(ox+x*s).toFixed(1)}px;top:${(y*s).toFixed(1)}px`;
+  let h='';
+  PLACES.forEach(p=>h+=`<div class="lbl city" style="${P(p[1],p[2])};${p[0]==='Hamburg'?'margin-top:22px;':''}${p[0]==='Husum'?'margin-top:14px;':''}${p[3]?'':'font-weight:400;color:var(--m-label)'}">${p[0]}</div>`);
+  h+=`<div class="lbl sea" style="${P(60,200)}">NORTH SEA</div><div class="lbl sea" style="${P(480,150)}">BALTIC SEA</div>`;
+  const only=open==='consent'?consentPins:null;
+  const show=c=>!only||only.includes(c.n);
+  singles.filter(show).forEach(c=>{
+    const isSel=c===felix&&open!=='cluster'&&open!=='lookup';
+    h+=`<div class="pinav${isSel?' sel':''}" style="${P(c.x,c.y)}">${av(c,32)}${isSel?`<span class="tag">${firstNames(c.n)} ${lastName(c.n)}</span>`:''}</div>`;
+  });
+  const hs=hh.filter(show);
+  if(hs.length>1) h+=`<div class="cl" style="${P(330,388)}">${hs.length}</div>`; else hs.forEach(c=>h+=`<div class="pinav" style="${P(c.x,c.y)}">${av(c,32)}</div>`);
+  if(!only) h+=`<div class="cl s" style="${P(189,158)}">${hus.length}</div>`;
+  // Karte zum gewählten Kontakt
+  if(open===''||open==='lookup'){
+    const x=ox+felix.x*s+60,y=felix.y*s-90;
+    h+=`<div class="fl pop" style="left:${x}px;top:${y}px"><div class="row">${av(felix,48)}<div class="grow"><div class="strong ell">Felix Brandt</div><div class="meta t3 ell">Creative director · Brandt Medien</div></div><button class="iconbtn sm">${ic('x','s14')}</button></div>
+      <div class="line">${ic('map-pin','s14')}<span>Fackenburger Allee 11<br>23554 Lübeck</span></div>
+      <div class="btns"><button class="btn">${ic('mail')}Mail</button><button class="btn">${ic('phone')}Call</button><button class="btn">${ic('navigation')}Maps</button></div>
+      <div class="foot">${ic('locate-fixed','s14')}<span class="grow">Found from address</span><button class="btn ghost sm">Move pin</button><button class="btn ghost sm">Open ›</button></div></div>`;
+  }
+  if(open==='cluster'){
+    const x=ox+330*s+34,y=388*s-110;
+    h+=`<div class="fl menu clpop" style="left:${x}px;top:${y}px"><div class="lab">Hamburg · ${hh.length} contacts</div>${hh.map(c=>`<div class="item" style="height:40px;gap:10px">${av(c,28)}<span class="grow ell" style="color:var(--text)">${c.n}</span><span class="t3 meta">${c.o.split(' ')[0]}</span></div>`).join('')}<div class="sep"></div><div class="item">${ic('maximize')}Zoom to fit</div></div>`;
+  }
+  wrap.querySelector('.ov').innerHTML=h; paintIcons(wrap);
+}
+function listcard(){
+  const inView=located.filter(c=>open!=='consent'||consentPins.includes(c.n)).sort((a,b)=>a.city.localeCompare(b.city)||lastName(a.n).localeCompare(lastName(b.n)));
+  return `<div class="fl listcard"><div class="hd"><span class="strong">In view</span><span class="t3 tab">${inView.length}</span><span class="grow"></span><button class="btn ghost sm">${ic('arrow-down-wide-narrow','s14')}City</button></div>
+   <div class="rows">${inView.map(c=>`<div class="lr${c===felix&&open!=='cluster'?' sel':''}">${av(c,32)}<div class="grow"><div class="ell strong" style="font-weight:${c===felix?500:400}">${c.n}</div><div class="sub ell">${c.o||c.t}</div></div><span class="d ell" style="max-width:76px">${c.city}</span></div>`).join('')}</div></div>`;
+}
+function status(){
+  if(open==='consent') return `<div class="fl consent"><div style="display:flex;gap:12px">${ic('map-pin','s20')}<div class="grow"><div class="strong">Show all your contacts on the map?</div><div class="meta t2" style="margin-top:4px">Torro can turn addresses into places with OpenStreetMap (Nominatim). For that, <b class="strong">the full addresses are sent to the OpenStreetMap Foundation</b>, one per second. It is off until you switch it on. Now the map shows the 3 contacts that already carry coordinates.</div></div></div>
+    <div class="btns"><button class="btn primary">Turn on address lookup</button><button class="btn">Not now</button><span class="grow"></span><button class="btn ghost">Settings</button></div></div>`;
+  const looking=open==='lookup';
+  return `<div class="fl stat"><div style="display:flex;align-items:center;gap:8px"><span class="strong">${looking?'Looking up addresses…':'All addresses located'}</span><span class="grow"></span><span class="t3 tab meta">${looking?'148 / 212':'212 / 212'}</span></div>
+    <div class="bar"><i style="width:${looking?'70%':'100%'}"></i></div><div class="meta t3">${looking?'One per second, in the background. Pause any time.':'25 contacts have no address.'}</div></div>`;
+}
+document.getElementById('app').innerHTML=`${sidebar('map')}
+<main class="main">
+  <div class="header"><button class="btn only-ms">${ic('map')}<span class="word">Map</span>${ic('chevron-down','s12')}</button>
+    <div class="crumbs not-ms">${ic('map','t3')}<b>Map</b><span class="t3 tab">${open==='consent'?'3 of 212':'187 of 212'} located</span></div>
+    <div class="field not-s" style="width:300px;margin-left:12px">${ic('search')}<input placeholder="Search a name or a place…"><kbd>/</kbd></div>
+    <span class="chip on not-ms">All books</span><span class="chip not-ms">Clients</span><span class="chip not-ms">Family</span><span class="grow"></span>
+    <div class="seg not-s"><a href="d1-tabelle.html?map=on" title="Table">${ic('table','s14')}<span class="word">Table</span></a><a href="d2-gruppen.html?map=on" title="Groups">${ic('list-tree','s14')}<span class="word">Groups</span></a><a href="d3-verzeichnis.html?map=on" title="Index">${ic('book-user','s14')}<span class="word">Index</span></a><a class="on" href="c-karte.html" title="Map">${ic('map','s14')}<span class="word">Map</span></a></div>
+    <button class="btn ghost not-s">${ic('layers')}<span class="word">OpenStreetMap</span>${ic('chevron-down','s12')}</button>
+    <button class="btn primary">${ic('plus')}<span class="word">New contact</span></button></div>
+  <div class="mapwrap" id="mw">${mapSvg()}<div class="ov"></div>
+    ${listcard()}${status()}
+    <div class="fl zoom"><button class="iconbtn">${ic('plus')}</button><div class="hline"></div><button class="iconbtn">${ic('minus')}</button></div>
+    <span class="attr">© OpenStreetMap contributors</span>
+  </div>
+</main>`;
+paintIcons(); build(); addEventListener('resize',build);
+if(document.fonts) document.fonts.ready.then(build);
+</script>
+</body></html>

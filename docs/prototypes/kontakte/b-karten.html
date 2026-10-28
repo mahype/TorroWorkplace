@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Contacts – Entwurf B: Kartenwand</title>
+<!-- Entwurf B „Kartenwand“: Kontakte als Karten zum Blättern (Google Contacts, Clay, folk), oben „Coming up“ mit dem,
+     was Aufmerksamkeit braucht: Geburtstage, Dubletten, neue Absender aus dem Eingang. Ein Klick öffnet den Kontakt
+     im Seitenpaneel (400) statt in einer festen dritten Spalte – die Wand bleibt sichtbar.
+     Zustände: ?open=panel (Kontakt im Paneel) · merge (Dubletten zusammenführen) · conflict (Konflikt mit dem Server)
+     ?size=l|m|s  ?theme=light -->
+<link rel="stylesheet" href="kontakte.css">
+<script src="icons.js"></script>
+<script src="kontakte.js"></script>
+<style>
+.filters{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 24px;border-bottom:1px solid var(--line);overflow:hidden}
+.filters .sepv{width:1px;height:20px;background:var(--line-strong);margin:0 4px}
+.filters .chip .n{font-family:"Inter Tabular",Inter,sans-serif;font-weight:400;color:var(--text3)}
+.wall{flex:1;overflow:auto;padding:24px;min-height:0}
+.wall-in{max-width:1480px;margin:0 auto}
+.up{display:flex;gap:12px;margin-bottom:24px;overflow:auto}
+.up .upc{flex:1 0 300px}
+.upc{display:flex;gap:12px;align-items:center;padding:14px 16px;border:1px solid var(--line-strong);background:var(--raised);border-radius:var(--r);min-height:76px}
+.upc .ic{width:36px;height:36px;border-radius:var(--r);display:grid;place-items:center;flex:none;background:var(--selected);border:1px solid var(--line-strong)}
+.upc .ic.at svg{color:var(--attn)}
+.upc .t{font-weight:500}
+.az{position:absolute;right:6px;top:140px;bottom:16px;width:20px;display:flex;flex-direction:column;justify-content:space-between;align-items:center;font:500 11px/14px Inter,sans-serif;color:var(--text3);z-index:3}
+html[data-size="s"] .az{display:none}
+.sh{display:flex;align-items:center;gap:8px;height:40px;margin:16px 0 4px;color:var(--text2);font-size:12px;line-height:16px;font-weight:500;position:sticky;top:-24px;background:var(--panel);z-index:2}
+.sh::after{content:"";flex:1;height:1px;background:var(--line)}
+.sh .n{color:var(--text3);font-weight:400}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(264px,1fr));gap:12px}
+.cc{background:var(--raised);border:1px solid var(--line-strong);border-radius:var(--r);padding:16px;display:flex;flex-direction:column;gap:12px;position:relative}
+.cc:hover,.cc.hov{border-color:var(--line-selected)}
+.cc.sel{background:var(--selected);border-color:var(--line-selected)}
+.cc .hd{display:flex;gap:12px;align-items:center}
+.cc .nm{font-weight:500}
+.cc .sub{font-size:13px;line-height:18px;color:var(--text3)}
+.cc .star{position:absolute;right:12px;top:12px;color:var(--text2)} .cc .star svg{fill:currentColor}
+.cc .lk{position:absolute;right:12px;top:12px;color:var(--text3)}
+.cc .ln{display:flex;align-items:center;gap:8px;font-size:13px;line-height:18px;color:var(--text2)}
+.cc .ln svg{color:var(--text3)}
+.cc .ft{display:flex;align-items:center;gap:2px;margin:0 -8px -8px;padding-top:8px;border-top:1px solid var(--line)}
+.cc .ft .iconbtn{width:32px;height:32px}
+.cc .ft .book{margin-left:auto;display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text3);padding-right:8px}
+
+.panel{position:absolute;right:0;top:0;bottom:0;width:400px;background:var(--panel);border-left:1px solid var(--line);z-index:10;display:flex;flex-direction:column}
+.panel .ph{height:64px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px 0 24px;border-bottom:1px solid var(--line)}
+.panel .pb{padding:24px;overflow:auto;flex:1}
+.panel h2{font-size:22px;line-height:28px;font-weight:600;margin:0}
+.panel .mini{display:flex;gap:6px;margin:16px 0 0}
+.panel .mini .btn{flex:1;justify-content:center;padding:0}
+.main.withpanel .wall{padding-right:424px}
+.main.withpanel .header{padding-right:424px}
+.main.withpanel .az{right:412px}
+html[data-size="m"] .main.withpanel .wall,html[data-size="s"] .main.withpanel .wall{padding-right:24px}
+html[data-size="m"] .main.withpanel .header,html[data-size="s"] .main.withpanel .header{padding-right:24px}
+html[data-size="m"] .main.withpanel .panel,html[data-size="s"] .main.withpanel .panel{width:min(400px,100%);box-shadow:var(--shadow)}
+html[data-size="s"] .panel{width:100%}
+
+.dlg{position:absolute;left:50%;top:72px;transform:translateX(-50%);width:760px;max-width:calc(100% - 32px);z-index:50;padding:0}
+.dlg .hd{display:flex;align-items:center;gap:12px;padding:16px 16px 12px}
+.dlg .hd h3{margin:0;font-size:22px;line-height:28px;font-weight:600}
+.mg{display:grid;grid-template-columns:96px 1fr 1fr;border-top:1px solid var(--line)}
+.mg>div{padding:8px 16px;border-bottom:1px solid var(--line);min-height:44px;display:flex;align-items:center;gap:8px}
+.mg .k{color:var(--text3);font-size:13px;padding-left:16px}
+.mg .pick{cursor:default}
+.mg .pick.on{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
+.mg .r{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--text3);flex:none;display:grid;place-items:center}
+.mg .on .r{border-color:var(--text)} .mg .on .r::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--text)}
+.dlg .ft{display:flex;gap:8px;align-items:center;padding:12px 16px}
+.ban{display:flex;gap:12px;align-items:center;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--raised)}
+.ban svg.at{color:var(--attn)}
+</style></head>
+<body>
+<div class="app" id="app"></div>
+<script>
+const open=document.documentElement.dataset.open;
+const picked=CONTACTS.find(c=>c.n==='Felix Brandt');
+const MAIL={ 'Amelie Krause':'amelie@krause-verlag.example','Felix Brandt':'felix@brandt-medien.example','Jonas Keller':'jonas@keller-it.example'};
+const slug=c=>lastName(c.n).toLowerCase().replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ä/g,'ae');
+const PH=n=>'+49 '+(30+(n.length*7)%60)+' 5550 '+(1000+([...n].reduce((a,ch)=>a+ch.charCodeAt(0),0)*13)%9000);
+function card(c){
+  const mail=c.o?`${firstNames(c.n).split(' ')[0].toLowerCase()}@${slug(c)}.example`:`${firstNames(c.n).toLowerCase()}@mailbox.example`;
+  const bk=BOOKS[c.b];
+  return `<div class="cc${c===picked&&open==='panel'?' sel':''}${c.n==='Julia Sommer'?' hov':''}">
+    <div class="hd">${av(c,48)}<div class="grow"><div class="nm ell">${c.n}</div><div class="sub ell">${c.o||c.t}</div></div></div>
+    ${c.f?`<span class="star" title="Favorite">${ic('star','s14')}</span>`:(c.b===1?`<span class="lk" title="Read-only">${ic('lock','s14')}</span>`:'')}
+    <div><div class="ln">${ic('mail','s14')}<span class="ell">${mail}</span></div>
+      <div class="ln">${ic('phone','s14')}<span class="tab">${PH(c.n)}</span></div>
+      <div class="ln">${ic('map-pin','s14')}<span class="ell">${c.city}${c.g.length?` · ${c.g[0]}`:''}</span></div></div>
+    <div class="ft"><button class="iconbtn" title="Write an email">${ic('mail')}</button><button class="iconbtn" title="Call">${ic('phone')}</button><button class="iconbtn" title="Show on map">${ic('map-pin')}</button><button class="iconbtn" title="Copy">${ic('copy')}</button>
+      <span class="book"><span class="dot" style="--c:${bk.c};width:6px;height:6px"></span>${bk.name}</span></div></div>`;
+}
+function wall(){
+  return `<div class="grid">${byLast.map(card).join('')}</div>`;
+}
+function coming(){
+  const lk=CONTACTS.find(c=>c.n==='Lukas Meier'), cl=CONTACTS.find(c=>c.n==='Clara Neumann');
+  return `<div class="up">
+    <div class="upc">${av(lk,40)}<div class="grow"><div class="t ell" style="display:flex;gap:6px;align-items:center">${ic('cake','s14')}Lukas Meier</div><div class="meta t3">Birthday on Sat 31 Oct · turns 41</div></div><button class="btn">Write</button></div>
+    <div class="upc">${av(cl,40)}<div class="grow"><div class="t ell">Clara Neumann</div><div class="meta t3">Birthday on Mon 2 Nov</div></div><button class="btn">Write</button></div>
+    <div class="upc"><div class="ic at">${ic('users')}</div><div class="grow"><div class="t">3 possible duplicates</div><div class="meta t3">Same email or phone across your books</div></div><button class="btn">Review</button></div>
+    <div class="upc"><div class="ic">${ic('inbox')}</div><div class="grow"><div class="t">2 senders not in your address book</div><div class="meta t3">From your Inbox this week</div></div><button class="btn">Save…</button></div>
+  </div>`;
+}
+function panel(){
+  const c=picked;
+  return `<aside class="panel"><div class="ph"><span class="grow strong ell">Contact</span><button class="btn ghost sm">${ic('square-pen','s14')}Edit</button><button class="iconbtn">${ic('x')}</button></div>
+  <div class="pb"><div style="display:flex;gap:16px;align-items:center">${av(c,64)}<div class="grow"><h2>${c.n}</h2><div class="t2">${c.t} · ${c.o}</div></div></div>
+    <div class="mini"><button class="btn">${ic('mail')}Mail</button><button class="btn">${ic('phone')}Call</button><button class="btn">${ic('map-pin')}Map</button><button class="btn sq">${ic('ellipsis')}</button></div>
+    <div class="sect"><div class="cap">Phone</div><div class="pl"><span class="lab">mobile</span><span class="tab">+49 451 5550 2087</span></div></div>
+    <div class="sect"><div class="cap">Email</div><div class="pl"><span class="lab">work</span><span>felix@brandt-medien.example</span></div></div>
+    <div class="sect"><div class="cap">Address</div><div class="pl"><span class="lab">work</span><span>Fackenburger Allee 11, 23554 Lübeck</span></div></div>
+    <div class="sect"><div class="cap">Groups</div><div style="display:flex;gap:6px"><span class="chip">${ic('tag','s14')}Clients</span><span class="chip" style="border-style:dashed;color:var(--text3)">${ic('plus','s14')}Add</span></div></div>
+    <div class="sect"><div class="cap">Connected in Torro</div><div class="pl"><span>${ic('mail','t3')}</span><span class="grow ell">Banner proofs, round 2</span><span class="t3 meta">Yesterday</span></div><div class="pl"><span>${ic('calendar-days','t3')}</span><span class="grow ell">Kick-off call</span><span class="t3 meta">Mon 10:00</span></div></div>
+    <div class="meta t3" style="margin-top:24px;display:flex;gap:6px;align-items:center">${ic('refresh-cw','s12')}Synced with Nextcloud · Contacts</div>
+  </div></aside>`;
+}
+function merge(){
+  const row=(k,a,b,w)=>`<div class="k">${k}</div><div class="pick${w==='a'?' on':''}"><span class="r"></span>${a}</div><div class="pick${w==='b'?' on':''}"><span class="r"></span>${b}</div>`;
+  return `<div class="scrim"></div><div class="menu dlg"><div class="hd">${ic('users','s20')}<h3 class="grow">Merge 2 contacts</h3><button class="iconbtn">${ic('x')}</button></div>
+    <div class="mg"><div></div><div style="gap:12px">${av(CONTACTS.find(c=>c.n==='Amelie Krause'),32)}<div><div class="strong">Amelie Krause</div><div class="meta t3">Contacts · Nextcloud</div></div></div>
+      <div style="gap:12px"><span class="av s32" style="--c:var(--c4)">AK</span><div><div class="strong">A. Krause</div><div class="meta t3">Personal · Fastmail</div></div></div>
+      ${row('Name','Amelie Krause','A. Krause','a')}${row('Company','Krause Verlag','Krause Verlag','a')}${row('Email','amelie@krause-verlag.example','amelie@krause-verlag.example','a')}
+      ${row('Phone','+49 30 5550 1429','+49 171 5550 1823 <span class="pill" style="height:18px">adds</span>','b')}${row('Birthday','12 Mar 1988','—','a')}
+      <div class="k">Result</div><div style="grid-column:span 2"><div class="t2 meta">One contact in Contacts with both phone numbers. “A. Krause” is removed from Fastmail; both versions stay in the sync log.</div></div></div>
+    <div class="ft"><span class="meta t3 grow">Nothing is changed until you confirm.</span><button class="btn ghost">Cancel</button><button class="btn primary">Merge contacts</button></div></div>`;
+}
+const conflictBanner=`<div class="ban">${ic('circle-alert','at s20')}<div class="grow"><b class="strong">Felix Brandt changed on the server too</b><div class="meta t3">You edited the phone number at 14:02, someone else edited it in Nextcloud at 14:05. Your change is kept on this computer.</div></div><button class="btn">Keep mine</button><button class="btn">Keep server's</button><button class="btn">Keep both</button></div>`;
+document.getElementById('app').innerHTML=`${sidebar('all')}
+<main class="main${open==='panel'?' withpanel':''}">
+  <div class="header"><button class="btn only-ms">${ic('users')}<span class="word">All contacts</span>${ic('chevron-down','s12')}</button>
+    <div class="crumbs not-ms">${ic('users','t3')}<b>All contacts</b><span class="t3 tab">248</span></div><span class="grow"></span>
+    <div class="seg not-s"><span class="on">A–Z</span><span>Company</span><span>City</span></div>
+    <button class="btn ghost not-s">${ic('search')}<span class="word">Search</span><kbd>/</kbd></button>
+    <button class="btn primary">${ic('plus')}<span class="word">New contact</span></button></div>
+  ${open==='conflict'?conflictBanner:''}
+  <div class="filters"><span class="chip on">Everyone <span class="n">248</span></span><span class="chip">${ic('star','s14')}Favorites <span class="n">5</span></span><span class="chip">Clients <span class="n">18</span></span><span class="chip">Family <span class="n">6</span></span><span class="chip">Neighbours <span class="n">4</span></span><span class="sepv"></span><span class="chip">${ic('cake','s14')}Birthday soon</span><span class="chip">No email</span><span class="chip">${ic('circle-alert','s14')}Needs review <span class="n">3</span></span></div>
+  <div class="az">${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l=>`<span>${l}</span>`).join('')}</div><div class="wall"><div class="wall-in">${coming()}${wall()}</div></div>
+  ${open==='panel'?panel():''}${open==='merge'?merge():''}
+</main>`;
+paintIcons();
+</script>
+</body></html>

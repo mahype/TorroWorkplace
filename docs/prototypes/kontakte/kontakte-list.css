@@ -1,0 +1,39 @@
+/* Runde 2: die Listenansichten D1–D3 (Tabelle, Gruppen, Verzeichnis). Gemeinsam: Kopfleiste mit Ansichtsschalter,
+   Werkzeugzeile, Kontakt im Seitenpaneel (400). Baut auf kontakte.css auf. */
+.body{flex:1;display:flex;min-height:0}
+.view{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+.tools{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 24px;border-bottom:1px solid var(--line)}
+.tools .field{width:320px;height:36px}
+.tools .chip .n{font-family:"Inter Tabular",Inter,sans-serif;font-weight:400;color:var(--text3)}
+.tools .sepv{width:1px;height:20px;background:var(--line-strong);margin:0 4px}
+.scroll{flex:1;overflow:auto;min-height:0;position:relative}
+
+/* Ansichtsschalter in der Kopfleiste: dieselben Kontakte, andere Darstellung (wie „Display“ in Linear) */
+.seg a{color:var(--text3)} .seg a.on{color:var(--text)} .seg a svg{color:currentColor}
+
+/* Seitenpaneel mit dem Kontakt */
+.cpanel{width:400px;flex:none;border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.cpanel .ph{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px 0 24px;border-bottom:1px solid var(--line)}
+.cpanel .pb{padding:24px;overflow:auto;flex:1}
+.cpanel h2{font-size:22px;line-height:28px;font-weight:600;margin:0}
+.cpanel .mini{display:flex;gap:6px;margin:16px 0 0}
+.cpanel .mini .btn{flex:1;justify-content:center;padding:0}
+html[data-size="m"] .cpanel,html[data-size="s"] .cpanel{position:absolute;right:0;top:0;bottom:0;width:min(400px,100%);background:var(--panel);box-shadow:var(--shadow);z-index:20}
+.body{position:relative}
+
+/* Zeilen-Bausteine */
+.chk{width:16px;height:16px;border-radius:var(--r);border:1.5px solid var(--text3);flex:none;display:grid;place-items:center;color:var(--on-accent)}
+.chk.on{background:var(--text);border-color:var(--text);color:var(--panel)}
+.chk svg{width:12px;height:12px;stroke-width:3}
+.st{color:var(--text2)} .st svg{fill:currentColor}
+.gp{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 6px;border-radius:10px;border:1px solid var(--line-strong);color:var(--text2);font-size:12px;line-height:16px;white-space:nowrap}
+.gp .dot{width:6px;height:6px}
+.ra{display:none;gap:2px;padding:2px;background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow)}
+.ra .iconbtn{width:32px;height:32px}
+.nm .f{color:var(--text2)} .nm b{font-weight:500}
+
+/* Sammelleiste bei Mehrfachauswahl (schwebend unten, wie die Leiste der Mail) */
+.bulk{position:absolute;left:50%;transform:translateX(-50%);bottom:24px;display:flex;align-items:center;gap:4px;padding:4px;background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow);z-index:20;white-space:nowrap}
+.bulk .cnt{padding:0 12px;font-weight:500}
+.bulk .vsep{width:1px;height:20px;background:var(--line-strong);margin:0 4px}
+.nm svg.i{display:inline-block;vertical-align:-3px}

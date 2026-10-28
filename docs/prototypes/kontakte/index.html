@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Contacts – drei Entwürfe</title>
+<link rel="stylesheet" href="kontakte.css">
+<style>
+body{overflow:auto}
+.wrap{max-width:1120px;margin:0 auto;padding:48px 24px 64px}
+h1{font-size:28px;line-height:36px;font-weight:600;margin:0 0 8px}
+.lead{color:var(--text2);max-width:70ch;margin:0 0 32px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.opt{border:1px solid var(--line-strong);background:var(--raised);border-radius:var(--r);padding:20px;display:flex;flex-direction:column;gap:12px}
+.opt h2{font-size:22px;line-height:28px;font-weight:600;margin:0}
+.opt .tag{font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.opt ul{margin:0;padding-left:18px;color:var(--text2)} .opt li{margin:2px 0}
+.links{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto;padding-top:8px}
+.links a{height:28px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--line-strong);border-radius:var(--r);color:var(--text);text-decoration:none;font:500 12px/16px Inter,sans-serif;background:var(--panel)}
+.links a:hover{background:var(--hover)} .links a.main{background:var(--accent);border-color:transparent;color:#fff}
+h3{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:40px 0 8px}
+p.s{color:var(--text2);margin:0;max-width:80ch}
+</style></head><body><div class="wrap">
+<h1>Torro Contacts – drei Entwürfe</h1>
+<p class="lead">Adressbuch von Nextcloud per CardDAV (WebDAV), im Standard-Design (Linear-Stil, Inter, Token-Werte seit #291). Alle drei teilen dieselbe Seitenleiste und dieselbe Datenlage (Bücher, Gruppen, Synchronstand, schreibgeschützte Bücher); sie unterscheiden sich darin, womit man arbeitet: einer Liste, einer Wand oder einer Karte. Wirkt am besten im Browser in voller Breite; <code>?theme=light</code> und <code>?size=m|s</code> an jede Adresse hängen.</p>
+<p class="s" style="margin:-16px 0 32px"><b class="strong">Entscheidung vom 27.10.2026:</b> Liste nach <b class="strong">D2 (Gruppen)</b>, die Karte <b class="strong">C</b> als zuschaltbare Ansicht, nur mit freigegebener Ortssuche. A, B, D1 und D3 sind verworfen und bleiben als Ideen stehen; der Zustand „Zustimmung“ in C ist überholt (die Frage steht in den Einstellungen). Siehe <code>docs/kontakte.md</code>, Entscheidung 11.</p>
+<div class="grid3">
+ <div class="opt"><span class="tag">A · vertraut, dicht</span><h2>Liste &amp; Kontakt</h2>
+  <ul><li>Liste mit Sprungleiste, Kontakt daneben, Eigenschaften rechts</li><li>Schnellaktionen am Kopf und beim Überfahren der Zeile</li><li>„Connected in Torro“: Mail, Termine, Aufgaben zur Person</li><li>Sync-Fenster, Bearbeiten im Kontakt, Ein-Satz-Eingabe</li></ul>
+  <div class="links"><a class="main" href="a-liste.html">Öffnen</a><a href="a-liste.html?open=edit">Bearbeiten</a><a href="a-liste.html?open=sync">Sync</a><a href="a-liste.html?open=quick">Schnelleingabe</a><a href="a-liste.html?theme=light">Hell</a></div></div>
+ <div class="opt"><span class="tag">B · bildhaft, aufräumend</span><h2>Kartenwand</h2>
+  <ul><li>Karten zum Blättern, Filter als Chips</li><li>„Coming up“: Geburtstage, Dubletten, neue Absender aus dem Eingang</li><li>Kontakt im Seitenpaneel, die Wand bleibt sichtbar</li><li>Dubletten zusammenführen, Konflikt mit dem Server</li></ul>
+  <div class="links"><a class="main" href="b-karten.html">Öffnen</a><a href="b-karten.html?open=panel">Paneel</a><a href="b-karten.html?open=merge">Zusammenführen</a><a href="b-karten.html?open=conflict">Konflikt</a><a href="b-karten.html?theme=light">Hell</a></div></div>
+ <div class="opt"><span class="tag">C · räumlich (Stufe KO4)</span><h2>Karte zuerst</h2>
+  <ul><li>Wer wohnt wo? Pins, Haufen, Liste des Ausschnitts</li><li>Pin öffnet eine kleine Karte mit Mail, Anruf, „In Karten öffnen“</li><li>Ortssuche aus, bis ein Mensch zustimmt (Hinweis im Entwurf)</li><li>Gezeichnete Karte; im Produkt OSM-Kacheln vom Kern</li></ul>
+  <div class="links"><a class="main" href="c-karte.html">Öffnen</a><a href="c-karte.html?open=cluster">Haufen</a><a href="c-karte.html?open=consent">Zustimmung</a><a href="c-karte.html?open=lookup">Suche läuft</a><a href="c-karte.html?theme=light">Hell</a></div></div>
+</div>
+<h3>Runde 2 · Listen statt Entwurf A – dieselbe Liste in drei Darstellungen</h3>
+<p class="s" style="margin-bottom:16px">Die Darstellung wählt man oben im Fenster (Table · Groups · Index), die Karte kommt erst als vierter Eintrag dazu, wenn die Ortssuche freigegeben ist (<code>?map=on</code> an jede Adresse). Ohne Freigabe bleibt es bei der Liste, links steht immer dasselbe Menü.</p>
+<div class="grid3">
+ <div class="opt"><span class="tag">D1 · nüchtern, vergleichend</span><h2>Tabelle</h2>
+  <ul><li>Eine Zeile je Kontakt, Spalten für Firma, Mail, Telefon, Ort, Gruppen, zuletzt kontaktiert</li><li>Spalten fallen von rechts weg, wenn die Kachel schmaler wird</li><li>Mehrfachauswahl mit schwebender Leiste (Gruppe, Verschieben, Zusammenführen)</li><li>„Display“: Spalten und Sortierung wählen</li></ul>
+  <div class="links"><a class="main" href="d1-tabelle.html">Öffnen</a><a href="d1-tabelle.html?open=panel">Mit Kontakt</a><a href="d1-tabelle.html?open=bulk">Auswahl</a><a href="d1-tabelle.html?open=display">Display</a><a href="d1-tabelle.html?theme=light">Hell</a></div></div>
+ <div class="opt"><span class="tag">D2 · geordnet, ruhig</span><h2>Gruppen</h2>
+  <ul><li>Einklappbare Köpfe nach Gruppe, Ort oder Adressbuch</li><li>Zweizeilige Zeilen: Name · Funktion · Firma, darunter Mail und Telefon</li><li>„+“ im Kopf legt einen Kontakt direkt in diese Gruppe</li><li>Nach Ort gruppiert ist es der Weg zur Karte, ohne Karte</li></ul>
+  <div class="links"><a class="main" href="d2-gruppen.html">Öffnen</a><a href="d2-gruppen.html?by=city">Nach Ort</a><a href="d2-gruppen.html?open=group">Menü</a><a href="d2-gruppen.html?open=panel">Mit Kontakt</a><a href="d2-gruppen.html?theme=light">Hell</a></div></div>
+ <div class="opt"><span class="tag">D3 · typografisch, weit</span><h2>Verzeichnis</h2>
+  <ul><li>Das gedruckte Adressbuch: große Buchstaben, Namen in Spalten</li><li>Je breiter die Kachel, desto mehr Spalten – auf dem 32:9-Monitor alles auf einen Blick</li><li>Buchstabenleiste oben, vorhandene Buchstaben hell</li><li>Wenig Chrom, Fotos und Initialen tragen die Seite</li></ul>
+  <div class="links"><a class="main" href="d3-verzeichnis.html">Öffnen</a><a href="d3-verzeichnis.html?open=panel">Mit Kontakt</a><a href="d3-verzeichnis.html?map=on">Mit „Map“</a><a href="d3-verzeichnis.html?theme=light">Hell</a></div></div>
+</div>
+<h3>Vorbilder</h3>
+<p class="s">Apple Kontakte und Nextcloud Contacts (Gruppen links, Liste, Kontakt als Formular) für A · Google Contacts mit „Merge &amp; fix“-Vorschlägen und Personal-CRMs wie Clay, folk, Dex (Karten, Erinnerungen, Verlauf) für B · Nextcloud Maps für C. Die Ein-Satz-Eingabe in A kennt man aus Cardhop.</p>
+<h3>Gemeinsam in allen drei</h3>
+<p class="s">Nextcloud-Konto als Gruppe in der Seitenleiste, Gruppen als Kinder des Buchs (<code>CATEGORIES</code>), Schloss für schreibgeschützte Bücher (Team directory), Stand „Synced 3 min ago · CardDAV“, ausgeblendetes Systemadressbuch, Favoriten, Geburtstage, Fotos oder getönte Initialen.</p>
+</div></body></html>
