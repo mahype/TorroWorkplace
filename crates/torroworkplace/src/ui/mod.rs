@@ -1951,11 +1951,11 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
     }
 }
 
+/// The account ids behind a cached list of models suitable for mail categorization.
+type MailDeciderCache = (Vec<String>, Vec<(String, torro_core::ai::AiModel)>);
+
 /// Loads everything the pages show; the search providers only `with_providers` (the setup is open).
-fn load(
-    with_providers: bool,
-    ai_cache: Option<(Vec<String>, Vec<(String, torro_core::ai::AiModel)>)>,
-) -> Task<Message> {
+fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Message> {
     // How long the core took to answer, with `TORRO_TIMING` (issue #206).
     let started = Instant::now();
     Task::perform(

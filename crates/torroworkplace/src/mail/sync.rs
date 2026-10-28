@@ -2013,8 +2013,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
         for n in 1..=130 {
-            // UID 1 is the oldest: 129 days, UID 130 today.
-            server.add("INBOX", &fake::mail(&format!("Mail {n}"), 130 - n, None), &["\\Seen"]);
+            // UID 1 is the oldest: 129 days, UID 130 today. Mail 40 is unambiguously
+            // outside the 90-day boundary even when the test and sync share one clock second.
+            let days_ago = if n == 40 { 91 } else { 130 - n };
+            server.add("INBOX", &fake::mail(&format!("Mail {n}"), days_ago, None), &["\\Seen"]);
         }
         server.add("Archive", &fake::mail("Kept", 3, None), &[]);
         let mailbox = mailbox(dir.path(), &server).await;
@@ -2035,7 +2037,7 @@ mod tests {
         let old = messages.iter().find(|m| m.subject == "Mail 1").expect("synced");
         assert_eq!(text_of(&mailbox, &old.id).await, None, "older than 90 days: only the headers");
         let bodies = fetches(&server, "BODY.PEEK[]");
-        // Mail 41 to 130 (Mail 40 is a moment more than 90 days old) and the archive's one.
+        // Mail 41 to 130 (Mail 40 is older than 90 days) and the archive's one.
         assert_eq!(bodies.len(), 90 + 1, "texts of the last 90 days only");
         let stores: Vec<String> = server.lines().into_iter().filter(|line| line.contains(" UID STORE ")).collect();
         assert!(stores.is_empty(), "syncing never marks mail read: {stores:?}");

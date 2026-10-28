@@ -544,10 +544,10 @@ fn rule_update<A>(form: &mut RuleForm, message: Message) -> (Action<A>, bool) {
             }
         }
         Message::Comparison { exception, at, comparison } => {
-            if let Some(held) = form.list(exception).get_mut(at) {
-                if held.field.allows(comparison) {
-                    held.comparison = comparison;
-                }
+            if let Some(held) = form.list(exception).get_mut(at)
+                && held.field.allows(comparison)
+            {
+                held.comparison = comparison;
             }
         }
         Message::Value { exception, at, value } => {

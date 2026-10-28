@@ -281,15 +281,14 @@ pub mod accounts {
     use iced::Length;
     use iced::widget::{column, container, responsive, row, space as blank, text_editor};
     use torro_core::i18n::trf;
-    use torro_gui::datetime::{format_exact, format_moment, month_name, month_name_short};
-    use torro_gui::theme::{self, ChartColor, size, space};
+    use torro_gui::datetime::format_moment;
+    use torro_gui::theme::{self, size, space};
     use torro_gui::units::{format_bytes, format_count};
     use torro_gui::widgets::{
-        Align, Anchor, ChartColumn, ChartSeries, HeadActions, MenuItem, MenuSection, PageAction, Placement, SharePart,
-        StatFigure, Status, TileFace, Trail,
+        Align, Anchor, HeadActions, MenuItem, MenuSection, PageAction, Placement, Status, TileFace, Trail,
     };
     use torro_gui::{layout, style, typo, widgets};
-    use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount};
+    use torro_ipc::mail::{MailAccountStats, MailFolderStats};
     use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request, Secret};
     use torro_mail::{Endpoint, MailFormat, Role, Security};
 
@@ -1170,132 +1169,8 @@ pub mod accounts {
     /// The sentence under the question for a folder role.
     const ROLE_DETAIL: &str = "The server has more than one folder that could hold it. Your choice is remembered.";
 
-    /// The four figures of the overview: mail, on the server, on this device, searchable.
-    pub(super) fn figures(stats: &MailAccountStats) -> Vec<StatFigure> {
-        vec![
-            StatFigure::new(
-                tr("Mail"),
-                format_count(stats.messages),
-                trf("{n} unread", &[("n", &format_count(stats.unread))]),
-            ),
-            server_figure(stats),
-            StatFigure::new(
-                tr("On this device"),
-                format_bytes(stats.database_bytes),
-                trf("{n} texts offline", &[("n", &format_count(stats.cached_bodies))]),
-            ),
-            StatFigure::new(
-                tr("Searchable"),
-                widgets::share_percent(stats.indexed_full, stats.messages),
-                trf("{n} with full text", &[("n", &format_count(stats.indexed_full))]),
-            ),
-        ]
-    }
-
-    /// "On the server": the quota with its limit where the server tells it, else the sum of the
-    /// folders' sizes without "of …" (decided in the planning of #314).
-    pub(super) fn server_figure(stats: &MailAccountStats) -> StatFigure {
-        let label = tr("On the server");
-        if let Some(quota) = &stats.quota {
-            let note = trf(
-                "of {total} · {share}",
-                &[
-                    ("total", &format_bytes(quota.limit_bytes)),
-                    ("share", &widgets::share_percent(quota.used_bytes, quota.limit_bytes)),
-                ],
-            );
-            return StatFigure::new(label, format_bytes(quota.used_bytes), note);
-        }
-        let known: Vec<u64> = stats.folders.iter().filter_map(|folder| folder.server_bytes).collect();
-        if known.is_empty() {
-            return StatFigure::new(label, UNKNOWN, tr("Sizes come with the next sync"));
-        }
-        let note = if known.len() < stats.folders.len() {
-            tr("Some sizes come with the next sync").to_string()
-        } else {
-            trf("in {n} folders", &[("n", &known.len())])
-        };
-        StatFigure::new(label, format_bytes(known.iter().sum()), note)
-    }
-
     /// What a cell shows for a value that is not known yet.
     const UNKNOWN: &str = "–";
-
-    /// The server's strip: the three largest folders, then "{n} other folders", and the free room
-    /// of the quota. The three keep the first three colours in their order: what the strip shows
-    /// is which folders are largest.
-    pub(super) fn server_parts(stats: &MailAccountStats) -> (Vec<SharePart>, Option<(String, u64)>) {
-        let mut sized: Vec<(&str, u64)> = stats
-            .folders
-            .iter()
-            .filter_map(|folder| Some((folder.folder.name.as_str(), folder.server_bytes?)))
-            .collect();
-        sized.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
-        let shown = sized.len().min(LARGEST_IN_STRIP);
-        let mut parts: Vec<SharePart> = sized[..shown]
-            .iter()
-            .enumerate()
-            .map(|(slot, (name, bytes))| SharePart::new(*name, *bytes, format_bytes(*bytes), ChartColor::Series(slot)))
-            .collect();
-        let others = &sized[shown..];
-        if !others.is_empty() {
-            let bytes = others.iter().map(|(_, bytes)| bytes).sum();
-            // One folder left over keeps its own name; several are counted.
-            let label = match others {
-                [(name, _)] => (*name).to_string(),
-                _ => trf("{n} other folders", &[("n", &others.len())]),
-            };
-            parts.push(SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Other));
-        }
-        // With a quota the strip is the quota, so "Free" is the free share.
-        if let Some(quota) = &stats.quota {
-            let (used, counted) = (quota.used_bytes, sized.iter().map(|(_, bytes)| bytes).sum::<u64>());
-            if counted > used {
-                // The folders count more than the server says is used (Gmail counts a mail in each of
-                // its labels): they are no parts of the quota, so the strip shows only the room used.
-                parts = vec![SharePart::new(tr("In use"), used, format_bytes(used), ChartColor::Series(0))];
-            } else {
-                // What no folder accounts for (sizes still coming) is a part of its own, in a colour
-                // of its own; below a hundredth of the used room it is rounding (KiB against bytes).
-                let rest = used - counted;
-                if rest > used / NOT_COUNTED_SHARE {
-                    let colour = ChartColor::Series(LARGEST_IN_STRIP);
-                    parts.push(SharePart::new(tr("Not counted by folder"), rest, format_bytes(rest), colour));
-                }
-            }
-        }
-        let free = stats
-            .quota
-            .as_ref()
-            .map(|quota| (tr("Free").to_string(), quota.limit_bytes.saturating_sub(quota.used_bytes)));
-        (parts, free)
-    }
-
-    /// How many folders the server's strip names before the rest is "other folders".
-    const LARGEST_IN_STRIP: usize = 3;
-
-    /// What no folder accounts for becomes a part of the server's strip from a hundredth of the
-    /// used room on.
-    const NOT_COUNTED_SHARE: u64 = 100;
-
-    /// The device's strip: search index, mail texts, originals and the rest of the database; never
-    /// below 0. Without the size of the index the rest says that it holds the index too.
-    pub(super) fn device_parts(stats: &MailAccountStats) -> Vec<SharePart> {
-        let part =
-            |label: &str, bytes: u64, slot| SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Series(slot));
-        let mut parts = Vec::new();
-        if let Some(index) = stats.search_index_bytes {
-            parts.push(part(tr("Search index"), index, 0));
-        }
-        parts.push(part(tr("Mail texts"), stats.body_cache_bytes, 1));
-        parts.push(part(tr("Originals"), stats.original_bytes, 2));
-        let counted = stats.search_index_bytes.unwrap_or(0) + stats.body_cache_bytes + stats.original_bytes;
-        let rest = stats.database_bytes.saturating_sub(counted);
-        let label =
-            if stats.search_index_bytes.is_some() { tr("Headers & folders") } else { tr("Index, headers & folders") };
-        parts.push(part(label, rest, 3));
-        parts
-    }
 
     /// "Storage": the server and the device as strips, the attachments under them, and the way to
     /// the page that manages them.
@@ -1313,108 +1188,6 @@ pub mod accounts {
         let manage =
             widgets::text_button(None, tr("Storage & search"), style::button::ghost, Some(Message::OpenStorage));
         widgets::chart_card(tr("Mail inventory"), "", body.push(row![blank::horizontal(), manage]))
-    }
-
-    /// "Mail over time": the mail per year – per month when it all lies within two years –, readable
-    /// offline or headers only, then the oldest and newest mail and the offline window.
-    fn time_card<'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Element<'a, Message> {
-        let mut body = column![].spacing(space::m());
-        let columns = time_columns(&stats.months);
-        if columns.is_empty() {
-            body = body.push(typo::text(typo::meta(), tr("No mail yet.")).style(theme::text_2));
-        } else {
-            let series = vec![
-                ChartSeries { name: tr("Readable offline").to_string(), color: ChartColor::Series(0) },
-                ChartSeries { name: tr("Headers only").to_string(), color: ChartColor::Series(1) },
-            ];
-            body = body.push(widgets::chart_legend(&series)).push(widgets::column_chart(series, columns));
-        }
-        let moment =
-            |at: Option<DateTime<Utc>>| at.map_or_else(|| tr("Not known").to_string(), |at| format_moment(at, now));
-        let range = trf(
-            "Oldest {oldest} · newest {newest}",
-            &[("oldest", &moment(stats.oldest_known)), ("newest", &moment(stats.newest_known))],
-        );
-        body = body.push(dated(typo::text(typo::meta(), range).style(theme::text_2), stats.oldest_known));
-        let window = match stats.oldest_cached_body {
-            Some(at) => trf("Readable offline from {moment}", &[("moment", &format_moment(at, now))]),
-            None => tr("No mail texts on this device yet.").to_string(),
-        };
-        let change = widgets::text_button(None, tr("Change"), style::button::ghost, Some(Message::OpenStorage));
-        let window = row![
-            dated(typo::text(typo::meta(), window).style(theme::text_2), stats.oldest_cached_body),
-            blank::horizontal(),
-            change
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-        widgets::chart_card(tr("Mail over time"), "", body.push(window))
-    }
-
-    /// `content` with the exact moment `at` as its tooltip, when there is one.
-    fn dated<'a>(content: impl Into<Element<'a, Message>>, at: Option<DateTime<Utc>>) -> Element<'a, Message> {
-        match at {
-            Some(at) => widgets::with_tooltip(content, format_exact(at)),
-            None => content.into(),
-        }
-    }
-
-    /// The columns of "Mail over time": one per year from the first to the last with mail, or one per
-    /// month when they all lie within two years; gaps count as 0.
-    pub(super) fn time_columns(months: &[MailMonthCount]) -> Vec<ChartColumn> {
-        let (Some(first), Some(last)) =
-            (months.iter().min_by_key(|m| (m.year, m.month)), months.iter().max_by_key(|m| (m.year, m.month)))
-        else {
-            return Vec::new();
-        };
-        let values = |count: (u64, u64)| {
-            let offline = u32::try_from(count.1).unwrap_or(u32::MAX);
-            let headers = u32::try_from(count.0.saturating_sub(count.1)).unwrap_or(u32::MAX);
-            vec![offline, headers]
-        };
-        if last.year - first.year <= 1 {
-            let mut columns = Vec::new();
-            let (mut year, mut month) = (first.year, first.month);
-            while (year, month) <= (last.year, last.month) {
-                let count = months
-                    .iter()
-                    .filter(|m| m.year == year && m.month == month)
-                    .fold((0, 0), |sum, m| (sum.0 + m.messages, sum.1 + m.cached_bodies));
-                columns.push(ChartColumn {
-                    label: month_name_short(month).to_string(),
-                    title: trf("{month} {year}", &[("month", &month_name(month)), ("year", &year)]),
-                    values: values(count),
-                });
-                (year, month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
-            }
-            return columns;
-        }
-        (first.year..=last.year)
-            .map(|year| {
-                let count = months
-                    .iter()
-                    .filter(|m| m.year == year)
-                    .fold((0, 0), |sum, m| (sum.0 + m.messages, sum.1 + m.cached_bodies));
-                ChartColumn { label: year.to_string(), title: year.to_string(), values: values(count) }
-            })
-            .collect()
-    }
-
-    /// "Search index": how far the mail is searchable, and when the index last ran.
-    fn index_card<'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Element<'a, Message> {
-        let part = |label: &str, count: u64, colour| SharePart::new(label, count, format_count(count), colour);
-        // What is searchable in full stands in the figure "Searchable" already (each number once):
-        // here it is the quiet track, and the parts are what is not there yet.
-        let parts = vec![
-            part(tr("Partial or unverified"), stats.indexed_partial_or_unverified, ChartColor::Series(1)),
-            part(tr("Awaiting"), stats.awaiting_index, ChartColor::Series(2)),
-            part(tr("Text unavailable"), stats.text_unavailable, ChartColor::Series(3)),
-        ];
-        let searchable = Some((String::new(), stats.indexed_full));
-        let note = stats
-            .last_index_run
-            .map_or_else(String::new, |at| trf("Last run {moment}", &[("moment", &format_moment(at, now))]));
-        widgets::chart_card(tr("Search index"), note, widgets::share_strip(parts, searchable))
     }
 
     /// Identity is kept beside access details. Sending preferences and the signature live in
@@ -1705,21 +1478,6 @@ pub mod accounts {
             Role::Archive => tr("Which folder holds archived mail?"),
             Role::Junk => tr("Which folder holds spam?"),
             Role::Trash => tr("Which folder holds deleted mail?"),
-        }
-    }
-
-    /// "Write new mail as" as a choice of a pick list.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct FormatChoice(MailFormat);
-
-    const FORMAT_CHOICES: [FormatChoice; 2] = [FormatChoice(MailFormat::Html), FormatChoice(MailFormat::Plain)];
-
-    impl std::fmt::Display for FormatChoice {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(match self.0 {
-                MailFormat::Html => tr("Formatted (HTML)"),
-                MailFormat::Plain => tr("Plain text"),
-            })
         }
     }
 
@@ -2027,86 +1785,6 @@ pub mod accounts {
             assert_eq!(nothing, Action::None, "the stored name is back");
         }
 
-        /// "On the server" with a quota names its limit and share; without one it is the sum of the
-        /// folders, and without sizes it waits for the next sync.
-        #[test]
-        fn the_server_figure_with_and_without_a_quota() {
-            const GIB: u64 = 1024 * 1024 * 1024;
-            let quota = stats(&[("INBOX", 30, 8, Some(1024))], Some((GIB * 236 / 100, 10 * GIB)));
-            let figure = server_figure(&quota);
-            assert_eq!(figure.value, format_bytes(GIB * 236 / 100));
-            let share = widgets::share_percent(GIB * 236 / 100, 10 * GIB);
-            assert_eq!(
-                figure.note,
-                trf("of {total} · {share}", &[("total", &format_bytes(10 * GIB)), ("share", &share)])
-            );
-            let sum = server_figure(&stats(&[("INBOX", 30, 8, Some(3072)), ("Sent", 10, 2, Some(1024))], None));
-            assert_eq!((sum.value, sum.note), (format_bytes(4096), trf("in {n} folders", &[("n", &2)])));
-            let unknown = server_figure(&stats(&[("INBOX", 30, 8, None)], None));
-            assert_eq!(unknown.value, UNKNOWN);
-            let (parts, free) = server_parts(&quota);
-            assert_eq!(parts.len(), 2, "the folder and what no folder accounts for");
-            assert_eq!(parts[1].label, tr("Not counted by folder"));
-            let whole: u64 = parts.iter().map(|part| part.value).sum::<u64>() + free.as_ref().map_or(0, |(_, b)| *b);
-            assert_eq!(whole, 10 * GIB, "the strip is the quota");
-            assert_eq!(free.map(|(_, bytes)| bytes), Some(10 * GIB - GIB * 236 / 100));
-            // A few KiB of rounding make no part; folders counting more than is used give way to
-            // the room used.
-            let close = stats(&[("INBOX", 30, 8, Some(GIB - 4096))], Some((GIB, 10 * GIB)));
-            assert_eq!(server_parts(&close).0.len(), 1);
-            let twice = stats(&[("INBOX", 30, 8, Some(GIB)), ("All Mail", 30, 8, Some(GIB))], Some((GIB, 10 * GIB)));
-            let (parts, _) = server_parts(&twice);
-            assert_eq!(parts.iter().map(|p| (p.label.as_str(), p.value)).collect::<Vec<_>>(), [(tr("In use"), GIB)]);
-            assert!(server_parts(&stats(&[("INBOX", 30, 8, Some(1))], None)).1.is_none(), "no quota, no free room");
-        }
-
-        /// The server's strip names the three largest folders and puts the rest together from the
-        /// fourth folder on.
-        #[test]
-        fn folders_past_the_third_become_other_folders() {
-            let folders = [("INBOX", 1, 0, Some(400)), ("Sent", 1, 0, Some(300)), ("Archive", 1, 0, Some(500))];
-            let (three, _) = server_parts(&stats(&folders, None));
-            assert_eq!(three.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["Archive", "INBOX", "Sent"]);
-            let mut four = folders.to_vec();
-            four.push(("Junk", 1, 0, Some(10)));
-            let (parts, _) = server_parts(&stats(&four, None));
-            assert_eq!(parts.len(), 4);
-            assert_eq!((parts[3].label.as_str(), parts[3].value), ("Junk", 10));
-            assert_eq!(parts[3].color, ChartColor::Other);
-            four.push(("Trash", 1, 0, Some(20)));
-            let (parts, _) = server_parts(&stats(&four, None));
-            assert_eq!((parts[3].label.clone(), parts[3].value), (trf("{n} other folders", &[("n", &2)]), 30));
-        }
-
-        /// The device's strip never goes below 0 and names the rest by what it holds.
-        #[test]
-        fn the_device_strip_adds_up_to_the_database() {
-            let mut stats = stats(&[("INBOX", 30, 8, None)], None);
-            let parts = device_parts(&stats);
-            assert_eq!(parts.iter().map(|p| p.value).sum::<u64>(), stats.database_bytes);
-            assert_eq!(parts.last().map(|p| p.label.as_str()), Some(tr("Headers & folders")));
-            stats.search_index_bytes = None;
-            stats.database_bytes = 1;
-            let parts = device_parts(&stats);
-            assert_eq!(parts.last().map(|p| (p.label.as_str(), p.value)), Some((tr("Index, headers & folders"), 0)));
-        }
-
-        /// Mail over time is counted per month within two years, else per year, gaps as 0.
-        #[test]
-        fn mail_over_time_per_month_or_per_year() {
-            let month = |year, month, messages, cached_bodies| MailMonthCount { year, month, messages, cached_bodies };
-            let months = time_columns(&[month(2025, 11, 10, 2), month(2026, 2, 30, 18)]);
-            assert_eq!(months.len(), 4, "Nov, Dec, Jan, Feb");
-            assert_eq!(months[0].values, vec![2, 8]);
-            assert_eq!(months[1].values, vec![0, 0]);
-            let years = time_columns(&[month(2020, 3, 5, 0), month(2026, 2, 30, 18)]);
-            assert_eq!(
-                years.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-                ["2020", "2021", "2022", "2023", "2024", "2025", "2026"]
-            );
-            assert!(time_columns(&[]).is_empty());
-        }
-
         /// The folder table has a total; a size the server has not told yet shows as unknown.
         #[test]
         fn the_folder_table_totals_its_columns() {
@@ -2117,7 +1795,6 @@ pub mod accounts {
             assert_eq!(rows[1][5], UNKNOWN);
             assert_eq!(total[1], format_count(40));
             assert_eq!(total[5], UNKNOWN, "not all sizes are known");
-            assert_eq!(figures(&stats(&[], None)).len(), 4);
         }
 
         /// The "…" menu opens and closes, and its entries lead to this account's own tabs.
@@ -2220,8 +1897,6 @@ pub mod accounts {
             for role in [Role::Inbox, Role::Drafts, Role::Sent, Role::Archive, Role::Junk, Role::Trash] {
                 assert!(!role_question(role).is_empty(), "{role:?}");
             }
-            let words: Vec<String> = FORMAT_CHOICES.iter().map(ToString::to_string).collect();
-            assert_eq!(words, [tr("Formatted (HTML)"), tr("Plain text")]);
             let mut state = State::default();
             let _ = page(&state, &Data::default()).body;
             let data = data();
@@ -2918,13 +2593,6 @@ pub mod storage {
 
     fn button<'a>(label: &'static str, message: Option<Message>) -> Element<'a, Message> {
         widgets::text_button(None, tr(label), style::button::secondary, message)
-    }
-
-    fn line<'a>(label: &'static str, value: String) -> Element<'a, Message> {
-        row_frame(
-            row![typo::text(typo::body(), tr(label)), blank::horizontal(), typo::text(typo::body_strong(), value)],
-            false,
-        )
     }
 
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {

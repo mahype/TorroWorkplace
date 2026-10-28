@@ -1726,6 +1726,7 @@ impl MailStore {
 
     /// Whether a known message belongs to the policy's local-reading set. Search indexing is
     /// independent and still fetches the message text when this is false.
+    #[cfg(test)]
     pub fn should_cache_body(
         &self,
         id: &str,
@@ -1898,6 +1899,7 @@ impl MailStore {
 
     /// Up to `limit` messages below `before` (by `seq`, newest first) that the mode wants fetched:
     /// what [`cache_estimate`](Self::cache_estimate) counts as to fetch.
+    #[cfg(test)]
     pub fn cached_body_missing(
         &self,
         before: Option<i64>,
