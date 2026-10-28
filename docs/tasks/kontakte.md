@@ -254,17 +254,31 @@ KO4.1 (braucht KO2.1) ── KO4.2 (braucht auch KO2.2)
 - **Modell:** Opus · **Braucht:** KO1.1a · **Dateien:** `crates/torrocontacts/` (neu), Wurzel-`Cargo.toml`
   (Mitglied), `crates/torro-core/src/app.rs` (`AppId::CONTACTS`), `scripts/{macos-dev-sign,design-check}.sh`
 - Iced-App mit `torro_gui::shell`, Fensterklasse `torro-contacts`. Skill `torro-design` laden.
+- **Vorlage:** Entwurf `docs/prototypes/kontakte/d2-gruppen.html` (Entscheidung 11 in
+  [kontakte.md](../kontakte.md)); die Zahlen dort sind die des Standard-Designs.
 - **Seitenleiste:** **All contacts**, **Favorites**, **Recent**, **Birthdays**, darunter die Bücher mit
-  Gruppen und Zahlen, ab zwei Konten je Konto gruppiert.
-- **Liste:**
-  - Foto oder Initialen (Farbe aus dem Namen), Name, Firma, Hauptkontakt.
-  - Alphabetische Sprungleiste, Suchfeld oben (`/`, `Ctrl+F`), Pfeiltasten und Enter.
+  Gruppen und Zahlen, ab zwei Konten je Konto gruppiert; unten der Abgleichstand („Synced 3 min ago“).
+  Kein Eintrag „Map“ (die Karte ist eine Ansicht, KO4.2).
+- **Liste (gruppiert):**
+  - **Köpfe:** `size::row_group()` mit Chevron, Icon in Tönung, Name, Zahl und „+“; einklappbar.
+    „Group by“ in der Werkzeugzeile wählt Gruppe (Standard), Ort oder Adressbuch; Wahl und eingeklappte
+    Köpfe in `ui.json` (`torro_gui::ui_state`).
+  - **Zeile** 60 hoch, zweizeilig: Foto oder Initialen (Farbe aus dem Namen), Name (Vorname leise,
+    Nachname `body_strong`), Stern, Schloss; darunter Funktion · Firma; Mail über Telefon (tabellarisch);
+    Ort rechts. Aktionsleiste beim Überfahren (`widgets::row_actions`: Mail, Call, Copy).
+  - Sortiert nach Nachname innerhalb eines Kopfes. Suchfeld oben (`/`, `Ctrl+F`), Pfeiltasten und Enter.
+    Keine Sprungleiste.
   - Kennzeichen für schreibgeschützt, offline geändert und Konflikt.
-- **Kontakt rechts (nur lesen):**
-  - Kopf mit Foto, Name, Firma und Position; Schnellknöpfe Mail (`mailto:`), Call (`tel:`), Copy.
+- **Kontakt im Seitenpaneel (nur lesen):** `torro_gui::panel` mit `size::panel()` (400) neben der Liste;
+  in Mittel und Schmal darüber.
+  - Kopf mit Foto, Name, Firma und Position; Schnellknöpfe Mail (`mailto:`), Call (`tel:`), Map, „…“.
   - Abschnitte je Feldart.
   - Links nur mit erlaubten Schemata (Konzept, Abschnitt Sicherheit).
-- **Größen:** Breit, Mittel, Schmal (Liste oder Kontakt). Mini und Leiste folgen in KO1.8.
+- **Größen:** Breit, Mittel, Schmal (Liste, Kontakt darüber). Spalten der Zeile fallen mit der Breite weg
+  (erst Ort, dann Mail und Telefon). Mini und Leiste folgen in KO1.8.
+- **Vorher zu klären (Rückfrage, nicht Teil der Aufgabe):** `torro-gui` braucht ein Maß `size::row_contact()`
+  (60) und die Icons `phone`, `star`, `lock`, `cake`, `user-plus`, `tag` (vorhanden), `book-user`, `map-pin`
+  (vorhanden) als Lucide 0.469.0. Die Koordination ergänzt sie vor dem Start (CLAUDE.md, Abschnitt Code).
 - **Datenquelle:** `ContactsSource`. `--demo` nimmt die `DemoSource`, `--demo --open <state>` dient
   der Sichtprüfung.
 - Leerer Zustand: „No contacts yet.“ mit „New contact“.
@@ -277,7 +291,8 @@ KO4.1 (braucht KO2.1) ── KO4.2 (braucht auch KO2.2)
 - **Oberfläche:**
   - **Bearbeiten:** „Edit“ (`⌘E`/`Ctrl+E`) schaltet alle Felder im Kontakt um. Je Feld ein
     Art-Wähler, „+ Add field“ für weitere Arten. „Done“ speichert mit `etag`, „Cancel“ verwirft.
-  - **Neuer Kontakt:** „New contact“ im gewählten Buch.
+  - **Neuer Kontakt:** „New contact“ in der Kopfleiste legt ihn im gewählten Buch an; das „+“ im Kopf einer
+    Gruppe (bei Gruppierung nach Gruppe) legt ihn zusätzlich in dieser Gruppe an.
   - **Weitere Aktionen:**
     - Foto per Datei wählen oder hineinziehen, entfernen.
     - Gruppen als Chips mit Vorschlägen.
@@ -573,12 +588,19 @@ KO4.1 (braucht KO2.1) ── KO4.2 (braucht auch KO2.2)
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** KO4.1, KO2.2 · **Dateien:** `crates/torrocontacts/src/*`
 - **Oberfläche:**
-  - **Seitenleisten-Eintrag „Map“:** `Map` als `Interactive` über die volle Breite. Die Pins richten
-    sich nach Buch und Gruppe aus der Seitenleiste. Gruppen aus nahen Pins zeigen eine Zahl.
-  - **Klick auf einen Pin:** Karte des Kontakts mit „Open“.
+  - **Vorlage:** Entwurf `docs/prototypes/kontakte/c-karte.html` (Entscheidung 11).
+  - **Ansicht „Map“ statt eigenem Seitenleisten-Eintrag:** In der Kopfleiste steht ein Schalter
+    „List | Map“, **nur wenn `maps.geocoding` an ist**; sonst gibt es ihn nicht und die App zeigt nur die
+    Liste. Schaltet jemand die Ortssuche aus, springt die App zur Liste zurück.
+  - `Map` als `Interactive` über die volle Breite. Die Pins richten sich nach Buch, Gruppe, Suche und
+    Filter wie die Liste. Gruppen aus nahen Pins zeigen eine Zahl; ein Klick auf den Haufen öffnet seine Liste.
+  - **Schwebende Liste „In view“** links: die Kontakte im Ausschnitt, Klick wählt den Pin. In Mittel und
+    Schmal als untere Schublade.
+  - **Klick auf einen Pin:** kleine Karte des Kontakts mit Mail, Call, „In Karten öffnen“, „Move pin“ und „Open“.
   - **Kacheln:** bis Zoom 6 offline, darüber vom Kachelserver.
-  - **Leiste oben:** „12 contacts without location“. Mit Zustimmung steht dort der Fortschritt der
-    Suche im Hintergrund, sonst der Hinweis auf die Einstellung.
+  - **Statuskarte oben rechts:** Fortschritt der Suche im Hintergrund („148 / 212“, „One per second, in the
+    background“) und „25 contacts have no address“. Die Ansicht gibt es nur mit Zustimmung, einen Hinweis
+    auf die Einstellung braucht sie deshalb nicht.
   - **Pin von Hand:** Im Kontakt „Set location on map“: Pin ziehen, „Save“ schreibt `GEO`.
 - **API:** `contacts.list_locations`, `set_location`, `maps.get_tile`,
   `maps.get_offline_tile`, `maps.get_status`.
