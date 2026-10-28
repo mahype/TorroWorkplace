@@ -317,12 +317,13 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
     /// Draws the expanded sidebar beside the content `width` wide instead of [`size::sidebar()`], with
     /// a handle over its right edge that the person drags (issue #376): pressed it sends
     /// [`SplitEvent::Grab`], double-clicked [`SplitEvent::Reset`], and while `dragging` every move over
-    /// the window sends [`SplitEvent::Drag`] with the width that puts the edge under the pointer, and
+    /// the window sends [`SplitEvent::Drag`] with the width that puts the handle under the pointer, and
     /// the line beside the sidebar shows in `line_selected`. The app keeps a [`split::Split`] and
     /// clamps it to [`sidebar_limits`], as for [`split::split`]. Only the wide layout without the rail
     /// uses the width; the rail, the drawer and the band's [`Cover::Drawer`] keep their widths. The
     /// window has the same widgets with and without a drag, and beside the rail as well, so neither a
-    /// drag nor `[` loses the content's state (scroll positions, focus).
+    /// drag nor `[` loses the content's state (scroll positions, focus). [`content_width`] still counts
+    /// [`size::sidebar()`]: an app that drags the width measures its content with that width itself.
     pub fn sidebar_width(mut self, width: f32, dragging: bool, on: fn(SplitEvent) -> M) -> Self {
         self.side = Some(SideWidth { width, dragging, on });
         self
@@ -727,11 +728,17 @@ fn inset_window<'a, M: 'a>(
     container(window).width(Fill).height(Fill).style(style::container::sidebar).into()
 }
 
+/// How far the handle of the expanded sidebar reaches over the sidebar ([`resizable`]): the margin
+/// of [`style::scrollbar()`], so the sidebar's scroller, which floats in its right edge, stays free
+/// to grab and to scroll over; the rest of the handle lies over the content's edge.
+const GRIP_INSIDE: f32 = 2.0;
+
 /// `window` with the handle of the expanded sidebar over it (issue #376), when the app gave a `side`
 /// width ([`Shell::sidebar_width`]); `handle` is false beside the rail, which has none. The handle is
-/// [`split::handle_width()`] wide, centred on the sidebar's edge, and only it takes the pointer: the
-/// rest of its layer is empty, so the window below gets every other press. Window and layer always
-/// lie in one mouse area, with or without the handle and the drag, so the window keeps its state.
+/// [`split::handle_width()`] wide, [`GRIP_INSIDE`] of it over the sidebar, and only it takes the
+/// pointer: the rest of its layer is empty, so the window below gets every other press. Window and
+/// layer always lie in one mouse area, with or without the handle and the drag, so the window keeps
+/// its state.
 fn resizable<'a, M: Clone + 'a>(window: Element<'a, M>, side: Option<SideWidth<M>>, handle: bool) -> Element<'a, M> {
     let Some(SideWidth { width, dragging, on }) = side else {
         return window;
@@ -741,14 +748,16 @@ fn resizable<'a, M: Clone + 'a>(window: Element<'a, M>, side: Option<SideWidth<M
             .on_press(on(SplitEvent::Grab))
             .on_double_click(on(SplitEvent::Reset))
             .interaction(mouse::Interaction::ResizingHorizontally);
-        row![blank().width((width - split::handle_width() / 2.0).max(0.0)), grip].height(Fill).into()
+        row![blank().width((width - GRIP_INSIDE).max(0.0)), grip].height(Fill).into()
     } else {
         blank().into()
     };
     let area = mouse_area(stack![window, layer]);
     if handle && dragging {
-        // The window starts at the left edge, so the pointer's x is the sidebar's width.
-        area.on_move(move |point| on(SplitEvent::Drag(point.x)))
+        // The window starts at the left edge, so the pointer's x is the sidebar's width once the
+        // handle's middle, which lies right of the edge, is under the pointer.
+        let middle = split::handle_width() / 2.0 - GRIP_INSIDE;
+        area.on_move(move |point| on(SplitEvent::Drag(point.x - middle)))
             .interaction(mouse::Interaction::ResizingHorizontally)
             .into()
     } else {
