@@ -3543,7 +3543,7 @@ static CONTROL_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.",
+    description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. An agent may resume a job naming a model that runs elsewhere only while it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.",
 };
 
 static PREVIEW_CLEAR_CATEGORIES: Command = Command {

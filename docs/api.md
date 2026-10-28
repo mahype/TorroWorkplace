@@ -988,7 +988,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    kein Agent eine Ausnahme vorbereitet, die die Person später einschaltet; ohne Modell zählt ein Konto auf diesem
    Computer als hier, weil „Automatic“ dort nur Modelle hier nimmt (nie `:cloud`), ein Konto anderswo als anderswo –
    sowie für `inbox.start_category_job` mit
-   einem Modell anderswo, das nicht das gerade geltende ist: Die Zustimmung gilt
+   einem Modell anderswo, das nicht das gerade geltende ist, und für das Fortsetzen eines solchen Auftrags
+   (`inbox.control_category_job`): Die Zustimmung gilt
    einem Anbieter, und kein Agent leitet sie auf einen anderen um. `decide_mail_to_cloud: false` ist eine
    gewöhnliche Admin-Änderung. Geprüft wird beim Setzen und beim Aufruf.
 

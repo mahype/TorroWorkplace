@@ -6192,7 +6192,19 @@ impl Core {
         }
         let decider = if action == CategoryJobControl::Resume {
             match (category_job_decider(&self.settings, &self.ai, &existing.scope).await, existing.scope.again) {
-                (Ok((decider, _)), _) => Some(decider),
+                (Ok((decider, cloud)), _) => {
+                    // As at the start: a client resumes a run naming a model elsewhere only while it
+                    // is what sorting uses now (PR review of #325), the last guard an approval runs on to.
+                    if matches!(reach, Reach::Client(_))
+                        && existing.scope.model.is_some()
+                        && cloud
+                        && decider_of(&self.settings, &self.ai).await.ok().as_ref() != Some(&decider)
+                    {
+                        let lack = torro_ipc::api::Lack::ForPeople;
+                        return Refused::Lacks { command: "inbox.control_category_job", lack }.response();
+                    }
+                    Some(decider)
+                }
                 (Err(_), true) => None,
                 (Err(refusal), false) => return refused_decider(refusal),
             }
@@ -8953,7 +8965,8 @@ impl Core {
     /// switches on. Naming no model, the account's seat
     /// decides ([`elsewhere_of`]): "Automatic" at an account here picks only models here
     /// ([`categorize::chosen`], review of #325). And `inbox.start_category_job` naming a model
-    /// elsewhere that sorting does not use now ([`Core::names_another_model_elsewhere`]).
+    /// elsewhere that sorting does not use now ([`Core::names_another_model_elsewhere`]), and
+    /// `inbox.control_category_job resume` of a run that names one (PR review of #325).
     /// Emptying a slot, taking an assignment back or switching off what sorts now are ordinary admin
     /// commands. The handlers judge again with the server's list of now ([`Core::set_ai_slot`],
     /// [`Core::set_ai_assignment`], [`Core::start_category_job`]).
@@ -8980,6 +8993,12 @@ impl Core {
                 (engine, model)
             }
             Request::StartCategoryJob { scope } => return self.names_another_model_elsewhere(scope).await,
+            // Resuming sends the run's mail to the model stored with it: the person may have chosen
+            // another for Sorting since (PR review of #325). A run that is not there is the handler's.
+            Request::ControlCategoryJob { id, action: torro_ipc::inbox::CategoryJobControl::Resume } => {
+                let Ok(Some(job)) = self.inbox.category_job(Some(id)) else { return Ok(false) };
+                return self.names_another_model_elsewhere(&job.scope).await;
+            }
             _ => return Ok(false),
         };
         if let Some(model) = model {
@@ -23594,6 +23613,68 @@ mod tests {
         *core.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let answer = core.inbox_request(job("nimble:cloud"), Some(&info), None).await;
         assert!(matches!(answer, Response::CategoryJob { job: Some(_) }), "{answer:?}");
+    }
+
+    /// PR review of #325: resuming a stored run sends its mail to the model stored with it. A client
+    /// resumes one naming a model elsewhere only while it is what sorting uses now – the person may have
+    /// chosen another for Sorting since –, refused before any approval and in the handler an approval
+    /// runs on to. The person resumes it as before.
+    #[tokio::test]
+    async fn a_client_resumes_no_run_elsewhere_the_person_no_longer_sorts_with() {
+        use torro_core::ai::AiSlot;
+        use torro_ipc::inbox::{CategoryJob, CategoryJobControl, CategoryJobScope, CategoryJobState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama_deciding_here_and_elsewhere().await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let engine = account.expect("ollama").id;
+        assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
+        // A run the person started elsewhere, paused; since then the person sorts here.
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
+        let id = core.inbox.new_category_job_id().expect("an id");
+        let now = Utc::now();
+        let job = CategoryJob {
+            id: id.clone(),
+            scope: CategoryJobScope {
+                engine: Some(engine.clone()),
+                model: Some("nimble:cloud".into()),
+                ..Default::default()
+            },
+            state: CategoryJobState::Paused,
+            accounts: Vec::new(),
+            errors: Vec::new(),
+            started_at: now,
+            updated_at: now,
+            generation: 1,
+            model_in_cloud: Some(true),
+        };
+        core.inbox.save_category_job(&job).expect("saved");
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
+        // … and lets sorted mail out all the same.
+        let permission = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
+        assert_eq!(core.handle(permission).await, Response::Ok);
+        let (client_id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let info = core.clients.list().into_iter().find(|info| info.id == client_id).expect("the client");
+        let resume = Request::ControlCategoryJob { id: id.clone(), action: CategoryJobControl::Resume };
+        let refused = Refused::Lacks { command: "inbox.control_category_job", lack: Lack::ForPeople };
+
+        assert_eq!(core.turns_on_elsewhere(&resume).await, Ok(true), "refused before any approval");
+        let door = door_for(&core, Some(&key));
+        assert_eq!(Box::pin(core.handle_from(Some(&key), door, resume.clone())).await.err(), Some(refused));
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert_eq!(code(&core.inbox_request(resume.clone(), Some(&info), None).await), "forbidden");
+        // The handler itself, where an approval runs on to.
+        let rights = RightsTemplate::FullAccess.rights();
+        assert_eq!(code(&core.handle_within(resume.clone(), Reach::Client(&rights)).await), "forbidden");
+        let held = core.inbox.category_job(Some(&id)).expect("read").expect("the run");
+        assert_eq!(held.state, CategoryJobState::Paused, "not resumed");
+
+        // The person resumes it as before.
+        let answer = core.handle(resume).await;
+        assert!(
+            matches!(&answer, Response::CategoryJob { job: Some(job) } if job.state == CategoryJobState::Running),
+            "{answer:?}"
+        );
     }
 
     /// Review of issue #325: "Automatic" at an account on this computer picks only models here, also

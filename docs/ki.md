@@ -177,7 +177,8 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
   Freigabe – auch für eine ausgeschaltete Ausnahme (`enabled: false`) mit einem Modell anderswo, außer sie nennt
   Konto und Modell, die gerade sortieren: Ausschalten geht so, vorbereiten nicht, sonst ginge die Mail nach dem
   Einschalten durch die Person an den Anbieter, den der Agent gewählt hat. Ein Sortierauftrag (`inbox.start_category_job`) darf ein Modell anderswo nur nennen, wenn es
-  das ist, mit dem gerade sortiert wird.
+  das ist, mit dem gerade sortiert wird; ebenso setzt ein Client einen gespeicherten Auftrag mit einem solchen Modell
+  nur fort (`inbox.control_category_job`), solange damit gerade sortiert wird.
 - **„Automatic“ an einem Konto auf diesem Rechner bleibt hier.** Ohne Modell nimmt Sortieren an Ollama, LM Studio
   oder Strata nur Modelle, die auf diesem Rechner rechnen, nie ein `:cloud`-Modell – auch bei eingeschalteter
   Erlaubnis. Wer „Ollama hier“ wählt, wählt „hier“; die Erlaubnis gilt dem Modell, das ein Mensch gewählt hat.

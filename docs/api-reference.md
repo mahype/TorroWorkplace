@@ -882,7 +882,7 @@ Reads the latest persistent mail categorization job or a job by ID, including sc
 
 Zugriff `write` · MCP-Tool `inbox_control_category_job`
 
-Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.
+Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. An agent may resume a job naming a model that runs elsewhere only while it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
