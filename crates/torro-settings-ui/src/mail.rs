@@ -3058,40 +3058,62 @@ pub mod storage {
         if current.mode == MailCacheMode::HeadersOnly && state.pending_mode.is_none() {
             rows.insert(
                 0,
-                row_frame(
-                    typo::text(typo::meta(), tr("This account still uses the previous header-only setting. Choose one of the three offline options."))
-                        .style(theme::text_2),
-                    false,
-                ),
+                container(
+                    typo::text(
+                        typo::meta(),
+                        tr("This account still uses the previous header-only setting. Choose one of the three offline options."),
+                    )
+                    .style(theme::text_2),
+                )
+                .width(Length::Fill)
+                .padding([space::m(), space::l()])
+                .into(),
             );
         }
         if chosen == MailCacheMode::SinceDate {
             rows.push(
-                row_frame(
-                    row![
-                        typo::text(typo::body(), tr("From date")),
-                        field(tr("DD.MM.YYYY"), &date).on_input(Message::Date),
-                    ]
-                    .spacing(space::m())
-                    .align_y(iced::Alignment::Center),
-                    false,
-                ),
+                responsive(move |room| {
+                    let label = typo::text(typo::body(), tr("From date"));
+                    let input = field(tr("DD.MM.YYYY"), &date).on_input(Message::Date);
+                    if room.width < 460.0 {
+                        container(column![label, input].spacing(space::s()))
+                            .width(Length::Fill)
+                            .padding([space::m(), space::l()])
+                            .into()
+                    } else {
+                        row_frame(row![label, input].spacing(space::m()).align_y(iced::Alignment::Center), false)
+                    }
+                })
+                .height(Length::Shrink)
+                .into(),
             );
         }
         if chosen == MailCacheMode::MaxSize {
-            rows.push(row_frame(
-                row![
-                    typo::text(typo::body(), tr("Maximum")),
-                    field(tr("MiB"), &size).on_input(Message::Size),
-                    typo::text(typo::meta(), tr("MiB")).style(theme::text_2),
-                ]
-                .spacing(space::m())
-                .align_y(iced::Alignment::Center),
-                false,
-            ));
+            rows.push(
+                responsive(move |room| {
+                    let label = typo::text(typo::body(), tr("Maximum"));
+                    let input = field(tr("MiB"), &size).on_input(Message::Size);
+                    let unit = typo::text(typo::meta(), tr("MiB")).style(theme::text_2);
+                    if room.width < 460.0 {
+                        container(column![label, row![input, unit].spacing(space::s())].spacing(space::s()))
+                            .width(Length::Fill)
+                            .padding([space::m(), space::l()])
+                            .into()
+                    } else {
+                        row_frame(row![label, input, unit].spacing(space::m()).align_y(iced::Alignment::Center), false)
+                    }
+                })
+                .height(Length::Shrink)
+                .into(),
+            );
         }
         if let Some(error) = &state.error {
-            rows.push(row_frame(typo::text(typo::meta(), error.clone()).style(theme::text_2), false));
+            rows.push(
+                container(typo::text(typo::meta(), error.clone()).style(theme::text_2))
+                    .width(Length::Fill)
+                    .padding([space::m(), space::l()])
+                    .into(),
+            );
         }
         let running =
             data.mail_cache_jobs.iter().any(|job| job.account == account && job.state == MailCacheJobState::Running);
@@ -3100,16 +3122,25 @@ pub mod storage {
         if matches!(retention, Retention::Other(_)) {
             retention_options.push(retention);
         }
-        rows.push(row_frame(
-            row![
-                typo::text(typo::body(), tr("Keep downloaded attachments")),
-                blank::horizontal(),
-                picker(retention_options, retention, |choice| Message::Retention(choice.days())),
-            ]
-            .spacing(space::m())
-            .align_y(iced::Alignment::Center),
-            false,
-        ));
+        rows.push(
+            responsive(move |room| {
+                let label = typo::text(typo::body(), tr("Keep downloaded attachments"));
+                let select = picker(retention_options.clone(), retention, |choice| Message::Retention(choice.days()));
+                if room.width < 480.0 {
+                    container(column![label, select].spacing(space::s()))
+                        .width(Length::Fill)
+                        .padding([space::m(), space::l()])
+                        .into()
+                } else {
+                    row_frame(
+                        row![label, blank::horizontal(), select].spacing(space::m()).align_y(iced::Alignment::Center),
+                        false,
+                    )
+                }
+            })
+            .height(Length::Shrink)
+            .into(),
+        );
         rows.push(row_frame(
             row![
                 blank::horizontal(),
