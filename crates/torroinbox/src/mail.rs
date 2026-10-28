@@ -2615,8 +2615,9 @@ fn split_body<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Element<'
 }
 
 /// The mail itself in the panel's body, both [`Bars`] alike: while it loads or after an error a
-/// quiet line; once in, the mail in the reading column (issue #291, [`reading_column`]): the HTML with
-/// the note under it, or the text with the note on foreign text and its "Links".
+/// quiet line; once in, the text in the reading column (issue #291, [`reading_column`]) with the note
+/// on foreign text and its "Links", or the HTML from edge to edge of the panel's body (issue #377,
+/// [`html_letter`]).
 fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
     match reading.loaded {
         None => vec![panel::inset(note(tr("Loading the message…")))],
@@ -2625,23 +2626,35 @@ fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
             let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
             vec![panel::inset(column![what, why].spacing(space::xs()))]
         }
-        Some(Ok(_)) => vec![reading_column(letter(reading).width(Fill))],
+        Some(Ok(_)) => match html_edge(reading) {
+            // Out to the panel's edges; the margin of a mail without a background of its own puts its
+            // text in line with the title (16 from the edge, as `panel::inset` does).
+            Some(html) => {
+                vec![panel::bleed(html_letter(html, space::l(), Padding::ZERO.left(space::l()).right(space::l())))]
+            }
+            None => vec![reading_column(letter(reading).width(Fill))],
+        },
     }
 }
 
-/// The loaded mail as the reading column holds it ([`panel_letter`], [`reader_mail`]): the HTML
-/// ([`html_view`], no margin of its own – the column's padding is its margin, so its text starts where
-/// a plain text does) with the note under it, or the text with the note on foreign text and its
-/// "Links".
+/// The text of a loaded mail as the reading column holds it ([`panel_letter`], [`reader_mail`]), with
+/// the note on foreign text and its "Links". The HTML does not stand here: it fills its parent
+/// ([`html_letter`]).
 fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
-    if let Some(html) = html_edge(reading) {
-        return column![html_view(html).margin(0.0), html_note()].spacing(space::m());
-    }
     let mut text = column![text_block(reading.text, text_level(reading.read))].spacing(space::l());
     if let Some(links) = text_links(reading.text) {
         text = text.push(links);
     }
     text
+}
+
+/// The mail's HTML from edge to edge of its parent (issue #377): no padding around it and no limit to
+/// its width, so a mail with a background of its own paints it up to the edges. `margin` is the side
+/// margin of a mail without one (its text starts where the head does); the note under it keeps
+/// `note_padding`, as the text of a plain mail does.
+fn html_letter<'a>(html: HtmlReading<'a>, margin: f32, note_padding: Padding) -> Element<'a, Message> {
+    let note = container(html_note()).padding(note_padding);
+    column![html_view(html).margin(margin), note].spacing(space::m()).width(Fill).into()
 }
 
 /// The widest the mail's text or HTML stands in a reader or panel `width` wide (issue #291, the reading
@@ -2735,18 +2748,19 @@ struct ReaderWidths {
     /// The head – subject, sender, invitation, task – and the attachments: inside the reading padding's
     /// sides.
     head: f32,
-    /// The mail's text or HTML: the reading column ([`reading_width`]), at most
-    /// [`size::reading_max`].
+    /// The mail's text: the reading column ([`reading_width`]), at most [`size::reading_max`].
     mail: f32,
+    /// The mail's HTML (issue #377): the whole reader, from edge to edge.
+    html: f32,
 }
 
 /// The widths in a reader `width` wide (issue #291): the head over the whole width inside the reading
-/// padding, the mail – text and HTML alike – in the reading column, at most [`size::reading_max`]
-/// wide, at the left under the head (a newsletter centres itself in it, a mail without a background
-/// of its own starts its text where the head does).
+/// padding, a text in the reading column, at most [`size::reading_max`] wide, at the left under the
+/// head, and a HTML from edge to edge (issue #377: a newsletter centres itself in its background, a
+/// mail without a background of its own starts its text where the head does).
 fn reader_widths(width: f32) -> ReaderWidths {
     let pad = layout::reading_padding();
-    ReaderWidths { head: (width - pad.left - pad.right).max(0.0), mail: reading_width(width) }
+    ReaderWidths { head: (width - pad.left - pad.right).max(0.0), mail: reading_width(width), html: width.max(0.0) }
 }
 
 /// The mail's HTML when it is loaded and shows as HTML.
@@ -2754,9 +2768,10 @@ fn html_edge<'a>(reading: &Reading<'a>) -> Option<HtmlReading<'a>> {
     reading.html.filter(|html| html.shown() && matches!(reading.loaded, Some(Ok(_))))
 }
 
-/// The mail under the reader's head and its line (task E11.3, issue #291): in the reading column
-/// `widths.mail` wide with the reading padding around it ([`letter`]: text with its links and the
-/// note on foreign text, or HTML with the note under it). While it loads, or after an error, a quiet
+/// The mail under the reader's head and its line (task E11.3, issues #291, #377): a text in the reading
+/// column `widths.mail` wide with the reading padding around it ([`letter`]: the text with its links and
+/// the note on foreign text), a HTML `widths.html` wide, without padding ([`html_letter`]; only its note
+/// keeps the reading padding). While it loads, or after an error, a quiet
 /// line says so.
 fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, Message> {
     let pad = layout::reading_padding();
@@ -2767,7 +2782,13 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
             let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
             container(column![what, why].spacing(space::xs())).padding(pad).into()
         }
-        Some(Ok(_)) => container(letter(reading).width(widths.mail)).padding(pad).into(),
+        Some(Ok(_)) => match html_edge(reading) {
+            Some(html) => {
+                let note = Padding { left: pad.left, right: pad.right, bottom: pad.bottom, top: 0.0 };
+                container(html_letter(html, pad.left, note)).width(widths.html).into()
+            }
+            None => container(letter(reading).width(widths.mail)).padding(pad).into(),
+        },
     }
 }
 
@@ -4656,20 +4677,22 @@ mod tests {
         DemoSource::new(now()).mail_folders().expect("folders")
     }
 
-    /// Issue #291 (task L.35): the mail stands in the reading column – text and HTML alike at most
-    /// `size::reading_max()` wide inside the reading padding, at the left –, the head over the whole
-    /// width inside the padding's sides; in every built-in design.
+    /// Issue #291 (task L.35): the text stands in the reading column – at most `size::reading_max()`
+    /// wide inside the reading padding, at the left –, the head over the whole width inside the
+    /// padding's sides; a HTML fills the whole reader (issue #377); in every built-in design.
     #[test]
     fn the_mail_stands_in_the_reading_column() {
         let pad = layout::reading_padding();
         let sides = pad.left + pad.right;
         assert_eq!((size::reading_max(), sides), (600.0, 128.0), "the standard's column and margins");
         for width in [3000.0, 1400.0, 900.0, 728.0] {
-            assert_eq!(reader_widths(width), ReaderWidths { head: width - sides, mail: 600.0 }, "at {width}");
+            let widths = ReaderWidths { head: width - sides, mail: 600.0, html: width };
+            assert_eq!(reader_widths(width), widths, "at {width}");
         }
         // Narrower than the column with its margins: the room inside them.
-        assert_eq!(reader_widths(500.0), ReaderWidths { head: 372.0, mail: 372.0 });
-        assert_eq!(reader_widths(10.0), ReaderWidths { head: 0.0, mail: 0.0 }, "never below nothing");
+        assert_eq!(reader_widths(500.0), ReaderWidths { head: 372.0, mail: 372.0, html: 500.0 });
+        assert_eq!(reader_widths(10.0), ReaderWidths { head: 0.0, mail: 0.0, html: 10.0 }, "a HTML fills it");
+        assert_eq!(reader_widths(-5.0).html, 0.0, "never below nothing");
         // Compact and Console from their files: Console's column is as wide as the reader allows.
         for (id, column, margins) in [("compact", 640.0, 80.0), ("console", 1200.0, 36.0)] {
             let design = torro_core::design::load(std::path::Path::new(""), id).expect("built in");
