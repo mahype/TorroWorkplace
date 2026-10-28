@@ -5224,6 +5224,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Turned off in Settings › AI", "Abgeschaltet unter Einstellungen › KI"),
     ("Turned off at {account}", "Abgeschaltet bei {account}"),
+    ("{text}; sorted mail stays on this computer", "{text}; sortierte Mail bleibt auf diesem Rechner"),
+    ("Let {engine} ({model}) be the model for {slot}", "{engine} ({model}) für {slot} nehmen"),
     ("Sorting may no longer send mail to the cloud.", "Sortieren darf keine Mail mehr in die Cloud schicken."),
     ("Turned off in {area}", "Abgeschaltet in {area}"),
     (

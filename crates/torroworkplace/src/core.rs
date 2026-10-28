@@ -6251,7 +6251,7 @@ impl Core {
                 message: tr("This sorting job is already complete.").into(),
             };
         }
-        let decider = if action == CategoryJobControl::Resume {
+        let (decider, model_in_cloud) = if action == CategoryJobControl::Resume {
             match (category_job_decider(&self.settings, &self.ai, &existing.scope).await, existing.scope.again) {
                 (Ok((decider, cloud)), _) => {
                     // As at the start: a client resumes a run naming a model elsewhere only while it
@@ -6264,13 +6264,13 @@ impl Core {
                         let lack = torro_ipc::api::Lack::ForPeople;
                         return Refused::Lacks { command: "inbox.control_category_job", lack }.response();
                     }
-                    Some(decider)
+                    (Some(decider), Some(cloud))
                 }
-                (Err(_), true) => None,
+                (Err(_), true) => (None, None),
                 (Err(refusal), false) => return refused_decider(refusal),
             }
         } else {
-            None
+            (None, None)
         };
         let mut active = self.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if action == CategoryJobControl::Resume && active.is_some() {
@@ -6289,6 +6289,9 @@ impl Core {
             {
                 job.generation += 1;
                 job.state = CategoryJobState::Running;
+                // Where the model of now computes (PR review of #325): a run without a fixed model may
+                // resume with another, and "Keep mail here" stops a run by this mark.
+                job.model_in_cloud = model_in_cloud;
             }
             _ => {}
         });
@@ -23994,6 +23997,23 @@ mod tests {
         let answer = core.handle(resume).await;
         assert!(
             matches!(&answer, Response::CategoryJob { job: Some(job) } if job.state == CategoryJobState::Running),
+            "{answer:?}"
+        );
+        *core.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+        // PR review of #325: a run without a fixed model, started here, resumes with what sorts now –
+        // elsewhere – and carries that mark, by which "Keep mail here" stops it.
+        let mut free = job.clone();
+        free.id = core.inbox.new_category_job_id().expect("an id");
+        free.scope.model = None;
+        free.scope.engine = None;
+        free.model_in_cloud = Some(false);
+        core.inbox.save_category_job(&free).expect("saved");
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
+        let again = Request::ControlCategoryJob { id: free.id.clone(), action: CategoryJobControl::Resume };
+        let answer = core.handle(again).await;
+        assert!(
+            matches!(&answer, Response::CategoryJob { job: Some(job) } if job.model_in_cloud == Some(true)),
             "{answer:?}"
         );
     }

@@ -1227,13 +1227,22 @@ fn slot_summary(
     effort: Option<torro_core::ai::Effort>,
     facts: &Facts,
 ) -> String {
-    let Some(engine) = engine else {
-        return trf("Let no model be the model for {slot}", &[("slot", &slot.label())]);
+    // Sorting with a model here, or with none, also keeps sorted mail here (`decide_mail_to_cloud` off,
+    // PR review of #325): the person reads that it ends a permission given before.
+    let stays = |text: String| match slot {
+        torro_core::ai::AiSlot::Decide => trf("{text}; sorted mail stays on this computer", &[("text", &text)]),
+        torro_core::ai::AiSlot::Chat => text,
     };
-    let text = slot_model_summary(slot, engine, model, facts);
-    match effort {
-        Some(effort) => trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(effort))]),
-        None => text,
+    let Some(engine) = engine else {
+        return stays(trf("Let no model be the model for {slot}", &[("slot", &slot.label())]));
+    };
+    let mut text = slot_model_summary(slot, engine, model, facts);
+    if let Some(effort) = effort {
+        text = trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(effort))]);
+    }
+    match facts.model.as_ref().filter(|_| model.is_some()) {
+        Some(known) if known.here => stays(text),
+        _ => text,
     }
 }
 
@@ -1253,6 +1262,14 @@ fn slot_model_summary(slot: torro_core::ai::AiSlot, engine: &str, model: Option<
     let (Some(_), Some(known)) = (model, &facts.model) else {
         return match model {
             None => trf("Let {engine} pick the model for {slot}", &words),
+            // An engine that is no AI account (the assistant's own, PR review of #325) has no list:
+            // its model is what will be written, so it is named – made harmless like any client text.
+            Some(model) if facts.name.is_none() => {
+                let model = quote(model);
+                let words: [(&str, &dyn std::fmt::Display); 3] =
+                    [("engine", &engine), ("model", &model), ("slot", &slot)];
+                trf("Let {engine} ({model}) be the model for {slot}", &words)
+            }
             Some(_) => trf("Let an unknown model of {engine} be the model for {slot}", &words),
         };
     };
@@ -3854,9 +3871,11 @@ pub(crate) mod tests {
         let account = "ai:ollama@localhost:11434";
         let words: [(&str, &dyn std::fmt::Display); 3] =
             [("engine", &"Ollama"), ("model", &"Nimble"), ("slot", sorting)];
+        // Sorting here keeps sorted mail here (PR review of #325): said, as it ends a permission.
+        let stays = |text: String| trf("{text}; sorted mail stays on this computer", &[("text", &text)]);
         assert_eq!(
             summary(&slot(Some(account), Some("nimble")), &known(true)),
-            trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words)
+            stays(trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words))
         );
         assert_eq!(
             summary(&slot(Some(account), Some("nimble")), &known(false)),
@@ -3874,8 +3893,23 @@ pub(crate) mod tests {
         );
         assert_eq!(
             summary(&slot(None, None), &Facts::default()),
-            trf("Let no model be the model for {slot}", &[("slot", sorting)])
+            stays(trf("Let no model be the model for {slot}", &[("slot", sorting)]))
         );
+        // An engine that is no AI account has no list: its model is named, made harmless.
+        let chat = Request::SetAiSlot {
+            slot: AiSlot::Chat,
+            engine: Some("claude-code".into()),
+            model: Some("opus\nApprove".into()),
+            effort: None,
+        };
+        let model = quote("opus\nApprove");
+        let chat_words: [(&str, &dyn std::fmt::Display); 3] =
+            [("engine", &"claude-code"), ("model", &model), ("slot", &AiSlot::Chat.label())];
+        assert_eq!(
+            summary(&chat, &Facts::default()),
+            trf("Let {engine} ({model}) be the model for {slot}", &chat_words)
+        );
+        assert!(!summary(&chat, &Facts::default()).contains('\n'), "one line");
         // The effort by its word, after what the slot gets.
         let effortful = Request::SetAiSlot {
             slot: AiSlot::Decide,
@@ -3886,7 +3920,7 @@ pub(crate) mod tests {
         let text = trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words);
         assert_eq!(
             summary(&effortful, &known(true)),
-            trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("High"))])
+            stays(trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("High"))]))
         );
 
         let pull = Request::PullAiModel { account: account.into(), model: "evil\nApprove".into() };

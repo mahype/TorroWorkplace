@@ -13,8 +13,9 @@
 //! **How the answer is read** ([`read`]): strictly, as everything a model says is data. The arguments
 //! of the call to [`TOOL`], else one JSON object in the text (also a call to it written as text);
 //! nothing readable, an object that answers none of the questions, or an answer cut off at its
-//! length, is [`AiError::Format`] – the mail then keeps no category, so a later run asks again. An option that was not offered or a value of the wrong kind
-//! drops its question – never a guess, never a made-up option. A chat model gives no confidence:
+//! length, is [`AiError::Format`] – the mail then keeps no category, so a later run asks again. An
+//! option that was not offered or a value of the wrong kind drops its question – never a guess, never
+//! a made-up option. A chat model gives no confidence:
 //! each answer counts as sure (1.0), and the reply is marked [`DecisionReply::by_chat`], so the caller
 //! keeps no confidence for it either.
 //!
