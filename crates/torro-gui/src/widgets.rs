@@ -472,6 +472,19 @@ pub fn icon_button<'a, M: Clone + 'a>(
     icon_only(which, tooltip, style::button::icon, on_press)
 }
 
+/// An icon button that can be switched on, 28 × 28: ghost while `on` is false, the surface of a
+/// choice (`style::button::icon_chosen`) while it is true – the filter icon on the mail search field
+/// shows an active quick filter this way. Like [`icon_button`] it needs a tooltip; `None` disables it.
+pub fn icon_toggle<'a, M: Clone + 'a>(
+    which: Icon,
+    tooltip: impl IntoFragment<'a>,
+    on: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let style = if on { style::button::icon_chosen } else { style::button::icon };
+    icon_only(which, tooltip, style, on_press)
+}
+
 /// An icon button with a frame (`style::button::boxed`), 28 × 28: "New" next to the app switcher.
 pub fn boxed_button<'a, M: Clone + 'a>(
     which: Icon,

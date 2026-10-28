@@ -6616,4 +6616,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Downloading {done} of {total}", "{done} von {total} heruntergeladen"),
     ("The account does not list {model}.", "Das Konto führt {model} nicht."),
     ("The download stopped. Try again.", "Der Download wurde beendet. Versuch es noch einmal."),
+    // Quick filters at the end of the mail search field (issue #336).
+    ("Filters", "Filter"),
+    ("Filtered: {filters}", "Gefiltert: {filters}"),
+    ("Quick filters", "Schnellfilter"),
+    ("Clear filters", "Filter entfernen"),
+    ("filter|Read", "Gelesen"),
+    ("Not flagged", "Nicht markiert"),
+    ("Last 7 days", "Letzte 7 Tage"),
 ];

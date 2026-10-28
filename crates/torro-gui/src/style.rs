@@ -216,6 +216,16 @@ pub mod button {
         ghost(theme, status)
     }
 
+    /// An [`icon`] button that is switched on (the filter icon while a quick filter is active):
+    /// the surface of a choice – `selected`, `line_selected` edge, `text` – in every state, like
+    /// the active [`segment`]. The fill and the edge carry the state, not a status dot (the dot is
+    /// for errors and attention). Disabled: faded.
+    pub fn icon_chosen(theme: &Theme, status: Status) -> Style {
+        let p = palette(theme);
+        let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::sm() };
+        chosen(status, rest)
+    }
+
     /// An icon button with a frame, for "New" next to the app switcher in the sidebar: looks like
     /// [`secondary`] at 28 × 28.
     pub fn boxed(theme: &Theme, status: Status) -> Style {
@@ -901,6 +911,7 @@ mod tests {
             ("danger", Box::new(button::danger)),
             ("segment", Box::new(button::segment(false))),
             ("segment(active)", Box::new(button::segment(true))),
+            ("icon(on)", Box::new(button::icon_chosen)),
             ("sidebar_item", Box::new(button::sidebar_item(false))),
             ("sidebar_item(active)", Box::new(button::sidebar_item(true))),
             ("list_row", Box::new(button::list_row(false))),
@@ -1051,9 +1062,10 @@ mod tests {
     #[test]
     fn a_choice_reads_as_chosen_in_every_state() {
         for (mode, theme, p) in modes() {
-            let chosen: [(&str, ButtonStyle); 3] = [
+            let chosen: [(&str, ButtonStyle); 4] = [
                 ("choice_chip(on)", Box::new(button::choice_chip(true))),
                 ("segment(active)", Box::new(button::segment(true))),
+                ("icon_chosen", Box::new(button::icon_chosen)),
                 ("preview_tile(on)", Box::new(button::preview_tile(true, true))),
             ];
             for (name, style) in chosen {
