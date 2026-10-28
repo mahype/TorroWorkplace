@@ -691,13 +691,20 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
 }
 
 /// Commands of server areas that stay on this computer: the core keeps reminders, snoozing and
-/// dismissing locally and never writes them to the calendar server (task ER1.2).
+/// dismissing locally and never writes them to the calendar server (task ER1.2), and the mail
+/// filters in its own file (issue #339; `mail.apply_filter` changes mail on the server).
 const STAYS_HERE: &[&str] = &[
     "calendar.list_reminders",
     "calendar.snooze_reminder",
     "calendar.dismiss_reminder",
     "calendar.pause_reminders",
     "calendar.preview_reminder",
+    // Mail filters are kept by the core (issue #339); only running one changes mail on the server.
+    "mail.list_filters",
+    "mail.create_filter",
+    "mail.update_filter",
+    "mail.remove_filter",
+    "mail.preview_filter",
 ];
 
 /// The inbox commands that reach a server: a calendar server (a task or an event of an entry) or an
@@ -758,6 +765,9 @@ const IDEMPOTENT: &[&str] = &[
     "ai.set_model_enabled",
     "mail.set_flags",
     "mail.move_messages",
+    // The same filter again, or one removed again, changes nothing more (issue #339).
+    "mail.update_filter",
+    "mail.remove_filter",
 ];
 
 /// Why a tool call did not become a request.
