@@ -380,7 +380,7 @@ fn address_of(prop: &Prop) -> PostalAddress {
 fn geo_of(prop: &Prop) -> Option<Geo> {
     let value = strip_scheme(prop.value.trim(), "geo:");
     let (lat, lon) = value.split_once([';', ',']).map(|(a, b)| (a, b.split([';', ',']).next().unwrap_or(b)))?;
-    Some(Geo { lat: lat.trim().parse().ok()?, lon: lon.trim().parse().ok()? })
+    Geo::new(lat.trim().parse().ok()?, lon.trim().parse().ok()?)
 }
 
 /// FNV-1a over the bytes, as hex: a short version that changes with the text.

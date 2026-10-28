@@ -11,7 +11,7 @@ use crate::model::{Contact, Labeled};
 /// What [`merge`] found.
 // Made once per write that met a newer version; the size does not matter.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Merge {
     /// Both changes fit together: the server's contact with this device's changes.
     Merged(Contact),

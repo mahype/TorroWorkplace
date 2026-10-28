@@ -88,7 +88,7 @@ impl JsonSchema for FieldKind {
 }
 
 /// One value of a field that may hold several (mail addresses, numbers, addresses, links).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Labeled<T> {
     pub value: T,
     #[serde(default)]
@@ -269,10 +269,24 @@ impl JsonSchema for PartialDate {
 }
 
 /// A place as coordinates (vCard `GEO`), read only in this stage.
+///
+/// `Eq` holds because a `Geo` never holds NaN: JSON has no NaN, and the vCard reader refuses
+/// anything but finite numbers in range (as `torro_pim::model::Geo`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Geo {
+    /// Latitude, -90 (south) to 90 (north).
     pub lat: f64,
+    /// Longitude, -180 (west) to 180 (east).
     pub lon: f64,
+}
+
+impl Eq for Geo {}
+
+impl Geo {
+    /// The point when both numbers are finite and in range.
+    pub fn new(lat: f64, lon: f64) -> Option<Geo> {
+        (lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0).then_some(Geo { lat, lon })
+    }
 }
 
 /// Where a contact's picture is: ask `contacts.get_photo` with the contact's id. `version`
@@ -297,7 +311,7 @@ pub enum ContactState {
 }
 
 /// One contact with every field.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Contact {
     /// `<book-id>/<uid>`.
     pub id: String,
@@ -518,7 +532,7 @@ impl Birthday {
 ///
 /// Every field is optional: a field not sent stays as it is. To empty a field, send it empty
 /// (`""`, `[]`). `birthday` and `anniversary` are dates as [`PartialDate`] writes them.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ContactFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<Name>,
@@ -826,7 +840,7 @@ pub struct ContactPage {
 }
 
 /// What `contacts.move_contact` did.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Moved {
     /// The contact in its new address book.
     pub contact: Contact,
