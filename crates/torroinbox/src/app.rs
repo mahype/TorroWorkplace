@@ -17982,8 +17982,9 @@ mod tests {
         for id in torro_core::design::BUILT_IN_IDS {
             let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
             let (least, most) = (0.75 * d.size.sidebar, 2.0 * d.size.sidebar);
-            // As `App::sidebar_limits`: list and reader, the divider, the collapsed rail and its gap.
-            let rest = 2.0 * d.size.props + d.space.s + d.space.xs + d.size.rail;
+            // As `App::sidebar_limits`: list and reader, the divider, the collapsed rail with its line
+            // (`RailMode::width`) and its gap.
+            let rest = 2.0 * d.size.props + d.space.s + d.space.xs + d.size.rail + size::HAIRLINE;
             let room = |window: f32| window - d.layout.inset - d.space.s - rest;
             assert!(least > d.size.rail, "{id}: the narrowest sidebar is no rail");
             assert!(room(layout::MEDIUM_MAX_WIDTH) > least, "{id}: the narrowest wide window still drags");
