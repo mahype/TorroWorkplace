@@ -2498,7 +2498,7 @@ impl Gallery {
 /// styles `cell` and `pill`, the track and the flat input forced into every state (the hover is the
 /// column "Hover"), the command bar in three widths, the strip under a row with and without words,
 /// the pills, the attachment chips and the reader's foot with its view switches.
-/// Task E12.7: the category pill in all four groups, with and without the suggestion mark.
+/// Task E12.7: the category pill in all five groups, with and without the suggestion mark.
 impl Gallery {
     /// The blocks of a detail page (tasks DS.3, DS.4), each wide and narrow: the head with and
     /// without its pill, the tabs as a row and as a pick list, open questions.

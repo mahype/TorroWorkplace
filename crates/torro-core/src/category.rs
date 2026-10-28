@@ -149,7 +149,8 @@ pub fn group_description(group: CategoryGroup) -> &'static str {
     match group {
         CategoryGroup::WaitingForMe => {
             "Something waits for me: a question, an assignment, a confirmation, a sign-in \
-                                        code, or a message written to me by a person."
+                                        code, a message written to me by a person, or a mail that \
+                                        could not be delivered."
         }
         CategoryGroup::PaperTrail => {
             "A record to keep: an invoice, a receipt, an order, a shipment, a booking, a \
@@ -157,7 +158,7 @@ pub fn group_description(group: CategoryGroup) -> &'static str {
         }
         CategoryGroup::Info => {
             "To read when I like: a newsletter, an offer, a notice of a service, a social \
-                                network or an event."
+                                network, an event or an automatic reply."
         }
         CategoryGroup::Junk => "Unwanted mail: spam, or an attempt to deceive me.",
         CategoryGroup::Unsorted => "Mail no other group fits, or where it is unclear what it is.",

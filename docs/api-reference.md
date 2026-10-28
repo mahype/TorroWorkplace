@@ -923,7 +923,7 @@ Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored acc
 
 Zugriff `admin` · MCP-Tool `inbox_create_category`
 
-Makes a mail category of the person's own in one of the five groups and returns it; its key is `custom_<n>` and never changes. `icon` chooses a monochrome category icon; the group supplies its colour. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
+Makes a mail category of the person's own in one of the five groups and returns it; its key is `custom_<n>` and never changes. `group` is `waiting_for_me`, `paper_trail`, `info`, `junk` (unwanted mail: spam, phishing) or `unsorted` (mail no other group fits). `icon` chooses a monochrome category icon; the group supplies its colour. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -937,7 +937,7 @@ Makes a mail category of the person's own in one of the five groups and returns 
 
 Zugriff `admin` · MCP-Tool `inbox_update_category`
 
-Changes a mail category, one of the suite's or the person's own, and returns it: only the fields given (`group`, `name`, `description`, `model`, `icon`). The key stays, so mail and rules that name it stay valid. An empty `name` or `description` puts back the suite's words for one of its categories. Mail already filed keeps its category until inbox_catch_up_categories runs with `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs the person's approval.
+Changes a mail category, one of the suite's or the person's own, and returns it: only the fields given (`group`, `name`, `description`, `model`, `icon`). The key stays, so mail and rules that name it stay valid. An empty `name` or `description` puts back the suite's words for one of its categories. Mail already filed keeps its category until inbox_catch_up_categories runs with `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs the person's approval. `group` takes the keys of create_category: `junk` is unwanted mail, `unsorted` mail no other group fits.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
