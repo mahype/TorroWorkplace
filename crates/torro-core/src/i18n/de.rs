@@ -5788,6 +5788,61 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "„{key}“ ist {value}; erlaubt sind 0 (aus) oder {min} bis {max}.",
     ),
     ("Widen the window to expand actions", "Fenster verbreitern, um die Aktionen auszuklappen"),
+    // Mail filters (issue #339): approvals and the core's answers.
+    ("Add the mail filter {filter}", "Den Mail-Filter {filter} hinzufügen"),
+    ("Apply an unknown mail filter", "Einen unbekannten Mail-Filter anwenden"),
+    (
+        "Apply the mail filter {filter} now to up to {n} mails in the inbox",
+        "Den Mail-Filter {filter} jetzt auf bis zu {n} Mails im Posteingang anwenden",
+    ),
+    ("Change an unknown mail filter to {new}", "Einen unbekannten Mail-Filter ändern in {new}"),
+    ("Change the mail filter {filter} to {new}", "Den Mail-Filter {filter} ändern in {new}"),
+    ("Remove an unknown mail filter", "Einen unbekannten Mail-Filter entfernen"),
+    ("Remove the mail filter {filter}", "Den Mail-Filter {filter} entfernen"),
+    ("every mail account", "allen Mail-Konten"),
+    ("file as {category}", "als {category} einordnen"),
+    ("mark as read", "als gelesen markieren"),
+    ("move to the archive", "ins Archiv verschieben"),
+    ("move to the trash", "in den Papierkorb verschieben"),
+    ("move to {folder}", "nach {folder} verschieben"),
+    ("{query} in {account}: {actions}", "{query} in {account}: {actions}"),
+    (
+        "A mail filter cannot move mail into the inbox.",
+        "Ein Mail-Filter kann keine Mails in den Posteingang verschieben.",
+    ),
+    (
+        "A mail filter cannot search the names of attachments; leave out filename:.",
+        "Ein Mail-Filter kann nicht in den Namen von Anhängen suchen; lass filename: weg.",
+    ),
+    (
+        "A mail filter for every account needs access to every mail account.",
+        "Ein Mail-Filter für alle Konten braucht Zugriff auf alle Mail-Konten.",
+    ),
+    (
+        "A mail filter looks at the inbox only; leave out in:.",
+        "Ein Mail-Filter sieht nur in den Posteingang; lass in: weg.",
+    ),
+    (
+        "A mail filter needs an action: move the mail, mark it as read or set a category.",
+        "Ein Mail-Filter braucht eine Aktion: die Mail verschieben, als gelesen markieren oder eine Kategorie setzen.",
+    ),
+    ("A mail filter needs a search.", "Ein Mail-Filter braucht eine Suche."),
+    (
+        "A mail filter that moves mail to a folder needs an account.",
+        "Ein Mail-Filter, der Mails in einen Ordner verschiebt, braucht ein Konto.",
+    ),
+    ("No such mail filter.", "Diesen Mail-Filter gibt es nicht."),
+    (
+        "Setting a category with a mail filter needs admin access to the Notification Hub.",
+        "Eine Kategorie mit einem Mail-Filter zu setzen braucht Admin-Zugriff auf die Mitteilungszentrale.",
+    ),
+    (
+        "The category of the mail filter is not in the catalogue.",
+        "Die Kategorie des Mail-Filters steht nicht im Katalog.",
+    ),
+    ("The mail filter's account has no such folder.", "Das Konto des Mail-Filters hat diesen Ordner nicht."),
+    ("The mail filters cannot be read or written.", "Die Mail-Filter können nicht gelesen oder geschrieben werden."),
+    ("There can be at most 200 mail filters.", "Es kann höchstens 200 Mail-Filter geben."),
     // Saving attachments (issue #290): approvals (M12.1, M12.3).
     ("Change an unknown save target", "Ein unbekanntes Ablageziel ändern"),
     ("Remove an unknown save target", "Ein unbekanntes Ablageziel entfernen"),

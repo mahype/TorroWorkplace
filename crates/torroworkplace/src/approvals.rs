@@ -52,7 +52,7 @@ use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceKind, Sou
 use torro_ipc::api::{Area, Mcp, Rights};
 use torro_ipc::assistant::Mode;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
-use torro_mail::{MailAddress, Role};
+use torro_mail::{CategoryDef, FilterFile, MailAddress, MailFilter, Role};
 use torro_pim::model::SeriesScope;
 use torro_pim::{Event, EventTime, Todo};
 use torro_setups::LoadMode;
@@ -340,6 +340,26 @@ pub struct Facts {
     /// folders (`crate::tools::organize::Plan`), never the client's text. `None` when the core could not resolve
     /// them: the summary then names an unknown file.
     pub paths: Option<PathFacts>,
+    /// For `mail.create_filter`, `mail.update_filter`, `mail.remove_filter` and `mail.apply_filter`
+    /// (issue #339): the stored filter and how its account and folder read, from the core's file and
+    /// stores (`crate::mail::filters::to_approve`). The account, folder and count of what the request
+    /// sets are in [`Facts::mail`]. Boxed: the facts are held across awaits, deep in the stack.
+    pub filter: Option<Box<FilterFacts>>,
+}
+
+/// A mail filter as the core stores it, for the summaries of the filter commands ([`Facts::filter`],
+/// issue #339): never from the client's words.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FilterFacts {
+    /// The filter the command changes, removes or runs, as stored; `None` for a new one and when
+    /// the core does not have it (the summary then says "an unknown mail filter").
+    pub stored: Option<torro_mail::MailFilter>,
+    /// The address of the stored filter's account; `None` for every account or when unknown.
+    pub stored_account: Option<String>,
+    /// The name of the folder the stored filter moves to; `None` without one or when unknown.
+    pub stored_folder: Option<String>,
+    /// The catalogue of mail categories, for the names of the categories.
+    pub categories: Vec<torro_mail::CategoryDef>,
 }
 
 /// The paths a command of the tool `files` touches, as the core resolved them ([`Facts::paths`], issue #304):
@@ -1735,6 +1755,13 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             Some(name) => trf("Remove save target \"{name}\"", &[("name", &quote(name))]),
             None => tr("Remove an unknown save target").to_string(),
         },
+        // Mail filters (issue #339): the stored filter, its account and folder as the core holds
+        // them ([`Facts::filter`], [`Facts::mail`]); only the new search is the client's, and it is
+        // what will be written.
+        request @ (Request::CreateMailFilter { .. }
+        | Request::UpdateMailFilter { .. }
+        | Request::RemoveMailFilter { .. }
+        | Request::ApplyMailFilter { .. }) => filter_summary(request, facts),
         Request::OpenFile { .. } => match &facts.name {
             Some(title) => trf("Open the PDF \"{title}\"", &[("title", &quote(title))]),
             None => tr("Open an unknown file").to_string(),
@@ -3415,6 +3442,107 @@ fn subject(text: &str) -> String {
         empty if empty.is_empty() => tr("(no subject)").to_string(),
         quoted => format!("\"{quoted}\""),
     }
+}
+
+/// What a mail filter command does, in words (issue #339): `Add the mail filter "from:shop.example"
+/// in anna@example.org: mark as read, move to "Receipts"`; a change as the stored filter and what it
+/// becomes, a removal and a run by the stored filter, a run with how many mails it changes now ("up
+/// to 500"). The stored filter, the accounts and folders from [`Facts::filter`] and [`Facts::mail`],
+/// never the client's words; the new search is quoted as it will be written.
+fn filter_summary(request: &Request, facts: &Facts) -> String {
+    let stored_facts = facts.filter.as_deref();
+    let categories = stored_facts.map(|filter| filter.categories.as_slice()).unwrap_or_default();
+    let new_shown = (
+        facts.mail.as_ref().and_then(|mail| mail.account.as_deref()),
+        facts.mail.as_ref().and_then(|mail| mail.folder.as_deref()),
+    );
+    let stored = stored_facts.and_then(|filter| {
+        let shown = (filter.stored_account.as_deref(), filter.stored_folder.as_deref());
+        filter.stored.as_ref().map(|stored| filter_words(stored, shown, categories))
+    });
+    // What a create or an update writes, as a filter: the client's search and actions.
+    let written = |query: &str, account: &Option<String>, file: &Option<FilterFile>, mark_read, category, enabled| {
+        let filter = MailFilter {
+            id: String::new(),
+            query: query.to_string(),
+            account: account.clone(),
+            file: file.clone(),
+            mark_read,
+            category,
+            enabled,
+            created: DateTime::<Utc>::UNIX_EPOCH,
+        };
+        filter_words(&filter, new_shown, categories)
+    };
+    match (request, stored) {
+        (Request::CreateMailFilter { query, account, file, mark_read, category, enabled }, _) => {
+            let new = written(query, account, file, *mark_read, *category, *enabled);
+            trf("Add the mail filter {filter}", &[("filter", &new)])
+        }
+        (Request::UpdateMailFilter { query, account, file, mark_read, category, enabled, .. }, stored) => {
+            let kept = stored_facts.and_then(|filter| filter.stored.as_ref()).is_none_or(|stored| stored.enabled);
+            let new = written(query, account, file, *mark_read, *category, enabled.unwrap_or(kept));
+            match stored {
+                Some(old) => trf("Change the mail filter {filter} to {new}", &[("filter", &old), ("new", &new)]),
+                None => trf("Change an unknown mail filter to {new}", &[("new", &new)]),
+            }
+        }
+        (Request::RemoveMailFilter { .. }, Some(old)) => trf("Remove the mail filter {filter}", &[("filter", &old)]),
+        (Request::RemoveMailFilter { .. }, None) => tr("Remove an unknown mail filter").to_string(),
+        (Request::ApplyMailFilter { .. }, Some(old)) => {
+            let count = facts.mail.as_ref().map_or(0, |mail| mail.count);
+            trf(
+                "Apply the mail filter {filter} now to up to {n} mails in the inbox",
+                &[("filter", &old), ("n", &count.to_string())],
+            )
+        }
+        (Request::ApplyMailFilter { .. }, None) => tr("Apply an unknown mail filter").to_string(),
+        (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// A mail filter in words, for the summaries of [`filter_summary`]: `"from:shop.example" in
+/// anna@example.org: mark as read, move to "Receipts"` (and `, switched off`). `shown` is how its
+/// account and folder read (the address, the folder's name); without them the ids it runs with.
+/// `categories` names a category.
+fn filter_words(filter: &MailFilter, shown: (Option<&str>, Option<&str>), categories: &[CategoryDef]) -> String {
+    let (account, folder) = shown;
+    let account = match (&filter.account, account) {
+        (None, _) => tr("every mail account").to_string(),
+        (Some(_), Some(address)) => quote(address),
+        (Some(id), None) => quote(id),
+    };
+    let mut actions = Vec::new();
+    if filter.mark_read {
+        actions.push(tr("mark as read").to_string());
+    }
+    if let Some(category) = filter.category {
+        let name = match categories.iter().find(|def| def.category == category) {
+            Some(def) => torro_core::category::name_of(def),
+            None => torro_core::category::fallback_name(category),
+        };
+        actions.push(trf("file as {category}", &[("category", &format!("\"{}\"", quote(&name)))]));
+    }
+    match &filter.file {
+        Some(FilterFile::Archive) => actions.push(tr("move to the archive").to_string()),
+        Some(FilterFile::Trash) => actions.push(tr("move to the trash").to_string()),
+        Some(FilterFile::Folder { id }) => {
+            let name = format!("\"{}\"", quote(folder.unwrap_or(id)));
+            actions.push(trf("move to {folder}", &[("folder", &name)]));
+        }
+        None => {}
+    }
+    if actions.is_empty() {
+        actions.push(tr("nothing").to_string());
+    }
+    let mut words = trf(
+        "{query} in {account}: {actions}",
+        &[("query", &format!("\"{}\"", quote(&filter.query))), ("account", &account), ("actions", &actions.join(", "))],
+    );
+    if !filter.enabled {
+        words.push_str(tr(", switched off"));
+    }
+    words
 }
 
 /// What `mail.set_flags` does, in words: "read, not flagged". "unchanged" when nothing changes.

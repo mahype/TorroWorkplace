@@ -441,6 +441,18 @@ pub fn ids(request: &Request) -> Vec<String> {
             [Some(format!("message:{}", hashed(message))), target].into_iter().flatten().collect()
         }
         Request::ListSaveTargets { id } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
+        // Mail filters (issue #339): a filter by the id the core made (`f<n>`, hex digits) and the
+        // account it names, never its search, folder or category – the person's words about their mail.
+        Request::ListMailFilters => Vec::new(),
+        Request::CreateMailFilter { account: named, .. } | Request::PreviewMailFilter { account: named, .. } => {
+            named.iter().map(|name| account(name)).collect()
+        }
+        Request::UpdateMailFilter { id: filter, account: named, .. } => {
+            std::iter::once(random("filter", filter)).chain(named.iter().map(|name| account(name))).collect()
+        }
+        Request::RemoveMailFilter { id: filter } | Request::ApplyMailFilter { id: filter } => {
+            vec![random("filter", filter)]
+        }
         // MCP servers (issue #302): a server by its id and a tool by its name when they have their
         // form, never the arguments, a command, an address or a secret.
         Request::ListExtensions | Request::ListCatalog | Request::ListExtensionTools => Vec::new(),
@@ -1041,6 +1053,41 @@ pub(crate) mod tests {
         assert_eq!(opened, vec!["app:torro-inbox-mail".to_string()]);
         let all = [logged, opened].concat().join(" ");
         for secret in ["m:0a1b2c3d", "keller", "offer", &hashed("m:0a1b2c3d"), &hashed(message_id), "Answer"] {
+            assert!(!all.contains(secret), "{secret} in {all}");
+        }
+    }
+
+    /// Issue #339: a mail filter by its id `f<n>` as it is and its account, never its search, folder
+    /// or category; an id of another form is hashed.
+    #[test]
+    fn mail_filters_log_their_id_and_account_only() {
+        let create = Request::CreateMailFilter {
+            query: "from:salary@boss.example".into(),
+            account: Some("mail:anna@mailbox.org".into()),
+            file: Some(torro_mail::FilterFile::Folder { id: "f:secret-folder".into() }),
+            mark_read: true,
+            category: Some(torro_mail::Category::Invoice),
+            enabled: true,
+        };
+        assert_eq!(super::ids(&create), ["account:mail:anna@mailbox.org"]);
+        let update = Request::UpdateMailFilter {
+            id: "f12".into(),
+            query: "from:salary@boss.example".into(),
+            account: None,
+            file: None,
+            mark_read: true,
+            category: None,
+            enabled: None,
+        };
+        assert_eq!(super::ids(&update), ["filter:f12"]);
+        let preview = Request::PreviewMailFilter { query: "salary".into(), account: None };
+        assert!(super::ids(&preview).is_empty());
+        assert!(super::ids(&Request::ListMailFilters).is_empty());
+        assert_eq!(super::ids(&Request::ApplyMailFilter { id: "f3".into() }), ["filter:f3"]);
+        let odd = Request::RemoveMailFilter { id: "salary filter".into() };
+        assert_eq!(super::ids(&odd), [format!("filter:hash:{}", hashed("salary filter"))]);
+        let all = [create, update, preview].iter().flat_map(super::ids).collect::<Vec<_>>().join(" ");
+        for secret in ["salary", "boss", "secret-folder", "invoice"] {
             assert!(!all.contains(secret), "{secret} in {all}");
         }
     }

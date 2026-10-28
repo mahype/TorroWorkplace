@@ -971,6 +971,13 @@ fn describe(request: &Request) -> String {
         Request::RemoveSaveTarget { id } => format!("remove save target {id}"),
         Request::SaveMailAttachments { parts, .. } if parts.is_empty() => "save all mail attachments".into(),
         Request::SaveMailAttachments { parts, .. } => format!("save {} mail attachments", parts.len()),
+        // Never a filter's search, account or folder (issue #339).
+        Request::ListMailFilters => "list mail filters".into(),
+        Request::CreateMailFilter { .. } => "create a mail filter".into(),
+        Request::UpdateMailFilter { id, .. } => format!("change mail filter {id}"),
+        Request::RemoveMailFilter { id } => format!("remove mail filter {id}"),
+        Request::PreviewMailFilter { .. } => "preview a mail filter".into(),
+        Request::ApplyMailFilter { id } => format!("apply mail filter {id}"),
         Request::SetMailFlags { ids, .. } => format!("set flags of {} messages", ids.len()),
         Request::MoveMail { ids, .. } => format!("move {} messages", ids.len()),
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),

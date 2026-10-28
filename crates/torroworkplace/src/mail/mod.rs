@@ -16,6 +16,8 @@
 //! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3).
 //! - [`save`]: saving attachments to Downloads, a chosen place or a save target, and the save
 //!   targets themselves in `<data>/mail/save-targets.json` (task M12.3, issue #290).
+//! - [`filters`]: mail filters, a saved search with what to do with the mail it finds in the inbox,
+//!   in `<data>/mail/filters.json` (issue #339).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -43,6 +45,7 @@ use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
 pub mod backup;
+pub mod filters;
 pub mod fold;
 pub mod inbox_feed;
 pub mod query;

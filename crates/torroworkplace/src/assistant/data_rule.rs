@@ -133,8 +133,11 @@ impl Reader {
 }
 
 /// The answers of `mail.*` commands that hold no mail content: what the assistant wrote itself
-/// (a draft, that it was sent), the folders' names, `ok` and errors.
-const MAIL_ANSWERS_ALLOWED: &[&str] = &["ok", "mail-draft", "mail-sent", "mail-folders", "error"];
+/// (a draft, that it was sent), the folders' names, how many mails a filter changed (numbers only,
+/// issue #339), `ok` and errors. The filters themselves stay home: their searches name senders and
+/// subjects.
+const MAIL_ANSWERS_ALLOWED: &[&str] =
+    &["ok", "mail-draft", "mail-sent", "mail-folders", "mail-filter-applied", "error"];
 
 /// A tool's answer as a model may read it.
 #[derive(Debug, Clone, PartialEq)]
