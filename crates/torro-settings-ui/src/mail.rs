@@ -1,25 +1,15 @@
-//! The sections behind the gear of the inbox's mail window (task S.20 in
-//! `docs/tasks/steuerzentrale.md`, concept `docs/settings.md`): what belongs to writing and
-//! reading mail.
+//! The sections behind the gear of the inbox's mail window. Account setup, reading and writing,
+//! attachments, and automatic categorization each have one place.
 //!
 //! ```text
-//! Accounts  one row per mail account; its page holds the sender name, the signature,
-//!           "Write new mail as" and the folder questions the server left open
-//! Reading   "Show mail as" and "Mail colors" for the reader
-//! Attachments  what a click on an attachment does, the Downloads folder, the save targets
-//!              (task M12.7, [`attachments`])
+//! Accounts        identity and connection, offline content, folders and backup per account
+//! Reading         display, default sender, compose format and formatted signature
+//! Attachments     default click, Downloads folder and save targets
+//! Categorization  rules before model sorting, plus editable categories
 //! ```
 //!
-//! Task E10.3 adds a third section, "Keyboard shortcuts"; it is not built here.
-//!
-//! **What is not here:** everything about the account itself – servers, password, services,
-//! removing it – and which new mail becomes an inbox entry. Servers and passwords stay in the
-//! control centre, where the keychain is ([`crate::Action::ControlCentre`] leads there); "Show new
-//! mail" belongs to the Notification Hub's sources ([`crate::inbox::sources`]), so it has one
-//! place only.
-//!
-//! Ported from the control centre's mail account page and its group "Mail" under Appearance, which
-//! task S.21 removes.
+//! Passwords stay in the keychain; the page only sends a newly typed secret to the connection
+//! command. Notification Hub source choices remain in [`crate::inbox::sources`].
 
 use iced::Element;
 
@@ -276,8 +266,8 @@ fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Messag
     }
 }
 
-/// "Accounts": one row per mail account, and below it the account's own page – the sender name,
-/// the signature, how new mail is written and the folder questions the server left open.
+/// "Accounts": one row per mail account, and below it the account's own identity, connection,
+/// offline content, folder and backup pages. Signature and compose format are in Reading & writing.
 ///
 /// The sender name and the signature are typed into a draft and saved with "Save"
 /// (`accounts.update_mail_account`); everything else is sent the moment it is pressed, like every
@@ -2412,14 +2402,8 @@ pub mod reading {
         });
         let group = widgets::group(
             tr("Reading"),
-            vec![
-                setting_row(None, tr("Show mail as"), None, show),
-                setting_row(None, tr("Mail colors"), None, colors),
-            ],
-            Some(
-                tr("Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.")
-                    .to_string(),
-            ),
+            vec![setting_row(None, tr("Show mail as"), None, show), setting_row(None, tr("Mail colors"), None, colors)],
+            None,
         );
         let mut page = column![group].spacing(layout::section_gap());
         let accounts: Vec<SenderChoice> = data

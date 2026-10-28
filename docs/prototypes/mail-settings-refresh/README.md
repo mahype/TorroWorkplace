@@ -44,7 +44,9 @@ Im nativen Katalog sind die vier Gruppen zurzeit ein festes Enum, ihre Farben si
 
 Für die Übersichtsseiten gilt: Die äußeren Boxen nutzen die verfügbare Inhaltsbreite. Einzelne Textzeilen und Eingabefelder bleiben für die Lesbarkeit begrenzt. Das gilt auch für beide Tabs der Kategorisierung. Bei schmaleren Fenstern stapeln sich die Karten. Alle Aktionen ohne Backend-Anbindung zeigen in der Vorschau nur eine Meldung.
 
-## Abgleich mit dem aktuellen Code
+## Abgleich mit dem Code vor der Umsetzung
+
+Die folgende Tabelle dokumentiert die Ausgangslage beim Erstellen der Mockups. Den Stand der nativen Umsetzung hält [Issue #343](../../tasks/mail-settings-343-implementation.md) fest.
 
 | Wunsch | Aktueller Stand | Für die Umsetzung nötig |
 |---|---|---|

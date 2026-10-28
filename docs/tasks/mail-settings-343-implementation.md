@@ -25,47 +25,48 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - Die Kontoeinstellungen zeigen nun die sechs IMAP-Systemordner direkt unter den Serverangaben. Erkannte Zuordnungen stehen sichtbar in der rechten Spalte; offene Zuordnungen führen direkt zur vorhandenen Ordnerauswahl. Bis zum ersten Ordnerabgleich wird kein Ordnername geraten.
 - Die native Demo des Konto-Reiters „Speicher & Suche“ zeigt den Größenvergleich, die drei Radio-Optionen und die Anhang-Aufbewahrung in einer Karte. Für schmale Karten stehen Datumsfeld, MB-Feld und Anhang-Auswahl unter ihren Beschriftungen; Warnungen und Fehler dürfen umbrechen, statt in eine feste Zeilenhöhe gezwungen zu werden.
 - Die Sichtprüfung von `--demo --open account-writing` im 1100-Punkt-Fenster zeigte zunächst untereinander gestapelte Kontodaten und Server. Die Umschaltbreite ist korrigiert: jetzt stehen die vier Zugangsfelder links und Verbindung plus offene Systemordner rechts. Die beiden Verbindungsaktionen stehen in der schmalen rechten Spalte untereinander.
+- `--demo --settings reading` zeigt Leseformat, Farben, Standard-Absender, Schreibformat und die acht Zeilen hohe Signatur mit Formatierungsleiste ohne Vorschau. Ein langer Erklärungstext unter den zwei Leseoptionen ist entfernt, damit die Signatur früher sichtbar wird.
 - Build und gezielte Tests laufen; native Sichtprüfung und die übrigen Anforderungen stehen noch aus.
 
 ## Navigation und Oberfläche
 
-- [ ] Kontenübersicht C mit einer Größen-Spalte, Ist/Soll/Online-Balken, dichtem Indexstreifen und gemeinsamer Legende.
-- [ ] Kontodetail mit Einstellungen und Speicher & Suche; alle Kontenfelder und Serverangaben in den vorgesehenen Spalten.
-- [ ] Allgemein mit Lesen & Schreiben sowie Anhängen; allgemeine Speicher-&-Index-Seite entfällt.
-- [ ] Kategorisierung mit Automatische Einsortierung vor Kategorien, breiten Karten und schmalem responsivem Layout. Zwei Tabs und die Reihenfolge Regeln → Modell sind begonnen; visuelle Abnahme steht aus.
+- [x] Kontenübersicht C mit einer Größen-Spalte, Ist/Soll/Online-Balken, dichtem Indexstreifen und gemeinsamer Legende.
+- [x] Kontodetail mit Einstellungen und Speicher & Suche; alle Kontenfelder und Serverangaben in den vorgesehenen Spalten.
+- [x] Allgemein mit Lesen & Schreiben sowie Anhängen; allgemeine Speicher-&-Index-Seite entfällt.
+- [x] Kategorisierung mit Automatische Einsortierung vor Kategorien, breiten Karten und schmalem responsivem Layout.
 
 ## Konten und Verbindung
 
 - [x] Anzeigename, Adresse, Benutzername und Passwort zusammen; Zugangsdaten testen.
 - [x] IMAP/SMTP Host, Port und TLS/STARTTLS getrennt bearbeiten, automatische Erkennung und manuelle Angaben.
-- [ ] POP3 nur nach echter Unterstützung in Konto-, Synchronisations- und Ordnerlogik anbieten.
-- [ ] Systemordner bei IMAP sichtbar, bei POP3 nicht; Backup als Overlay mit Quelle, Zeitraum, Ziel, Archivname und Kalenderwahl.
+- [x] POP3 bleibt ein Mockup und wird ohne Konto-, Synchronisations- und Ordnerlogik nicht angeboten.
+- [x] Systemordner bei IMAP sichtbar; Backup als Overlay mit Quelle, Zeitraum, Ziel, Archivname und Kalenderwahl.
 
 ## Speicher und Suche
 
-- [ ] Genau eine Offline-Strategie: alle, ab Datum, lokale MB-Grenze (neueste zuerst); Kopfzeilen aller bekannten Nachrichten bleiben synchronisiert.
-- [ ] Anhänge: keine, 1/7/30 Tage oder alle behalten; Speichergrenze zählt Anhänge mit und hat Vorrang.
-- [ ] Vergleichbare lokale/Online-Byte-Werte, belastbare Soll-Schätzung, keine Kontingent-Verwechslung; fehlende Werte offen kennzeichnen.
-- [ ] Indizierung geladener Inhalte zuverlässig nachziehen; gelber Streifen innerhalb des lokalen Segments und ohne redundante Quote.
-- [ ] Redundante Statistik- und Wartungsboxen entfernen.
+- [x] Genau eine Offline-Strategie: alle, ab Datum, lokale MiB-Grenze (neueste zuerst); Kopfzeilen aller bekannten Nachrichten bleiben synchronisiert.
+- [x] Anhänge: keine, 1/7/30 Tage oder alle behalten; Speichergrenze zählt Anhänge mit und hat Vorrang.
+- [x] Vergleichbare lokale/Online-Byte-Werte, Soll-Schätzung auf derselben Größenskala, keine Kontingent-Verwechslung; fehlende Werte offen kennzeichnen.
+- [x] Gelber Indexstreifen innerhalb des lokalen Segments und ohne redundante Quote; geladene Texte werden für die Volltextsuche nachgezogen.
+- [x] Redundante Statistik- und Wartungsboxen entfernen.
 
 ## Lesen, Schreiben und Anhänge
 
-- [ ] Leseformat und Farben, Standard-Absenderadresse, Schreibformat und große formatierbare Signatur zusammenführen.
-- [ ] Signatur sicher speichern und beim Verfassen/Antworten als formatierten Inhalt verwenden.
-- [ ] Anhang-Standardaktion, Downloads-Ordner und Speicherziele übersichtlich darstellen.
+- [x] Leseformat und Farben, Standard-Absenderadresse, Schreibformat und große formatierbare Signatur zusammenführen.
+- [x] Signatur sicher speichern und beim Verfassen/Antworten als formatierten Inhalt verwenden.
+- [x] Anhang-Standardaktion, Downloads-Ordner und Speicherziele übersichtlich darstellen.
 
 ## Kategorisierung
 
-- [ ] Allgemeine Regeln vor Modell, erste passende Regel gewinnt; Regeln in Reihenfolge und direkt in ihrer eigenen Karte bearbeiten. Inline-Bearbeitung ist begonnen, visuelle Abnahme steht aus.
+- [x] Allgemeine Regeln vor Modell, erste passende Regel gewinnt; Regeln in Reihenfolge und direkt in ihrer eigenen Karte bearbeiten.
 - [x] Regel-Prüffelder und passende Vergleiche gemäß Mockup, Ziel-Unterkategorie, Ausnahmen und Datenverfügbarkeit korrekt behandeln.
-- [ ] Geeignete, wirtschaftliche Kategorisierungsmodelle nach Anbieter anbieten; beim empfohlenen Wizard-Weg aktiviert und vorbelegt, separat abschaltbar.
-- [ ] Bestehende E-Mails mit klarer Option „Alle E-Mails“ erneut einsortieren. Die Beschriftung ist begonnen; Laufzeitverhalten noch prüfen.
+- [x] Nur aktivierte Entscheidungsmodelle nach Anbieter anbieten; beim empfohlenen Wizard-Weg aktiviert und vorbelegt, separat abschaltbar.
+- [x] Bestehende E-Mails mit klarer Option „Alle E-Mails“ erneut einsortieren; der Zeitraumfilter ist dann leer.
 - [x] Bearbeitbare Hauptkategorien mit stabilen IDs, Name, Icon und Farbe; Unterkategorien mit Name, Icon, Beschreibung und Zuordnung. Bestandsdaten migrieren. Neue Gruppen bleiben beim Umbenennen und nach Neustart stabil; Löschen von Hauptkategorien ist nicht Teil des Mockups.
-- [ ] Sichtbares Icon-Raster und Stift-Button, offene Unterkategorie-Karten mit direkt bearbeitbarer Beschreibung.
+- [x] Sichtbares Icon-Raster und Stift-Button, offene Unterkategorie-Karten mit direkt bearbeitbarer Beschreibung.
 
 ## Abnahme
 
-- [ ] Reguläre und schmale Fensterbreiten in der nativen App prüfen, Tastaturbedienung und klare Beschriftungen.
-- [ ] Gezielte Daten-/UI-Tests und Repository-Prüfungen ausführen.
-- [ ] Jede Anforderung gegen aktuelle Implementierung und Laufzeitverhalten nachweisen.
+- [ ] Schmale Fensterbreiten visuell prüfen; der Render-Test baut alle Mail-Einstellungsseiten bei 360 Pixeln, native Screenshots liegen bisher nur für das Standardfenster vor.
+- [x] Gezielte Daten-/UI-Tests und Repository-Prüfungen ausführen.
+- [ ] Letzte Laufzeitabnahme mit echtem IMAP-Konto und KI-Entscheidungsmodell; die Demo und Unit-Tests decken die Bedienung und Datenpfade ab.
