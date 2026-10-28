@@ -60,19 +60,34 @@ pub struct Limits {
     pub default: f32,
     /// The width of the whole split: both panes and the handle.
     pub total: f32,
+    /// The least the first pane keeps: [`min_pane()`] unless [`Limits::bounded`] says otherwise.
+    pub least: f32,
+    /// The most the first pane may take, whatever room the second leaves: no bound unless
+    /// [`Limits::bounded`] sets one (the sidebar of the mail window, issue #376).
+    pub most: f32,
+    /// The least the second pane keeps: [`min_pane()`] unless [`Limits::bounded`] says otherwise.
+    pub rest: f32,
 }
 
 impl Limits {
-    /// The limits of a split `total` wide whose first pane is `default` wide by default.
+    /// The limits of a split `total` wide whose first pane is `default` wide by default; both panes
+    /// keep at least [`min_pane()`].
     pub fn new(default: f32, total: f32) -> Limits {
-        Limits { default, total }
+        Limits { default, total, least: min_pane(), most: f32::INFINITY, rest: min_pane() }
     }
 
-    /// `width` kept between [`min_pane()`] and what leaves the second pane [`min_pane()`]; in a
-    /// split too narrow for both, [`min_pane()`].
+    /// These limits with bounds of their own: the first pane between `least` and `most`, the second
+    /// keeping at least `rest`. For a pane that is no list beside its detail, as the sidebar
+    /// (issue #376), whose room is not [`min_pane()`].
+    pub fn bounded(self, least: f32, most: f32, rest: f32) -> Limits {
+        Limits { least, most, rest, ..self }
+    }
+
+    /// `width` kept between [`Limits::least`] and what leaves the second pane [`Limits::rest`], never
+    /// over [`Limits::most`]; in a split too narrow for both, [`Limits::least`].
     pub fn clamp(&self, width: f32) -> f32 {
-        let max = (self.total - handle_width() - min_pane()).max(min_pane());
-        width.clamp(min_pane(), max)
+        let max = (self.total - handle_width() - self.rest).min(self.most).max(self.least);
+        width.clamp(self.least, max)
     }
 }
 
@@ -194,6 +209,20 @@ mod tests {
         assert_eq!(tight.clamp(460.0), min_pane(), "too narrow for both: the first keeps its least");
         assert_eq!(Split::default().width(limits), 460.0, "the default without a choice");
         assert_eq!(Split::with(Some(2000.0)).width(limits), limits.clamp(2000.0), "a stored width is clamped");
+    }
+
+    /// Issue #376: bounds of their own keep the first pane between them and leave the second its rest.
+    #[test]
+    fn bounded_limits_keep_their_own_least_most_and_rest() {
+        let bounded = Limits::new(240.0, 1200.0).bounded(180.0, 480.0, 600.0);
+        assert_eq!(bounded.clamp(100.0), 180.0, "the first keeps its own least");
+        assert_eq!(bounded.clamp(5000.0), 480.0, "never over the most");
+        assert_eq!(bounded.clamp(300.0), 300.0);
+        let tight = Limits::new(240.0, 900.0).bounded(180.0, 480.0, 600.0);
+        assert_eq!(tight.clamp(480.0), 900.0 - handle_width() - 600.0, "the second keeps its rest");
+        let tiny = Limits::new(240.0, 500.0).bounded(180.0, 480.0, 600.0);
+        assert_eq!(tiny.clamp(300.0), 180.0, "too narrow for both: the first keeps its least");
+        assert_eq!(limits().bounded(min_pane(), f32::INFINITY, min_pane()), limits(), "new: the panes' least");
     }
 
     #[test]

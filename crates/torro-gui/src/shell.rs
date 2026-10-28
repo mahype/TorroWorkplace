@@ -96,13 +96,20 @@
 //!
 //! The drawer of the medium and narrow layouts dims the window behind it (scrim) and has a shadow.
 //!
+//! # Width of the expanded sidebar
+//!
+//! An app may let the person drag the expanded sidebar wider or narrower (issue #376, first the mail
+//! window): [`Shell::sidebar_width`] lays a handle over its right edge that works like the divider of
+//! [`crate::split`], and [`sidebar_limits`] bounds the width. The rail, the drawer and
+//! [`Cover::Drawer`] keep [`size::sidebar()`].
+//!
 //! While something is dragged over the sidebar, the rows that may take it are wrapped in
 //! [`drop_target`]: they report the pointer and show a ring while it is on them.
 
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, stack};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Size, Vector, keyboard};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Size, Vector, keyboard, mouse};
 use serde::{Deserialize, Serialize};
 
 use torro_core::AppId;
@@ -112,6 +119,7 @@ use torro_pim::{PimAccount, account::account_of};
 use crate::icon::{self, Icon};
 use crate::layout::{self, SizeClass};
 use crate::scheme;
+use crate::split::{self, SplitEvent};
 use crate::style;
 use crate::theme::{self, palette, radius, size, space};
 use crate::typo;
@@ -185,6 +193,15 @@ pub fn content_width(class: SizeClass, choice: SidebarMode, width: f32) -> f32 {
     (width - side - layout::inset()).max(0.0)
 }
 
+/// What the handle of the expanded sidebar ([`Shell::sidebar_width`], issue #376) moves in, for a
+/// window `window` wide whose content must keep `rest` beside the sidebar: [`size::sidebar()`] by
+/// default, at least three quarters and at most twice that, and never so wide that the content gets
+/// less than `rest`.
+pub fn sidebar_limits(window: f32, rest: f32) -> split::Limits {
+    let default = size::sidebar();
+    split::Limits::new(default, window - layout::inset()).bounded(0.75 * default, 2.0 * default, rest)
+}
+
 /// Whether a key press is the sidebar shortcut `[` (as in Linear): the app then flips its choice
 /// (wide) or opens or closes the drawer (medium, narrow) – the same as the panel button. Ctrl and
 /// Alt are allowed, because some layouts type `[` with AltGr (German: AltGr+8, which Windows
@@ -226,6 +243,14 @@ pub struct Shell<'a, M> {
     rail: Option<Element<'a, M>>,
     drawer: Option<M>,
     overlay: Option<Element<'a, M>>,
+    side: Option<SideWidth<M>>,
+}
+
+/// The width of the expanded sidebar the person drags ([`Shell::sidebar_width`]).
+struct SideWidth<M> {
+    width: f32,
+    dragging: bool,
+    on: fn(SplitEvent) -> M,
 }
 
 /// The window of an app in the layout for `class` ([`crate::layout::of`] of the window size):
@@ -258,6 +283,7 @@ pub fn shell<'a, M: 'a>(
         rail: None,
         drawer: None,
         overlay: None,
+        side: None,
     }
 }
 
@@ -287,21 +313,42 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
         self.drawer = open.then_some(on_dismiss);
         self
     }
+
+    /// Draws the expanded sidebar beside the content `width` wide instead of [`size::sidebar()`], with
+    /// a handle over its right edge that the person drags (issue #376): pressed it sends
+    /// [`SplitEvent::Grab`], double-clicked [`SplitEvent::Reset`], and while `dragging` every move over
+    /// the window sends [`SplitEvent::Drag`] with the width that puts the handle under the pointer, and
+    /// the line beside the sidebar shows in `line_selected`. The app keeps a [`split::Split`] and
+    /// clamps it to [`sidebar_limits`], as for [`split::split`]. Only the wide layout without the rail
+    /// uses the width; the rail, the drawer and the band's [`Cover::Drawer`] keep their widths. The
+    /// window has the same widgets with and without a drag, and beside the rail as well, so neither a
+    /// drag nor `[` loses the content's state (scroll positions, focus). [`content_width`] still counts
+    /// [`size::sidebar()`]: an app that drags the width measures its content with that width itself.
+    pub fn sidebar_width(mut self, width: f32, dragging: bool, on: fn(SplitEvent) -> M) -> Self {
+        self.side = Some(SideWidth { width, dragging, on });
+        self
+    }
 }
 
 impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
     fn from(shell: Shell<'a, M>) -> Self {
-        let Shell { class, sidebar, header, body, props, rail, drawer: on_dismiss, overlay } = shell;
+        let Shell { class, sidebar, header, body, props, rail, drawer: on_dismiss, overlay, side } = shell;
         let header = header_box(class, header);
         let mut layers = Vec::new();
         let rail = rail.filter(|_| matches!(class, SizeClass::Wide | SizeClass::Medium));
         if class == SizeClass::Wide {
             match rail {
-                Some(rail) => layers.push(inset_window(rail, self::rail(), header, body, props)),
-                None => layers.push(inset_window(sidebar, size::sidebar(), header, body, props)),
+                Some(rail) => {
+                    layers.push(resizable(inset_window(rail, self::rail(), header, body, props, false), side, false));
+                }
+                None => {
+                    let width = side.as_ref().map_or(size::sidebar(), |side| side.width);
+                    let dragging = side.as_ref().is_some_and(|side| side.dragging);
+                    layers.push(resizable(inset_window(sidebar, width, header, body, props, dragging), side, true));
+                }
             }
         } else if let Some(rail) = rail {
-            layers.push(inset_window(rail, self::rail(), header, body, props));
+            layers.push(resizable(inset_window(rail, self::rail(), header, body, props, false), side, false));
             if let Some(on_dismiss) = on_dismiss {
                 layers.push(drawer(sidebar, on_dismiss));
             }
@@ -632,15 +679,17 @@ fn header_box<'a, M: 'a>(class: SizeClass, header: Element<'a, M>) -> Element<'a
     column![bar, rule::horizontal(LINE).style(style::rule)].into()
 }
 
-/// The sidebar (`width` [`size::sidebar()`]) or the rail ([`rail()`]) on the window background, and
-/// the content beside it: flush with a line between them when the design's [`layout::inset()`] is 0,
-/// else as an inset panel with that margin.
+/// The sidebar (`width`, [`size::sidebar()`] unless the person dragged it) or the rail ([`rail()`]) on
+/// the window background, and the content beside it: flush with a line between them when the design's
+/// [`layout::inset()`] is 0, else as an inset panel with that margin. While the sidebar's edge is
+/// `dragged` ([`Shell::sidebar_width`]) the line shows in `line_selected`, as the divider of a split.
 fn inset_window<'a, M: 'a>(
     sidebar: Element<'a, M>,
     width: f32,
     header: Element<'a, M>,
     body: Element<'a, M>,
     props: Option<Element<'a, M>>,
+    dragged: bool,
 ) -> Element<'a, M> {
     let mut main = row![container(body).width(Fill).height(Fill)];
     if let Some(props) = props {
@@ -663,13 +712,57 @@ fn inset_window<'a, M: 'a>(
     let window = if is_flush(inset) {
         // Flush (issue #291): the panel runs to the window's edges, a line parts it from the sidebar.
         let panel = container(content).width(Fill).height(Fill).style(style::container::panel_flush);
-        row![side, rule::vertical(LINE).style(style::rule), panel]
+        let line = rule::vertical(LINE).style(move |t| {
+            let mut look = style::rule(t);
+            if dragged {
+                look.color = palette(t).line_selected;
+            }
+            look
+        });
+        row![side, line, panel]
     } else {
         // The 1-px padding keeps the content inside the panel's border, as `border-box` in the CSS.
         let panel = container(content).width(Fill).height(Fill).padding(LINE).style(style::container::panel);
         row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(inset) })]
     };
     container(window).width(Fill).height(Fill).style(style::container::sidebar).into()
+}
+
+/// How far the handle of the expanded sidebar reaches over the sidebar ([`resizable`]): the margin
+/// of [`style::scrollbar()`], so the sidebar's scroller, which floats in its right edge, stays free
+/// to grab and to scroll over; the rest of the handle lies over the content's edge.
+const GRIP_INSIDE: f32 = 2.0;
+
+/// `window` with the handle of the expanded sidebar over it (issue #376), when the app gave a `side`
+/// width ([`Shell::sidebar_width`]); `handle` is false beside the rail, which has none. The handle is
+/// [`split::handle_width()`] wide, [`GRIP_INSIDE`] of it over the sidebar, and only it takes the
+/// pointer: the rest of its layer is empty, so the window below gets every other press. Window and
+/// layer always lie in one mouse area, with or without the handle and the drag, so the window keeps
+/// its state.
+fn resizable<'a, M: Clone + 'a>(window: Element<'a, M>, side: Option<SideWidth<M>>, handle: bool) -> Element<'a, M> {
+    let Some(SideWidth { width, dragging, on }) = side else {
+        return window;
+    };
+    let layer: Element<'a, M> = if handle {
+        let grip = mouse_area(container(blank()).width(split::handle_width()).height(Fill))
+            .on_press(on(SplitEvent::Grab))
+            .on_double_click(on(SplitEvent::Reset))
+            .interaction(mouse::Interaction::ResizingHorizontally);
+        row![blank().width((width - GRIP_INSIDE).max(0.0)), grip].height(Fill).into()
+    } else {
+        blank().into()
+    };
+    let area = mouse_area(stack![window, layer]);
+    if handle && dragging {
+        // The window starts at the left edge, so the pointer's x is the sidebar's width once the
+        // handle's middle, which lies right of the edge, is under the pointer.
+        let middle = split::handle_width() / 2.0 - GRIP_INSIDE;
+        area.on_move(move |point| on(SplitEvent::Drag(point.x - middle)))
+            .interaction(mouse::Interaction::ResizingHorizontally)
+            .into()
+    } else {
+        area.into()
+    }
 }
 
 /// Whether a design with the inset `inset` ([`layout::inset()`]) draws the content beside the sidebar
@@ -1377,8 +1470,46 @@ mod tests {
         assert!(is_flush(0.0) && !is_flush(8.0));
         assert_eq!(layout::inset(), 0.0, "the standard is flush");
         let part = || -> Element<'static, Msg> { blank().into() };
-        let _ = inset_window(part(), size::sidebar(), part(), part(), Some(part()));
-        let _ = inset_window(part(), rail(), part(), part(), None);
+        let _ = inset_window(part(), size::sidebar(), part(), part(), Some(part()), false);
+        let _ = inset_window(part(), rail(), part(), part(), None, true);
+    }
+
+    /// Issue #376: the expanded sidebar moves between three quarters and twice its default, and leaves
+    /// the content its rest; in every built-in design the narrowest is still wider than the rail.
+    #[test]
+    fn the_sidebar_width_stays_inside_its_limits() {
+        let rest = 700.0;
+        let limits = sidebar_limits(1600.0, rest);
+        assert_eq!(limits.default, size::sidebar());
+        assert_eq!(limits.clamp(10.0), 0.75 * size::sidebar(), "never narrower than three quarters");
+        assert_eq!(limits.clamp(5000.0), 2.0 * size::sidebar(), "never wider than twice the default");
+        let tight = sidebar_limits(1024.0, rest);
+        assert_eq!(
+            tight.clamp(5000.0),
+            1024.0 - layout::inset() - split::handle_width() - rest,
+            "the content keeps its rest"
+        );
+        for id in torro_core::design::BUILT_IN_IDS {
+            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            assert!(0.75 * d.size.sidebar > d.size.rail, "{id}: the narrowest sidebar is no rail");
+        }
+    }
+
+    /// Issue #376: the window builds with the sidebar's handle in every layout, dragged or not, and
+    /// without it as before.
+    #[test]
+    fn the_shell_builds_with_the_sidebars_width() {
+        let part = || -> Element<'static, Msg> { blank().into() };
+        let on = |_| Msg::Close;
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            for rail in [false, true] {
+                for dragging in [false, true] {
+                    let shell = shell(class, part(), part(), part(), None).rail(rail.then(part));
+                    let _: Element<'_, Msg> = shell.sidebar_width(300.0, dragging, on).into();
+                }
+                let _: Element<'_, Msg> = shell(class, part(), part(), part(), None).rail(rail.then(part)).into();
+            }
+        }
     }
 
     /// Issue #291: the rail is the design's `size.rail`, at least as wide as its button.
