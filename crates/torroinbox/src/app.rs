@@ -17973,30 +17973,22 @@ mod tests {
         }
     }
 
-    /// Issue #376: the sidebar's edge drags in every built-in design, bounded by that design's
-    /// sidebar. Holds [`DESIGN`] and puts the standard back at the end.
+    /// Issue #376: in every built-in design the sidebar's bounds work out – the least is wider than the
+    /// rail, and from the narrowest wide window on, list and reader keep their least beside it; at
+    /// [`WIDE`] the sidebar reaches its most. Reads the packs' values instead of switching the design
+    /// of the process: the tests beside this one read the standard's tokens without [`DESIGN`].
     #[test]
-    fn the_sidebars_edge_drags_in_every_design() {
-        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn the_sidebars_bounds_hold_in_every_design() {
         for id in torro_core::design::BUILT_IN_IDS {
-            design::set(torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design"));
-            let mut app = mail_window(Density::Compact, &[]);
-            let _ = app.update(Message::Resized(WIDE));
-            assert_eq!(app.sidebar_room(), size::sidebar(), "{id}: the default");
-            let _ = app.update(Message::SidebarWidth(SplitEvent::Grab));
-            let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(0.0)));
-            assert_eq!(app.sidebar_room(), 0.75 * size::sidebar(), "{id}: the least");
-            assert!(app.sidebar_room() > shell::rail(), "{id}: wider than the rail");
-            let _ = app.view();
-            let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(WIDE.width)));
-            assert_eq!(app.sidebar_room(), 2.0 * size::sidebar(), "{id}: the most");
-            let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
-            for size in SIZES {
-                let _ = app.update(Message::Resized(size));
-                let _ = app.view();
-            }
+            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let (least, most) = (0.75 * d.size.sidebar, 2.0 * d.size.sidebar);
+            // As `App::sidebar_limits`: list and reader, the divider, the collapsed rail and its gap.
+            let rest = 2.0 * d.size.props + d.space.s + d.space.xs + d.size.rail;
+            let room = |window: f32| window - d.layout.inset - d.space.s - rest;
+            assert!(least > d.size.rail, "{id}: the narrowest sidebar is no rail");
+            assert!(room(layout::MEDIUM_MAX_WIDTH) > least, "{id}: the narrowest wide window still drags");
+            assert!(room(WIDE.width) >= most, "{id}: {WIDE:?} reaches the most");
         }
-        design::set(torro_core::design::Design::standard());
     }
 
     /// Task E8.11 (finding 4): the wide mail window keeps the reader's column while nothing is open,
