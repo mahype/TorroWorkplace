@@ -4712,6 +4712,17 @@ mod tests {
         }
     }
 
+    /// Issue #377: only a loaded HTML mail with a background of its own fills the reader and the panel
+    /// edge to edge; a plain HTML mail, the text of a mail and one still loading stay in the reading column.
+    #[test]
+    fn only_html_with_a_background_of_its_own_fills_the_reader() {
+        let fills = |id, format, loaded| reading_of(id, format, loaded, |reading| html_filling(reading).is_some());
+        assert!(fills("m:p2", MailFormat::Html, true), "the newsletter paints its own background");
+        assert!(!fills("m:w2", MailFormat::Html, true), "a plain mail stands in the column");
+        assert!(!fills("m:p2", MailFormat::Text, true), "shown as text");
+        assert!(!fills("m:p2", MailFormat::Html, false), "still loading");
+    }
+
     /// Issue #291 (task L.35): the reader's head has the sender's avatar only where the mail rows
     /// have one (`[list] avatar`), so a design without avatars has none in the head either.
     #[test]
