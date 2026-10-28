@@ -2780,8 +2780,8 @@ fn html_edge<'a>(reading: &Reading<'a>) -> Option<HtmlReading<'a>> {
 /// The mail under the reader's head and its line (task E11.3, issues #291, #377): in the reading
 /// column `widths.mail` wide with the reading padding around it ([`letter`]: text with its links and the
 /// note on foreign text, or HTML with the note under it), but a HTML with a background of its own
-/// `widths.html` wide, without padding ([`html_letter`]; only its note keeps the reading padding). While it loads, or after an error, a quiet
-/// line says so.
+/// `widths.html` wide, without padding ([`html_letter`]; only its note keeps the reading padding). While
+/// it loads, or after an error, a quiet line says so.
 fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, Message> {
     let pad = layout::reading_padding();
     match reading.loaded {
