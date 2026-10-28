@@ -79,6 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
+| `contacts` ²⁷ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_shown` ²⁶, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
@@ -829,6 +830,18 @@ Leserecht in `mail`, das Konto in `mail_accounts` und seine Quelle in `inbox_sou
 ganze Aufruf `not-found`, dieselbe Antwort wie für eine Mail, die es nicht gibt – Schreibrecht im Eingang allein verrät
 nicht, welche Mail-Kennungen es gibt. Geprüft vor der Freigabe und noch einmal bei der Ausführung; der App-Schlüssel
 erreicht jedes Konto.
+
+²⁷ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
+`Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
+Vorlagen setzen nur die Stufe und öffnen kein Buch; ein Mensch hakt die Bücher an. Ausgeblendete Bücher
+(Systemadressbuch, „Recently contacted“) erreicht ein Client nur, wenn sie einzeln in `Rights.hidden_address_books`
+stehen, auch bei `All`. Bücher außerhalb der Auswahl gibt es für den Client nicht (`not-found`), ausgefiltert vor dem
+Lesen. `update_contact` überschreibt Felder des Menschen und ist `Delete`; `add_to_contact` ergänzt nur (neue Werte
+hinter den bestehenden, nie bevorzugt) und ist `Write`. `resolve_conflict` ist mit `mine` oder `theirs` `Delete`,
+mit `both` `Write` (`Request::operation()`). Alle Kontaktfelder, Buch- und Gruppennamen sind `untrusted`. **`contacts`
+steht nicht in `NEVER_TO_AGENTS`:** Anders als Mail regelt bei Kontakten allein die Auswahl der Bücher, was ein Agent
+sieht; wer ein Buch nicht bei einem KI-Anbieter haben will, lässt es dort weg (Entscheidung 5 in
+[kontakte.md](kontakte.md)).
 
 Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › MCP-Server (#302)](erweiterungen.md#mcp-server-302)):
 - **Ausgehend:** Ein Werkzeug eines Servers zählt nicht als „Nach außen“ (`Rights::outbound`, nur `mail.send_draft`

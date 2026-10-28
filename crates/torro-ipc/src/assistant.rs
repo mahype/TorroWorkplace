@@ -457,7 +457,7 @@ impl MyAccess {
 }
 
 /// Takes `area` out of `rights` with what it selects: an area the client does not get here names
-/// none of its calendars, lists, repositories, mail accounts, tools or MCP servers either (a mail
+/// none of its calendars, lists, address books, repositories, mail accounts, tools or MCP servers either (a mail
 /// account's id is its address, which the data rule keeps from an agent), and without mail no mail
 /// account's inbox source.
 fn close(rights: &mut Rights, area: Area) {
@@ -466,6 +466,10 @@ fn close(rights: &mut Rights, area: Area) {
     match area {
         Area::Calendar => rights.calendars = nothing(),
         Area::Tasks => rights.task_lists = nothing(),
+        Area::Contacts => {
+            rights.address_books = nothing();
+            rights.hidden_address_books.clear();
+        }
         Area::Github => rights.github_repos = nothing(),
         Area::Inbox => rights.inbox_sources = nothing(),
         Area::Tools => rights.tools = nothing(),

@@ -5203,6 +5203,27 @@ impl Core {
                 Ok(entries) => Response::Catalog { entries },
                 Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
             },
+            // Contacts (`docs/kontakte.md`, issue #351): the commands come with the store.
+            Request::ListAddressBooks { .. }
+            | Request::ListContacts { .. }
+            | Request::GetContact { .. }
+            | Request::GetContactPhoto { .. }
+            | Request::ListContactGroups { .. }
+            | Request::UpcomingBirthdays { .. }
+            | Request::CreateContact { .. }
+            | Request::AddToContact { .. }
+            | Request::UpdateContact { .. }
+            | Request::SetContactFavorite { .. }
+            | Request::AddContactToGroup { .. }
+            | Request::RemoveContactFromGroup { .. }
+            | Request::MarkContactUsed { .. }
+            | Request::SetContactPhoto { .. }
+            | Request::MoveContact { .. }
+            | Request::DeleteContact { .. }
+            | Request::ResolveContactConflict { .. } => Response::Error {
+                code: "unsupported".into(),
+                message: tr("Contacts are not available yet.").into(),
+            },
             // The other commands (task MA.5). A client's rights were checked before (`handle_client`,
             // `run_approved`); what a server shows and offers depends on who asks, and a client never reaches
             // what only a person does (point 10), whatever came before.
@@ -5217,7 +5238,9 @@ impl Core {
             | Request::SetExtensionSecret { .. }
             | Request::SetExtensionFolder { .. }
             | Request::ReadExtensionLogs { .. }
-            | Request::RemoveExtension { .. }) => self.extensions_request(request, reach).await,
+            // Boxed: a call of a server tool approved by a person reaches it in the second pass through
+            // this function (see `decide_approval`), with both frames on a test thread's stack.
+            | Request::RemoveExtension { .. }) => Box::pin(self.extensions_request(request, reach)).await,
         }
     }
 

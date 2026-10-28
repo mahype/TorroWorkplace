@@ -68,6 +68,11 @@ pub struct Settings {
     /// message when it ends. On unless turned off.
     #[serde(default = "on")]
     pub quiet_when_busy: bool,
+    /// Show the hidden address books in the contacts app (`docs/kontakte.md`): Nextcloud's system
+    /// address book and "Recently contacted". Only what the app shows; what a client may reach
+    /// stays with its rights. Off unless turned on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub contacts_show_hidden_books: bool,
     /// The design pack every window draws with (task L.3, `docs/design-pakete.md`): its id, the
     /// folder name under `<data>/designs/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the
     /// standard. Kept as written even when the pack is gone or broken: the apps then draw with
@@ -759,6 +764,7 @@ impl Default for Settings {
             working_hours: WorkingHours::default(),
             list_orders: BTreeMap::new(),
             quiet_when_busy: on(),
+            contacts_show_hidden_books: false,
             design: standard_design(),
             font: standard_design(),
             color_scheme: standard_design(),
@@ -2681,6 +2687,7 @@ mod tests {
             working_hours: WorkingHours::DEFAULT,
             list_orders: BTreeMap::new(),
             quiet_when_busy: true,
+            contacts_show_hidden_books: false,
             design: "torro".into(),
             font: "torro".into(),
             color_scheme: "torro".into(),
@@ -2939,6 +2946,7 @@ mod tests {
             working_hours: WorkingHours { from: q(7, 30), to: q(16, 0) },
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             quiet_when_busy: false,
+            contacts_show_hidden_books: false,
             design: "plex".into(),
             font: "channelr".into(),
             color_scheme: "nord".into(),

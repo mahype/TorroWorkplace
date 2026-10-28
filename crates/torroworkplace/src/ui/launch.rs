@@ -1689,6 +1689,8 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         areas: BTreeMap::from([(Area::Inbox, AreaRights { level: Level::Write, admin: false })]),
         calendars: Selection::Only(Vec::new()),
         task_lists: Selection::Only(Vec::new()),
+        address_books: Selection::Only(Vec::new()),
+        hidden_address_books: Vec::new(),
         github_repos: Selection::Only(Vec::new()),
         inbox_sources: Selection::Only(vec!["script:backup".into()]),
         mail_accounts: Selection::Only(Vec::new()),

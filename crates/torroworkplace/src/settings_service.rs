@@ -599,6 +599,8 @@ enum Change {
     /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
     ListOrder(ListOrderEntry),
     QuietWhenBusy(bool),
+    /// Show the hidden address books in the contacts app.
+    ContactsShowHiddenBooks(bool),
     /// Whether the pack exists and is valid is [`SettingsStore::check_part`]'s check.
     Design(String),
     /// The font (task L.22), checked like [`Change::Design`].
@@ -695,6 +697,9 @@ impl Change {
             SettingKey::WorkingHours => Change::WorkingHours(WorkingHours::from_value(value)?),
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::ContactsShowHiddenBooks => {
+                Change::ContactsShowHiddenBooks(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             SettingKey::Design => Change::Design(part_id(key, value)?),
             SettingKey::Font => Change::Font(part_id(key, value)?),
             SettingKey::ColorScheme => Change::ColorScheme(part_id(key, value)?),
@@ -786,6 +791,7 @@ impl Change {
             Change::WorkingHours(hours) => settings.working_hours = hours,
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
+            Change::ContactsShowHiddenBooks(show) => settings.contacts_show_hidden_books = show,
             Change::Design(id) => settings.design = id,
             Change::Font(id) => settings.font = id,
             Change::ColorScheme(id) => settings.color_scheme = id,
@@ -1754,6 +1760,7 @@ mod tests {
                 working_hours: WorkingHours::from_value(&working).expect("valid working hours"),
                 list_orders: Default::default(),
                 quiet_when_busy: false,
+                contacts_show_hidden_books: false,
                 design: "plex".into(),
                 font: "channelr".into(),
                 color_scheme: "nord".into(),

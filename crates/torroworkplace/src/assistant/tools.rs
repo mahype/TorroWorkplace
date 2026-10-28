@@ -183,7 +183,7 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<Arc<Tool>> {
 
 /// The tools of the commands a client of `kind` with `rights` may use in a conversation without the
 /// areas `without`, in catalogue order (see the module's documentation). `None` rights (no client
-/// yet): none. A command of one of the assistant's own tools only with the tool in
+/// yet): none. Contacts only with an address book in the rights. A command of one of the assistant's own tools only with the tool in
 /// [`Rights::tools`]; pass rights cut by [`with_tools_on`], so a switched-off tool is not offered. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
 /// [`ASSISTANT_BOT_TOOLS`] (task B.2) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
 /// task B.1) its rights only; both get [`MY_ACCESS`] (issue #134). Neither is offered any other tool
@@ -205,7 +205,12 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
         let granted = !matches!(area, Area::Assistant | Area::Bots) && rights.allows(operation);
         let by_kind = (own && (tool.is_memory() || tool.is_bots())) || (assistant_or_bot && tool.is_my_access());
         let tool_reached = ToolId::of_command(tool.command.name).is_none_or(|own| rights.reaches_tool(own));
-        area.grantable() && !without.contains(&area) && (granted || by_kind) && tool_reached
+        // Contacts without a single address book ticked (how the assistant starts, decision 5 in
+        // `docs/kontakte.md`) would only answer with nothing: their tools wait for a book.
+        let books = area != Area::Contacts
+            || rights.address_books != Selection::Only(Vec::new())
+            || !rights.hidden_address_books.is_empty();
+        area.grantable() && !without.contains(&area) && (granted || by_kind) && tool_reached && books
     });
     let served = servers.iter().filter(|tool| {
         let operation = call_command().map(|command| Operation { command, access: tool.access });
@@ -408,7 +413,7 @@ fn without_pictures(mut value: Value) -> Value {
     value
 }
 
-/// An answer of `area` holds text from outside the suite: everything of mail and of GitHub (issues,
+/// An answer of `area` holds text from outside the suite: everything of contacts, of mail and of GitHub (issues,
 /// repositories of others) but errors, inbox answers that carry an entry marked `untrusted`, and
 /// task answers that carry GitHub items – an issue of a filter list (its list is `github:…`) or a
 /// task linked to one (`github:…` link, task C.11), and answers of the assistant's own tools marked
@@ -423,6 +428,9 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
     let error = result == Some("error");
     match area {
         Area::Mail | Area::Github => !error,
+        // Contacts are text of other people (shared books, the system address book), every answer
+        // (decision 4 in `docs/kontakte.md`).
+        Area::Contacts => true,
         Area::Extensions => !matches!(result, Some("error" | "ok" | "catalog")),
         Area::Inbox | Area::Tools => value.to_string().contains("\"untrusted\":true"),
         Area::Tasks => {
@@ -472,7 +480,7 @@ pub fn may_have_read_outside(name: &str) -> bool {
     torro_ipc::api::CATALOGUE
         .iter()
         .find(|command| command.name == name)
-        .is_some_and(|command| matches!(command.area, Area::Mail | Area::Github | Area::Inbox))
+        .is_some_and(|command| matches!(command.area, Area::Mail | Area::Github | Area::Inbox | Area::Contacts))
 }
 
 /// `value` within [`RESULT_CHARS`]: texts over [`TEXT_CHARS`] and lists over [`LIST_ITEMS`] cut
@@ -782,6 +790,21 @@ mod tests {
             lack_summary(Lack::Denied { area: Area::Calendar }, "Ollama"),
             trf("Turned off in {area}", &[("area", &calendar)])
         );
+    }
+
+    /// Decision 5 in `docs/kontakte.md`: the assistant starts with contacts in full but no book, and
+    /// gets their tools once a person ticks one; a hidden book alone counts too.
+    #[test]
+    fn contacts_tools_come_with_an_address_book() {
+        let contacts =
+            |rights: &Rights| allowed(Some(rights), &[]).iter().filter(|t| t.command.area == Area::Contacts).count();
+        let mut rights = Rights::assistant();
+        assert_eq!(contacts(&rights), 0);
+        rights.address_books = Selection::Only(vec!["nextcloud:anna@cloud.example.org/contacts".into()]);
+        assert!(contacts(&rights) > 10);
+        rights.address_books = Selection::Only(Vec::new());
+        rights.hidden_address_books = vec!["nextcloud:anna@cloud.example.org/z-server-generated--system".into()];
+        assert!(contacts(&rights) > 10);
     }
 
     #[test]

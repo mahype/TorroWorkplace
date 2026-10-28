@@ -23,6 +23,7 @@ todo = "deny"
 torro-core.workspace = true
 torro-setups.workspace = true
 torro-pim.workspace = true
+torro-contacts.workspace = true
 torro-inbox.workspace = true
 torro-mail.workspace = true
 chrono.workspace = true

@@ -1552,6 +1552,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Templates of your windows", "Vorlagen deiner Fenster"),
     ("Calendars and events", "Kalender und Termine"),
     ("Task lists and tasks", "Aufgabenlisten und Aufgaben"),
+    ("Address books and contacts", "Adressbücher und Kontakte"),
+    ("Contacts", "Kontakte"),
     ("Issues and pull requests in filter lists", "Issues und Pull Requests in Filterlisten"),
     ("Connected accounts and sync", "Verbundene Konten und Abgleich"),
     ("Settings of the suite", "Einstellungen der Suite"),

@@ -1340,6 +1340,25 @@ impl PimService {
             | Request::TrashFile { .. } => {
                 return None;
             }
+            // Address books are no calendar or task collection: the contacts service checks its
+            // books itself (`contacts::ContactsService::out_of_reach`).
+            Request::ListAddressBooks { .. }
+            | Request::ListContacts { .. }
+            | Request::GetContact { .. }
+            | Request::GetContactPhoto { .. }
+            | Request::ListContactGroups { .. }
+            | Request::UpcomingBirthdays { .. }
+            | Request::CreateContact { .. }
+            | Request::AddToContact { .. }
+            | Request::UpdateContact { .. }
+            | Request::SetContactFavorite { .. }
+            | Request::AddContactToGroup { .. }
+            | Request::RemoveContactFromGroup { .. }
+            | Request::MarkContactUsed { .. }
+            | Request::SetContactPhoto { .. }
+            | Request::MoveContact { .. }
+            | Request::DeleteContact { .. }
+            | Request::ResolveContactConflict { .. } => return None,
             // No collection: MCP servers are the core's own (issue #302); their rights are per server.
             Request::ListExtensions
             | Request::GetExtension { .. }

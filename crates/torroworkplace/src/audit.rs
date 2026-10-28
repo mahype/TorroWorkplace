@@ -270,6 +270,28 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UnpinIssue { collection: list, url } | Request::AddLink { collection: list, url } => {
             vec![collection(list), format!("item:{}", hashed(url))]
         }
+        // Contacts (`docs/kontakte.md`): books like collections, contacts hashed; never a group, a
+        // search or a field (a contact's id holds its book and uid only, hashed all the same).
+        Request::ListAddressBooks { account: name } => name.iter().map(|name| account(name)).collect(),
+        Request::ListContacts { book, .. } | Request::ListContactGroups { book } => {
+            book.iter().map(|book| collection(book)).collect()
+        }
+        Request::UpcomingBirthdays { .. } => Vec::new(),
+        Request::CreateContact { book, .. } => vec![collection(book)],
+        Request::GetContact { id: contact }
+        | Request::GetContactPhoto { id: contact, .. }
+        | Request::AddToContact { id: contact, .. }
+        | Request::UpdateContact { id: contact, .. }
+        | Request::SetContactFavorite { id: contact, .. }
+        | Request::AddContactToGroup { id: contact, .. }
+        | Request::RemoveContactFromGroup { id: contact, .. }
+        | Request::MarkContactUsed { id: contact }
+        | Request::SetContactPhoto { id: contact, .. }
+        | Request::DeleteContact { id: contact, .. }
+        | Request::ResolveContactConflict { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
+        Request::MoveContact { id: contact, to_book, .. } => {
+            vec![format!("item:{}", hashed(contact)), collection(to_book)]
+        }
         Request::SetSetting { key, .. } => {
             let key = serde_json::to_value(key).ok().and_then(|key| key.as_str().map(str::to_string));
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()

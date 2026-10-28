@@ -405,6 +405,7 @@ fn area_access(rights: &Rights, area: Area) -> String {
     let selection = match area {
         Area::Calendar => Some((&rights.calendars, "calendar", "calendars")),
         Area::Tasks => Some((&rights.task_lists, "task list", "task lists")),
+        Area::Contacts => Some((&rights.address_books, "address book", "address books")),
         Area::Github => Some((&rights.github_repos, "repository", "repositories")),
         Area::Inbox => Some((&rights.inbox_sources, "source", "sources")),
         Area::Mail => Some((&rights.mail_accounts, "mail account", "mail accounts")),

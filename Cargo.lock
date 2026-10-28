@@ -7059,6 +7059,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "torro-contacts",
  "torro-core",
  "torro-inbox",
  "torro-mail",
@@ -7168,6 +7169,7 @@ dependencies = [
  "rrule",
  "serde",
  "tokio",
+ "torro-contacts",
  "torro-core",
  "torro-pim",
 ]
