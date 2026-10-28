@@ -3074,7 +3074,7 @@ impl Core {
         // list says where it computes, so it is checked here and not with the request alone.
         // Asked only of a client that may otherwise: a refused one makes the core ask no server.
         let elsewhere = match allowed && !for_people {
-            true => self.turns_on_elsewhere(&request).await,
+            true => self.turns_on_elsewhere(&request, Reach::Client(&rights)).await,
             false => Ok(false),
         };
         if !allowed || for_people || matches!(elsewhere, Ok(true)) {
@@ -4177,7 +4177,7 @@ impl Core {
         if !allowed
             || self.switches_on_for_people(&request)
             // Without a list it runs on: turning on asks the server again and answers its error.
-            || matches!(self.turns_on_elsewhere(&request).await, Ok(true))
+            || matches!(self.turns_on_elsewhere(&request, Reach::Client(rights)).await, Ok(true))
             || torro_ipc::api::loops_back(&info.kind, request.operation())
             || self.bots_refusal(client, rights, &request).is_some()
         {
@@ -9000,7 +9000,7 @@ impl Core {
     /// Emptying a slot, taking an assignment back or switching off what sorts now are ordinary admin
     /// commands. The handlers judge again with the server's list of now ([`Core::set_ai_slot`],
     /// [`Core::set_ai_assignment`], [`Core::start_category_job`]).
-    async fn turns_on_elsewhere(&self, request: &Request) -> Result<bool, torro_core::ai::AiError> {
+    async fn turns_on_elsewhere(&self, request: &Request, reach: Reach<'_>) -> Result<bool, torro_core::ai::AiError> {
         let (engine, model) = match request {
             Request::SetModelEnabled { account, model, enabled } => {
                 self.ai.switches_writable().await?;
@@ -9024,9 +9024,14 @@ impl Core {
             }
             Request::StartCategoryJob { scope } => return self.names_another_model_elsewhere(scope).await,
             // Resuming sends the run's mail to the model stored with it: the person may have chosen
-            // another for Sorting since (PR review of #325). A run that is not there is the handler's.
+            // another for Sorting since (PR review of #325). A run that is not there, or not in `reach`, is
+            // the handler's: it answers `not-found`, so a client learns nothing of a run it cannot see.
             Request::ControlCategoryJob { id, action: torro_ipc::inbox::CategoryJobControl::Resume } => {
                 let Ok(Some(job)) = self.inbox.category_job(Some(id)) else { return Ok(false) };
+                let reached = self.mail.accounts_in(reach).await;
+                if !job.scope.accounts.iter().all(|account| reached.contains(account)) {
+                    return Ok(false);
+                }
                 return self.names_another_model_elsewhere(&job.scope).await;
             }
             _ => return Ok(false),
@@ -23701,7 +23706,7 @@ mod tests {
         let resume = Request::ControlCategoryJob { id: id.clone(), action: CategoryJobControl::Resume };
         let refused = Refused::Lacks { command: "inbox.control_category_job", lack: Lack::ForPeople };
 
-        assert_eq!(core.turns_on_elsewhere(&resume).await, Ok(true), "refused before any approval");
+        assert_eq!(core.turns_on_elsewhere(&resume, Reach::Suite).await, Ok(true), "refused before any approval");
         let door = door_for(&core, Some(&key));
         assert_eq!(Box::pin(core.handle_from(Some(&key), door, resume.clone())).await.err(), Some(refused));
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
@@ -23711,6 +23716,20 @@ mod tests {
         assert_eq!(code(&core.handle_within(resume.clone(), Reach::Client(&rights)).await), "forbidden");
         let held = core.inbox.category_job(Some(&id)).expect("read").expect("the run");
         assert_eq!(held.state, CategoryJobState::Paused, "not resumed");
+
+        // A run in a mail account the client does not reach is refused as any such run, never "for
+        // people": that would tell the client the run is there and names a model elsewhere.
+        let mut unseen = job.clone();
+        unseen.id = core.inbox.new_category_job_id().expect("an id");
+        unseen.scope.accounts = vec!["mail:someone-else".into()];
+        core.inbox.save_category_job(&unseen).expect("saved");
+        let hidden = Request::ControlCategoryJob { id: unseen.id.clone(), action: CategoryJobControl::Resume };
+        assert_eq!(core.turns_on_elsewhere(&hidden, Reach::Client(&rights)).await, Ok(false));
+        let for_people = refused.response();
+        let answer = core.handle_within(hidden.clone(), Reach::Client(&rights)).await;
+        assert_ne!(answer, for_people, "{answer:?}");
+        let door = door_for(&core, Some(&key));
+        assert_ne!(Box::pin(core.handle_from(Some(&key), door, hidden)).await.err(), Some(refused));
 
         // The person resumes it as before.
         let answer = core.handle(resume).await;
@@ -23742,7 +23761,7 @@ mod tests {
         let reach = Reach::Client(&rights);
         let automatic = set_sorting(Some(&engine), None, true);
 
-        assert_eq!(core.turns_on_elsewhere(&automatic).await, Ok(false), "here, as the account is");
+        assert_eq!(core.turns_on_elsewhere(&automatic, Reach::Suite).await, Ok(false), "here, as the account is");
         let answer = core.handle_within(automatic.clone(), reach).await;
         assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
         assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
@@ -23774,18 +23793,18 @@ mod tests {
 
         // The slot sorts here: an exception elsewhere, even off, is the person's.
         let prepared = set_sorting(Some(&engine), Some("nimble:cloud"), false);
-        assert_eq!(core.turns_on_elsewhere(&prepared).await, Ok(true), "refused before any approval");
+        assert_eq!(core.turns_on_elsewhere(&prepared, Reach::Suite).await, Ok(true), "refused before any approval");
         assert_eq!(code(&core.handle_within(prepared.clone(), reach).await), "forbidden");
         assert!(core.settings.current().ai_assignments.is_empty(), "nothing prepared");
         // Off with the model that sorts now: an ordinary admin command.
         let off_here = set_sorting(Some(&engine), Some("nimble"), false);
-        assert_eq!(core.turns_on_elsewhere(&off_here).await, Ok(false));
+        assert_eq!(core.turns_on_elsewhere(&off_here, Reach::Suite).await, Ok(false));
         assert!(matches!(core.handle_within(off_here, reach).await, Response::AiAssignments { .. }));
         core.handle(set_sorting(None, None, false)).await;
 
         // The slot sorts elsewhere (the person's choice): "off" with that model goes.
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
-        assert_eq!(core.turns_on_elsewhere(&prepared).await, Ok(false), "what sorts now");
+        assert_eq!(core.turns_on_elsewhere(&prepared, Reach::Suite).await, Ok(false), "what sorts now");
         let answer = core.handle_within(prepared.clone(), reach).await;
         assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
         core.handle(set_sorting(None, None, false)).await;
@@ -23793,7 +23812,7 @@ mod tests {
         // The person's exception elsewhere sorts: switching it off with its own model goes too.
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
         core.handle(set_sorting(Some(&engine), Some("nimble:cloud"), true)).await;
-        assert_eq!(core.turns_on_elsewhere(&prepared).await, Ok(false));
+        assert_eq!(core.turns_on_elsewhere(&prepared, Reach::Suite).await, Ok(false));
         let answer = core.handle_within(prepared, reach).await;
         assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
         assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel), "off");

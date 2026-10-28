@@ -1325,8 +1325,12 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
     match request {
         // Which model does which function (task E12.5): the function and the account, no secret.
         // Account, model and place from the core's list (PR review of #325), as for a slot.
-        Request::SetAiAssignment { function, engine: Some(engine), model, enabled: true, .. } => {
-            assignment_summary(*function, &named(engine), model.as_deref(), facts)
+        Request::SetAiAssignment { function, engine: Some(engine), model, enabled: true, effort } => {
+            let text = assignment_summary(*function, &named(engine), model.as_deref(), facts);
+            match effort {
+                Some(effort) => trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(*effort))]),
+                None => text,
+            }
         }
         // Stored switched off: then no model does the function, whichever the client names.
         Request::SetAiAssignment { function, enabled: false, engine: Some(_), .. } => {
@@ -3772,6 +3776,19 @@ pub(crate) mod tests {
         assert_eq!(
             summary(&set(Some(account), Some("nimble"), false), &known(true)),
             trf("Let no model do “{function}” any more", &[("function", label)])
+        );
+        // The effort by its word, as for a slot.
+        let effortful = Request::SetAiAssignment {
+            function,
+            engine: Some(account.into()),
+            model: Some("nimble".into()),
+            effort: Some(torro_core::ai::Effort::Low),
+            enabled: true,
+        };
+        let text = trf("Let {engine} ({model}) do “{function}” (runs on this computer)", &words);
+        assert_eq!(
+            summary(&effortful, &known(true)),
+            trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("Low"))])
         );
         let slot: &dyn std::fmt::Display = &AiSlot::Decide.label();
         for enabled in [true, false] {
