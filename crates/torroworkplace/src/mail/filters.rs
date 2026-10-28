@@ -29,6 +29,10 @@
 //! category ([`MailService::set_category`], never over one the person set by hand), then the move.
 //! The trash is a move, never deleting for good.
 //!
+//! **New mail** ([`on_arrival`]): the mail feed hands over the mail that just arrived in an
+//! account's inbox folder (not a folder's first sync, not a catch-up); the enabled filters of that
+//! account run on it with the same steps, and a category one of them set goes on the inbox entry.
+//!
 //! **Approvals** ([`to_approve`]): what a person is shown comes from the stored filter and the mail
 //! store (the account's address, the folder's name), never from the client's words but the new
 //! search; an approval of a change, a removal or a run is pinned to the stored filter
@@ -210,8 +214,7 @@ impl MailFilters {
     }
 
     /// The enabled filters that run on new mail of `account`, in their order
-    /// ([`MailFilter::runs_in`]); for the core's handling of arriving mail (issue #339, step 3).
-    #[allow(dead_code, reason = "for the arriving mail of issue #339, step 3")]
+    /// ([`MailFilter::runs_in`]); for the core's handling of arriving mail ([`on_arrival`]).
     pub fn running_in(&self, account: &str) -> Result<Vec<MailFilter>, FilterError> {
         Ok(self.list()?.into_iter().filter(|filter| filter.runs_in(account)).collect())
     }
@@ -652,50 +655,77 @@ pub async fn apply(
     categories: &[Category],
 ) -> Result<Applied, FilterError> {
     let (due, more) = due(mail, reach, filter, categories).await?;
+    let actions = FilterActions::of([filter]);
     let mut failed: HashSet<String> = HashSet::new();
     let mut accounts: Vec<String> = due.iter().map(|message| message.account.clone()).collect();
     accounts.sort();
     accounts.dedup();
     for account in accounts {
         let mine: Vec<&MessageSummary> = due.iter().filter(|message| message.account == account).collect();
-        if filter.mark_read {
-            let unread = mine.iter().filter(|message| !message.flags.contains(&Flag::Seen));
-            let ids: Vec<String> = unread.map(|message| message.id.clone()).collect();
-            for piece in ids.chunks(MAX_IDS) {
-                let done = super::write::set_flags(mail, Reach::Suite, piece, &[Flag::Seen], &[]).await;
-                note_failed(&mut failed, piece, &done);
-            }
-        }
-        if let Some(category) = filter.category {
-            let ids: Vec<String> = mine
-                .iter()
-                .filter(|message| category_due(message, category, categories))
-                .map(|message| message.id.clone())
-                .collect();
-            if let Err(err) = mail.set_category(&account, &ids, Some(MailCategory::by_rule(category))).await {
-                eprintln!("torroworkplace: mail: a filter cannot set a category: {}", err.code());
-                failed.extend(ids);
-            }
-        }
-        if let Some(file) = &filter.file {
-            let ids: Vec<String> = mine.iter().map(|message| message.id.clone()).collect();
-            for piece in ids.chunks(MAX_IDS) {
-                let done = match file {
-                    FilterFile::Archive => {
-                        super::write::move_messages(mail, Reach::Suite, piece, &MoveTarget::Role(MoveRole::Archive))
-                            .await
-                    }
-                    FilterFile::Folder { id } => {
-                        super::write::move_messages(mail, Reach::Suite, piece, &MoveTarget::Folder(id.clone())).await
-                    }
-                    FilterFile::Trash => super::write::delete_messages(mail, Reach::Suite, piece, false).await,
-                };
-                note_failed(&mut failed, piece, &done);
-            }
-        }
+        failed.extend(carry_out(mail, &account, &actions, &mine, categories).await.failed);
     }
     let failed_count = failed.len() as u64;
     Ok(Applied { applied: due.len() as u64 - failed_count, failed: failed_count, more })
+}
+
+/// What [`carry_out`] did: the mails an action failed on, and those that got the category.
+#[derive(Debug, Default)]
+struct CarriedOut {
+    failed: HashSet<String>,
+    categorised: Vec<String>,
+}
+
+/// Carries out `actions` on `messages` (all of `account`, in its inbox), in pieces of [`MAX_IDS`]:
+/// read (the unread ones), then the category ([`category_due`]: in `categories`, never over one the
+/// person set by hand), then the move (the trash as a move, never for good). The changes run as the
+/// suite's: a person approved them, or made the filter. A step that fails notes its mails as failed
+/// (logged with a code, never a subject) and the next step goes on.
+async fn carry_out(
+    mail: &MailService,
+    account: &str,
+    actions: &FilterActions,
+    messages: &[&MessageSummary],
+    categories: &[Category],
+) -> CarriedOut {
+    let mut done = CarriedOut::default();
+    if actions.mark_read {
+        let unread = messages.iter().filter(|message| !message.flags.contains(&Flag::Seen));
+        let ids: Vec<String> = unread.map(|message| message.id.clone()).collect();
+        for piece in ids.chunks(MAX_IDS) {
+            let answer = super::write::set_flags(mail, Reach::Suite, piece, &[Flag::Seen], &[]).await;
+            note_failed(&mut done.failed, piece, &answer);
+        }
+    }
+    if let Some(category) = actions.category {
+        let ids: Vec<String> = messages
+            .iter()
+            .filter(|message| category_due(message, category, categories))
+            .map(|message| message.id.clone())
+            .collect();
+        match mail.set_category(account, &ids, Some(MailCategory::by_rule(category))).await {
+            Ok(()) => done.categorised = ids,
+            Err(err) => {
+                eprintln!("torroworkplace: mail: a filter cannot set a category: {}", err.code());
+                done.failed.extend(ids);
+            }
+        }
+    }
+    if let Some(file) = &actions.file {
+        let ids: Vec<String> = messages.iter().map(|message| message.id.clone()).collect();
+        for piece in ids.chunks(MAX_IDS) {
+            let answer = match file {
+                FilterFile::Archive => {
+                    super::write::move_messages(mail, Reach::Suite, piece, &MoveTarget::Role(MoveRole::Archive)).await
+                }
+                FilterFile::Folder { id } => {
+                    super::write::move_messages(mail, Reach::Suite, piece, &MoveTarget::Folder(id.clone())).await
+                }
+                FilterFile::Trash => super::write::delete_messages(mail, Reach::Suite, piece, false).await,
+            };
+            note_failed(&mut done.failed, piece, &answer);
+        }
+    }
+    done
 }
 
 /// Notes `piece` as failed unless `done` is `ok`; the error's code goes to the log, never a subject.
@@ -713,7 +743,6 @@ fn note_failed(failed: &mut HashSet<String>, piece: &[String], done: &Response) 
 /// finds are left out. For the core's handling of arriving mail: pass
 /// [`MailFilters::running_in`]. A filter whose search no longer reads is skipped (and logged by its
 /// id). Nothing is changed here.
-#[allow(dead_code, reason = "for the arriving mail of issue #339, step 3")]
 pub async fn matching(
     store: &SharedStore,
     filters: &[MailFilter],
@@ -745,6 +774,92 @@ pub async fn matching(
             Ok(found.into_iter().map(|(id, filters)| (id, FilterActions::of(filters))).collect())
         })
         .await
+}
+
+/// Runs the enabled filters of `account` ([`MailFilters::running_in`]) on its new mail `new` (ids
+/// `m:…` that just arrived in its inbox folder; the mail feed calls it, never on a folder's first
+/// sync nor on a catch-up) and gives back the mails that got a filter's category, with it, so their
+/// inbox entries carry it too (decision 4: before the sorting rules, without asking a model).
+///
+/// - Mail whose `Message-ID` the account holds in another folder already is left alone
+///   ([`delivered`]): it was moved or copied into the inbox, not delivered, and a filter must not
+///   take it out again.
+/// - What several filters do together follows their order ([`matching`], [`FilterActions::of`],
+///   decision 3); a category that is no longer in `categories` (the catalogue) is skipped.
+/// - Read, then the category, then the move ([`carry_out`]). Mail read or moved by a filter gets no
+///   entry: the feed files only what is still unread in the inbox folder, as the store says.
+/// - A failure goes to the log (the account and a code, never a search or a subject); the mail
+///   stays as it came, and gets an entry as any other.
+pub async fn on_arrival(
+    mail: &MailService,
+    store: &SharedStore,
+    account: &str,
+    new: &[String],
+    categories: &[Category],
+) -> Vec<(String, MailCategory)> {
+    let filters = match mail.filters().running_in(account) {
+        Ok(filters) => filters,
+        Err(_) => {
+            eprintln!("torroworkplace: mail: the mail filters cannot be read; new mail of {account} is not filtered");
+            return Vec::new();
+        }
+    };
+    if filters.is_empty() || new.is_empty() {
+        return Vec::new();
+    }
+    let ids = new.to_vec();
+    let arrived = match store.run(move |store| delivered(store, &ids)).await {
+        Ok(arrived) => arrived,
+        Err(err) => {
+            eprintln!("torroworkplace: mail: cannot read the new mail of {account} to filter it: {err}");
+            return Vec::new();
+        }
+    };
+    let arrived_ids: Vec<String> = arrived.iter().map(|message| message.id.clone()).collect();
+    let found = match matching(store, &filters, &arrived_ids).await {
+        Ok(found) => found,
+        Err(err) => {
+            eprintln!("torroworkplace: mail: cannot run the mail filters on new mail of {account}: {err}");
+            return Vec::new();
+        }
+    };
+    // Mails that get the same actions go together, so each action runs once per kind.
+    let mut groups: Vec<(FilterActions, Vec<&MessageSummary>)> = Vec::new();
+    for (id, mut actions) in found {
+        actions.category = actions.category.filter(|category| categories.contains(category));
+        let Some(message) = arrived.iter().find(|message| message.id == id) else { continue };
+        if actions.is_empty() {
+            continue;
+        }
+        match groups.iter_mut().find(|(same, _)| *same == actions) {
+            Some((_, messages)) => messages.push(message),
+            None => groups.push((actions, vec![message])),
+        }
+    }
+    let mut categorised = Vec::new();
+    for (actions, messages) in &groups {
+        let done = carry_out(mail, account, actions, messages, categories).await;
+        if let Some(category) = actions.category {
+            categorised.extend(done.categorised.into_iter().map(|id| (id, MailCategory::by_rule(category))));
+        }
+    }
+    categorised
+}
+
+/// Those of `ids` the store holds that were delivered rather than moved: no other folder of the
+/// account holds a mail with the same `Message-ID` (a mail without one counts as delivered).
+fn delivered(store: &super::store::MailStore, ids: &[String]) -> Result<Vec<MessageSummary>, super::MailStoreError> {
+    let mut arrived = Vec::new();
+    for id in ids {
+        let Some(summary) = store.summary(id)? else { continue };
+        if let Some(rfc) = store.resolve_message(id)?.and_then(|found| found.rfc_message_id)
+            && store.messages_by_rfc_id(&rfc)?.iter().any(|copy| copy.folder != summary.folder)
+        {
+            continue;
+        }
+        arrived.push(summary);
+    }
+    Ok(arrived)
 }
 
 // ----- approvals -----
