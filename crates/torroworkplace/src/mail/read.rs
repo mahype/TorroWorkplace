@@ -75,7 +75,7 @@ use torro_core::i18n::tr;
 use torro_inbox::SourceRef;
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area};
-use torro_ipc::mail::{IncompleteReason, MailHighlight, MailSort, MailSource, PileFilter};
+use torro_ipc::mail::{IncompleteReason, MailCacheMode, MailHighlight, MailSort, MailSource, PileFilter};
 use torro_ipc::{Request, mail::limit_refusal};
 use torro_mail::{Invite, MailAddress, MailPile, Message, MessageSummary, Order};
 use torro_mail_imap::imap::Session;
@@ -1145,6 +1145,14 @@ async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &s
         .await
         .map_err(|_| no_attachment_folder())?
         .map_err(store_failed)?;
+    let policy = located.store.run(|store| store.cache_policy()).await.map_err(store_failed)?;
+    if policy.mode == MailCacheMode::MaxSize {
+        located
+            .store
+            .run(move |store| store.prune_bodies_for_policy(&policy, chrono::Utc::now(), usize::MAX))
+            .await
+            .map_err(store_failed)?;
+    }
     Ok(Response::MailAttachment {
         path: path.to_string_lossy().into_owned(),
         size,

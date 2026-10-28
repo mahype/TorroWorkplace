@@ -1232,9 +1232,15 @@ impl MailService {
             loop {
                 service.remove_unknown_stores(&dirs).await;
                 let mut retention = Vec::new();
+                let mut limited = Vec::new();
                 for (account, store) in service.stores(Reach::Suite).await {
                     if let Ok(policy) = store.run(|store| store.cache_policy()).await {
-                        retention.push((account, policy.attachment_retention_days));
+                        retention.push((account.clone(), policy.attachment_retention_days));
+                        if policy.mode == MailCacheMode::MaxSize
+                            && let Some(bytes) = policy.max_local_mb.and_then(|mb| mb.checked_mul(1024 * 1024))
+                        {
+                            limited.push((account, bytes, store));
+                        }
                     }
                 }
                 let purge = cache.clone();
@@ -1242,6 +1248,16 @@ impl MailService {
                     Ok(Ok(_)) => {}
                     Ok(Err(err)) => eprintln!("torroworkplace: cannot clean up mail attachments: {err}"),
                     Err(err) => eprintln!("torroworkplace: cannot clean up mail attachments: {err}"),
+                }
+                for (account, bytes, store) in limited {
+                    let trim = cache.clone();
+                    let result = tokio::task::spawn_blocking(move || trim.trim_account_to_bytes(&account, bytes)).await;
+                    if let Ok(Err(err)) = result {
+                        eprintln!("torroworkplace: cannot limit mail attachments: {err}");
+                    }
+                    if let Err(err) = store.run(|store| store.prune_bodies(Utc::now())).await {
+                        eprintln!("torroworkplace: cannot prune offline mail texts: {err}");
+                    }
                 }
                 tokio::time::sleep(PURGE_EVERY).await;
             }
@@ -1769,6 +1785,25 @@ impl MailService {
         policy.prefetch_attachments = false;
         let saved = policy.clone();
         store.run(move |store| store.set_cache_policy(&saved)).await?;
+        if let Some(dirs) = &self.dirs {
+            let limit = if policy.attachment_retention_days == 0 {
+                Some(0)
+            } else if policy.mode == MailCacheMode::MaxSize {
+                policy.max_local_mb.and_then(|mb| mb.checked_mul(1024 * 1024))
+            } else {
+                None
+            };
+            if let Some(limit) = limit {
+                let cache = AttachmentCache::new(dirs);
+                let account = policy.account.clone();
+                tokio::task::spawn_blocking(move || cache.trim_account_to_bytes(&account, limit))
+                    .await
+                    .map_err(|err| MailError::Store(MailStoreError::Io(io::Error::other(err))))??;
+            }
+        }
+        if policy.mode == MailCacheMode::MaxSize {
+            store.run(|store| store.prune_bodies(Utc::now())).await?;
+        }
         Ok(policy)
     }
 

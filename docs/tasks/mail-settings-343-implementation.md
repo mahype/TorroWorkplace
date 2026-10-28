@@ -13,7 +13,8 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - Neue Regeln werden an Position 0 gespeichert. Die Modellauswahl zeigt nur aktivierte Entscheidungsmodelle und gruppiert mehrere Anbieter. Kategorie-Icons erscheinen als sichtbares Raster.
 - „Lesen & Schreiben“ enthält die Standard-Absenderadresse, das Schreibformat und eine hohe Signaturfläche mit Formatierungsaktionen. Formatierte Signaturen werden sicher in HTML und als Textkopie versendet. Der Konto-Reiter zeigt Identität und Verbindung, ohne die Signatur zu duplizieren.
 - Die frühere Anhang-Vorabladeoption ist auch für alte gespeicherte Policies deaktiviert. Alte „Nur Kopfzeilen“-Konten werden ausdrücklich zur Auswahl einer der drei neuen Strategien aufgefordert.
-- Die MB-Auswahl berechnet ihre Größenkante beim Synchronisieren nur einmal pro Stapel. Sie bleibt jedoch eine RFC822-Größenauswahl und berücksichtigt noch nicht alle physischen lokalen Bytes.
+- Das Backup-Formular öffnet als Overlay; Quelle, Stichtag mit Kalenderwahl, Archivname und Ziel stehen zusammen. Fortschritt und Wiederherstellung bleiben im Konto-Reiter sichtbar.
+- Die MB-Auswahl berechnet ihre Größenkante beim Synchronisieren nur einmal pro Stapel und zieht bereits gespeicherte Anhänge von der Grenze ab. Beim Ändern der Auswahl und im Cache-Job werden ältere Anhangdateien nötigenfalls entfernt und die Offline-Texte neu zugeschnitten. Die Auswahl bleibt dennoch eine RFC822-Größenschätzung; Index und Datenbankdatei sind noch keine hart begrenzten physischen Bytes.
 - Build und gezielte Tests laufen; native Sichtprüfung und die übrigen Anforderungen stehen noch aus.
 
 ## Navigation und Oberfläche

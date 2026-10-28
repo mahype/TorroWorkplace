@@ -542,6 +542,7 @@ pub struct Hiding {
 pub struct MailStore {
     account: String,
     path: PathBuf,
+    dirs: MailDirs,
     db: Connection,
 }
 
@@ -566,7 +567,7 @@ impl MailStore {
         let _mode: String = db.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         migrate(&db)?;
-        let store = MailStore { account: account.to_string(), path, db };
+        let store = MailStore { account: account.to_string(), path, dirs: dirs.clone(), db };
         // Tighten the side files anyway, in case a looser version made them.
         store.restrict_files()?;
         Ok(store)
@@ -1701,6 +1702,10 @@ impl MailStore {
                     .and_then(|mb| mb.checked_mul(1024 * 1024))
                     .and_then(|bytes| i64::try_from(bytes).ok())
                     .ok_or_else(|| MailStoreError::Corrupt("offline policy has no valid size".into()))?;
+                // A downloaded attachment belongs to the same local budget as offline mail
+                // texts. It takes space even when the message body itself was later pruned.
+                let (_, attachment_bytes) = super::AttachmentCache::new(&self.dirs).account_usage(&self.account)?;
+                let available = limit.saturating_sub(i64::try_from(attachment_bytes).unwrap_or(i64::MAX));
                 let selected = self
                     .db
                     .query_row(
@@ -1709,7 +1714,7 @@ impl MailStore {
                             (ORDER BY date DESC, seq DESC) AS cumulative_bytes
                         FROM messages
                      ) WHERE cumulative_bytes <= ?1 ORDER BY date, seq LIMIT 1",
-                        [limit],
+                        [available],
                         |row| Ok(CacheWindow { date: row.get(0)?, seq: row.get(1)? }),
                     )
                     .optional()?;
@@ -4224,6 +4229,27 @@ mod tests {
         assert!(!store.should_cache_body(&ids[1], &policy, now).expect("middle"));
         assert!(store.should_cache_body(&ids[2], &policy, now).expect("new"));
         assert_eq!(store.prune_bodies_for_policy(&policy, now, 10).expect("prune"), 1);
+    }
+
+    #[test]
+    fn downloaded_attachments_reduce_the_offline_mail_budget() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 12, 0, 0).single().expect("date");
+        let mut ids = Vec::new();
+        for day in 1..=3 {
+            let date = Utc.with_ymd_and_hms(2026, 1, day, 12, 0, 0).single().expect("date");
+            ids.push(add(&store, &inbox, &NewMessage { date, ..message(day, "mail") }));
+            store.set_size(&inbox, day, 1024 * 1024).expect("size");
+        }
+        let mut policy = store.cache_policy().expect("policy");
+        policy.mode = MailCacheMode::MaxSize;
+        policy.max_local_mb = Some(2);
+        assert_eq!(store.should_cache_bodies(&ids, &policy, now).expect("before"), [false, true, true]);
+        super::super::AttachmentCache::new(&dirs)
+            .store_for_part(ACCOUNT, &ids[2], "1", "receipt.pdf", &vec![0; 1024 * 1024])
+            .expect("cached attachment");
+        assert_eq!(store.should_cache_bodies(&ids, &policy, now).expect("after"), [false, false, true]);
     }
 
     #[test]

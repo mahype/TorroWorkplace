@@ -877,6 +877,11 @@ pub mod accounts {
 
     /// Escape closes the head's "…" menu while it is open.
     pub(super) fn escape(state: &State) -> Option<Message> {
+        if state.tab == Tab::Backup
+            && let Some(message) = backup::escape(&state.backup)
+        {
+            return Some(Message::Backup(message));
+        }
         state.more.then_some(Message::CloseMore)
     }
 
