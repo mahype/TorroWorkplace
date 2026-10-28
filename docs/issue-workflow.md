@@ -77,8 +77,8 @@ TORRO_LANG=de cargo test --workspace
 
 - Vor Push und PR läuft zusätzlich `scripts/ci-local.sh` (dieselben Schritte wie `ci.yml`). Beides muss grün sein;
   schlägt etwas fehl, wird nicht gepusht.
-- Sind nur Doku, Skills oder Skripte geändert, reicht `scripts/ci-local.sh --quick`; bei `de.rs` zusätzlich
-  `TORRO_LANG=de cargo test -p torro-core`.
+- Ausnahme Direkt-PR (`quick-fix`): Sind nur Doku, Skills oder Skripte geändert, reicht
+  `scripts/ci-local.sh --quick`; bei `de.rs` zusätzlich `TORRO_LANG=de cargo test -p torro-core`.
 - Tests brauchen keinen laufenden Hyprland, kein Netz und kein echtes Home-Verzeichnis (`CLAUDE.md`).
 - Bei Oberflächenänderungen gehört die Sichtprüfung dazu (Skill `torro-design`, Agent `torro-design-review`), bei
   Änderungen an Requests, Katalog oder MCP der Agent `torro-api-review`.
@@ -130,7 +130,8 @@ TORRO_LANG=de cargo test --workspace
 **`pullrequest`**
 
 - Vor dem Push `scripts/ci-local.sh` und `TORRO_LANG=de cargo test --workspace` (Abschnitt „Prüfen“); beide stehen
-  abgehakt im `## Test plan`.
+  abgehakt im `## Test plan`. Im Direkt-Modus (`quick-fix`) gilt die Ausnahme aus „Prüfen“, und der `## Test plan`
+  nennt die Befehle, die tatsächlich gelaufen sind.
 - Neue Nutzertexte ohne Eintrag in `de.rs` stehen im Body unter `## Übersetzungen` mit Vorschlag
   (`"Today" → "Heute"`).
 
@@ -182,8 +183,8 @@ TorroWorkplace hat keine lokale Instanz (kein `.enon-tools/hooks/start.mjs`): Pl
 
 ## Worktrees und Herdr
 
-- Worktrees legt das Plugin an (`/issue-plan`, `/issue-small`, `/quick-fix`, von Hand `<cli> worktree create <nr>`),
-  unter `.worktrees/TorroWorkplace-<nr>-<slug>` im Haupt-Checkout. Ältere Ordner `torro-<nr>-…` findet
+- Worktrees legt das Plugin an (`/issue-plan`, `/issue-small`, von Hand `<cli> worktree create <nr>`), unter
+  `.worktrees/TorroWorkplace-<nr>-<slug>` im Haupt-Checkout; `/quick-fix` ohne Issue unter `.worktrees/<typ>-<slug>`. Ältere Ordner `torro-<nr>-…` findet
   `<cli> worktree list` über den Branch. Nach dem Merge räumt `/worktree-cleanup` in der Sitzung im Worktree auf.
 - Jeder Worktree hat ein eigenes `target/`; der erste `cargo build` dort dauert entsprechend.
 - In Herdr übergibt jede Phase ab der Planung an einen eigenen Tab (`plan-<nr>`, `impl-<nr>` …); das gilt immer, ohne
