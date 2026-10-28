@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d32a2a'/%3E%3Ctext x='32' y='46' font-size='43' text-anchor='middle' fill='white' font-family='sans-serif'%3ET%3C/text%3E%3C/svg%3E">
+  <title>Torro Workplace Mail – alle Einstellungen</title>
+  <link rel="stylesheet" href="./style.css">
+  <script defer src="./app.js"></script>
+  <script defer src="./category-automation.js"></script>
+</head>
+<body>
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="m3.5 6 8.5 7 8.5-7"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M10 2h4l.5 2.2 1.8.8 2-.9 2.8 2.8-.9 2 .8 1.8L23 11v4l-2.2.5-.8 1.8.9 2-2.8 2.8-2-.9-1.8.8L14 24h-4l-.5-2.2-1.8-.8-2 .9-2.8-2.8.9-2-.8-1.8L1 15v-4l2.2-.5.8-1.8-.9-2 2.8-2.8 2 .9 1.8-.8z" transform="translate(0 -1) scale(1 .96)"/></symbol>
+    <symbol id="i-storage" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M8 6h.01M8 12h.01M8 18h.01"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.8-4M4 3v5h5M4 13a8 8 0 0 0 14.8 4M20 21v-5h-5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-backup" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h13A2.5 2.5 0 0 1 21 7.5v11a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5zM3 10h18M12 13v5m0-5-2 2m2-2 2 2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2V3ZM8 8h8M8 12h8"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 20 5v6c0 5-3.2 8.5-8 11-4.8-2.5-8-6-8-11V5l8-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-7 7L3 12Z"/><circle cx="8" cy="8" r="1"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2h8l5 5v15H6V2ZM14 2v5h5M9 12h7M9 16h7"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 9h18c0-1-3-2-3-9ZM10 21h4"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-message_circle" viewBox="0 0 24 24"><path d="M20 11.5a8 8 0 0 1-8 8 8.4 8.4 0 0 1-3.5-.8L4 20l1.3-4.5A8 8 0 1 1 20 11.5Z"/></symbol>
+    <symbol id="i-list_todo" viewBox="0 0 24 24"><path d="m3 6 1.5 1.5L7 5M11 6h10M3 13h4v4H3zM11 15h10M11 21h7"/></symbol>
+    <symbol id="i-circle_check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-user_check" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M2 21a7 7 0 0 1 13-3m1 1 2 2 4-5"/></symbol>
+    <symbol id="i-shield_alert" viewBox="0 0 24 24"><path d="M12 2 20 5v6c0 5-3.2 8.5-8 11-4.8-2.5-8-6-8-11V5l8-3Z"/><path d="M12 8v5m0 3h.01"/></symbol>
+    <symbol id="i-calendar_plus" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18M12 13v5m-2.5-2.5h5"/></symbol>
+    <symbol id="i-text_quote" viewBox="0 0 24 24"><path d="M4 5h16M4 9h12M4 13h16M4 17h9M17 17h3v3h-3z"/></symbol>
+    <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m8 12 6-6a4 4 0 0 1 6 6l-8 8a6 6 0 0 1-9-9l8-8"/><path d="m6 14 7-7"/></symbol>
+    <symbol id="i-square_check" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m7 12 3 3 7-7"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4L22 2ZM11 13 22 2"/></symbol>
+    <symbol id="i-calendar_days" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18M8 14h2m4 0h2m-8 4h2m4 0h2"/></symbol>
+    <symbol id="i-chart_column" viewBox="0 0 24 24"><path d="M3 21h18M5 17h3v4H5zM11 11h3v10h-3zM17 5h3v16h-3z"/></symbol>
+    <symbol id="i-align_left" viewBox="0 0 24 24"><path d="M3 5h18M3 9h12M3 13h18M3 17h11M3 21h18"/></symbol>
+    <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4m0 1c5-3 9 3 15 0v11c-6 3-10-3-15 0"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M2 21a7 7 0 0 1 14 0M17 5a3 3 0 0 1 0 6m2 10a6 6 0 0 0-3-5"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="m17 10 5-3v10l-5-3"/></symbol>
+    <symbol id="i-mail_open" viewBox="0 0 24 24"><path d="M3 9 12 3l9 6v11H3V9ZM3 9l9 7 9-7M3 20l7-6m11 6-7-6"/></symbol>
+    <symbol id="i-reply" viewBox="0 0 24 24"><path d="m9 10-6 5 6 5v-4h5a7 7 0 0 0 7-7V6m-12 4h5"/></symbol>
+    <symbol id="i-trash2" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4l12-12a2.1 2.1 0 0 0-4-4L4 16v4ZM14.5 5.5l4 4"/></symbol>
+  </svg>
+
+  <div class="preview-toolbar" aria-label="Mockup-Navigation">
+    <div class="preview-title"><span class="preview-mark">T</span><span><strong>Mail-Einstellungen</strong><small>Entwurfsstand · 27. Oktober 2026</small></span></div>
+    <div class="preview-controls" role="group" aria-label="Ansicht wechseln">
+      <button class="preview-tab" data-screen="list-a">Konten A</button>
+      <button class="preview-tab" data-screen="list-b">Konten B</button>
+      <button class="preview-tab active" data-screen="list-c">Konten C</button>
+      <button class="preview-tab" data-screen="account-settings">Kontoeinstellungen</button>
+      <button class="preview-tab" data-screen="account-storage">Speicher &amp; Suche</button>
+      <button class="preview-tab" data-screen="reading">Lesen &amp; Schreiben</button>
+      <button class="preview-tab" data-screen="attachments">Anhänge</button>
+      <button class="preview-tab" data-screen="categorization">Kategorisierung</button>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Farbschema wechseln">Hell</button>
+  </div>
+  <p class="preview-note" id="preview-note">C · Vergleich: Blau zeigt lokal vorhanden, Schraffur den geplanten Download, der Rest bleibt online.</p>
+
+  <div class="window">
+    <aside class="side">
+      <div class="side-brand"><span class="brand-mark">T</span><span><b>Torro</b><small>Workplace Mail</small></span></div>
+      <nav aria-label="Mail-Einstellungen">
+        <button class="side-link active" data-screen="list-a"><svg><use href="#i-mail"/></svg> Konten</button>
+        <button class="side-link" data-screen="reading"><svg><use href="#i-settings"/></svg> Allgemein</button>
+        <button class="side-link" data-screen="categorization"><svg><use href="#i-search"/></svg> Kategorisierung</button>
+      </nav>
+      <div class="side-bottom">Gestaltungsentwurf<br>Keine Verbindung zu echten Konten</div>
+    </aside>
+
+    <main class="main">
+      <nav class="mobile-nav" aria-label="Mail-Einstellungsbereiche"><button class="mobile-link active" type="button" data-screen="list-a">Konten</button><button class="mobile-link" type="button" data-screen="reading">Allgemein</button><button class="mobile-link" type="button" data-screen="categorization">Kategorisierung</button></nav>
+      <div class="topbar"><span id="breadcrumb">Einstellungen <span class="sep">›</span> Konten</span><span class="topbar-right"><span class="status-dot"></span> Vorführung mit Beispieldaten</span></div>
+      <div class="page-scroll" id="page-scroll">
+        <section class="screen" id="list-a" aria-labelledby="list-a-title">
+          <div class="page-head"><div><h1 id="list-a-title">E-Mail-Konten</h1><p>Drei Konten · Erfasste Mails, lokaler Stand und Synchronisierung.</p></div><button class="button" type="button" data-demo="Konto hinzufügen ist in dieser Vorschau nicht verbunden.">Konto hinzufügen</button></div>
+          <div class="account-list compact">
+            <button class="compact-row" type="button" data-account="0"><span class="avatar">S</span><span class="account-name"><b>s@g5k.de</b><small>Sven Wagener</small></span><span class="compact-stat"><b>4.796</b><small>Mails erfasst</small></span><span class="compact-stat"><b>292</b><small>offline lesbar</small></span><span class="compact-stat"><b>63,5 MB</b><small>auf diesem Gerät</small></span><span class="account-status"><i class="dot ok"></i> Heute 22:15</span><svg class="chevron"><use href="#i-chevron"/></svg></button>
+            <button class="compact-row" type="button" data-account="1"><span class="avatar teal">I</span><span class="account-name"><b>sven@immoticket24.de</b><small>Sven Wagener</small></span><span class="compact-stat"><b>14.218</b><small>Mails erfasst</small></span><span class="compact-stat"><b>12.084</b><small>offline lesbar</small></span><span class="compact-stat"><b>1,18 GB</b><small>auf diesem Gerät</small></span><span class="account-status"><i class="dot ok"></i> Heute 21:48</span><svg class="chevron"><use href="#i-chevron"/></svg></button>
+            <button class="compact-row" type="button" data-account="2"><span class="avatar violet">A</span><span class="account-name"><b>sven@awesome.ug</b><small>Sven Wagener</small></span><span class="compact-stat"><b>2.960</b><small>Mails erfasst</small></span><span class="compact-stat"><b>2.960</b><small>offline lesbar</small></span><span class="compact-stat"><b>610 MB</b><small>auf diesem Gerät</small></span><span class="account-status"><i class="dot attention"></i> Gestern 18:03</span><svg class="chevron"><use href="#i-chevron"/></svg></button>
+          </div>
+          <p class="page-footnote">Mails und Größen stammen aus dem letzten bekannten Synchronisierungsstand. Weitere Details stehen im Konto.</p>
+        </section>
+        <section class="screen settings-screen" id="reading" aria-labelledby="reading-title">
+          <div class="page-head"><div><h1 id="reading-title">Allgemein</h1><p>Lesen und Schreiben nach deinen Vorlieben.</p></div></div>
+          <div class="detail-tabs general-tabs" role="tablist" aria-label="Allgemeine Mail-Einstellungen"><button class="active" role="tab" aria-selected="true" data-screen="reading">Lesen &amp; Schreiben</button><button role="tab" aria-selected="false" data-screen="attachments">Anhänge</button></div>
+          <div class="reading-writing-layout">
+            <section class="settings-panel"><div class="section-heading"><h2>Lesen</h2><p>Darstellung eingehender E-Mails.</p></div>
+              <fieldset class="option-block"><legend>Inhalt anzeigen als</legend><label class="choice-row"><input type="radio" name="read-format" value="html" checked><span><b>Formatiert</b><small>Layout, Bilder und Links.</small></span></label><label class="choice-row"><input type="radio" name="read-format" value="text"><span><b>Nur Text</b></span></label></fieldset>
+              <fieldset class="option-block"><legend>Farben der E-Mail</legend><label class="choice-row"><input type="radio" name="read-colors" value="app" checked><span><b>Wie die App</b></span></label><label class="choice-row"><input type="radio" name="read-colors" value="light"><span><b>Hell</b></span></label><label class="choice-row"><input type="radio" name="read-colors" value="dark"><span><b>Dunkel</b></span></label></fieldset>
+            </section>
+            <section class="settings-panel"><div class="section-heading"><h2>Schreiben</h2><p>Vorgaben für neue E-Mails.</p></div>
+              <label class="field-line" for="default-sender"><span>Standard-Absender</span><select id="default-sender"><option>s@g5k.de</option><option>sven@immoticket24.de</option><option>sven@awesome.ug</option></select></label>
+              <fieldset class="option-block"><legend>Neue E-Mails verfassen als</legend><label class="choice-row"><input type="radio" name="compose-format" value="html" checked><span><b>Formatiert</b></span></label><label class="choice-row"><input type="radio" name="compose-format" value="text"><span><b>Nur Text</b></span></label></fieldset>
+              <div class="signature-field"><span class="signature-label" id="signature-label">Signatur</span><div class="signature-toolbar" role="toolbar" aria-label="Signatur formatieren"><button type="button" data-signature-format="bold" aria-label="Fett" title="Fett"><b>B</b></button><button type="button" data-signature-format="italic" aria-label="Kursiv" title="Kursiv"><i>I</i></button><button type="button" data-signature-format="underline" aria-label="Unterstrichen" title="Unterstrichen"><u>U</u></button><span class="toolbar-divider"></span><button type="button" data-signature-format="insertUnorderedList" aria-label="Liste" title="Liste">☷</button><button type="button" id="signature-add-link" aria-label="Link einfügen" title="Link einfügen">↗ Link</button></div><div id="signature-editor" class="signature-editor" contenteditable="true" role="textbox" aria-labelledby="signature-label" aria-multiline="true">Viele Grüße<br>Sven</div></div>
+            </section>
+          </div>
+        </section>
+        <section class="screen settings-screen" id="attachments" aria-labelledby="attachments-title">
+          <div class="page-head"><div><h1 id="attachments-title">Allgemein</h1><p>Öffnen und Ablage von E-Mail-Anhängen.</p></div></div>
+          <div class="detail-tabs general-tabs" role="tablist" aria-label="Allgemeine Mail-Einstellungen"><button role="tab" aria-selected="false" data-screen="reading">Lesen &amp; Schreiben</button><button class="active" role="tab" aria-selected="true" data-screen="attachments">Anhänge</button></div>
+          <div class="settings-grid">
+            <section class="settings-panel"><div class="section-heading"><h2>Beim Anklicken</h2><p>Das Dreieck am Anhang bietet weiterhin alle Aktionen.</p></div><label class="field-line" for="attachment-action"><span>Standardaktion</span><select id="attachment-action"><option>Öffnen</option><option>In Downloads speichern</option><option>Speichern unter…</option><option>Vorgeschlagenes Ziel, sonst öffnen</option><option>In „Rechnungen“ speichern</option></select></label><div class="field-line"><span>Downloads-Ordner</span><div class="inline-control"><code>~/Downloads</code><button class="button" type="button" data-demo="In der App öffnet sich hier die Ordnerwahl.">Ändern…</button></div></div></section>
+            <section class="settings-panel"><div class="panel-heading"><div><h2>Speicherziele</h2><p>Ordner und Dateinamen für wiederkehrende Anhänge.</p></div><button class="button primary" type="button" data-open-target>Neues Ziel</button></div><button class="setting-item" type="button" data-open-target><span><b>Rechnungen</b><small>~/Dokumente/Rechnungen/Jahr/Monat · Datum-Absender-Betreff.pdf</small></span><span>Bearbeiten ›</span></button></section>
+          </div>
+        </section>
+
+        <section class="screen settings-screen" id="categorization" aria-labelledby="categorization-title">
+          <div class="page-head"><div><h1 id="categorization-title">Kategorisierung</h1></div><button class="button primary" type="button" id="new-main-category" hidden>Neue Hauptkategorie</button></div>
+          <div class="detail-tabs general-tabs category-tabs" role="tablist" aria-label="Kategorisierung"><button class="active" type="button" role="tab" aria-selected="true" aria-controls="category-automation" data-category-tab="automation">Automatische Einsortierung</button><button type="button" role="tab" aria-selected="false" aria-controls="category-catalog" data-category-tab="catalog">Kategorien</button></div>
+          <div id="category-catalog" role="tabpanel" hidden>
+            <div class="category-overview-head"><h2>Alle Kategorien</h2></div>
+            <div class="main-category-list" id="category-list"></div>
+          </div>
+          <div id="category-automation" role="tabpanel">
+            <section class="settings-panel automation-panel" aria-labelledby="automation-rules-title">
+              <div class="panel-heading"><div><h2 id="automation-rules-title">1. Regeln</h2><p>Regeln werden von oben nach unten geprüft. Die erste passende Regel legt die Unterkategorie fest.</p></div><button class="button primary" type="button" id="new-sort-rule" aria-expanded="false" aria-controls="automation-rule-form">Regel hinzufügen</button></div>
+              <p class="automation-system-note">Systemfälle wie Kalendereinladungen, Zustellfehler und automatische Antworten werden zuerst erkannt.</p>
+              <div class="automation-rule-list" id="automation-rule-list"></div>
+              <form class="automation-rule-form" id="automation-rule-form" hidden>
+                <div class="automation-rule-fields"><label><span>Prüfen</span><select id="sort-rule-field"></select></label><label><span>Vergleich</span><select id="sort-rule-operator"></select></label><label id="sort-rule-value-wrap"><span>Wert</span><input id="sort-rule-value" placeholder="Wert eingeben"></label><label><span>Zuordnen zu</span><select id="sort-rule-target"></select></label></div>
+                <div class="automation-rule-form-actions"><button class="button primary" type="submit">Regel speichern</button><button class="button ghost" type="button" id="cancel-sort-rule">Abbrechen</button><button class="button ghost remove-rule" type="button" id="remove-sort-rule" hidden>Regel entfernen</button></div>
+              </form>
+            </section>
+            <div class="automation-next" aria-hidden="true"><span>Keine Regel passt</span><span>↓</span></div>
+            <section class="settings-panel automation-panel" aria-labelledby="automation-model-title">
+              <div class="panel-heading"><div><h2 id="automation-model-title">2. Zuordnung per Sprachmodell</h2><p>Das Modell vergleicht die E-Mail mit den Beschreibungen der Unterkategorien.</p></div><label class="switch-control"><input id="category-model-enabled" type="checkbox" checked><span class="switch-track" aria-hidden="true"></span><span class="switch-label">Aktiv</span></label></div>
+              <div class="automation-model-settings" id="automation-model-settings"><label class="field-line" for="category-model"><span>Kategorisierungsmodell</span><select id="category-model"><optgroup label="Ollama · Beispielmodelle"><option value="nimble" selected>nimble</option><option value="qwen3:8b">qwen3:8b</option></optgroup></select></label><p>Beim Einrichten empfohlen und bereits ausgewählt. Du kannst die Modellzuordnung hier ausschalten.</p></div>
+            </section>
+          <details class="batch-sort"><summary>Bestehende E-Mails erneut zuordnen</summary><div class="batch-sort-content"><div class="field-pair"><label class="field-line" for="sort-account"><span>Konten</span><select id="sort-account"><option>Alle Konten</option><option>s@g5k.de</option><option>sven@immoticket24.de</option></select></label><label class="field-line" for="sort-period"><span>Zeitraum</span><select id="sort-period"><option>Alle E-Mails</option><option>Letzte 30 Tage</option><option selected>Letzte 90 Tage</option><option>Letztes Jahr</option></select></label></div><div class="batch-sort-actions"><span>Vorschau: 1.284 geeignet · 312 ohne Kategorie</span><button class="button primary" type="button" data-demo="Vorschau: die Kategorisierung würde gestartet.">Sortierung starten</button></div></div></details>
+          <details class="danger-disclosure"><summary>Kategorisierung zurücksetzen</summary><p>Entfernt Zuordnungen und Modellantworten. E-Mails und Regeln bleiben erhalten.</p><button class="button" type="button" data-demo="In der App folgt vor dem Zurücksetzen eine Bestätigung.">Zurücksetzen…</button></details>
+          </div>
+        </section>
+        <section class="screen" id="list-b" aria-labelledby="list-b-title">
+          <div class="page-head"><div><h1 id="list-b-title">E-Mail-Konten</h1><p>Die wichtigsten Zahlen pro Konto, ohne die Liste zu überladen.</p></div><button class="button" type="button" data-demo="Konto hinzufügen ist in dieser Vorschau nicht verbunden.">Konto hinzufügen</button></div>
+          <div class="account-cards">
+            <button class="account-card" type="button" data-account="0"><span class="card-top"><span class="avatar">S</span><span class="account-name"><b>s@g5k.de</b><small>Sven Wagener</small></span><span class="account-status"><i class="dot ok"></i> Heute 22:15</span><svg class="chevron"><use href="#i-chevron"/></svg></span><span class="card-data"><span><b>4.796</b><small>Mails erfasst</small></span><span><b>424 MB</b><small>auf dem Server</small></span><span><b>63,5 MB</b><small>auf diesem Gerät</small></span><span><b>292 <em>von 4.796</em></b><small>offline lesbar</small></span></span><span class="coverage"><span style="width:6%"></span></span></button>
+            <button class="account-card" type="button" data-account="1"><span class="card-top"><span class="avatar teal">I</span><span class="account-name"><b>sven@immoticket24.de</b><small>Sven Wagener</small></span><span class="account-status"><i class="dot ok"></i> Heute 21:48</span><svg class="chevron"><use href="#i-chevron"/></svg></span><span class="card-data"><span><b>14.218</b><small>Mails erfasst</small></span><span><b>2,36 GB</b><small>auf dem Server</small></span><span><b>1,18 GB</b><small>auf diesem Gerät</small></span><span><b>12.084 <em>von 14.218</em></b><small>offline lesbar</small></span></span><span class="coverage"><span style="width:85%"></span></span></button>
+            <button class="account-card" type="button" data-account="2"><span class="card-top"><span class="avatar violet">A</span><span class="account-name"><b>sven@awesome.ug</b><small>Sven Wagener</small></span><span class="account-status"><i class="dot attention"></i> Gestern 18:03</span><svg class="chevron"><use href="#i-chevron"/></svg></span><span class="card-data"><span><b>2.960</b><small>Mails erfasst</small></span><span><b>810 MB</b><small>auf dem Server</small></span><span><b>610 MB</b><small>auf diesem Gerät</small></span><span><b>2.960 <em>von 2.960</em></b><small>offline lesbar</small></span></span><span class="coverage"><span style="width:100%"></span></span></button>
+          </div>
+          <p class="page-footnote">Der Balken zeigt offline lesbare E-Mails, nicht die Volltextsuche.</p>
+        </section>
+
+
+<section class="screen active" id="list-c" aria-labelledby="list-c-title">
+  <div class="page-head"><div><h1 id="list-c-title">E-Mail-Konten</h1><p>Online-Bestand und lokale Kopien auf einen Blick.</p></div><button class="button" type="button" data-demo="Konto hinzufügen ist in dieser Vorschau nicht verbunden.">Konto hinzufügen</button></div>
+  <div class="table-wrap"><table class="comparison"><thead><tr><th>Konto</th><th>Mailbestand</th><th>Letzter Sync</th><th></th></tr></thead><tbody>
+    <tr data-account="0" tabindex="0"><td><span class="table-account"><span class="avatar">S</span><span><b>s@g5k.de</b><small>Sven Wagener</small></span></span></td><td class="balance-cell"><span class="balance-size"><strong>63,5 MB</strong><span>von <b>424 MB</b> online</span></span><small>4.796 E-Mails insgesamt</small><span class="local-meter" role="img" aria-label="15 Prozent auf dem Gerät, weitere 23 Prozent geplant, 62 Prozent bleiben online"><i class="meter-on" style="width:15%"></i><i class="meter-planned" style="width:23%"></i></span><span class="index-meter list-index-meter" role="img" aria-label="82 Prozent der lokalen Inhalte für die Volltextsuche indiziert"><span class="index-scope list-index-scope" style="width:15%"><i class="index-filled list-index-filled" style="width:82%"></i></span></span></td><td><span class="account-status"><i class="dot ok"></i> Heute 22:15</span></td><td><svg class="chevron"><use href="#i-chevron"/></svg></td></tr>
+    <tr data-account="1" tabindex="0"><td><span class="table-account"><span class="avatar teal">I</span><span><b>sven@immoticket24.de</b><small>Sven Wagener</small></span></span></td><td class="balance-cell"><span class="balance-size"><strong>1,18 GB</strong><span>von <b>2,36 GB</b> online</span></span><small>14.218 E-Mails insgesamt</small><span class="local-meter" role="img" aria-label="50 Prozent auf dem Gerät, weitere 22 Prozent geplant, 28 Prozent bleiben online"><i class="meter-on" style="width:50%"></i><i class="meter-planned" style="width:22%"></i></span><span class="index-meter list-index-meter" role="img" aria-label="94 Prozent der lokalen Inhalte für die Volltextsuche indiziert"><span class="index-scope list-index-scope" style="width:50%"><i class="index-filled list-index-filled" style="width:94%"></i></span></span></td><td><span class="account-status"><i class="dot ok"></i> Heute 21:48</span></td><td><svg class="chevron"><use href="#i-chevron"/></svg></td></tr>
+    <tr data-account="2" tabindex="0"><td><span class="table-account"><span class="avatar violet">A</span><span><b>sven@awesome.ug</b><small>Sven Wagener</small></span></span></td><td class="balance-cell"><span class="balance-size"><strong>610 MB</strong><span>von <b>810 MB</b> online</span></span><small>2.960 E-Mails insgesamt</small><span class="local-meter" role="img" aria-label="75 Prozent auf dem Gerät, kein weiterer Download geplant, 25 Prozent bleiben online"><i class="meter-on" style="width:75%"></i><i class="meter-planned" style="width:0%"></i></span><span class="index-meter list-index-meter" role="img" aria-label="100 Prozent der lokalen Inhalte für die Volltextsuche indiziert"><span class="index-scope list-index-scope" style="width:75%"><i class="index-filled list-index-filled" style="width:100%"></i></span></span></td><td><span class="account-status"><i class="dot attention"></i> Gestern 18:03</span></td><td><svg class="chevron"><use href="#i-chevron"/></svg></td></tr>
+  </tbody></table></div>
+  <p class="page-footnote">Größenvergleich zum bekannten Online-Bestand, kein Postfachkontingent. Die geplante Größe ist eine Schätzung.</p>
+  <div class="meter-key"><span><i class="meter-key-on"></i> Auf dem Gerät</span><span><i class="meter-key-planned"></i> Zum Herunterladen vorgesehen</span><span><i class="meter-key-remaining"></i> Bleibt online</span><span><i class="meter-key-index"></i> Für Volltextsuche indiziert</span></div>
+</section>
+
+        <section class="screen" id="account-settings" aria-labelledby="settings-title">
+          <div class="detail-head"><button class="back" type="button" data-back aria-label="Zurück zu den Konten">←</button><span class="avatar large" id="detail-avatar">S</span><div class="detail-identity"><h1 id="settings-title">s@g5k.de</h1><p><span id="detail-name">Sven Wagener</span> · <span id="detail-sync">Heute 22:15 synchronisiert</span></p></div><div class="detail-actions"><button class="button" type="button" data-demo="Synchronisieren ist im Mockup nicht mit dem Dienst verbunden."><svg><use href="#i-refresh"/></svg> Synchronisieren</button><button class="button primary" type="button" data-open-backup><svg><use href="#i-backup"/></svg> Backup erstellen</button></div></div>
+          <div class="detail-tabs" role="tablist" aria-label="Kontodetail"><button class="active" role="tab" aria-selected="true" data-screen="account-settings">Einstellungen</button><button role="tab" aria-selected="false" data-screen="account-storage">Speicher &amp; Suche</button></div>
+          <div class="content-column">
+            <section class="form-section"><div class="section-heading"><h2>Konto und Zugangsdaten</h2><p>Diese Angaben werden beim Einrichten des Kontos benötigt.</p></div><div class="form-grid credentials-grid"><label><span>Anzeigename</span><input id="sender-name" value="Sven Wagener" autocomplete="off"></label><label><span>E-Mail-Adresse</span><input id="account-address" value="s@g5k.de" type="email" autocomplete="email"></label><label><span>Benutzername</span><input id="account-login" value="s@g5k.de" autocomplete="username"><small>Für den Eingang und Ausgang; meist die E-Mail-Adresse.</small></label><label><span>Passwort</span><input id="account-password" type="password" placeholder="Gespeichertes Passwort" autocomplete="new-password"><small>Gespeichertes Passwort ändern oder Zugangsdaten prüfen.</small></label></div><button class="button test-credentials" type="button" id="test-credentials">Zugangsdaten testen</button></section>
+            <div class="connection-column">
+            <section class="form-section"><div class="section-heading"><h2>Verbindung</h2><p>Server werden nach Möglichkeit automatisch erkannt.</p></div><div class="server-grid"><div><small>Posteingang · <span id="incoming-protocol-label">IMAP</span></small><b id="imap-server">mail.g5k.de · 993 · TLS</b></div><div><small>Postausgang · SMTP</small><b id="smtp-server">mail.g5k.de · 465 · TLS</b></div></div><details class="manual-server"><summary>Server manuell angeben</summary><div class="server-editor"><h3>Posteingang</h3><div class="server-fields incoming-fields"><label class="field-line server-host"><span>Serveradresse</span><input id="imap-server-edit" value="mail.g5k.de" autocomplete="off" required></label><label class="field-line"><span>Protokoll</span><select id="incoming-protocol-edit"><option value="IMAP">IMAP</option><option value="POP3">POP3</option></select></label><label class="field-line"><span>Port</span><input id="imap-port-edit" type="number" min="1" max="65535" value="993" inputmode="numeric" required></label><label class="field-line"><span>Verbindungssicherheit</span><select id="imap-security-edit"><option value="TLS">SSL/TLS</option><option value="STARTTLS">STARTTLS</option></select></label></div></div><div class="server-editor"><h3>Postausgang <span>SMTP</span></h3><div class="server-fields"><label class="field-line server-host"><span>Serveradresse</span><input id="smtp-server-edit" value="mail.g5k.de" autocomplete="off" required></label><label class="field-line"><span>Port</span><input id="smtp-port-edit" type="number" min="1" max="65535" value="465" inputmode="numeric" required></label><label class="field-line"><span>Verbindungssicherheit</span><select id="smtp-security-edit"><option value="TLS">SSL/TLS</option><option value="STARTTLS">STARTTLS</option></select></label></div></div></details></section>
+            <details class="folder-roles" id="system-folders" open><summary>Systemordner <span>Zuordnung prüfen</span></summary><p>Nur wenn der Server mehrere passende Ordner anbietet, fragt Torro nach deiner Wahl.</p><div class="role-pair"><span>Posteingang</span><b>INBOX</b></div><div class="role-pair"><span>Gesendet</span><b>Sent</b></div><div class="role-pair"><span>Entwürfe</span><b>Drafts</b></div><div class="role-pair"><span>Archiv</span><b>Archive</b></div></details>
+            </div>
+            <div class="save-strip" id="save-strip" hidden><span>Änderungen an diesem Konto</span><div><button class="button ghost" id="discard-settings">Verwerfen</button><button class="button primary" id="save-settings">Speichern</button></div></div>
+          </div>
+        </section>
+
+
+<section class="screen" id="account-storage" aria-labelledby="storage-title">
+  <div class="detail-head"><button class="back" type="button" data-back aria-label="Zurück zu den Konten">←</button><span class="avatar large" id="storage-avatar">S</span><div class="detail-identity"><h1 id="storage-title">s@g5k.de</h1><p><span id="storage-name">Sven Wagener</span> · Stand <span id="storage-sync">heute 22:15</span></p></div><div class="detail-actions"><button class="button" type="button" data-demo="Synchronisieren ist im Mockup nicht mit dem Dienst verbunden."><svg><use href="#i-refresh"/></svg> Synchronisieren</button><button class="button primary" type="button" data-open-backup><svg><use href="#i-backup"/></svg> Backup erstellen</button></div></div>
+  <div class="detail-tabs" role="tablist" aria-label="Kontodetail"><button role="tab" aria-selected="false" data-screen="account-settings">Einstellungen</button><button class="active" role="tab" aria-selected="true" data-screen="account-storage">Speicher &amp; Suche</button></div>
+  <div class="storage-brief">
+    <section class="storage-primary">
+      <div class="section-heading"><h2>Online und auf diesem Gerät</h2><p>Wie viel vom bekannten Mailbestand lokal verfügbar ist.</p></div>
+      <div class="storage-pair"><div><small>Online</small><strong id="server-size">424 MB</strong><span id="storage-mail-count">4.796 E-Mails bekannt</span></div><div><small>Auf diesem Gerät</small><strong id="local-size">63,5 MB</strong><span id="storage-offline-count">292 E-Mails offline lesbar</span></div></div>
+      <div class="storage-meter-head"><span id="storage-device-percent">15 % der bekannten Online-Größe</span><span id="storage-target-text">Weitere 23 % vorgesehen</span></div>
+      <div class="local-meter large" id="storage-meter" role="img" aria-label="15 Prozent auf dem Gerät, weitere 23 Prozent geplant, 62 Prozent bleiben online"><i class="meter-on" id="storage-actual-bar" style="width:15%"></i><i class="meter-planned" id="storage-pending-bar" style="width:23%"></i></div>
+      <div class="index-meter" id="storage-index-meter" role="img" aria-label="82 Prozent der lokalen Inhalte indiziert"><span class="index-scope" id="storage-index-scope" style="width:15%"><i class="index-filled" id="storage-index-filled" style="width:82%"></i></span></div>
+      <div class="meter-key"><span><i class="meter-key-on"></i> Auf dem Gerät</span><span><i class="meter-key-planned"></i> Geplant</span><span><i class="meter-key-remaining"></i> Bleibt online</span><span><i class="meter-key-index"></i><span id="storage-index-label">Für Volltextsuche indiziert (82 % der lokalen Inhalte)</span></span></div>
+      <p class="quiet-note">Größenvergleich, keine Anzeige des Postfachkontingents. Geplante Größe geschätzt.</p>
+    </section>
+    <section class="storage-choice">
+      <div class="section-heading"><h2>Welche Inhalte offline behalten?</h2><p>Kopfzeilen aller bekannten E-Mails bleiben immer auf dem Gerät.</p></div>
+      <fieldset class="option-block"><legend class="sr-only">E-Mail-Inhalte offline behalten</legend>
+        <label class="choice-row"><input type="radio" name="policy" value="all"><span><b>Alle E-Mails</b><small>Alle Lesetexte lokal behalten.</small></span></label>
+        <label class="choice-row"><input type="radio" name="policy" value="since" checked><span><b>E-Mails ab Datum</b><small>Ältere E-Mails bleiben über ihre Kopfzeilen auffindbar.</small></span></label>
+        <label class="choice-row"><input type="radio" name="policy" value="limit"><span><b>Speichergröße begrenzen</b><small>Die neuesten E-Mails zuerst, bis zur gewählten Größe.</small></span></label>
+      </fieldset>
+      <div class="policy-date" id="policy-date"><label for="policy-date-input">Ab</label><input id="policy-date-input" type="date" value="2024-01-01"></div>
+      <div class="policy-date" id="policy-limit" hidden><label for="policy-limit-input">Höchstens</label><input id="policy-limit-input" type="number" min="1" step="1" value="500"><span>MB auf diesem Gerät</span></div><p class="quiet-note limit-scope" id="limit-scope" hidden>Geladene Anhänge zählen mit; die Grenze hat Vorrang vor der Aufbewahrungsfrist.</p>
+      <div class="attachment-retention"><h3>Anhänge</h3><label class="field-line" for="retention"><span>Geladene Anhänge behalten</span><select id="retention"><option value="none">Keine</option><option value="1">1 Tag</option><option value="7" selected>7 Tage</option><option value="30">30 Tage</option><option value="all">Alle behalten</option></select></label></div>
+    </section>
+  </div>
+</section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="backup-dialog" aria-labelledby="backup-title"><form method="dialog" id="backup-form"><div class="dialog-head"><div><h2 id="backup-title">Backup erstellen</h2><p id="backup-account">s@g5k.de</p></div><button class="icon-button" type="button" id="close-backup" aria-label="Schließen">×</button></div><div class="dialog-body"><fieldset><legend>Quelle</legend><label class="source-choice"><input type="radio" name="backup-source" value="server" checked><span><b>Vom Server</b><small>Alle erreichbaren E-Mails im gewählten Zeitraum.</small></span></label><label class="source-choice"><input type="radio" name="backup-source" value="local"><span><b>Von diesem Gerät</b><small>Nur lokal aufbewahrte Originale.</small></span></label></fieldset><div class="dialog-field"><span>Zeitraum</span><div class="radio-line"><label><input type="radio" name="backup-period" value="all" checked> Alle E-Mails</label><label><input type="radio" name="backup-period" value="since"> Ab Datum</label></div></div><div class="dialog-field backup-date-field" id="backup-date-field" hidden><label for="backup-date-input">Ab Datum</label><div class="date-combo"><input id="backup-date-input" type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" value="01.01.2024" aria-describedby="date-help"><button id="calendar-button" type="button" aria-label="Datum im Kalender wählen" aria-expanded="false"><svg><use href="#i-calendar"/></svg></button></div><small id="date-help">Datum anklicken oder als TT.MM.JJJJ eingeben.</small><div class="calendar-popover" id="calendar-popover" hidden><div class="calendar-head"><button type="button" id="month-prev" aria-label="Vorheriger Monat">‹</button><strong id="calendar-month"></strong><button type="button" id="month-next" aria-label="Nächster Monat">›</button></div><div class="calendar-grid weekdays" aria-hidden="true"><span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span></div><div class="calendar-grid" id="calendar-days"></div></div></div><div class="dialog-field"><label for="backup-destination">Zielordner</label><div class="date-combo"><input id="backup-destination" value="Verwalteter Backup-Ordner"><button type="button" data-demo="Die Ordnerwahl ist im Mockup nicht mit dem System verbunden.">Wählen</button></div></div><div class="dialog-field"><label for="backup-filename">Archivname</label><input id="backup-filename" value="mail-2026-10-27.zip"><small>ZIP-Datei ohne Verschlüsselung. Bitte an einem privaten Ort aufbewahren.</small></div></div><div class="dialog-foot"><button class="button ghost" type="button" id="cancel-backup">Abbrechen</button><button class="button primary" type="submit">Backup erstellen</button></div></form></dialog>
+  <dialog id="main-category-dialog" aria-labelledby="main-category-title"><div class="dialog-head"><div><h2 id="main-category-title">Neue Hauptkategorie</h2></div><button class="icon-button" type="button" id="main-category-close" aria-label="Schließen">×</button></div><div class="dialog-body"><label class="dialog-field" for="main-category-name"><span>Name</span><input id="main-category-name" maxlength="60" placeholder="z. B. Projekte"></label><fieldset class="category-icon-field"><legend>Icon</legend><div class="category-icon-picker" id="main-category-icon" data-color="blue"></div></fieldset><label class="dialog-field" for="main-category-color"><span>Farbe</span><select id="main-category-color"></select></label><div class="category-appearance-preview" id="main-category-preview" data-color="blue"><span class="main-category-glyph"><svg><use href="#i-tag"/></svg></span><strong id="main-category-preview-name">Neue Hauptkategorie</strong></div></div><div class="dialog-foot"><button class="button ghost" type="button" id="main-category-cancel">Abbrechen</button><button class="button primary" type="button" id="main-category-save">Hauptkategorie anlegen</button></div></dialog>
+  <dialog id="subcategory-dialog" aria-labelledby="subcategory-title"><div class="dialog-head"><div><h2 id="subcategory-title">Neue Unterkategorie</h2></div><button class="icon-button" type="button" id="subcategory-close" aria-label="Schließen">×</button></div><div class="dialog-body"><label class="dialog-field" for="subcategory-name"><span>Name</span><input id="subcategory-name" maxlength="60" placeholder="z. B. Projektberichte"></label><label class="dialog-field" for="subcategory-parent"><span>Hauptkategorie</span><select id="subcategory-parent"></select></label><fieldset class="category-icon-field"><legend>Icon</legend><div class="category-icon-picker" id="subcategory-icon" data-color="blue"></div></fieldset></div><div class="dialog-foot"><button class="button ghost" type="button" id="subcategory-cancel">Abbrechen</button><button class="button primary" type="button" id="subcategory-save">Unterkategorie anlegen</button></div></dialog>
+  <dialog id="signature-link-dialog" aria-labelledby="signature-link-title"><div class="dialog-head"><div><h2 id="signature-link-title">Link in der Signatur</h2></div><button class="icon-button" type="button" id="signature-link-close" aria-label="Schließen">×</button></div><div class="dialog-body"><label class="dialog-field" for="signature-link-url"><span>Adresse</span><input id="signature-link-url" type="url" placeholder="https://beispiel.de" autocomplete="url"></label></div><div class="dialog-foot"><button class="button ghost" type="button" id="signature-link-cancel">Abbrechen</button><button class="button primary" type="button" id="signature-link-apply">Link einfügen</button></div></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog id="target-dialog" aria-labelledby="target-title"><form method="dialog"><div class="dialog-head"><div><h2 id="target-title">Speicherziel bearbeiten</h2><p>Beispiel für die Detailansicht eines Ziels.</p></div><button class="icon-button" type="button" data-close-target aria-label="Schließen">×</button></div><div class="dialog-body"><label class="dialog-field"><span>Name</span><input value="Rechnungen"></label><label class="dialog-field"><span>Ordner</span><input value="~/Dokumente/Rechnungen"></label><label class="dialog-field"><span>Unterordner</span><input value="{Jahr}/{Monat}"></label><label class="dialog-field"><span>Dateiname</span><input value="{Datum}-{Absender}-{Betreff}"></label><label class="dialog-field"><span>Datum aus</span><select><option>E-Mail-Datum</option><option>Dateiname, sonst E-Mail</option></select></label><details class="inline-details"><summary>Vorschlagsbedingungen</summary><p>Absender, Domain und Betreff können für Vorschläge genutzt werden.</p></details><div class="target-example">Vorschau: <b>2026/10/27-beispiel-rechnung.pdf</b></div></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-target>Abbrechen</button><button class="button primary" type="button" data-close-target>Fertig</button></div></form></dialog>
+</body>
+</html>
