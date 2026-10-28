@@ -2419,7 +2419,8 @@ fn data_rule_group<'a>(data: &Data, models: &BTreeMap<String, Vec<AiModel>>, sta
 /// What sorts mail now, as the data rule says it (review of #325).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortingNow<'a> {
-    /// No model sorts: the slot Sorting is empty, or the exception is switched off.
+    /// No model sorts: the slot Sorting is empty, the exception is switched off, or its model is turned
+    /// off at its account.
     Nothing,
     /// The model that sorts computes on this computer.
     Here,
@@ -2443,6 +2444,11 @@ fn sorting_now<'a>(data: &'a Data, models: &BTreeMap<String, Vec<AiModel>>) -> S
             None => return SortingNow::Nothing,
         },
     };
+    // A model its account lists turned off sorts nothing (seen in the check of #325 on the Mac).
+    let listed = model.and_then(|id| models.get(engine)?.iter().find(|known| same_model(&known.id, id)));
+    if listed.is_some_and(|known| !known.enabled) {
+        return SortingNow::Nothing;
+    }
     if !sorts_elsewhere(data, models, engine, model) {
         return SortingNow::Here;
     }
@@ -5756,7 +5762,13 @@ mod tests {
         // model here sorts; nothing while the exception is off or the slot is empty.
         data.settings.decide_mail_to_cloud = Some(true);
         with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", true);
-        assert_eq!(sorting_now(&data, &state.models), SortingNow::Here);
+        // nimble is off at the demo's Ollama: then it sorts nothing.
+        assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "turned off at its account");
+        let mut models = state.models.clone();
+        for model in models.get_mut(DEMO_OLLAMA).into_iter().flatten() {
+            model.enabled = true;
+        }
+        assert_eq!(sorting_now(&data, &models), SortingNow::Here);
         with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", false);
         assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "switched off");
         drop(data_rule_group(&data, &state.models, false));
