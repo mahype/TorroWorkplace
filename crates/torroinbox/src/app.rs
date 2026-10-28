@@ -248,7 +248,7 @@ use crate::mail::{
 };
 use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
-use crate::search::{self, Found, Scope, ScopeChoice, SearchView, Sort, Suggestion};
+use crate::search::{self, Found, QuickFilter, Scope, ScopeChoice, SearchView, Sort, Suggestion};
 use crate::suggest::{self as ai, SuggestSource};
 use crate::{detail, list};
 
@@ -1351,6 +1351,8 @@ pub enum Menu {
     MailContext,
     /// The account checkboxes beside the mail list's sorting control.
     MailAccounts,
+    /// The quick filters at the end of the search field (issue #336).
+    SearchFilters,
     /// The on-demand folder browser, grouped by mail account.
     Folders,
     /// The snooze menu of `App::subject`: Later today, Tomorrow, Next week, Pick….
@@ -1566,10 +1568,13 @@ pub enum Open {
     SetAside,
     /// "Focus & reply" on the mail window's pile "Reply later" (task E19.5), at its first mail.
     Focus,
+    /// A search of all mail for "budget" with the attachments filter set and the menu of quick
+    /// filters open (issue #336), from the first account's inbox.
+    SearchFilters,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 65] = [
+    const ALL: [(&'static str, Open); 66] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1635,6 +1640,7 @@ impl Open {
         ("reply-later", Open::ReplyLater),
         ("set-aside", Open::SetAside),
         ("focus", Open::Focus),
+        ("search-filters", Open::SearchFilters),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2393,6 +2399,12 @@ fn wrap_settings<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -
     }
 }
 
+/// Today in the computer's zone, for the dates the period filters of the search write (issue #336);
+/// not kept, so a window left open over midnight writes the right day.
+fn today() -> chrono::NaiveDate {
+    chrono::Local::now().date_naive()
+}
+
 /// The section of the settings that lists the rules: where "All rules" in the bell's menu leads in
 /// the windows that have it ([`Message::OpenRules`]). A test keeps it among the inbox's sections.
 const RULES_SECTION: &str = "rules";
@@ -2442,6 +2454,8 @@ fn shows_entries(message: &Message) -> bool {
             | Message::SearchInput(_)
             | Message::Search
             | Message::ClearSearch
+            | Message::SearchFilter(_)
+            | Message::ClearSearchFilters
             | Message::SearchScope(_)
             | Message::SearchSort(_)
             | Message::MoreMail
@@ -3095,6 +3109,12 @@ pub enum Message {
     Search,
     /// "Clear search" (or Escape in a search): back to the view the search started from.
     ClearSearch,
+    /// The filter icon at the end of the search field: its menu of quick filters (issue #336).
+    ToggleSearchFilters,
+    /// A quick filter ticked or unticked: its operator goes into or out of the field, searched at once.
+    SearchFilter(QuickFilter),
+    /// "Clear filters": the operators of the quick filters out of the field, the words stay.
+    ClearSearchFilters,
     /// The timer of a search that waits ([`search::TICK`]): it runs once it is due.
     SearchTick(Instant),
     /// A suggestion under the field: this query in the field, searched for soon.
@@ -3838,9 +3858,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::SetAside) => View::SetAside,
                 // The first inbox, once the folders are in.
                 // The search starts there too, so the bar offers the folder and its account.
-                Some(Open::Folder | Open::Mail | Open::Search | Open::MuteMail | Open::MoveMail | Open::DeleteMail) => {
-                    View::Mail
-                }
+                Some(
+                    Open::Folder
+                    | Open::Mail
+                    | Open::Search
+                    | Open::SearchFilters
+                    | Open::MuteMail
+                    | Open::MoveMail
+                    | Open::DeleteMail,
+                ) => View::Mail,
                 // The first mail of "All" in the mail window (task E18.4).
                 Some(Open::MailEntry | Open::MailActions | Open::MailGroup) if mail_window => View::All,
                 Some(Open::MailEntry | Open::MailActions | Open::MailGroup) => View::ForMe,
@@ -5012,6 +5038,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 return Task::batch([self.run_search(), remembered]);
             }
             Message::ClearSearch => return self.clear_search(),
+            Message::ToggleSearchFilters => self.toggle_menu(Menu::SearchFilters),
+            Message::SearchFilter(filter) => {
+                let query = search::toggle(&self.search, filter, today());
+                return self.filter_search(query);
+            }
+            Message::ClearSearchFilters => {
+                let query = search::without_filters(&self.search, today());
+                return self.filter_search(query);
+            }
             Message::SearchTick(now) => {
                 if self.search_due.is_some_and(|due| now >= due) {
                     return self.run_search();
@@ -6747,6 +6782,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Task::none()
     }
 
+    /// A quick filter changed the field to `query` (issue #336): searched at once, as if `Enter` was
+    /// pressed, in the scope shown (all mail from a folder). Without a word left the search ends
+    /// as it does when the field is emptied by hand.
+    fn filter_search(&mut self, query: String) -> Task<Message> {
+        if query.trim().is_empty() {
+            return self.type_search(String::new());
+        }
+        self.search = query;
+        self.suggesting = false;
+        self.run_search()
+    }
+
     /// Searches for what is typed now: the search view with it, in the scope and order shown (all
     /// mail, by relevance, for a new search).
     fn run_search(&mut self) -> Task<Message> {
@@ -6849,7 +6896,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The bar over the list: field, suggestions, scope and order, the line on the results.
-    fn search_bar(&self) -> Element<'_, Message> {
+    fn search_bar(&self, filters: &Anchor) -> Element<'_, Message> {
         let search = self.view.search();
         let status = search
             .filter(|search| !search.query.is_empty() && self.listed == self.view.listing() && self.loaded)
@@ -6861,6 +6908,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             suggestions: self.search_suggestions(),
             status,
             full: self.launch.kind == Kind::Mail,
+            filters: filters.clone(),
+            today: today(),
         })
     }
 
@@ -7464,6 +7513,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 | Menu::Switcher
                 | Menu::MailContext
                 | Menu::MailAccounts
+                | Menu::SearchFilters
                 | Menu::Folders
                 | Menu::Attachment(_)
                 | Menu::SaveAll { .. },
@@ -9479,6 +9529,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// own section menu.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav, accounts, folders) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
+        let filters = Anchor::new();
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher, &folders);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
@@ -9547,6 +9598,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 &accounts,
                 Placement::Below(Align::End),
                 self.mail_accounts_menu(),
+                Message::CloseMenu,
+            )),
+            Some(Menu::SearchFilters) => Some(widgets::floating(
+                &filters,
+                Placement::Below(Align::End),
+                self.search_filters_menu(),
                 Message::CloseMenu,
             )),
             Some(Menu::Folders) => Some(widgets::floating(
@@ -9637,7 +9694,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if let Some(reader) = self.wide_reader(class, &anchors).or_else(|| self.empty_reader(class)) {
             // The divider between them drags (issue #130).
             let width = self.split.width(self.split_limits());
-            let body = split::split(self.body(class, &rows), reader, width, self.split.dragging, Message::Split);
+            let body =
+                split::split(self.body(class, &rows, &filters), reader, width, self.split.dragging, Message::Split);
             let placed = panel::place(class, body, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
                 .rail(rail)
@@ -9677,7 +9735,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
-        let placed = panel::place(class, self.body(class, &rows), detail, layer);
+        let placed = panel::place(class, self.body(class, &rows, &filters), detail, layer);
         // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
         // column at the right.
         let side = self.hub_side().then(|| {
@@ -10040,7 +10098,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// `CONTENT_MAX` wide, also while the panel stands beside it (its column takes its own room,
     /// and a narrower list would only leave a gap). Loading and the error of a first load stand in
     /// for both.
-    fn body(&self, class: SizeClass, rows: &detail::Anchors) -> Element<'_, Message> {
+    fn body(&self, class: SizeClass, rows: &detail::Anchors, filters: &Anchor) -> Element<'_, Message> {
         if let Some(unloaded) = self.unloaded() {
             return unloaded;
         }
@@ -10048,7 +10106,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let mut content = column![];
         // The search stands above the error line: it belongs to the mail, the error to the list.
         if self.shows_search() {
-            content = content.push(self.search_bar());
+            content = content.push(self.search_bar(filters));
         }
         if let Some(failure) = &self.error {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
@@ -10630,6 +10688,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .padding(style::MENU_INSET)
             .style(style::container::menu)
             .into()
+    }
+
+    /// The menu at the filter icon of the search field (issue #336): a tick for each quick filter,
+    /// read from the field's text, in groups that exclude each other; "Clear filters" while one is set.
+    /// A tick keeps the menu open, so several can be set one after the other.
+    fn search_filters_menu(&self) -> Element<'_, Message> {
+        let colour = palette(&self.theme()).accent;
+        let today = today();
+        let set = search::active(&self.search, today);
+        let mut list = column![menu_caption(tr("Quick filters"))];
+        let mut previous: Option<QuickFilter> = None;
+        for filter in QuickFilter::ALL {
+            if previous.is_some_and(|before| !before.same_group(filter)) {
+                list = list.push(menu_line());
+            }
+            previous = Some(filter);
+            let item = MenuItem::new(
+                Mark::Check(colour, set.contains(&filter)),
+                filter.label(),
+                Message::SearchFilter(filter),
+            );
+            list = list.push(widgets::menu_item(item));
+        }
+        if !set.is_empty() {
+            let clear = MenuItem::new(Mark::Icon(Icon::X), tr("Clear filters"), Message::ClearSearchFilters);
+            list = list.push(menu_line()).push(widgets::menu_item(clear));
+        }
+        container(list).width(size::sidebar()).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
     fn folder_browser(&self) -> Element<'_, Message> {
@@ -11254,6 +11340,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Some(Open::Search) => {
                 self.search = "budget".to_owned();
+                return self.run_search();
+            }
+            Some(Open::SearchFilters) => {
+                self.search = "budget has:attachment".to_owned();
+                self.menu = Some(Menu::SearchFilters);
                 return self.run_search();
             }
             // "Focus & reply" at the first mail of "Reply later" (task E19.5).
@@ -14889,6 +14980,63 @@ mod tests {
         let _ = app.update(Message::Search);
         load(&mut app);
         assert!(app.messages.is_empty());
+        draw_everywhere(&mut app);
+    }
+
+    /// Issue #336: a quick filter of the menu on the search field writes its operator into the field and
+    /// searches at once – in all mail, with the words typed –, a second click takes it out, the last one
+    /// out goes back to where the search started, and the menu stays open meanwhile.
+    #[test]
+    fn a_quick_filter_searches_like_the_operator_typed() {
+        let mut app = in_folder("f:work-inbox");
+        let folder = app.view.clone();
+        let _ = app.update(Message::ToggleSearchFilters);
+        assert_eq!(app.menu, Some(Menu::SearchFilters));
+        let _ = app.update(Message::SearchFilter(QuickFilter::Attachments));
+        assert_eq!(app.search, "has:attachment");
+        let shown = app.view.search().cloned().expect("a search");
+        assert_eq!((shown.query.as_str(), &shown.scope), ("has:attachment", &Scope::All), "all mail, at once");
+        assert!(app.search_due.is_none(), "no pause: the click is not typing");
+        load(&mut app);
+        assert!(!app.messages.is_empty());
+        assert!(app.messages.iter().all(|message| message.has_attachments));
+        assert_eq!(app.menu, Some(Menu::SearchFilters), "several can be ticked in a row");
+        draw_everywhere(&mut app);
+        // With a word typed before, and a second filter.
+        let _ = app.update(Message::SearchInput("budget has:attachment".into()));
+        let _ = app.update(Message::SearchFilter(QuickFilter::Unread));
+        assert_eq!(app.search, "budget has:attachment is:unread");
+        load(&mut app);
+        assert!(app.messages.iter().all(|message| !message.flags.contains(&Flag::Seen)));
+        let _ = app.update(Message::SearchFilter(QuickFilter::Read));
+        assert_eq!(app.search, "budget has:attachment is:read", "read replaces unread");
+        let _ = app.update(Message::SearchFilter(QuickFilter::Read));
+        let _ = app.update(Message::SearchFilter(QuickFilter::Attachments));
+        assert_eq!(app.search, "budget", "second click: out again");
+        assert_eq!(app.view.search().map(|search| search.query.as_str()), Some("budget"));
+        // "Clear filters" keeps the words; the last operator out without a word goes back.
+        let _ = app.update(Message::SearchFilter(QuickFilter::Flagged));
+        let _ = app.update(Message::ClearSearchFilters);
+        assert_eq!(app.search, "budget");
+        let _ = app.update(Message::SearchInput(String::new()));
+        let _ = app.update(Message::SearchFilter(QuickFilter::Flagged));
+        assert!(app.view.search().is_some());
+        let _ = app.update(Message::SearchFilter(QuickFilter::Flagged));
+        assert_eq!((app.search.as_str(), &app.view), ("", &folder), "back where it started");
+        draw_everywhere(&mut app);
+    }
+
+    /// Issue #336: the demo state `--open search-filters` shows a search with a filter set and the menu open.
+    #[test]
+    fn the_demo_state_shows_the_menu_over_a_filtered_search() {
+        let mut app = loaded(&["--source", "mail", "--open", "search-filters"]);
+        load(&mut app);
+        load(&mut app);
+        assert!(!app.messages.is_empty(), "the search found mail");
+        assert_eq!(app.menu, Some(Menu::SearchFilters));
+        assert_eq!(app.search, "budget has:attachment");
+        assert_eq!(search::active(&app.search, today()), [QuickFilter::Attachments]);
+        assert!(app.messages.iter().all(|message| message.has_attachments));
         draw_everywhere(&mut app);
     }
 
