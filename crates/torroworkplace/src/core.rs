@@ -1394,13 +1394,14 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
 /// inbox database holds its cursor after every message, so a restart or pause never needs to
 /// repeat a successful model call. Its ID and generation prevent an older worker from writing
 /// progress after a resume.
+///
+/// A run whose model computes elsewhere stops (`failed`) before the next mail once the permission of
+/// Sorting is off (`settings`, PR review of #325): "Keep mail here" holds for a run already going too.
 async fn category_job_run(
-    mail: Arc<MailService>,
-    inbox: Arc<Inbox>,
-    ai: Arc<AiAccounts>,
+    (mail, inbox, ai): (Arc<MailService>, Arc<Inbox>, Arc<AiAccounts>),
+    settings: SettingsStore,
     worker: Arc<std::sync::Mutex<Option<(String, u64)>>>,
-    id: String,
-    generation: u64,
+    (id, generation): (String, u64),
     decider: Option<(String, String)>,
 ) {
     use torro_ipc::inbox::CategoryJobState;
@@ -1477,6 +1478,14 @@ async fn category_job_run(
                 };
                 let decided = match (ruled, &decider) {
                     (Some(category), _) => Some((category, None)),
+                    (None, Some(_))
+                        if job.model_in_cloud == Some(true)
+                            && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) =>
+                    {
+                        let why = tr("Sorting may no longer send mail to the cloud.");
+                        category_job_error(&inbox, &id, generation, &account.account, why);
+                        break;
+                    }
                     (None, Some((engine, model))) => {
                         asked = true;
                         match tokio::time::timeout(
@@ -6306,7 +6315,8 @@ impl Core {
     fn spawn_category_worker(&self, id: String, generation: u64, decider: Option<(String, String)>) {
         let (mail, inbox, ai, worker) =
             (Arc::clone(&self.mail), Arc::clone(&self.inbox), Arc::clone(&self.ai), Arc::clone(&self.category_worker));
-        tokio::spawn(category_job_run(mail, inbox, ai, worker, id, generation, decider));
+        let settings = self.settings.clone();
+        tokio::spawn(category_job_run((mail, inbox, ai), settings, worker, (id, generation), decider));
     }
 
     async fn preview_clear_categories(&self, reach: Reach<'_>) -> Response {
@@ -23102,6 +23112,215 @@ mod tests {
         );
         assert!(chat.calls_async().await >= 1, "asked through the chat");
         assert_eq!(systemone.calls_async().await, 0, "never at /systemone");
+    }
+
+    /// PR review of #325: a chat model that gives one mail no readable answer leaves that mail without a
+    /// category and counts it as failed – the run goes on and sorts the mail after it, and completes.
+    #[tokio::test]
+    async fn a_sorting_run_goes_on_past_a_mail_without_a_readable_answer() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_core::ai::AiSlot;
+        use torro_ipc::inbox::{CategoryJobScope, CategoryJobState};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        for (id, subject, text) in [("m1", "Odd one", "Something odd."), ("m2", "Invoice 7", "Please pay.")] {
+            let raw = format!(
+                "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {}\r\n\
+                 Message-ID: <{id}@example.org>\r\nContent-Type: text/plain\r\n\r\n{text}\r\n",
+                Utc::now().to_rfc2822()
+            );
+            imap.add("INBOX", &raw, &[]);
+        }
+        let anna = mail_account("anna@example.org", &imap.endpoint);
+        store_accounts(dir.path(), &keys, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &keys);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"object": "list", "data": [
+                    {"id": "qwen3:8b", "object": "model", "owned_by": "local"},
+                ]}));
+            })
+            .await;
+        let call = |arguments: String| {
+            serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "answer", "arguments": arguments}}]
+            }}]})
+        };
+        let odd = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").body_includes("Odd one");
+                then.status(200).header("content-type", "application/json").json_body(call("{}".into()));
+            })
+            .await;
+        let invoice = serde_json::json!({"category": "invoice", "needs_reply": false, "urgency": 1}).to_string();
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").body_includes("Invoice 7");
+                then.status(200).header("content-type", "application/json").json_body(call(invoice));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(404);
+            })
+            .await;
+
+        let core = Core {
+            ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())),
+            ..audited(dir.path())
+        }
+        .with_mail(mail);
+        let connect = Request::ConnectAi {
+            provider: AiProvider::OpenAiCompatible,
+            server: Some(server.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let slot = Request::SetAiSlot {
+            slot: AiSlot::Decide,
+            engine: Some(account.id.clone()),
+            model: Some("qwen3:8b".into()),
+            effort: None,
+        };
+        assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
+
+        let start = Request::StartCategoryJob { scope: CategoryJobScope::default() };
+        let answer = core.handle(start).await;
+        assert!(matches!(answer, Response::CategoryJob { job: Some(_) }), "{answer:?}");
+        let mut ended = None;
+        for _ in 0..200 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let Response::CategoryJob { job: Some(job) } = core.handle(Request::GetCategoryJob { id: None }).await
+            else {
+                panic!("the run")
+            };
+            if job.state != CategoryJobState::Running {
+                ended = Some(job);
+                break;
+            }
+        }
+        let job = ended.expect("the run ends");
+        assert_eq!(job.state, CategoryJobState::Complete, "not failed at the odd mail: {:?}", job.errors);
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!((progress.processed, progress.changed, progress.failed), (2, 1, 1));
+        assert!(odd.calls_async().await >= 1, "the odd mail was asked");
+
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            hidden: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        let category_of = |subject: &str| {
+            messages.iter().find(|message| message.subject == subject).and_then(|message| message.category)
+        };
+        assert_eq!(category_of("Odd one"), None, "kept for a later run");
+        assert_eq!(category_of("Invoice 7").map(|held| held.category), Some(torro_mail::Category::Invoice));
+    }
+
+    /// PR review of #325: "Keep mail here" holds for a run already going – a run whose model computes
+    /// elsewhere stops before the next mail once the permission of Sorting is off, and sends it nothing.
+    #[tokio::test]
+    async fn keeping_mail_here_stops_a_run_elsewhere_before_the_next_mail() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_core::ai::AiSlot;
+        use torro_ipc::inbox::{CategoryJobScope, CategoryJobState};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        for (id, subject) in [("m1", "Invoice 7"), ("m2", "Invoice 8")] {
+            let raw = format!(
+                "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {}\r\n\
+                 Message-ID: <{id}@example.org>\r\nContent-Type: text/plain\r\n\r\nPlease pay.\r\n",
+                Utc::now().to_rfc2822()
+            );
+            imap.add("INBOX", &raw, &[]);
+        }
+        let anna = mail_account("anna@example.org", &imap.endpoint);
+        store_accounts(dir.path(), &keys, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &keys);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+
+        let openrouter = crate::account::ai::tests::fake_openrouter().await;
+        let arguments = serde_json::json!({"category": "invoice", "needs_reply": false, "urgency": 1}).to_string();
+        let chat = openrouter
+            .mock_async(|when, then| {
+                when.method("POST").path("/api/v1/chat/completions");
+                // Slow enough that the person switches the permission off while the first mail is asked.
+                then.status(200).delay(std::time::Duration::from_millis(600)).json_body(serde_json::json!({
+                    "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                        "role": "assistant", "content": "",
+                        "tool_calls": [{"id": "call_1", "type": "function",
+                                        "function": {"name": "answer", "arguments": arguments}}]
+                    }}]
+                }));
+            })
+            .await;
+        let core = Core {
+            ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())),
+            ..audited(dir.path())
+        }
+        .with_mail(mail);
+        let remote = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        assert_eq!(core.handle(turn_on(&remote.id, "qwen/qwen3-14b")).await, Response::Ok);
+        let slot = set_slot(AiSlot::Decide, Some(&remote.id), Some("qwen/qwen3-14b"));
+        assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
+        assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide), "the person let sorted mail out");
+
+        let start = Request::StartCategoryJob { scope: CategoryJobScope::default() };
+        let answer = core.handle(start).await;
+        assert!(
+            matches!(&answer, Response::CategoryJob { job: Some(job) } if job.model_in_cloud == Some(true)),
+            "{answer:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let keep = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
+        assert_eq!(core.handle(keep).await, Response::Ok);
+
+        let mut ended = None;
+        for _ in 0..200 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let Response::CategoryJob { job: Some(job) } = core.handle(Request::GetCategoryJob { id: None }).await
+            else {
+                panic!("the run")
+            };
+            if job.state != CategoryJobState::Running {
+                ended = Some(job);
+                break;
+            }
+        }
+        let job = ended.expect("the run ends");
+        assert_eq!(job.state, CategoryJobState::Failed);
+        assert_eq!(job.errors, [tr("Sorting may no longer send mail to the cloud.").to_string()]);
+        // The first mail may have been asked before the switch, never the second.
+        assert!(chat.calls_async().await <= 1, "the second mail went nowhere");
     }
 
     /// Task E12.6: runs are numbered, so a stop asked for while one starts is never swallowed.

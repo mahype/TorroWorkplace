@@ -5224,6 +5224,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Turned off in Settings › AI", "Abgeschaltet unter Einstellungen › KI"),
     ("Turned off at {account}", "Abgeschaltet bei {account}"),
+    ("Sorting may no longer send mail to the cloud.", "Sortieren darf keine Mail mehr in die Cloud schicken."),
     ("Turned off in {area}", "Abgeschaltet in {area}"),
     (
         "Turning the assistant on or off and what it may use are set under Access.",

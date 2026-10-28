@@ -220,7 +220,7 @@ Die Auswahl (`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ei
 | Herunterladen | Steuerzentrale › AI, „Use suggestion“ | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt – außer er wurde inzwischen abgebrochen, dann die Liste mit ihm als `cancelled`. Antwortet der Start `busy`, hängt sich „Use suggestion“ an den laufenden Download desselben Modells | `ai_pull_model` (Freigabe) |
 | Stand der Downloads | dieselben Orte | `ai.list_pulls` · Read | `ai_list_pulls` |
 | Download abbrechen | „Cancel“ | `ai.cancel_pull` · Write | `ai_cancel_pull` |
-| Erlaubnis *Sortieren* | Steuerzentrale › AI, „Data rule“ („Keep mail here“) | `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit | `settings_set_setting` nur `false` |
+| Erlaubnis *Sortieren* | Steuerzentrale › AI, „Data rule“ („Keep mail here“) | `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit; ausgeschaltet hält ein laufender Sortierauftrag mit einem Modell anderswo vor der nächsten Mail an (`failed`) | `settings_set_setting` nur `false` |
 | Eintrag zusammenfassen | Paneel „Summarize“ | `inbox.summarize_item` · Write (löst einen Modellaufruf aus) | `inbox_summarize_item` |
 
 Neuer Bereich `ai` im Katalog für die Einstellungen; die Funktionen selbst gehören zu dem Bereich, in
