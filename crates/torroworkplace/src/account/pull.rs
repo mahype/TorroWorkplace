@@ -112,7 +112,8 @@ impl Pulls {
     /// of this computer. Errors: [`PullError::Unsupported`] for another model or account,
     /// [`PullError::NotFound`] for an account `ai` does not hold, [`PullError::Busy`] while the same model
     /// downloads to the same account, [`PullError::Offline`] when Ollama does not take the request (then
-    /// nothing is listed).
+    /// nothing is listed) – unless the download was cancelled while the request was on its way: then the
+    /// list with it `cancelled`, as `ai.cancel_pull` answered.
     pub async fn start(&self, ai: &Arc<AiAccounts>, account: &str, model: &str) -> Result<Vec<AiPull>, PullError> {
         let list = List::builtin().map_err(|err| PullError::Error(err.to_string()))?;
         let Some(listed) = list.ollama_model(model) else {
@@ -129,10 +130,7 @@ impl Pulls {
         let id = self.reserve(account, &model)?;
         let response = match http.post(pull::url(&base)).json(&pull::body(&model)).send().await {
             Ok(response) => response,
-            Err(_) => {
-                self.forget(&id);
-                return Err(PullError::Offline);
-            }
+            Err(_) => return self.unreached(&id),
         };
         if !response.status().is_success() {
             // Its body is the server's words, which are not passed on.
@@ -201,11 +199,28 @@ impl Pulls {
 
     /// Takes back the download `id` that never reached Ollama. One cancelled while its request was on the
     /// way stays listed as `cancelled`, as the answer to `ai.cancel_pull` said; it only lets the model go.
-    fn forget(&self, id: &str) {
+    /// `true` for such a one.
+    fn forget(&self, id: &str) -> bool {
         let mut entries = self.entries();
         match entries.iter_mut().find(|entry| entry.pull.id == id) {
-            Some(entry) if entry.pull.state == AiPullState::Cancelled => entry.phase = Phase::Ended,
-            _ => entries.retain(|entry| entry.pull.id != id),
+            Some(entry) if entry.pull.state == AiPullState::Cancelled => {
+                entry.phase = Phase::Ended;
+                true
+            }
+            _ => {
+                entries.retain(|entry| entry.pull.id != id);
+                false
+            }
+        }
+    }
+
+    /// The answer to `ai.pull_model` when its request did not reach Ollama: [`PullError::Offline`], unless
+    /// the download was cancelled meanwhile (review of #325) – then the list with it `cancelled`, as
+    /// `ai.cancel_pull` answered, so the start does not report a failure the person already ended.
+    fn unreached(&self, id: &str) -> Result<Vec<AiPull>, PullError> {
+        match self.forget(id) {
+            true => Ok(self.list()),
+            false => Err(PullError::Offline),
         }
     }
 
@@ -625,11 +640,16 @@ mod tests {
         let pulls = Pulls::default();
         let state = |id: &str| pulls.list().into_iter().find(|pull| pull.id == id).map(|pull| pull.state);
 
-        // The request fails (`send` errs): listed as cancelled, the model free again.
+        // The request fails (`send` errs): listed as cancelled, the model free again – and the start
+        // answers with that list, not `offline` (review of #325).
         let id = pulls.reserve("ai:ollama@localhost:11434", "nimble").expect("reserved");
         assert_eq!(pulls.cancel(&id).expect("cancelled")[0].state, AiPullState::Cancelled);
         assert_eq!(pulls.reserve("ai:ollama@localhost:11434", "nimble"), Err(PullError::Busy), "the POST is out");
-        pulls.forget(&id);
+        let answer = pulls.unreached(&id).expect("the list, not offline");
+        assert_eq!(
+            answer.iter().map(|pull| (pull.id.as_str(), pull.state)).collect::<Vec<_>>(),
+            [(id.as_str(), AiPullState::Cancelled)]
+        );
         assert_eq!(state(&id), Some(AiPullState::Cancelled), "still listed as the cancel answered");
         let second = pulls.reserve("ai:ollama@localhost:11434", "nimble").expect("free again");
 
@@ -647,5 +667,14 @@ mod tests {
         assert_eq!(state(&third), Some(AiPullState::Cancelled));
         assert!(pulls.reserve("ai:ollama@localhost:11434", "nimble").is_ok());
         assert_eq!(pulls.list().len(), 4);
+    }
+
+    /// A request that does not reach Ollama, not cancelled: `offline`, and nothing is listed.
+    #[test]
+    fn a_start_that_reaches_no_ollama_is_offline_and_listed_nowhere() {
+        let pulls = Pulls::default();
+        let id = pulls.reserve("ai:ollama@localhost:11434", "nimble").expect("reserved");
+        assert_eq!(pulls.unreached(&id), Err(PullError::Offline));
+        assert!(pulls.list().is_empty());
     }
 }

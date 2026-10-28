@@ -352,7 +352,8 @@ pub fn tier_of<'a>(hardware: &Hardware, list: &'a List) -> &'a Tier {
 /// 3. A cloud model: providers in the order of [`AiProvider::ALL`], the first account with a `[[cloud]]` entry
 ///    for the slot whose list holds a model with that beginning that fits the slot (chat: `tools` not
 ///    `false`; sorting: [`AiModel::can_decide`]) – of several, the one named exactly so, else the shortest
-///    id (`gemini-2.5-flash` never takes `gemini-2.5-flash-lite`); an account whose list could not be read
+///    id (`gemini-2.5-flash` goes before `gemini-2.5-flash-lite` while the list holds the exact id; one
+///    that lists only variants gets the shortest of them, which may be `-lite`); an account whose list could not be read
 ///    with `model: None`. The reason says whether the tier has no local model for the slot, no AI server
 ///    runs here, or the servers here offer none of the tier's models (a Strata without it, no Ollama).
 /// 4. The tier's Ollama model without an account (`engine: None`), with its size and the reason "Needs
@@ -459,8 +460,9 @@ fn cloud_suggestion(list: &List, slot: AiSlot, accounts: &[Connected], reason: &
 }
 
 /// The model of `models` for a `[[cloud]]` entry with `prefix` that fits `slot`: the one whose id is `prefix`,
-/// else the shortest id that starts with it – the plain model before its variants (`-lite`, `:nitro`); of
-/// equally long ones the first listed.
+/// else the shortest id that starts with it – the plain model before its variants (`-lite`, `:nitro`) while
+/// the plain one is listed; without it the shortest variant, which may be `-lite`. Of equally long ones the
+/// first listed.
 fn best_of<'a>(models: &'a [AiModel], prefix: &str, slot: AiSlot) -> Option<&'a AiModel> {
     models
         .iter()
@@ -786,7 +788,8 @@ mod tests {
     }
 
     /// Review of #325 (F7): of several models with the entry's beginning, the one named exactly so, else
-    /// the shortest – `gemini-2.5-flash` never takes `gemini-2.5-flash-lite`, whatever the order.
+    /// the shortest – `gemini-2.5-flash` goes before `gemini-2.5-flash-lite`, whatever the order, while the
+    /// list holds the exact id.
     #[test]
     fn the_cloud_model_named_exactly_goes_before_its_variants() {
         let gemini = |ids: &[&str]| {
