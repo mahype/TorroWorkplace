@@ -79,8 +79,8 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
-| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_shown` ²⁶, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
-| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
@@ -432,24 +432,14 @@ Steuerzentrale ihn mit seinen Beispielen an) – sie geben keine Daten heraus, �
 keine Rechte. Ein Agent hätte davon nichts; Teile hinzufügen bleibt Sache des Menschen im Ordner, auflisten und
 wählen geht über die Befehle oben.
 
-¹⁰ `hide_sender { id, scope: conversation | sender | domain }` (E3.10, E3.11) hat je Umfang eine
-andere Stufe: `conversation` ist `Write` (nur dieser Eintrag wird erledigt, keine Regel; eine neue
-Antwort bringt ihn zurück), `sender` und `domain` sind `Admin` – eine dauerhafte Regel wie
-`mute_source`, die spätere Mails des Absenders bzw. der Domain (genau, ohne Subdomains) in **allen**
-Mail-Konten nicht mehr zu Einträgen macht und die offenen und vertagten passenden Einträge aller
-Konten erledigt. Der Katalog nennt `Write`, `Request::operation` hebt `sender` und `domain` auf
-`Admin` (wie `set_item_lane` mit `remember`). Anders als `set_item_done` wirkt keiner der Umfänge in
-die Quelle zurück: Die Mail bleibt ungelesen und an ihrem Platz, darum braucht es kein Schreibrecht
-für Mail (nur Leserecht, um den Eintrag zu sehen). Antwort `hidden`: die Regel (`rule`, bei
-`conversation` keine; dieselbe Regel noch einmal ergibt die vorhandene mit `new_rule: false`) und
-die Ids der Einträge, die der Aufruf erledigt hat (`done`, nur die der Schlüssel sehen darf) – damit
-lässt sich der Aufruf genau zurücknehmen: `remove_rule` bei `new_rule`, dann `set_item_done` mit
-`done: false` für jede Id (vorher vertagte Einträge kommen offen zurück, nicht wieder vertagt). Die
-Regel wird beim Konto des Eintrags gespeichert; `list_rules` und `remove_rule` zeigen sie nur
-Schlüsseln, die dieses Konto lesen dürfen, obwohl sie in allen Konten wirkt. Eine Regel aus einem
-Konto, das der Schlüssel nicht lesen darf, gibt `hide_sender` nie heraus (auch nicht als
-„gibt es schon“): Der Schlüssel bekommt dann eine eigene Regel in seinem Konto. `not-found` für Einträge, die der Schlüssel nicht sieht, `error` für
-Einträge, die keine Mail sind, und bei `sender`/`domain` für Mail ohne Absender.
+¹⁰ **Mail wird nicht ausgeblendet** (Issue #339, [mail.md](mail.md#filter)). `inbox.hide_sender` (E3.10, E3.11:
+eine Unterhaltung, einen Absender oder eine Domain aus dem Eingang ausblenden) und `inbox.set_mail_shown` („Show
+again“, E18.2) sind entfallen, ebenso das Feld `hidden` von `mail.search_messages` und die Wirkung `hide` von
+`mute_item` für Mail ([Versionen](#versionen)). Statt Mail unsichtbar zu machen, verschiebt, liest oder ordnet sie ein
+Filter (`mail.create_filter` …, Fußnote 27). Beim Update entfernt der Kern die Regeln, die Mail ausblendeten (Regeln
+eines Mail-Kontos mit Wirkung `muted` für einen Absender, eine Domain oder ein Merkmal), was sie ferngehalten hatten,
+die Markierungen ausgeblendeter Mail-Einträge und „Show again“ (`inbox.sqlite` Schema 17). Ein stummgeschaltetes
+Konto (`mute_source`), gemerkte Spuren und die Regeln anderer Quellen bleiben; nichts wird zu einem Filter.
 
 ¹¹ Stummschalten nach Merkmalen (E8.6a, Konzept [eingang.md](eingang.md#stummschalten-nach-merkmalen)).
 Jeder Eintrag trägt `facets`: die Merkmale, die seine Quelle verlässlich liefert (Mail: Konto,
@@ -461,8 +451,8 @@ Fremdtext) und `admin` (jede Wahl braucht `Admin`). `mute_item { id, scope: conv
 key }, until?, effect: no_popup | info | hide }` nimmt den Wert **immer aus dem gespeicherten
 Eintrag**, nie aus dem Request – so kann kein Agent beliebige Absender stummschalten, und die Freigabe
 zeigt keinen Text des Clients. Stufe in `Request::operation`: `Write` nur für `conversation` mit
-`hide` oder `info` ohne `until` (erledigt bzw. verschiebt nur diesen Eintrag, keine Regel, wie
-`hide_sender` mit `conversation`), alles andere ist eine Regel und `Admin`; der Katalog nennt
+`hide` oder `info` ohne `until` (erledigt bzw. verschiebt nur diesen Eintrag, keine Regel), alles andere ist eine
+Regel und `Admin`; der Katalog nennt
 `Write`. Eine Regel (`Rule` mit `facet` und `until`) gilt für alle Quellen derselben Art (ein
 Absender in allen Mail-Konten, ein Projekt für alle Agenten), die Unterhaltung nur in ihrer Quelle;
 sie wird bei der Quelle des Eintrags gespeichert und nur Schlüsseln gezeigt, die diese sehen. Die
@@ -472,12 +462,14 @@ Abgelaufene Regeln wirken nicht mehr, fehlen in `list_rules` und werden vom Dien
 Merkmal noch einmal ergibt die vorhandene Regel (`new_rule: false`), die so lange gilt wie die
 längere der beiden. Antwort `muted`: `rule`, `new_rule`, `done` und `moved` (nur Ids, die der
 Schlüssel sieht). Undo: `remove_rule` bei `new_rule`, `set_item_done` mit `done: false` für `done`,
-`set_item_lane` nach `for_me` für `moved`. Wie `hide_sender` wirkt nichts in die Mail zurück.
+`set_item_lane` nach `for_me` für `moved`. Nichts wirkt in die Mail zurück. **`hide` gibt es für Mail nicht** (Issue
+#339, Fußnote 10): An einem Mail-Eintrag und an einer Mail-Kennung ist es `unsupported`, geprüft vor der Freigabe, für
+jeden Umfang (die Glocke bietet es dort nicht an). Für alle anderen Quellen bleibt es.
 Freigaben und Einträge der Suite trifft keine Regel: `not-found` für Client-Schlüssel, `forbidden`
 für den App-Schlüssel; `error` für ein Merkmal, das der Eintrag nicht hat, oder ein `until` in der
 Vergangenheit; `conflict`, wenn sich der Eintrag während der Freigabe geändert hat. Die Freigabe
 nennt Merkmal und Wert aus dem Eintrag, die Reichweite, Dauer und Wirkung in Worten („Mute “Mail from
-news@shop.example” in every mail account for good (hidden)“). Ins Protokoll kommt nur die Kennung des
+news@shop.example” in every mail account for good (only Info)“). Ins Protokoll kommt nur die Kennung des
 Eintrags. Den Wert einer Regel für die Unterhaltung (den `thread_key`) sieht nur der App-Schlüssel.
 Statt der Kennung eines Eintrags darf `id` die einer Mail sein (`m:…`, Issue #123): Ist die Mail in einem
 Eintrag abgelegt, gilt dessen Kennung; eine Ordnernachricht ohne Eintrag bietet nur ihre Merkmale an,
@@ -485,8 +477,8 @@ wie der Mail-Speicher des Dienstes sie hält (keine Unterhaltung: es gibt keinen
 `error`), und nur für Schlüssel, die Konto und Mail lesen dürfen (sonst `not-found`).
 Auch `snooze_item` nimmt eine Mail-Kennung (E9.1, „Später“ für jede Mail): Ist die Mail in einem Eintrag abgelegt,
 wird dieser Eintrag mit der ganzen Unterhaltung zurückgestellt; sonst legt der Kern zuerst einen an, wie der Abgleich
-neue Mail ablegt (Spur nach den Regeln, unabhängig von `notify` des Kontos), und stellt ihn zurück. Verbirgt eine
-Regel des Menschen die Mail, gibt es keinen Eintrag: `unsupported`. Ohne `until` und ohne Eintrag wird nichts
+neue Mail ablegt (Spur nach den Regeln, unabhängig von `notify` des Kontos), und stellt ihn zurück. Hält eine
+Regel des Menschen die Mail fern (etwa ein stummgeschaltetes Konto), gibt es keinen Eintrag: `unsupported`. Ohne `until` und ohne Eintrag wird nichts
 gespeichert; die Antwort ist der Eintrag, der es wäre. Rechte wie bei `mute_item` mit Mail-Kennung. Dazu
 `mail.search_messages` mit dem optionalen Feld `snoozed`: `false` lässt zurückgestellte Mails weg und stellt
 zurückgekommene nach dem Zeitpunkt ihrer Rückkehr ein, `true` liefert nur die zurückgestellten; gefiltert wird vor dem
@@ -513,41 +505,26 @@ zurückgestellten oder erledigten Eintrag hat, ist `unsupported`: Das Ablegen de
 könnte „Only if no reply“ verlieren), statt ihn gesehen an seinem alten Platz zurückzuholen. Ohne `until`, an einem
 erledigten Eintrag und an einem, der keine Mail ist, ist es ebenfalls `unsupported`; alles geprüft vor der Freigabe. Die
 Freigabe nennt das Zurückholen („Bring … back and follow up …“).
-Ebenso `hidden` (E18.1, „Hidden“ im Mail-Fenster): `false` lässt Mails des Posteingangsordners weg, die der Mensch
-ausgeblendet hat – von einem Absender oder einer Domain (`hide_sender`, geprüft beim Lesen gegen den Absender, also
-auch ältere Mails ohne Eintrag), einer ausgeblendeten Unterhaltung, solange ihr Eintrag erledigt ist, oder durch ein
-Merkmal mit Wirkung `hide` ferngehalten, solange die Regel besteht –, `true` liefert nur sie. Mail eines offenen oder
-zurückgestellten Eintrags und Mail in einem anderen Ordner ist nie ausgeblendet; ein stummes Konto, „Only Info“ und
-„No popup“ blenden nichts aus. Beide Felder gelten zusammen und nur für Konten, deren Einträge der Schlüssel sieht
-(Leserecht in `inbox`, Konto in `inbox_sources`); sonst gilt nichts als zurückgestellt oder ausgeblendet. Absender- und
-Domain-Regeln gelten bewusst für jedes Konto (E3.11), auch wenn die Regel an einem Eintrag eines Kontos entstand, das
-der Schlüssel nicht sieht; `hidden: true` zeigt dann ihre Wirkung in den sichtbaren Konten, `inbox.list_rules` die Regel
-selbst nicht. Archivieren ist `mail.move_messages` mit Rolle `archive`; das erledigt den Eintrag, sobald keine
+`snoozed` gilt nur für Konten, deren Einträge der Schlüssel sieht (Leserecht in `inbox`, Konto in `inbox_sources`);
+sonst gilt nichts als zurückgestellt. Das Feld `hidden` (E18.1, Ansicht „Hidden“) und „Show again“
+(`inbox.set_mail_shown`, E18.2) sind mit Issue #339 entfallen (Fußnote 10, [Versionen](#versionen)). Archivieren ist
+`mail.move_messages` mit Rolle `archive`; das erledigt den Eintrag, sobald keine
 ungelesene Mail der Unterhaltung mehr im Posteingang liegt. Archiviert die App vom Eintrag aus (Zentrale, App Feed,
-„Later“), schließt sie ihn danach zusätzlich mit `inbox.set_item_done`; in „Unfiltered“, „Hidden“ und den Ordnern überlässt
+„Later“), schließt sie ihn danach zusätzlich mit `inbox.set_item_done`; in „Unfiltered“ und den Ordnern überlässt
 sie ihn dem Kern.
-„Show again“ (E18.2) ist `inbox.set_mail_shown` (Zugriff Write, MCP `inbox_set_mail_shown`): `shown: true` nimmt 1 bis
-100 Mails (`ids`, `m:…`, auch mehrerer Konten) aus „Hidden“, `hidden` zählt sie dann als nicht ausgeblendet. Nur diese
-Mails: Die Regel bzw. die ausgeblendete Unterhaltung bleibt, weitere und neue Mail bleibt ausgeblendet, der Eintrag
-bleibt, wie er ist (ein erledigter bleibt erledigt). Gemerkt wird nur, was jetzt ausgeblendet ist; `shown: false` nimmt
-die Ausnahme zurück (Undo). Wer den Eintrag erneut ausblendet (`mute_item` mit `hide`, `hide_sender`), blendet seine Mail
-wieder aus. `not-found` für den ganzen Aufruf, sobald eine Mail in einem Konto liegt, das der Schlüssel nicht liest
-(`mail_accounts`) oder dessen Einträge er nicht sieht (`inbox_sources`) – geprüft, bevor jemand um Freigabe gebeten wird.
-Erledigte Einträge, deren Ausblendung noch gilt (diese Unterhaltung, oder eine Regel, die noch besteht), räumt der Kern
-nicht nach 30 Tagen auf, damit ihre Mail ausgeblendet bleibt.
 „Reply later“ und „Set aside“ (E19.2) sind `inbox.set_mail_pile` (Zugriff Write, MCP `inbox_set_mail_pile`): `pile:
 reply_later` bzw. `set_aside` legt 1 bis 100 Mails (`ids`, `m:…`, auch mehrerer Konten) auf diesen Stapel, ohne `pile`
 kommen sie herunter. Eine Mail liegt auf höchstens einem Stapel, erneut legen verlegt sie; derselbe Stapel noch einmal
 ändert nichts (auch nicht, seit wann sie dort liegt). Gemerkt wird nur im Kern, nichts geht an den Server, Mail und
 Eintrag bleiben, wie sie sind. „Reply later“ räumt sich selbst ab: Taucht nach dem Auflegen eine Mail von der Adresse des
 Kontos in der Unterhaltung auf (jeder Ordner außer Entwürfen, jedes Programm), nimmt der Kern die Mail herunter; „Set aside“ bleibt, bis
-man sie herunternimmt. Reichweite, Grenzen, Freigabe und Protokoll wie bei `set_mail_shown`: `not-found` für den ganzen
-Aufruf, sobald eine Mail außer Reichweite liegt, geprüft vor der Freigabe. Mail im Papierkorb oder im Spam kommt auf
+man sie herunternimmt. `not-found` für den ganzen Aufruf, sobald eine Mail außer Reichweite liegt (Fußnote 26), geprüft
+vor der Freigabe. Mail im Papierkorb oder im Spam kommt auf
 keinen Stapel (Review von #315): Mit `pile` ist der ganze Aufruf dann `unsupported`, geprüft vor der Freigabe; Mail im
 Archiv darf, und herunternehmen geht überall. Die Freigabe nennt die Betreffe aus dem
 Mail-Speicher, das Protokoll nur gehashte Kennungen. Dazu `mail.search_messages` mit dem optionalen Feld `pile`:
 `without` lässt Mail auf einem Stapel weg („Unfiltered“, bis #337 „All“, und die Kategorien), `reply_later` bzw. `set_aside` liefert nur
-diesen Stapel; gefiltert wird vor dem Blättern, mit `snoozed` und `hidden` gelten alle, und wie diese nur für Konten,
+diesen Stapel; gefiltert wird vor dem Blättern, mit `snoozed` gelten beide, und wie dieses nur für Konten,
 deren Einträge der Schlüssel sieht. Jede Mail einer Suche trägt `pile`, wenn sie auf einem Stapel liegt, und
 `pile_since`, seit wann (verträglich, kein `v: 2`). Für Undo (Review von #315) nimmt `set_mail_pile` das optionale Feld
 `since`: Mit `pile` legt es die Mail mit diesem Zeitpunkt statt jetzt auf (höchstens jetzt; ohne `pile` und für Mail, die
@@ -824,11 +801,11 @@ nicht), auch für Freigaben und Nur-Lese-Unterhaltungen. Nach außen heißt jede
 vorhanden (`not-found`); zu niedrige Stufe oder ein gesperrtes Werkzeug ist `forbidden` (`Lack::Extension`).
 Beschreibungen, Schemas und Antworten eines Servers sind fremder Text (`untrusted`).
 
-²⁶ `set_mail_shown` und `set_mail_pile` (E18.2, E19.2) nennen Mails: Außer Schreibrecht in `inbox` brauchen sie
+²⁶ `set_mail_pile` (E19.2) nennt Mails: Außer Schreibrecht in `inbox` braucht es
 Leserecht in `mail`, das Konto in `mail_accounts` und seine Quelle in `inbox_sources` (Review von #315). Sonst ist der
 ganze Aufruf `not-found`, dieselbe Antwort wie für eine Mail, die es nicht gibt – Schreibrecht im Eingang allein verrät
 nicht, welche Mail-Kennungen es gibt. Geprüft vor der Freigabe und noch einmal bei der Ausführung; der App-Schlüssel
-erreicht jedes Konto.
+erreicht jedes Konto. Bis Issue #339 galt dasselbe für `set_mail_shown` („Show again“, entfallen, Fußnote 10).
 
 Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › MCP-Server (#302)](erweiterungen.md#mcp-server-302)):
 - **Ausgehend:** Ein Werkzeug eines Servers zählt nicht als „Nach außen“ (`Rights::outbound`, nur `mail.send_draft`
@@ -862,6 +839,28 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
   Argumenten (stdio) bzw. gleichem Ursprung (HTTP); Katalog-Server beim Versionswechsel aus dem Katalog.
 - **Keine Änderungsmeldung:** Torros MCP-Server meldet geänderte Werkzeuglisten nicht; fremde Agenten sehen neue
   Server-Werkzeuge erst in der nächsten Sitzung.
+
+²⁷ **Mail-Filter** (Issue #339, Konzept [mail.md](mail.md#filter)): eine Suche in der Sprache von `search_messages`
+(ohne `in:` und `filename:`, höchstens 500 Zeichen) mit Konto (`account`, fehlt: alle Konten) und mindestens einer
+Aktion – `file` (`{"to": "archive"}`, `{"to": "folder", "id": "f:…"}` nur mit Konto, `{"to": "trash"}`), `mark_read`,
+`category`. Der Dienst hält höchstens 200 Filter in `<data>/mail/filters.json`, Kennung `f<n>`, und lässt die
+eingeschalteten auf neue Mail im Posteingang laufen; jeder passende wirkt, beim Verschieben und bei der Kategorie der
+erste. `list_filters` und `preview_filter { query, account? }` (Anzahl und die fünf neuesten Treffer im Posteingang)
+sind `Read`; `create_filter` (hängt an), `update_filter` (Platz und Kennung bleiben, `enabled` fehlt = bleibt),
+`remove_filter` und `apply_filter { id }` sind `Admin`, weil ein Filter dauerhaft auf die Mail des Menschen wirkt: Bei
+Agenten wartet jede Änderung und jedes Anwenden auf eine Freigabe, nicht nur das Löschen. `apply_filter` wendet einen
+Filter einmal auf den Posteingang an, auch einen ausgeschalteten: je Aufruf die 500 neuesten Treffer, die noch eine
+Aktion brauchen, Antwort `applied`, `failed`, `more` (dann erneut aufrufen); der Papierkorb ist ein Verschieben, eine
+von Hand gesetzte Kategorie bleibt. **Reichweite:** Ein Client sieht Filter der Konten in `mail_accounts`, einen für
+alle Konten nur mit Zugriff auf alle Mail-Konten; jeder andere ist `not-found`. Einen Filter für alle Konten ohne diesen
+Zugriff anzulegen oder zu ändern ist `forbidden`, ebenso eine Kategorie (auch beim Anwenden) ohne `Admin` in `inbox`,
+denn sie wirkt wie eine Sortierregel. Suche, Aktionen, Ordner (muss zum Konto gehören, nicht der Posteingang) und
+Kategorie (aus dem Katalog) prüft der Dienst vor der Freigabe (`error`) und noch einmal bei der Ausführung. Die
+Freigabe nennt den gespeicherten Filter mit Adresse und Ordnernamen aus dem Speicher des Dienstes, beim Ändern alt und
+neu, beim Anwenden „up to n“ Mails; sie ist an den gespeicherten Filter gebunden, eine Änderung dazwischen ergibt
+`conflict`. Ins Protokoll kommen Kennung und Konto, nie die Suche. Die Suchen sind Worte des Menschen, Absender,
+Betreffe und Texte der Vorschau `untrusted`. `update_filter` und `remove_filter` sind als idempotent gekennzeichnet,
+alle außer `apply_filter` als lokal (sie ändern nichts auf einem Server).
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
@@ -1269,6 +1268,15 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   (als „nicht verstanden“ behandeln, nicht abstürzen). So kam `pending` (A.3) dazu, ohne `v` zu
   ändern: Ein Befehl, der auf eine Freigabe wartet, antwortet nicht mit `error`, sondern mit
   `result: "pending"` und der Freigabe. `pending` ist darum auch kein Fehlercode.
+- **Ausnahme Mail-Ausblenden (Issue #339):** `inbox.hide_sender` und `inbox.set_mail_shown` (MCP `inbox_hide_sender`,
+  `inbox_set_mail_shown`) und das Feld `hidden` von `mail.search_messages` sind entfernt, **ohne** `v: 2` und ohne
+  Zeit, in der der Dienst beides beantwortet – wie beim Feld `colorScheme` der Designs. Grund: Der Kern blendet Mail
+  gar nicht mehr aus, und das Update holt alles Ausgeblendete zurück (Fußnote 10). Ein Dienst, der die alten Befehle
+  weiter beantwortete, müsste ein Ausblenden vortäuschen, das nicht mehr geschieht. `hidden` war optional; eine Suche
+  ohne das Feld liefert, was die Suite jetzt zeigt. Folgen: Ein alter Befehlsname ergibt über die API `error` mit
+  „unknown method“, ein altes MCP-Tool gibt es nicht mehr. Ein mitgeschicktes `hidden` ignoriert die API (die Suche
+  läuft wie ohne), über MCP lehnt `mail_search_messages` es als unbekanntes Argument ab. `inbox.mute_item` mit `hide`
+  antwortet für Mail `unsupported` (Fußnote 11), für alle anderen Quellen wie bisher.
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 

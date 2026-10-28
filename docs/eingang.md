@@ -129,27 +129,24 @@ In dieser Reihenfolge, die erste passende Regel gewinnt:
    eine Zeile Zusammenfassung. Nur als Vorschlag, mit Kennzeichnung; ohne KI-Konto fehlt die Funktion
    einfach, nichts anderes ändert sich.
 
-**Ausblenden in Stufen (E3.10, E3.11):** „Hide“ ist kein Spam. Das Menü „Hide from Notification Hub“ (`m`, „…“
-im Paneel, „Hide“ in der Aktionsleiste) bietet für Mail „This conversation“ (`inbox.hide_sender` mit
-`conversation`: erledigt, aber anders als `e` bleibt die Mail ungelesen; eine neue Antwort bringt
-sie zurück), „Everything from <Adresse>“, „Everything from <Domain>“, dann „Always to Info“ und – nur
-wenn das Konto einen Ordner mit Rolle Junk hat – „Move to junk“; für andere Quellen „This entry“
-und „Mute <Quelle>“, die Suite nie. Absender und Domain sind eine Regel (`inbox.hide_sender`): Neue
-Mail davon wird kein Eintrag, offene und vertagte passende Einträge werden erledigt. Die Mail selbst
-bleibt **unverändert** im Postfach, nicht gelesen, nicht verschoben – anders als „erledigt“, das
-die Mail als gelesen markiert. Domain heißt der Teil nach `@`, klein, genau (keine Subdomains); die
-Regel gilt für **alle** Mail-Konten (E3.11), auch Regeln, die vorher für ein Konto angelegt wurden.
-Die Regeln stehen im Fenster des Notification Hub unter Einstellungen › Rules („Hidden: news@shop.example“,
-„Hidden: everything from shop.example“, darunter „All mail accounts“) mit „Remove“.
+**Ausblenden (E3.10, E3.11), für Mail entfallen mit Issue #339:** „Hide“ ist kein Spam. Für Quellen außer Mail
+blendet die Glocke („What happens“ › „Hide“) einen Eintrag, eine Quelle oder ein Merkmal aus (siehe
+„Stummschalten nach Merkmalen“), die Suite nie. **Mail wird nicht mehr ausgeblendet:** Ausgeblendete Mail war weg,
+ohne dass man sah, wohin. Die Ansicht „Hidden“, „Hide“ an der Mail, die Regeln für Absender und Domain
+(`inbox.hide_sender`) und „Show again“ gibt es nicht mehr. Wer Mail eines Absenders nicht im Blick haben will, legt
+einen **Filter** an, der sie archiviert, in einen Ordner verschiebt, als gelesen markiert oder einordnet
+([mail.md](mail.md#filter)); dann sieht man, wo sie liegt. In der Glocke bleiben für Mail „No popup“ und „Only Info“.
+Beim Update entfernt der Kern die Regeln, die Mail ausblendeten; früher ausgeblendete Mail steht wieder in den Listen,
+und nichts wird automatisch zu einem Filter.
 
-**Rückgängig (E3.11):** Nach Done, Later und Hide erscheint unten mittig ein Hinweis
+**Rückgängig (E3.11):** Nach Done, Later und Stummschalten erscheint unten mittig ein Hinweis
 (`widgets::toast`) mit „Undo“; er verschwindet nach 5 s oder mit `Escape`. `u` in der Liste und
 `Ctrl+Z` (⌘Z auf macOS) lösen Undo aus. Undo nimmt genau die Wirkung zurück, mit vorhandenen
-Befehlen: Done → `set_item_done` wieder offen; Later → `snooze_item` ohne Zeit; Hide „This
-conversation“ → wieder offen; Hide Absender/Domain → `remove_rule` (nur wenn der Aufruf die Regel
-neu angelegt hat), dann die dadurch erledigten Einträge wieder offen (die Antwort von
-`hide_sender` nennt sie; vorher vertagte kommen offen zurück). Done einer Mail hat die Mail schon
-als gelesen markiert; Undo öffnet nur den Eintrag wieder.
+Befehlen: Done → `set_item_done` wieder offen; Later → `snooze_item` ohne Zeit; Stummschalten oder
+Ausblenden mit der Glocke → `remove_rule` (nur wenn der Aufruf die Regel neu angelegt hat), dann die
+dadurch erledigten Einträge wieder offen und die verschobenen zurück (die Antwort von `mute_item` nennt
+sie; vorher vertagte kommen offen zurück). Done einer Mail hat die Mail schon als gelesen markiert;
+Undo öffnet nur den Eintrag wieder.
 
 **Dringend** ist eine kleine, feste Menge (Freigabe, Agent wartet, Server down, CI rot auf dem
 eigenen PR) und ein Absender, den ich selbst als „VIP“ markiere. Mehr nicht.
@@ -262,9 +259,8 @@ weder Mail noch Slack).
 | Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
 | Quelle stummschalten | Menü „Hide from Notification Hub“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
-| Gespräch ausblenden, Mail bleibt ungelesen (E3.11) | Menü „Hide from Notification Hub“ › „This conversation“ | `inbox.hide_sender` mit `conversation` · Write | `inbox_hide_sender` |
-| Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from Notification Hub“ (`m`, „…“ im Paneel), Notification Hub › Einstellungen › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
-| Rückgängig nach Done, Later, Hide (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
+| Mail eines Absenders aus dem Weg räumen (statt Ausblenden, #339) | „Create filter…“ an der Mail, Mail-Fenster › Einstellungen › Filters | `mail.create_filter` · Admin (weitere Befehle in [mail.md](mail.md#filter)) | `mail_create_filter` |
+| Rückgängig nach Done, Later, Stummschalten (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
 | Verwerfen, nur Benachrichtigungen (E8.4) | ✕ oben rechts auf der Karte | vorhandenes `inbox.set_item_done` · Write | `inbox_set_item_done` |
 | Was sich an einem Eintrag stummschalten lässt (E8.6a) | Glocke auf der Karte öffnet das Menü | `inbox.list_mute_options` · Read | `inbox_list_mute_options` |
 | Stummschalten nach Merkmal, für eine Zeit (E8.6a) | Menü der Glocke, Notification Hub › Einstellungen › Rules | `inbox.mute_item` · Write nur für die Unterhaltung, sonst Admin | `inbox_mute_item` |
@@ -345,7 +341,7 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 | **Mini / Leiste** | Anzeige: „3 for you“, die drei obersten mit Quellen-Symbol; dringend sichtbar hervorgehoben (nicht in Torro-Rot) |
 
 - **Tastatur zuerst** wie Linear oder Superhuman: `j/k` bewegen, `e` erledigt, `s` später,
-  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` ausblenden (Menü „Hide from Notification Hub“, siehe unten).
+  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` stummschalten (die Glocke, siehe „Stummschalten nach Merkmalen“).
   Seit E18.5 archiviert `e` eine Mail, in jedem Fenster: im Mail-Fenster die Mail in Liste und Leser, an einem offenen
   Mail-Eintrag (Zentrale, „Later“) dessen Mail, und das Fenster schließt den Eintrag danach. Ein erledigter
   Mail-Eintrag („Done today“) öffnet sich mit `e` wieder.
@@ -380,7 +376,7 @@ im Eingang, nur die Oberfläche teilt sich auf.
   ihren Kategorien, sobald eine Mail eine Kategorie hat), als letzter Eintrag **Unfiltered** (bis #337 „All“: der
   Posteingang aller gezeigten Konten, mit der Zahl ungelesener Mails; ohne Kategorien allein oben). Darunter, nur durch
   Abstand getrennt (in der Leiste durch eine Linie), **Reply later** und **Set aside** (die beiden Stapel, mit der
-  Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“) und **Hidden**, dann **Folders**
+  Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“; „Hidden“ darunter ist mit #339 entfallen), dann **Folders**
   mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**. Das Menü
   der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „Unfiltered“. Die Smart views
   „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
@@ -419,7 +415,7 @@ Design „Torro“ zeigt **kompakt**.
 
 - **Verwerfen (✕)** gibt es auf jeder Benachrichtigung: weg, ohne etwas zu tun. Es wirkt wie Erledigt
   (`inbox.set_item_done`, auch das Zurückwirken auf die Quelle), heißt nur anders. **Nicht im Mail-Fenster**: Mails
-  bleiben dort vollständig, sie werden archiviert oder ausgeblendet.
+  bleiben dort vollständig, sie werden archiviert oder verschoben.
 - **Archive statt Done an jeder Mail** (E18.5, Issue #301): Wer mit einer Mail fertig ist, archiviert sie; „Done“ gibt
   es für Mail nirgends mehr, weder in Zeilen noch auf Karten, im Paneel oder in der Aktionsleiste. „Archive“ steht an
   der Stelle von „Done“ und tut, was `e` tut: `mail.move_messages` in den Archivordner; an einem Mail-Eintrag schließt
@@ -448,9 +444,9 @@ aus E9.4.
   mehr, E18.5; liegt die Mail auf einem Stapel, steht an seiner Stelle „Remove from Reply later“ bzw. „Remove from Set
   aside“ mit derselben Taste, E19.4), **Torro** (Task, Event, Category…, Re-categorize nur mit Entscheidungsmodell),
   **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…) und **More** (Show as text bzw. HTML,
-  Light bzw. Dark colours, Copy text, im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
+  Light bzw. Dark colours, Copy text, Create filter… für den Absender (#339), im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
   Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Move to, Event, Category, aber Follow up… (E19,
-  Entscheidung 8). Ein Klick auf das Icon von File archiviert. In „Hidden“ steht in Mute zuerst „Show again“ (E18.4).
+  Entscheidung 8). Ein Klick auf das Icon von File archiviert. „Show again“ in Mute (E18.4) ist mit #339 entfallen.
 - **Eingeklappt** (Breite der eingeklappten Seitenleiste): ein Icon je Gruppe, ein Klick tut die erste Aktion der
   Gruppe, Hover öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile, für alle Gruppen
   gleich breit. **Ausgeklappt** (Breite der Seitenleiste): alle Gruppen offen mit Namen, als Spalte im Layout; die Mail
@@ -473,7 +469,8 @@ Eintrags (`inbox.list_mute_options`), damit Oberfläche und Agenten dieselben M�
 
 - **No popup:** Der Eintrag kommt, aber ohne Popup und Ton.
 - **Only Info:** Er kommt unter „Zur Info“ und zählt nicht.
-- **Hide:** Er wird gar nicht erst Eintrag (wie `mute_source` und `hide_sender` heute).
+- **Hide:** Er wird gar nicht erst Eintrag (wie bei `mute_source`). Nicht für Mail (#339): Mail wird nie
+  ausgeblendet, ein Filter verschiebt sie stattdessen ([mail.md](mail.md#filter)).
 
 Welche Merkmale eine Quelle mitbringt, und damit, wonach sich verlässlich stummschalten lässt:
 
@@ -497,15 +494,15 @@ Konto, Absender, Domain, Liste (`List-Id`), Massenmail; Agenten Agent, Projekt (
 Client. Das **Thema** von Skripten fehlt noch: `inbox.post_item` hat kein Feld dafür. Die Unterhaltung ist kein
 Merkmal am Eintrag, sondern der eigene Umfang `conversation`. Eine Regel mit Merkmal gilt für alle Quellen derselben
 Art (ein Absender in allen Mail-Konten, ein Projekt für alle Agenten), eine für die Unterhaltung nur in ihrer
-Quelle. „Hide“ und „Only Info“ für die Unterhaltung ohne Ablauf legen keine Regel an, sondern erledigen bzw.
+Quelle. „Hide“ (nicht für Mail) und „Only Info“ für die Unterhaltung ohne Ablauf legen keine Regel an, sondern erledigen bzw.
 verschieben nur diesen Eintrag. Befehle: [api.md](api.md), Fußnote 11.
 
 **Mail-Fenster (Issue #123, E8.25):** Mail hat **ein** Menü, die Glocke „Mute…“ – „Hide from inbox“ ist darin
 aufgegangen. Die Glocke steht in Zeilen und Karten (statt „…“), im Leser und im Paneel (im Mail-Fenster in der Gruppe
 „Mute“ der Aktionsleiste), `m` öffnet sie; für Mail-Einträge
-in jedem Fenster. Dauer: 1 Stunde, bis morgen, 1 Woche, immer. Was „Hide from inbox“ bot, steht so darin: „This
-conversation“ mit „Hide“ und „Always“ erledigt den Eintrag (die Mail bleibt ungelesen), Absender und Domain sind
-Merkmale, „Always to Info“ ist Absender mit „Only Info“; „Move to junk“ bleibt als letzter Punkt. Auch Nachrichten
+in jedem Fenster. Dauer: 1 Stunde, bis morgen, 1 Woche, immer. Seit Issue #339 bietet die Glocke für Mail als Wirkung
+nur „No popup“ und „Only Info“, „Hide“ fehlt (auch für „This conversation“); Absender und Domain sind Merkmale,
+„Always to Info“ ist Absender mit „Only Info“; „Move to junk“ bleibt als letzter Punkt. Auch Nachrichten
 eines Ordners ohne Eintrag haben die Glocke: `inbox.mute_item` mit der Kennung der Mail (`m:…`), angeboten werden
 nur ihre Merkmale (Absender, Domain, Liste, Konto, Massenmail), nicht die Unterhaltung.
 
@@ -556,7 +553,7 @@ Die Zentrale zählt, damit Optimieren nicht beim Gefühl bleibt: je Tag, Quelle 
 verworfen, erledigt, vertagt oder zur Aufgabe wurde, wie viele Popups es gab und wie lange es bis zum Erledigen
 dauerte. „Geöffnet“ zählt höchstens einmal je Eintrag und Tag, über „Open“ oder indem man die Mail im Mail-Fenster
 liest. Ansicht für Woche, Monat und Quartal: Nachrichten je Tag nach Quelle, Stoßzeiten, und **„Where you could cut
-back“** mit einem fertigen Vorschlag je Zeile („Mute channel“, „Only failed checks“, „Hide sender“).
+back“** mit einem fertigen Vorschlag je Zeile („Mute channel“, „Only failed checks“, „Sender to Info“; bis #339 „Hide sender“).
 
 - Gezählt wird **nur lokal** im Kern, in Tagessummen, höchstens 13 Monate. Keine Titel, keine Texte; Absender und
   Kanäle nur als Merkmal einer Zeile. Nichts davon kommt ins Protokoll.
@@ -602,15 +599,15 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
   offen (`rules::merge_mail`), in „All“ oben mit `back` zur Zeit der neuen Mail und ebenso in der Zentrale. Eine ältere
   Mail, die erst später abgelegt wird, lässt die Unterhaltung zurückgestellt. Andere Quellen bleiben bei `rules::merge`:
   meldet etwa ein Agent dieselbe Sache noch einmal, bleibt sie zurückgestellt.
-- **Regel verbirgt die Mail:** Dann gibt es keinen Eintrag zum Zurückstellen, die Antwort ist `unsupported`.
-- **All, Later, Hidden** (E18, Issue #301): „All“ zeigt die Mails des Posteingangs aller gezeigten Konten mit
-  `snoozed: false` und `hidden: false`, „Later“ (seit E19 „Follow up“) die zurückgestellten Einträge, „Hidden“ die
-  Mails, die der Kern aus „All“ heraushält. Was ausgeblendet ist, entscheidet nur der Kern, über das Feld `hidden` von `mail.search_messages`,
-  genau wie `snoozed`: Er nimmt die Mails schon in die Abfrage auf, damit Seiten und Cursor stimmen.
-- **Show again** (Entscheidungen 10 und 11 in E18): In „Hidden“ holt „Show again“ (`inbox.set_mail_shown`) genau diese
-  eine Mail nach „All“ zurück. Die Regel, die sie ausblendet, bleibt; weitere und neue Mail des Absenders bleibt
-  ausgeblendet, und der Eintrag der Mail bleibt erledigt. „Undo“ nimmt die Ausnahme zurück. Wer die Regel loswerden
-  will, entfernt sie in der Steuerzentrale.
+- **Regel hält die Mail fern** (etwa ein stummgeschaltetes Konto): Dann gibt es keinen Eintrag zum Zurückstellen, die
+  Antwort ist `unsupported`.
+- **All, Later** (E18, Issue #301): „All“ (seit #337 „Unfiltered“) zeigt die Mails des Posteingangs aller gezeigten
+  Konten mit `snoozed: false`, „Later“ (seit E19 „Follow up“) die zurückgestellten Einträge. Was zurückgestellt ist,
+  entscheidet nur der Kern über das Feld `snoozed` von `mail.search_messages`: Er nimmt die Mails schon in die Abfrage
+  auf, damit Seiten und Cursor stimmen.
+- **Hidden und Show again** (E18, Entscheidungen 10 und 11) sind mit Issue #339 entfallen: die Ansicht „Hidden“, das Feld
+  `hidden` von `mail.search_messages` und „Show again“ (`inbox.set_mail_shown`). Früher ausgeblendete Mail steht wieder
+  in „Unfiltered“; Mail, die man nicht im Blick haben will, verschiebt ein Filter ([mail.md](mail.md#filter)).
 
 #### Reply later, Set aside, Follow up (E19, Issue #315, entschieden 2026-10-26)
 

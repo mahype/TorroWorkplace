@@ -99,9 +99,8 @@ Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug
 1. **Feste Merkmale** entscheiden, was in den Kopfzeilen steht: `invitation` (iMIP `REQUEST`),
    `auto_reply` (`Auto-Submitted` ungleich `no`), `bounce` (mit E9.3a), `spam` für Mail im
    Junk-Ordner des Servers. Herkunft `rule`.
-2. **Gemerkte Regeln** je Absender und Domain (`RuleEffect::Category`), dieselbe Mechanik wie
-   `inbox.hide_sender`: lesbar über `inbox.list_rules`, löschbar über `inbox.remove_rule`.
-   Herkunft `rule`.
+2. **Gemerkte Regeln** je Absender und Domain (`RuleEffect::Category`): lesbar über
+   `inbox.list_rules`, löschbar über `inbox.remove_rule`. Herkunft `rule`.
 3. **Modell** für den Rest, gewählt über den Platz *Sortieren* ([ki.md](ki.md), Abschnitt „Plätze“) oder
    eine Ausnahme je Funktion: **ein** Aufruf über die SystemOne-/Jev-Schnittstelle mit **einer**
    `choice`-Frage über die 20 Kategorien aus Schritt „Der Katalog“ und zwei Zusatzfragen. Ein
@@ -113,6 +112,8 @@ Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug
    `person` fassen das Einordnen beim Eintreffen und der Altbestand **nie** an; nur ein
    ausdrückliches `inbox.classify_item` überschreibt auch sie – wer den Knopf drückt, will genau
    das.
+
+Vor Schritt 1 steht seit Issue #339 die Kategorie eines Mail-Filters (siehe [Vorrang](#vorrang)).
 
 **Wann:** beim Eintreffen jeder neuen Mail. Zusätzlich rechnet der Kern den **Altbestand** einmal
 nach, begrenzt auf 30 Tage oder 500 Nachrichten je Konto, im Hintergrund und gedrosselt, mit
@@ -260,9 +261,17 @@ weiter erreichbar.
 
 1. **Von Hand** gesetzt (`person`): bleibt, bis der Mensch selbst etwas anderes wählt oder
    ausdrücklich `inbox.classify_item` drückt.
-2. **Sortierregeln** in ihrer Reihenfolge (`rule`).
-3. **Feste Merkmale**: Einladung, Abwesenheit, Junk-Ordner (`rule`).
-4. **Modell** (`model`), nur für Kategorien, die es wählen darf.
+2. **Mail-Filter** (Issue #339, [mail.md](mail.md#filter)): Setzt ein Filter beim Eintreffen eine
+   Kategorie, gilt sie vor allem Folgenden, und das Modell wird nicht gefragt (`rule`). Gibt es mehrere
+   passende Filter, entscheidet der erste in der Liste, der eine Kategorie setzt. Eine Kategorie, die nicht
+   mehr im Katalog steht, überspringt der Filter. Eine von Hand gesetzte Kategorie überschreibt er nie,
+   auch nicht beim Anwenden auf vorhandene Mail (`mail.apply_filter`).
+3. **Sortierregeln** in ihrer Reihenfolge (`rule`).
+4. **Feste Merkmale**: Einladung, Abwesenheit, Junk-Ordner (`rule`).
+5. **Modell** (`model`), nur für Kategorien, die es wählen darf.
+
+Ein Filter mit Kategorie wirkt wie eine Sortierregel: Ihn anzulegen, zu ändern oder anzuwenden braucht
+außer Admin im Bereich `mail` auch Admin im Bereich `inbox`.
 
 ### Mehr als 20 Kategorien fürs Modell
 
