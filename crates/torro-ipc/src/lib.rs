@@ -2721,7 +2721,8 @@ pub enum Request {
     /// Runs a mail filter once on the mail in the inbox now ([`Response::MailFilterApplied`]), also
     /// when it is switched off: the 500 newest it finds that still need one of its actions; `more`
     /// says there are others, for another call. `not-found` for a filter that is not there or that
-    /// the caller does not see.
+    /// the caller does not see. A client's run is approved for the mails it found when it asked:
+    /// `conflict` when the filter or those mails changed by the time a person allows it.
     #[serde(rename = "mail.apply_filter")]
     ApplyMailFilter {
         /// The filter's id from `mail.list_filters` (`f<n>`).

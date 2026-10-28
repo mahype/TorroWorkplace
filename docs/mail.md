@@ -408,7 +408,9 @@ nicht nur das Löschen.
   Ordner und Kategorie (`error`, dann gibt es nichts freizugeben).
 - Die Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos und dem Namen des Ordners aus dem Speicher
   des Dienstes, nie die Worte des Clients außer der neuen Suche: beim Ändern alt und neu, beim Anwenden „up to n“. Sie
-  ist an den gespeicherten Filter gebunden; hat ihn jemand inzwischen geändert, endet sie mit `conflict`.
+  ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die er da fand: Hat ihn jemand
+  inzwischen geändert oder findet er bis zur Zustimmung andere Mail (ein ausgeschalteter Filter findet neue Mail
+  weiter), endet sie mit `conflict` und ändert nichts.
 - Ins Protokoll kommen Kennung und Konto, nie die Suche, ein Ordner oder eine Kategorie.
 - Filter bleiben auf dem Rechner. Nur `mail.apply_filter` ändert Mail auf dem Server; die Tools der übrigen fünf
   Befehle sind entsprechend gekennzeichnet.

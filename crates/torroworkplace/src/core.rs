@@ -4313,11 +4313,16 @@ impl Core {
         {
             return refused;
         }
-        if let Request::UpdateMailFilter { id, .. } | Request::RemoveMailFilter { id } | Request::ApplyMailFilter { id } =
-            &request
-            && crate::mail::filters::fingerprint_of(&self.mail, id).as_deref() != Some(fingerprint.unwrap_or_default())
+        if matches!(
+            request,
+            Request::UpdateMailFilter { .. } | Request::RemoveMailFilter { .. } | Request::ApplyMailFilter { .. }
+        ) && crate::mail::filters::fingerprint_now(&self.mail, reach, &request, &self.filter_categories())
+            .await
+            .as_deref()
+            != Some(fingerprint.unwrap_or_default())
         {
-            let message = "the mail filter changed after the approval was asked for; nothing was done, ask again";
+            let message = "the mail filter or the mail it finds changed after the approval was asked for; nothing \
+                           was done, ask again";
             return Response::Error { code: "conflict".into(), message: message.into() };
         }
         let tool_files = self.tool_files(reach);
@@ -13451,8 +13456,24 @@ mod tests {
         assert_eq!(archived.len(), 2);
         assert!(archived.iter().all(|(_, flags, _)| flags.iter().any(|flag| flag == "\\Seen")), "{archived:?}");
         assert_eq!(server.messages("INBOX").len(), 1, "Bernd's mail stays");
-        let again = ask(&core, Some(&app_key), Request::ApplyMailFilter { id: filter.id }).await;
+        let again = ask(&core, Some(&app_key), Request::ApplyMailFilter { id: filter.id.clone() }).await;
         assert_eq!(again, Response::MailFilterApplied { applied: 0, failed: 0, more: false });
+
+        // The approval names a number; mail the filter finds after it was asked ends it `conflict`
+        // instead of changing more than the person was shown.
+        server.add("INBOX", &crate::mail::save::tests::raw_on(Utc::now(), "Bill three", &[]), &[]);
+        core.mail.sync_all(Reach::Suite).await.expect("synced");
+        let asked = waits(ask(&core, Some(&key), Request::ApplyMailFilter { id: filter.id }).await);
+        assert!(asked.summary.contains(" 1 "), "up to 1 mail: {}", asked.summary);
+        server.add("INBOX", &crate::mail::save::tests::raw_on(Utc::now(), "Bill four", &[]), &[]);
+        core.mail.sync_all(Reach::Suite).await.expect("synced");
+        let refused = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(
+            matches!(&refused.state, torro_ipc::ApprovalState::Done { response } if code(response) == "conflict"),
+            "{:?}",
+            refused.state
+        );
+        assert_eq!(server.messages("INBOX").len(), 3, "neither bill is moved");
     }
 
     /// A core whose mail data (and so its save targets) live in `dir`, without mail accounts.

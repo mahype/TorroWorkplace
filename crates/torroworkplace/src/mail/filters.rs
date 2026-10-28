@@ -876,6 +876,44 @@ pub fn fingerprint_of(mail: &MailService, id: &str) -> Option<String> {
     mail.filters().get(id).ok().flatten().as_ref().map(fingerprint)
 }
 
+/// The fingerprint an approval of `mail.apply_filter` is pinned to, and how many mails the run
+/// would change: the filter as stored and the mails [`due`] finds for `reach` now. The approval
+/// names that number, so the approved run must change exactly those mails; new mail the filter
+/// finds meanwhile (a switched-off filter keeps finding it) makes it `conflict` instead.
+async fn apply_fingerprint(
+    mail: &MailService,
+    reach: Reach<'_>,
+    filter: &MailFilter,
+    categories: &[Category],
+) -> (String, usize) {
+    let mut ids: Vec<String> = match due(mail, reach, filter, categories).await {
+        Ok((due, _)) => due.into_iter().map(|message| message.id).collect(),
+        Err(_) => Vec::new(),
+    };
+    ids.sort();
+    let pinned = crate::audit::hashed(&format!("{}\n{}", fingerprint(filter), ids.join("\n")));
+    (pinned, ids.len())
+}
+
+/// The fingerprint `request` (`mail.update_filter`, `mail.remove_filter`, `mail.apply_filter`) has
+/// for `reach` now, to compare with the approval's ([`to_approve`]); `None` for another request or
+/// a filter that is not there.
+pub async fn fingerprint_now(
+    mail: &MailService,
+    reach: Reach<'_>,
+    request: &Request,
+    categories: &[Category],
+) -> Option<String> {
+    match request {
+        Request::UpdateMailFilter { id, .. } | Request::RemoveMailFilter { id } => fingerprint_of(mail, id),
+        Request::ApplyMailFilter { id } => {
+            let filter = mail.filters().get(id).ok().flatten()?;
+            Some(apply_fingerprint(mail, reach, &filter, categories).await.0)
+        }
+        _ => None,
+    }
+}
+
 /// What the approval of a filter request of `reach` shows ([`MailFacts`] for the account and folder
 /// the request names and, for `mail.apply_filter`, how many mails it would change now;
 /// [`FilterFacts`] for the stored filter), and the fingerprint it is pinned to (none for
@@ -893,14 +931,15 @@ pub async fn to_approve(
         }
         _ => None,
     };
-    let pinned = stored.as_ref().map(fingerprint);
+    let mut pinned = stored.as_ref().map(fingerprint);
     let mut facts = MailFacts::default();
     if let Some(spec) = FilterSpec::of(request) {
         (facts.account, facts.folder) = names(mail, spec.account.as_deref(), spec.file.as_ref()).await;
     }
     if let (Request::ApplyMailFilter { .. }, Some(filter)) = (request, &stored) {
         let known: Vec<Category> = categories.iter().map(|def| def.category).collect();
-        facts.count = due(mail, reach, filter, &known).await.map(|(due, _)| due.len()).unwrap_or(0);
+        let (print, count) = apply_fingerprint(mail, reach, filter, &known).await;
+        (pinned, facts.count) = (Some(print), count);
     }
     let (stored_account, stored_folder) = match &stored {
         Some(filter) => names(mail, filter.account.as_deref(), filter.file.as_ref()).await,

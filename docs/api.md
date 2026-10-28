@@ -857,8 +857,8 @@ Zugriff anzulegen oder zu ändern ist `forbidden`, ebenso eine Kategorie (auch b
 denn sie wirkt wie eine Sortierregel. Suche, Aktionen, Ordner (muss zum Konto gehören, nicht der Posteingang) und
 Kategorie (aus dem Katalog) prüft der Dienst vor der Freigabe (`error`) und noch einmal bei der Ausführung. Die
 Freigabe nennt den gespeicherten Filter mit Adresse und Ordnernamen aus dem Speicher des Dienstes, beim Ändern alt und
-neu, beim Anwenden „up to n“ Mails; sie ist an den gespeicherten Filter gebunden, eine Änderung dazwischen ergibt
-`conflict`. Ins Protokoll kommen Kennung und Konto, nie die Suche. Die Suchen sind Worte des Menschen, Absender,
+neu, beim Anwenden „up to n“ Mails; sie ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die
+er da fand: eine Änderung des Filters oder andere Treffer dazwischen ergeben `conflict`. Ins Protokoll kommen Kennung und Konto, nie die Suche. Die Suchen sind Worte des Menschen, Absender,
 Betreffe und Texte der Vorschau `untrusted`. `update_filter` und `remove_filter` sind als idempotent gekennzeichnet,
 alle außer `apply_filter` als lokal (sie ändern nichts auf einem Server).
 
