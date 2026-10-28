@@ -1468,6 +1468,7 @@ pub(crate) mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         };
         inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("an entry");
         let opened = || match inbox.handle(Request::GetStats { range: StatsRange::Week, until: None }, None, Utc::now())
@@ -1934,6 +1935,7 @@ pub(crate) mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         }
     }
 

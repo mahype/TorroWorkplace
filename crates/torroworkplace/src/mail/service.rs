@@ -2320,7 +2320,8 @@ impl MailService {
     pub async fn sorting_facts(&self, account: &str, message: &str) -> Result<Option<SortingFacts>, MailError> {
         let store = self.mailbox_of(account).await?.store()?;
         let wanted = message.to_string();
-        let held = store.run(move |store| store.message(&wanted)).await?;
+        let (held, size_bytes) =
+            store.run(move |store| Ok((store.message(&wanted)?, store.message_size(&wanted)?))).await?;
         let Some(held) = held else { return Ok(None) };
         let Some(content) = self.content_for_category(account, message).await? else { return Ok(None) };
         Ok(Some(SortingFacts {
@@ -2329,6 +2330,26 @@ impl MailService {
             auto_submitted: held.traits.auto_submitted.clone(),
             category: held.summary.category,
             content,
+            sort_facts: torro_inbox::rules::SortFacts {
+                reply_to: held.reply_to.iter().map(|address| address.address.clone()).collect(),
+                recipients: held.summary.to.iter().chain(&held.cc).map(|address| address.address.clone()).collect(),
+                has_attachments: Some(held.summary.has_attachments),
+                attachment_names: if held.summary.has_attachments && held.attachments.is_empty() {
+                    None
+                } else {
+                    Some(
+                        held.attachments
+                            .iter()
+                            .filter(|part| !part.inline)
+                            .flat_map(|part| {
+                                part.filename.iter().cloned().chain(std::iter::once(part.content_type.clone()))
+                            })
+                            .collect(),
+                    )
+                },
+                size_bytes,
+                text_complete: held.text.is_some(),
+            },
         }))
     }
 
@@ -2556,6 +2577,7 @@ pub struct SortingFacts {
     pub category: Option<torro_mail::MailCategory>,
     /// What a model reads of it.
     pub content: crate::categorize::Content,
+    pub sort_facts: torro_inbox::rules::SortFacts,
 }
 
 #[cfg(test)]

@@ -5035,6 +5035,7 @@ mod tests {
             Request::CreateSortRule {
                 category: torro_mail::Category::Invoice,
                 conditions: vec![torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
                     field: torro_inbox::SortField::Domain,
                     value: "shop.example".into(),
                 }],
@@ -5046,6 +5047,7 @@ mod tests {
                 id: "r1".into(),
                 category: torro_mail::Category::Receipt,
                 conditions: vec![torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
                     field: torro_inbox::SortField::Subject,
                     value: "receipt".into(),
                 }],

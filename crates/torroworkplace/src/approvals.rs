@@ -2311,11 +2311,53 @@ fn conditions_words(conditions: &[torro_inbox::SortCondition]) -> String {
         .iter()
         .map(|condition| {
             let value = format!("\"{}\"", quote(&condition.value));
-            match condition.field {
-                torro_inbox::SortField::Sender => trf("from {sender}", &[("sender", &value)]),
-                torro_inbox::SortField::Domain => trf("from anyone at {domain}", &[("domain", &value)]),
-                torro_inbox::SortField::Subject => trf("with {text} in the subject", &[("text", &value)]),
-                torro_inbox::SortField::Text => trf("with {text} in the text", &[("text", &value)]),
+            let comparison = if condition.comparison == torro_inbox::SortComparison::Auto {
+                condition.field.default_comparison()
+            } else {
+                condition.comparison
+            };
+            let field = match condition.field {
+                torro_inbox::SortField::Sender => tr("Sender address"),
+                torro_inbox::SortField::Domain => tr("Sender domain"),
+                torro_inbox::SortField::ReplyTo => tr("Reply address"),
+                torro_inbox::SortField::Recipient => tr("Recipient (To/Cc)"),
+                torro_inbox::SortField::Subject => tr("Subject"),
+                torro_inbox::SortField::Text => tr("Message text"),
+                torro_inbox::SortField::Attachment => tr("Attachment"),
+                torro_inbox::SortField::AttachmentName => tr("Attachment name or type"),
+                torro_inbox::SortField::Size => tr("Message size"),
+                torro_inbox::SortField::ListId => tr("Mailing list (List-ID)"),
+                torro_inbox::SortField::Account => tr("Email account"),
+            };
+            let compared = match comparison {
+                torro_inbox::SortComparison::Auto => tr("matches"),
+                torro_inbox::SortComparison::Is => tr("is"),
+                torro_inbox::SortComparison::IsNot => tr("is not"),
+                torro_inbox::SortComparison::Contains => tr("contains"),
+                torro_inbox::SortComparison::NotContains => tr("does not contain"),
+                torro_inbox::SortComparison::StartsWith => tr("starts with"),
+                torro_inbox::SortComparison::EndsWith => tr("ends with"),
+                torro_inbox::SortComparison::Present => tr("present"),
+                torro_inbox::SortComparison::Absent => tr("not present"),
+                torro_inbox::SortComparison::GreaterThan => tr("larger than"),
+                torro_inbox::SortComparison::LessThan => tr("smaller than"),
+            };
+            match (condition.comparison, condition.field) {
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Sender) => {
+                    trf("from {sender}", &[("sender", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Domain) => {
+                    trf("from anyone at {domain}", &[("domain", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Subject) => {
+                    trf("with {text} in the subject", &[("text", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Text) => {
+                    trf("with {text} in the text", &[("text", &value)])
+                }
+                (_, torro_inbox::SortField::Attachment) => format!("{field} {compared}"),
+                (_, torro_inbox::SortField::Size) => format!("{field} {compared} {value} MB"),
+                _ => format!("{field} {compared} {value}"),
             }
         })
         .collect();
@@ -5678,7 +5720,11 @@ pub(crate) mod tests {
         let rule = SortRule {
             id: "r1".into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: "shop.example".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: "shop.example".into(),
+            }],
             exceptions: Vec::new(),
             enabled: true,
             created: Utc::now(),
@@ -5698,7 +5744,11 @@ pub(crate) mod tests {
         let update = Request::UpdateSortRule {
             id: "r1".into(),
             category: tax,
-            conditions: vec![SortCondition { field: SortField::Sender, value: "evil@example.org".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Sender,
+                value: "evil@example.org".into(),
+            }],
             exceptions: None,
             enabled: Some(true),
         };
@@ -5722,7 +5772,11 @@ pub(crate) mod tests {
         let off = Request::UpdateSortRule {
             id: "r1".into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: "shop.example".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: "shop.example".into(),
+            }],
             exceptions: None,
             enabled: Some(false),
         };

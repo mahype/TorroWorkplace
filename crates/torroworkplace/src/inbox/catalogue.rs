@@ -646,7 +646,11 @@ pub(super) fn keep_sender(
     let rule = SortRule {
         id: super::new_id()?,
         category,
-        conditions: vec![SortCondition { field: SortField::Sender, value: sender.to_string() }],
+        conditions: vec![SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field: SortField::Sender,
+            value: sender.to_string(),
+        }],
         exceptions: Vec::new(),
         enabled: true,
         created: now,
@@ -693,10 +697,13 @@ fn as_rule(rule: &SortRule, source: &str) -> Option<Rule> {
         return None;
     }
     let [condition] = rule.conditions.as_slice() else { return None };
+    if !matches!(condition.comparison, torro_inbox::SortComparison::Auto | torro_inbox::SortComparison::Is) {
+        return None;
+    }
     let (sender, domain) = match condition.field {
         SortField::Sender => (Some(condition.value.clone()), None),
         SortField::Domain => (None, Some(condition.value.clone())),
-        SortField::Subject | SortField::Text => return None,
+        _ => return None,
     };
     Some(Rule {
         id: rule.id.clone(),
@@ -758,14 +765,31 @@ fn checked_rule(db: &Connection, words: &RuleWords) -> Result<(Vec<SortCondition
         conditions
             .iter()
             .map(|condition| {
+                let comparison = if condition.comparison == torro_inbox::SortComparison::Auto {
+                    condition.field.default_comparison()
+                } else {
+                    condition.comparison
+                };
+                if !condition.field.allows(comparison) {
+                    return Err(Failure::Invalid(tr("This comparison does not fit the selected mail field.").into()));
+                }
                 let value = match condition.field {
                     SortField::Sender | SortField::Domain => {
                         torro_inbox::rules::sort_value(condition.field, &condition.value)
                     }
-                    SortField::Subject | SortField::Text => condition.value.trim().to_string(),
+                    SortField::Attachment => String::new(),
+                    _ => condition.value.trim().to_string(),
                 };
-                if value.is_empty() {
+                if value.is_empty() && condition.field != SortField::Attachment {
                     return Err(Failure::Invalid(tr("A condition needs a value.").into()));
+                }
+                if condition.field == SortField::Size
+                    && value
+                        .parse::<f64>()
+                        .ok()
+                        .is_none_or(|mb| !mb.is_finite() || mb < 0.0 || mb * 1_000_000.0 > u64::MAX as f64)
+                {
+                    return Err(Failure::Invalid(tr("Enter the message size in megabytes.").into()));
                 }
                 if value.chars().any(char::is_control) {
                     return Err(Failure::Invalid(tr("A condition's value is one line.").into()));
@@ -777,7 +801,7 @@ fn checked_rule(db: &Connection, words: &RuleWords) -> Result<(Vec<SortCondition
                         &[("most", &most)],
                     )));
                 }
-                Ok(SortCondition { field: condition.field, value })
+                Ok(SortCondition { field: condition.field, comparison: condition.comparison, value })
             })
             .collect()
     };
@@ -799,8 +823,16 @@ pub(super) fn move_kept_rules(db: &Connection) -> Result<(), StoreError> {
     for rule in kept {
         let RuleEffect::Category { category } = rule.effect else { continue };
         let condition = match (&rule.sender, &rule.domain) {
-            (Some(sender), _) => SortCondition { field: SortField::Sender, value: sender.clone() },
-            (None, Some(domain)) => SortCondition { field: SortField::Domain, value: domain.clone() },
+            (Some(sender), _) => SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Sender,
+                value: sender.clone(),
+            },
+            (None, Some(domain)) => SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: domain.clone(),
+            },
             (None, None) => continue,
         };
         let sorting = SortRule {

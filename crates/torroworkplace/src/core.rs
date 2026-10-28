@@ -1226,6 +1226,9 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
                 sender: facts.sender.as_deref(),
                 subject: &facts.content.subject,
                 text: &facts.content.text,
+                account: Some(&account),
+                list_id: facts.content.list.as_deref(),
+                facts: Some(&facts.sort_facts),
             };
             let ruled =
                 inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()).unwrap_or_else(|err| {
@@ -1357,6 +1360,9 @@ async fn category_job_run(
                     sender: facts.sender.as_deref(),
                     subject: &facts.content.subject,
                     text: &facts.content.text,
+                    account: Some(&account.account),
+                    list_id: facts.content.list.as_deref(),
+                    facts: Some(&facts.sort_facts),
                 };
                 let ruled = match inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()) {
                     Ok(category) => category,
@@ -17340,6 +17346,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         };
         let id =
             core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -17402,6 +17409,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         };
         let id = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -17437,6 +17445,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         };
         let id =
             core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -19152,6 +19161,7 @@ mod tests {
             let rule = Request::CreateSortRule {
                 category,
                 conditions: vec![torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
                     field: torro_inbox::SortField::Domain,
                     value: value.into(),
                 }],
@@ -20796,6 +20806,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         };
         core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed");
         let counted = || async {
@@ -25397,6 +25408,7 @@ mod tests {
                 invite: false,
                 auto_submitted: None,
                 junk: false,
+                sort_facts: Default::default(),
             };
             let entry =
                 core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -25808,6 +25820,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let asked = ask(&core, Some(&app_key), Request::SuggestEventFromItem { id: filed.clone() }).await;
@@ -25858,6 +25871,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let suggested = |id: String| {

@@ -4762,6 +4762,9 @@ pub struct NewMail {
     /// The mail lies in the folder the server keeps junk in: filed as
     /// [`torro_mail::Category::Spam`].
     pub junk: bool,
+    /// Extra header and MIME facts for deterministic sorting. Unknown values cannot satisfy
+    /// negative comparisons.
+    pub sort_facts: rules::SortFacts,
 }
 
 /// The value of `mail_messages.github` for a mail about `issue` (task E5.6): `owner/repo#<n>` in
@@ -4995,7 +4998,14 @@ fn pile_of_column(pile: &str) -> Option<MailPile> {
 /// first sorting rule that holds (task E15.3; they hold for **every** mail account, like a hidden
 /// sender, task E3.11), else what the headers and the folder say ([`rules::mail_category`]).
 fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Result<Option<MailCategory>, Failure> {
-    let input = rules::SortInput { sender, subject: &mail.subject, text: &mail.snippet };
+    let input = rules::SortInput {
+        sender,
+        subject: &mail.subject,
+        text: &mail.snippet,
+        account: Some(&mail.account),
+        list_id: mail.list.as_deref(),
+        facts: Some(&mail.sort_facts),
+    };
     rule_category_in(db, &input, mail.invite, mail.auto_submitted.as_deref(), mail.junk)
 }
 
@@ -7564,6 +7574,7 @@ pub(crate) mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            sort_facts: Default::default(),
         }
     }
 
@@ -7687,7 +7698,11 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let on = |field, value: &str| torro_inbox::SortCondition { field, value: value.into() };
+        let on = |field, value: &str| torro_inbox::SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let create = |category, value: &str, position| Request::CreateSortRule {
             category,
             conditions: vec![on(SortField::Domain, value)],
@@ -7781,7 +7796,11 @@ pub(crate) mod tests {
         let (kept, _) = kept.expect("kept");
         let editor = Request::CreateSortRule {
             category: Category::Promotion,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
             exceptions: Vec::new(),
             position: None,
             enabled: true,
@@ -7827,15 +7846,27 @@ pub(crate) mod tests {
         let off = Request::UpdateSortRule {
             id: editor_id.clone().expect("the editor's"),
             category: Category::Promotion,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
-            exceptions: Some(vec![SortCondition { field: SortField::Text, value: "invoice".into() }]),
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
+            exceptions: Some(vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Text,
+                value: "invoice".into(),
+            }]),
             enabled: Some(false),
         };
         assert!(matches!(inbox.handle(off, None, at(9, 4)), Response::SortRule { .. }));
         let renamed = Request::UpdateSortRule {
             id: editor_id.expect("the editor's"),
             category: Category::Newsletter,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
             exceptions: None,
             enabled: None,
         };
@@ -7866,7 +7897,11 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let on = |field, value: &str| torro_inbox::SortCondition { field, value: value.into() };
+        let on = |field, value: &str| torro_inbox::SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let rule = Request::CreateSortRule {
             category: Category::Booking,
             conditions: vec![on(SortField::Domain, "rail.example")],
@@ -7902,6 +7937,42 @@ pub(crate) mod tests {
             Ok(Some(MailCategory::by_rule(Category::Invitation))),
             "switched off"
         );
+    }
+
+    #[test]
+    fn extended_sorting_rules_are_validated_and_file_new_mail() {
+        use torro_inbox::{SortComparison, SortCondition, SortField};
+        use torro_mail::{Category, MailCategory};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let condition = |field, comparison, value: &str| SortCondition { field, comparison, value: value.into() };
+        let create = |condition| Request::CreateSortRule {
+            category: Category::Invoice,
+            conditions: vec![condition],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert_eq!(
+            code(&inbox.handle(
+                create(condition(SortField::Attachment, SortComparison::Contains, "pdf")),
+                None,
+                at(8, 0)
+            )),
+            "error",
+        );
+        assert_eq!(
+            code(&inbox.handle(create(condition(SortField::Size, SortComparison::GreaterThan, "NaN")), None, at(8, 0))),
+            "error",
+        );
+        let accepted = create(condition(SortField::Attachment, SortComparison::Present, ""));
+        assert!(matches!(inbox.handle(accepted, None, at(8, 0)), Response::SortRule { .. }));
+        let mut incoming = mail("m:1", "t:1", "Your bill", "billing@shop.example", false, at(8, 1));
+        incoming.sort_facts.has_attachments = Some(true);
+        assert_eq!(inbox.mail_category_of(&incoming), Ok(Some(MailCategory::by_rule(Category::Invoice))));
+        incoming.sort_facts.has_attachments = None;
+        assert_eq!(inbox.mail_category_of(&incoming), Ok(None), "unknown is not a negative match");
     }
 
     /// Task E15.2: what a category of the person's own may be called and how many a model may
@@ -8054,6 +8125,7 @@ pub(crate) mod tests {
             id: "r1".into(),
             category: club.category,
             conditions: vec![torro_inbox::SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
                 field: torro_inbox::SortField::Domain,
                 value: "club.example".into(),
             }],

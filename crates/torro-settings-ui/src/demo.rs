@@ -769,7 +769,11 @@ impl Demo {
     /// exception, and one switched off.
     fn sort_rules(&self) -> Vec<torro_inbox::SortRule> {
         use torro_inbox::{SortCondition, SortField, SortRule};
-        let on = |field, value: &str| SortCondition { field, value: value.into() };
+        let on = |field, value: &str| SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let rule = |id: &str, category, conditions, exceptions, enabled| SortRule {
             id: id.into(),
             category,

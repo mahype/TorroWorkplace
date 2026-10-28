@@ -2084,6 +2084,14 @@ impl MailStore {
         Ok(self.db.query_row(&sql, [id], |row| summary_from_row(&self.account, row)).optional()?)
     }
 
+    /// The server-reported size of one message. `None` means the server has not supplied it yet
+    /// (or the message is gone), so a size rule must wait for another sync.
+    pub fn message_size(&self, id: &str) -> Result<Option<u64>, MailStoreError> {
+        let size: Option<Option<i64>> =
+            self.db.query_row("SELECT size FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+        Ok(size.flatten().and_then(|bytes| u64::try_from(bytes).ok()))
+    }
+
     /// A whole message. `text` is `None` while the text is not stored (never fetched, or older
     /// than [`BODY_RETENTION_DAYS`]): the caller fetches it from the server with `BODY.PEEK` and
     /// stores it with [`set_body`](Self::set_body). `html` is always `None`: [`html`](Self::html)

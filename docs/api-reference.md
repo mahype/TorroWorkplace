@@ -1002,11 +1002,13 @@ Adds a sorting rule for mail at `position` (0 first; left out: last) and returns
 |---|---|---|---|
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as: a category of `inbox.list_categories`. |
 | `conditions` | array<object> | ja | All of them must hold; at least one, at most 10. |
-| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `conditions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `conditions[].value` | string | ja | What the field is compared with; one line. |
 | `enabled` | boolean | nein | Switched off, it holds for nothing. Left out: on. |
 | `exceptions` | array<object> | nein | None of them may hold; at most 10. |
-| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `exceptions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `exceptions[].value` | string | ja | What the field is compared with; one line. |
 | `position` | integer | nein | Where it stands, 0 first; left out: last. |
 
@@ -1020,11 +1022,13 @@ Changes a sorting rule and returns it: `category` and `conditions` always, `exce
 |---|---|---|---|
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as. |
 | `conditions` | array<object> | ja | All of them must hold; at least one. |
-| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `conditions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `conditions[].value` | string | ja | What the field is compared with; one line. |
 | `enabled` | boolean | nein | On or off. Left out: as it is. |
 | `exceptions` | array<object> | nein | None of them may hold; an empty list takes them all away. Left out: as they are. |
-| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `exceptions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `exceptions[].value` | string | ja | What the field is compared with; one line. |
 | `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
 

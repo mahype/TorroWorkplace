@@ -968,6 +968,29 @@ fn mail_to_file(store: &MailStore, account: &str, id: &str) -> Result<Option<New
 /// `message` of `account`, read from `store`, as [`Inbox::file_mail`] files it.
 fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -> Result<NewMail, MailStoreError> {
     let summary = message.summary;
+    let size_bytes = store.message_size(&summary.id)?;
+    let attachment_names = if summary.has_attachments && message.attachments.is_empty() {
+        None
+    } else {
+        Some(
+            message
+                .attachments
+                .iter()
+                .filter(|part| !part.inline)
+                .flat_map(|part| part.filename.iter().cloned().chain(std::iter::once(part.content_type.clone())))
+                .collect(),
+        )
+    };
+    let sort_facts = torro_inbox::rules::SortFacts {
+        reply_to: message.reply_to.iter().map(|address| address.address.clone()).collect(),
+        recipients: summary.to.iter().chain(&message.cc).map(|address| address.address.clone()).collect(),
+        has_attachments: Some(summary.has_attachments),
+        attachment_names,
+        size_bytes,
+        // `NewMail` passes only the snippet to the rule engine, even when the store has a full
+        // body. A negative text condition must wait for a later reclassification with that body.
+        text_complete: false,
+    };
     // Where it lies decides one category: mail the server put in its junk folder is spam (E12.2).
     let junk = store.folder_by_role(Role::Junk)?.is_some_and(|folder| folder.id == summary.folder);
     // Only a mail with `X-GitHub-Reason` can be a GitHub mail: the others need no lookup.
@@ -992,6 +1015,7 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
         invite: summary.invite.is_some(),
         auto_submitted: message.traits.auto_submitted.clone(),
         junk,
+        sort_facts,
     })
 }
 

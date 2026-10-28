@@ -17,6 +17,7 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - Das Backup-Formular öffnet als Overlay; Quelle, Stichtag mit Kalenderwahl, Archivname und Ziel stehen zusammen. Fortschritt und Wiederherstellung bleiben im Konto-Reiter sichtbar.
 - Der Konto-Reiter enthält nun Benutzername und maskiertes Passwort direkt neben Name und Adresse. IMAP und SMTP lassen sich manuell mit getrennten Host-, Port- und TLS/STARTTLS-Feldern bearbeiten. „Zugangsdaten testen“ prüft die eingegebenen Werte ohne Speicherung; bei leerem Passwortfeld verwendet der Kern das vorhandene Keychain-Geheimnis. „Verbindung speichern“ prüft und speichert die Änderungen nach erfolgreicher Anmeldung. Der Test-/Speicherbefehl ist auf den App-Schlüssel beschränkt.
 - Die MB-Auswahl berechnet ihre Größenkante beim Synchronisieren nur einmal pro Stapel und zieht bereits gespeicherte Anhänge von der Grenze ab. Beim Ändern der Auswahl und im Cache-Job werden ältere Anhangdateien nötigenfalls entfernt und die Offline-Texte neu zugeschnitten. Die Auswahl bleibt dennoch eine RFC822-Größenschätzung; Index und Datenbankdatei sind noch keine hart begrenzten physischen Bytes.
+- Die elf Prüffelder des Mockups mit passenden Vergleichen sind im nativen Regeleditor und in der Regelengine vorhanden. Eingang und erneutes Einsortieren liefern Antwortadresse, Empfänger, Anhangdaten, Nachrichtengröße, List-ID und Konto. Fehlende Metadaten erfüllen keine negativen Bedingungen; eine negative Textregel wartet auf den vollständigen Nachrichtentext. Gespeicherte Regeln ohne Vergleich behalten ihre bisherige Bedeutung. Die Bestätigung nennt auch Negationen und Größenvergleiche ausdrücklich.
 - Build und gezielte Tests laufen; native Sichtprüfung und die übrigen Anforderungen stehen noch aus.
 
 ## Navigation und Oberfläche
@@ -50,7 +51,7 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 ## Kategorisierung
 
 - [ ] Allgemeine Regeln vor Modell, erste passende Regel gewinnt; Regeln in Reihenfolge und direkt in ihrer eigenen Karte bearbeiten. Inline-Bearbeitung ist begonnen, visuelle Abnahme steht aus.
-- [ ] Regel-Prüffelder und passende Vergleiche gemäß `regeln-und-kategorien.md`, Ziel-Unterkategorie, Ausnahmen und Datenverfügbarkeit korrekt behandeln.
+- [x] Regel-Prüffelder und passende Vergleiche gemäß Mockup, Ziel-Unterkategorie, Ausnahmen und Datenverfügbarkeit korrekt behandeln.
 - [ ] Geeignete, wirtschaftliche Kategorisierungsmodelle nach Anbieter anbieten; beim empfohlenen Wizard-Weg aktiviert und vorbelegt, separat abschaltbar.
 - [ ] Bestehende E-Mails mit klarer Option „Alle E-Mails“ erneut einsortieren. Die Beschriftung ist begonnen; Laufzeitverhalten noch prüfen.
 - [x] Bearbeitbare Hauptkategorien mit stabilen IDs, Name, Icon und Farbe; Unterkategorien mit Name, Icon, Beschreibung und Zuordnung. Bestandsdaten migrieren. Neue Gruppen bleiben beim Umbenennen und nach Neustart stabil; Löschen von Hauptkategorien ist nicht Teil des Mockups.

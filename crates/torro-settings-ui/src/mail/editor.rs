@@ -29,7 +29,7 @@ use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, space};
 use torro_gui::{layout, style, typo, widgets};
 use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_VALUE_MAX};
-use torro_inbox::{SortCondition, SortField, SortRule};
+use torro_inbox::{SortComparison, SortCondition, SortField, SortRule};
 use torro_ipc::inbox::CategoryInfo;
 use torro_ipc::{Request, SettingKey};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
@@ -118,8 +118,8 @@ struct CategoryForm {
 struct RuleForm {
     id: Option<String>,
     category: Option<Category>,
-    conditions: Vec<(SortField, String)>,
-    exceptions: Vec<(SortField, String)>,
+    conditions: Vec<SortCondition>,
+    exceptions: Vec<SortCondition>,
     enabled: bool,
     tried: bool,
 }
@@ -168,6 +168,11 @@ pub enum Message {
         exception: bool,
         at: usize,
         field: SortField,
+    },
+    Comparison {
+        exception: bool,
+        at: usize,
+        comparison: SortComparison,
     },
     Value {
         exception: bool,
@@ -334,7 +339,11 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             state.form = Some(Form::Rule(RuleForm {
                 id: None,
                 category: None,
-                conditions: vec![(SortField::Sender, String::new())],
+                conditions: vec![SortCondition {
+                    field: SortField::Sender,
+                    comparison: SortComparison::Is,
+                    value: String::new(),
+                }],
                 exceptions: Vec::new(),
                 enabled: true,
                 tried: false,
@@ -527,18 +536,30 @@ fn rule_update<A>(form: &mut RuleForm, message: Message) -> (Action<A>, bool) {
         Message::RuleCategory(category) => form.category = Some(category),
         Message::Field { exception, at, field } => {
             if let Some(held) = form.list(exception).get_mut(at) {
-                held.0 = field;
+                held.field = field;
+                held.comparison = field.default_comparison();
+                if field == SortField::Attachment {
+                    held.value.clear();
+                }
+            }
+        }
+        Message::Comparison { exception, at, comparison } => {
+            if let Some(held) = form.list(exception).get_mut(at) {
+                if held.field.allows(comparison) {
+                    held.comparison = comparison;
+                }
             }
         }
         Message::Value { exception, at, value } => {
             if let Some(held) = form.list(exception).get_mut(at) {
-                held.1 = value;
+                held.value = value;
             }
         }
         Message::Add { exception } => {
             let list = form.list(exception);
             if list.len() < SORT_CONDITIONS_MAX {
-                list.push((if exception { SortField::Subject } else { SortField::Sender }, String::new()));
+                let field = if exception { SortField::Subject } else { SortField::Sender };
+                list.push(SortCondition { field, comparison: field.default_comparison(), value: String::new() });
             }
         }
         Message::Drop { exception, at } => {
@@ -575,7 +596,9 @@ impl Form {
             Form::Rule(form) => match &form.id {
                 None => {
                     form.category.is_some()
-                        || form.conditions.iter().chain(&form.exceptions).any(|(_, value)| !value.trim().is_empty())
+                        || form.conditions.iter().chain(&form.exceptions).any(|condition| {
+                            !condition.value.trim().is_empty() || condition.field == SortField::Attachment
+                        })
                 }
                 Some(id) => {
                     data.sort_rules.iter().find(|rule| &rule.id == id).is_some_and(|stored| !form.same_as(stored))
@@ -700,12 +723,11 @@ impl CategoryForm {
 
 impl RuleForm {
     fn of(rule: &SortRule) -> RuleForm {
-        let pairs = |list: &[SortCondition]| list.iter().map(|held| (held.field, held.value.clone())).collect();
         RuleForm {
             id: Some(rule.id.clone()),
             category: Some(rule.category),
-            conditions: pairs(&rule.conditions),
-            exceptions: pairs(&rule.exceptions),
+            conditions: rule.conditions.clone(),
+            exceptions: rule.exceptions.clone(),
             enabled: rule.enabled,
             tried: false,
         }
@@ -716,7 +738,7 @@ impl RuleForm {
         RuleForm { tried: false, ..self.clone() } == RuleForm::of(stored)
     }
 
-    fn list(&mut self, exception: bool) -> &mut Vec<(SortField, String)> {
+    fn list(&mut self, exception: bool) -> &mut Vec<SortCondition> {
         if exception { &mut self.exceptions } else { &mut self.conditions }
     }
 
@@ -727,7 +749,11 @@ impl RuleForm {
 
     /// What is wrong with the conditions, if anything.
     fn condition_mistake(&self) -> Option<String> {
-        if self.conditions.iter().all(|(_, value)| value.trim().is_empty()) {
+        if self
+            .conditions
+            .iter()
+            .all(|condition| condition.value.trim().is_empty() && condition.field != SortField::Attachment)
+        {
             return Some(tr("A sorting rule needs at least one condition.").to_string());
         }
         too_long(&self.conditions)
@@ -746,10 +772,14 @@ impl RuleForm {
     /// The request that saves the page; empty lines are left out.
     fn request(&self) -> Option<Request> {
         let category = self.category?;
-        let kept = |list: &[(SortField, String)]| {
+        let kept = |list: &[SortCondition]| {
             list.iter()
-                .filter(|(_, value)| !value.trim().is_empty())
-                .map(|(field, value)| SortCondition { field: *field, value: value.trim().to_string() })
+                .filter(|condition| condition.field == SortField::Attachment || !condition.value.trim().is_empty())
+                .map(|condition| SortCondition {
+                    field: condition.field,
+                    comparison: condition.comparison,
+                    value: condition.value.trim().to_string(),
+                })
                 .collect::<Vec<_>>()
         };
         let (conditions, exceptions) = (kept(&self.conditions), kept(&self.exceptions));
@@ -769,8 +799,15 @@ impl RuleForm {
 }
 
 /// A value of `list` longer than a condition may be, as the mistake to show.
-fn too_long(list: &[(SortField, String)]) -> Option<String> {
-    list.iter().any(|(_, value)| value.trim().chars().count() > SORT_VALUE_MAX).then(|| {
+fn too_long(list: &[SortCondition]) -> Option<String> {
+    if list.iter().any(|condition| {
+        condition.field == SortField::Size
+            && !condition.value.trim().is_empty()
+            && condition.value.trim().parse::<f64>().ok().is_none_or(|mb| !mb.is_finite() || mb < 0.0)
+    }) {
+        return Some(tr("Enter the message size in megabytes.").into());
+    }
+    list.iter().any(|condition| condition.value.trim().chars().count() > SORT_VALUE_MAX).then(|| {
         let most = SORT_VALUE_MAX.to_string();
         trf("A condition's value has at most {most} characters.", &[("most", &most)])
     })
@@ -1020,19 +1057,21 @@ fn add_row<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
     pressable(setting_row(Some(plus.into()), label, None, blank()), Some(message))
 }
 
-/// The conditions of a rule in a line: "from billing@shop.example · “invoice” in the subject".
+/// The conditions of a rule in one compact line, including each comparison.
 fn conditions_line(conditions: &[SortCondition]) -> String {
-    conditions.iter().map(|held| condition_words(held.field, &held.value)).collect::<Vec<_>>().join(" · ")
-}
-
-/// One condition in words.
-fn condition_words(field: SortField, value: &str) -> String {
-    match field {
-        SortField::Sender => trf("from {sender}", &[("sender", &value)]),
-        SortField::Domain => trf("from anyone at {domain}", &[("domain", &value)]),
-        SortField::Subject => trf("“{text}” in the subject", &[("text", &value)]),
-        SortField::Text => trf("“{text}” in the text", &[("text", &value)]),
-    }
+    conditions
+        .iter()
+        .map(|held| {
+            let comparison =
+                if held.comparison == SortComparison::Auto { held.field.default_comparison() } else { held.comparison };
+            if held.field == SortField::Attachment {
+                format!("{} {}", FieldChoice(held.field), ComparisonChoice(comparison))
+            } else {
+                format!("{} {} {}", FieldChoice(held.field), ComparisonChoice(comparison), held.value)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// A group's note: the mistake in the colour of mistakes once "Save" was pressed, else `note`.
@@ -1386,24 +1425,48 @@ fn rule_page<'a>(form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
 }
 
 /// One row per condition (or exception): what it looks at, the words, and ✕; "Add" last.
-fn condition_rows(list: &[(SortField, String)], exception: bool) -> Vec<Element<'_, Message>> {
+fn condition_rows(list: &[SortCondition], exception: bool) -> Vec<Element<'_, Message>> {
     let mut rows: Vec<Element<'_, Message>> = list
         .iter()
         .enumerate()
-        .map(|(at, (field_kind, value))| {
-            let kind = picker(FIELD_CHOICES, FieldChoice(*field_kind), move |choice: FieldChoice| Message::Field {
-                exception,
-                at,
-                field: choice.0,
-            });
-            let mut words = field(placeholder(*field_kind), value)
-                .on_input(move |value| Message::Value { exception, at, value })
-                .on_submit(Message::SaveRule);
-            if !exception && at == 0 {
-                words = words.id(CONDITION_FIELD);
-            }
-            let drop = widgets::icon_button(Icon::X, tr("Remove"), Some(Message::Drop { exception, at }));
-            row_frame(row![kind, words, drop].spacing(space::s()).align_y(Alignment::Center), false)
+        .map(|(at, condition)| {
+            responsive(move |room| {
+                let kind = picker(FIELD_CHOICES, FieldChoice(condition.field), move |choice: FieldChoice| {
+                    Message::Field { exception, at, field: choice.0 }
+                });
+                let comparison = if condition.comparison == SortComparison::Auto {
+                    condition.field.default_comparison()
+                } else {
+                    condition.comparison
+                };
+                let comparisons: Vec<ComparisonChoice> =
+                    COMPARISON_CHOICES.iter().copied().filter(|choice| condition.field.allows(choice.0)).collect();
+                let comparison = picker(comparisons, ComparisonChoice(comparison), move |choice: ComparisonChoice| {
+                    Message::Comparison { exception, at, comparison: choice.0 }
+                });
+                let drop = widgets::icon_button(Icon::X, tr("Remove"), Some(Message::Drop { exception, at }));
+                let value: Element<'_, Message> = if condition.field == SortField::Attachment {
+                    blank::horizontal().into()
+                } else {
+                    let mut words = field(placeholder(condition.field), &condition.value)
+                        .on_input(move |value| Message::Value { exception, at, value })
+                        .on_submit(Message::SaveRule);
+                    if !exception && at == 0 {
+                        words = words.id(CONDITION_FIELD);
+                    }
+                    words.into()
+                };
+                if room.width >= 700.0 {
+                    row_frame(row![kind, comparison, value, drop].spacing(space::s()).align_y(Alignment::Center), false)
+                } else {
+                    row_frame(
+                        column![row![kind, comparison].spacing(space::s()), row![value, drop].spacing(space::s())]
+                            .spacing(space::s()),
+                        false,
+                    )
+                }
+            })
+            .into()
         })
         .collect();
     if list.len() < SORT_CONDITIONS_MAX {
@@ -1418,7 +1481,13 @@ fn placeholder(field: SortField) -> &'static str {
     match field {
         SortField::Sender => "billing@shop.example",
         SortField::Domain => "shop.example",
+        SortField::ReplyTo | SortField::Recipient => "name@example.org",
         SortField::Subject | SortField::Text => tr("Words"),
+        SortField::Attachment => "",
+        SortField::AttachmentName => "invoice.pdf",
+        SortField::Size => tr("Megabytes"),
+        SortField::ListId => "news.example.org",
+        SortField::Account => "anna@example.org",
     }
 }
 
@@ -1426,20 +1495,68 @@ fn placeholder(field: SortField) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FieldChoice(SortField);
 
-const FIELD_CHOICES: [FieldChoice; 4] = [
+const FIELD_CHOICES: [FieldChoice; 11] = [
     FieldChoice(SortField::Sender),
     FieldChoice(SortField::Domain),
+    FieldChoice(SortField::ReplyTo),
+    FieldChoice(SortField::Recipient),
     FieldChoice(SortField::Subject),
     FieldChoice(SortField::Text),
+    FieldChoice(SortField::Attachment),
+    FieldChoice(SortField::AttachmentName),
+    FieldChoice(SortField::Size),
+    FieldChoice(SortField::ListId),
+    FieldChoice(SortField::Account),
 ];
 
 impl std::fmt::Display for FieldChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self.0 {
-            SortField::Sender => tr("Sender is"),
-            SortField::Domain => tr("Domain is"),
-            SortField::Subject => tr("Subject contains"),
-            SortField::Text => tr("Text contains"),
+            SortField::Sender => tr("Sender address"),
+            SortField::Domain => tr("Sender domain"),
+            SortField::ReplyTo => tr("Reply address"),
+            SortField::Recipient => tr("Recipient (To/Cc)"),
+            SortField::Subject => tr("Subject"),
+            SortField::Text => tr("Message text"),
+            SortField::Attachment => tr("Attachment"),
+            SortField::AttachmentName => tr("Attachment name or type"),
+            SortField::Size => tr("Message size"),
+            SortField::ListId => tr("Mailing list (List-ID)"),
+            SortField::Account => tr("Email account"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ComparisonChoice(SortComparison);
+
+const COMPARISON_CHOICES: [ComparisonChoice; 10] = [
+    ComparisonChoice(SortComparison::Is),
+    ComparisonChoice(SortComparison::IsNot),
+    ComparisonChoice(SortComparison::Contains),
+    ComparisonChoice(SortComparison::NotContains),
+    ComparisonChoice(SortComparison::StartsWith),
+    ComparisonChoice(SortComparison::EndsWith),
+    ComparisonChoice(SortComparison::Present),
+    ComparisonChoice(SortComparison::Absent),
+    ComparisonChoice(SortComparison::GreaterThan),
+    ComparisonChoice(SortComparison::LessThan),
+];
+
+impl std::fmt::Display for ComparisonChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            SortComparison::Auto => tr("matches"),
+            SortComparison::Is => tr("is"),
+            SortComparison::IsNot => tr("is not"),
+            SortComparison::Contains => tr("contains"),
+            SortComparison::NotContains => tr("does not contain"),
+            SortComparison::StartsWith => tr("starts with"),
+            SortComparison::EndsWith => tr("ends with"),
+            SortComparison::Present => tr("present"),
+            SortComparison::Absent => tr("not present"),
+            SortComparison::GreaterThan => tr("larger than"),
+            SortComparison::LessThan => tr("smaller than"),
         })
     }
 }
@@ -1477,7 +1594,11 @@ mod tests {
         SortRule {
             id: id.into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: domain.into() }],
+            conditions: vec![SortCondition {
+                comparison: SortComparison::Auto,
+                field: SortField::Domain,
+                value: domain.into(),
+            }],
             exceptions: Vec::new(),
             enabled: true,
             created: chrono::DateTime::from_timestamp(0, 0).expect("a time"),
@@ -1723,8 +1844,16 @@ mod tests {
             requests,
             vec![Request::CreateSortRule {
                 category: Category::Booking,
-                conditions: vec![SortCondition { field: SortField::Domain, value: "rail.example".into() }],
-                exceptions: vec![SortCondition { field: SortField::Subject, value: "delay".into() }],
+                conditions: vec![SortCondition {
+                    comparison: SortComparison::Is,
+                    field: SortField::Domain,
+                    value: "rail.example".into()
+                }],
+                exceptions: vec![SortCondition {
+                    comparison: SortComparison::Contains,
+                    field: SortField::Subject,
+                    value: "delay".into()
+                }],
                 position: Some(0),
                 enabled: true,
             }]
@@ -1732,6 +1861,37 @@ mod tests {
         let mut state = State::default();
         let _ = update::<()>(&mut state, Message::NewRule, &data);
         assert!(matches!(update::<()>(&mut state, Message::SaveRule, &data), Action::Focus(CONDITION_FIELD)));
+    }
+
+    #[test]
+    fn the_eleven_mail_fields_offer_fitting_comparisons_and_attachment_needs_no_value() {
+        assert_eq!(FIELD_CHOICES.len(), 11);
+        assert!(SortField::Attachment.allows(SortComparison::Absent));
+        assert!(!SortField::Attachment.allows(SortComparison::Contains));
+        let (data, mut state) = (data(), State::default());
+        let requests = sent(
+            &mut state,
+            &data,
+            vec![
+                Message::NewRule,
+                Message::Field { exception: false, at: 0, field: SortField::Attachment },
+                Message::Comparison { exception: false, at: 0, comparison: SortComparison::Absent },
+                Message::RuleCategory(Category::Invoice),
+                Message::SaveRule,
+            ],
+        );
+        let [Request::CreateSortRule { conditions, .. }] = requests.as_slice() else { panic!("one sorting rule") };
+        assert_eq!(
+            conditions,
+            &[SortCondition { field: SortField::Attachment, comparison: SortComparison::Absent, value: String::new() }]
+        );
+        let _: Action<()> = update(&mut state, Message::NewRule, &data);
+        let _: Action<()> =
+            update(&mut state, Message::Field { exception: false, at: 0, field: SortField::Size }, &data);
+        let _: Action<()> =
+            update(&mut state, Message::Value { exception: false, at: 0, value: "a lot".into() }, &data);
+        let _: Action<()> = update(&mut state, Message::RuleCategory(Category::Invoice), &data);
+        assert!(sent(&mut state, &data, vec![Message::SaveRule]).is_empty());
     }
 
     /// A stored rule: "Move up"/"Move down" by one place, stopping at the ends; the switch on its
