@@ -3942,7 +3942,8 @@ impl Core {
             }
             // A slot (issue #325) like a switch of a model: the account by its label, the model by its
             // name and where it computes as the account's list in the core says.
-            Request::SetAiSlot { engine: Some(engine), model, .. } => {
+            Request::SetAiSlot { engine: Some(engine), model, .. }
+            | Request::SetAiAssignment { engine: Some(engine), model, .. } => {
                 let known = match model {
                     Some(model) => self.ai.described(engine, model).await,
                     None => None,

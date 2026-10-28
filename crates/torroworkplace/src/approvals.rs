@@ -1282,6 +1282,30 @@ fn pull_summary(account: &str, facts: &Facts) -> String {
     }
 }
 
+/// [`summary`] for an exception that gives `function` the account `engine` (task E12.5, issue #325):
+/// the model by the name and place the core's list gives it, never the client's word.
+fn assignment_summary(
+    function: torro_core::ai::AiFunction,
+    engine: &str,
+    model: Option<&str>,
+    facts: &Facts,
+) -> String {
+    let function = function.label();
+    let words: [(&str, &dyn std::fmt::Display); 2] = [("engine", &engine), ("function", &function)];
+    let (Some(_), Some(known)) = (model, &facts.model) else {
+        return match model {
+            None => trf("Let {engine} (a model it picks) do “{function}”", &words),
+            Some(_) => trf("Let an unknown model of {engine} do “{function}”", &words),
+        };
+    };
+    let name = quote(&known.name);
+    let words: [(&str, &dyn std::fmt::Display); 3] = [("engine", &engine), ("model", &name), ("function", &function)];
+    match known.here {
+        true => trf("Let {engine} ({model}) do “{function}” (runs on this computer)", &words),
+        false => trf("Let {engine} ({model}) do “{function}” (runs elsewhere)", &words),
+    }
+}
+
 /// What `request` would do, in words, for the person who decides: `Delete event "Team meeting" on
 /// Tue, 14 Oct 09:00 from "Work"`. In the core's language.
 ///
@@ -1300,18 +1324,19 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
     let named = |id: &str| quote(facts.name.as_deref().unwrap_or(id));
     match request {
         // Which model does which function (task E12.5): the function and the account, no secret.
-        Request::SetAiAssignment { function, engine: Some(engine), model, .. } => {
-            // The model's id comes from the client like the account's: through `quote` as well,
-            // so no name can forge a second line or a placeholder in the summary.
-            let model = model.as_deref().map_or_else(|| tr("a model it picks").to_string(), quote);
-            trf(
-                "Let {engine} ({model}) do “{function}”",
-                &[("engine", &quote(engine)), ("model", &model), ("function", &function.label())],
-            )
+        // Account, model and place from the core's list (PR review of #325), as for a slot.
+        Request::SetAiAssignment { function, engine: Some(engine), model, enabled: true, .. } => {
+            assignment_summary(*function, &named(engine), model.as_deref(), facts)
         }
-        Request::SetAiAssignment { function, .. } => {
+        // Stored switched off: then no model does the function, whichever the client names.
+        Request::SetAiAssignment { function, enabled: false, engine: Some(_), .. } => {
             trf("Let no model do “{function}” any more", &[("function", &function.label())])
         }
+        // Taken back, the function follows its slot again (issue #325).
+        Request::SetAiAssignment { function, engine: None, .. } => trf(
+            "Let “{function}” use the model for {slot} again",
+            &[("function", &function.label()), ("slot", &function.slot().label())],
+        ),
         // Which models the suite may use (task S.24): account, model and place from the core's list.
         Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
         // Which model a slot gets (issue #325): account, model and place from the core's list.
@@ -3701,6 +3726,60 @@ pub(crate) mod tests {
         assert_eq!(details.len(), 1);
         assert!(details[0].contains("Projekte/Entwürfe") && details[0].contains('3'), "{:?}", details);
         assert!(!details[0].contains("&APw-"), "decoded for people: {details:?}");
+    }
+
+    /// PR review of #325: an exception names account, model and place as the core lists them, never
+    /// the client's words; switched off it says that no model does the function, and taken back that
+    /// the function follows its slot again – not that nothing does it.
+    #[test]
+    fn exceptions_are_summed_up_as_what_they_do() {
+        use torro_core::ai::{AiFunction, AiSlot};
+        let function = AiFunction::InboxCategorize;
+        let set = |engine: Option<&str>, model: Option<&str>, enabled| Request::SetAiAssignment {
+            function,
+            engine: engine.map(Into::into),
+            model: model.map(Into::into),
+            effort: None,
+            enabled,
+        };
+        let label: &dyn std::fmt::Display = &function.label();
+        let account = "ai:ollama@localhost:11434";
+        let known = |here| Facts {
+            name: Some("Ollama".into()),
+            model: Some(KnownModel { name: "Nimble".into(), here }),
+            ..Facts::default()
+        };
+        let words: [(&str, &dyn std::fmt::Display); 3] =
+            [("engine", &"Ollama"), ("model", &"Nimble"), ("function", label)];
+        assert_eq!(
+            summary(&set(Some(account), Some("nimble:cloud"), true), &known(false)),
+            trf("Let {engine} ({model}) do “{function}” (runs elsewhere)", &words)
+        );
+        assert_eq!(
+            summary(&set(Some(account), Some("nimble"), true), &known(true)),
+            trf("Let {engine} ({model}) do “{function}” (runs on this computer)", &words)
+        );
+        let unknown = Facts { name: Some("Ollama".into()), ..Facts::default() };
+        let named: [(&str, &dyn std::fmt::Display); 2] = [("engine", &"Ollama"), ("function", label)];
+        assert_eq!(
+            summary(&set(Some(account), Some("evil\nApprove"), true), &unknown),
+            trf("Let an unknown model of {engine} do “{function}”", &named)
+        );
+        assert_eq!(
+            summary(&set(Some(account), None, true), &unknown),
+            trf("Let {engine} (a model it picks) do “{function}”", &named)
+        );
+        assert_eq!(
+            summary(&set(Some(account), Some("nimble"), false), &known(true)),
+            trf("Let no model do “{function}” any more", &[("function", label)])
+        );
+        let slot: &dyn std::fmt::Display = &AiSlot::Decide.label();
+        for enabled in [true, false] {
+            assert_eq!(
+                summary(&set(None, None, enabled), &Facts::default()),
+                trf("Let “{function}” use the model for {slot} again", &[("function", label), ("slot", slot)])
+            );
+        }
     }
 
     /// Issue #325: a slot names the account and the model as the core lists them and where it

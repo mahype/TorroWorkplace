@@ -4401,9 +4401,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die E-Mails ohne Kategorie mit der KI auf diesem Rechner einordnen",
     ),
     ("Stop sorting mail into categories", "Das Einordnen von E-Mails anhalten"),
-    ("Let {engine} ({model}) do “{function}”", "„{function}“ von {engine} ({model}) erledigen lassen"),
     ("Let no model do “{function}” any more", "„{function}“ von keinem Modell mehr erledigen lassen"),
-    ("a model it picks", "einem Modell seiner Wahl"),
+    (
+        "Let {engine} (a model it picks) do “{function}”",
+        "„{function}“ von {engine} (einem Modell seiner Wahl) erledigen lassen",
+    ),
+    (
+        "Let an unknown model of {engine} do “{function}”",
+        "„{function}“ von einem unbekannten Modell von {engine} erledigen lassen",
+    ),
+    (
+        "Let {engine} ({model}) do “{function}” (runs on this computer)",
+        "„{function}“ von {engine} ({model}) erledigen lassen (rechnet auf diesem Computer)",
+    ),
+    (
+        "Let {engine} ({model}) do “{function}” (runs elsewhere)",
+        "„{function}“ von {engine} ({model}) erledigen lassen (rechnet anderswo)",
+    ),
+    (
+        "Let “{function}” use the model for {slot} again",
+        "„{function}“ wieder mit dem Modell für {slot} erledigen lassen",
+    ),
     // The two slots of models (issue #325) and their approvals.
     ("Chat", "Chat"),
     ("Sorting", "Sortieren"),
