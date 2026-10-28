@@ -1,0 +1,131 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:cs="http://calendarserver.org/ns/" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/></d:resourcetype>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+  <d:propstat>
+   <d:prop><d:displayname/><cs:getctag/><d:sync-token/></d:prop>
+   <d:status>HTTP/1.1 404 Not Found</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname>Contacts</d:displayname>
+    <cs:getctag>http://sabre.io/ns/sync/42</cs:getctag>
+    <d:sync-token>http://sabre.io/ns/sync/42</d:sync-token>
+    <d:current-user-privilege-set>
+     <d:privilege><d:write/></d:privilege><d:privilege><d:write-properties/></d:privilege><d:privilege><d:write-content/></d:privilege><d:privilege><d:unlock/></d:privilege><d:privilege><d:bind/></d:privilege><d:privilege><d:unbind/></d:privilege><d:privilege><d:write-acl/></d:privilege><d:privilege><d:read/></d:privilege><d:privilege><d:read-acl/></d:privilege><d:privilege><d:read-current-user-privilege-set/></d:privilege>
+    </d:current-user-privilege-set>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/familie%20m%C3%BCller/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname/>
+    <cs:getctag>http://sabre.io/ns/sync/7</cs:getctag>
+    <d:sync-token>http://sabre.io/ns/sync/7</d:sync-token>
+    <d:current-user-privilege-set>
+     <d:privilege><d:all/></d:privilege>
+    </d:current-user-privilege-set>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/team_shared_by_bob/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname>Team (Bob)</d:displayname>
+    <cs:getctag>http://sabre.io/ns/sync/3</cs:getctag>
+    <d:sync-token>http://sabre.io/ns/sync/3</d:sync-token>
+    <d:current-user-privilege-set>
+     <d:privilege><d:read/></d:privilege><d:privilege><d:read-acl/></d:privilege><d:privilege><d:read-current-user-privilege-set/></d:privilege>
+    </d:current-user-privilege-set>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/z-server-generated--system/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname>Accounts</d:displayname>
+    <cs:getctag>http://sabre.io/ns/sync/118</cs:getctag>
+    <d:sync-token>http://sabre.io/ns/sync/118</d:sync-token>
+    <d:current-user-privilege-set>
+     <d:privilege><d:read/></d:privilege><d:privilege><d:read-acl/></d:privilege><d:privilege><d:read-current-user-privilege-set/></d:privilege>
+    </d:current-user-privilege-set>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/z-app-generated--contactsinteraction--recent/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname>Recently contacted</d:displayname>
+    <cs:getctag>http://sabre.io/ns/sync/5</cs:getctag>
+    <d:sync-token>http://sabre.io/ns/sync/5</d:sync-token>
+    <d:current-user-privilege-set>
+     <d:privilege><d:all/></d:privilege><d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege><d:privilege><d:write-content/></d:privilege><d:privilege><d:bind/></d:privilege><d:privilege><d:unbind/></d:privilege>
+    </d:current-user-privilege-set>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/notes/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/></d:resourcetype>
+    <d:displayname>Not an address book</d:displayname>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>https://evil.example.org/remote.php/dav/addressbooks/users/anna/stolen/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname>On another host</d:displayname>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/bob/contacts/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname>Outside the home</d:displayname>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/deeper/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:displayname>Below another book</d:displayname>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+</d:multistatus>

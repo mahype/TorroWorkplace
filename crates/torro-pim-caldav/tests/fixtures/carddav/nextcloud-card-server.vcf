@@ -1,0 +1,8 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Sabre//Sabre VObject 4.5.4//EN
+UID:ben
+FN:Ben Beispiel
+N:Beispiel;Ben;;;
+TEL;TYPE=CELL:+49 170 0000000
+END:VCARD

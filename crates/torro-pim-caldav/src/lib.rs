@@ -1,4 +1,4 @@
-//! CalDAV and iCalendar for torro-pim.
+//! CalDAV and iCalendar for torro-pim, CardDAV for torro-contacts.
 //!
 //! Open standards first: Nextcloud, iCloud, Fastmail, Radicale and every other CalDAV
 //! server, events (VEVENT) and tasks (VTODO) alike. Nextcloud comes first and gets its
@@ -15,9 +15,13 @@
 //! - `recur`: the rule of a series, `RRULE` to `torro_pim::model::Repeat` and back (task TE.3).
 //! - `series`: changing and deleting one occurrence, the following ones or a whole series on the
 //!   stored object (task TE.4); `write` sends it ([`CalDavClient::save_in_series`]).
+//! - `carddav`: address books and contacts (RFC 6352), changes by `sync-collection` (RFC 6578):
+//!   the `torro_contacts::ContactsProvider` of the client (issue #380).
 //!
-//! `sync-collection` and the `torro_pim::Provider` implementation come with the SQLite cache.
+//! For calendars, `sync-collection` and the `torro_pim::Provider` implementation come with the SQLite
+//! cache.
 
+mod carddav;
 mod client;
 pub mod discover;
 mod ical;

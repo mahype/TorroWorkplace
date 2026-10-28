@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:exception>Sabre\DAVACL\Exception\NeedPrivileges</s:exception>
+  <s:message>User did not have the required privileges ({DAV:}bind) for path "addressbooks/users/anna/team_shared_by_bob"</s:message>
+  <d:need-privileges>
+    <d:resource>
+      <d:href>/remote.php/dav/addressbooks/users/anna/team_shared_by_bob</d:href>
+      <d:privilege><d:bind/></d:privilege>
+    </d:resource>
+  </d:need-privileges>
+</d:error>

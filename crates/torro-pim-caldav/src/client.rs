@@ -32,7 +32,7 @@ use torro_pim::{Collection, CollectionKind, Event, ProviderError, Todo};
 
 use crate::{CalDavAccount, http_error, ical};
 
-const NS_DAV: &str = "DAV:";
+pub(crate) const NS_DAV: &str = "DAV:";
 const NS_CALDAV: &str = "urn:ietf:params:xml:ns:caldav";
 const NS_APPLE: &str = "http://apple.com/ns/ical/";
 /// Nextcloud's (ownCloud's) sharing properties: `owner-principal`, `invite`.
@@ -352,7 +352,7 @@ impl CalDavClient {
 
 /// Whether `current-user-privilege-set` allows changing items. A server that does not report
 /// the set is trusted to allow it; a write attempt would still fail cleanly.
-fn writable(prop: roxmltree::Node<'_, '_>) -> bool {
+pub(crate) fn writable(prop: roxmltree::Node<'_, '_>) -> bool {
     let Some(set) = child(prop, NS_DAV, "current-user-privilege-set") else { return true };
     set.children().filter(|n| is(*n, NS_DAV, "privilege")).flat_map(|privilege| privilege.children()).any(|p| {
         p.is_element()
@@ -410,7 +410,7 @@ fn principal_path(url: &Url) -> String {
 
 /// `text` with every `%XX` decoded; anything else, and a `%` not followed by two hex digits, as it
 /// is. Invalid UTF-8 becomes U+FFFD, which then matches nothing.
-fn percent_decoded(text: &str) -> String {
+pub(crate) fn percent_decoded(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -434,21 +434,21 @@ fn parse_xml(xml: &str) -> Result<roxmltree::Document<'_>, ProviderError> {
     roxmltree::Document::parse(xml).map_err(|err| ProviderError::Other(format!("unreadable server answer: {err}")))
 }
 
-fn is(node: roxmltree::Node<'_, '_>, ns: &str, name: &str) -> bool {
+pub(crate) fn is(node: roxmltree::Node<'_, '_>, ns: &str, name: &str) -> bool {
     node.is_element() && node.tag_name().name() == name && node.tag_name().namespace() == Some(ns)
 }
 
-fn child<'a, 'i>(node: roxmltree::Node<'a, 'i>, ns: &str, name: &str) -> Option<roxmltree::Node<'a, 'i>> {
+pub(crate) fn child<'a, 'i>(node: roxmltree::Node<'a, 'i>, ns: &str, name: &str) -> Option<roxmltree::Node<'a, 'i>> {
     node.children().find(|c| is(*c, ns, name))
 }
 
 /// The `<d:response>` elements of a multistatus.
-fn responses<'a, 'i>(doc: &'a roxmltree::Document<'i>) -> impl Iterator<Item = roxmltree::Node<'a, 'i>> {
+pub(crate) fn responses<'a, 'i>(doc: &'a roxmltree::Document<'i>) -> impl Iterator<Item = roxmltree::Node<'a, 'i>> {
     doc.root_element().children().filter(|n| is(*n, NS_DAV, "response"))
 }
 
 /// The `<d:prop>` of a response's propstat with status 200.
-fn ok_prop<'a, 'i>(response: roxmltree::Node<'a, 'i>) -> Option<roxmltree::Node<'a, 'i>> {
+pub(crate) fn ok_prop<'a, 'i>(response: roxmltree::Node<'a, 'i>) -> Option<roxmltree::Node<'a, 'i>> {
     response
         .children()
         .filter(|n| is(*n, NS_DAV, "propstat"))
@@ -516,7 +516,7 @@ fn objects_in_answer(xml: &str, collection: &str) -> Result<Vec<RawObject>, Prov
 }
 
 /// `text` safe inside an XML element: `&`, `<` and `>` escaped.
-fn xml_escaped(text: &str) -> String {
+pub(crate) fn xml_escaped(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
