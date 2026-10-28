@@ -7354,6 +7354,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "toml",
+ "torro-contacts",
  "torro-core",
  "torro-gui",
  "torro-inbox",

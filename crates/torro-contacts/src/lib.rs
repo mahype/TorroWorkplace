@@ -17,7 +17,8 @@ pub mod vcard;
 pub use merge::{Merge, merge};
 pub use model::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactState, ContactSummary, FieldKind,
-    FieldsError, Geo, Group, Keep, Labeled, Moved, Name, PartialDate, PhotoRef, PhotoSize, PostalAddress,
+    FieldsError, Geo, Group, Keep, Labeled, Moved, Name, PartialDate, PhotoRef, PhotoSize, PostalAddress, account_of,
+    book_id, book_of, contact_id,
 };
 pub use provider::{
     Changes, ContactsError, ContactsProvider, Entry, Listing, RemoteBook, RemoteCard, Stored, SyncToken,

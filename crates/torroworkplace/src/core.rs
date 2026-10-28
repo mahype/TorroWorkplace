@@ -43,6 +43,7 @@ use crate::assistant::{Assistant, Place};
 use crate::audit::Audit;
 use crate::categorize;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
+use crate::contacts::ContactsService;
 use crate::inbox::{Inbox, Opening};
 use crate::mail::backup::{ApplyRequest, BackupJobs, BackupRunError, BackupSelection, RestoreChoice, RestorePlans};
 use crate::mail::service::{MailService, Service, SignInError};
@@ -2086,6 +2087,9 @@ pub struct Core {
     /// The downloads of models into Ollama on this computer since the core started (task MW.7,
     /// `ai.pull_model`, `ai.list_pulls`, `ai.cancel_pull`), in memory only.
     pulls: crate::account::pull::Pulls,
+    /// The contacts of the Nextcloud and CalDAV accounts (issue #351): the user's store
+    /// ([`ContactsService::system`]); tests hold none unless they bring one ([`Core::with_contacts`]).
+    contacts: Arc<ContactsService>,
 }
 
 /// How long a measurement without shared memory counts ([`Core::hardware`]): long enough that the
@@ -2122,6 +2126,7 @@ impl Core {
         // Tests bring their own mail accounts (`Core::with_mail`); none may reach the user's.
         let mail = if cfg!(test) { MailService::without_home() } else { MailService::system() };
         let mail = Arc::new(mail.with_calendars(Arc::clone(&pim)));
+        let contacts = Arc::new(ContactsService::system(Arc::clone(&pim)));
         let core = Core {
             backend,
             store,
@@ -2176,6 +2181,7 @@ impl Core {
             probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
             hardware: tokio::sync::Mutex::new(None),
             pulls: crate::account::pull::Pulls::default(),
+            contacts,
         };
         let allowed = core.allowed_folders();
         Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
@@ -2501,6 +2507,13 @@ impl Core {
         self
     }
 
+    /// The core with the contacts `contacts` instead of none, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_contacts(mut self, contacts: ContactsService) -> Core {
+        self.contacts = Arc::new(contacts);
+        self
+    }
+
     /// The core with the voice listener `listener` instead of none, for tests.
     #[cfg(all(test, unix))]
     pub(crate) fn with_listener(mut self, listener: Listener) -> Core {
@@ -2649,6 +2662,7 @@ impl Core {
         let core = Arc::clone(self);
         tokio::spawn(async move { core.keep_used_models_on().await });
         self.ntfy.start();
+        self.start_contacts();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
         // A removal of a category cut short (task E15.2) needs the mail stores: once they are read.
         let core = Arc::clone(self);
@@ -2702,6 +2716,46 @@ impl Core {
                 tokio::time::sleep(FILTER_LISTS_EVERY).await;
             }
         });
+    }
+
+    /// The contacts (issue #351): a round once the calendar service has read its accounts and every
+    /// [`crate::contacts::SYNC_EVERY`] after; the books that are gone leave every client's rights.
+    /// An account removed or wiped takes its contacts along ([`PimService::on_forget`]). Part of
+    /// [`Core::start`].
+    fn start_contacts(self: &Arc<Self>) {
+        let mut forgotten = self.pim.on_forget();
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                match forgotten.recv().await {
+                    Ok(account) => core.contacts.forget_account(&account).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            while started.elapsed() < ACCOUNTS_WAIT && !core.pim.accounts_loaded().await {
+                tokio::time::sleep(ACCOUNTS_STEP).await;
+            }
+            loop {
+                core.sync_contacts().await;
+                tokio::time::sleep(crate::contacts::SYNC_EVERY).await;
+            }
+        });
+    }
+
+    /// One round of the contacts of every account; the books gone from their servers leave every
+    /// client's rights ([`Clients::forget_address_books`]).
+    async fn sync_contacts(&self) {
+        let removed = self.contacts.sync_all().await;
+        if !removed.is_empty()
+            && let Err(err) = self.clients.forget_address_books(&removed).await
+        {
+            eprintln!("torroworkplace: removed address books stay in the clients' rights: {err}");
+        }
     }
 
     /// Holds `accounts.list_accounts` back until the calendar, GitHub and mail services have read
@@ -8786,6 +8840,8 @@ impl Core {
     async fn sync(&self, reach: Reach<'_>) -> Response {
         let (pim, mail) = tokio::join!(self.pim.handle_within(Request::Sync, reach), self.mail.sync_all(reach));
         let github = self.github.check_all().await;
+        // Contacts follow the calendars' sign-ins; a failure shows at the next command, not here.
+        Box::pin(self.sync_contacts()).await;
         // A list that fails keeps its items and shows its problem; it does not fail the sync.
         refresh_filter_lists(&self.pim, &self.github).await;
         let no_calendars = matches!(&pim, Response::Error { code, .. } if code == "not-connected")

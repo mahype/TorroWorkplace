@@ -823,6 +823,9 @@ pub struct PimService {
     filters_writing: Mutex<()>,
     /// Where CalDAV sign-ins search and store (task M7.1).
     sign_in: SignIn,
+    /// Tells who listens ([`PimService::on_forget`]) the id of every account removed or wiped from
+    /// this device, so the contacts of it go too (issue #351).
+    forgotten: tokio::sync::broadcast::Sender<String>,
 }
 
 impl PimService {
@@ -853,7 +856,29 @@ impl PimService {
             filters_file: None,
             filters_writing: Mutex::new(()),
             sign_in: SignIn::offline(),
+            forgotten: tokio::sync::broadcast::channel(16).0,
         }
+    }
+
+    /// The id of every account forgotten on this device from now on: removed by a person or wiped
+    /// at the server's request ([`PimService::forget_locally`]). The contacts service listens, so
+    /// an account's contacts never outlive it (issue #351).
+    pub fn on_forget(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.forgotten.subscribe()
+    }
+
+    /// The CalDAV connections of the Nextcloud and CalDAV accounts that have one, by account id: the
+    /// address books of these accounts are synced (issue #351, decision 2 of its plan). Mail
+    /// accounts are left out until their address books were tried on real servers.
+    pub async fn dav_clients(&self) -> Vec<(String, CalDavClient)> {
+        self.state
+            .read()
+            .await
+            .accounts
+            .iter()
+            .filter(|slot| matches!(slot.connected.account.kind, AccountKind::Nextcloud | AccountKind::CalDav))
+            .filter_map(|slot| Some((slot.id().to_string(), slot.client.clone()?)))
+            .collect()
     }
 
     /// The HTTP client for the calendars of `account` (issue #284). A mail account gets a client
@@ -1628,6 +1653,8 @@ impl PimService {
         if let Err(err) = self.settings.forget_collections(&collections) {
             eprintln!("torroworkplace: hidden collections of the removed account stay in the settings: {err}");
         }
+        // Nobody listening (tests, a core not started) is no failure.
+        let _ = self.forgotten.send(id.to_string());
         Ok(())
     }
 
@@ -1655,7 +1682,7 @@ impl PimService {
     /// be wiped and does so for this account (task S.12). Otherwise the account stays and shows
     /// "sign-in refused" until the user signs in again. Only for Nextcloud: other CalDAV servers
     /// know no remote wipe, and asking them would send the password to a path they never named.
-    async fn on_refused(&self, id: &str) {
+    pub(crate) async fn on_refused(&self, id: &str) {
         let Some(http) = self.http.clone() else {
             return;
         };
