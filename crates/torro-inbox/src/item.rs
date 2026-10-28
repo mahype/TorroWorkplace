@@ -299,8 +299,8 @@ impl FacetKey {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum MuteScope {
     /// Only this conversation: with `hide` or `info` and no `until` it changes this entry alone and
-    /// keeps no rule (write access, like `inbox.hide_sender` with `conversation`); otherwise a rule
-    /// for the conversation (admin access).
+    /// keeps no rule (write access, like `inbox.set_item_done`); otherwise a rule for the
+    /// conversation (admin access).
     Conversation,
     /// Every entry with the entry's trait `key`, e.g. every mail from its sender, with the value
     /// the stored entry has – never a value from the request. Always a rule (admin access).
@@ -792,8 +792,8 @@ pub enum SourceHealth {
 
 /// A lasting rule of the inbox, as `inbox.list_rules` lists it: a lane remembered for a source or,
 /// for mail, for one sender of it (`inbox.set_item_lane` with `remember`), a muted source
-/// (`inbox.mute_source`), the mail of one sender or domain hidden (`inbox.hide_sender`, task
-/// E3.10), or a trait muted (`inbox.mute_item`, task E8.6a).
+/// (`inbox.mute_source`) or a trait muted (`inbox.mute_item`, task E8.6a). Mail is never hidden by
+/// a rule (issue #339: filters took that over); the senders and domains hidden before are gone.
 ///
 /// At most one of `sender`, `domain` and `facet` is set; with none the rule is about the whole
 /// source. A rule with [`RuleEffect::Category`] always names a `sender` or a `domain`. A rule with `facet` holds for every source of the same kind as `source` (a sender muted
@@ -806,13 +806,12 @@ pub struct Rule {
     pub source: SourceRef,
     /// Only reports from this sender: the address of a mail's sender, in small letters (task
     /// E4.1). Moving a mail with `remember` keeps the lane for its sender, not for the whole
-    /// account; hiding a sender (task E3.10) mutes only it. `None`: every report of the source
-    /// (or of `domain`).
+    /// account. `None`: every report of the source (or of `domain`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
     /// Only mail from this domain (task E3.10): the part of the sender's address after `@`, in
     /// small letters, matched exactly – `shop.example` does not cover `news.shop.example`
-    /// ([`crate::rules::domain_of`]). Only hidden domains have it. `None`: no domain rule.
+    /// ([`crate::rules::domain_of`]). `None`: no domain rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     pub effect: RuleEffect,
@@ -912,55 +911,6 @@ pub enum SortField {
     Text,
 }
 
-/// What `inbox.hide_sender` hides of a mail entry (tasks E3.10, E3.11).
-///
-/// The scopes need different rights (`torro_ipc::api`, `Request::operation`): `conversation`
-/// changes one entry and keeps no rule, so write access covers it; `sender` and `domain` keep a
-/// lasting rule for every mail account and need admin rights, like muting a source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HideScope {
-    /// Only this conversation (task E3.11): the entry is done, its mail stays unread and in place,
-    /// no rule is kept. A new reply in the conversation brings the entry back, as after "done".
-    Conversation,
-    /// Every mail from the entry's sender's address, e.g. `news@shop.example`, in every mail
-    /// account (task E3.11).
-    Sender,
-    /// Every mail from the domain of that address, e.g. `shop.example` – exactly that domain, not
-    /// its subdomains –, in every mail account (task E3.11).
-    Domain,
-}
-
-impl HideScope {
-    /// Whether hiding with this scope keeps a lasting rule (`sender`, `domain`); `conversation`
-    /// keeps none.
-    pub fn keeps_rule(self) -> bool {
-        !matches!(self, HideScope::Conversation)
-    }
-}
-
-/// What `inbox.hide_sender` did (task E3.11): enough to take it back exactly ("Undo" in the app).
-///
-/// Undo is `inbox.remove_rule { id: rule.id }` when `new_rule`, then `inbox.set_item_done { id,
-/// done: false }` for every id in `done` – nothing else changed, and no mail was touched. An entry
-/// that was snoozed before comes back open, not snoozed: the answer does not keep its time.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
-pub struct Hidden {
-    /// The lasting rule that hides the sender or domain in every mail account from now on, as
-    /// stored – also when it was there already. `None` for `scope: conversation`, which keeps
-    /// none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rule: Option<Rule>,
-    /// Whether this call made `rule`: `false` when the same rule was there already, so taking the
-    /// call back must leave it.
-    #[serde(default)]
-    pub new_rule: bool,
-    /// The ids of the entries this call marked done – open or snoozed before –, as far as the
-    /// caller may see them. Empty when nothing was waiting (the entry was done already).
-    #[serde(default)]
-    pub done: Vec<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,12 +944,6 @@ mod tests {
         assert_eq!(value["domain"], "shop.example");
         assert!(value.get("sender").is_none(), "{value}");
         assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), for_domain);
-        assert_eq!(json(HideScope::Sender), "sender");
-        assert_eq!(json(HideScope::Domain), "domain");
-        assert_eq!(json(HideScope::Conversation), "conversation");
-        assert!(
-            !HideScope::Conversation.keeps_rule() && HideScope::Sender.keeps_rule() && HideScope::Domain.keeps_rule()
-        );
     }
 
     #[test]
@@ -1065,16 +1009,6 @@ mod tests {
         assert_eq!(value["moved"], serde_json::json!(["e1"]));
         assert_eq!(serde_json::from_value::<Muted>(value).expect("deserialize"), muted);
         assert_eq!(serde_json::from_value::<Muted>(serde_json::json!({})).expect("deserialize"), Muted::default());
-    }
-
-    #[test]
-    fn hidden_names_the_rule_and_what_it_closed() {
-        let only = Hidden { rule: None, new_rule: false, done: vec!["e1".into()] };
-        let value = json(&only);
-        assert!(value.get("rule").is_none(), "no rule for a conversation: {value}");
-        assert_eq!(value["done"], serde_json::json!(["e1"]));
-        assert_eq!(serde_json::from_value::<Hidden>(value).expect("deserialize"), only);
-        assert_eq!(serde_json::from_value::<Hidden>(serde_json::json!({})).expect("deserialize"), Hidden::default());
     }
 
     #[test]

@@ -21,8 +21,8 @@ use torro_core::i18n::{tr, trf};
 use torro_mail::{Category, CategorySource, MailCategory, Order};
 
 use crate::item::{
-    AgentKind, Facet, FacetKey, FollowUp, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption,
-    MuteScope, Rule, RuleEffect, Sender, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
+    AgentKind, Facet, FacetKey, FollowUp, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
+    RuleEffect, Sender, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
 };
 
 /// Days a done entry is kept before [`expired`] says it goes.
@@ -191,45 +191,8 @@ pub fn domain_of(address: &str) -> Option<String> {
     (!domain.is_empty()).then_some(domain)
 }
 
-/// What `inbox.hide_sender` with `scope` keeps a rule for when it hides `item` (task E3.10): its
-/// sender's address ([`mail_sender`]) or that address's domain ([`domain_of`]). `None` for
-/// [`HideScope::Conversation`], which keeps no rule, for entries that are no mail and for mail
-/// without a sender's address: there is nothing to hide by. An "address" that starts with `@`
-/// names no sender: the core keeps a hidden domain as `@<domain>`, so such a sender's rule would be
-/// taken for the domain's.
-pub fn hide_target(item: &Item, scope: HideScope) -> Option<String> {
-    let sender = mail_sender(item).filter(|sender| !sender.starts_with('@'))?;
-    match scope {
-        HideScope::Conversation => None,
-        HideScope::Sender => Some(sender),
-        HideScope::Domain => domain_of(&sender),
-    }
-}
-
-/// Whether `item` can be hidden with `scope` (task E3.11): a conversation when it is mail (with or
-/// without a sender's address), a sender or domain when there is one to keep a rule for
-/// ([`hide_target`]). Everything else is no mail and is done with `inbox.set_item_done`.
-pub fn may_hide(item: &Item, scope: HideScope) -> bool {
-    match scope {
-        HideScope::Conversation => item.source.kind == SourceKind::Mail,
-        HideScope::Sender | HideScope::Domain => hide_target(item, scope).is_some(),
-    }
-}
-
-/// Whether `rule` hides mail of one sender or domain (task E3.10): a muting rule of a mail account
-/// with `sender` or `domain`. Such a rule holds for every mail account, not only the one it was
-/// made in (task E3.11, [`reaches`]).
-pub fn is_hiding(rule: &Rule) -> bool {
-    rule.effect == RuleEffect::Muted
-        && rule.facet.is_none()
-        && rule.source.kind == SourceKind::Mail
-        && (rule.sender.is_some() || rule.domain.is_some())
-}
-
-/// Whether `rule` is asked about new reports of `source`: every rule about `source` itself, and a
-/// hiding rule ([`is_hiding`]) about any mail account when `source` is a mail account – a hidden
-/// sender or domain is hidden in every account (task E3.11). Rules kept per account before E3.11
-/// are read the same way, so they hold for every account from now on.
+/// Whether `rule` is asked about new reports of `source`: every rule about `source` itself. (Mail
+/// of a sender or domain hidden in every account, task E3.11, is gone with issue #339.)
 ///
 /// A rule with a trait (task E8.6a, [`Rule::facet`]) is asked about every source of its source's
 /// kind – a sender muted from one mail account is muted in all, a project of one agent for every
@@ -238,7 +201,7 @@ pub fn reaches(rule: &Rule, source: &SourceRef) -> bool {
     match &rule.facet {
         Some(facet) if facet.key == FacetKey::Conversation => rule.source == *source,
         Some(_) => rule.source.kind == source.kind,
-        None => rule.source == *source || (is_hiding(rule) && source.kind == SourceKind::Mail),
+        None => rule.source == *source,
     }
 }
 
@@ -257,14 +220,6 @@ pub fn drops(rule: &Rule, sender: Option<&str>) -> bool {
         (Some(hidden), _) => sender == Some(hidden.as_str()),
         (None, Some(hidden)) => sender.and_then(domain_of).as_deref() == Some(hidden.as_str()),
     }
-}
-
-/// Whether `rule` hides `item`: a hiding rule ([`is_hiding`]) that would drop the entry's mail
-/// ([`drops`]), in whichever mail account the entry is (task E3.11). The entries it hides are done
-/// when the rule is made; a rule for a whole source hides none, muting leaves the entries already
-/// there.
-pub fn hides(rule: &Rule, item: &Item) -> bool {
-    is_hiding(rule) && reaches(rule, &item.source) && drops(rule, mail_sender(item).as_deref())
 }
 
 /// The longest value of a trait, in bytes; longer ones are cut at a character boundary, so the same
@@ -745,6 +700,22 @@ pub fn mute_entry(item: &mut Item, effect: MuteEffect, now: DateTime<Utc>) -> Op
     }
 }
 
+/// The effects muting offers for an entry of a source of `kind`, in the order of the bell's menu
+/// (issue #339): mail is never hidden – a filter moves it instead, so it can be found again –, so
+/// it gets no popup and "Info" only; every other source all three.
+pub fn mute_effects(kind: SourceKind) -> &'static [MuteEffect] {
+    match kind {
+        SourceKind::Mail => &[MuteEffect::NoPopup, MuteEffect::Info],
+        _ => &[MuteEffect::NoPopup, MuteEffect::Info, MuteEffect::Hide],
+    }
+}
+
+/// Whether muting an entry (or a mail message) of a source of `kind` with `effect` is allowed
+/// ([`mute_effects`]); the core answers `unsupported` otherwise, before anyone is asked.
+pub fn may_mute_with(kind: SourceKind, effect: MuteEffect) -> bool {
+    mute_effects(kind).contains(&effect)
+}
+
 /// The later of two ends of a rule, `None` (for good) being the latest: muting the same trait again
 /// keeps one rule that lasts as long as the longer of both asked for.
 pub fn later_end(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
@@ -754,7 +725,7 @@ pub fn later_end(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> Option<D
 /// Whether the rule with a trait `rule` (task E8.6a) holds for `item` at `now`: it is active
 /// ([`is_active`]), [`reaches`] the entry's source and the entry has the rule's trait – for the
 /// conversation its thread key. Never for the person's own entries ([`human_only`], security rule
-/// 1), never for rules without a trait (those ask [`drops`] and [`hides`]).
+/// 1), never for rules without a trait (those ask [`drops`]).
 pub fn mutes(rule: &Rule, item: &Item, now: DateTime<Utc>) -> bool {
     let Some(facet) = &rule.facet else { return false };
     if !is_active(rule, now) || human_only(item) || !reaches(rule, &item.source) {
@@ -1372,6 +1343,20 @@ mod tests {
         assert_eq!(later_end(Some(at(9)), None), None, "for good lasts longest");
     }
 
+    /// Issue #339: mail is never hidden; every other source may still be.
+    #[test]
+    fn mail_is_muted_without_hiding_and_other_sources_with() {
+        assert_eq!(mute_effects(SourceKind::Mail), [MuteEffect::NoPopup, MuteEffect::Info]);
+        assert!(!may_mute_with(SourceKind::Mail, MuteEffect::Hide));
+        assert!(
+            may_mute_with(SourceKind::Mail, MuteEffect::Info) && may_mute_with(SourceKind::Mail, MuteEffect::NoPopup)
+        );
+        for kind in [SourceKind::Agent, SourceKind::Script, SourceKind::Github, SourceKind::Talk, SourceKind::Ntfy] {
+            assert!(may_mute_with(kind, MuteEffect::Hide), "{kind:?}");
+            assert_eq!(mute_effects(kind).len(), 3);
+        }
+    }
+
     #[test]
     fn a_conversation_holds_only_in_its_own_source() {
         let thread = facet(FacetKey::Conversation, "thread-m");
@@ -1394,9 +1379,8 @@ mod tests {
         assert_eq!(muting(&all, &mail, at(9)), Some(MuteEffect::Hide));
         assert_eq!(muting(&all, &mail, at(10)), Some(MuteEffect::Info), "the ended one holds no more");
         assert_eq!(muting(&all, &item("n", Kind::Notice), at(9)), None);
-        // A muting rule with a trait is no rule for the whole source or a hidden sender.
+        // A muting rule with a trait is no rule for the whole source or a sender.
         assert!(!drops(&hide, Some("news@shop.example")) && !drops(&hide, None));
-        assert!(!is_hiding(&hide) && !hides(&hide, &mail));
         assert!(is_active(&hide, at(9)) && !is_active(&hide, at(10)));
     }
 
@@ -1408,17 +1392,6 @@ mod tests {
         assert_eq!(domain_of("no-at-sign"), None);
         assert_eq!(domain_of("news@"), None);
         assert_eq!(domain_of("news@shop.example.").as_deref(), Some("shop.example"), "a final dot is the same");
-    }
-
-    #[test]
-    fn hiding_needs_a_mail_with_a_sender() {
-        let mail = mail_from(Some("News@Shop.Example"));
-        assert_eq!(hide_target(&mail, HideScope::Sender).as_deref(), Some("news@shop.example"));
-        assert_eq!(hide_target(&mail, HideScope::Domain).as_deref(), Some("shop.example"));
-        assert_eq!(hide_target(&mail_from(None), HideScope::Sender), None, "no address");
-        assert_eq!(hide_target(&mail_from(Some("@shop.example")), HideScope::Sender), None, "no sender");
-        let notice = Item { from: mail.from.clone(), ..item("n", Kind::Notice) };
-        assert_eq!(hide_target(&notice, HideScope::Domain), None, "not mail");
     }
 
     #[test]
@@ -1439,41 +1412,18 @@ mod tests {
         assert!(!drops(&lane, Some("news@shop.example")), "a lane drops nothing");
     }
 
+    /// Issue #339: mail is hidden by no rule any more, so a rule without a trait – a muted account,
+    /// a remembered lane, a sender's rule kept before – holds only for its own source.
     #[test]
-    fn a_hiding_rule_hides_matching_mail_of_every_account_whatever_their_case() {
-        let domain = hiding(None, Some("shop.example"));
-        assert!(hides(&domain, &mail_from(Some("NEWS@SHOP.EXAMPLE"))));
-        assert!(!hides(&domain, &mail_from(Some("news@mail.shop.example"))));
-        assert!(!hides(&domain, &mail_from(None)));
-        let other_account =
-            Item { source: SourceRef::mail("anna@work.example.org"), ..mail_from(Some("a@shop.example")) };
-        assert!(hides(&domain, &other_account), "every mail account (task E3.11)");
-        let notice = Item { from: other_account.from.clone(), ..item("n", Kind::Notice) };
-        assert!(!hides(&domain, &notice), "only mail");
-        assert!(!hides(&hiding(None, None), &mail_from(Some("a@shop.example"))), "muting hides nothing already there");
-    }
-
-    #[test]
-    fn hiding_rules_reach_every_mail_account_and_other_rules_only_their_source() {
+    fn rules_without_a_trait_reach_only_their_source() {
         let work = SourceRef::mail("anna@work.example.org");
         let sender = hiding(Some("news@shop.example"), None);
-        assert!(is_hiding(&sender) && reaches(&sender, &work) && reaches(&sender, &sender.source));
+        assert!(reaches(&sender, &sender.source) && !reaches(&sender, &work), "no longer every account");
         assert!(!reaches(&sender, &SourceRef::script("ci")), "no other kind of source");
         let whole = hiding(None, None);
-        assert!(!is_hiding(&whole) && !reaches(&whole, &work), "a muted account stays that account's");
+        assert!(!reaches(&whole, &work), "a muted account stays that account's");
         let lane = Rule { effect: RuleEffect::Lane { lane: Lane::Info }, ..sender.clone() };
-        assert!(!is_hiding(&lane) && !reaches(&lane, &work), "a remembered lane stays per account");
-    }
-
-    #[test]
-    fn a_conversation_hides_any_mail_and_keeps_no_rule() {
-        let mail = mail_from(Some("news@shop.example"));
-        assert_eq!(hide_target(&mail, HideScope::Conversation), None, "no rule");
-        assert!(may_hide(&mail, HideScope::Conversation));
-        assert!(may_hide(&mail_from(None), HideScope::Conversation), "also without a sender");
-        assert!(!may_hide(&mail_from(None), HideScope::Sender));
-        assert!(!may_hide(&item("n", Kind::Notice), HideScope::Conversation), "no mail");
-        assert!(may_hide(&mail, HideScope::Domain));
+        assert!(!reaches(&lane, &work), "a remembered lane stays per account");
     }
 
     #[test]
