@@ -512,7 +512,8 @@ impl Demo {
     }
 
     /// The sample rules with what they caught (`inbox.list_rules`, task S.20): a remembered lane,
-    /// a muted source, a hidden sender and a muted trait – one of each kind the section shows.
+    /// a muted source, a trait hidden (an ntfy tag: mail is never hidden, issue #339) and a muted
+    /// trait – one of each kind the section shows.
     fn rules(&self) -> (Vec<Rule>, Vec<RuleHits>) {
         let made = |day| Utc.with_ymd_and_hms(2026, 10, day, 9, 0, 0).single().unwrap_or_else(Utc::now);
         let rule = |id: &str, source: SourceRef, effect, day| Rule {
@@ -529,8 +530,8 @@ impl Demo {
             rule("r1", SourceRef::script("nightly-build"), RuleEffect::Lane { lane: Lane::Info }, 10),
             rule("r2", SourceRef::script("cron"), RuleEffect::Muted, 11),
             Rule {
-                sender: Some("news@shop.example".into()),
-                ..rule("r3", SourceRef::mail(MAIL_ADDRESS), RuleEffect::Muted, 12)
+                facet: Some(Facet { key: FacetKey::Tag, value: "backup".into() }),
+                ..rule("r3", SourceRef::ntfy("ntfy.sh"), RuleEffect::Muted, 12)
             },
             Rule {
                 facet: Some(Facet { key: FacetKey::Bulk, value: "bulk".into() }),

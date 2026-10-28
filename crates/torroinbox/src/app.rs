@@ -15,16 +15,16 @@
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
 //! Its sidebar (issue #337) lists the groups of categories without a title, then "Unfiltered" (the
 //! mail of every inbox, with the unread mail it holds, [`App::unfiltered_entry`]); after a gap Reply
-//! later and Set aside (the piles, with the mail they hold), Follow up and Hidden (tasks E18.4 and
-//! E19.4, [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
+//! later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
+//! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
 //! folder browser grouped by account ([`App::folder_entries`]); no sources. The mail header filters combined views by account. In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
 //! `list::Look`); in the wide layout an open mail stands in the reader beside the list
 //! ([`App::wide_reader`], `mail::reader`) instead of in the panel; every action on it stands in the
 //! mail's action rail at its right (task E14.3, [`App::rail_groups`]), collapsed or expanded as the
 //! window remembers ([`App::actions`], `]`). The narrow layout opens the same grouped folder
-//! browser on demand. Nothing is dismissed in the mail window: mail is archived, followed up, put on
-//! a pile or hidden, and "Show again" takes a hidden mail back into "Unfiltered" ([`App::show_mail`]).
+//! browser on demand. Nothing is dismissed in the mail window: mail is archived, followed up or put
+//! on a pile. Nothing is hidden either (issue #339): a filter moves mail instead.
 //!
 //! Reply later, Set aside and Follow up (task E19.4, `docs/tasks/eingang.md` E19): the mail window
 //! has no "Later". `w` and `b` – and the rail's File and the row's context menu – put a mail on "Reply
@@ -96,7 +96,7 @@
 //! the entries get the demo's tasks ([`demo_task`]).
 //!
 //! The mail window starts on "Unfiltered" (task E18.4, [`View::All`]): the mail of every inbox, at
-//! the end of the categories, with the piles, "Follow up" and "Hidden" under it and "Folders" (Archive,
+//! the end of the categories, with the piles and "Follow up" under it and "Folders" (Archive,
 //! pinned folders, "Open folders") after them. The other windows start on the overview (task E3.9,
 //! [`View::Overview`]): the open entries in the column "Mail" and "Notifications". The app keeps
 //! which column has the
@@ -702,9 +702,6 @@ pub enum Undo {
     /// Takes "Dismiss all" back (task E8.4): opens the entries it closed again
     /// (`inbox.set_item_done` with `false`, one by one).
     Dismissed(Vec<String>),
-    /// Takes "Show again" back (task E18.4): `inbox.set_mail_shown` with `shown: false` for these
-    /// mails, which go back into "Hidden" – the rule that hid them still holds.
-    Shown(Vec<String>),
     /// Takes a change of pile back (task E19.4): `inbox.set_mail_pile` for these mails with the pile
     /// they lay on before ([`MessageSummary::pile`]; `None`: on none) and since when they lay there
     /// ([`MessageSummary::pile_since`], decision of #315), so an answer sent meanwhile still takes
@@ -889,9 +886,6 @@ impl MuteFor {
         }
     }
 }
-
-/// What muting does, in the order of the segments of "What happens": mildest first.
-pub const MUTE_EFFECTS: [MuteEffect; 3] = [MuteEffect::NoPopup, MuteEffect::Info, MuteEffect::Hide];
 
 /// The word of a segment of "What happens" (task E8.6b).
 pub fn effect_name(effect: MuteEffect) -> &'static str {
@@ -1083,9 +1077,6 @@ pub enum Sent {
     /// Archiving from a mail entry and "Archive mail" (task E18.5): after the move ([`Sent::Mail`] just
     /// before), `inbox.set_item_done` for these entries – the mail entry's, then the question's.
     MailDone(Vec<String>),
-    /// `inbox.set_mail_shown` (task E18.4, "Show again" and its undo): the mails, `shown` and the
-    /// hint that follows the answer (`None` after an undo).
-    Shown(Vec<String>, bool, Option<Hint>),
     /// `inbox.set_mail_pile` (task E19.4, `w`, `b`, the rail's items and their undo): the mails, the
     /// pile (`None`: off it), since when (an undo's, decision of #315) and the hint that follows the
     /// answer (`None` after an undo).
@@ -1160,13 +1151,10 @@ pub enum View {
     /// time, by relevance or by date; `mail.*` only.
     Search(SearchView),
     /// "Unfiltered" of the mail window (task E18.4, decision 1 of E18; named "All" until issue #337):
-    /// the mail in the inbox of every account shown, neither snoozed nor hidden, newest first, a page
+    /// the mail in the inbox of every account shown, not snoozed, newest first, a page
     /// at a time (`MailSource::mail_by_role` with [`Role::Inbox`]); the mail window's start view, the
     /// last row of the categories. `mail.*` only.
     All,
-    /// "Hidden" of the mail window (task E18.4, decision 3): the mail of every account's inbox the
-    /// core keeps out of "All" (`hidden: true`), where "Show again" takes one back. `mail.*` only.
-    Hidden,
     /// "Archive" under "Folders" of the mail window (task E18.4): the mail in the archive folders
     /// of every account shown ([`Role::Archive`]). `mail.*` only.
     Archive,
@@ -1194,7 +1182,6 @@ impl View {
             | View::Category(_)
             | View::Search(_)
             | View::All
-            | View::Hidden
             | View::Archive
             | View::ReplyLater
             | View::SetAside => return None,
@@ -1219,7 +1206,6 @@ impl View {
             View::Category(view) => view.label(),
             View::Search(_) => tr("Search").into(),
             View::All => tr("Unfiltered").into(),
-            View::Hidden => tr("Hidden").into(),
             // The word of the folder (`mail::folder_name`), not the button's (`trc("action", …)`).
             View::Archive => tr("Archive").into(),
             View::ReplyLater => tr("Reply later").into(),
@@ -1241,7 +1227,6 @@ impl View {
             View::Category(view) => mail::group_mark(view.group).0,
             View::Search(_) => Icon::Search,
             View::All => Icon::Mail,
-            View::Hidden => Icon::EyeOff,
             View::Archive => Icon::Archive,
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
@@ -1256,7 +1241,7 @@ impl View {
         }
     }
 
-    /// A view of mail: a folder, a category, a search, "Unfiltered", "Hidden", "Archive", a pile, or a
+    /// A view of mail: a folder, a category, a search, "Unfiltered", "Archive", a pile, or a
     /// window of mail waiting for its folders.
     pub fn is_mail(&self) -> bool {
         matches!(
@@ -1266,7 +1251,6 @@ impl View {
                 | View::Category(_)
                 | View::Search(_)
                 | View::All
-                | View::Hidden
                 | View::Archive
                 | View::ReplyLater
                 | View::SetAside
@@ -1284,7 +1268,7 @@ impl View {
 
     /// Whether a mail leaves this view when it goes on a pile or off one (decision 4 of E19):
     /// "Unfiltered" and the categories leave mail on a pile out, a pile lists only its own. A folder,
-    /// a search, "Hidden" and "Archive" keep listing it, with its new pile.
+    /// a search and "Archive" keep listing it, with its new pile.
     pub fn leaves_out_piles(&self) -> bool {
         matches!(self, View::All | View::Category(_) | View::ReplyLater | View::SetAside)
     }
@@ -1307,7 +1291,6 @@ impl View {
             // typing does not flash "loading" (issue #136).
             View::Search(_) => Some("search".to_owned()),
             View::All => Some("all".to_owned()),
-            View::Hidden => Some("hidden".to_owned()),
             View::Archive => Some("archive".to_owned()),
             View::ReplyLater => Some("reply-later".to_owned()),
             View::SetAside => Some("set-aside".to_owned()),
@@ -1315,13 +1298,12 @@ impl View {
         }
     }
 
-    /// The folder role, snoozed and hidden mail of "All", "Hidden" and "Archive" (task E18.4), as
+    /// The folder role and snoozed mail of "All" and "Archive" (task E18.4), as
     /// `MailSource::mail_by_role` asks for them; `None` for every other view.
-    pub fn by_role(&self) -> Option<(Role, Option<bool>, Option<bool>)> {
+    pub fn by_role(&self) -> Option<(Role, Option<bool>)> {
         match self {
-            View::All => Some((Role::Inbox, Some(false), Some(false))),
-            View::Hidden => Some((Role::Inbox, None, Some(true))),
-            View::Archive => Some((Role::Archive, None, None)),
+            View::All => Some((Role::Inbox, Some(false))),
+            View::Archive => Some((Role::Archive, None)),
             _ => None,
         }
     }
@@ -1547,9 +1529,6 @@ pub enum Open {
     CategoryMenu,
     /// The mail window's "Archive" under "Folders" (task E18.4): the mail of every archive folder.
     Archive,
-    /// The mail window's "Hidden" (task E18.4) with its first mail in the reader (or the panel), so
-    /// "Show again" stands in the rail and its context menu.
-    Hidden,
     /// The mail window's pile "Reply later" (task E19.4).
     ReplyLater,
     /// The mail window's pile "Set aside" (task E19.4).
@@ -1562,7 +1541,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 66] = [
+    const ALL: [(&'static str, Open); 65] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1624,7 +1603,6 @@ impl Open {
         ("category", Open::Category),
         ("category-menu", Open::CategoryMenu),
         ("archive", Open::Archive),
-        ("hidden", Open::Hidden),
         ("reply-later", Open::ReplyLater),
         ("set-aside", Open::SetAside),
         ("focus", Open::Focus),
@@ -2861,8 +2839,8 @@ pub enum Message {
     /// and "What happens" as chosen.
     MuteBy(String, MuteScope),
     /// A suggestion of Insights' "Where you could cut back" (task E8.12, finding 14): `inbox.mute_item`
-    /// for the entry with this id and scope with the suggestion's own effect ("Hide sender" hides,
-    /// "Mute app" keeps popups away), for as long as "For" says.
+    /// for the entry with this id and scope with the suggestion's own effect ("Sender to Info" moves
+    /// to Info, "Mute app" keeps popups away), for as long as "For" says.
     MuteSuggested(String, MuteScope, MuteEffect),
     /// The core's answer to `inbox.mute_item`, with the effect asked for (for the toast).
     MutedBy(Result<Muted, String>, MuteEffect),
@@ -3046,11 +3024,6 @@ pub enum Message {
     LetterLoaded(String, Result<Box<Mail>, String>),
     /// From the panel or a key: do this with the message with this id.
     Mail(MailAction, String),
-    /// "Show again" on a mail of "Hidden" (task E18.4, decisions 10 and 11 of E18): back into
-    /// "All", the rule that hid it stays ([`App::show_mail`]).
-    ShowMail(String),
-    /// The core's answer to `inbox.set_mail_shown`, with the hint to show (`None` after an undo).
-    MailShown(Result<(), String>, Option<Hint>),
     /// "Reply later", "Set aside" and their "Remove from …" (task E19.4, `w`, `b`, the rail's File and
     /// the row's context menu): the mail with this id on that pile, or off it with `None`
     /// ([`App::pile_mail`]).
@@ -3456,9 +3429,9 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
                 category_selected(&*inbox, view.categories(), limit, None, order, mail_accounts.as_deref()).await?;
             Some(page)
         }
-        // "All", "Hidden" and "Archive" (task E18.4): the mail of one folder role of every account
-        // shown, as the core leaves out what is snoozed or hidden.
-        View::All | View::Hidden | View::Archive => {
+        // "All" and "Archive" (task E18.4): the mail of one folder role of every account shown, as
+        // the core leaves out what is snoozed.
+        View::All | View::Archive => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         // A pile (task E19.4): its mail from every folder of the accounts shown.
@@ -3533,7 +3506,7 @@ async fn category_selected<S: MailSource>(
     }
 }
 
-/// The page of "All", "Hidden" or "Archive" (`view`, task E18.4) from `cursor` on: one
+/// The page of "All" or "Archive" (`view`, task E18.4) from `cursor` on: one
 /// `MailSource::mail_by_role` for every account (`accounts` `None`) or the one chosen; with several
 /// chosen, the core's pages walked as [`category_selected`] does, keeping the chosen accounts' mail,
 /// so the cursor stays the core's and "Load more" skips nothing. Empty for any other view and for no
@@ -3546,12 +3519,12 @@ async fn role_selected<S: MailSource>(
     order: Order,
     accounts: Option<&[String]>,
 ) -> Result<MailPage, String> {
-    let Some((role, snoozed, hidden)) = view.by_role() else { return Ok(MailPage::of(Vec::new(), None)) };
-    // "All" leaves the mail on a pile out (task E19.4, decision 3 of E19); "Hidden" and "Archive" are
-    // where it lies as well.
+    let Some((role, snoozed)) = view.by_role() else { return Ok(MailPage::of(Vec::new(), None)) };
+    // "All" leaves the mail on a pile out (task E19.4, decision 3 of E19); "Archive" is where it
+    // lies as well.
     let pile = (*view == View::All).then_some(PileFilter::Without);
     let ask = |account: Option<String>, limit: u32, cursor: Option<String>| async move {
-        let find = MailByRole { role, account, snoozed, hidden, pile, order, limit, cursor };
+        let find = MailByRole { role, account, snoozed, pile, order, limit, cursor };
         inbox.mail_by_role(find).await.map_err(|err| err.to_string())
     };
     walk_selected(ask, limit, cursor, accounts).await
@@ -3804,7 +3777,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
                 Some(Open::Archive) => View::Archive,
-                Some(Open::Hidden) => View::Hidden,
                 Some(Open::ReplyLater | Open::Focus) => View::ReplyLater,
                 Some(Open::SetAside) => View::SetAside,
                 // The first inbox, once the folders are in.
@@ -4434,7 +4406,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::MuteFor(span) => self.mute_for = span,
             Message::MuteHow(effect) => self.mute_effect = effect,
-            Message::MuteBy(id, scope) => return self.mute_by(id, scope, self.mute_effect),
+            Message::MuteBy(id, scope) => return self.mute_by(id, scope, self.mute_effect_now()),
             Message::MuteSuggested(id, scope, effect) => return self.mute_by(id, scope, effect),
             Message::MutedBy(Ok(muted), effect) => {
                 let text = muted_note(&muted, effect, self.now);
@@ -4888,7 +4860,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
-            Message::ShowMail(id) => return self.show_mail(id),
             Message::Pile(id, pile) => return self.pile_mail(id, pile),
             Message::Piled(Ok(()), hint) => {
                 if let Some(hint) = hint {
@@ -4940,17 +4911,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                         }
                     }
                 }
-            }
-            Message::MailShown(Ok(()), hint) => {
-                if let Some(hint) = hint {
-                    self.hint = Some(Hint { shown: Instant::now(), ..hint });
-                }
-                return self.load();
-            }
-            // Not changed: the load brings the row back, and the error line says why.
-            Message::MailShown(Err(err), _) => {
-                self.error = Some(Failure::new(tr("Couldn't show the mail again."), err));
-                return self.load();
             }
             Message::MailEdited(Ok(()), ids, hint) => {
                 // Moved: out of the core's lists soon, then they need no hiding any more.
@@ -5799,39 +5759,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         theirs.peek().is_none() || theirs.any(|folder| folder.role == Some(Role::Archive))
     }
 
-    /// "Show again" on the mail `id` of "Hidden" (task E18.4, decisions 10 and 11 of E18):
-    /// `MailSource::set_mail_shown` with `shown: true`. The row leaves the list at once, as when it is
-    /// archived ([`App::take_out`]), the hint "Back in Unfiltered." offers to undo it ([`Undo::Shown`]). The
-    /// rule that hid it stays, its entry stays as it is; an error brings the row back with the load
-    /// and says so ([`Message::MailShown`]).
-    fn show_mail(&mut self, id: String) -> Task<Message> {
-        self.close_menus();
-        let ids = vec![id.clone()];
-        let hint = Hint {
-            text: tr("Back in Unfiltered.").to_owned(),
-            undo: Some(Undo::Shown(ids.clone())),
-            shown: Instant::now(),
-            folder: None,
-        };
-        self.take_out(&id);
-        self.set_mail_shown(ids, true, Some(hint))
-    }
-
-    /// Sends `inbox.set_mail_shown` for `ids`; the answer comes as [`Message::MailShown`] with `hint`.
-    fn set_mail_shown(&mut self, ids: Vec<String>, shown: bool, hint: Option<Hint>) -> Task<Message> {
-        #[cfg(test)]
-        self.sent.push(Sent::Shown(ids.clone(), shown, hint.clone()));
-        let inbox = self.inbox.clone();
-        Task::perform(
-            async move { inbox.set_mail_shown(ids, shown).await.map_err(|err| err.to_string()) },
-            move |result| Message::MailShown(result, hint.clone()),
-        )
-    }
-
     /// "Reply later", "Set aside" and "Remove from …" on the mail `id` (task E19.4, decisions 3 and 4
     /// of E19): `MailSource::set_mail_pile` with `pile` (`None`: off its pile). The row leaves a list
     /// that leaves mail on a pile out ([`View::leaves_out_piles`]: "Unfiltered", a category, a
-    /// pile), as when it is archived ([`App::take_out`]); in a folder, a search, "Hidden" and "Archive"
+    /// pile), as when it is archived ([`App::take_out`]); in a folder, a search and "Archive"
     /// it stays with its new pile. The numbers on the piles follow at once. The hint ("On Reply
     /// later.", "Set aside.", "Removed from Reply later.", "Removed from Set aside.") offers to undo it with the pile the mail lay on before
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
@@ -6923,8 +6854,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     category_selected(&*inbox, categories, mail::PAGE, Some(cursor), order, selected.as_deref()).await
                 })
             }
-            // "All", "Hidden" and "Archive" (task E18.4): the next page of the same role and fields.
-            View::All | View::Hidden | View::Archive => {
+            // "All" and "Archive" (task E18.4): the next page of the same role and fields.
+            View::All | View::Archive => {
                 let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
                 Box::pin(async move {
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
@@ -7650,7 +7581,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Task::none()
             }
             Command::MuteHow { stronger } => {
-                self.mute_effect = step_in(&MUTE_EFFECTS, self.mute_effect, stronger);
+                self.mute_effect = step_in(self.mute_effects(), self.mute_effect_now(), stronger);
                 Task::none()
             }
             Command::EarlierDay => self.update(Message::PickDay(self.pick.day - Days::new(1))),
@@ -7938,6 +7869,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             },
             |(id, options)| Message::MuteOptions(id, options),
         )
+    }
+
+    /// The segments of "What happens" in the bell's menu, mildest first: what muting its subject may
+    /// do ([`rules::mute_effects`]). Mail is never hidden (issue #339), so for a mail entry or message
+    /// it is "No popup" and "Only Info" only.
+    fn mute_effects(&self) -> &'static [MuteEffect] {
+        rules::mute_effects(self.subject.as_ref().map_or(SourceKind::Script, |item| item.source.kind))
+    }
+
+    /// What muting the bell's subject does: the effect chosen last where the subject offers it, else
+    /// the strongest it offers – "Only Info" for mail after "Hide" was chosen for an agent. The choice
+    /// itself stays for the next subject that offers it.
+    fn mute_effect_now(&self) -> MuteEffect {
+        let offered = self.mute_effects();
+        match offered.contains(&self.mute_effect) {
+            true => self.mute_effect,
+            false => offered.last().copied().unwrap_or(MuteEffect::Info),
+        }
     }
 
     /// Mutes by the entry `id` with `scope` (`inbox.mute_item`), for as long as "For" says and with
@@ -8780,8 +8729,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Message::MailEdited(result, ids.clone(), None)
                 })
             }
-            // Back into "Hidden": the load after the answer shows the row there again.
-            Undo::Shown(ids) => self.set_mail_shown(ids, false, None),
             // Back on the pile it lay on, or off it: the load after the answer puts the row back.
             // With the time it lay there since (decision of #315).
             Undo::Pile(ids, pile, since) => {
@@ -9163,7 +9110,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The groups of the mail's action rail (task E14.3, `mail::action_groups`) for the mail the
     /// reader or the mail window's panel shows, with Close only in the wide window's reader (the
-    /// panel has its ✕) and "Show again" only in "Hidden" (task E18.4). `None` where no rail is drawn: outside the mail window, while no mail is
+    /// panel has its ✕). `None` where no rail is drawn: outside the mail window, while no mail is
     /// open there, and for an entry without a mail (its panel is `detail::panel`). The same groups
     /// make the rail ([`App::rail`]) and the card of [`App::rail_open`] ([`App::rail_layer`]), so both
     /// register and read the same anchors.
@@ -9177,7 +9124,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return None;
         }
         let close = class == SizeClass::Wide;
-        Some(mail::action_groups(&reading, entry, &self.folders, close, self.view == View::Hidden, anchors))
+        Some(mail::action_groups(&reading, entry, &self.folders, close, anchors))
     }
 
     /// The mail's action rail of `groups` in `class` (`widgets::action_rail_toggle`): in the wide window
@@ -10267,8 +10214,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// their lane, a source its open entries in both lanes – so the sources add up to "For me"
     /// plus "Info". "Snoozed" and "Done" are put away and have no number. No "0" anywhere.
     ///
-    /// The mail window lists Reply later and Set aside – with the mail they hold (task E19.4) –,
-    /// Follow up and Hidden, and no sources: they are all mail accounts, whose folders follow
+    /// The mail window lists Reply later and Set aside – with the mail they hold (task E19.4) – and
+    /// Follow up, and no sources: they are all mail accounts, whose folders follow
     /// ([`App::folder_entries`]). "Unfiltered" stands above them, at the end of the categories
     /// ([`App::unfiltered_entry`], issue #337).
     fn nav_entries(&self) -> (Vec<NavEntry>, Vec<NavEntry>) {
@@ -10284,14 +10231,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
         let for_me = Some(self.for_me.len()).filter(|&n| n > 0);
         let views = match kind {
-            // What waits is the mail on each pile (task E19.4); Follow up and Hidden are put away
-            // and have no number.
+            // What waits is the mail on each pile (task E19.4); Follow up is put away and has no
+            // number.
             Kind::Mail => {
                 vec![
                     entry(View::ReplyLater, number(self.reply_later)),
                     entry(View::SetAside, number(self.set_aside)),
                     entry(View::Snoozed, None),
-                    entry(View::Hidden, None),
                 ]
             }
             // New, Later, Done (task E8.4); "New" counts all it shows, both lanes. The sources are
@@ -11010,7 +10956,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // The mail window has no section Rules; its foot entry opens the Notification Hub's
         // window, which takes a longer word and the arrow out of this window.
         let leaves = self.launch.kind == Kind::Mail;
-        let width = mute_menu_width(&choices, leaves);
+        let offered = self.mute_effects();
+        let width = mute_menu_width(&choices, offered, leaves);
         let mut list = column![menu_caption(tr("Mute"))];
         let quiet = match &self.mute_options {
             None => Some(tr("Loading…")),
@@ -11030,10 +10977,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Meta, width));
         list = list.extend(entries);
         let span = MuteFor::ALL.iter().position(|span| *span == self.mute_for).unwrap_or_default();
-        let how = MUTE_EFFECTS.iter().position(|effect| *effect == self.mute_effect).unwrap_or_default();
+        let now = self.mute_effect_now();
+        let how = offered.iter().position(|effect| *effect == now).unwrap_or_default();
         let spans = widgets::segmented(MuteFor::ALL.map(|span| (span.name(), Message::MuteFor(span))), span);
         let effects =
-            widgets::segmented(MUTE_EFFECTS.map(|effect| (effect_name(effect), Message::MuteHow(effect))), how);
+            widgets::segmented(offered.iter().map(|effect| (effect_name(*effect), Message::MuteHow(*effect))), how);
         let segment = |control: Element<'a, Message>| {
             container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
         };
@@ -11323,7 +11271,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return self.ask_event(&item.id);
                 }
             }
-            Some(Open::Mail | Open::Hidden) => {
+            Some(Open::Mail) => {
                 self.cursor = self.messages.first().map(|message| message.id.clone());
                 self.reading = self.cursor.is_some();
             }
@@ -11603,7 +11551,6 @@ fn closes_rail(message: &Message) -> bool {
             | Message::AskHide(_)
             | Message::AskMuteMail(_)
             | Message::AskSaveAttachments(_)
-            | Message::ShowMail(_)
             | Message::ShowMailAs(_)
             | Message::MailColors(_)
             | Message::CopyText
@@ -11658,12 +11605,12 @@ fn rules_entry_width(leaves: bool) -> f32 {
     frame + icon::SIZE + gap + typo::text_width(rules_word(leaves), typo::body()) + trail
 }
 
-/// The width of the bell's menu with `choices`: as a menu of choices ([`choice_menu_width`]), and
-/// at least what its segments need beside the menu's and their insets – "Until tomorrow" and
-/// "Only Info" are long in some languages.
-fn mute_menu_width(choices: &[Choice], leaves: bool) -> f32 {
+/// The width of the bell's menu with `choices` and the segments `effects` of "What happens": as a
+/// menu of choices ([`choice_menu_width`]), and at least what its segments need beside the menu's
+/// and their insets – "Until tomorrow" and "Only Info" are long in some languages.
+fn mute_menu_width(choices: &[Choice], effects: &[MuteEffect], leaves: bool) -> f32 {
     let spans = MuteFor::ALL.map(MuteFor::name);
-    let effects = MUTE_EFFECTS.map(effect_name);
+    let effects: Vec<&str> = effects.iter().map(|effect| effect_name(*effect)).collect();
     let frame = 2.0 * (style::MENU_INSET + space::s());
     let segments = segmented_width(&spans).max(segmented_width(&effects)) + frame;
     let rules = rules_entry_width(leaves).ceil();
@@ -13274,7 +13221,8 @@ mod tests {
 
     /// Issue #123: mail has one menu to mute – `m` opens the bell's menu with the core's ways for the
     /// entry, then "Move to junk" after a line; the domain picked mutes for as long as "For" says,
-    /// the mail stays unread, and the undo brings the entry back.
+    /// the mail stays unread, and the undo takes the rule back. Issue #339: "Hide" chosen before
+    /// mutes mail with "Only Info", mail is never hidden.
     #[test]
     fn m_opens_the_bells_menu_for_mail() {
         let mut app = loaded(&["--open", "info"]);
@@ -13295,20 +13243,23 @@ mod tests {
         let _ = app.update(Message::MuteHow(MuteEffect::Hide));
         let _ = press(&mut app, Key::Digit(digit));
         let week = Some(app.now + TimeDelta::days(7));
-        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(sale.id.clone(), domain, week, MuteEffect::Hide)));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(sale.id.clone(), domain, week, MuteEffect::Info)));
         deliver(&mut app);
-        assert!(!ids(&app).contains(&sale.id.as_str()), "out of the inbox");
+        assert!(ids(&app).contains(&sale.id.as_str()), "still in Info: mail is never hidden");
         let Some(Link::Mail { message }) = &sale.link else { panic!("a mail entry") };
         let flags = app.inbox.get_mail(message).map(|mail| mail.summary.flags).expect("the mail");
         assert!(!flags.contains(&torro_mail::Flag::Seen), "muting leaves the mail unread");
+        let Some(Undo::Muted { rule: Some(rule), .. }) = app.hint.clone().and_then(|hint| hint.undo) else {
+            panic!("a rule to take back")
+        };
         let _ = press(&mut app, Key::U);
         deliver(&mut app);
-        assert!(ids(&app).contains(&sale.id.as_str()), "the undo brings it back");
+        assert_eq!(block_on(app.inbox.remove_rule(rule)), Err(InboxError::NotFound), "the undo took it back");
     }
 
     /// Issue #123 (acceptance): "This conversation" for a week keeps a rule, so further mail of the
-    /// conversation stays out of "For me"; hidden for good it is done without marking the mail read,
-    /// as "Hide from Notification Hub" did, and the undo of the suite takes it back.
+    /// conversation stays out of "For me"; to Info for good it moves without marking the mail read,
+    /// and the undo of the suite takes it back. Issue #339: never hidden, also when "Hide" was chosen.
     #[test]
     fn this_conversation_is_muted_without_marking_the_mail_read_and_undoes() {
         let mut app = loaded(&[]);
@@ -13319,19 +13270,20 @@ mod tests {
         let _ = press(&mut app, Key::Digit(1));
         assert_eq!(
             app.sent.last(),
-            Some(&Sent::MuteItem(plans.id.clone(), MuteScope::Conversation, None, MuteEffect::Hide))
+            Some(&Sent::MuteItem(plans.id.clone(), MuteScope::Conversation, None, MuteEffect::Info))
         );
         deliver(&mut app);
         let hint = app.hint.clone().expect("a hint");
-        let undo = Undo::Muted { rule: None, reopen: vec![plans.id.clone()], moved: Vec::new() };
-        assert_eq!((hint.text.as_str(), hint.undo), (tr("Conversation hidden"), Some(undo)));
-        assert!(!ids(&app).contains(&plans.id.as_str()), "out of the inbox");
+        let undo = Undo::Muted { rule: None, reopen: Vec::new(), moved: vec![plans.id.clone()] };
+        assert_eq!(hint.text, trf("Moved to {lane}", &[("lane", &tr("Info"))]));
+        assert_eq!(hint.undo, Some(undo));
+        assert_eq!(stored(&app, &plans.id).lane, Lane::Info, "in Info, not hidden");
         let Some(Link::Mail { message }) = &plans.link else { panic!("a mail entry") };
         let flags = app.inbox.get_mail(message).map(|mail| mail.summary.flags).expect("the mail");
         assert!(!flags.contains(&torro_mail::Flag::Seen), "unlike done, the mail stays unread");
         let _ = app.update(Message::Undo);
         deliver(&mut app);
-        assert!(ids(&app).contains(&plans.id.as_str()), "back");
+        assert_eq!(stored(&app, &plans.id).lane, Lane::ForMe, "back");
 
         // For a week: a rule for the conversation, which holds for its next mail.
         bell_by_keys(&mut app);
@@ -13340,14 +13292,14 @@ mod tests {
         let week = Some(app.now + TimeDelta::days(7));
         assert_eq!(
             app.sent.last(),
-            Some(&Sent::MuteItem(plans.id.clone(), MuteScope::Conversation, week, MuteEffect::Hide))
+            Some(&Sent::MuteItem(plans.id.clone(), MuteScope::Conversation, week, MuteEffect::Info))
         );
         deliver(&mut app);
         let Some(Undo::Muted { rule: Some(rule), .. }) = app.hint.clone().and_then(|hint| hint.undo) else {
             panic!("a rule to take back")
         };
         // Asked again, the demo answers the rule already kept.
-        let again = block_on(app.inbox.mute_item(plans.id.clone(), MuteScope::Conversation, week, MuteEffect::Hide));
+        let again = block_on(app.inbox.mute_item(plans.id.clone(), MuteScope::Conversation, week, MuteEffect::Info));
         let kept = again.ok().and_then(|muted| muted.rule).expect("the rule");
         assert_eq!(kept.id, rule);
         let next = Item { id: "next".into(), state: State::New, ..stored(&app, &plans.id) };
@@ -13383,16 +13335,16 @@ mod tests {
     fn the_sender_is_muted_and_mail_goes_to_junk_with_an_undo() {
         let (mut app, offer, address) = at_mail();
         bell_by_keys(&mut app);
-        let _ = app.update(Message::MuteHow(MuteEffect::Hide));
+        let _ = app.update(Message::MuteHow(MuteEffect::Info));
         let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
         let place =
             app.choices().iter().position(|c| matches!(c.message, Message::MuteBy(_, scope) if scope == sender));
         let _ =
             press(&mut app, Key::Digit(place.map(|at| u8::try_from(at + 1).expect("a digit")).expect("the sender")));
-        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(offer.id.clone(), sender, None, MuteEffect::Hide)));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(offer.id.clone(), sender, None, MuteEffect::Info)));
         deliver(&mut app);
         let what = trf("Mail from {sender}", &[("sender", &address)]);
-        let text = trf("Hidden: {what}", &[("what", &what)]);
+        let text = trf("Only Info: {what}", &[("what", &what)]);
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(text));
 
         let (mut app, item, _) = at_mail();
@@ -13411,7 +13363,7 @@ mod tests {
         let (mut app, _, _) = at_mail();
         bell_by_keys(&mut app);
         let choices = app.choices();
-        let width = mute_menu_width(&choices, true);
+        let width = mute_menu_width(&choices, rules::mute_effects(SourceKind::Agent), true);
         assert!(width > widgets::menu_width(), "wider than a plain menu: {width}");
         for (i, choice) in choices.iter().enumerate() {
             let shown = choice_label(&choice.label, None, keys::digit(i + 1), width, choice.tint.is_some());
@@ -13510,6 +13462,34 @@ mod tests {
         let Some(Link::Mail { message }) = entry.link.clone() else { panic!("a mail entry") };
         let _ = app.update(Message::AskMuteMail(message));
         assert_eq!(app.sent.last(), Some(&Sent::MuteOptions(entry.id)));
+    }
+
+    /// Issue #339: mail is never hidden. The bell's menu of a mail offers "No popup" and "Only Info"
+    /// only, steps between those two, and mutes with "Only Info" where "Hide" was chosen for another
+    /// source – a choice the window keeps for the next entry that offers it.
+    #[test]
+    fn the_bells_menu_of_a_mail_has_no_hide() {
+        let mut app = loaded(&["--open", "folder"]);
+        load(&mut app);
+        let message = app.messages.first().map(|message| message.id.clone()).expect("a message");
+        let _ = app.update(Message::AskMuteMail(message.clone()));
+        deliver(&mut app);
+        assert_eq!(app.mute_effects(), [MuteEffect::NoPopup, MuteEffect::Info]);
+        app.mute_effect = MuteEffect::Hide;
+        assert_eq!(app.mute_effect_now(), MuteEffect::Info, "the strongest a mail offers");
+        let _ = app.view();
+        let _ = press(&mut app, Key::Up);
+        assert_eq!(app.mute_effect, MuteEffect::NoPopup, "one step milder than Info");
+        app.mute_effect = MuteEffect::Hide;
+        let _ = press(&mut app, Key::Digit(1));
+        let Some(Sent::MuteItem(_, _, _, effect)) = app.sent.last().cloned() else { panic!("muted") };
+        assert_eq!(effect, MuteEffect::Info, "never hide for mail");
+        assert_eq!(app.mute_effect, MuteEffect::Hide, "the choice stays for other sources");
+
+        let mut hub = notifications_window(&[]);
+        let _ = hub.update(Message::Act("demo-6".into(), Command::Hide));
+        deliver(&mut hub);
+        assert_eq!(hub.mute_effects(), [MuteEffect::NoPopup, MuteEffect::Info, MuteEffect::Hide]);
     }
 
     #[test]
@@ -15860,10 +15840,10 @@ mod tests {
 
     /// Task E18.4: the views without a number but the piles, then "Folders" with Archive, the
     /// pinned folders and "Open folders" with its chevron; no sources, no "For me", "Info" or "Done".
-    /// The menu has the same. Task E19.4: Reply later · Set aside · Follow up · Hidden – the piles
+    /// The menu has the same. Task E19.4: Reply later · Set aside · Follow up – the piles
     /// with the mail they hold (`count_in_pile`), "Later" no more. Issue #337: "Unfiltered" (once
     /// "All") with the unread mail of every inbox at the end of the categories, the start view; no
-    /// "Smart views".
+    /// "Smart views". Issue #339: no "Hidden".
     #[test]
     fn the_mail_windows_sidebar_lists_unfiltered_its_piles_and_folders() {
         let mut app = mail_window(Density::Comfortable, &[]);
@@ -15871,14 +15851,14 @@ mod tests {
         let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
         let pile = trc("pile", "Set aside");
         let follow = trc("snooze", "Follow up");
-        assert_eq!(labels, [tr("Reply later"), pile, follow, tr("Hidden")]);
+        assert_eq!(labels, [tr("Reply later"), pile, follow]);
         assert!(!labels.contains(&tr("Later").to_owned()), "Later is the hub's");
         assert_eq!(
             views.iter().map(|entry| entry.view.clone()).collect::<Vec<_>>(),
-            [View::ReplyLater, View::SetAside, View::Snoozed, View::Hidden]
+            [View::ReplyLater, View::SetAside, View::Snoozed]
         );
         let icons: Vec<Mark> = views.iter().map(|entry| entry.mark).collect();
-        let marks = [Icon::MessageSquareReply, Icon::Bookmark, Icon::CalendarClock, Icon::EyeOff];
+        let marks = [Icon::MessageSquareReply, Icon::Bookmark, Icon::CalendarClock];
         assert_eq!(icons, marks.map(Mark::Icon));
         let unread = block_on(app.inbox.unread_in_all(None)).expect("the demo counts");
         assert!(unread > 0, "the demo has unread mail");
@@ -15888,7 +15868,7 @@ mod tests {
         assert_eq!((reply, aside), (2, 1), "the demo's piles");
         assert_eq!((app.reply_later, app.set_aside), (Some(reply), Some(aside)));
         let counts: Vec<Option<usize>> = views.iter().map(|entry| entry.count).collect();
-        assert_eq!(counts, [Some(2), Some(1), None, None], "the piles have numbers");
+        assert_eq!(counts, [Some(2), Some(1), None], "the piles have numbers");
         assert!(views.iter().all(|entry| !entry.active), "no pile is the start view");
         let unfiltered = app.unfiltered_entry().expect("the mail window has Unfiltered");
         assert_eq!(unfiltered.label, tr("Unfiltered"));
@@ -15952,27 +15932,23 @@ mod tests {
         assert!(app.folder_entries().first().is_none_or(|entry| entry.view != View::Archive));
     }
 
-    /// Task E18.4: "All", "Hidden" and "Archive" ask for the mail of their role with the fields of
-    /// decision 1 and 3 of E18 – All leaves out snoozed and hidden mail, Hidden gives only the hidden,
-    /// Archive the archive folders – and "Load more" goes on from the cursor with the same fields.
+    /// Task E18.4: "All" and "Archive" ask for the mail of their role with the fields of decision 1
+    /// and 3 of E18 – All leaves out snoozed mail, Archive the archive folders – and "Load more" goes
+    /// on from the cursor with the same fields. Issue #339: nothing is hidden, the work account's
+    /// newsletter stands in All too.
     #[test]
-    fn all_hidden_and_archive_list_the_mail_of_their_role_and_load_more() {
-        assert_eq!(View::All.by_role(), Some((Role::Inbox, Some(false), Some(false))));
-        assert_eq!(View::Hidden.by_role(), Some((Role::Inbox, None, Some(true))));
-        assert_eq!(View::Archive.by_role(), Some((Role::Archive, None, None)));
+    fn all_and_archive_list_the_mail_of_their_role_and_load_more() {
+        assert_eq!(View::All.by_role(), Some((Role::Inbox, Some(false))));
+        assert_eq!(View::Archive.by_role(), Some((Role::Archive, None)));
         assert_eq!(View::Overview.by_role(), None);
-        for view in [View::All, View::Hidden, View::Archive] {
+        for view in [View::All, View::Archive] {
             assert!(view.is_mail() && view.filter().is_none(), "{view:?}: mail, no entries");
         }
-        let hidden = torro_inbox::demo::HIDDEN_MAIL;
         let mut app = mail_window(Density::Compact, &[]);
         assert_eq!(app.view, View::All, "the mail window starts on All");
         assert!(app.items.is_empty(), "All lists mail, no entries");
         let all = message_ids(&app).into_iter().map(str::to_owned).collect::<Vec<_>>();
-        assert!(!all.is_empty() && !all.iter().any(|id| id == hidden), "All without the hidden newsletter");
-        let _ = app.update(Message::Show(View::Hidden));
-        load(&mut app);
-        assert_eq!(message_ids(&app), [hidden], "Hidden gives only it");
+        assert!(all.iter().any(|id| id == "m:w14"), "All with the newsletter");
         let _ = app.update(Message::Show(View::Archive));
         load(&mut app);
         let mut archived = message_ids(&app);
@@ -16235,7 +16211,6 @@ mod tests {
             None,
             &app.folders,
             true,
-            false,
             &detail::Anchors::default(),
         );
         let follow = groups.iter().flat_map(|group| &group.items).find(|item| item.label == tr("Follow up…"));
@@ -17335,10 +17310,6 @@ mod tests {
             assert_eq!(app.cursor.as_deref(), app.messages.first().map(|message| message.id.as_str()), "{open}");
         }
         assert_eq!(mail_window(Density::Compact, &["--open", "archive"]).view, View::Archive);
-        let hidden = mail_window(Density::Compact, &["--open", "hidden"]);
-        assert_eq!(hidden.view, View::Hidden);
-        assert_eq!(hidden.cursor.as_deref(), Some(torro_inbox::demo::HIDDEN_MAIL), "its first mail in the reader");
-        assert!(hidden.reading);
         assert_eq!(overview_at(&["--view", "hub"]).view, View::Overview, "the hub keeps its overview");
         assert_eq!(overview_at(&["--view", "notifications"]).view, View::Overview);
         assert_eq!(overview_at(&["--view", "hub", "--open", "info"]).view, View::Info);
@@ -17366,92 +17337,6 @@ mod tests {
         assert_eq!(app.glance_selected(), Some(entry.id.as_str()), "the glance highlights the entry");
         assert_eq!(app.update(Message::OpenForMe(entry.id.clone())).units(), 0, "in All already: nothing to load");
         let _ = app.view();
-    }
-
-    /// The hidden newsletter of the demo in the reader of "Hidden" (`--open hidden`).
-    fn reading_hidden() -> App<DemoSource> {
-        let mut app = mail_window(Density::Compact, &["--open", "hidden"]);
-        let _ = app.update(Message::Resized(WIDE));
-        deliver_letter(&mut app, torro_inbox::demo::HIDDEN_MAIL);
-        app
-    }
-
-    /// The labels of the mail's rail group "Mute" in `app`.
-    fn mute_labels(app: &App<DemoSource>) -> Vec<String> {
-        let groups = app.rail_groups(app.class(), &detail::Anchors::default()).expect("a mail in the reader");
-        let mute = groups.into_iter().find(|group| group.label == tr("Mute")).expect("the group Mute");
-        mute.items.iter().map(|item| item.label.to_string()).collect()
-    }
-
-    /// Task E18.4 (decisions 10 and 11 of E18): "Show again" stands first in the group Mute of the
-    /// rail – and so in the row's context menu – of a mail in "Hidden" only; it sends
-    /// `set_mail_shown(…, true)`, takes the row out with the hint "Back in Unfiltered." and its undo, which
-    /// sends `false` and brings the row back.
-    #[test]
-    fn show_again_takes_a_hidden_mail_back_into_all_and_undo_hides_it() {
-        let hidden = torro_inbox::demo::HIDDEN_MAIL.to_owned();
-        let mut app = reading_hidden();
-        assert_eq!(mute_labels(&app), [tr("Show again"), tr("Mute…")]);
-        let groups = app.rail_groups(app.class(), &detail::Anchors::default()).expect("the rail");
-        let mute = groups.iter().find(|group| group.label == tr("Mute")).expect("the group Mute");
-        assert!(matches!(&mute.items[0].on_press, Some(Message::ShowMail(id)) if *id == hidden));
-        assert_eq!((mute.items[0].icon, mute.items[0].key), (Icon::Eye, ""), "the eye, no key");
-        // The same groups are the row's context menu.
-        let _ = app.update(Message::ContextMail(hidden.clone()));
-        assert_eq!(app.menu, Some(Menu::MailContext));
-        let _ = app.view();
-        let _ = app.update(Message::CloseMenu);
-
-        let _ = app.update(Message::ContextAction(Box::new(Message::ShowMail(hidden.clone()))));
-        let Some(Sent::Shown(ids, true, hint)) = app.sent.last().cloned() else { panic!("set_mail_shown(…, true)") };
-        assert_eq!(ids, std::slice::from_ref(&hidden));
-        assert!(!message_ids(&app).contains(&hidden.as_str()), "the row leaves the list at once");
-        let hint = hint.expect("the hint after the answer");
-        assert_eq!(hint.text, tr("Back in Unfiltered."));
-        assert_eq!(hint.undo, Some(Undo::Shown(vec![hidden.clone()])));
-        let result = block_on(MailSource::set_mail_shown(&*app.inbox, ids, true)).map_err(|err| err.to_string());
-        let _ = app.update(Message::MailShown(result, Some(hint)));
-        load(&mut app);
-        assert!(message_ids(&app).is_empty(), "Hidden is empty now");
-        assert!(app.can_undo(), "the hint offers Undo");
-        let _ = app.update(Message::Show(View::All));
-        load(&mut app);
-        assert!(message_ids(&app).contains(&hidden.as_str()), "it stands in All");
-        let _ = app.update(Message::Show(View::Hidden));
-        load(&mut app);
-
-        let _ = app.update(Message::Undo);
-        let Some(Sent::Shown(ids, false, None)) = app.sent.last().cloned() else {
-            panic!("set_mail_shown(…, false)")
-        };
-        assert_eq!(ids, std::slice::from_ref(&hidden));
-        let result = block_on(MailSource::set_mail_shown(&*app.inbox, ids, false)).map_err(|err| err.to_string());
-        let _ = app.update(Message::MailShown(result, None));
-        load(&mut app);
-        assert_eq!(message_ids(&app), [hidden.as_str()], "the row is back");
-    }
-
-    /// Task E18.4: other views have no "Show again"; a failed "Show again" brings the row back and
-    /// says so.
-    #[test]
-    fn show_again_is_hiddens_alone_and_a_failure_brings_the_row_back() {
-        let mut app = mail_window(Density::Compact, &["--open", "mail"]);
-        let _ = app.update(Message::Resized(WIDE));
-        let _ = app.update(Message::Show(View::All));
-        load(&mut app);
-        let first = app.messages.first().map(|message| message.id.clone()).expect("mail in All");
-        let _ = app.update(Message::SelectMail(first.clone()));
-        deliver_letter(&mut app, &first);
-        assert!(!mute_labels(&app).contains(&tr("Show again").to_owned()), "not in All");
-
-        let hidden = torro_inbox::demo::HIDDEN_MAIL;
-        let mut app = reading_hidden();
-        let _ = app.update(Message::ShowMail(hidden.into()));
-        assert!(app.messages.is_empty());
-        let _ = app.update(Message::MailShown(Err("offline".into()), None));
-        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't show the mail again.")));
-        load(&mut app);
-        assert_eq!(message_ids(&app), [hidden], "the load brings the row back");
     }
 
     /// Issue #265: category children use their own monochrome symbol while the open parent group
@@ -18203,7 +18088,7 @@ mod tests {
         let reading = app.reading().expect("a mail");
         let item = app.detail.clone().expect("the entry");
         for entry in [Some(mail::ReaderEntry { item: &item, hide: true }), None] {
-            for group in mail::action_groups(&reading, entry, &app.folders, true, false, &anchors) {
+            for group in mail::action_groups(&reading, entry, &app.folders, true, &anchors) {
                 // An item that is off sends nothing (the piles while the headers load, review of #315).
                 for item in group.items.into_iter().filter(|item| item.on_press.is_some()) {
                     let sent = item.press().expect("on");
@@ -18923,7 +18808,10 @@ mod tests {
         assert!(rules_entry_width(true) > rules_entry_width(false), "the longer word needs more room");
         // The menu grows at most to a panel's width; a word that needed more would be cut.
         assert!(rules_entry_width(true) <= size::panel(), "{}", rules_entry_width(true));
-        assert!(mute_menu_width(&[], true) >= rules_entry_width(true).ceil(), "the menu makes room for it");
+        assert!(
+            mute_menu_width(&[], rules::mute_effects(SourceKind::Agent), true) >= rules_entry_width(true).ceil(),
+            "the menu makes room for it"
+        );
     }
 
     /// Task S.20: the gear turns the content area into the settings and back, and the sidebar and
@@ -19259,7 +19147,7 @@ mod tests {
                 }
             }
         }
-        let menu = mute_menu_width(&[], false);
+        let menu = mute_menu_width(&[], rules::mute_effects(SourceKind::Agent), false);
         assert!(menu >= widgets::menu_width() && menu <= size::panel());
     }
 
@@ -19797,19 +19685,19 @@ mod tests {
 
     /// Task E8.8b: a suggestion's button mutes its entry by the suggestion's way with the window's
     /// "For", and the toast offers the undo; task E8.12 (finding 14): with the effect of its ready
-    /// suggestion – a newsletter's list is hidden ("Hide list"), not the window's "Only Info".
+    /// suggestion – a newsletter's list goes to Info ("List to Info", issue #339: mail is never
+    /// hidden), whatever the window's "What happens" says.
     #[test]
     fn a_suggestion_mutes_with_an_undo() {
         let mut hub = overview_at(&["--view", "hub", "--open", "insights"]);
         deliver_stats(&mut hub);
         let Some(Ok(stats)) = hub.insights.stats.clone() else { panic!("numbers") };
         let cut = insights::cuts(&stats).into_iter().next().expect("a suggestion");
-        assert_eq!(cut.word, tr("Hide list"));
+        assert_eq!(cut.word, tr("List to Info"));
         let suggestion = &stats.suggestions[0];
         let _ = hub.update(cut.mute);
-        let expected = Sent::MuteItem(suggestion.item.clone(), suggestion.option.scope, None, MuteEffect::Hide);
-        assert_eq!(hub.sent.last(), Some(&expected), "always (the window's For), hidden (the suggestion's)");
-        assert_eq!(hub.mute_effect, MuteEffect::Info, "the bell's own choice stays");
+        let expected = Sent::MuteItem(suggestion.item.clone(), suggestion.option.scope, None, MuteEffect::Info);
+        assert_eq!(hub.sent.last(), Some(&expected), "always (the window's For), to Info (the suggestion's)");
         deliver(&mut hub);
         let hint = hub.hint.clone().expect("a toast");
         assert!(hint.undo.is_some(), "{hint:?}");

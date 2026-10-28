@@ -1897,7 +1897,6 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::Mail
         | View::Search(_)
         | View::All
-        | View::Hidden
         | View::Archive
         | View::ReplyLater
         | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),
@@ -2207,7 +2206,7 @@ mod tests {
         let sent: Vec<Message> = actions(&mail, true).into_iter().map(|action| action.on_press).collect();
         assert!(matches!(&sent[0], Message::Act(id, Command::MakeTask) if *id == mail.id));
         assert!(matches!(&sent[2], Message::Act(_, Command::Hide)));
-        // Task E18.5: mail is archived or hidden, never done nor dismissed – Archive stands first in
+        // Task E18.5: mail is archived, never done nor dismissed – Archive stands first in
         // `entry_actions`; a done mail entry still opens again ("Done today", decision 9 of E18).
         assert_eq!(labels(&actions(&mail, true)), [tr("Task"), tr("Later"), tr("Mute…")]);
         let done = Item { state: State::Done { at: now() }, ..mail.clone() };

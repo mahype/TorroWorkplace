@@ -962,10 +962,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Issues", "Issues"),
     ("Checks", "Prüfungen"),
     // Polish of notifications, hub, tasks and rules (E8.12)
-    ("Hide sender", "Absender ausblenden"),
-    ("Hide domain", "Domain ausblenden"),
-    ("Hide list", "Liste ausblenden"),
-    ("Hide newsletters", "Newsletter ausblenden"),
+    ("Sender to Info", "Absender nach Info"),
+    ("Domain to Info", "Domain nach Info"),
+    ("List to Info", "Liste nach Info"),
+    ("Newsletters to Info", "Newsletter nach Info"),
     ("Mute account", "Konto stummschalten"),
     ("Mute agent", "Agent stummschalten"),
     ("Mute project", "Projekt stummschalten"),
@@ -1487,8 +1487,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Bring {entry} back and follow up {when} unless someone replies",
         "{entry} zurückholen, Wiedervorlage {when}, falls niemand antwortet",
     ),
-    ("Show {messages} in the inbox again", "{messages} wieder im Eingang anzeigen"),
-    ("Hide {messages} from the inbox again", "{messages} wieder aus dem Eingang ausblenden"),
     ("Put {messages} on Reply later", "{messages} auf „Später beantworten“ legen"),
     ("Set {messages} aside", "{messages} beiseitelegen"),
     ("Take {messages} off their pile", "{messages} von ihrem Stapel nehmen"),
@@ -2982,18 +2980,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Hide from the inbox in steps (E3.10)
     ("Everything from {domain}", "Alles von {domain}"),
     ("Hide from Notification Hub", "In der Mitteilungszentrale ausblenden"),
-    (
-        "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
-        "Mails von allen unter {domain} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
-    ),
-    (
-        "Hide mail from {sender} in every mail account; the mail stays unread",
-        "Mails von {sender} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
-    ),
-    (
-        "Hide the sender of {entry} in the Notification Hub",
-        "Den Absender von {entry} in der Mitteilungszentrale ausblenden",
-    ),
     ("Mail from {sender} goes to “{lane}”", "Mails von {sender} landen in „{lane}“"),
     ("Move to junk", "In den Spam verschieben"),
     ("Moved to junk", "In den Spam verschoben"),
@@ -3011,10 +2997,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("All mail accounts", "Alle Mail-Konten"),
     ("Conversation hidden", "Unterhaltung ausgeblendet"),
     ("Couldn't undo the change.", "Die Änderung ließ sich nicht rückgängig machen."),
-    (
-        "Hide {entry} from the Notification Hub; the mail stays unread",
-        "{entry} in der Mitteilungszentrale ausblenden; die Mail bleibt ungelesen",
-    ),
     ("2 invoices could not be matched to a customer.", "2 Rechnungen ließen sich keinem Kunden zuordnen."),
     ("Invoice run needs a check", "Rechnungslauf muss geprüft werden"),
     // AI accounts (KI.1a)
@@ -4284,8 +4266,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("No rules", "Keine Regeln"),
     (
-        "A rule appears here when you mute something with the bell, move notices to a lane for good or hide a sender.",
-        "Eine Regel erscheint hier, wenn du etwas mit der Glocke stummschaltest, Hinweise dauerhaft einer Spur zuordnest oder einen Absender ausblendest.",
+        "A rule appears here when you mute something with the bell or move notices to a lane for good.",
+        "Eine Regel erscheint hier, wenn du etwas mit der Glocke stummschaltest oder Hinweise dauerhaft einer Spur zuordnest.",
     ),
     ("Reading", "Lesen"),
     (
@@ -6523,14 +6505,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "No MCP servers yet. Each one you add in the control centre under MCP servers gets its own level here.",
         "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, bekommt hier eine eigene Stufe.",
     ),
-    // The mail window: Unfiltered (once All), Later, Hidden and Folders, "Show again" (E18.4, issue #301, #337)
-    ("Show again", "Wieder anzeigen"),
-    ("Back in Unfiltered.", "Wieder in „Ungefiltert“."),
-    ("Couldn't show the mail again.", "Die Mail konnte nicht wieder angezeigt werden."),
+    // The mail window: Unfiltered (once All), Later and Folders (E18.4, issue #301, #337, #339)
     ("No mail in your inboxes.", "Keine Mail in deinen Posteingängen."),
     ("New mail shows up here.", "Neue Mails erscheinen hier."),
-    ("No hidden mail.", "Keine ausgeblendeten Mails."),
-    ("Mail you hide from the inbox shows up here.", "Mails, die du aus dem Eingang ausblendest, erscheinen hier."),
     ("No archived mail.", "Keine archivierten Mails."),
     ("Mail you archive shows up here.", "Mails, die du archivierst, erscheinen hier."),
     // Mail settings: an account's detail page (DS.6, issue #314)
