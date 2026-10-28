@@ -30,7 +30,7 @@ Skills des Plugins enon-tools; Board und Typen stehen in `.enon-tools/konvention
 
 Die Schritte 1 bis 8 liegen als Skills des Plugins enon-tools vor: `issue-create` legt das Issue an, `issue-plan` legt den Worktree an und
 postet einen Implementierungsplan, `issue-approve` gibt ihn frei (nur durch Menschen), `issue-implement` setzt um,
-lässt vor dem Push ein Review mit frischem Kontext laufen und erstellt nach Rückfrage den PR, `pr-review` reviewt
+lässt vor dem Push ein Review mit frischem Kontext laufen und erstellt den PR (Rückfrage nur bei Auffälligkeiten), `pr-review` reviewt
 den offenen PR (ohne Approve, ohne Merge), `pr-triage` macht aus Review-Funden außerhalb des PR-Scopes eigene
 Issues. Für Kleinigkeiten legt `issue-small` Issue und Worktree an und setzt ohne Plan und Freigabe um. Für winzige
 Änderungen ohne Issue gibt es `quick-fix`, für das Aufräumen nach dem Merge `worktree-cleanup`. `pr` ist ein
@@ -96,7 +96,6 @@ Commit ohne Issue-Nummer, z.B. `docs: fix typo in roadmap`, PR-Body kurz und ohn
 - Der Titel bleibt unter 70 Zeichen und enthält `#<issue-nr>`, z.B. `feat(torrocalendar): reminders #188`.
 - Der Body hat `## Summary`, `## Test plan` (Checkliste) und am Ende `Closes #<issue-nr>`; soll das Issue offen
   bleiben, `Related to #<issue-nr>`.
-- Pushen und PR erstellen nur nach Rückfrage beim Nutzer. Kein Force-Push ohne ausdrückliche Anweisung, keine Hooks
-  überspringen (`--no-verify`).
-- Nach dem Erstellen den Link nennen und aufhören: KI-Agenten genehmigen und mergen nicht, auch nicht per
-  Auto-Merge.
+- Pushen und PR erstellen: in der Skill-Kette wie im Plugin (ohne Rückfrage, wenn alles sauber ist), sonst nur nach
+  Rückfrage beim Nutzer. Kein Force-Push ohne ausdrückliche Anweisung, keine Hooks überspringen (`--no-verify`).
+- KI-Agenten genehmigen und mergen nicht, auch nicht per Auto-Merge.
