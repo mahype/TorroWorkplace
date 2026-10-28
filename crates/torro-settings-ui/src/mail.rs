@@ -2363,14 +2363,46 @@ mod tests {
         assert_eq!(sent(Message::Enabled(true), &switched_off), [no_exception()]);
         assert_eq!(
             sent(Message::Model("ai:x".into(), "tev1".into()), &switched_off),
-            [set_slot("ai:x", "tev1"), no_exception()],
-            "the slot first, then the exception goes"
+            [no_exception(), set_slot("ai:x", "tev1")],
+            "the exception goes first, then the slot"
         );
         // Without a slot, "on" puts what sorted last into it before the exception goes.
         let no_slot = Data { assignments: exception("nimble", false), ..Data::default() };
         assert_eq!(sent(Message::Enabled(true), &no_slot), [set_slot(ollama, "nimble"), no_exception()]);
         // Nothing sorts: nothing to switch off.
         assert!(sent(Message::Enabled(false), &Data::default()).is_empty());
+    }
+
+    /// The daemon of [`a_refused_take_back_sets_no_slot`]: refuses taking the exception back and notes
+    /// every request it gets.
+    struct Refusing(std::sync::Mutex<Vec<torro_ipc::Request>>);
+
+    impl crate::Backend for Refusing {
+        fn call(&self, request: torro_ipc::Request) -> crate::Answer {
+            let refused = matches!(request, torro_ipc::Request::SetAiAssignment { engine: None, .. });
+            self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(request);
+            Box::pin(async move {
+                match refused {
+                    true => Err("Settings cannot be written.".to_string()),
+                    false => Ok(torro_ipc::Response::Ok),
+                }
+            })
+        }
+    }
+
+    /// Review of #325 (R6): picking a model while an exception stands sends the take-back first; the
+    /// daemon refusing it stops there, so the slot is not set and nothing sorts in between.
+    #[tokio::test]
+    async fn a_refused_take_back_sets_no_slot() {
+        use categorization::Message;
+        let mut data = Data { assignments: exception("nimble", true), ..Data::default() };
+        data.settings.ai_slots.decide = Some(slot("nimble"));
+        let requests = sent(Message::Model("ai:x".into(), "tev1".into()), &data);
+        let backend = std::sync::Arc::new(Refusing(std::sync::Mutex::new(Vec::new())));
+        let failed = crate::send(backend.clone(), requests, Vec::new()).await;
+        assert_eq!(failed.err().as_deref(), Some("Settings cannot be written."));
+        let got = backend.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(got, [no_exception()], "no ai.set_slot after the refusal");
     }
 
     /// Task S.26 (and MW.3): only models turned on are offered for sorting mail – switching it on
@@ -2724,12 +2756,14 @@ pub mod categorization {
                 }
             }
             // Picking a model switches the sorting on: that is what picking one means. It goes into
-            // the slot; an exception would stand before it, so it is taken back – after the slot, so
-            // a slot refused leaves the exception as it was.
+            // the slot; an exception would stand before it, so it is taken back – first (review of
+            // #325): setting the slot can let Sorting's mail out, and meanwhile an exception the person
+            // stopped with "Keep mail here" would sort again. The requests go one after the other and
+            // stop at the first refused ([`crate::send`]), so a refused take-back sets no slot.
             Message::Model(engine, model) => {
                 let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
-                let mut requests = vec![set_slot(engine, Some(model), effort)];
-                requests.extend(stored_exception(data).map(|_| no_exception()));
+                let mut requests: Vec<Request> = stored_exception(data).map(|_| no_exception()).into_iter().collect();
+                requests.push(set_slot(engine, Some(model), effort));
                 Action::Send(requests)
             }
             Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel, again: false }),

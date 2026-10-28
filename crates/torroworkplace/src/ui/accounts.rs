@@ -98,8 +98,8 @@
 //! account, `OpenApp` for the buttons that open a window, `TorroMailAccounts` for the import,
 //! `SetSetting { key: MailToCloud | DecideMailToCloud }` for the data rule, `AiModels` /
 //! `SetModelEnabled` for an AI account's models, and for the slots `AiRecommend`, `PullAiModel`,
-//! `AiPulls`, `CancelAiPull`, `SetAiSlot` and – after a model for Sorting – `SetAiAssignment`, which
-//! takes a stored exception of sorting back. The pure parts (relative time, status text,
+//! `AiPulls`, `CancelAiPull`, `SetAiSlot` and – before a model goes into Sorting – `AiAssignments` and
+//! `SetAiAssignment`, which take a stored exception of sorting back. The pure parts (relative time, status text,
 //! whether a collection is shown, which accounts are listed, the groups) are plain functions with
 //! unit tests.
 
@@ -222,10 +222,13 @@ pub struct Using {
     pub model: Option<String>,
     /// How hard it thinks: the chat keeps the effort it has, sorting takes none.
     effort: Option<Effort>,
-    /// An exception of `inbox.categorize` was stored when the chain started (review of #325): after
-    /// `ai.set_slot decide` it is taken back ([`UseStep::TakeBack`]), as Settings › Categorization does,
-    /// so the slot sorts – one switched off would keep sorting off, one elsewhere would sort instead.
-    take_back: bool,
+    /// The exception of `inbox.categorize` stored when the chain started, for Sorting (review of #325):
+    /// before `ai.set_slot decide` it is taken back ([`UseStep::TakeBack`]), as Settings › Categorization
+    /// does, so the slot sorts – one switched off would keep sorting off, one elsewhere would sort
+    /// instead. Taken back first, so meanwhile no exception the person stopped sorts again. Whether it
+    /// still stands is asked at that step ([`UseStep::Check`]): one the person changed or set while a
+    /// download ran is theirs and stays.
+    displaces: Option<torro_core::ai::AiAssignment>,
     /// `ai.list_pulls` was out when `ai.pull_model` went out: its answer may predate the start and
     /// lack the new download, so it is dropped (review of #325) – never a reason to stop the chain.
     stale_poll: bool,
@@ -240,15 +243,29 @@ pub struct Using {
 pub enum UseStep {
     /// `ai.pull_model` is out (`None`) or the download with this id runs; `ai.list_pulls` follows it.
     Pull(Option<String>),
+    /// `ai.pull_model` answered `busy` (the sentence): `ai.list_pulls` is out to find the download of
+    /// the model that runs already (another window, an agent), which the chain then follows by its id
+    /// (review of #325); without one it stops with that sentence.
+    Join(String),
     /// `ai.list_models` for the account: the model's id as listed and whether it is on.
     List,
     /// `ai.set_model_enabled` turns the model on.
     Enable,
+    /// `ai.list_assignments`: whether the exception the chain started with still stands as it was
+    /// ([`Using::displaces`]), just before the slot is set.
+    Check,
+    /// `ai.set_assignment inbox.categorize` with `engine: null` takes the stored exception back, so the
+    /// slot Sorting sorts ([`Using::displaces`]); `ai.set_slot` follows.
+    TakeBack,
     /// `ai.set_slot` puts it in the slot.
     Set,
-    /// `ai.set_assignment inbox.categorize` with `engine: null` takes the stored exception back, so the
-    /// slot Sorting sorts ([`Using::take_back`]).
-    TakeBack,
+}
+
+impl UseStep {
+    /// The chain waits for a download: one it starts, joins or follows.
+    fn downloading(&self) -> bool {
+        matches!(self, UseStep::Pull(_) | UseStep::Join(_))
+    }
 }
 
 /// A step of a [`Using`] (or "Cancel") that failed: the sentence under the slot and what "Retry"
@@ -1084,45 +1101,51 @@ fn holds(data: &Data, slot: AiSlot, engine: Option<&str>, model: Option<&str>) -
     }
 }
 
-/// An exception of `inbox.categorize` is stored, on or off (`ai.set_assignment`): while it is, the
-/// slot Sorting does not sort. The settings hold it as the core weighs it (`assignment_in_effect`).
-fn has_exception(data: &Data) -> bool {
-    data.settings.ai_assignments.get(&AiFunction::InboxCategorize).is_some_and(|held| held.engine.is_some())
+/// The exception of sorting a chain for `slot` takes back before `ai.set_slot` ([`Using::displaces`]):
+/// the one stored, on or off, for Sorting only – while it is, the slot Sorting does not sort. The
+/// settings hold it as the core weighs it (`assignment_in_effect`).
+fn displaced(data: &Data, slot: AiSlot) -> Option<torro_core::ai::AiAssignment> {
+    let stored = data.settings.ai_assignments.get(&AiFunction::InboxCategorize);
+    stored.filter(|held| slot == AiSlot::Decide && held.engine.is_some()).cloned()
 }
 
-/// After `ai.set_slot` for `slot`, an exception of sorting is taken back ([`Using::take_back`]).
-fn takes_back(data: &Data, slot: AiSlot) -> bool {
-    slot == AiSlot::Decide && has_exception(data)
-}
-
-/// A choice in a slot's list: `ai.set_slot` at once (for Sorting then the exception taken back), with
-/// "Retry" sending the same choice. Nothing while another chain runs, or for what the slot has already
-/// while no exception stands in its way.
+/// A choice in a slot's list: `ai.set_slot` at once – for Sorting the stored exception taken back first,
+/// from the data of the press, which is now –, with "Retry" sending the same choice. Nothing while
+/// another chain runs, or for what the slot has already while no exception stands in its way.
 fn pick_slot(state: &mut State, data: &Data, slot: AiSlot, choice: SlotChoice) -> Action {
-    let take_back = takes_back(data, slot);
+    let displaces = displaced(data, slot);
     let held = holds(data, slot, choice.engine.as_deref(), choice.model.as_deref());
-    if state.slots.using.is_some() || (held && !take_back) {
+    if state.slots.using.is_some() || (held && displaces.is_none()) {
         return Action::None;
     }
     state.slots.failed = None;
-    let using = Using {
+    let take_back = displaces.is_some();
+    let mut using = Using {
         slot,
         engine: choice.engine.clone(),
         model: choice.model.clone(),
         effort: kept_effort(data, slot),
-        take_back,
+        displaces,
         stale_poll: false,
         step: UseStep::Set,
         retry: Box::new(Message::PickSlot(slot, choice)),
     };
-    let request = set_slot_request(&using);
+    let request = match take_back {
+        true => {
+            using.step = UseStep::TakeBack;
+            no_exception()
+        }
+        false => set_slot_request(&using),
+    };
     state.slots.using = Some(using);
     ask_ai(Asked::Slot(slot), request)
 }
 
 /// "Use suggestion": a model to download starts with `ai.pull_model` – or waits for a download of it
-/// that runs already (another window, an agent; only one that is `running`) –, any other with
-/// `ai.list_models`. For Sorting a stored exception is taken back at the end ([`Using::take_back`]).
+/// that runs already (another window, an agent; only one that is `running`; one the core knows of but
+/// the page not yet is joined when the start answers `busy`, [`UseStep::Join`]) –, any other with
+/// `ai.list_models`. For Sorting a stored exception is taken back before the slot is set, if it still
+/// stands then ([`Using::displaces`]).
 /// Nothing while another chain runs, without a suggestion or for one without an account (it shows why
 /// instead).
 fn use_suggestion(state: &mut State, data: &Data, slot: AiSlot) -> Action {
@@ -1137,7 +1160,7 @@ fn use_suggestion(state: &mut State, data: &Data, slot: AiSlot) -> Action {
         engine: Some(engine.clone()),
         model: suggestion.model.clone(),
         effort: kept_effort(data, slot),
-        take_back: takes_back(data, slot),
+        displaces: displaced(data, slot),
         stale_poll: false,
         step: UseStep::List,
         retry: Box::new(Message::UseSuggestion(slot)),
@@ -1169,6 +1192,19 @@ fn set_slot_request(using: &Using) -> Request {
         model: using.model.clone(),
         effort: using.effort,
     }
+}
+
+/// The model is ready for the slot: `ai.set_slot` – for Sorting, while the chain started with an
+/// exception, first `ai.list_assignments`, whose answer says whether that one still stands
+/// ([`UseStep::Check`]).
+fn toward_slot(using: &mut Using) -> Action {
+    let slot = using.slot;
+    if using.displaces.is_some() {
+        using.step = UseStep::Check;
+        return ask_ai(Asked::Slot(slot), Request::AiAssignments);
+    }
+    using.step = UseStep::Set;
+    ask_ai(Asked::Slot(slot), set_slot_request(using))
 }
 
 /// The chain stops at a step that failed: the sentence under its slot with "Retry".
@@ -1242,12 +1278,25 @@ fn step_answered(state: &mut State, slot: AiSlot, result: &Result<Response, Stri
         return Action::None;
     };
     match step {
+        // Another window or an agent downloads the model already: the chain joins that download.
+        UseStep::Pull(None) if is_busy(result) => {
+            let message = failure(result, |_| false).unwrap_or_default();
+            if let Some(using) = state.slots.using.as_mut() {
+                using.step = UseStep::Join(message);
+            }
+            ask_ai(Asked::Slot(slot), Request::AiPulls)
+        }
         UseStep::Pull(_) => match failure(result, |response| matches!(response, Response::AiPulls { .. })) {
             Some(message) => stop(state, message),
             None => match result {
                 Ok(Response::AiPulls { pulls }) => started(state, pulls.clone()),
                 _ => Action::None,
             },
+        },
+        UseStep::Join(busy) => match (failure(result, |response| matches!(response, Response::AiPulls { .. })), result)
+        {
+            (None, Ok(Response::AiPulls { pulls })) => joined(state, pulls.clone(), busy),
+            (message, _) => stop(state, message.unwrap_or(busy)),
         },
         UseStep::List => match (failure(result, |response| matches!(response, Response::AiModels { .. })), result) {
             (None, Ok(Response::AiModels { account, models })) => {
@@ -1261,29 +1310,78 @@ fn step_answered(state: &mut State, slot: AiSlot, result: &Result<Response, Stri
             None => {
                 let Some(using) = state.slots.using.as_mut() else { return Action::None };
                 let (engine, model) = (using.engine.clone().unwrap_or_default(), using.model.clone());
-                using.step = UseStep::Set;
-                let request = set_slot_request(using);
+                let next = toward_slot(using);
                 let models = state.models.get_mut(&engine).into_iter().flatten();
                 for entry in models.filter(|entry| Some(&entry.id) == model.as_ref()) {
                     entry.enabled = true;
                 }
-                ask_ai(Asked::Slot(slot), request)
+                next
+            }
+        },
+        UseStep::Check => {
+            match (failure(result, |response| matches!(response, Response::AiAssignments { .. })), result) {
+                (None, Ok(Response::AiAssignments { assignments, .. })) => {
+                    let stored = assignments
+                        .iter()
+                        .map(|info| &info.assignment)
+                        .find(|held| held.function == AiFunction::InboxCategorize && held.engine.is_some());
+                    let Some(using) = state.slots.using.as_mut() else { return Action::None };
+                    // Only the exception the chain started with, as it was: one changed or set meanwhile is
+                    // the person's newer choice and stays.
+                    match stored.is_some() && stored == using.displaces.as_ref() {
+                        true => {
+                            using.step = UseStep::TakeBack;
+                            ask_ai(Asked::Slot(slot), no_exception())
+                        }
+                        false => {
+                            using.step = UseStep::Set;
+                            ask_ai(Asked::Slot(slot), set_slot_request(using))
+                        }
+                    }
+                }
+                (message, _) => stop(state, message.unwrap_or_default()),
+            }
+        }
+        // Taken back: now the slot. Refused: the chain stops, the slot stays as it was.
+        UseStep::TakeBack => match failure(result, |response| matches!(response, Response::AiAssignments { .. })) {
+            Some(message) => stop(state, message),
+            None => {
+                let Some(using) = state.slots.using.as_mut() else { return Action::None };
+                using.step = UseStep::Set;
+                ask_ai(Asked::Slot(slot), set_slot_request(using))
             }
         },
         UseStep::Set => match failure(result, |response| matches!(response, Response::AiAssignments { .. })) {
             Some(message) => stop(state, message),
-            None => match state.slots.using.as_mut().filter(|using| using.take_back) {
-                Some(using) => {
-                    using.step = UseStep::TakeBack;
-                    ask_ai(Asked::Slot(slot), no_exception())
-                }
-                None => finished(state),
-            },
-        },
-        UseStep::TakeBack => match failure(result, |response| matches!(response, Response::AiAssignments { .. })) {
-            Some(message) => stop(state, message),
             None => finished(state),
         },
+    }
+}
+
+/// The core refused with `busy`: for `ai.pull_model`, the same model downloads to the same account.
+fn is_busy(result: &Result<Response, String>) -> bool {
+    matches!(result, Ok(Response::Error { code, .. }) if code == "busy")
+}
+
+/// The list of downloads after a start that was `busy` ([`UseStep::Join`]): the newest download of the
+/// chain's model that runs is the one it follows from now on, by its id; without one it stops with the
+/// core's sentence `busy`.
+fn joined(state: &mut State, pulls: Vec<AiPull>, busy: String) -> Action {
+    let Some(using) = state.slots.using.as_mut() else { return Action::None };
+    let (engine, model) = (using.engine.clone().unwrap_or_default(), using.model.clone().unwrap_or_default());
+    let runs = pulls
+        .iter()
+        .rev()
+        .find(|pull| pull.state == AiPullState::Running && pull.account == engine && same_model(&pull.model, &model));
+    match runs {
+        Some(pull) => {
+            using.step = UseStep::Pull(Some(pull.id.clone()));
+            pulls_answered(state, pulls)
+        }
+        None => {
+            state.slots.pulls = pulls;
+            stop(state, busy)
+        }
     }
 }
 
@@ -1312,17 +1410,13 @@ fn no_exception() -> Request {
 fn model_listed(state: &mut State, models: &[AiModel]) -> Action {
     let Some(using) = state.slots.using.as_mut() else { return Action::None };
     let slot = using.slot;
-    let Some(wanted) = using.model.clone() else {
-        using.step = UseStep::Set;
-        return ask_ai(Asked::Slot(slot), set_slot_request(using));
-    };
+    let Some(wanted) = using.model.clone() else { return toward_slot(using) };
     let Some(model) = models.iter().find(|model| same_model(&model.id, &wanted)) else {
         return stop(state, trf("The account does not list {model}.", &[("model", &wanted)]));
     };
     using.model = Some(model.id.clone());
     if model.enabled {
-        using.step = UseStep::Set;
-        return ask_ai(Asked::Slot(slot), set_slot_request(using));
+        return toward_slot(using);
     }
     using.step = UseStep::Enable;
     let account = using.engine.clone().unwrap_or_default();
@@ -2280,8 +2374,9 @@ fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
 /// for the assistant and every bot. While *Sorting* may send mail elsewhere (`decide_mail_to_cloud`, set
 /// by choosing a model elsewhere for it), a row offers "Keep mail here"; it is never switched on here.
 /// The row says "Sorting sends mail to the cloud" and where mail goes only while the model that sorts
-/// now computes elsewhere ([`sorting_place`]), else that it may (review of #325: the permission can
-/// outlast a model elsewhere, as after the take-over of an old `mailToCloud`).
+/// now computes elsewhere ([`sorting_now`]), else that it may (review of #325: the permission can
+/// outlast a model elsewhere, as after the take-over of an old `mailToCloud`) – with "The model that
+/// sorts now runs on this computer" only while one here sorts, without a line while nothing sorts.
 fn data_rule_group<'a>(data: &Data, models: &BTreeMap<String, Vec<AiModel>>) -> Element<'a, Message> {
     let settings = &data.settings;
     let switch =
@@ -2294,16 +2389,16 @@ fn data_rule_group<'a>(data: &Data, models: &BTreeMap<String, Vec<AiModel>>) -> 
     if settings.mail_to_cloud_in(AiSlot::Decide) {
         let keep =
             widgets::text_button(None, tr("Keep mail here"), style::button::secondary, Some(Message::StopSortingMail));
-        let row = match sorting_place(data, models) {
-            Some((provider, seat)) => {
+        let may = tr("Sorting may send mail to the cloud");
+        let row = match sorting_now(data, models) {
+            SortingNow::Elsewhere(provider, seat) => {
                 setting_row(None, tr("Sorting sends mail to the cloud"), Some(mail_sentence(provider, seat)), keep)
             }
-            None => setting_row(
-                None,
-                tr("Sorting may send mail to the cloud"),
-                Some(tr("The model that sorts now runs on this computer").to_string()),
-                keep,
-            ),
+            SortingNow::Here => {
+                let here = tr("The model that sorts now runs on this computer").to_string();
+                setting_row(None, may, Some(here), keep)
+            }
+            SortingNow::Nothing => setting_row(None, may, None, keep),
         };
         rows.push(row);
     }
@@ -2311,31 +2406,53 @@ fn data_rule_group<'a>(data: &Data, models: &BTreeMap<String, Vec<AiModel>>) -> 
     widgets::group(tr("Data rule"), rows, Some(footer.to_string()))
 }
 
-/// Where *Sorting* sends mail while it may (`decide_mail_to_cloud`): the provider of the model that
-/// sorts now ("OpenRouter"; the account's id for a provider Torro does not know) and where that runs
-/// ("Cloud · US"). What sorts now is weighed as the core does (`assignment_in_effect`): the exception of
-/// `inbox.categorize` while one is stored, else the slot Sorting. `None` while mail stays here, nothing
-/// sorts (no model, the exception switched off) or that model computes on this computer
-/// ([`sorts_elsewhere`]).
-fn sorting_place<'a>(data: &'a Data, models: &BTreeMap<String, Vec<AiModel>>) -> Option<(&'a str, &'static str)> {
+/// What sorts mail now, as the data rule says it (review of #325).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortingNow<'a> {
+    /// No model sorts: the slot Sorting is empty, or the exception is switched off.
+    Nothing,
+    /// The model that sorts computes on this computer.
+    Here,
+    /// The model that sorts computes elsewhere: its provider ("OpenRouter"; the account's id for a
+    /// provider Torro does not know) and where that runs ("Cloud · US").
+    Elsewhere(&'a str, &'static str),
+}
+
+/// What sorts now, weighed as the core does (`assignment_in_effect`): the exception of
+/// `inbox.categorize` while one is stored (switched off, nothing sorts), else the slot Sorting; where
+/// its model computes by [`sorts_elsewhere`].
+fn sorting_now<'a>(data: &'a Data, models: &BTreeMap<String, Vec<AiModel>>) -> SortingNow<'a> {
     let settings = &data.settings;
-    if !settings.mail_to_cloud_in(AiSlot::Decide) {
-        return None;
-    }
     let (engine, model) = match settings.ai_assignments.get(&AiFunction::InboxCategorize) {
-        Some(own) if own.engine.is_some() => (own.engine.as_deref().filter(|_| own.enabled)?, own.model.as_deref()),
-        _ => {
-            let slot = settings.ai_slots.get(AiSlot::Decide)?;
-            (slot.engine.as_str(), slot.model.as_deref())
-        }
+        Some(own) if own.engine.is_some() => match own.engine.as_deref().filter(|_| own.enabled) {
+            Some(engine) => (engine, own.model.as_deref()),
+            None => return SortingNow::Nothing,
+        },
+        _ => match settings.ai_slots.get(AiSlot::Decide) {
+            Some(slot) => (slot.engine.as_str(), slot.model.as_deref()),
+            None => return SortingNow::Nothing,
+        },
     };
     if !sorts_elsewhere(data, models, engine, model) {
-        return None;
+        return SortingNow::Here;
     }
     let provider = ai_provider(engine);
     let name = provider.map_or(engine, |provider| provider.name());
     let seat = provider.map_or(tr("Cloud"), |provider| seat_of(provider, false));
-    Some((name, seat))
+    SortingNow::Elsewhere(name, seat)
+}
+
+/// Where *Sorting* sends mail while it may (`decide_mail_to_cloud`): the provider and the seat of the
+/// model that sorts now ([`SortingNow::Elsewhere`]). `None` while mail stays here, nothing sorts (no
+/// model, the exception switched off) or that model computes on this computer.
+fn sorting_place<'a>(data: &'a Data, models: &BTreeMap<String, Vec<AiModel>>) -> Option<(&'a str, &'static str)> {
+    if !data.settings.mail_to_cloud_in(AiSlot::Decide) {
+        return None;
+    }
+    match sorting_now(data, models) {
+        SortingNow::Elsewhere(name, seat) => Some((name, seat)),
+        SortingNow::Here | SortingNow::Nothing => None,
+    }
 }
 
 /// Whether mail sorted with `model` of the AI account `engine` leaves this computer, as the core weighs
@@ -2522,8 +2639,7 @@ fn by_chat_note() -> &'static str {
 /// (with the alert, `true`) while the model it holds is not among those turned on ([`held_model`]);
 /// else what the slot is for, for *Sorting* with a chat model "· Answers in a fixed format, slower".
 fn slot_detail(state: &State, data: &Data, slot: AiSlot) -> (String, bool) {
-    let busy =
-        state.slots.using.as_ref().is_some_and(|using| using.slot == slot && !matches!(using.step, UseStep::Pull(_)));
+    let busy = state.slots.using.as_ref().is_some_and(|using| using.slot == slot && !using.step.downloading());
     if busy {
         return (tr("Saving…").to_string(), false);
     }
@@ -2698,9 +2814,7 @@ fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion, stacked:
             detail = vec![download_text(pull)];
             download_control(slot, pull)
         }
-        (_, Some(using)) if !matches!(using.step, UseStep::Pull(_)) => {
-            widgets::busy_button(tr("Saving…"), style::button::secondary)
-        }
+        (_, Some(using)) if !using.step.downloading() => widgets::busy_button(tr("Saving…"), style::button::secondary),
         (_, Some(_)) => widgets::busy_button(tr("Starting download…"), style::button::secondary),
         _ => {
             let words = match suggestion.download_bytes {
@@ -2722,9 +2836,9 @@ fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion, stacked:
 /// Chat has finished", or "Wait until Chat is saved" once the download is done.
 fn waits_for(other: &Using) -> String {
     let slot = other.slot.label();
-    match other.step {
-        UseStep::Pull(_) => trf("Wait until the download for {slot} has finished", &[("slot", &slot)]),
-        _ => trf("Wait until {slot} is saved", &[("slot", &slot)]),
+    match other.step.downloading() {
+        true => trf("Wait until the download for {slot} has finished", &[("slot", &slot)]),
+        false => trf("Wait until {slot} is saved", &[("slot", &slot)]),
     }
 }
 
@@ -5462,46 +5576,106 @@ mod tests {
         data.settings.ai_assignments.insert(AiFunction::InboxCategorize, exception);
     }
 
-    /// Review of #325 (F2): while an exception of sorting is stored, putting a model into Sorting – from
-    /// the list or by "Use suggestion" – takes it back after `ai.set_slot`, as Settings › Categorization
-    /// does, so the slot sorts; also for the model the slot has already. A take-back that fails stops
-    /// with its reason. The chat's slot never touches it.
+    /// Review of #325 (F2, R6): while an exception of sorting is stored, putting a model into Sorting – from
+    /// the list or by "Use suggestion" – takes it back first, then `ai.set_slot`, as Settings ›
+    /// Categorization does, so the slot sorts and meanwhile no exception the person stopped sorts again;
+    /// also for the model the slot has already. A take-back that fails stops with its reason and sets no
+    /// slot. The chat's slot never touches it.
     #[test]
     fn a_model_for_sorting_takes_a_stored_exception_back() {
         let (mut state, mut data) = shown(false);
         with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", false);
         let (_, chosen) = slot_choices(&state, &data, AiSlot::Decide);
-        let (asked, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, chosen), &data));
-        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "held, but the exception sorts");
-        let set = || Ok(Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() });
-        let (asked, request) = ask(ai_answered(&mut state, asked, &set()));
-        assert_eq!(request, no_exception());
+        let (asked, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, chosen.clone()), &data));
+        assert_eq!(request, no_exception(), "held, but the exception sorts: it goes first");
         assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::TakeBack));
         assert!(asked.changes(), "the shell reloads the settings after it");
+        let set = || Ok(Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() });
+        let (asked, request) = ask(ai_answered(&mut state, asked, &set()));
+        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "{request:?}");
         assert_eq!(ask(ai_answered(&mut state, asked, &set())), (Asked::Recommend, Request::AiRecommend));
         assert!(state.slots.using.is_none() && state.slots.failed.is_none());
 
-        // "Use suggestion" for Sorting: listed, on, set – then the exception goes.
+        // The take-back refused: the chain stops there, the slot is not set.
+        let (mut state, _) = shown(false);
+        let (asked, _) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, chosen), &data));
+        let refused = Response::Error { code: "error".into(), message: "Settings cannot be written.".into() };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(refused)), Action::None), "no ai.set_slot");
+        assert_eq!(state.slots.failed.as_ref().map(|f| f.message.as_str()), Some("Settings cannot be written."));
+        assert!(state.slots.using.is_none());
+
+        // "Use suggestion" for Sorting: listed, on – then asked whether the exception still stands, taken
+        // back, and only then the slot.
         let (mut state, _) = shown(false);
         with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", true);
+        let exception = data.settings.ai_assignments[&AiFunction::InboxCategorize].clone();
         let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data));
         let mut models = demo_ollama_models();
         models.iter_mut().for_each(|model| model.enabled = true);
         let listed = Response::AiModels { account: DEMO_OLLAMA.into(), models };
-        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(listed)));
-        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }));
-        let (asked, request) = ask(ai_answered(&mut state, asked, &set()));
+        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(listed.clone())));
+        assert_eq!(request, Request::AiAssignments, "what stands now, not at the start");
+        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(stored(Some(exception.clone())))));
         assert_eq!(request, no_exception());
-        let refused = Response::Error { code: "error".into(), message: "Settings cannot be written.".into() };
-        assert!(matches!(ai_answered(&mut state, asked, &Ok(refused)), Action::None));
-        assert_eq!(state.slots.failed.as_ref().map(|f| f.message.as_str()), Some("Settings cannot be written."));
-        assert!(state.slots.using.is_none());
+        let (asked, request) = ask(ai_answered(&mut state, asked, &set()));
+        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "{request:?}");
+        assert_eq!(ask(ai_answered(&mut state, asked, &set())), (Asked::Recommend, Request::AiRecommend));
+
+        // Taken back already, or changed by the person while the chain ran (a long download): theirs, it
+        // stays – straight to the slot.
+        for now in [None, Some(torro_core::ai::AiAssignment { enabled: false, ..exception.clone() })] {
+            let (mut state, _) = shown(false);
+            let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data));
+            let (asked, _) = ask(ai_answered(&mut state, asked, &Ok(listed.clone())));
+            let (_, request) = ask(ai_answered(&mut state, asked, &Ok(stored(now))));
+            assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "{request:?}");
+        }
 
         // The chat's slot leaves the exception as it is.
         let (mut state, _) = shown(false);
         let none = slot_choices(&state, &data, AiSlot::Chat).0[0].clone();
-        let (asked, _) = ask(update(&mut state, Message::PickSlot(AiSlot::Chat, none), &data));
+        let (asked, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Chat, none), &data));
+        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Chat, .. }), "{request:?}");
         assert_eq!(ask(ai_answered(&mut state, asked, &set())), (Asked::Recommend, Request::AiRecommend));
+    }
+
+    /// The answer of `ai.list_assignments` with `exception` stored for sorting, or none.
+    fn stored(exception: Option<torro_core::ai::AiAssignment>) -> Response {
+        let assignment = exception.unwrap_or_else(|| torro_core::ai::AiAssignment::none(AiFunction::InboxCategorize));
+        let info = torro_ipc::AiAssignmentInfo { assignment, label: "Sorting mail".into(), needs_decision: true };
+        Response::AiAssignments { assignments: vec![info], slots: Vec::new() }
+    }
+
+    /// Review of #325 (R5): "Use suggestion" whose start the core answers `busy` (another window or an
+    /// agent downloads the model) joins that download by its id; with none running it stops with the
+    /// core's sentence.
+    #[test]
+    fn use_suggestion_joins_a_download_that_runs_already() {
+        let (mut state, data) = shown(false);
+        let (asked, request) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        assert!(matches!(request, Request::PullAiModel { .. }), "{request:?}");
+        let busy = Response::Error { code: "busy".into(), message: "It downloads already.".into() };
+        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(busy.clone())));
+        assert_eq!((asked.clone(), request), (Asked::Slot(AiSlot::Chat), Request::AiPulls));
+        assert!(state.slots.using.as_ref().is_some_and(|using| using.step.downloading()), "still the download");
+        let other = AiPull { model: "gemma3:12b".into(), ..pull("p8", AiPullState::Running) };
+        let runs = vec![pull("p5", AiPullState::Failed), pull("p7", AiPullState::Running), other];
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(Response::AiPulls { pulls: runs })), Action::None));
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(Some("p7".into()))));
+        assert!(state.slots.failed.is_none());
+        draw_ai(&state, &data);
+        let done = Response::AiPulls { pulls: vec![pull("p7", AiPullState::Done)] };
+        let (_, request) = ask(ai_answered(&mut state, Asked::Pulls, &Ok(done)));
+        assert_eq!(request, Request::AiModels { account: DEMO_OLLAMA.into(), all: true }, "followed to its end");
+
+        // None of the model runs (one cancelled while its request is on the way holds it): the sentence.
+        let (mut state, data) = shown(false);
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        let (asked, _) = ask(ai_answered(&mut state, asked, &Ok(busy)));
+        let cancelled = Response::AiPulls { pulls: vec![pull("p7", AiPullState::Cancelled)] };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(cancelled)), Action::None));
+        assert!(state.slots.using.is_none());
+        assert_eq!(state.slots.failed.as_ref().map(|f| f.message.as_str()), Some("It downloads already."));
     }
 
     /// Review of #325 (F3): the data rule and "Models" say that sorting sends mail to the cloud only while
@@ -5536,6 +5710,19 @@ mod tests {
         data.settings.decide_mail_to_cloud = Some(false);
         with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", true);
         assert_eq!(sorting_place(&data, &state.models), None, "the permission is off");
+
+        // The line under "Sorting may send mail to the cloud" (R4): "runs on this computer" only while a
+        // model here sorts; nothing while the exception is off or the slot is empty.
+        data.settings.decide_mail_to_cloud = Some(true);
+        with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", true);
+        assert_eq!(sorting_now(&data, &state.models), SortingNow::Here);
+        with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", false);
+        assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "switched off");
+        drop(data_rule_group(&data, &state.models));
+        data.settings.ai_assignments.clear();
+        data.settings.ai_slots.decide = None;
+        assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "the slot is empty");
+        drop(data_rule_group(&data, &state.models));
     }
 
     /// Review of #325 (F4): while the start of a download is out, a list of downloads is dropped – an older

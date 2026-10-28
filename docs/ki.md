@@ -174,7 +174,9 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
 - **Ein Modell anderswo für Mail-Funktionen setzt nur ein Mensch**: als Platz *Sortieren* wie als Ausnahme
   `inbox.categorize` (`ai.set_assignment`), auch wenn die Erlaubnis schon an ist. Die Zustimmung gilt einem
   Anbieter; kein Agent leitet sie auf einen anderen um. Ein Client bekommt dafür `forbidden`, auch nach einer
-  Freigabe. Ein Sortierauftrag (`inbox.start_category_job`) darf ein Modell anderswo nur nennen, wenn es
+  Freigabe – auch für eine ausgeschaltete Ausnahme (`enabled: false`) mit einem Modell anderswo, außer sie nennt
+  Konto und Modell, die gerade sortieren: Ausschalten geht so, vorbereiten nicht, sonst ginge die Mail nach dem
+  Einschalten durch die Person an den Anbieter, den der Agent gewählt hat. Ein Sortierauftrag (`inbox.start_category_job`) darf ein Modell anderswo nur nennen, wenn es
   das ist, mit dem gerade sortiert wird.
 - **„Automatic“ an einem Konto auf diesem Rechner bleibt hier.** Ohne Modell nimmt Sortieren an Ollama, LM Studio
   oder Strata nur Modelle, die auf diesem Rechner rechnen, nie ein `:cloud`-Modell – auch bei eingeschalteter
@@ -210,7 +212,7 @@ Die Auswahl (`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ei
 | Platz setzen oder leeren | Steuerzentrale › AI (Gruppe „Models“), Einstellungen des Moduls | `ai.set_slot` · Admin; ein Modell anderswo für *Sortieren* nur Menschen | `ai_set_slot` (Freigabe) |
 | Zuordnung ändern (Ausnahme je Funktion) | Einstellungen des Moduls | `ai.set_assignment` · Admin | `ai_set_assignment` (Admin braucht beim Agenten immer Freigabe) |
 | Empfehlung je Rechner | Steuerzentrale › AI (Gruppe „Models“) | `ai.recommend` · Read | `ai_recommend` |
-| Herunterladen | Steuerzentrale › AI, „Use suggestion“ | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt | `ai_pull_model` (Freigabe) |
+| Herunterladen | Steuerzentrale › AI, „Use suggestion“ | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt – außer er wurde inzwischen abgebrochen, dann die Liste mit ihm als `cancelled`. Antwortet der Start `busy`, hängt sich „Use suggestion“ an den laufenden Download desselben Modells | `ai_pull_model` (Freigabe) |
 | Stand der Downloads | dieselben Orte | `ai.list_pulls` · Read | `ai_list_pulls` |
 | Download abbrechen | „Cancel“ | `ai.cancel_pull` · Write | `ai_cancel_pull` |
 | Erlaubnis *Sortieren* | Steuerzentrale › AI, „Data rule“ („Keep mail here“) | `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit | `settings_set_setting` nur `false` |
