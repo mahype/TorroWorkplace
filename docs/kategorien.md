@@ -194,7 +194,7 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Kategorie sehen | Pille in Liste, Leser, Paneel | Feld `category` in `inbox.list_items`, `inbox.get_item`, `mail.search_messages`, `mail.get_message` · Read; eine Kategorie mit `source: model` ist ein **Vorschlag mit Konfidenz**, keine Tatsache | über die vorhandenen Tools |
-| Nach Kategorie filtern | Gruppe „Categories“ der Seitenleiste | Feld `categories` in `inbox.list_items` und `mail.search_messages` · Read | über die vorhandenen Tools |
+| Nach Kategorie filtern | Gruppen der Kategorien oben in der Seitenleiste (seit #337 ohne Überschrift „Categories“) | Feld `categories` in `inbox.list_items` und `mail.search_messages` · Read | über die vorhandenen Tools |
 | Katalog der Kategorien | Seitenleiste, Menü „Category“ | `inbox.list_categories` · Read; die Zahlen zählen nur Konten, die der Schlüssel lesen darf | `inbox_list_categories` |
 | Kategorie ändern, „immer so“ | Menü an Zeile und Leser | `inbox.set_item_category` · Write, mit „merken“ Admin | `inbox_set_item_category` |
 | Neu einordnen lassen | Knopf im Leser | `inbox.classify_item` · Write | `inbox_classify_item` |

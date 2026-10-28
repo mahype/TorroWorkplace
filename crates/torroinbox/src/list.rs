@@ -1895,8 +1895,6 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         // The views of mail have their own list and empty states (`mail::list`).
         View::Folder(_)
         | View::Mail
-        | View::Attachments
-        | View::Invitations
         | View::Search(_)
         | View::All
         | View::Hidden

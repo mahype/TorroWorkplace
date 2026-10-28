@@ -1024,12 +1024,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}",
         "Einladung „{title}“ am {when} ablehnen: Antwort von {account} an {organizer}",
     ),
-    ("Invitations", "Einladungen"),
-    ("No invitations.", "Keine Einladungen."),
-    (
-        "Invitations to events you can answer show up here.",
-        "Einladungen zu Terminen, die du beantworten kannst, erscheinen hier.",
-    ),
     ("Invitation · {when}", "Einladung · {when}"),
     ("Accept", "Annehmen"),
     ("Maybe", "Vielleicht"),
@@ -1211,7 +1205,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("What your apps report shows up here.", "Was deine Apps melden, erscheint hier."),
     // Mail window (E8.3)
     ("With attachments", "Mit Anhang"),
-    ("Smart views", "Intelligente Ansichten"),
+    // Mail window sidebar (#337)
+    ("Unfiltered", "Ungefiltert"),
     ("Open folders", "Ordner öffnen"),
     ("Pin folder", "Ordner anpinnen"),
     ("Unpin folder", "Ordner lösen"),
@@ -1221,8 +1216,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{count} accounts", "{count} Konten"),
     ("new for you", "neu für dich"),
     ("{n} messages", "{n} Nachrichten"),
-    ("No attachments.", "Keine Anhänge."),
-    ("New mail with attachments shows up here.", "Neue Mail mit Anhängen erscheint hier."),
     // Muting by trait (E8.6a)
     ("All mail to {account}", "Alle Mails an {account}"),
     ("Mail from {sender}", "Mails von {sender}"),
@@ -6419,9 +6412,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "No MCP servers yet. Each one you add in the control centre under MCP servers gets its own level here.",
         "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, bekommt hier eine eigene Stufe.",
     ),
-    // The mail window: All, Later, Hidden and Folders, "Show again" (E18.4, issue #301)
+    // The mail window: Unfiltered (once All), Later, Hidden and Folders, "Show again" (E18.4, issue #301, #337)
     ("Show again", "Wieder anzeigen"),
-    ("Back in All.", "Wieder in „Alle“."),
+    ("Back in Unfiltered.", "Wieder in „Ungefiltert“."),
     ("Couldn't show the mail again.", "Die Mail konnte nicht wieder angezeigt werden."),
     ("No mail in your inboxes.", "Keine Mail in deinen Posteingängen."),
     ("New mail shows up here.", "Neue Mails erscheinen hier."),
