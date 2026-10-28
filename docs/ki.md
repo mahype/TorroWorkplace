@@ -167,8 +167,9 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
 - `mail_to_cloud` ist die Erlaubnis für **Chat**, mit der Bedeutung von bisher.
 - `decide_mail_to_cloud` ist die Erlaubnis für **Sortieren**. Sie folgt der Wahl: Setzt man für Sortieren ein
   Modell anderswo (Cloud, Server im Netz), wird sie eingeschaltet (`ai.set_slot` setzt sie mit); wählt man ein
-  Modell hier, wird sie zurückgenommen. In der Oberfläche steht sie unter „Data rule“ als Zeile mit „Stop“,
-  solange sie an ist.
+  Modell hier, wird sie zurückgenommen. In der Oberfläche steht sie unter „Data rule“ als Zeile mit „Keep mail
+  here“, solange sie an ist; „Sorting sends mail to the cloud“ und wohin nur, solange das Modell, das gerade sortiert
+  (Ausnahme vor Platz), anderswo rechnet.
 - **Einschalten nur Menschen**; ausschalten darf jeder Client mit Rechten.
 - **Ein Modell anderswo für Mail-Funktionen setzt nur ein Mensch**: als Platz *Sortieren* wie als Ausnahme
   `inbox.categorize` (`ai.set_assignment`), auch wenn die Erlaubnis schon an ist. Die Zustimmung gilt einem
@@ -212,7 +213,7 @@ Die Auswahl (`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ei
 | Herunterladen | Steuerzentrale › AI, „Use suggestion“ | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt | `ai_pull_model` (Freigabe) |
 | Stand der Downloads | dieselben Orte | `ai.list_pulls` · Read | `ai_list_pulls` |
 | Download abbrechen | „Cancel“ | `ai.cancel_pull` · Write | `ai_cancel_pull` |
-| Erlaubnis *Sortieren* | Steuerzentrale › AI, „Data rule“ („Stop“) | `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit | `settings_set_setting` nur `false` |
+| Erlaubnis *Sortieren* | Steuerzentrale › AI, „Data rule“ („Keep mail here“) | `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit | `settings_set_setting` nur `false` |
 | Eintrag zusammenfassen | Paneel „Summarize“ | `inbox.summarize_item` · Write (löst einen Modellaufruf aus) | `inbox_summarize_item` |
 
 Neuer Bereich `ai` im Katalog für die Einstellungen; die Funktionen selbst gehören zu dem Bereich, in

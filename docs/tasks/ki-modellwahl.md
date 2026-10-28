@@ -258,8 +258,8 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
 - Ist *Sorting* ein Modell anderswo oder ein solcher Vorschlag sichtbar, sagt die Zeile im selben Moment, wohin Mail
   geht: „Mail goes to {provider} ({seat}) for sorting only. The chat still gets no mail.“ (zweiter Satz nur, solange
   die Erlaubnis *Chat* aus ist). „Data rule“: der Schalter heißt „Chat may read mail in the cloud“, Unterzeile wie
-  bisher; darunter die Erlaubnis *Sorting* als Text mit „Stop“ (`set_setting decide_mail_to_cloud false`), solange sie
-  an ist.
+  bisher; darunter die Erlaubnis *Sorting* als Text mit „Keep mail here“ (`set_setting decide_mail_to_cloud false`), solange
+  sie an ist.
 - Leer-, Lade- und Fehlerzustand: ohne KI-Konto keine Gruppe; Vorschlag lädt ruhig; Fehler mit „Retry“.
 - Assistant › General (`general.rs`): liest `ai_slots.chat`, schreibt `ai.set_slot chat` statt `assistant_default`.
 - Demo der Steuerzentrale (`ui/mod.rs`, Zustand `ai-models` in `launch.rs`): Vorschlag, laufender Download und ein Platz *Sorting* in der Cloud;

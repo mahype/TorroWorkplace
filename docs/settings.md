@@ -291,9 +291,13 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   Gruppe **„Models“** mit zwei Zeilen, *Chat* und *Sorting*. Die Einstellung `aiSlots` hält je Platz `chat` bzw.
   `decide` mit `engine`, `model` und `effort`; gesetzt wird sie mit `ai.set_slot`. Jede Zeile zeigt das gewählte
   Modell und darunter den Vorschlag der Suite für diesen Rechner mit „Use suggestion“ (`ai.recommend`, Herunterladen
-  in Ollama mit Fortschritt und „Cancel“). Die Mail-Erlaubnisse stehen unter „Data rule“: `mailToCloud` („Chat may
-  read mail in the cloud“) für Chat, `decideMailToCloud` für Sorting. Ist Sorting ein Modell anderswo, sagt die
-  Zeile, wohin Mail geht; ausgeschaltet wird die Erlaubnis über „Stop“.
+  in Ollama mit Fortschritt und „Cancel“). Ein Modell für Sorting nimmt danach eine gespeicherte Ausnahme
+  `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`, wie Einstellungen › Categorization), damit der
+  Platz sortiert. Die Mail-Erlaubnisse stehen unter „Data rule“: `mailToCloud` („Chat may
+  read mail in the cloud“) für Chat, `decideMailToCloud` für Sorting. Solange die Erlaubnis für Sorting an ist, steht
+  dort eine Zeile mit „Keep mail here“, die sie ausschaltet. Rechnet das Modell, das gerade sortiert (Ausnahme vor
+  Platz), anderswo, heißt sie „Sorting sends mail to the cloud“ und sagt, wohin Mail geht; sonst „Sorting may send
+  mail to the cloud“.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.
   Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › AI“.
