@@ -23,7 +23,7 @@
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, responsive, row, space as blank, text_editor};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::{Alignment, Element, Fill, Length, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, space};
@@ -971,47 +971,72 @@ pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a
         if matches!(state.group_form, Some(GroupForm { group: Some(open), .. }) if open == group) {
             rows.push(group_editor(state));
         }
-        for info in data.categories.iter().filter(|info| info.group == group) {
-            let category = info.category;
-            let icon = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
-                .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
-            let head = row![
-                icon,
-                typo::text(typo::body(), info.label.clone()),
-                blank::horizontal(),
-                widgets::icon_button(Icon::SquarePen, tr("Edit subcategory"), Some(Message::EditCategory(category))),
-            ]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
-            let mut child = column![head, typo::text(typo::meta(), tr("Description")).style(torro_gui::theme::text_2)]
-                .spacing(space::s());
-            if let Some(content) = state.descriptions.get(&category) {
-                let editor = text_editor(content)
-                    .on_action(move |action| Message::InlineDescription(category, action))
-                    .font(typo::body().font)
-                    .size(typo::body().size)
-                    .line_height(typo::body().line_height)
-                    .padding(style::INPUT_PADDING)
-                    .wrapping(Wrapping::WordOrGlyph)
-                    .height(INLINE_DESCRIPTION_HEIGHT)
-                    .style(style::text_editor);
-                child = child.push(editor);
-                if content.text().trim() != info.description.trim() {
-                    child = child.push(widgets::text_button(
-                        None,
-                        tr("Save description"),
-                        style::button::primary,
-                        Some(Message::SaveDescription(category)),
-                    ));
-                }
-            } else {
-                child = child.push(typo::text(typo::body(), info.description.clone()));
-            }
-            rows.push(row_frame(child, false));
+        let children: Vec<&CategoryInfo> = data.categories.iter().filter(|info| info.group == group).collect();
+        if !children.is_empty() {
+            rows.push(
+                responsive(move |room| {
+                    let columns = if room.width >= 640.0 { 2 } else { 1 };
+                    let mut grid = column![].spacing(space::s());
+                    for pair in children.chunks(columns) {
+                        let mut line = row![].spacing(space::s());
+                        for info in pair {
+                            line = line
+                                .push(container(subcategory_card(state, info, color_at)).width(Length::FillPortion(1)));
+                        }
+                        if columns == 2 && pair.len() == 1 {
+                            line = line.push(blank::horizontal().width(Length::FillPortion(1)));
+                        }
+                        grid = grid.push(line);
+                    }
+                    container(grid).width(Fill).padding([space::m(), space::l()]).into()
+                })
+                .into(),
+            );
         }
         groups.push(widgets::group(main.label, rows, None));
     }
     groups
+}
+
+fn subcategory_card<'a>(state: &'a State, info: &'a CategoryInfo, color_at: usize) -> Element<'a, Message> {
+    let category = info.category;
+    let icon = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
+        .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
+    let head = row![
+        icon,
+        typo::text(typo::body(), info.label.clone()),
+        blank::horizontal(),
+        widgets::icon_button(Icon::SquarePen, tr("Edit subcategory"), Some(Message::EditCategory(category))),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    let mut parts: Vec<Element<'a, Message>> =
+        vec![head.into(), typo::text(typo::meta(), tr("Description")).style(torro_gui::theme::text_2).into()];
+    if let Some(content) = state.descriptions.get(&category) {
+        parts.push(
+            text_editor(content)
+                .on_action(move |action| Message::InlineDescription(category, action))
+                .font(typo::body().font)
+                .size(typo::body().size)
+                .line_height(typo::body().line_height)
+                .padding(style::INPUT_PADDING)
+                .wrapping(Wrapping::WordOrGlyph)
+                .height(INLINE_DESCRIPTION_HEIGHT)
+                .style(style::text_editor)
+                .into(),
+        );
+        if content.text().trim() != info.description.trim() {
+            parts.push(widgets::text_button(
+                None,
+                tr("Save description"),
+                style::button::primary,
+                Some(Message::SaveDescription(category)),
+            ));
+        }
+    } else {
+        parts.push(typo::text(typo::body(), info.description.clone()).into());
+    }
+    widgets::card(parts, false, None)
 }
 
 fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
