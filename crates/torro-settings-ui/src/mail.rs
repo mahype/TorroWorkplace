@@ -1495,31 +1495,39 @@ pub mod accounts {
                 ),
                 false,
             ));
-            server_rows.push(row_frame(
-                row![
-                    widgets::text_button(
+            server_rows.push(
+                responsive(move |room| {
+                    let test = widgets::text_button(
                         None,
                         if draft.connection.pending { tr("Checking…") } else { tr("Test credentials") },
                         style::button::secondary,
-                        (!draft.connection.pending).then_some(Message::TestConnection)
-                    ),
-                    widgets::text_button(
+                        (!draft.connection.pending).then_some(Message::TestConnection),
+                    );
+                    let save = widgets::text_button(
                         None,
                         tr("Save connection"),
                         style::button::primary,
-                        (connection_changed && !draft.connection.pending).then_some(Message::SaveConnection)
-                    ),
-                ]
-                .spacing(space::s()),
-                false,
-            ));
+                        (connection_changed && !draft.connection.pending).then_some(Message::SaveConnection),
+                    );
+                    if room.width < 440.0 {
+                        container(column![test, save].spacing(space::s()))
+                            .width(Length::Fill)
+                            .padding([space::s(), space::l()])
+                            .into()
+                    } else {
+                        row_frame(row![test, save].spacing(space::s()), false)
+                    }
+                })
+                .height(Length::Shrink)
+                .into(),
+            );
             if let Some(status) = &draft.connection.status {
                 server_rows.push(row_frame(typo::text(typo::body(), status.clone()), false));
             }
             let connection = widgets::group(tr("Connection"), server_rows, None);
             let folders = system_folders(mail, data.mail_stats.iter().find(|stats| stats.account == draft.account));
             let right = column![connection, folders].spacing(layout::section_gap());
-            if room.width >= 820.0 {
+            if room.width >= 700.0 {
                 row![container(identity).width(Length::FillPortion(1)), container(right).width(Length::FillPortion(1))]
                     .spacing(space::l())
                     .align_y(Alignment::Start)

@@ -24,6 +24,7 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - Die Aufbewahrungsdauer bereits geladener Anhänge steht nun in derselben Karte wie die drei Offline-Strategien. Beide Werte werden erst mit „Offline-Auswahl speichern“ als eine Policy übernommen; ein gezielter UI-Test prüft die gemeinsame Änderung. Der Hinweis zur MB-Grenze benennt die zusätzlich benötigten Bytes für Kopfzeilen und Suchindex ausdrücklich.
 - Die Kontoeinstellungen zeigen nun die sechs IMAP-Systemordner direkt unter den Serverangaben. Erkannte Zuordnungen stehen sichtbar in der rechten Spalte; offene Zuordnungen führen direkt zur vorhandenen Ordnerauswahl. Bis zum ersten Ordnerabgleich wird kein Ordnername geraten.
 - Die native Demo des Konto-Reiters „Speicher & Suche“ zeigt den Größenvergleich, die drei Radio-Optionen und die Anhang-Aufbewahrung in einer Karte. Für schmale Karten stehen Datumsfeld, MB-Feld und Anhang-Auswahl unter ihren Beschriftungen; Warnungen und Fehler dürfen umbrechen, statt in eine feste Zeilenhöhe gezwungen zu werden.
+- Die Sichtprüfung von `--demo --open account-writing` im 1100-Punkt-Fenster zeigte zunächst untereinander gestapelte Kontodaten und Server. Die Umschaltbreite ist korrigiert: jetzt stehen die vier Zugangsfelder links und Verbindung plus offene Systemordner rechts. Die beiden Verbindungsaktionen stehen in der schmalen rechten Spalte untereinander.
 - Build und gezielte Tests laufen; native Sichtprüfung und die übrigen Anforderungen stehen noch aus.
 
 ## Navigation und Oberfläche
