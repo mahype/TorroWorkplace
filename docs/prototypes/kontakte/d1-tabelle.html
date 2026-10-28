@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Contacts – Entwurf D1: Tabelle</title>
+<!-- Entwurf D1 „Tabelle“ (Linears Table view): jede Zeile ein Kontakt, jede Spalte ein Merkmal – Name, Firma, Mail, Telefon,
+     Ort, Gruppen, zuletzt kontaktiert. Spalten fallen von rechts weg, wenn die Kachel schmaler wird (Container-Breite, nicht Fenster).
+     Zeile anklicken: Kontakt im Seitenpaneel. Mehrfachauswahl: schwebende Sammelleiste.
+     Zustände: ?open=panel · bulk (Auswahl) · display (Spalten wählen)   ?map=on zeigt „Map“ im Schalter   ?size=l|m|s  ?theme=light -->
+<link rel="stylesheet" href="kontakte.css">
+<link rel="stylesheet" href="kontakte-list.css">
+<script src="icons.js"></script>
+<script src="kontakte.js"></script>
+<script src="kontakte-list.js"></script>
+<style>
+.tw{container-type:inline-size;flex:1;min-height:0;display:flex;flex-direction:column}
+.trow{display:grid;grid-template-columns:28px minmax(220px,1.6fr) minmax(130px,1fr) minmax(180px,1.3fr) 140px 110px 140px 110px 32px;align-items:center;column-gap:12px;padding:0 24px;border-bottom:1px solid var(--line);height:48px;position:relative}
+.trow.head{height:36px;position:sticky;top:0;z-index:3;background:var(--panel);font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.trow.head .sort{color:var(--text);display:flex;gap:4px;align-items:center}
+.trow:not(.head):hover,.trow.hov{background:var(--hover)}
+.trow.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
+.trow .cn{display:flex;align-items:center;gap:12px;min-width:0}
+.trow .cell{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow .cell.t3,.trow .cell.t2{font-size:13px}
+.trow .box{display:grid;place-items:center}
+.trow .box .chk{visibility:hidden}
+.trow:hover .box .chk,.trow .box .chk.on,.trow.head .box .chk{visibility:visible}
+.trow .ra{position:absolute;right:56px;top:50%;transform:translateY(-50%)}
+.trow:hover .ra,.trow.hov .ra{display:flex}
+.trow:hover .c-city,.trow.hov .c-city,.trow:hover .c-last,.trow.hov .c-last{visibility:hidden}
+@container (max-width:1240px){.trow{grid-template-columns:28px minmax(220px,1.6fr) minmax(130px,1fr) minmax(180px,1.3fr) 140px 110px 140px 32px}.c-last{display:none}}
+@container (max-width:1040px){.trow{grid-template-columns:28px minmax(220px,1.6fr) minmax(130px,1fr) minmax(180px,1.3fr) 140px 110px 32px}.c-grp{display:none}}
+@container (max-width:860px){.trow{grid-template-columns:28px minmax(200px,1.6fr) minmax(120px,1fr) minmax(170px,1.3fr) 110px 32px}.c-ph{display:none}}
+@container (max-width:640px){.trow{grid-template-columns:28px minmax(180px,1.6fr) minmax(110px,1fr) 100px 32px;padding:0 12px}.c-em{display:none}}
+@container (max-width:480px){.trow{grid-template-columns:28px minmax(0,1fr) 32px}.c-co,.c-city{display:none}}
+.menu.disp{position:absolute;right:24px;top:56px;width:264px;z-index:30}
+.menu.disp .item .chk{margin-left:auto}
+</style></head>
+<body><div class="app" id="app"></div>
+<script>
+const checked=OPEN==='bulk'?['Amelie Krause','Felix Brandt','Jonas Keller']:[];
+const letters='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+function row(c){
+  const sel=OPEN==='panel'&&c===SELECTED, on=checked.includes(c.n);
+  return `<div class="trow${sel?' sel':''}${c.n==='Julia Sommer'?' hov':''}">
+    <div class="box"><span class="chk${on?' on':''}">${on?ic('check'):''}</span></div>
+    <div class="cn">${av(c,28)}<span class="cell nm"><span class="f">${firstNames(c.n)}</span> <b>${lastName(c.n)}</b></span>${star(c)}${lock(c)}</div>
+    <span class="cell t2 c-co">${c.o||'<span class="t3">—</span>'}</span>
+    <span class="cell t2 c-em">${fakeMail(c)}</span>
+    <span class="cell t2 tab c-ph">${fakePhone(c)}</span>
+    <span class="cell t3 c-city">${c.city}</span>
+    <span class="cell c-grp" style="display:flex;gap:4px">${gpills(c)}</span>
+    <span class="cell t3 c-last">${c.last}</span>
+    <span></span>${actions}</div>`;
+}
+const head=`<div class="trow head"><div class="box"><span class="chk"></span></div><span class="sort">Name ${ic('arrow-up-narrow-wide','s14')}</span><span class="c-co">Company</span><span class="c-em">Email</span><span class="c-ph">Phone</span><span class="c-city">City</span><span class="c-grp">Groups</span><span class="c-last">Last contact</span><span></span></div>`;
+const table=`<div class="tw"><div class="scroll">${head}${byLast.map(row).join('')}</div></div>`;
+const bulk=OPEN==='bulk'?`<div class="bulk"><span class="cnt">3 selected</span><span class="vsep"></span><button class="btn ghost">${ic('tag')}Add to group</button><button class="btn ghost">${ic('arrow-up-right')}Move to…</button><button class="btn ghost">${ic('users')}Merge</button><button class="btn ghost">${ic('mail')}Write to all</button><button class="btn ghost">${ic('trash-2')}Delete</button><span class="vsep"></span><button class="iconbtn sm">${ic('x')}</button></div>`:'';
+const disp=OPEN==='display'?`<div class="menu disp"><div class="lab">Columns</div>${[['Company',1],['Email',1],['Phone',1],['City',1],['Groups',1],['Last contact',0],['Address book',0],['Birthday',0]].map(c=>`<div class="item"><span class="grow">${c[0]}</span><span class="chk${c[1]?' on':''}">${c[1]?ic('check'):''}</span></div>`).join('')}<div class="sep"></div><div class="lab">Sort by</div><div class="item hl">Last name${ic('check','')}</div><div class="item">First name</div><div class="item">Last contacted</div><div class="item">Recently added</div></div>`:'';
+mount('table',table,`<button class="btn ghost">${ic('list-filter')}<span class="word">Filter</span></button>`,bulk+disp);
+</script></body></html>

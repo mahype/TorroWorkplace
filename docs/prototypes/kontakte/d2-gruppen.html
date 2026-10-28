@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Contacts – Entwurf D2: Gruppen</title>
+<!-- Entwurf D2 „Gruppen“ (Linears gruppierte Liste): Kontakte unter einklappbaren Köpfen – nach Gruppe, Ort oder Adressbuch.
+     Zeilen zweizeilig: Name mit Funktion · Firma, darunter Mail und Telefon als ruhige Kontaktzeile, so ist alles sofort
+     greifbar, ohne zu öffnen. Zeile anklicken: Kontakt im Seitenpaneel.
+     Aufrufe: ?by=group|city|book · Zustände ?open=panel · group (Menü „Group by“)   ?map=on  ?size=l|m|s  ?theme=light -->
+<link rel="stylesheet" href="kontakte.css">
+<link rel="stylesheet" href="kontakte-list.css">
+<script src="icons.js"></script>
+<script src="kontakte.js"></script>
+<script src="kontakte-list.js"></script>
+<style>
+.gh{height:40px;display:flex;align-items:center;gap:8px;padding:0 24px;background:var(--raised);border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:12px;line-height:16px;font-weight:500;color:var(--text2);position:sticky;top:0;z-index:2}
+.gh:first-child{border-top:0}
+.gh .n{font-weight:400;color:var(--text3);font-family:"Inter Tabular",Inter,sans-serif}
+.gh .mark{width:20px;height:20px;border-radius:var(--r);display:grid;place-items:center;background:color-mix(in srgb,var(--c) var(--tint),var(--panel))}
+.gh .mark svg{width:12px;height:12px}
+.gh .plus{margin-left:auto}
+.gh svg.chev{color:var(--text3)}
+.prow{display:grid;grid-template-columns:36px minmax(200px,1.2fr) minmax(200px,1fr) 120px 28px;align-items:center;column-gap:12px;height:60px;padding:0 24px;border-bottom:1px solid var(--line);position:relative}
+.prow:hover,.prow.hov{background:var(--hover)}
+.prow.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
+.prow .l1,.prow .l2{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow .l2{font-size:13px;line-height:18px;color:var(--text3)}
+.prow .cp{font-size:13px;line-height:18px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow .cp.t3{color:var(--text3)}
+.prow .city{font-size:13px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow .ra{position:absolute;right:24px;top:50%;transform:translateY(-50%)}
+.prow:hover .ra,.prow.hov .ra{display:flex}
+.prow:hover .city,.prow.hov .city{visibility:hidden}
+.body .view .scroll{container-type:inline-size}
+@container (max-width:900px){.prow{grid-template-columns:36px minmax(0,1fr) 28px}.prow .cpc,.prow .city{display:none}}
+@container (max-width:1100px){.prow{grid-template-columns:36px minmax(200px,1.2fr) minmax(190px,1fr) 28px}.prow .city{display:none}}
+.menu.grp{position:absolute;right:24px;top:56px;width:248px;z-index:30}
+.menu.grp .item .rd{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--text3);display:grid;place-items:center;margin-left:auto}
+.menu.grp .item.on .rd{border-color:var(--text)} .menu.grp .item.on .rd::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--text)}
+</style></head>
+<body><div class="app" id="app"></div>
+<script>
+const by=Q.get('by')||'group';
+const order={group:['Clients','Family','Neighbours','No group'],book:BOOKS.map(b=>b.name)};
+const keyOf=c=>by==='city'?c.city:by==='book'?BOOKS[c.b].name:(c.g[0]||'No group');
+const gmap={}; byLast.forEach(c=>{(gmap[keyOf(c)]=gmap[keyOf(c)]||[]).push(c)});
+let keys=Object.keys(gmap); keys=by==='city'?keys.sort((a,b)=>gmap[b].length-gmap[a].length||a.localeCompare(b)):(order[by]||keys).filter(k=>gmap[k]);
+const markOf=k=>by==='city'?['map-pin','var(--c3)']:by==='book'?['book-user',BOOKS.find(b=>b.name===k).c]:({Clients:['tag','var(--c0)'],Family:['tag','var(--c2)'],Neighbours:['tag','var(--c1)']}[k]||['users','var(--text3)']);
+const collapsed=by==='group'?['No group']:by==='city'?['Lübeck','Kiel','Bremen','Husum']:[];
+function row(c){
+  const sel=OPEN==='panel'&&c===SELECTED;
+  return `<div class="prow${sel?' sel':''}${c.n==='Lukas Meier'?' hov':''}">${av(c,36)}
+    <div style="min-width:0"><div class="l1 nm"><span class="f">${firstNames(c.n)}</span> <b>${lastName(c.n)}</b> ${c.f?`<span class="st" style="margin-left:4px">${ic('star','s14')}</span>`:''}${lock(c)}</div><div class="l2">${[c.t,c.o].filter(Boolean).join(' · ')||'—'}</div></div>
+    <div class="cpc" style="min-width:0"><div class="cp">${fakeMail(c)}</div><div class="cp t3 tab">${fakePhone(c)}</div></div>
+    <span class="city">${c.city}</span><span></span>${actions}</div>`;
+}
+const body=keys.map(k=>{
+  const [icon,col]=markOf(k), open=!collapsed.includes(k), list=gmap[k];
+  return `<div class="gh">${ic(open?'chevron-down':'chevron-right','s12 chev')}<span class="mark" style="--c:${col}">${ic(icon)}</span><span>${k}</span><span class="n">${by==='group'&&k==='Clients'?18:list.length}</span><button class="iconbtn sm plus">${ic('plus','s14')}</button></div>${open?list.map(row).join(''):''}`;
+}).join('');
+const menu=OPEN==='group'?`<div class="menu grp"><div class="lab">Group by</div>${[['Group','group'],['City','city'],['Address book','book'],['Company','co'],['No grouping','none']].map(([l,id])=>`<div class="item${id===by?' on':''}"><span>${l}</span><span class="rd"></span></div>`).join('')}<div class="sep"></div><div class="lab">Order</div><div class="item hl"><span class="grow">Last name</span>${ic('check')}</div><div class="item">Most recent first</div></div>`:'';
+mount('groups',`<div class="scroll">${body}</div>`,`<button class="btn"${''}>${ic('list-tree')}<span class="word">Group: ${by==='city'?'City':by==='book'?'Address book':'Group'}</span>${ic('chevron-down','s12')}</button>`,menu);
+</script></body></html>
