@@ -992,6 +992,8 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
         invite: summary.invite.is_some(),
         auto_submitted: message.traits.auto_submitted.clone(),
         junk,
+        // A filter's category is put on by the feed, which ran the filters (issue #339).
+        category: None,
     })
 }
 

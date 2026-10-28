@@ -18055,6 +18055,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            category: None,
         };
         let id =
             core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -18117,6 +18118,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            category: None,
         };
         let id = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -18152,6 +18154,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            category: None,
         };
         let id =
             core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -21482,6 +21485,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            category: None,
         };
         core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed");
         let counted = || async {
@@ -27240,6 +27244,7 @@ mod tests {
                 invite: false,
                 auto_submitted: None,
                 junk: false,
+                category: None,
             };
             let entry =
                 core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -27651,6 +27656,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            category: None,
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let asked = ask(&core, Some(&app_key), Request::SuggestEventFromItem { id: filed.clone() }).await;
@@ -27701,6 +27707,7 @@ mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            category: None,
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let suggested = |id: String| {

@@ -4720,6 +4720,10 @@ pub struct NewMail {
     /// The mail lies in the folder the server keeps junk in: filed as
     /// [`torro_mail::Category::Spam`].
     pub junk: bool,
+    /// The category a mail filter set when the mail arrived (issue #339, decision 4): the entry
+    /// takes it before the sorting rules and the headers ([`Inbox::file_mail`]). `None` for every
+    /// mail no filter gave one.
+    pub category: Option<MailCategory>,
 }
 
 /// The value of `mail_messages.github` for a mail about `issue` (task E5.6): `owner/repo#<n>` in
@@ -5080,9 +5084,13 @@ fn file_mail(
         None if lane == Lane::Info => mail.bulk,
         None => None,
     };
-    // What the mail is, as far as the headers, the folder and a kept rule say (task E12.2); the
-    // feed writes the same answer into the mail store.
-    let category = mail_category_in(&tx, sender.as_deref(), mail)?;
+    // What the mail is: what a mail filter set (issue #339, decision 4), else as far as the
+    // headers, the folder and a kept rule say (task E12.2); the feed writes the same answer into
+    // the mail store. A category the person set on the entry stays ([`rules::merge`]).
+    let category = match mail.category {
+        Some(category) => Some(category),
+        None => mail_category_in(&tx, sender.as_deref(), mail)?,
+    };
     let existing = read_owned(&tx, &mail.account, &mail.thread)?;
     let id = match &existing {
         Some(existing) => existing.id.clone(),
@@ -7522,6 +7530,7 @@ pub(crate) mod tests {
             invite: false,
             auto_submitted: None,
             junk: false,
+            category: None,
         }
     }
 
