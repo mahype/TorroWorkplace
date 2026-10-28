@@ -49,7 +49,8 @@ when = [{ min_vram_gb = 12, min_memory_gb = 32 }]
 [[tier]]
 id = "large"
 label = "Large"
-when = [{ unified = true, min_memory_gb = 32 }, { unified = false, min_memory_gb = 16 }]
+# A PC needs a graphics card for this tier: on the processor alone a 14B model answers too slowly.
+when = [{ unified = true, min_memory_gb = 32 }, { unified = false, min_memory_gb = 16, min_vram_gb = 8 }]
 
 [[tier]]
 id = "medium"

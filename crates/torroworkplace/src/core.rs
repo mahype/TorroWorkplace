@@ -23171,7 +23171,11 @@ mod tests {
         torro_core::ai::hardware::Hardware {
             cpu: Some("AMD Ryzen 9 7950X".into()),
             memory_bytes: Some(32 << 30),
-            gpu: None,
+            // A PC needs a graphics card with 8 GB for the tier `large`.
+            gpu: Some(torro_core::ai::hardware::Gpu {
+                name: Some("NVIDIA GeForce RTX 4060".into()),
+                vram_bytes: Some(8 << 30),
+            }),
             unified_memory: false,
         }
     }

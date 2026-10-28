@@ -618,7 +618,9 @@ mod tests {
         // nvidia-smi: a 12 GB RTX 4070 reports 12282 MiB, about 11.99 GiB.
         assert_eq!(tier_of(&pc(64 * GIB_U64, Some(12282 * MIB)), list).id, "gpu");
         // A computer sold with 16 GB that keeps some for itself: 15.5 GiB.
-        assert_eq!(tier_of(&pc(15 * GIB_U64 + 512 * MIB, None), list).id, "large");
+        assert_eq!(tier_of(&pc(15 * GIB_U64 + 512 * MIB, Some(8188 * MIB)), list).id, "large");
+        assert_eq!(tier_of(&pc(64 * GIB_U64, None), list).id, "medium", "a PC needs a graphics card for large");
+        assert_eq!(tier_of(&pc(32 * GIB_U64, Some(6 * GIB_U64)), list).id, "medium", "6 GB is not 8");
         assert_eq!(tier_of(&pc(7 * GIB_U64 + 700 * MIB, None), list).id, "medium", "8 GB sold");
         assert_eq!(tier_of(&pc(12 * GIB_U64, None), list).id, "medium", "12 GB is not 16");
         assert_eq!(tier_of(&pc(32 * GIB_U64, Some(10 * GIB_U64)), list).id, "large", "10 GB is not 12");

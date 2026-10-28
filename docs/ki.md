@@ -141,7 +141,7 @@ setzt nie etwas von selbst.
   Was sich nicht messen lässt, bleibt leer; das Messen liefert nie einen Fehler.
 - **Stufen** aus `crates/torroworkplace/assets/ai/recommendations.toml`, die erste zutreffende gilt:
   `mac_large` (gemeinsamer Speicher ab 64 GB), `gpu` (VRAM ab 12 GB und RAM ab 32 GB), `large` (gemeinsamer
-  Speicher ab 32 GB oder RAM ab 16 GB), `medium` (RAM ab 8 GB), `small` (sonst, auch bei unbekannter Hardware).
+  Speicher ab 32 GB oder RAM ab 16 GB mit Grafikspeicher ab 8 GB; ohne Grafikkarte rechnet ein 14B-Modell zu langsam), `medium` (RAM ab 8 GB), `small` (sonst, auch bei unbekannter Hardware).
   Der Kern lässt 10 % weniger gelten, weil Systeme etwas weniger melden, als verbaut ist.
 - **Lokal zuerst:** Ein lokales Modell der Stufe für den Platz gewinnt. Ein Strata-Eintrag zählt nur, wenn Strata
   ein passendes Modell ausliefert; sonst gilt der Ollama-Eintrag derselben Stufe. Ohne verbundenes Ollama bleibt
