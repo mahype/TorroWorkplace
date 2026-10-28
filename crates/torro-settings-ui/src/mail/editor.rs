@@ -44,22 +44,39 @@ const NAME_FIELD: &str = "mail-category-name";
 /// The id of the first condition's field of a rule's page.
 const CONDITION_FIELD: &str = "mail-rule-condition";
 
+/// Enough room for a short description without making each category card tall.
+const INLINE_DESCRIPTION_HEIGHT: f32 = 100.0;
+
 /// What the editor keeps between two frames: the page that is open, and the question it asks.
 #[derive(Debug, Default)]
 pub struct State {
     form: Option<Form>,
     asking: Option<Ask>,
+    group_form: Option<GroupForm>,
+    descriptions: std::collections::BTreeMap<Category, text_editor::Content>,
+    saved_descriptions: std::collections::BTreeMap<Category, String>,
 }
 
 impl State {
     /// A page of the editor is open: the section shows it instead of its list.
     pub fn is_open(&self) -> bool {
-        self.form.is_some()
+        self.form.is_some() || self.group_form.is_some()
     }
 
     pub fn is_rule_open(&self) -> bool {
         matches!(self.form.as_ref(), Some(Form::Rule(_)))
     }
+}
+
+#[derive(Debug)]
+struct GroupForm {
+    group: Option<CategoryGroup>,
+    name: String,
+    icon: CategoryIcon,
+    color: u8,
+    tried: bool,
+    sending: bool,
+    refused: Option<String>,
 }
 
 /// What the page asks before it does something that loses what was there.
@@ -110,6 +127,16 @@ struct RuleForm {
 /// What the editor's rows and pages report.
 #[derive(Debug, Clone)]
 pub enum Message {
+    NewGroup,
+    EditGroup(CategoryGroup),
+    GroupName(String),
+    GroupIcon(CategoryIcon),
+    GroupColor(u8),
+    SaveGroup,
+    CancelGroup,
+    NewCategoryInGroup(CategoryGroup),
+    InlineDescription(Category, text_editor::Action),
+    SaveDescription(Category),
     /// "New category".
     NewCategory,
     /// A category's row: open its page.
@@ -171,7 +198,110 @@ pub enum Message {
 
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
     match message {
+        Message::NewGroup => {
+            state.form = None;
+            state.group_form = Some(GroupForm {
+                group: None,
+                name: String::new(),
+                icon: CategoryIcon::Tag,
+                color: 0,
+                tried: false,
+                sending: false,
+                refused: None,
+            });
+            Action::None
+        }
+        Message::EditGroup(group) => {
+            state.form = None;
+            state.group_form = data.category_groups.iter().find(|held| held.group == group).map(|held| GroupForm {
+                group: Some(group),
+                name: held.label.clone(),
+                icon: held.icon,
+                color: held.color,
+                tried: false,
+                sending: false,
+                refused: None,
+            });
+            Action::None
+        }
+        Message::GroupName(name) => {
+            if let Some(form) = &mut state.group_form {
+                form.name = name;
+                form.refused = None;
+            }
+            Action::None
+        }
+        Message::GroupIcon(icon) => {
+            if let Some(form) = &mut state.group_form {
+                form.icon = icon;
+                form.refused = None;
+            }
+            Action::None
+        }
+        Message::GroupColor(color) => {
+            if let Some(form) = &mut state.group_form {
+                form.color = color;
+                form.refused = None;
+            }
+            Action::None
+        }
+        Message::SaveGroup => {
+            let Some(form) = &mut state.group_form else { return Action::None };
+            if form.sending {
+                return Action::None;
+            }
+            form.tried = true;
+            let name = form.name.trim();
+            if name.is_empty()
+                || name.chars().count() > NAME_MAX
+                || name.chars().any(char::is_control)
+                || form.color >= 4
+            {
+                return Action::None;
+            }
+            let request = match form.group {
+                Some(group) => {
+                    Request::UpdateCategoryGroup { group, name: name.to_string(), icon: form.icon, color: form.color }
+                }
+                None => Request::CreateCategoryGroup { name: name.to_string(), icon: form.icon, color: form.color },
+            };
+            form.sending = true;
+            Action::send(request)
+        }
+        Message::CancelGroup => {
+            state.group_form = None;
+            Action::None
+        }
+        Message::NewCategoryInGroup(group) => {
+            let action = update(state, Message::NewCategory, data);
+            if let Some(Form::Category(form)) = &mut state.form {
+                form.group = group;
+            }
+            action
+        }
+        Message::InlineDescription(category, action) => {
+            if let Some(content) = state.descriptions.get_mut(&category) {
+                content.perform(action);
+            }
+            Action::None
+        }
+        Message::SaveDescription(category) => {
+            let Some(content) = state.descriptions.get(&category) else { return Action::None };
+            let description = content.text().trim().to_string();
+            if description.is_empty() || description.chars().count() > DESCRIPTION_MAX {
+                return Action::None;
+            }
+            Action::send(Request::UpdateCategory {
+                category,
+                group: None,
+                name: None,
+                description: Some(description),
+                model: None,
+                icon: None,
+            })
+        }
         Message::NewCategory => {
+            state.group_form = None;
             state.asking = None;
             state.form = Some(Form::Category(CategoryForm {
                 category: None,
@@ -187,6 +317,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::EditCategory(category) => {
+            state.group_form = None;
             if let Some(info) = data.categories.iter().find(|info| info.category == category) {
                 state.asking = None;
                 state.form = Some(Form::Category(CategoryForm::of(info)));
@@ -194,6 +325,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::NewRule => {
+            state.group_form = None;
             if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
                 state.asking = Some(Ask::Discard);
                 return Action::None;
@@ -242,6 +374,9 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::send(Request::MoveSortRule { id, position: position as u32 })
         }
         Message::Back => {
+            if state.group_form.take().is_some() {
+                return Action::None;
+            }
             // A question open: Escape and "‹ Back" take it back first.
             if state.asking.take().is_some() {
                 return Action::None;
@@ -297,6 +432,35 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }
             action
         }
+    }
+}
+
+/// Refresh descriptions that were saved or have not been edited. A local unsaved change stays
+/// visible across unrelated reloads of the settings data.
+pub fn loaded(state: &mut State, data: &Data) {
+    state.descriptions.retain(|category, _| data.categories.iter().any(|held| held.category == *category));
+    state.saved_descriptions.retain(|category, _| data.categories.iter().any(|held| held.category == *category));
+    for info in &data.categories {
+        let previous = state.saved_descriptions.insert(info.category, info.description.clone());
+        let dirty = state
+            .descriptions
+            .get(&info.category)
+            .is_some_and(|content| previous.as_deref().is_some_and(|saved| content.text().trim() != saved.trim()));
+        if !dirty {
+            state.descriptions.insert(info.category, text_editor::Content::with_text(&info.description));
+        }
+    }
+}
+
+pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+    let Some(form) = state.group_form.as_mut().filter(|form| form.sending) else { return };
+    match answer {
+        Ok(torro_ipc::Response::CategoryGroup { .. }) => state.group_form = None,
+        Ok(torro_ipc::Response::Error { message, .. }) | Err(message) => {
+            form.sending = false;
+            form.refused = Some(message.clone());
+        }
+        _ => {}
     }
 }
 
@@ -491,7 +655,7 @@ impl CategoryForm {
             trf(
                 "{group} would have {n} categories for the AI; at most {most} fit.",
                 &[
-                    ("group", &torro_core::category::group_label(self.group)),
+                    ("group", &group_words(data, self.group)),
                     ("n", &self.for_model(data).to_string()),
                     ("most", &MODEL_PER_GROUP_MAX.to_string()),
                 ],
@@ -726,39 +890,127 @@ fn inline_rule<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     container(body).width(Fill).padding([space::m(), space::l()]).into()
 }
 
-/// "Categories": "New category" with what the list is for, then one group per group of
-/// categories, each row opening its page. A row says more only where a category is unusual: not
-/// for the AI, or hidden from the sidebar.
-pub fn categories_groups(data: &Data) -> Vec<Element<'_, Message>> {
-    let hidden = &data.settings.hidden_categories;
-    let mut groups =
-        vec![widgets::group(tr("All categories"), vec![add_row(tr("New category"), Message::NewCategory)], None)];
-    for group in CategoryGroup::ALL {
-        let rows: Vec<Element<'_, Message>> = data
-            .categories
-            .iter()
-            .filter(|info| info.group == group)
-            .map(|info| {
-                let notes: Vec<&str> = [
-                    (!info.model).then(|| tr("Only by rules and by hand")),
-                    hidden.contains(&info.category).then(|| tr("Hidden from the sidebar")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                let detail = (!notes.is_empty()).then(|| notes.join(" · "));
-                let color_at = CategoryGroup::ALL.iter().position(|held| *held == group).unwrap_or(0);
-                let mark = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
-                    .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
-                let row = setting_row(Some(mark.into()), info.label.clone(), detail, chevron());
-                pressable(row, Some(Message::EditCategory(info.category)))
-            })
-            .collect();
-        if !rows.is_empty() {
-            groups.push(widgets::group(torro_core::category::group_label(group), rows, None));
+/// Main categories stay open; each child shows its editable description and a clear edit button.
+pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a, Message>> {
+    let add = widgets::text_button(
+        Some(Icon::Plus),
+        tr("New main category"),
+        style::button::secondary,
+        Some(Message::NewGroup),
+    );
+    let mut groups = vec![widgets::group(tr("All categories"), vec![row_frame(add, false)], None)];
+    if matches!(state.group_form, Some(GroupForm { group: None, .. })) {
+        groups.push(group_editor(state));
+    }
+    let definitions = if data.category_groups.is_empty() {
+        torro_mail::CategoryGroupDef::defaults().iter().map(torro_ipc::inbox::CategoryGroupInfo::of).collect::<Vec<_>>()
+    } else {
+        data.category_groups.clone()
+    };
+    for main in definitions {
+        let group = main.group;
+        let color_at = usize::from(main.color.min(3));
+        let mark = torro_gui::icon::icon(category_icon(main.icon), torro_gui::icon::SIZE)
+            .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
+        let heading = row![
+            mark,
+            typo::text(typo::body(), main.label.clone()),
+            blank::horizontal(),
+            widgets::text_button(None, tr("Edit"), style::button::secondary, Some(Message::EditGroup(group))),
+            widgets::text_button(
+                Some(Icon::Plus),
+                tr("Subcategory"),
+                style::button::secondary,
+                Some(Message::NewCategoryInGroup(group))
+            ),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        let mut rows: Vec<Element<'a, Message>> = vec![row_frame(heading, false)];
+        if matches!(state.group_form, Some(GroupForm { group: Some(open), .. }) if open == group) {
+            rows.push(group_editor(state));
         }
+        for info in data.categories.iter().filter(|info| info.group == group) {
+            let category = info.category;
+            let icon = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
+                .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
+            let head = row![
+                icon,
+                typo::text(typo::body(), info.label.clone()),
+                blank::horizontal(),
+                widgets::icon_button(Icon::SquarePen, tr("Edit subcategory"), Some(Message::EditCategory(category))),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            let mut child = column![head, typo::text(typo::meta(), tr("Description")).style(torro_gui::theme::text_2)]
+                .spacing(space::s());
+            if let Some(content) = state.descriptions.get(&category) {
+                let editor = text_editor(content)
+                    .on_action(move |action| Message::InlineDescription(category, action))
+                    .font(typo::body().font)
+                    .size(typo::body().size)
+                    .line_height(typo::body().line_height)
+                    .padding(style::INPUT_PADDING)
+                    .wrapping(Wrapping::WordOrGlyph)
+                    .height(INLINE_DESCRIPTION_HEIGHT)
+                    .style(style::text_editor);
+                child = child.push(editor);
+                if content.text().trim() != info.description.trim() {
+                    child = child.push(widgets::text_button(
+                        None,
+                        tr("Save description"),
+                        style::button::primary,
+                        Some(Message::SaveDescription(category)),
+                    ));
+                }
+            } else {
+                child = child.push(typo::text(typo::body(), info.description.clone()));
+            }
+            rows.push(row_frame(child, false));
+        }
+        groups.push(widgets::group(main.label, rows, None));
     }
     groups
+}
+
+fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
+    let Some(form) = &state.group_form else { return blank().into() };
+    let name = field(tr("Name"), &form.name).on_input(Message::GroupName).on_submit(Message::SaveGroup);
+    let colors = row![
+        choice(tr("Blue"), form.color == 0, Message::GroupColor(0)),
+        choice(tr("Purple"), form.color == 1, Message::GroupColor(1)),
+        choice(tr("Green"), form.color == 2, Message::GroupColor(2)),
+        choice(tr("Red"), form.color == 3, Message::GroupColor(3)),
+    ]
+    .spacing(space::s());
+    let mut body = column![
+        typo::text(typo::caption(), tr("Main category")),
+        name,
+        typo::text(typo::meta(), tr("Icon")),
+        icon_picker(form.icon, Message::GroupIcon, form.group.unwrap_or(CategoryGroup::Info)),
+        typo::text(typo::meta(), tr("Colour")),
+        colors,
+    ]
+    .spacing(space::s());
+    if form.tried && form.name.trim().is_empty() {
+        body = body.push(typo::text(typo::meta(), tr("Give the category a name.")));
+    }
+    if let Some(refused) = &form.refused {
+        body = body.push(typo::text(typo::meta(), refused.clone()));
+    }
+    body = body.push(
+        row![
+            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CancelGroup)),
+            widgets::text_button(
+                None,
+                if form.sending { tr("Saving…") } else { tr("Save") },
+                style::button::primary,
+                (!form.sending).then_some(Message::SaveGroup)
+            ),
+        ]
+        .spacing(space::s()),
+    );
+    container(body).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 /// The last row of a list: "+ New …".
@@ -812,9 +1064,10 @@ fn checked_group<'a>(
 /// A category's page.
 fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
     let name = field(tr("Name"), &form.name).id(NAME_FIELD).on_input(Message::Name).on_submit(Message::SaveCategory);
-    let groups: Vec<Element<'a, Message>> = CategoryGroup::ALL
-        .into_iter()
-        .map(|group| choice(torro_core::category::group_label(group), form.group == group, Message::Group(group)))
+    let groups: Vec<Element<'a, Message>> = data
+        .category_groups
+        .iter()
+        .map(|held| choice(held.label.clone(), form.group == held.group, Message::Group(held.group)))
         .collect();
     let description = text_editor(&form.description)
         .on_action(Message::Description)
@@ -828,11 +1081,7 @@ fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Mess
         .style(style::text_editor);
     let counted = trf(
         "{group}: {n} of {most} categories for the AI",
-        &[
-            ("group", &torro_core::category::group_label(form.group)),
-            ("n", &form.for_model(data)),
-            ("most", &MODEL_PER_GROUP_MAX),
-        ],
+        &[("group", &group_words(data, form.group)), ("n", &form.for_model(data)), ("most", &MODEL_PER_GROUP_MAX)],
     );
     let model = setting_row(None, tr("Let the AI choose it"), Some(counted), switch(form.model, Message::Model));
     let built_in = form.built_in(data);
@@ -1011,14 +1260,20 @@ impl std::fmt::Display for CategoryChoice {
 
 /// The categories of the catalogue as choices, by group, "Group · Name".
 fn category_choices(data: &Data, leave_out: Option<Category>) -> Vec<CategoryChoice> {
-    CategoryGroup::ALL
-        .into_iter()
-        .flat_map(|group| data.categories.iter().filter(move |info| info.group == group))
+    data.categories
+        .iter()
         .filter(|info| Some(info.category) != leave_out)
         .map(|info| CategoryChoice {
             category: info.category, words: format!("{} · {}", info.group_label, info.label)
         })
         .collect()
+}
+
+fn group_words(data: &Data, group: CategoryGroup) -> String {
+    data.category_groups
+        .iter()
+        .find(|held| held.group == group)
+        .map_or_else(|| torro_core::category::group_label(group).to_string(), |held| held.label.clone())
 }
 
 /// A pick list of `choices` in the look of a row's choice ([`crate::parts::picker`]); while
@@ -1243,6 +1498,54 @@ mod tests {
 
     fn typed(text: &str) -> Message {
         Message::Description(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(text.into()))))
+    }
+
+    #[test]
+    fn main_category_can_be_created_and_used_by_a_child() {
+        let mut data = data();
+        data.category_groups =
+            torro_mail::CategoryGroupDef::defaults().iter().map(torro_ipc::inbox::CategoryGroupInfo::of).collect();
+        let mut state = State::default();
+        let _ = update::<()>(&mut state, Message::NewGroup, &data);
+        let _ = update::<()>(&mut state, Message::GroupName("Belege".into()), &data);
+        let _ = update::<()>(&mut state, Message::GroupIcon(CategoryIcon::Paperclip), &data);
+        let _ = update::<()>(&mut state, Message::GroupColor(2), &data);
+        let request = update::<()>(&mut state, Message::SaveGroup, &data);
+        assert_eq!(
+            request,
+            Action::send(Request::CreateCategoryGroup {
+                name: "Belege".into(),
+                icon: CategoryIcon::Paperclip,
+                color: 2,
+            })
+        );
+        assert!(state.group_form.as_ref().is_some_and(|form| form.sending));
+        let created = torro_ipc::inbox::CategoryGroupInfo {
+            group: CategoryGroup::Custom(5),
+            label: "Belege".into(),
+            icon: CategoryIcon::Paperclip,
+            color: 2,
+            built_in: false,
+        };
+        answered(&mut state, &Ok(torro_ipc::Response::CategoryGroup { group: created.clone() }));
+        assert!(state.group_form.is_none());
+        data.category_groups.push(created);
+        let _ = update::<()>(&mut state, Message::NewCategoryInGroup(CategoryGroup::Custom(5)), &data);
+        assert!(matches!(&state.form, Some(Form::Category(form)) if form.group == CategoryGroup::Custom(5)));
+    }
+
+    #[test]
+    fn a_subcategory_description_is_editable_in_its_open_card() {
+        let data = data();
+        let mut state = State::default();
+        loaded(&mut state, &data);
+        let _ = categories_groups(&state, &data);
+        let action = text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(" More.".into())));
+        let _ = update::<()>(&mut state, Message::InlineDescription(tax(), action), &data);
+        let sent = update::<()>(&mut state, Message::SaveDescription(tax()), &data);
+        assert!(
+            matches!(sent, Action::Send(requests) if matches!(requests.as_slice(), [Request::UpdateCategory { category, description: Some(_), .. }] if *category == tax()))
+        );
     }
 
     /// A new category is made with what was typed, and its page closes.
@@ -1471,7 +1774,7 @@ mod tests {
     #[test]
     fn the_pages_draw() {
         let (data, mut state) = (data(), State::default());
-        let _ = categories_groups(&data);
+        let _ = categories_groups(&state, &data);
         let _ = rules_group(&State::default(), &data);
         for open in [Message::NewCategory, Message::EditCategory(Category::Invoice), Message::EditCategory(tax())] {
             let _ = update::<()>(&mut state, open, &data);

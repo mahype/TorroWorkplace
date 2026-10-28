@@ -1921,6 +1921,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
     },
+    /// Creates a main mail category with a stable key (`custom_group_<n>`). The colour is one
+    /// of the four theme colours. Existing categories are not moved.
+    #[serde(rename = "inbox.create_category_group")]
+    CreateCategoryGroup { name: String, icon: torro_mail::CategoryIcon, color: u8 },
+    /// Renames or restyles a main category without changing its key or the mail beneath it.
+    /// An empty name restores a built-in name; custom groups require a name.
+    #[serde(rename = "inbox.update_category_group")]
+    UpdateCategoryGroup { group: torro_mail::CategoryGroup, name: String, icon: torro_mail::CategoryIcon, color: u8 },
     /// Files a mail under `category` by hand ([`Response::ItemCategory`], task E12.4): the
     /// category of the mail and of its entry becomes `person`, which no automatic run overwrites.
     /// With `remember: true` later mail of the same sender is filed there too – a lasting rule
@@ -3988,6 +3996,12 @@ pub enum Response {
     /// nothing here is foreign text.
     Categories {
         categories: Vec<crate::inbox::CategoryInfo>,
+        #[serde(default)]
+        groups: Vec<crate::inbox::CategoryGroupInfo>,
+    },
+    /// The main category after it was created or edited.
+    CategoryGroup {
+        group: crate::inbox::CategoryGroupInfo,
     },
     /// A mail's category after it was set or asked anew ([`Request::SetItemCategory`],
     /// [`Request::ClassifyItem`]): the entry as it stands now, and the lasting rule when

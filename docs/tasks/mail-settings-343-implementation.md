@@ -10,6 +10,7 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - Die allgemeine Speicher-Seite ist aus der Navigation entfernt; Offline-Auswahl und Anhang-Aufbewahrung stehen im Konto-Reiter „Speicher & Suche“. Die Mail-Seiten dürfen auf breiten Fenstern bis 1200 Pixel nutzen.
 - Datum und maximale Größe sind als gespeicherte Konto-Strategien ergänzt. Die Synchronisierung und der Cache-Job verwenden denselben Auswahlbereich; eine bestehende 90-Tage-Strategie erscheint als entsprechendes Datum. Der Maximalwert verwendet bislang die gemeldete RFC822.SIZE-Summe und ist noch keine harte Grenze für Anhang-Cache, Index und Datenbankdatei.
 - Die Kategorisierung hat die Reihenfolge Automatische Einsortierung → Kategorien; Regel-Editoren stehen innerhalb ihrer Regelkarte.
+- Hauptkategorien haben nun stabile eigene IDs, Namen, sichtbare Icons und eine wählbare Designfarbe. Die vier bisherigen Gruppen werden bei der Datenbankmigration als bearbeitbare Hauptkategorien angelegt. Neue Hauptkategorien können leer beginnen; vorhandene Unterkategorien behalten bei einer Umbenennung ihre Schlüssel. Die Kategorienseite zeigt offene Gruppen und direkt bearbeitbare Beschreibungen der Unterkategorien.
 - Neue Regeln werden an Position 0 gespeichert. Die Modellauswahl zeigt nur aktivierte Entscheidungsmodelle und gruppiert mehrere Anbieter. Kategorie-Icons erscheinen als sichtbares Raster.
 - „Lesen & Schreiben“ enthält die Standard-Absenderadresse, das Schreibformat und eine hohe Signaturfläche mit Formatierungsaktionen. Formatierte Signaturen werden sicher in HTML und als Textkopie versendet. Der Konto-Reiter zeigt Identität und Verbindung, ohne die Signatur zu duplizieren.
 - Die frühere Anhang-Vorabladeoption ist auch für alte gespeicherte Policies deaktiviert. Alte „Nur Kopfzeilen“-Konten werden ausdrücklich zur Auswahl einer der drei neuen Strategien aufgefordert.
@@ -51,7 +52,7 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - [ ] Regel-Prüffelder und passende Vergleiche gemäß `regeln-und-kategorien.md`, Ziel-Unterkategorie, Ausnahmen und Datenverfügbarkeit korrekt behandeln.
 - [ ] Geeignete, wirtschaftliche Kategorisierungsmodelle nach Anbieter anbieten; beim empfohlenen Wizard-Weg aktiviert und vorbelegt, separat abschaltbar.
 - [ ] Bestehende E-Mails mit klarer Option „Alle E-Mails“ erneut einsortieren. Die Beschriftung ist begonnen; Laufzeitverhalten noch prüfen.
-- [ ] Bearbeitbare Hauptkategorien mit stabilen IDs, Name, Icon und Farbe; Unterkategorien mit Name, Icon, Beschreibung und Zuordnung. Bestandsdaten migrieren.
+- [x] Bearbeitbare Hauptkategorien mit stabilen IDs, Name, Icon und Farbe; Unterkategorien mit Name, Icon, Beschreibung und Zuordnung. Bestandsdaten migrieren. Neue Gruppen bleiben beim Umbenennen und nach Neustart stabil; Löschen von Hauptkategorien ist nicht Teil des Mockups.
 - [ ] Sichtbares Icon-Raster und Stift-Button, offene Unterkategorie-Karten mit direkt bearbeitbarer Beschreibung.
 
 ## Abnahme

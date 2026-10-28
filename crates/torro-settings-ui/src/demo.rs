@@ -991,7 +991,13 @@ impl Backend for Demo {
                 self.note(request);
                 Response::CategoryJob { job }
             }
-            Request::ListCategories { .. } => Response::Categories { categories: self.categories() },
+            Request::ListCategories { .. } => Response::Categories {
+                categories: self.categories(),
+                groups: torro_mail::CategoryGroupDef::defaults()
+                    .iter()
+                    .map(torro_ipc::inbox::CategoryGroupInfo::of)
+                    .collect(),
+            },
             Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },

@@ -196,6 +196,7 @@ pub fn sent(state: &mut State) {
 /// already being typed stays in place while unrelated settings refresh.
 pub fn loaded(state: &mut State, data: &Data) {
     reading::loaded(&mut state.reading, data);
+    editor::loaded(&mut state.categorization.editor, data);
 }
 
 /// What Escape means while "Accounts" shows: close the "…" menu of an account's head (task DS.6).
@@ -216,6 +217,7 @@ pub fn escape(state: &State) -> Option<Message> {
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
     categorization::answered(&mut state.categorization, answer);
     storage::answered(&mut state.storage, answer);
+    editor::answered(&mut state.categorization.editor, answer);
 }
 
 /// Backup answers carry their originating account, so another section's pending answer cannot
@@ -3305,7 +3307,7 @@ pub mod categorization {
         );
         if state.tab == Tab::Categories {
             let mut page = column![tabs].spacing(layout::section_gap());
-            for group in super::editor::categories_groups(data) {
+            for group in super::editor::categories_groups(&state.editor, data) {
                 page = page.push(group.map(Message::Editor));
             }
             return page.into();

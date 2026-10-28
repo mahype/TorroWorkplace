@@ -815,6 +815,8 @@ fn describe(request: &Request) -> String {
         Request::ControlClearCategories { id, action } => format!("{action:?} category reset {id}"),
         // Never a name, a description or a condition (task E15.1).
         Request::CreateCategory { .. } => "create a mail category".into(),
+        Request::CreateCategoryGroup { .. } => "create a main mail category".into(),
+        Request::UpdateCategoryGroup { .. } => "change a main mail category".into(),
         Request::UpdateCategory { .. } => "change a mail category".into(),
         Request::RemoveCategory { .. } => "remove a mail category".into(),
         Request::ListSortRules => "list sorting rules".into(),

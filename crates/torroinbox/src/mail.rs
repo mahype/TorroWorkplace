@@ -1038,7 +1038,10 @@ impl CategoryView {
     /// The whole `group`, with the categories the catalogue puts in it now.
     pub fn of_group(group: CategoryGroup, catalogue: &[CategoryInfo]) -> CategoryView {
         let categories = catalogue.iter().filter(|held| held.group == group).map(|held| held.category).collect();
-        let label = torro_core::category::group_label(group).to_string();
+        let label = catalogue
+            .iter()
+            .find(|held| held.group == group)
+            .map_or_else(|| torro_core::category::group_label(group).to_string(), |held| held.group_label.clone());
         CategoryView { group, only: None, categories, label }
     }
 
@@ -2092,6 +2095,7 @@ pub(crate) fn group_mark(group: CategoryGroup) -> (Icon, usize) {
         CategoryGroup::PaperTrail => (Icon::TextQuote, 1),
         CategoryGroup::Info => (Icon::Info, 2),
         CategoryGroup::Junk => (Icon::ShieldAlert, 3),
+        CategoryGroup::Custom(_) => (Icon::Tag, 0),
     }
 }
 

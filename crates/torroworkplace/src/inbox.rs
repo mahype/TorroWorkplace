@@ -187,7 +187,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -575,6 +575,22 @@ CREATE TABLE mail_piles (
     at TEXT NOT NULL,
     PRIMARY KEY (account, message)
 );
+";
+
+/// Main categories are now catalogue entries. The first four IDs preserve the former enum
+/// groups; SQLite's sequence gives every later group an ID that is never reused.
+const SCHEMA_V17: &str = "
+CREATE TABLE IF NOT EXISTS category_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    icon TEXT NOT NULL,
+    color INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO category_groups (id, name, icon, color) VALUES
+    (1, NULL, 'user_check', 0),
+    (2, NULL, 'text_quote', 1),
+    (3, NULL, 'bell', 2),
+    (4, NULL, 'shield_alert', 3);
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -1556,6 +1572,29 @@ impl Inbox {
     /// of it, in the order the sidebar lists them. `Err` holds the message for the log.
     pub fn catalogue(&self) -> Result<Vec<torro_mail::CategoryDef>, String> {
         self.with(|db| catalogue::catalogue_in(db)).map_err(|failure| failure.to_string())
+    }
+
+    pub fn category_groups(&self) -> Result<Vec<torro_mail::CategoryGroupDef>, String> {
+        self.with(|db| catalogue::groups_in(db)).map_err(|failure| failure.to_string())
+    }
+
+    pub fn create_category_group(
+        &self,
+        name: &str,
+        icon: torro_mail::CategoryIcon,
+        color: u8,
+    ) -> Result<torro_mail::CategoryGroupDef, Response> {
+        self.with(|db| catalogue::create_group(db, name, icon, color)).map_err(Failure::response)
+    }
+
+    pub fn update_category_group(
+        &self,
+        group: torro_mail::CategoryGroup,
+        name: &str,
+        icon: torro_mail::CategoryIcon,
+        color: u8,
+    ) -> Result<torro_mail::CategoryGroupDef, Response> {
+        self.with(|db| catalogue::update_group(db, group, name, icon, color)).map_err(Failure::response)
     }
 
     /// What the sorting rules and the headers make of a mail of the inbox folder (task E15.4):
@@ -4217,6 +4256,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 16 {
         tx.execute_batch(SCHEMA_V16)?;
+    }
+    if version < 17 {
+        tx.execute_batch(SCHEMA_V17)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -7864,6 +7906,53 @@ pub(crate) mod tests {
 
     /// Task E15.2: what a category of the person's own may be called and how many a model may
     /// choose between in one group.
+    #[test]
+    fn main_categories_keep_their_ids_and_children_when_renamed() {
+        use torro_mail::{CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.category_groups().expect("defaults").len(), 4);
+        let main = inbox.create_category_group("Private Belege", CategoryIcon::Paperclip, 2).expect("main");
+        assert_eq!(main.group, CategoryGroup::Custom(5));
+        let child = inbox
+            .create_category(main.group, "Rechnungen", "Bills to pay.", true, CategoryIcon::Mail, at(8, 0))
+            .expect("child");
+        assert!(inbox.create_category_group("Private Belege", CategoryIcon::Tag, 0).is_err(), "duplicate name");
+        assert!(inbox.create_category_group("Archive", CategoryIcon::Tag, 4).is_err(), "invalid colour");
+        let changed =
+            inbox.update_category_group(main.group, "Dokumente", CategoryIcon::TextQuote, 1).expect("renamed");
+        assert_eq!((changed.group, changed.name.as_deref(), changed.color), (main.group, Some("Dokumente"), 1));
+        drop(inbox);
+
+        let reopened = inbox_in(dir.path());
+        assert!(reopened.category_groups().expect("groups").iter().any(|held| held == &changed));
+        let child_again = reopened
+            .catalogue()
+            .expect("catalogue")
+            .into_iter()
+            .find(|held| held.category == child.category)
+            .expect("child");
+        assert_eq!(child_again.group, main.group);
+    }
+
+    #[test]
+    fn version_16_catalogue_gains_editable_main_categories() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        inbox
+            .with(|db| {
+                db.execute_batch("DROP TABLE category_groups; PRAGMA user_version = 16")?;
+                Ok(())
+            })
+            .expect("old schema");
+        drop(inbox);
+        let reopened = inbox_in(dir.path());
+        let groups = reopened.category_groups().expect("migrated groups");
+        assert_eq!(groups, torro_mail::CategoryGroupDef::defaults());
+        assert_eq!(reopened.catalogue().expect("categories").len(), 23);
+    }
+
     #[test]
     fn a_new_category_keeps_to_its_limits() {
         use torro_mail::{Category, CategoryGroup, CategoryIcon};

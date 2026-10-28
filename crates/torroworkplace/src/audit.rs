@@ -326,6 +326,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         // condition's value or a category – a person's own words about their mail. A sorting
         // rule is named by its id only.
         Request::CreateCategory { .. }
+        | Request::CreateCategoryGroup { .. }
+        | Request::UpdateCategoryGroup { .. }
         | Request::UpdateCategory { .. }
         | Request::RemoveCategory { .. }
         | Request::ListSortRules

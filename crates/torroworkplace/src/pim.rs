@@ -1088,6 +1088,8 @@ impl PimService {
             | Request::ClearCategories { .. }
             | Request::ControlClearCategories { .. }
             | Request::CreateCategory { .. }
+            | Request::CreateCategoryGroup { .. }
+            | Request::UpdateCategoryGroup { .. }
             | Request::UpdateCategory { .. }
             | Request::RemoveCategory { .. }
             | Request::ListSortRules

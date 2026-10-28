@@ -156,6 +156,8 @@ pub struct Data {
     /// The catalogue of mail categories (`inbox.list_categories`, task E15.2): what each one is
     /// called and which group it stands in now. Empty from a load that did not ask for it.
     pub categories: Vec<torro_ipc::inbox::CategoryInfo>,
+    /// Main categories, including ones without children yet.
+    pub category_groups: Vec<torro_ipc::inbox::CategoryGroupInfo>,
     /// The sorting rules for mail in their order (`inbox.list_sort_rules`, task E15.5).
     pub sort_rules: Vec<torro_inbox::SortRule>,
     /// The models of every AI account, each with the account it came from (`ai.list_models`,
@@ -215,7 +217,20 @@ impl Data {
             Response::CategoryJob { job } => self.category_job = job,
             Response::CategoryJobPreview { preview } => self.category_job_preview = Some(preview),
             Response::CategoryClearPreview { preview } => self.category_clear_preview = Some(preview),
-            Response::Categories { categories } => self.categories = categories,
+            Response::Categories { categories, groups } => {
+                self.categories = categories;
+                self.category_groups = groups;
+            }
+            Response::CategoryGroup { group } => {
+                self.category_groups.retain(|held| held.group != group.group);
+                self.category_groups.push(group.clone());
+                self.category_groups.sort_by_key(|held| held.group.database_id());
+                for category in self.categories.iter_mut().filter(|held| held.group == group.group) {
+                    category.group_label = group.label.clone();
+                    category.group_icon = group.icon;
+                    category.group_color = group.color;
+                }
+            }
             Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,

@@ -102,6 +102,7 @@ pub(crate) fn english_group_label(group: CategoryGroup) -> &'static str {
         CategoryGroup::PaperTrail => "Paper trail",
         CategoryGroup::Info => "Info",
         CategoryGroup::Junk => "Junk",
+        CategoryGroup::Custom(_) => "Category",
     }
 }
 
@@ -162,6 +163,7 @@ pub fn group_description(group: CategoryGroup) -> &'static str {
             "Technical mail and rubbish: an undeliverable mail, an automatic reply, spam, \
                                 phishing, or nothing that fits."
         }
+        CategoryGroup::Custom(_) => "Mail in this main category.",
     }
 }
 

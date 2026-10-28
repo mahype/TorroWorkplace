@@ -1623,6 +1623,8 @@ impl Request {
             Request::SetItemLane { .. } => &SET_ITEM_LANE,
             Request::MuteSource { .. } => &MUTE_SOURCE,
             Request::ListCategories { .. } => &LIST_CATEGORIES,
+            Request::CreateCategoryGroup { .. } => &CREATE_CATEGORY_GROUP,
+            Request::UpdateCategoryGroup { .. } => &UPDATE_CATEGORY_GROUP,
             Request::SetItemCategory { .. } => &SET_ITEM_CATEGORY,
             Request::ClassifyItem { .. } => &CLASSIFY_ITEM,
             Request::GetCategorization => &GET_CATEGORIZATION,
@@ -1889,6 +1891,8 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_ASSIGNMENTS,
     &SET_ASSIGNMENT,
     &LIST_CATEGORIES,
+    &CREATE_CATEGORY_GROUP,
+    &UPDATE_CATEGORY_GROUP,
     &SET_ITEM_CATEGORY,
     &CLASSIFY_ITEM,
     &GET_CATEGORIZATION,
@@ -3344,8 +3348,7 @@ static LIST_CATEGORIES: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, \
-                  `info`, `junk`), the words a person reads for both, its monochrome `icon` in the group's colour, \
+    description: "Lists the catalogue of mail categories and the main categories, including empty ones. Each child has a stable group key (`waiting_for_me`, `paper_trail`, `info`, `junk` or `custom_group_<n>`), the words a person reads for both, its monochrome `icon` in the group's colour, \
                   how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder \
                   only, so mail thrown away, marked as spam \
                   or sent by the person is counted nowhere. The counts cover only mail accounts this key may read \
@@ -3356,6 +3359,22 @@ static LIST_CATEGORIES: Command = Command {
                   brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or \
                   the person's own, not foreign text. Use it to offer the categories and to build a sidebar; \
                   filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.",
+};
+
+static CREATE_CATEGORY_GROUP: Command = Command {
+    name: "inbox.create_category_group",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Creates a main mail category with a stable custom_group_<n> key, name, icon and theme colour. Its child categories can then be created or moved into it. Needs the person's approval.",
+};
+
+static UPDATE_CATEGORY_GROUP: Command = Command {
+    name: "inbox.update_category_group",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Changes the name, icon and theme colour of a main mail category without changing its stable key or the mail in its child categories. An empty name restores a built-in label. Needs the person's approval.",
 };
 
 static SET_ITEM_CATEGORY: Command = Command {
@@ -3475,7 +3494,7 @@ static CREATE_CATEGORY: Command = Command {
     area: Area::Inbox,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Makes a mail category of the person's own in one of the four groups and returns it; its key is \
+    description: "Makes a mail category of the person's own in an existing main category and returns it; its key is \
                   `custom_<n>` and never changes. `icon` chooses a monochrome category icon; the group supplies \
                   its colour. `description` says what belongs there, with examples and \
                   exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. \
@@ -4958,6 +4977,17 @@ mod tests {
                 enabled: true,
             },
             Request::ListCategories { account: None },
+            Request::CreateCategoryGroup {
+                name: "Receipts".into(),
+                icon: torro_mail::CategoryIcon::Paperclip,
+                color: 1,
+            },
+            Request::UpdateCategoryGroup {
+                group: torro_mail::CategoryGroup::PaperTrail,
+                name: "Documents".into(),
+                icon: torro_mail::CategoryIcon::TextQuote,
+                color: 1,
+            },
             Request::SetItemCategory { id: "i1".into(), category: torro_mail::Category::Invoice, remember: true },
             Request::ClassifyItem { id: "i1".into() },
             Request::GetCategorization,

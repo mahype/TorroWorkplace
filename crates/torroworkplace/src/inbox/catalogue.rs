@@ -24,11 +24,96 @@ use rusqlite::{Connection, OptionalExtension, params};
 use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_RULES_MAX, SORT_VALUE_MAX};
 use torro_inbox::{Rule, RuleEffect, SortCondition, SortField, SortRule, SourceRef};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
-use torro_mail::{Category, CategoryDef, CategoryGroup, CustomCategory};
+use torro_mail::{Category, CategoryDef, CategoryGroup, CategoryGroupDef, CategoryIcon, CustomCategory};
 
 use super::{Failure, Scope, StoreError, read_items, stamp, text, write_item};
 use chrono::{DateTime, Utc};
 use torro_core::i18n::{tr, trf};
+
+/// Main categories, including empty ones; each has a stable key independent of its name.
+pub(super) fn groups_in(db: &Connection) -> Result<Vec<CategoryGroupDef>, Failure> {
+    let mut statement = db.prepare("SELECT id, name, icon, color FROM category_groups ORDER BY id")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+    })?;
+    let mut groups = Vec::new();
+    for row in rows {
+        let (id, name, icon, color) = row?;
+        let Some(group) = u32::try_from(id).ok().and_then(CategoryGroup::from_database_id) else { continue };
+        let color = u8::try_from(color).ok().filter(|color| *color < 4).unwrap_or(0);
+        groups.push(CategoryGroupDef { group, name, icon: CategoryIcon::from_key(&icon), color });
+    }
+    Ok(groups)
+}
+
+fn find_group(db: &Connection, group: CategoryGroup) -> Result<CategoryGroupDef, Failure> {
+    groups_in(db)?
+        .into_iter()
+        .find(|held| held.group == group)
+        .ok_or_else(|| Failure::NotFound(trf("There is no main category {group}.", &[("group", &group.key())])))
+}
+
+fn checked_group_name(db: &Connection, group: Option<CategoryGroup>, name: &str) -> Result<String, Failure> {
+    let name = checked_name(name)?;
+    let taken = groups_in(db)?.into_iter().any(|held| {
+        Some(held.group) != group
+            && held
+                .name
+                .as_deref()
+                .unwrap_or_else(|| torro_core::category::group_label(held.group))
+                .eq_ignore_ascii_case(&name)
+    });
+    if taken {
+        return Err(Failure::Invalid(trf("There is a main category called “{name}” already.", &[("name", &name)])));
+    }
+    Ok(name)
+}
+
+pub(super) fn create_group(
+    db: &Connection,
+    name: &str,
+    icon: CategoryIcon,
+    color: u8,
+) -> Result<CategoryGroupDef, Failure> {
+    if color >= 4 {
+        return Err(Failure::Invalid(tr("Choose a category colour.").into()));
+    }
+    if groups_in(db)?.len() >= 20 {
+        return Err(Failure::Invalid(tr("There can be at most 20 main categories.").into()));
+    }
+    let name = checked_group_name(db, None, name)?;
+    db.execute(
+        "INSERT INTO category_groups (name, icon, color) VALUES (?1, ?2, ?3)",
+        params![name, icon.key(), color],
+    )?;
+    let id = u32::try_from(db.last_insert_rowid()).map_err(|_| Failure::Invalid("no more main category IDs".into()))?;
+    let group =
+        CategoryGroup::from_database_id(id).ok_or_else(|| Failure::Invalid("invalid main category ID".into()))?;
+    Ok(CategoryGroupDef { group, name: Some(name), icon, color })
+}
+
+pub(super) fn update_group(
+    db: &Connection,
+    group: CategoryGroup,
+    name: &str,
+    icon: CategoryIcon,
+    color: u8,
+) -> Result<CategoryGroupDef, Failure> {
+    find_group(db, group)?;
+    if color >= 4 {
+        return Err(Failure::Invalid(tr("Choose a category colour.").into()));
+    }
+    let name = if name.trim().is_empty() && !matches!(group, CategoryGroup::Custom(_)) {
+        None
+    } else {
+        Some(checked_group_name(db, Some(group), name)?)
+    };
+    db.execute(
+        "UPDATE category_groups SET name = ?2, icon = ?3, color = ?4 WHERE id = ?1",
+        params![group.database_id(), name, icon.key(), color],
+    )?;
+    Ok(CategoryGroupDef { group, name, icon, color })
+}
 
 /// Every category of the catalogue, by group in the order of [`CategoryGroup::ALL`]; within a
 /// group the suite's first in their order, then the person's own in the order they were made. A
@@ -89,7 +174,7 @@ pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure>
         });
     }
     // By group, as the sidebar lists them; within a group the suite's order, then the person's.
-    defs.sort_by_key(|def| CategoryGroup::ALL.iter().position(|group| *group == def.group));
+    defs.sort_by_key(|def| def.group.database_id());
     Ok(defs)
 }
 
@@ -126,6 +211,7 @@ pub(super) fn create(
     icon: torro_mail::CategoryIcon,
     now: DateTime<Utc>,
 ) -> Result<CategoryDef, Failure> {
+    find_group(db, group)?;
     let name = checked_name(name)?;
     let description = checked_description(description)?
         .ok_or_else(|| Failure::Invalid(tr("Describe what belongs in the category.").into()))?;
@@ -170,6 +256,7 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
     let mut catalogue = catalogue_in(db)?;
     let mut def = find(&catalogue, category)?.clone();
     if let Some(group) = changes.group {
+        find_group(db, group)?;
         def.group = group;
     }
     if let Some(model) = changes.model {

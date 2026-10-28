@@ -4692,6 +4692,8 @@ impl Core {
             | Request::ListRules
             | Request::RemoveRule { .. }
             | Request::ListCategories { .. }
+            | Request::CreateCategoryGroup { .. }
+            | Request::UpdateCategoryGroup { .. }
             | Request::SetItemCategory { .. }
             | Request::ClassifyItem { .. }
             | Request::GetCategorization
@@ -5297,14 +5299,19 @@ impl Core {
             Ok(catalogue) => catalogue,
             Err(message) => return Response::Error { code: "error".into(), message },
         };
+        let groups = match self.inbox.category_groups() {
+            Ok(groups) => groups.iter().map(torro_ipc::inbox::CategoryGroupInfo::of).collect::<Vec<_>>(),
+            Err(message) => return Response::Error { code: "error".into(), message },
+        };
         let categories = catalogue
             .iter()
             .map(|def| {
                 let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
-                torro_ipc::inbox::CategoryInfo::of(def, unread, messages)
+                let group = groups.iter().find(|group| group.group == def.group);
+                torro_ipc::inbox::CategoryInfo::of_with_group(def, unread, messages, group)
             })
             .collect();
-        Response::Categories { categories }
+        Response::Categories { categories, groups }
     }
 
     /// One category as `inbox.create_category` and `inbox.update_category` answer it (task E15.2):
@@ -5312,7 +5319,12 @@ impl Core {
     async fn category_answer(&self, def: &torro_mail::CategoryDef, reach: Reach<'_>) -> Response {
         let counts = self.mail.unread_by_category(reach, None).await.unwrap_or_default();
         let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
-        Response::Category { category: torro_ipc::inbox::CategoryInfo::of(def, unread, messages) }
+        let group = self.inbox.category_groups().ok().and_then(|groups| {
+            groups.iter().find(|group| group.group == def.group).map(torro_ipc::inbox::CategoryGroupInfo::of)
+        });
+        Response::Category {
+            category: torro_ipc::inbox::CategoryInfo::of_with_group(def, unread, messages, group.as_ref()),
+        }
     }
 
     /// `inbox.remove_category` (task E15.2): a category of the person's own goes, and what names
@@ -6185,6 +6197,18 @@ impl Core {
             // The catalogue and the backlog need the mail stores, so the core answers them, not
             // the inbox database (task E12.4).
             Request::ListCategories { account } => Box::pin(self.list_categories(account, reach)).await,
+            Request::CreateCategoryGroup { name, icon, color } => {
+                match self.inbox.create_category_group(&name, icon, color) {
+                    Ok(group) => Response::CategoryGroup { group: torro_ipc::inbox::CategoryGroupInfo::of(&group) },
+                    Err(refused) => refused,
+                }
+            }
+            Request::UpdateCategoryGroup { group, name, icon, color } => {
+                match self.inbox.update_category_group(group, &name, icon, color) {
+                    Ok(group) => Response::CategoryGroup { group: torro_ipc::inbox::CategoryGroupInfo::of(&group) },
+                    Err(refused) => refused,
+                }
+            }
             Request::GetCategorization => Box::pin(self.get_categorization(reach)).await,
             Request::CatchUpCategories { cancel, again } => {
                 Box::pin(self.catch_up_categories(cancel, again, reach)).await
@@ -15869,7 +15893,7 @@ mod tests {
         let app_key = crate::clients::tests::app_key(dir.path());
 
         // The catalogue: every category, with its words and zero counts – there is no mailbox.
-        let Response::Categories { categories } =
+        let Response::Categories { categories, .. } =
             ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
         else {
             panic!("the catalogue answers with Categories");
@@ -15919,7 +15943,7 @@ mod tests {
         no_mail.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
         no_mail.mail_accounts = Selection::All;
         let (_, inbox_only) = client(&core, no_mail).await;
-        let Response::Categories { categories } =
+        let Response::Categories { categories, .. } =
             ask(&core, Some(&inbox_only), Request::ListCategories { account: None }).await
         else {
             panic!("the catalogue answers with Categories");
@@ -18742,7 +18766,7 @@ mod tests {
         assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
 
         let counted = |answer: Response| -> (u32, u32) {
-            let Response::Categories { categories } = answer else { panic!("the catalogue") };
+            let Response::Categories { categories, .. } = answer else { panic!("the catalogue") };
             categories
                 .iter()
                 .find(|held| held.category == torro_mail::Category::Invoice)
@@ -18855,7 +18879,7 @@ mod tests {
         // Filed under it by hand, counted and found like any other.
         let filed = Request::SetItemCategory { id: id.clone(), category: tax.category, remember: false };
         assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
-        let Response::Categories { categories } =
+        let Response::Categories { categories, .. } =
             ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
         else {
             panic!("the catalogue")
@@ -18882,7 +18906,8 @@ mod tests {
         };
         assert_eq!((bills.label.as_str(), bills.group, bills.renamed), ("Bills", CategoryGroup::WaitingForMe, true));
         let again = fresh().await;
-        let Response::Categories { categories } = again.handle(Request::ListCategories { account: None }).await else {
+        let Response::Categories { categories, .. } = again.handle(Request::ListCategories { account: None }).await
+        else {
             panic!("the catalogue")
         };
         let held = categories.iter().find(|held| held.category == Category::Invoice).expect("invoice");

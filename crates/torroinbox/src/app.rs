@@ -10351,7 +10351,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return Vec::new();
         }
         let mut branches = Vec::new();
-        for group in CategoryGroup::ALL {
+        for group in category_group_order(&self.categories) {
             let of_group: Vec<&CategoryInfo> =
                 self.categories.iter().filter(|held| held.group == group).filter(occurs).collect();
             if of_group.is_empty() {
@@ -10361,11 +10361,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let open = self.open_groups.contains(&group);
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
             // four colours are learnt. The line of its branch takes it too (issue #300).
-            let (mark, at) = mail::group_mark(group);
+            let mark = mail::category_symbol(of_group[0].group_icon);
+            let at = usize::from(of_group[0].group_color.min(3));
             let line = self.category_colour(at);
             let entry = NavEntry {
                 mark: Mark::Tinted(mark, line),
-                label: torro_core::category::group_label(group).to_string(),
+                label: of_group[0].group_label.clone(),
                 count: (unread > 0).then_some(unread as usize),
                 active: self.category_group_active(group),
                 view: self.category_group_view(group),
@@ -10457,8 +10458,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let occurs = |held: &&CategoryInfo| held.messages > 0 && !hidden.contains(&held.category);
             self.categories.iter().filter(|held| held.group == group).filter(occurs).count()
         };
-        let most = CategoryGroup::ALL.into_iter().map(held).max().filter(|most| *most > 0)?;
-        CategoryGroup::ALL.into_iter().find(|group| held(*group) == most)
+        let groups = category_group_order(&self.categories);
+        let most = groups.iter().copied().map(held).max().filter(|most| *most > 0)?;
+        groups.into_iter().find(|group| held(*group) == most)
     }
 
     /// Puts the category start states in place once the catalogue is in; the window then loads
@@ -10864,7 +10866,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         } else {
             self.categories.clone()
         };
-        let shown: Vec<&CategoryInfo> = CategoryGroup::ALL
+        let shown: Vec<&CategoryInfo> = category_group_order(&catalogue)
             .into_iter()
             .flat_map(|group| {
                 catalogue
@@ -10878,7 +10880,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let width = needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel());
         let mut list = column![menu_caption(tr("Category"))];
         let mut at = 0;
-        for group in CategoryGroup::ALL {
+        for group in category_group_order(&catalogue) {
             let of_group: Vec<&CategoryInfo> = catalogue
                 .iter()
                 .filter(|held| held.group == group && !(held.built_in && held.category.by_rule_only()))
@@ -10886,11 +10888,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             if of_group.is_empty() {
                 continue;
             }
-            let (group_icon, color_at) = mail::group_mark(group);
+            let group_icon = mail::category_symbol(of_group[0].group_icon);
+            let color_at = usize::from(of_group[0].group_color.min(3));
             let color = palette(&self.theme()).category[color_at];
             let group_heading = row![
                 icon::icon(group_icon, icon::SIZE).style(move |_, _| iced::widget::svg::Style { color: Some(color) }),
-                typo::text(typo::caption(), torro_core::category::group_label(group).to_owned())
+                typo::text(typo::caption(), of_group[0].group_label.clone())
                     .style(move |_| iced::widget::text::Style { color: Some(color) })
             ]
             .spacing(space::s())
@@ -11414,6 +11417,16 @@ struct MailGroup {
 
 /// A group of "Categories" with its categories (issue #300): the sidebar draws the group as a row
 /// that folds and its categories indented in a branch, the menu the categories nested under it.
+fn category_group_order(catalogue: &[CategoryInfo]) -> Vec<CategoryGroup> {
+    let mut groups = Vec::new();
+    for category in catalogue {
+        if !groups.contains(&category.group) {
+            groups.push(category.group);
+        }
+    }
+    groups
+}
+
 struct CategoryBranch {
     /// The group's row; its target is [`Target::Fold`].
     group: NavEntry,
