@@ -5188,6 +5188,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Turn on a model of {provider} in Settings › AI.",
         "Schalte unter Einstellungen › KI ein Modell von {provider} an.",
     ),
+    (
+        "Turn on a model of {provider} that runs on this computer in Settings › AI.",
+        "Schalte unter Einstellungen › KI ein Modell von {provider} an, das auf diesem Computer läuft.",
+    ),
     ("Turn on an unknown model of {account}", "Ein unbekanntes Modell von {account} anschalten"),
     ("Turn on models in Settings › AI.", "Schalte Modelle unter Einstellungen › KI an."),
     ("Turn on “{model}” of {account} (runs elsewhere)", "„{model}“ von {account} anschalten (rechnet anderswo)"),

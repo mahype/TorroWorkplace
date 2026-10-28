@@ -983,8 +983,11 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    in [ki.md](ki.md), „Erlaubnis je Platz“): `settings.set_setting` mit `decide_mail_to_cloud: true` und ein
    `settings.update_settings`, das es einschalten würde, bekommen von jedem Client `forbidden`, auch mit
    Admin-Rechten. Dasselbe gilt für `ai.set_slot` mit `slot: decide` und einem Modell, das anderswo rechnet,
-   und für `ai.set_assignment` der Funktion `inbox.categorize` mit einem solchen Modell – ohne Modell schon dann,
-   wenn das Konto ein angeschaltetes, sortierfähiges Modell anderswo hat – sowie für `inbox.start_category_job` mit
+   und für `ai.set_assignment` der Funktion `inbox.categorize` mit einem solchen Modell – auch ausgeschaltet
+   (`enabled: false`), außer es nennt Konto und Modell, die gerade sortieren (die Ausnahme, sonst der Platz), damit
+   kein Agent eine Ausnahme vorbereitet, die die Person später einschaltet; ohne Modell zählt ein Konto auf diesem
+   Computer als hier, weil „Automatic“ dort nur Modelle hier nimmt (nie `:cloud`), ein Konto anderswo als anderswo –
+   sowie für `inbox.start_category_job` mit
    einem Modell anderswo, das nicht das gerade geltende ist: Die Zustimmung gilt
    einem Anbieter, und kein Agent leitet sie auf einen anderen um. `decide_mail_to_cloud: false` ist eine
    gewöhnliche Admin-Änderung. Geprüft wird beim Setzen und beim Aufruf.

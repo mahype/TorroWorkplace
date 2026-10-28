@@ -698,7 +698,8 @@ pub struct Automatic {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub chat: bool,
     /// A function that needs a decision model, with mail allowed to the cloud: the first model that
-    /// decides, as sorting mail took it.
+    /// decides, as sorting mail took it – at an account on this computer the first that decides here
+    /// ([`Automatic::picks`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub decides: bool,
     /// The same while mail may not leave this computer: the first model that decides and computes here.
@@ -744,8 +745,16 @@ impl Automatic {
 
     /// The models of `models` (all of the account's, as its server lists them) that "Automatic"
     /// took for the uses marked, `place` saying where each computes; none for a use the account
-    /// offers nothing for.
-    pub fn picks(self, models: &[AiModel], place: impl Fn(&AiModel) -> crate::assistant::Place) -> Vec<AiModel> {
+    /// offers nothing for. `seat_here`: the account sits on this computer
+    /// ([`torro_core::ai::Seat::ThisComputer`]), where sorting with "Automatic" picks only models here
+    /// whatever the permission (`categorize::chosen`, review of #325) – so the decision model kept on
+    /// is one here too, never a `:cloud` model the account lists before it.
+    pub fn picks(
+        self,
+        models: &[AiModel],
+        place: impl Fn(&AiModel) -> crate::assistant::Place,
+        seat_here: bool,
+    ) -> Vec<AiModel> {
         let here = |model: &AiModel| place(model) == crate::assistant::Place::Local;
         let decides = |model: &&AiModel| model.decision == Some(true);
         let mut picks = Vec::new();
@@ -753,7 +762,7 @@ impl Automatic {
             picks.extend(crate::assistant::ModelAccess::automatic(models.to_vec(), &place).ok());
         }
         if self.decides {
-            picks.extend(models.iter().find(decides).cloned());
+            picks.extend(models.iter().filter(decides).find(|model| !seat_here || here(model)).cloned());
         }
         if self.decides_here {
             picks.extend(models.iter().filter(decides).find(|model| here(model)).cloned());
@@ -1051,7 +1060,8 @@ impl AiAccounts {
         let mut changed = switches.clone();
         changed.automatic.remove(id);
         let mut kept = 0;
-        for model in automatic.picks(models, place) {
+        let seat_here = provider.seat() == torro_core::ai::Seat::ThisComputer;
+        for model in automatic.picks(models, place, seat_here) {
             if !changed.held.is_on(id, &model, place(&model) == crate::assistant::Place::Local) {
                 changed.held.turn_on(id, &model.id);
                 kept += 1;
@@ -2682,14 +2692,22 @@ pub(crate) mod tests {
             model("here-tools", true, true, false, false),
         ];
         let place = |model: &AiModel| if model.remote == Some(true) { Place::Remote } else { Place::Local };
-        let ids = |uses: Automatic| uses.picks(&models, place).into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let ids = |uses: Automatic| uses.picks(&models, place, false).into_iter().map(|m| m.id).collect::<Vec<_>>();
         assert_eq!(ids(Automatic { chat: true, ..Automatic::default() }), ["here-tools"]);
         assert_eq!(ids(Automatic { decides: true, ..Automatic::default() }), ["cloud-decides"]);
         assert_eq!(ids(Automatic { decides_here: true, ..Automatic::default() }), ["here-decides"]);
         let both = Automatic { chat: true, ..Automatic::default() }
             .and(Automatic { decides_here: true, ..Automatic::default() });
         assert_eq!(ids(both), ["here-tools", "here-decides"]);
-        assert!(Automatic::default().picks(&models, place).is_empty());
+        assert!(Automatic::default().picks(&models, place, false).is_empty());
+        // Review of #325: at an account on this computer "Automatic" sorted only with models here
+        // (`categorize::chosen`), so that is the one kept on – `nimble`, never `nimble:cloud` before it.
+        let ollama = [model("nimble:cloud", false, true, true, true), model("nimble", false, true, true, false)];
+        let decides = Automatic { decides: true, ..Automatic::default() };
+        let kept =
+            |seat_here: bool| decides.picks(&ollama, place, seat_here).into_iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(kept(true), ["nimble"]);
+        assert_eq!(kept(false), ["nimble:cloud"], "an account elsewhere picks as it lists");
         let sorting = ai::AiFunction::InboxCategorize;
         assert_eq!(Automatic::for_function(sorting, false), Automatic { decides_here: true, ..Automatic::default() });
         assert_eq!(Automatic::for_function(sorting, true), Automatic { decides: true, ..Automatic::default() });

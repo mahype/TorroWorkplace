@@ -2780,13 +2780,16 @@ static SET_ASSIGNMENT: Command = Command {
                   A function that needs a decision takes a decision model or a chat model with tools, which \
                   answers in a fixed format. Choosing a model that runs elsewhere for a function that reads \
                   mail is for a person, in the control centre: an agent gets `forbidden`, also while sorted \
-                  mail may leave this computer, and with no model named also for an account on this computer \
-                  that has a model on running elsewhere (such as Ollama's `:cloud` models), since it could \
-                  pick that one. `not-found` for a function this version does not know or an \
-                  account that does not exist; `error` for a model the account does not offer or one that \
-                  cannot decide; `unsupported` while the assignment is on for a model that is turned off \
-                  (`ai.set_model_enabled`), or, with no model named, for an account with no model on that \
-                  fits; a model turned off later is not used.",
+                  mail may leave this computer, and also with `enabled: false` unless it names the account \
+                  and model the function uses now (its exception, else its slot), so an agent can switch \
+                  that off but never prepare another. With no model named, an account on this computer \
+                  counts as here: its \"Automatic\" picks only models that run on this computer, never one \
+                  elsewhere such as Ollama's `:cloud` models; an account elsewhere counts as elsewhere. \
+                  `not-found` for a function this version does not know or an account that does not exist; \
+                  `error` for a model the account does not offer or one that cannot decide; `unsupported` \
+                  while the assignment is on for a model that is turned off (`ai.set_model_enabled`), or, \
+                  with no model named, for an account with no model on that fits (at an account on this \
+                  computer, none on that runs here); a model turned off later is not used.",
 };
 
 // Admin like `ai.set_assignment`: it decides which account of the person works for the whole suite.

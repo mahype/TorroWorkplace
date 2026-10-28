@@ -1059,6 +1059,25 @@ fn assignment_in_effect(
     })
 }
 
+/// Whether `engine` and `model` are what `function` uses now ([`assignment_in_effect`]: its exception,
+/// on or off, else its slot) – review of issue #325: switching that off is no choice of a model, so a
+/// client may do it with a model elsewhere too; an exception elsewhere it would only prepare is not.
+fn names_what_is_in_effect(
+    settings: &torro_core::settings::Settings,
+    function: torro_core::ai::AiFunction,
+    engine: &str,
+    model: Option<&str>,
+) -> bool {
+    assignment_in_effect(settings, function)
+        .is_some_and(|held| held.engine.as_deref() == Some(engine) && held.model.as_deref() == model)
+}
+
+/// Whether one of `models` is on that the function could ask: any, or for one that needs a decision
+/// (`decides`) one that can decide ([`torro_core::ai::AiModel::can_decide`]).
+fn one_fits(models: &[torro_core::ai::AiModel], decides: bool) -> bool {
+    models.iter().any(|model| model.enabled && (!decides || model.can_decide()))
+}
+
 /// Whether mail given to `model` of the AI account at `provider` and `server` leaves this computer
 /// (tasks S.23, MW.2): where the model computes ([`crate::assistant::place_of`]); naming none, where
 /// the account sits – only an account on this computer keeps it here, since its "Automatic" picks
@@ -5367,7 +5386,10 @@ impl Core {
     /// **Mail elsewhere is the person's** (issue #325, task MW.2): an assignment that is on, for a
     /// function that reads mail, with a model elsewhere – or, naming none, an account elsewhere – is
     /// `forbidden` for a client (`client`), also while the permission of the function's slot is on:
-    /// that consent was given to another provider. The core refused it before any approval
+    /// that consent was given to another provider. Switched off, the same unless it names what the
+    /// function uses now ([`names_what_is_in_effect`], review of #325): "off" with that model is no
+    /// choice, one prepared elsewhere would be the agent's once the person switches it on. The core
+    /// refused it before any approval
     /// ([`Core::turns_on_elsewhere`]); this asks again with the server's list of now, so an approval
     /// does not run past it. A person who sets one lets the slot's mail out with it
     /// (`decide_mail_to_cloud`), as when choosing the slot itself ([`Core::set_ai_slot`]). Without a
@@ -5408,7 +5430,13 @@ impl Core {
             // here: its "Automatic" picks only models here ([`categorize::chosen`], review of #325).
             let elsewhere = elsewhere_of(provider, &server, chosen.as_ref());
             let sorts_mail = function.reads_mail() && wanted.enabled;
-            if sorts_mail
+            // Switched off, one elsewhere is still the person's unless it is what the function uses
+            // now (review of #325): else an agent prepares it, and the person who later switches it
+            // on sends the mail to the provider the agent named.
+            let prepares = function.reads_mail()
+                && !wanted.enabled
+                && !names_what_is_in_effect(&self.settings.current(), function, engine, wanted.model.as_deref());
+            if (sorts_mail || prepares)
                 && client
                 && let Some(refused) =
                     self.for_people_elsewhere("ai.set_assignment", engine, chosen.as_ref(), elsewhere).await
@@ -5422,10 +5450,11 @@ impl Core {
             // would never be asked, and nothing would say why.
             let here_only = wanted.model.is_none() && function.reads_mail() && !elsewhere;
             let considered = considered_models(provider, &server, &models, here_only);
+            let decides = function.needs_decision();
+            let left_out = here_only && one_fits(&models, decides);
             if wanted.enabled
-                && let Some(refused) = self
-                    .model_off_refusal(engine, wanted.model.as_deref(), function.needs_decision(), &considered)
-                    .await
+                && let Some(refused) =
+                    self.model_off_refusal(engine, wanted.model.as_deref(), decides, &considered, left_out).await
             {
                 return refused;
             }
@@ -5542,7 +5571,10 @@ impl Core {
         // an assignment does: one on elsewhere would never be asked.
         let here_only = decides && wanted.model.is_none() && !elsewhere;
         let considered = considered_models(provider, &server, &models, here_only);
-        if let Some(refused) = self.model_off_refusal(engine, wanted.model.as_deref(), decides, &considered).await {
+        let left_out = here_only && one_fits(&models, decides);
+        if let Some(refused) =
+            self.model_off_refusal(engine, wanted.model.as_deref(), decides, &considered, left_out).await
+        {
             return Err(refused);
         }
         Ok(elsewhere)
@@ -8914,12 +8946,14 @@ impl Core {
     /// Choosing a model elsewhere for what reads mail is the person's too (issue #325, task MW.2):
     /// `ai.set_slot decide` with a model elsewhere, and `ai.set_assignment` that is on for a function
     /// that reads mail ([`torro_core::ai::AiFunction::reads_mail`]) with one – also while the
-    /// permission is on, since it was given to another provider. Naming no model, the account's seat
+    /// permission is on, since it was given to another provider; switched off too, unless it names what
+    /// the function uses now ([`names_what_is_in_effect`]), so no agent prepares one the person later
+    /// switches on. Naming no model, the account's seat
     /// decides ([`elsewhere_of`]): "Automatic" at an account here picks only models here
     /// ([`categorize::chosen`], review of #325). And `inbox.start_category_job` naming a model
     /// elsewhere that sorting does not use now ([`Core::names_another_model_elsewhere`]).
-    /// Emptying a slot, taking an assignment back or switching it off are ordinary admin commands. The
-    /// handlers judge again with the server's list of now ([`Core::set_ai_slot`],
+    /// Emptying a slot, taking an assignment back or switching off what sorts now are ordinary admin
+    /// commands. The handlers judge again with the server's list of now ([`Core::set_ai_slot`],
     /// [`Core::set_ai_assignment`], [`Core::start_category_job`]).
     async fn turns_on_elsewhere(&self, request: &Request) -> Result<bool, torro_core::ai::AiError> {
         let (engine, model) = match request {
@@ -8933,9 +8967,14 @@ impl Core {
             Request::SetAiSlot { slot: torro_core::ai::AiSlot::Decide, engine: Some(engine), model, .. } => {
                 (engine, model)
             }
-            Request::SetAiAssignment { function, engine: Some(engine), model, enabled: true, .. }
+            Request::SetAiAssignment { function, engine: Some(engine), model, enabled, .. }
                 if function.reads_mail() =>
             {
+                // Switched off with what the function uses now: no choice of a model (review of #325).
+                let current = self.settings.current();
+                if !enabled && names_what_is_in_effect(&current, *function, engine, model.as_deref()) {
+                    return Ok(false);
+                }
                 (engine, model)
             }
             Request::StartCategoryJob { scope } => return self.names_another_model_elsewhere(scope).await,
@@ -9008,14 +9047,17 @@ impl Core {
     /// [`AiAccounts::mark_enabled`]), or – `model` being `None` – when no model of it is on, and for
     /// a function that needs a decision model (`decides`) when none of those on can decide, directly
     /// or through the fallback ([`torro_core::ai::AiModel::can_decide`], task MW.3): "Automatic"
-    /// would find nothing to ask. A model the list lacks is left to the caller (`error`, "offers no
-    /// model"). `None` otherwise.
+    /// would find nothing to ask. `left_out`: `models` holds only the models here of an account here
+    /// ([`considered_models`]), and one left out elsewhere would fit – the sentence then asks for a model
+    /// that runs on this computer, since models are on (review of #325). A model the list lacks is left
+    /// to the caller (`error`, "offers no model"). `None` otherwise.
     async fn model_off_refusal(
         &self,
         engine: &str,
         model: Option<&str>,
         decides: bool,
         models: &[torro_core::ai::AiModel],
+        left_out: bool,
     ) -> Option<Response> {
         let message = match model {
             Some(id) => {
@@ -9029,8 +9071,13 @@ impl Core {
                     &[("model", &listed.name), ("provider", &provider)],
                 )
             }
-            None if models.iter().any(|listed| listed.enabled && (!decides || listed.can_decide())) => {
-                return None;
+            None if one_fits(models, decides) => return None,
+            None if left_out => {
+                let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
+                trf(
+                    "Turn on a model of {provider} that runs on this computer in Settings › AI.",
+                    &[("provider", &provider)],
+                )
             }
             None if decides && models.iter().any(|listed| listed.enabled) => {
                 let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
@@ -23575,6 +23622,53 @@ mod tests {
         assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())), "person");
     }
 
+    /// Review of issue #325 (A2): a client prepares no exception elsewhere switched off – the person
+    /// would switch it on later and send mail to the provider the agent named. Switching off what sorts
+    /// now (the slot's model, or the exception's own) still goes with that model, also elsewhere;
+    /// refused before any approval and in the handler an approval runs on to.
+    #[tokio::test]
+    async fn a_client_prepares_no_exception_elsewhere_that_is_switched_off() {
+        use torro_core::ai::AiSlot;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama_deciding_here_and_elsewhere().await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let engine = account.expect("ollama").id;
+        assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let reach = Reach::Client(&rights);
+
+        // The slot sorts here: an exception elsewhere, even off, is the person's.
+        let prepared = set_sorting(Some(&engine), Some("nimble:cloud"), false);
+        assert_eq!(core.turns_on_elsewhere(&prepared).await, Ok(true), "refused before any approval");
+        assert_eq!(code(&core.handle_within(prepared.clone(), reach).await), "forbidden");
+        assert!(core.settings.current().ai_assignments.is_empty(), "nothing prepared");
+        // Off with the model that sorts now: an ordinary admin command.
+        let off_here = set_sorting(Some(&engine), Some("nimble"), false);
+        assert_eq!(core.turns_on_elsewhere(&off_here).await, Ok(false));
+        assert!(matches!(core.handle_within(off_here, reach).await, Response::AiAssignments { .. }));
+        core.handle(set_sorting(None, None, false)).await;
+
+        // The slot sorts elsewhere (the person's choice): "off" with that model goes.
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
+        assert_eq!(core.turns_on_elsewhere(&prepared).await, Ok(false), "what sorts now");
+        let answer = core.handle_within(prepared.clone(), reach).await;
+        assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
+        core.handle(set_sorting(None, None, false)).await;
+
+        // The person's exception elsewhere sorts: switching it off with its own model goes too.
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
+        core.handle(set_sorting(Some(&engine), Some("nimble:cloud"), true)).await;
+        assert_eq!(core.turns_on_elsewhere(&prepared).await, Ok(false));
+        let answer = core.handle_within(prepared, reach).await;
+        assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel), "off");
+    }
+
     /// Review of issue #325, F1: the slot Sorting on "Automatic" at the Ollama here, an exception the
     /// person set elsewhere (which turned the permission on); a client takes the exception back – an
     /// ordinary admin command –, and the slot sorts again with the model here, never with
@@ -23786,9 +23880,19 @@ mod tests {
         assert_eq!(core.handle(set(None, true)).await, none_on);
 
         // A model on that counts as elsewhere does not help "Automatic" at an account here: it would
-        // never be picked (review of #325), so the switches still find none on.
+        // never be picked (review of #325), so the switches find none on here – and say so, as the
+        // slot Sorting does.
         assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "qwen3:8b")).await, Response::Ok);
-        assert_eq!(core.handle(set(None, true)).await, none_on, "qwen3 counts as elsewhere here");
+        let none_here = Response::Error {
+            code: "unsupported".into(),
+            message: trf(
+                "Turn on a model of {provider} that runs on this computer in Settings › AI.",
+                &[("provider", &provider)],
+            ),
+        };
+        assert_eq!(core.handle(set(None, true)).await, none_here, "qwen3 counts as elsewhere here");
+        let slot = set_slot(torro_core::ai::AiSlot::Decide, Some(&engine), None);
+        assert_eq!(core.handle(slot).await, none_here);
         assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "nimble")).await, Response::Ok);
         assert!(matches!(core.handle(set(None, true)).await, Response::AiAssignments { .. }), "nimble decides");
     }
