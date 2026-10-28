@@ -1024,12 +1024,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}",
         "Einladung „{title}“ am {when} ablehnen: Antwort von {account} an {organizer}",
     ),
-    ("Invitations", "Einladungen"),
-    ("No invitations.", "Keine Einladungen."),
-    (
-        "Invitations to events you can answer show up here.",
-        "Einladungen zu Terminen, die du beantworten kannst, erscheinen hier.",
-    ),
     ("Invitation · {when}", "Einladung · {when}"),
     ("Accept", "Annehmen"),
     ("Maybe", "Vielleicht"),
@@ -1211,7 +1205,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("What your apps report shows up here.", "Was deine Apps melden, erscheint hier."),
     // Mail window (E8.3)
     ("With attachments", "Mit Anhang"),
-    ("Smart views", "Intelligente Ansichten"),
+    // Mail window sidebar (#337)
+    ("Unfiltered", "Ungefiltert"),
     ("Open folders", "Ordner öffnen"),
     ("Pin folder", "Ordner anpinnen"),
     ("Unpin folder", "Ordner lösen"),
@@ -1221,8 +1216,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{count} accounts", "{count} Konten"),
     ("new for you", "neu für dich"),
     ("{n} messages", "{n} Nachrichten"),
-    ("No attachments.", "Keine Anhänge."),
-    ("New mail with attachments shows up here.", "Neue Mail mit Anhängen erscheint hier."),
     // Muting by trait (E8.6a)
     ("All mail to {account}", "Alle Mails an {account}"),
     ("Mail from {sender}", "Mails von {sender}"),

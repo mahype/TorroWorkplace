@@ -1212,7 +1212,7 @@ pub fn sidebar_group_in<'a, M: Clone + 'a>(
     toggle: Option<(bool, M)>,
 ) -> Element<'a, M> {
     if mode == SidebarMode::Rail {
-        return container(rule::horizontal(LINE).style(style::rule)).padding([space::s(), space::xs()]).into();
+        return sidebar_gap_in(mode);
     }
     let mut title =
         row![typo::text(typo::caption(), label).style(theme::text_3)].spacing(space::xs()).align_y(Alignment::Center);
@@ -1226,6 +1226,24 @@ pub fn sidebar_group_in<'a, M: Clone + 'a>(
         None => bar.into(),
     };
     container(bar).padding(Padding::new(0.0).top(space::m())).into()
+}
+
+/// The gap before a group of the sidebar that has no title (issue #337, the piles of the mail
+/// window): expanded only the space a [`sidebar_group_in`] leaves above its title, so the rows stand
+/// apart from those before without a word that would say nothing new; in the rail the same line as a
+/// group's title there.
+///
+/// ```ignore
+/// items.push(widgets::sidebar_gap_in(mode));
+/// items.extend(piles.into_iter().map(row));
+/// ```
+pub fn sidebar_gap_in<'a, M: 'a>(mode: SidebarMode) -> Element<'a, M> {
+    match mode {
+        SidebarMode::Rail => {
+            container(rule::horizontal(LINE).style(style::rule)).padding([space::s(), space::xs()]).into()
+        }
+        SidebarMode::Expanded => blank().height(space::m()).into(),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6615,6 +6633,8 @@ mod tests {
             sidebar_item(Icon::Sun, "Today", Trail::Count(5), true, Msg::Go),
             sidebar_item(Mark::Ring(p.calendar[0]), "Work", Trail::Kbd("W"), false, Msg::Go),
             sidebar_group("Lists", Some((true, Msg::Go))),
+            sidebar_gap_in(SidebarMode::Expanded),
+            sidebar_gap_in(SidebarMode::Rail),
             list_row(vec![typo::text(typo::body(), "Review").into()], true, Some(Msg::Go)),
             group_head(Mark::Tinted(Icon::CircleAlert, p.attention), "Overdue", Some(2), Some(Msg::Go)),
             menu(vec![MenuSection::titled("View", vec![MenuItem::new(Icon::Calendar, "Week", Msg::Go)])]),

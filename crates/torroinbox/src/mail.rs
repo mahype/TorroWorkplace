@@ -1710,12 +1710,6 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::Folder(folder) => {
                 (folder_icon(folder.role), tr("No messages here."), tr("Mail in this folder shows up here."))
             }
-            View::Attachments => {
-                (Icon::Paperclip, tr("No attachments."), tr("New mail with attachments shows up here."))
-            }
-            View::Invitations => {
-                (Icon::Calendar, tr("No invitations."), tr("Invitations to events you can answer show up here."))
-            }
             // The views of every account's mail (task E18.4).
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Hidden => (Icon::EyeOff, tr("No hidden mail."), tr("Mail you hide from the inbox shows up here.")),
@@ -1844,11 +1838,8 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     }
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let smart = matches!(
-        data.view,
-        View::Attachments | View::Invitations | View::Search(_) | View::All | View::Hidden | View::Archive
-    );
-    let several = smart && data.accounts.len() > 1;
+    let several =
+        matches!(data.view, View::Search(_) | View::All | View::Hidden | View::Archive) && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
         domain,
@@ -1929,16 +1920,6 @@ fn account_name(account: &str) -> String {
     torro_inbox::rules::domain_of(address).unwrap_or_else(|| list::one_line(address))
 }
 
-/// The smart view "With attachments" (task E8.3): of the messages of every account's inbox, those
-/// with attachments, in `order` by date (task E8.15). `pages` are the first pages of the inboxes
-/// as `mail.search_messages` answered them in that order; nothing new is asked of the core.
-pub fn attachments(pages: Vec<Vec<MessageSummary>>, order: Order) -> Vec<MessageSummary> {
-    let mut found: Vec<MessageSummary> =
-        pages.into_iter().flatten().filter(|message| message.has_attachments).collect();
-    found.sort_by(|a, b| order.apply(b.date.cmp(&a.date)));
-    found
-}
-
 /// The demo's invitations (task E8.3b): Maria's "Lunch next week?" (`m:w4`) invites to lunch on the
 /// Tuesday of next week at 12:00 for an hour, Paul's "Weekend plans" (`m:p1`) to a hike all
 /// Saturday. Counted from the demo's "now" (the mail's `date` plus how long before "now" the demo
@@ -1995,19 +1976,6 @@ fn demo_events(lunch: Option<&Invite>) -> Vec<CalendarEvent> {
             busy: true,
         },
     ]
-}
-
-/// The smart view "Invitations" (task E8.3b): of the messages of every account's inbox, those that
-/// invite to an event that is not over at `now`, the soonest first. `pages` are the first pages of
-/// the inboxes as `mail.search_messages` answered them; nothing new is asked of the core.
-pub fn invitations(pages: Vec<Vec<MessageSummary>>, now: DateTime<Utc>) -> Vec<MessageSummary> {
-    let mut found: Vec<MessageSummary> = pages
-        .into_iter()
-        .flatten()
-        .filter(|message| message.invite.as_ref().is_some_and(|invite| !invite_over(invite, now)))
-        .collect();
-    found.sort_by_key(|message| message.invite.as_ref().map(|invite| invite.start));
-    found
 }
 
 /// The event of `invite` is over at `now`: its end (its start without one) has passed. Such an
@@ -5575,7 +5543,7 @@ mod tests {
         let folders = folders();
         let folder = FolderView::of(first_inbox(&folders).expect("an inbox"));
         let search = crate::search::SearchView::new("budget", crate::search::Scope::All, MailSort::Relevance);
-        let views = [View::Folder(folder.clone()), View::Attachments, View::Mail, View::Search(search)];
+        let views = [View::Folder(folder.clone()), View::Mail, View::Search(search)];
         // A search's matches in the subject and the passage of the first message (issue #136).
         let hit = |text: &str, hit| torro_ipc::mail::HighlightSpan { text: text.into(), hit };
         let highlights = [MailHighlight {
@@ -6027,10 +5995,10 @@ mod tests {
         assert_eq!(block_on(MailSource::send_reply(&demo, "m:nope".into(), "Hi".into())), Err(InboxError::NotFound));
     }
 
-    /// Task E8.3b: the smart view keeps the invitations not over yet, the soonest first; the demo's
-    /// two are answered as sent, any other mail is none.
+    /// Task E8.3b: the demo's two invitations say when their events are and are answered as sent,
+    /// any other mail is none. (The smart view "Invitations" that listed them is gone with issue #337.)
     #[test]
-    fn invitations_are_the_ones_not_over_yet_soonest_first() {
+    fn the_demos_invitations_say_when_and_are_answered() {
         let demo = DemoSource::new(now());
         let page = |folder: &str| {
             iced::futures::executor::block_on(MailSource::search_mail(
@@ -6047,7 +6015,9 @@ mod tests {
         let folders = iced::futures::executor::block_on(MailSource::mail_folders(&demo)).expect("folders");
         let inboxes: Vec<_> =
             folders.iter().filter(|folder| folder.role == Some(Role::Inbox)).map(|f| page(&f.id)).collect();
-        let found = invitations(inboxes.clone(), now());
+        let mut found: Vec<MessageSummary> =
+            inboxes.into_iter().flatten().filter(|message| message.invite.is_some()).collect();
+        found.sort_by_key(|message| message.invite.as_ref().map(|invite| invite.start));
         let ids: Vec<&str> = found.iter().map(|message| message.id.as_str()).collect();
         assert_eq!(ids, ["m:p1", "m:w4"], "the hike this Saturday before lunch next week");
         let hike = found[0].invite.clone().expect("an invite");
@@ -6055,7 +6025,12 @@ mod tests {
         let lunch = found[1].invite.clone().expect("an invite");
         assert!(invite_when(&lunch, now()).contains("12:00"), "{}", invite_when(&lunch, now()));
         assert!(invite_over(&lunch, lunch.end.expect("an end")) && !invite_over(&lunch, now()));
-        assert!(invitations(inboxes, lunch.end.expect("an end")).is_empty(), "both over by then");
+        assert!(
+            found
+                .iter()
+                .filter_map(|message| message.invite.as_ref())
+                .all(|invite| invite_over(invite, lunch.end.expect("an end")))
+        );
 
         let answer = |id: &str| {
             iced::futures::executor::block_on(MailSource::respond_to_invitation(
@@ -6131,24 +6106,6 @@ mod tests {
         let at = datetime::format_time(datetime::to_local(morning.start).time());
         let named = trf("Overlaps with {title} at {time}", &[("title", &"Climbing".to_owned()), ("time", &at)]);
         assert_eq!(overlap_text(&hike, &[morning], now()), named, "the hike's day has the time alone");
-    }
-
-    /// Task E8.3: the smart view keeps the messages with attachments of every inbox, newest first.
-    #[test]
-    fn the_smart_view_holds_the_mail_with_attachments_newest_first() {
-        let mail = demo::mail_sample(now());
-        let pages: Vec<Vec<MessageSummary>> = demo::MAIL_ACCOUNTS
-            .iter()
-            .map(|account| mail.iter().filter(|m| m.summary.account == *account).map(|m| m.summary.clone()).collect())
-            .collect();
-        let found = attachments(pages.clone(), Order::NewestFirst);
-        assert!(!found.is_empty(), "the demo has mail with attachments");
-        assert!(found.iter().all(|message| message.has_attachments));
-        assert!(found.windows(2).all(|pair| pair[0].date >= pair[1].date), "newest first");
-        let oldest = attachments(pages, Order::OldestFirst);
-        assert!(oldest.windows(2).all(|pair| pair[0].date <= pair[1].date), "oldest first (task E8.15)");
-        let wanted = mail.iter().filter(|m| m.summary.has_attachments).count();
-        assert_eq!(found.len(), wanted, "from every account");
     }
 
     /// Task E8.3: a message's card answers and archives (`r`, `e`), and is as high as its parts.

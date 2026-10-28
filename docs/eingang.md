@@ -273,7 +273,7 @@ weder Mail noch Slack).
 | Statistik (E8.8a) | Zentrale › Insights | `inbox.get_stats` · Read | `inbox_get_stats` |
 | Ruhe-Status (E8.5b) | Zentrale rechts „Quiet“, in Schmal und Mittel eine Zeile unter den Zahlen bzw. Kacheln | `inbox.get_quiet` · Read (Termintitel nur mit Kalender-Leserecht) | `inbox_get_quiet` |
 | Termin aus einem Eintrag (E8.5b) | „Event“ bei „To sort“, Paneel, Taste `c` | `inbox.create_event_from_item` · Write (braucht auch Kalender-Schreibrecht) | `inbox_create_event_from_item` |
-| Einladung beantworten (E8.3b) | Mail-Fenster: Karte (Accept · Maybe · Decline · Task), Leser und Paneel (Karte des Termins), Smart view „Invitations“ | `mail.respond_to_invitation` · Write + „Nach außen“ (prüft auch Kalender-Schreibrecht, beim Ablehnen Löschrecht) | `mail_respond_to_invitation` |
+| Einladung beantworten (E8.3b) | Mail-Fenster: Karte (Accept · Maybe · Decline · Task), Leser und Paneel (Karte des Termins) | `mail.respond_to_invitation` · Write + „Nach außen“ (prüft auch Kalender-Schreibrecht, beim Ablehnen Löschrecht) | `mail_respond_to_invitation` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
 | ntfy: Konto, Anmeldung, Themen (E5.12) | Steuerzentrale › Accounts (E5.14) | `accounts.connect_ntfy`, `accounts.set_ntfy_login`, `accounts.set_ntfy_topic` · Admin | `accounts_connect_ntfy` (Client: öffnet nur die Steuerzentrale), `accounts_set_ntfy_topic`; `set_ntfy_login` **Never** (Geheimnis) |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
@@ -376,11 +376,15 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
-- **Seitenleiste des Mail-Fensters** (E18.4, E19.4): oben **All** (der Posteingang aller gezeigten Konten, mit der
-  Zahl ungelesener Mails), **Reply later** und **Set aside** (die beiden Stapel, mit der Zahl ihrer Mails),
-  **Follow up** (ohne Zahl, an der Stelle des früheren „Later“) und **Hidden**, darunter Categories, Smart views und
-  **Folders** mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**.
-  Das Mail-Fenster startet in „All“.
+- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337): oben die **Kategorien** ohne Überschrift (die Gruppen mit
+  ihren Kategorien, sobald eine Mail eine Kategorie hat), als letzter Eintrag **Unfiltered** (bis #337 „All“: der
+  Posteingang aller gezeigten Konten, mit der Zahl ungelesener Mails; ohne Kategorien allein oben). Darunter, nur durch
+  Abstand getrennt (in der Leiste durch eine Linie), **Reply later** und **Set aside** (die beiden Stapel, mit der
+  Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“) und **Hidden**, dann **Folders**
+  mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**. Das Menü
+  der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „Unfiltered“. Die Smart views
+  „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
+  Mail mit Anhang findet das Filter-Icon im Suchfeld (#336).
 
 ### Dichte
 
@@ -623,8 +627,8 @@ und App Feed behalten „Later“ für alle Quellen, ohne „Only if no reply“
   ganzen Unterhaltung; eine heute zurückgestellte Mail ist eine Wiedervorlage ohne Bedingung, ohne Migration
   (Entscheidung 9).
 - **Nur lokal** (Entscheidung 2): kein IMAP-Schlagwort, andere Geräte sehen die Stapel nicht.
-- **Mail auf einem Stapel verschwindet wie bei HEY** (Entscheidung 3) aus „All“, den Kategorien, den Smart views „With
-  attachments“ und „Invitations“ und aus der Zahl ungelesener an „All“ (`mail.search_messages` mit `pile: without`);
+- **Mail auf einem Stapel verschwindet wie bei HEY** (Entscheidung 3) aus „Unfiltered“ (bis #337 „All“), den Kategorien
+  und aus der Zahl ungelesener an „Unfiltered“ (`mail.search_messages` mit `pile: without`);
   Ordner, Suche und Zentrale zeigen sie weiter. Ein Stapel listet seine Mails aus jedem Ordner außer Papierkorb und
   Spam (`pile: reply_later` bzw. `set_aside`), die Seitenleiste zählt sie.
 - **Eine Mail liegt auf höchstens einem Stapel** (Entscheidung 4): erneut legen verlegt sie, `inbox.set_mail_pile`
