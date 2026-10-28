@@ -6549,6 +6549,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Storage is loading", "Speicher wird geladen"),
     ("Try again shortly.", "Bitte gleich erneut versuchen."),
     ("Mail inventory", "Mailbestand"),
+    ("System folders", "Systemordner"),
+    ("Selection needed", "Zuordnung nötig"),
+    ("Not determined yet", "Noch nicht erkannt"),
     ("Disk space used here: {size}", "Speicherplatz auf diesem Gerät: {size}"),
     ("Local database incl. headers and index: {size}", "Lokale Datenbank inkl. Kopfzeilen und Index: {size}"),
     (

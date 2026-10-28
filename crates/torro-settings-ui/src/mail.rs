@@ -1517,20 +1517,64 @@ pub mod accounts {
                 server_rows.push(row_frame(typo::text(typo::body(), status.clone()), false));
             }
             let connection = widgets::group(tr("Connection"), server_rows, None);
+            let folders = system_folders(mail, data.mail_stats.iter().find(|stats| stats.account == draft.account));
+            let right = column![connection, folders].spacing(layout::section_gap());
             if room.width >= 820.0 {
-                row![
-                    container(identity).width(Length::FillPortion(1)),
-                    container(connection).width(Length::FillPortion(1))
-                ]
-                .spacing(space::l())
-                .align_y(Alignment::Start)
-                .into()
+                row![container(identity).width(Length::FillPortion(1)), container(right).width(Length::FillPortion(1))]
+                    .spacing(space::l())
+                    .align_y(Alignment::Start)
+                    .into()
             } else {
-                column![identity, connection].spacing(layout::section_gap()).into()
+                column![identity, right].spacing(layout::section_gap()).into()
             }
         })
         .height(Length::Shrink)
         .into()
+    }
+
+    /// Show the resolved IMAP roles beside the server settings. Ambiguous roles link to the
+    /// existing folder picker; a missing first sync is reported instead of guessed.
+    fn system_folders<'a>(mail: &'a MailView, stats: Option<&'a MailAccountStats>) -> Element<'a, Message> {
+        let roles = [
+            (Role::Inbox, "Inbox"),
+            (Role::Drafts, "Drafts"),
+            (Role::Sent, "Sent"),
+            (Role::Archive, "Archive"),
+            (Role::Junk, "Spam"),
+            (Role::Trash, "Trash"),
+        ];
+        let rows = roles
+            .into_iter()
+            .map(|(role, label)| {
+                let mapped = stats
+                    .and_then(|stats| stats.folders.iter().find(|folder| folder.folder.role == Some(role)))
+                    .map(|folder| folder.folder.name.as_str())
+                    .or_else(|| mail.settings.folder_roles.get(&role).map(String::as_str));
+                let pending = mail.open_roles.iter().any(|open| open.role == role);
+                let detail = if pending { tr("Selection needed") } else { mapped.unwrap_or(tr("Not determined yet")) };
+                let control = widgets::text_button(
+                    None,
+                    tr("Choose folders"),
+                    style::button::secondary,
+                    pending.then_some(Message::Tab(Tab::Folders.index())),
+                );
+                if pending {
+                    setting_row(None, tr(label), Some(detail.to_string()), control)
+                } else {
+                    row_frame(
+                        row![
+                            typo::text(typo::body(), tr(label)),
+                            blank::horizontal(),
+                            widgets::ellipsized(typo::body(), detail.to_string(), theme::text_2),
+                        ]
+                        .spacing(space::s())
+                        .align_y(Alignment::Center),
+                        false,
+                    )
+                }
+            })
+            .collect();
+        widgets::group(tr("System folders"), rows, None)
     }
 
     fn server_form<'a>(kind: ServerKind, server: &'a ServerDraft) -> Element<'a, Message> {
