@@ -2589,7 +2589,7 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
         body = body.push(widgets::prop_section(tr("Properties"), properties));
     }
     // A HTML mail starts right under the line, so its background meets it (issue #377).
-    let gap = if html_edge(reading).is_some() { 0.0 } else { space::l() };
+    let gap = if html_filling(reading).is_some() { 0.0 } else { space::l() };
     let letter = column(panel_letter(reading));
     body.spacing(space::l()).push(column![panel::bleed(line()), letter].spacing(gap)).into()
 }
@@ -2618,9 +2618,9 @@ fn split_body<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Element<'
 }
 
 /// The mail itself in the panel's body, both [`Bars`] alike: while it loads or after an error a
-/// quiet line; once in, the text in the reading column (issue #291, [`reading_column`]) with the note
-/// on foreign text and its "Links", or the HTML from edge to edge of the panel's body (issue #377,
-/// [`html_letter`]).
+/// quiet line; once in, the mail in the reading column (issue #291, [`reading_column`]) – a HTML with
+/// the note under it, or the text with the note on foreign text and its "Links" –, but a HTML with a
+/// background of its own from edge to edge of the panel's body (issue #377, [`html_letter`]).
 fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
     match reading.loaded {
         None => vec![panel::inset(note(tr("Loading the message…")))],
@@ -2629,21 +2629,22 @@ fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
             let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
             vec![panel::inset(column![what, why].spacing(space::xs()))]
         }
-        Some(Ok(_)) => match html_edge(reading) {
-            // Out to the panel's edges; the margin of a mail without a background of its own puts its
-            // text in line with the title (16 from the edge, as `panel::inset` does).
-            Some(html) => {
-                vec![panel::bleed(html_letter(html, space::l(), Padding::ZERO.left(space::l()).right(space::l())))]
-            }
+        Some(Ok(_)) => match html_filling(reading) {
+            // Out to the panel's edges; the note stays in line with the title (16 from the edge).
+            Some(html) => vec![panel::bleed(html_letter(html, Padding::ZERO.left(space::l()).right(space::l())))],
             None => vec![reading_column(letter(reading).width(Fill))],
         },
     }
 }
 
-/// The text of a loaded mail as the reading column holds it ([`panel_letter`], [`reader_mail`]), with
-/// the note on foreign text and its "Links". The HTML does not stand here: it fills its parent
-/// ([`html_letter`]).
+/// The loaded mail as the reading column holds it ([`panel_letter`], [`reader_mail`]): the HTML
+/// ([`html_view`], no margin of its own – the column's padding is its margin, so its text starts where
+/// a plain text does) with the note under it, or the text with the note on foreign text and its
+/// "Links". A HTML with a background of its own does not stand here ([`html_filling`]).
 fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
+    if let Some(html) = html_edge(reading) {
+        return column![html_view(html).margin(0.0), html_note()].spacing(space::m());
+    }
     let mut text = column![text_block(reading.text, text_level(reading.read))].spacing(space::l());
     if let Some(links) = text_links(reading.text) {
         text = text.push(links);
@@ -2652,12 +2653,11 @@ fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
 }
 
 /// The mail's HTML from edge to edge of its parent (issue #377): no padding around it and no limit to
-/// its width, so a mail with a background of its own paints it up to the edges. `margin` is the side
-/// margin of a mail without one (its text starts where the head does); the note under it keeps
-/// `note_padding`, as the text of a plain mail does.
-fn html_letter<'a>(html: HtmlReading<'a>, margin: f32, note_padding: Padding) -> Element<'a, Message> {
+/// its width, so its background paints up to the edges and its content places itself; the note under
+/// it keeps `note_padding`, as the text of a plain mail does.
+fn html_letter<'a>(html: HtmlReading<'a>, note_padding: Padding) -> Element<'a, Message> {
     let note = container(html_note()).padding(note_padding);
-    column![html_view(html).margin(margin), note].spacing(space::m()).width(Fill).into()
+    column![html_view(html), note].spacing(space::m()).width(Fill).into()
 }
 
 /// The widest the mail's text or HTML stands in a reader or panel `width` wide (issue #291, the reading
@@ -2766,15 +2766,21 @@ fn reader_widths(width: f32) -> ReaderWidths {
     ReaderWidths { head: (width - pad.left - pad.right).max(0.0), mail: reading_width(width), html: width.max(0.0) }
 }
 
+/// The mail's HTML when it is loaded, shows as HTML and paints a background of its own (issue #377): it
+/// fills its parent instead of standing in the reading column.
+fn html_filling<'a>(reading: &Reading<'a>) -> Option<HtmlReading<'a>> {
+    html_edge(reading).filter(|html| html.content.has_own_background())
+}
+
 /// The mail's HTML when it is loaded and shows as HTML.
 fn html_edge<'a>(reading: &Reading<'a>) -> Option<HtmlReading<'a>> {
     reading.html.filter(|html| html.shown() && matches!(reading.loaded, Some(Ok(_))))
 }
 
-/// The mail under the reader's head and its line (task E11.3, issues #291, #377): a text in the reading
-/// column `widths.mail` wide with the reading padding around it ([`letter`]: the text with its links and
-/// the note on foreign text), a HTML `widths.html` wide, without padding ([`html_letter`]; only its note
-/// keeps the reading padding). While it loads, or after an error, a quiet
+/// The mail under the reader's head and its line (task E11.3, issues #291, #377): in the reading
+/// column `widths.mail` wide with the reading padding around it ([`letter`]: text with its links and the
+/// note on foreign text, or HTML with the note under it), but a HTML with a background of its own
+/// `widths.html` wide, without padding ([`html_letter`]; only its note keeps the reading padding). While it loads, or after an error, a quiet
 /// line says so.
 fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, Message> {
     let pad = layout::reading_padding();
@@ -2785,10 +2791,10 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
             let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
             container(column![what, why].spacing(space::xs())).padding(pad).into()
         }
-        Some(Ok(_)) => match html_edge(reading) {
+        Some(Ok(_)) => match html_filling(reading) {
             Some(html) => {
                 let note = Padding { left: pad.left, right: pad.right, bottom: pad.bottom, top: 0.0 };
-                container(html_letter(html, pad.left, note)).width(widths.html).into()
+                container(html_letter(html, note)).width(widths.html).into()
             }
             None => container(letter(reading).width(widths.mail)).padding(pad).into(),
         },
