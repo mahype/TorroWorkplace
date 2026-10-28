@@ -12,6 +12,8 @@
 //! - [`category`]: what a piece of mail is ([`Category`]) – invoice, shipping, promotion,
 //!   phishing – with where that came from ([`MailCategory`]). Its words live in
 //!   `torro_core::category`.
+//! - [`filter`]: mail filters ([`MailFilter`], issue #339): a saved search with what to do with
+//!   the mail it finds in the inbox, and which filter wins when several find the same mail.
 //! - [`order`]: newest or oldest first ([`Order`]), for mail and for the inbox.
 //! - [`save_target`]: where attachments are saved ([`SaveTarget`]): a folder with schemes for
 //!   subfolders and file names, and when a target is suggested (issue #290).
@@ -27,6 +29,7 @@
 
 pub mod account;
 pub mod category;
+pub mod filter;
 pub mod html;
 pub mod markup;
 pub mod message;
@@ -38,6 +41,7 @@ pub use account::{
     Security, Services, account_id, is_account_id,
 };
 pub use category::{Category, CategoryDef, CategoryGroup, CategoryIcon, CategorySource, CustomCategory, MailCategory};
+pub use filter::{FILTER_QUERY_MAX, FILTERS_MAX, FilterActions, FilterFile, MailFilter};
 pub use message::{
     AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailPile, Message,
     MessageSummary, MessageTraits, Role,

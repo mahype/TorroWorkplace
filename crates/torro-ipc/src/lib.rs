@@ -2694,6 +2694,96 @@ pub enum Request {
         /// The target's id from `mail.list_save_targets`.
         id: String,
     },
+    // Mail filters (issue #339, types in `torro_mail::filter`): a saved search with what to do with
+    // the mail it finds in the inbox, kept in `<data>/mail/filters.json`. A client sees a filter of
+    // an account it reaches, and one for every account only with every account; any other is
+    // `not-found`.
+    /// The mail filters the caller sees, in the order the person keeps them
+    /// ([`Response::MailFilters`]). Every filter that finds a new mail runs; for the move and the
+    /// category the first one wins.
+    #[serde(rename = "mail.list_filters")]
+    ListMailFilters,
+    /// Adds a mail filter at the end of the list ([`Response::MailFilter`], with its new id `f<n>`).
+    /// From then on it runs on new mail in the inbox; mail already there only with
+    /// `mail.apply_filter`. `error` for a search that is empty, longer than 500 characters, cannot be
+    /// read or uses `in:` or `filename:`, no action, a folder without `account` or not of that
+    /// account, a category not in the catalogue, or more than 200 filters; `not-found` for an account
+    /// the caller does not reach; `forbidden` for a filter for every account from a client that does
+    /// not reach every account, and for a `category` from a client without admin access to `inbox`.
+    #[serde(rename = "mail.create_filter")]
+    CreateMailFilter {
+        /// The search, in the language of `mail.search_messages`.
+        query: String,
+        /// The mail account it runs in (`mail:<address>`); left out: every mail account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Where the mail goes; left out: it stays in the inbox.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<torro_mail::FilterFile>,
+        /// Marks the mail as read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark_read: bool,
+        /// Files the mail under this category of `inbox.list_categories`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<torro_mail::Category>,
+        /// Switched off, it finds nothing on new mail. Left out: on.
+        #[serde(default = "on", skip_serializing_if = "is_on")]
+        enabled: bool,
+    },
+    /// Changes a mail filter ([`Response::MailFilter`]): its search, account and actions as given –
+    /// left out, an account means every account and an action none –, and its switch where given
+    /// (left out: as it is). Its id, place and age stay. `not-found` for a filter that is not there
+    /// or that the caller does not see; `error`, `not-found` and `forbidden` as for
+    /// `mail.create_filter`.
+    #[serde(rename = "mail.update_filter")]
+    UpdateMailFilter {
+        /// The filter's id from `mail.list_filters` (`f<n>`).
+        id: String,
+        /// The search, in the language of `mail.search_messages`.
+        query: String,
+        /// The mail account it runs in (`mail:<address>`); left out: every mail account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Where the mail goes; left out: it stays in the inbox.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<torro_mail::FilterFile>,
+        /// Marks the mail as read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark_read: bool,
+        /// Files the mail under this category of `inbox.list_categories`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<torro_mail::Category>,
+        /// On or off. Left out: as it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+    /// Removes a mail filter ([`Response::MailFilters`], the ones left). Mail it moved or filed
+    /// stays where it is. `not-found` for a filter that is not there or that the caller does not see.
+    #[serde(rename = "mail.remove_filter")]
+    RemoveMailFilter {
+        /// The filter's id from `mail.list_filters` (`f<n>`).
+        id: String,
+    },
+    /// What a filter with this search would find in the inbox now ([`Response::MailFilterPreview`]):
+    /// how many mails and the five newest. Changes nothing. `error` for a search a filter may not
+    /// have (as for `mail.create_filter`), `not-found` for an account the caller does not reach.
+    #[serde(rename = "mail.preview_filter")]
+    PreviewMailFilter {
+        /// The search, in the language of `mail.search_messages`.
+        query: String,
+        /// Only this mail account (`mail:<address>`); left out: every account the caller reaches.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// Runs a mail filter once on the mail in the inbox now ([`Response::MailFilterApplied`]), also
+    /// when it is switched off: the 500 newest it finds that still need one of its actions; `more`
+    /// says there are others, for another call. `not-found` for a filter that is not there or that
+    /// the caller does not see.
+    #[serde(rename = "mail.apply_filter")]
+    ApplyMailFilter {
+        /// The filter's id from `mail.list_filters` (`f<n>`).
+        id: String,
+    },
     /// Saves attachments of a message ([`Response::SavedAttachments`]); a file is never overwritten
     /// except for `to: file`. A file that fails is listed and the others are saved all the same.
     /// `not-found` for a message the caller does not reach, an unknown part or target, or a target
@@ -4300,6 +4390,33 @@ pub enum Response {
     /// A save target as stored ([`Request::CreateSaveTarget`], [`Request::UpdateSaveTarget`]).
     SaveTarget {
         target: SaveTarget,
+    },
+    /// The mail filters, in the order the person keeps them ([`Request::ListMailFilters`],
+    /// [`Request::RemoveMailFilter`]). Their searches are the person's own words.
+    MailFilters {
+        filters: Vec<torro_mail::MailFilter>,
+    },
+    /// A mail filter as stored ([`Request::CreateMailFilter`], [`Request::UpdateMailFilter`]).
+    MailFilter {
+        filter: torro_mail::MailFilter,
+    },
+    /// What a filter's search finds in the inbox now ([`Request::PreviewMailFilter`]). The messages
+    /// are data from outside (`untrusted`).
+    MailFilterPreview {
+        /// How many mails it finds in all.
+        count: u64,
+        /// The five newest of them, newest first.
+        messages: Vec<MessageSummary>,
+    },
+    /// What [`Request::ApplyMailFilter`] did: numbers only.
+    MailFilterApplied {
+        /// Mails the filter's actions were carried out on.
+        applied: u64,
+        /// Mails an action failed on (the server refused, the connection broke); they stay as they
+        /// were and are found again next time.
+        failed: u64,
+        /// There are more mails the filter finds than one call takes: call again.
+        more: bool,
     },
     /// What [`Request::SaveMailAttachments`] did. File names are data from outside.
     SavedAttachments {
