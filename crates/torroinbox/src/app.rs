@@ -5770,14 +5770,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// "Show again" on the mail `id` of "Hidden" (task E18.4, decisions 10 and 11 of E18):
     /// `MailSource::set_mail_shown` with `shown: true`. The row leaves the list at once, as when it is
-    /// archived ([`App::take_out`]), the hint "Back in All." offers to undo it ([`Undo::Shown`]). The
+    /// archived ([`App::take_out`]), the hint "Back in Unfiltered." offers to undo it ([`Undo::Shown`]). The
     /// rule that hid it stays, its entry stays as it is; an error brings the row back with the load
     /// and says so ([`Message::MailShown`]).
     fn show_mail(&mut self, id: String) -> Task<Message> {
         self.close_menus();
         let ids = vec![id.clone()];
         let hint = Hint {
-            text: tr("Back in All.").to_owned(),
+            text: tr("Back in Unfiltered.").to_owned(),
             undo: Some(Undo::Shown(ids.clone())),
             shown: Instant::now(),
             folder: None,
@@ -17328,7 +17328,7 @@ mod tests {
 
     /// Task E18.4 (decisions 10 and 11 of E18): "Show again" stands first in the group Mute of the
     /// rail – and so in the row's context menu – of a mail in "Hidden" only; it sends
-    /// `set_mail_shown(…, true)`, takes the row out with the hint "Back in All." and its undo, which
+    /// `set_mail_shown(…, true)`, takes the row out with the hint "Back in Unfiltered." and its undo, which
     /// sends `false` and brings the row back.
     #[test]
     fn show_again_takes_a_hidden_mail_back_into_all_and_undo_hides_it() {
@@ -17350,7 +17350,7 @@ mod tests {
         assert_eq!(ids, std::slice::from_ref(&hidden));
         assert!(!message_ids(&app).contains(&hidden.as_str()), "the row leaves the list at once");
         let hint = hint.expect("the hint after the answer");
-        assert_eq!(hint.text, tr("Back in All."));
+        assert_eq!(hint.text, tr("Back in Unfiltered."));
         assert_eq!(hint.undo, Some(Undo::Shown(vec![hidden.clone()])));
         let result = block_on(MailSource::set_mail_shown(&*app.inbox, ids, true)).map_err(|err| err.to_string());
         let _ = app.update(Message::MailShown(result, Some(hint)));

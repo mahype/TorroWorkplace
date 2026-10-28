@@ -22,8 +22,8 @@
 //!   asks with `include_html`).
 //! - [`list`] draws a folder's messages – rows, or cards in the comfortable density of the mail
 //!   window (task E8.3, [`message_card`]), in the mail window without buttons (task E14.2,
-//!   [`MailList::bare`]) – and the smart view "With attachments" ([`attachments`]:
-//!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
+//!   [`MailList::bare`]) – and the views of every account's mail ("Unfiltered", a category, a
+//!   search). [`body`] is the whole mail for the
 //!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3), the text in
 //!   the reading level (`typo::read()`); [`empty_reader`] keeps its column while no mail is open
 //!   (task E8.11). The panel of the hub and the App Feed splits the buttons (task E9.4): the mail
@@ -1644,7 +1644,7 @@ pub struct MailList<'a> {
     /// The catalogue of categories (task E15.2): what a mail's category is called and where it
     /// stands now.
     pub categories: &'a [CategoryInfo],
-    /// The view shown: a folder, the smart view of attachments, or a window of mail waiting for
+    /// The view shown: a folder, a view of every account's mail, or a window of mail waiting for
     /// its folders ([`View::Mail`]).
     pub view: &'a View,
     /// The mail accounts have no folders at all (no account connected).
@@ -1821,8 +1821,8 @@ fn row_buttons<'a>(data: &MailList<'_>, message: &MessageSummary) -> Vec<RowActi
 
 /// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row and, as
 /// chips, "Attachments" and "Flagged"; no buttons (task E14.2). An invitation (task E8.3b)
-/// shows when it is and the answer given as chips. In the smart views, which hold every account's
-/// mail, the head names the account.
+/// shows when it is and the answer given as chips. In a search, "Unfiltered", "Hidden" and
+/// "Archive", which hold every account's mail, the head names the account.
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut chips = Vec::new();
     // What the mail is (task E12.8): the whole pill, where the card has room for it.

@@ -6412,7 +6412,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // The mail window: All, Later, Hidden and Folders, "Show again" (E18.4, issue #301)
     ("Show again", "Wieder anzeigen"),
-    ("Back in All.", "Wieder in „Alle“."),
+    ("Back in Unfiltered.", "Wieder in „Ungefiltert“."),
     ("Couldn't show the mail again.", "Die Mail konnte nicht wieder angezeigt werden."),
     ("No mail in your inboxes.", "Keine Mail in deinen Posteingängen."),
     ("New mail shows up here.", "Neue Mails erscheinen hier."),
