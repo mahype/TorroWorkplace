@@ -1,0 +1,150 @@
+/* Torro Contacts – gemeinsame Bausteine der drei Entwürfe (Standard-Design seit #291, Linear-Stil).
+   Werte nach torro-design: Text 14/22, Kopfleiste 64, Seitenleiste 240, Zeilen 32, Knöpfe 36, Radius 4, Haarlinien,
+   bündiger Inhalt. Dunkel ist Standard; ?theme=light schaltet hell, ?size=l|m|s erzwingt eine Größenklasse. */
+@font-face{font-family:Inter;font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf)}
+@font-face{font-family:Inter;font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf)}
+@font-face{font-family:Inter;font-weight:600;src:url(../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf)}
+@font-face{font-family:"Inter Tabular";font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Regular.ttf)}
+@font-face{font-family:"Inter Tabular";font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Medium.ttf)}
+
+:root{
+  --bg:#08090A; --panel:#0F1011; --raised:#141518; --hover:#16171A; --selected:#1C1E22; --menu:#17181B;
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10); --line-selected:rgba(255,255,255,.28);
+  --scrim:rgba(0,0,0,.62); --accent:#D50C0C; --on-accent:#fff;
+  --c0:#5B8CFF; --c1:#3FB984; --c2:#E8A33D; --c3:#D96CA8; --c4:#A78BFA;
+  --attn:#E8A33D; --ok:#3FB984; --err:#F0645A; --tint:18%;
+  --shadow:0 12px 32px rgba(0,0,0,.5);
+  /* Karte (Stilisiert, nur für den Entwurf) */
+  --m-land:#1B1D21; --m-water:#0E2231; --m-road:#3A3F47; --m-road2:#2B2F35; --m-green:#17261D; --m-label:#8A8F98; --m-city:#B4B8BF;
+  --r:4px; color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --bg:#F4F5F6; --panel:#FFFFFF; --raised:#F8F9FA; --hover:#F0F1F3; --selected:#E9EAED; --menu:#FFFFFF;
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11); --line-selected:rgba(0,0,0,.32);
+  --scrim:rgba(0,0,0,.30);
+  --c0:#3B6EF0; --c1:#1F9D68; --c2:#B06F12; --c3:#C2508F; --c4:#7C5CE6;
+  --attn:#B06F12; --ok:#1F9D68; --err:#C93A30; --tint:14%;
+  --shadow:0 12px 32px rgba(0,0,0,.12);
+  --m-land:#F1EEE8; --m-water:#CFE1EE; --m-road:#FFFFFF; --m-road2:#E4E0D8; --m-green:#DDE8D3; --m-label:#6E727A; --m-city:#3C4046;
+  color-scheme:light;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:400 14px/22px Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;cursor:default}
+.tab{font-family:"Inter Tabular",Inter,sans-serif}
+.t2{color:var(--text2)} .t3{color:var(--text3)}
+.meta{font-size:13px;line-height:18px} .cap{font-size:12px;line-height:16px;font-weight:500} .micro{font-size:11px;line-height:14px}
+.strong{font-weight:500} .grow{flex:1;min-width:0}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+svg.i{width:16px;height:16px;flex:none;display:block}
+svg.i.s12{width:12px;height:12px} svg.i.s14{width:14px;height:14px} svg.i.s20{width:20px;height:20px} svg.i.s24{width:24px;height:24px}
+::-webkit-scrollbar{width:8px;height:8px} ::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:4px} ::-webkit-scrollbar-track{background:transparent}
+
+/* Fenster: Seitenleiste auf dem Fenstergrund, Inhalt bündig mit Haarlinie (inset 0). */
+.app{display:flex;height:100vh;position:relative}
+.sidebar{width:240px;flex:none;display:flex;flex-direction:column;padding:8px;gap:2px;overflow:hidden}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--line);position:relative}
+.header{height:64px;flex:none;display:flex;align-items:center;gap:12px;padding:0 24px;border-bottom:1px solid var(--line)}
+.header .crumbs{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.header .crumbs b{font-weight:500}
+
+/* Seitenleiste */
+.switcher{display:flex;align-items:center;gap:8px;height:36px;padding:0 6px;border-radius:var(--r);flex:1}
+.switcher:hover{background:var(--hover)}
+.logo{width:20px;height:20px;border-radius:var(--r);background:var(--accent);display:grid;place-items:center;color:var(--on-accent);font-weight:600;font-size:11px;line-height:1}
+.iconbtn{width:36px;height:36px;display:grid;place-items:center;border-radius:var(--r);color:var(--text2);border:1px solid transparent;background:none;padding:0}
+.iconbtn:hover{background:var(--hover);color:var(--text)}
+.iconbtn.boxed{background:var(--raised);border-color:var(--line-strong);color:var(--text)}
+.iconbtn.sm{width:28px;height:28px}
+.nav{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:var(--r);color:var(--text2);position:relative}
+.nav:hover{background:var(--hover);color:var(--text)}
+.nav.on{background:var(--selected);color:var(--text)}
+.nav .n{font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.nav .pip{width:6px;height:6px;border-radius:50%;background:var(--attn)}
+.gt{display:flex;align-items:center;gap:4px;height:28px;padding:0 8px;margin-top:12px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--c);flex:none}
+.child{margin-left:12px;padding-left:12px;border-left:1px solid var(--line-strong)}
+.child .nav{height:30px}
+.sidebar .spacer{flex:1}
+.syncrow{display:flex;align-items:center;gap:8px;height:36px;padding:0 8px;border-radius:var(--r);color:var(--text2)}
+.syncrow:hover{background:var(--hover);color:var(--text)}
+.syncrow .ok{color:var(--ok)}
+
+/* Knöpfe, Eingaben, Segmente, Chips */
+.btn{height:36px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/16px Inter,sans-serif;white-space:nowrap}
+.btn:hover{background:var(--hover);border-color:var(--line-selected)}
+.btn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.btn.ghost:hover{background:var(--hover);color:var(--text)}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.btn.primary:hover{background:var(--accent);filter:brightness(1.1)}
+.btn.sq{width:36px;padding:0;justify-content:center}
+.btn.sm{height:28px;padding:0 8px}
+.btn svg{color:var(--text3)} .btn.primary svg{color:var(--on-accent)} .btn:hover svg{color:var(--text)}
+.seg{display:inline-flex;height:36px;padding:2px;border-radius:var(--r);background:var(--bg);border:1px solid var(--line)}
+.seg a{text-decoration:none}
+.seg span,.seg a{display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:2px;font:500 12px/16px Inter,sans-serif;color:var(--text3)}
+.seg span.on,.seg a.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-selected)}
+.field{height:38px;display:flex;align-items:center;gap:8px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text3)}
+.field.flat{border:0;background:none}
+.field input,.field .val{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--text);font:inherit}
+.field input::placeholder{color:var(--text3)}
+.field.focus{border-color:var(--line-selected);box-shadow:0 0 0 1px var(--panel),0 0 0 3px var(--line-selected)}
+kbd{font:500 11px/14px Inter,sans-serif;color:var(--text3);border:1px solid var(--line-strong);border-radius:var(--r);padding:1px 5px;background:none}
+.chip{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);font:500 12px/16px Inter,sans-serif;color:var(--text2);white-space:nowrap}
+.chip:hover{background:var(--hover);color:var(--text)}
+.chip.on{background:var(--selected);border-color:var(--line-selected);color:var(--text)}
+.chip .dot{width:6px;height:6px}
+.chip .x{color:var(--text3)}
+.pill{height:22px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);font:500 12px/16px Inter,sans-serif;color:var(--text2);white-space:nowrap}
+.pill svg{width:12px;height:12px}
+.pill.attn svg{color:var(--attn)} .pill.ok svg{color:var(--ok)}
+
+/* Avatar: Initialen nur getönt (Farbe des Nutzers nie als volle Fläche), „Foto“ als neutrale Silhouette. */
+.av{--s:36px;--c:var(--c0);width:var(--s);height:var(--s);border-radius:50%;display:grid;place-items:center;flex:none;position:relative;overflow:hidden;
+  font-weight:600;font-size:calc(var(--s)*.36);line-height:1;background:color-mix(in srgb,var(--c) var(--tint),var(--panel));color:var(--text)}
+.av.photo{background:linear-gradient(160deg,var(--p1),var(--p2));color:transparent}
+.av.photo::before{content:"";position:absolute;left:50%;top:22%;width:34%;height:34%;border-radius:50%;background:var(--p3);transform:translateX(-50%)}
+.av.photo::after{content:"";position:absolute;left:50%;top:60%;width:70%;height:70%;border-radius:50%;background:var(--p3);transform:translateX(-50%)}
+.av.s28{--s:28px} .av.s32{--s:32px} .av.s40{--s:40px} .av.s48{--s:48px} .av.s64{--s:64px} .av.s96{--s:96px} .av.s120{--s:120px}
+.av.fav::after{}
+.stack{display:flex} .stack .av{border:2px solid var(--panel);margin-left:-8px} .stack .av:first-child{margin-left:0}
+
+/* Menüs, Karten, Dialoge */
+.menu{background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow);padding:4px}
+.menu .item{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:var(--r);white-space:nowrap}
+.menu .item:hover,.menu .item.hl{background:var(--hover)}
+.menu .item svg{color:var(--text3)}
+.menu .sep{height:1px;background:var(--line);margin:4px 0}
+.menu .lab{padding:8px 8px 4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.card{background:var(--raised);border:1px solid var(--line-strong);border-radius:var(--r)}
+.scrim{position:absolute;inset:0;background:var(--scrim);z-index:40}
+.question{display:flex;align-items:flex-start;gap:12px;padding:12px 16px;border:1px solid var(--line-strong);background:var(--raised);border-radius:var(--r)}
+.question svg.at{color:var(--attn);margin-top:3px}
+.hline{height:1px;background:var(--line)}
+
+/* Eigenschaftszeile (prop_line) */
+.pl{display:flex;align-items:center;gap:12px;min-height:34px;padding:2px 8px;margin:0 -8px;border-radius:var(--r)}
+.pl:hover{background:var(--hover)}
+.pl .lab{width:88px;flex:none;font-size:13px;line-height:18px;color:var(--text3)}
+.pl .acts{display:none;gap:2px;margin-left:auto}
+.pl:hover .acts{display:flex}
+.pl .acts .iconbtn{width:28px;height:28px}
+.sect{margin-top:24px}
+.sect>.cap{color:var(--text3);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.sect>.cap .n{font-family:"Inter Tabular",Inter,sans-serif;font-weight:400}
+
+/* Größenklassen wie torro_gui::layout::of: l ≥ 1024, m 600–1023, s < 600 (gesetzt von kontakte.js als <html data-size>). */
+html:not([data-size="l"]) .only-l{display:none!important}
+html[data-size="l"] .not-l{display:none!important}
+html:not([data-size="s"]) .only-s{display:none!important}
+html[data-size="s"] .not-s{display:none!important}
+html[data-size="l"] .only-ms{display:none!important}
+html:not([data-size="l"]) .not-ms{display:none!important}
+html[data-size="m"] .sidebar,html[data-size="s"] .sidebar{display:none}
+html[data-size="m"] .main,html[data-size="s"] .main{border-left:0}
+html[data-size="s"] .header{padding:0 12px}
+html[data-size="s"] .btn .word{display:none}

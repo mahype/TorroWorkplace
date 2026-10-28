@@ -10327,7 +10327,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// else.
     ///
     /// The whole group is left out until at least one mail has a category: before that it would
-    /// be four empty rows. A group row is active while the group itself is shown
+    /// be five empty rows. A group row is active while the group itself is shown
     /// ([`App::category_group_active`]); the rail marks it also for one of its categories.
     fn category_entries(&self) -> Vec<CategoryBranch> {
         // Only what is there: the catalogue always holds all of them, so a mailbox nothing has
@@ -10505,7 +10505,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The colour of the category group at `at` in `Palette::category` (task E12.8).
     fn category_colour(&self, at: usize) -> iced::Color {
-        palette(&self.theme()).category[at.min(3)]
+        let p = palette(&self.theme());
+        p.category[at.min(p.category.len() - 1)]
     }
 
     /// The folders of the mail accounts by account for the on-demand folder browser. Every group
@@ -10719,7 +10720,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let message = e.message();
             widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, message)
         };
-        // What the mail is (task E12.8), on top and without a title (issue #337): the four groups,
+        // What the mail is (task E12.8), on top and without a title (issue #337): the five groups,
         // with the categories of an open one indented under it (issue #300), once at least one mail
         // has a category; then "Unfiltered", which the mail window always has.
         let mut items: Vec<Element<'a, Message>> = Vec::new();
@@ -10867,7 +10868,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     ///
     /// The menu is as wide as its longest entry needs ([`choice_menu_width`]), so the addresses and
     /// domains of "Hide from Notification Hub" show whole.
-    /// "Category ▸" (task E12.8): the catalogue by its four groups, each under its own caption,
+    /// "Category ▸" (task E12.8): the catalogue by its five groups, each under its own caption,
     /// and scrollable – 23 choices in one flat list are taller than a medium window.
     fn category_menu<'a>(&self) -> Element<'a, Message> {
         // The catalogue as the window loaded it (task E15.2): the person's names and groups,
@@ -11714,7 +11715,13 @@ fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f3
     let tint = choice.tint;
     let indented = tint.is_some();
     let mark = icon::icon(choice.icon, icon::SIZE).style(move |t: &Theme, _| iced::widget::svg::Style {
-        color: Some(tint.map_or_else(|| palette(t).text, |at| palette(t).category[at.min(3)])),
+        color: Some(tint.map_or_else(
+            || palette(t).text,
+            |at| {
+                let p = palette(t);
+                p.category[at.min(p.category.len() - 1)]
+            },
+        )),
     });
     let shown = choice_label(&choice.label, choice.when.as_deref(), key, width, indented);
     let cut = (shown != choice.label).then(|| choice.label.clone());
@@ -17441,11 +17448,11 @@ mod tests {
 
     /// Issue #300 (task E17.2): a click on a folded group opens it and shows the mail of all its
     /// categories; a click on the open group shown folds it and keeps the list; from one of its
-    /// categories a click shows the group again and keeps it open. For each of the four groups.
+    /// categories a click shows the group again and keeps it open. For each of the five groups.
     #[test]
     fn a_click_on_a_group_opens_and_shows_it_then_folds_it() {
         let app = mail_window(Density::Compact, &[]);
-        assert_eq!(listed_groups(&app), CategoryGroup::ALL, "the demo has mail in all four groups");
+        assert_eq!(listed_groups(&app), CategoryGroup::ALL, "the demo has mail in all five groups");
         for group in CategoryGroup::ALL {
             let mut app = mail_window(Density::Compact, &[]);
             assert!(!app.open_groups.contains(&group));

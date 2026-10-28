@@ -1,6 +1,6 @@
 # Kontakte: App `torrocontacts` auf CardDAV, mit Karte
 
-Stand: 2026-10-15. **Konzept, Entscheidungen vom 2026-10-15 eingearbeitet.** Aufgaben:
+Stand: 2026-10-27. **Konzept, Entscheidungen vom 2026-10-15 und 2026-10-27 (Oberfläche) eingearbeitet.** Aufgaben:
 [tasks/kontakte.md](tasks/kontakte.md). Beantwortet die Frage: **Wer ist das, und wie erreiche ich
 ihn?** Dazu: **Wo ist das?**, mit einer Karte ohne Lizenzschlüssel.
 
@@ -178,6 +178,17 @@ von `walkers` (egui): Kachel-Mathematik, Laden mit Cache, Widget aus `canvas` un
     M7.6 aus [tasks/mail.md](tasks/mail.md). Teilen (Mail, Talk, Kopieren, Datei, QR-Code) plant
     [teilen.md](teilen.md) mit den Aufgaben TL1–TL3; es kann nach KO1 beginnen.
 
+11. **Oberfläche (2026-10-27):** Entwürfe in [prototypes/kontakte/](prototypes/kontakte/index.html), gewählt ist
+    **D2 „Gruppen“** (`d2-gruppen.html`).
+    - Die Liste ist nach Gruppe, Ort oder Adressbuch gruppiert, mit einklappbaren Köpfen und zweizeiligen
+      Zeilen. Der Kontakt öffnet im Seitenpaneel neben der Liste. Links steht das Menü wie bei den anderen Apps.
+    - Die Karte (`c-karte.html`) ist eine **zuschaltbare Ansicht**, nur sichtbar, wenn die Ortssuche
+      freigegeben ist (Entscheidung 8). Ohne Zustimmung gibt es nur die Liste; es gibt keine leere Karte.
+    - Verworfen: A (Dreispalter mit Sprungleiste), B (Kartenwand), D1 (Tabelle), D3 (Verzeichnis). Ideen daraus
+      stehen unter „Offen“.
+    - Ein Ansichtsschalter für Tabelle oder Verzeichnis kommt nicht in KO1; er wäre später erweiterbar,
+      weil der Schalter der Kopfleiste ohnehin „List | Map“ trägt.
+
 ## Aufbau
 
 ```
@@ -297,18 +308,26 @@ Erläuterungen:
 
 **`torrocontacts`** nutzt `torro_gui::shell`:
 - **Seitenleiste:**
-  - **All contacts**, **Favorites**, **Recent**, **Birthdays** und **Map** (ab KO4).
+  - **All contacts**, **Favorites**, **Recent** und **Birthdays**. Die Karte hat keinen eigenen Eintrag,
+    sie ist eine Darstellung derselben Auswahl (siehe „Karte als Ansicht“).
   - Darunter die Adressbücher mit ihren Gruppen, ab zwei Konten je Konto gruppiert.
   - Systemadressbuch und „Recently contacted“ sind ausgeblendet; ein Schalter in den Einstellungen zeigt sie.
-- **Liste:** Foto oder Initialen, Name, Firma, ein Hauptkontakt. Alphabetische Sprungleiste.
-  Suchfeld oben; `/` und `Ctrl+F` springen hinein.
-- **Kontakt rechts:**
-  - **Kopf:** großes Foto, Name, Firma und Position, darunter Schnellknöpfe Mail, Call, Map, Copy
-    und „Share…“ ([teilen.md](teilen.md)).
+- **Liste (Entwurf D2 „Gruppen“, Entscheidung 11):**
+  - Kontakte stehen unter **einklappbaren Köpfen** (Zahl, „+“ legt einen Kontakt in dieser Gruppe an).
+    Gruppiert wird nach **Gruppe** (Standard), **Ort** oder **Adressbuch**; „Group by“ in der Kopfleiste
+    wählt, die Wahl und die eingeklappten Köpfe merkt sich die App in `ui.json`.
+  - **Zeile** (zweizeilig, 60 hoch): Foto oder Initialen; **Name** (Vorname leise, Nachname kräftig) mit
+    Favoritenstern und Schloss bei schreibgeschütztem Buch, darunter **Funktion · Firma**; daneben Mail
+    über Telefon als ruhige Kontaktzeile, Ort rechts. Beim Überfahren schwebt die Aktionsleiste (Mail, Call, Copy).
+  - Innerhalb eines Kopfes nach Nachname sortiert. Suchfeld und Filter-Chips oben; `/` und `Ctrl+F` springen
+    hinein. Eine Sprungleiste gibt es nicht (die Köpfe tragen die Ordnung).
+- **Kontakt im Seitenpaneel** (`size::panel()`, 400; die Liste bleibt daneben sichtbar):
+  - **Kopf:** Foto, Name, Firma und Position, darunter Schnellknöpfe Mail, Call, Map und „…“
+    (Copy, „Share…“ aus [teilen.md](teilen.md)).
   - **Abschnitte:** Telefon, Mail, Adressen (je mit kleiner Karte, KO2), Web und Messenger,
     Geburtstag und Jahrestage, Notiz, Gruppen.
   - **„Edit“** schaltet alle Felder im Kontakt selbst um. „+ Add field“ fügt eine Art hinzu.
-  - **Schmal** zeigt das Fenster entweder die Liste oder den Kontakt.
+  - **Mittel und Schmal:** das Paneel liegt über der Liste, ein „✕“ schließt es.
 - **Mini-Kachel:** Suchfeld und Favoriten mit Schnellknöpfen.
 - **Steuerzentrale:**
   - Kontoseite mit Dienst „Contacts“.
@@ -322,10 +341,17 @@ Erläuterungen:
 Zustimmung zeigt die Stelle nur „Open in Maps“ und den Hinweis „Turn on address lookup to see a
 map“, mit Link zur Einstellung.
 
-**Karte aller Kontakte (KO4):** verschiebbar und zoombar. Pins werden zu Gruppen zusammengefasst,
-ein Klick öffnet den Kontakt. Bis Zoom 6 kommt die Karte offline aus PMTiles, darüber vom
-Kachelserver. Gibt es keine Zustimmung zur Ortssuche, zeigt die Karte nur Kontakte mit `GEO` und
-sagt, wie viele fehlen. Mit Zustimmung zeigt sie den Fortschritt der Suche im Hintergrund.
+**Karte aller Kontakte (KO4), „Karte als Ansicht“** (Entscheidung 11, Entwurf `c-karte.html`):
+- **Nur mit Zustimmung.** Ist die Ortssuche (`maps.geocoding`) aus, gibt es die Karte nicht: kein Schalter,
+  kein Eintrag, nur die Liste. Die Frage nach der Zustimmung steht in der Steuerzentrale (KO2.3) und
+  am Hinweis „Turn on address lookup to see a map“ im Kontakt, nicht auf einer leeren Karte.
+- **Eine Darstellung derselben Auswahl:** In der Kopfleiste erscheint ein Schalter „List | Map“. Buch
+  und Gruppe aus der Seitenleiste, Suche und Filter gelten für beide.
+- Verschiebbar und zoombar. Pins werden zu Haufen mit Zahl zusammengefasst, ein Haufen öffnet seine Liste,
+  ein Pin eine kleine Karte mit Mail, Call, „In Karten öffnen“ und „Open“. Links schwebt die Liste dessen,
+  was im Ausschnitt liegt.
+- Bis Zoom 6 kommt die Karte offline aus PMTiles, darüber vom Kachelserver. Oben der Fortschritt der Suche
+  im Hintergrund und wie viele Kontakte keine Adresse haben.
 
 ## Offen (in der jeweiligen Aufgabe klären)
 
@@ -338,5 +364,10 @@ sagt, wie viele fehlen. Mit Zustimmung zeigt sie den Fortschritt der Suche im Hi
   Datei einmal nach Zustimmung. Das klärt KO4.1 mit dem Release-Plan ([release.md](release.md)).
 - **Vektorkacheln** (OpenFreeMap, OSMF Shortbread) sähen schärfer aus. Dafür bräuchte es aber einen
   eigenen MVT-Renderer in Iced. Das ist nicht Teil dieses Plans.
+- **Ideen aus den verworfenen Entwürfen** (je ein eigener kleiner Plan, wenn KO1 steht): „Connected in
+  Torro“ im Kontakt (Mails, Termine, Aufgaben zur Person, Entwurf A); „Coming up“ mit Geburtstagen,
+  Dubletten und unbekannten Absendern aus dem Eingang (Entwurf B); Schnelleingabe in einem Satz
+  („Lena Fischer, Fotografin, Mail, Nummer, Leipzig“, Entwurf A); Umkreissuche auf der Karte („Wer wohnt
+  im Umkreis von 30 km?“); Tabellen- und Verzeichnisansicht (D1, D3) als weitere Darstellung der Liste.
 - **Orte im Kalender:** `LOCATION` von Terminen auf derselben Karte und mit „In Karten öffnen“ liegt
   nahe. Das wird ein eigener kleiner Plan, sobald das Widget steht.

@@ -1,6 +1,7 @@
 # Kategorien eingehender Mail
 
-Stand: 2026-10-19. Geplant zu [Issue #221](https://github.com/mahype/TorroWorkplace/issues/221).
+Stand: 2026-10-28. Geplant zu [Issue #221](https://github.com/mahype/TorroWorkplace/issues/221), Gruppen neu
+geordnet mit [Issue #338](https://github.com/mahype/TorroWorkplace/issues/338).
 Ergänzt [eingang.md](eingang.md) (Spuren „Für mich“ und „Zur Info“) und [ki.md](ki.md)
 (Grundsätze für KI). Aufgaben: [tasks/eingang.md › E12](tasks/eingang.md#e12-kategorien-eingehender-mail-issue-221).
 
@@ -11,7 +12,7 @@ die Kategorie nichts.
 ## Der Katalog
 
 Englischer Schlüssel ist maßgeblich, die deutsche Beschriftung steht in
-`crates/torro-core/src/i18n/de.rs`. Vier Gruppen, 23 Kategorien.
+`crates/torro-core/src/i18n/de.rs`. Fünf Gruppen, 23 Kategorien.
 
 ### Gruppe `waiting_for_me` – Wartet auf mich
 
@@ -23,6 +24,7 @@ Englischer Schlüssel ist maßgeblich, die deutsche Beschriftung steht in
 | `security` | Sicherheit | Anmeldecode, Zwei-Faktor, Passwort zurücksetzen | Modell |
 | `personal` | Persönlich | Nachricht eines Menschen, nichts zu tun | Modell |
 | `invitation` | Einladung | Termineinladung | **Regel** (iMIP `text/calendar`) |
+| `bounce` | Unzustellbar | Zustellungsbenachrichtigung, Fehlbericht (DSN); meist ist eine Adresse zu korrigieren | **Regel**, kommt mit E9.3a |
 
 ### Gruppe `paper_trail` – Belege
 
@@ -45,16 +47,33 @@ Englischer Schlüssel ist maßgeblich, die deutsche Beschriftung steht in
 | `service_notice` | Dienstmeldung | Wartung, geänderte Bedingungen, Statusbericht | Modell |
 | `social` | Netzwerk | Soziale Netzwerke, Foren, Communitys | Modell |
 | `event_invite` | Veranstaltung | Webinar, Konferenz, Einladung zu einer Veranstaltung | Modell |
+| `auto_reply` | Abwesenheit | Automatische Antwort, Abwesenheitsnotiz | **Regel** (`Auto-Submitted`) |
 
-### Gruppe `junk` – Technik und Müll
+### Gruppe `junk` – Unerwünscht (englisch „Unwanted“)
 
 | Schlüssel | Deutsch | Was es ist | Erkannt durch |
 |---|---|---|---|
-| `bounce` | Unzustellbar | Zustellungsbenachrichtigung, Fehlbericht (DSN) | **Regel**, kommt mit E9.3a |
-| `auto_reply` | Abwesenheit | Automatische Antwort, Abwesenheitsnotiz | **Regel** (`Auto-Submitted`) |
-| `spam` | Unerwünscht | Massenmail ohne Bezug zu mir | Modell, Junk-Ordner des Servers |
+| `spam` | Spam | Massenmail ohne Bezug zu mir | Modell, Junk-Ordner des Servers |
 | `phishing` | Betrug | Täuschung, gefälschter Absender, Schadlink | Modell |
+
+### Gruppe `unsorted` – Nicht eingeordnet (englisch „Unsorted“)
+
+| Schlüssel | Deutsch | Was es ist | Erkannt durch |
+|---|---|---|---|
 | `other` | Sonstiges | nicht einzuordnen, oder das Modell ist zu unsicher | Rückfall |
+
+Bis #338 hieß die Gruppe `junk` „Technik und Müll“ und hielt auch Unzustellbar, Abwesenheit und
+Sonstiges. Unter der Schwelle 0,6 landet jede Mail in „Sonstiges“, auch eine echte persönliche
+Mail, bei der das Modell nur unsicher war; darum steht sie in einer eigenen Gruppe zum gezielten
+Durchsehen, nicht im Müll. Die Kategorie Spam heißt deutsch „Spam“, damit sie nicht wie ihre
+Gruppe heißt.
+
+Der **Schlüssel `junk` bleibt**, nur die Namen, die Menschen lesen, haben sich geändert: Eigene
+Kategorien in `junk` und Agenten, die `junk` senden, gelten weiter. Neu ist nur der Wert
+`unsorted`; ein neuer Wert ist für Clients verträglich, die API bleibt bei `v: 1`. Gespeicherte
+Kataloge brauchen keine Umstellung: Der Dienst speichert die Gruppe einer mitgelieferten Kategorie
+nur, wenn der Mensch sie geändert hat. Wer nichts geändert hat, bekommt die neue Zuordnung von
+selbst, wer eine Kategorie verschoben hat, behält seine.
 
 **Genau 20 Kategorien entscheidet das Modell**: alle außer `invitation`, `bounce` und `auto_reply`,
 die aus den Kopfzeilen folgen. 20 ist auch die engste dokumentierte Obergrenze einer
@@ -208,7 +227,7 @@ Die Darstellung mit Gruppenfarben und individuellen Kategorie-Icons gehört zu
 - Bearbeitbar sind bei **jeder** Kategorie Name, Gruppe, Beschreibung und „das Modell darf sie
   wählen“. Umbenennen ändert die Kennung nicht, Mail und Regeln bleiben gültig. Eine mitgelieferte
   Kategorie lässt sich auf die Worte der Suite zurücksetzen, aber nicht entfernen.
-- Die **vier Gruppen** bleiben fest und erhalten je eine Farbe aus der Gruppenpalette des aktiven
+- Die **fünf Gruppen** bleiben fest und erhalten je eine Farbe aus der Gruppenpalette des aktiven
   Designs. Jede Unterkategorie hat ein einfarbiges Icon in der Farbe ihrer Gruppe. Die 23
   mitgelieferten Kategorien haben feste Standard-Icons; bei eigenen Kategorien kann das Icon
   gewählt werden. Die Icon-Auswahl ist auch für mitgelieferte Kategorien verfügbar. Gruppenname

@@ -2060,6 +2060,7 @@ pub(crate) fn group_mark(group: CategoryGroup) -> (Icon, usize) {
         CategoryGroup::PaperTrail => (Icon::TextQuote, 1),
         CategoryGroup::Info => (Icon::Info, 2),
         CategoryGroup::Junk => (Icon::ShieldAlert, 3),
+        CategoryGroup::Unsorted => (Icon::CircleDashed, 4),
     }
 }
 

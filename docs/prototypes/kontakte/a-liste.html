@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Contacts – Entwurf A: Liste und Kontakt</title>
+<!-- Entwurf A „Liste & Kontakt“: das bewährte Dreigespann (Apple Kontakte, Nextcloud Contacts), im Linear-Stil.
+     Breit: Seitenleiste · Liste 440 mit Sprungleiste · Kontakt · Eigenschaften 300 (Buch, Gruppen, Sync, Dubletten).
+     Mittel: Seitenleiste im Menü, Liste 364 neben dem Kontakt, Eigenschaften als Chips. Schmal: Liste, der Kontakt ersetzt sie.
+     Zustände: ?open=edit (Bearbeiten im Kontakt) · sync (Nextcloud-Abgleich) · quick (Schnelleingabe in einem Satz) · detail (nur Schmal)
+     ?size=l|m|s  ?theme=light -->
+<link rel="stylesheet" href="kontakte.css">
+<script src="icons.js"></script>
+<script src="kontakte.js"></script>
+<style>
+.body{flex:1;display:flex;min-height:0}
+.list{width:440px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;position:relative}
+.list .search{height:56px;flex:none;border-bottom:1px solid var(--line);padding:0 24px}
+.list .search .field{height:38px;padding:0}
+.scroll{flex:1;overflow:auto;min-height:0}
+.lh{height:40px;display:flex;align-items:center;gap:8px;padding:0 24px;background:var(--raised);border-bottom:1px solid var(--line);font-size:12px;line-height:16px;font-weight:500;color:var(--text2);position:sticky;top:0;z-index:2}
+.lh .n{font-weight:400;color:var(--text3)}
+.crow{height:56px;display:flex;align-items:center;gap:12px;padding:0 32px 0 24px;border-bottom:1px solid var(--line);position:relative}
+.crow:hover,.crow.hov{background:var(--hover)}
+.crow.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
+.crow .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crow .nm .f{color:var(--text2)} .crow .nm b{font-weight:500}
+.crow .sub{font-size:13px;line-height:18px;color:var(--text3)}
+.crow .city{font-size:13px;color:var(--text3);flex:none;max-width:90px}
+.crow .st{color:var(--text2)} .crow .st svg{fill:currentColor}
+.crow .ra{position:absolute;right:32px;top:50%;transform:translateY(-50%);display:none;gap:2px;padding:2px;background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow)}
+.crow:hover .ra,.crow.hov .ra{display:flex}
+.crow:hover .city,.crow.hov .city{visibility:hidden}
+.crow .ra .iconbtn{width:32px;height:32px}
+.az{position:absolute;right:4px;top:96px;bottom:12px;width:20px;display:flex;flex-direction:column;justify-content:space-between;align-items:center;font:500 11px/14px Inter,sans-serif;color:var(--text3);z-index:3}
+.az span.on{color:var(--text)}
+
+.detail{flex:1;min-width:0;overflow:auto;padding:32px}
+.detail .in{max-width:640px}
+.head{display:flex;gap:24px;align-items:center}
+.head h1{font-size:28px;line-height:36px;font-weight:600;margin:0;letter-spacing:-.01em}
+.head .role{color:var(--text2);margin-top:2px}
+.head .pills{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+.qa{display:flex;gap:8px;margin:24px 0 8px;flex-wrap:wrap}
+.qa .btn{padding:0 14px}
+.map{position:relative;height:148px;border:1px solid var(--line-strong);border-radius:var(--r);overflow:hidden;margin:8px 0 0}
+.map svg.m{position:absolute;inset:0;width:100%;height:100%}
+.map .attr{position:absolute;right:0;bottom:0;padding:0 6px;background:color-mix(in srgb,var(--panel) 82%,transparent);font-size:11px;line-height:16px;color:var(--text2)}
+.map .open{position:absolute;left:8px;top:8px}
+.pin{position:absolute;left:50%;top:50%;transform:translate(-50%,-100%);color:var(--text)}
+.pin .h{width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:var(--text);display:grid;place-items:center;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+.pin .h::after{content:"";width:10px;height:10px;border-radius:50%;background:var(--panel)}
+.tl{display:flex;align-items:center;gap:12px;height:36px;border-bottom:1px solid var(--line)}
+.tl:last-child{border-bottom:0}
+.tl .when{margin-left:auto;font-size:13px;color:var(--text3)}
+.props{width:300px;flex:none;border-left:1px solid var(--line);padding:24px 16px;overflow:auto}
+.props h4{margin:20px 0 4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.props h4:first-child{margin-top:0}
+.pr{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 8px;margin:0 -8px;border-radius:var(--r)}
+.pr:hover{background:var(--hover)} .pr svg{color:var(--text3)} .pr .t3{margin-left:auto;font-size:13px}
+.dupe{padding:12px;border:1px solid var(--line-strong);background:var(--raised);border-radius:var(--r);margin-top:8px}
+.field-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.field-row .type{width:104px;flex:none}
+.field-row .field{flex:1}
+.savebar{position:absolute;left:50%;transform:translateX(-50%);bottom:24px;display:flex;align-items:center;gap:12px;padding:8px 8px 8px 16px;background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow);z-index:20}
+.mchips{display:none}
+.syncpop{position:absolute;left:8px;bottom:52px;width:352px;z-index:50;padding:0}
+.syncpop .hd{display:flex;gap:12px;align-items:flex-start;padding:16px;border-bottom:1px solid var(--line)}
+.syncpop .bk{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 16px}
+.syncpop .ft{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.dlg{position:absolute;left:50%;top:96px;transform:translateX(-50%);width:600px;max-width:calc(100% - 32px);z-index:50;padding:0}
+.dlg .top{padding:16px 16px 12px;border-bottom:1px solid var(--line)}
+.dlg .typed{min-height:56px;color:var(--text);font:400 16px/26px Inter,sans-serif}
+.dlg .parsed{padding:16px;display:grid;grid-template-columns:96px 1fr;gap:6px 12px}
+.dlg .parsed .k{color:var(--text3);font-size:13px;line-height:30px}
+.dlg .parsed .v{display:flex;gap:6px;align-items:center;min-height:30px}
+.dlg .ft{display:flex;gap:8px;align-items:center;padding:12px 16px;border-top:1px solid var(--line)}
+mark{background:color-mix(in srgb,var(--c0) 22%,transparent);color:var(--text);border-radius:2px;padding:0 1px}
+
+/* Mittel / Schmal */
+html[data-size="m"] .props,html[data-size="s"] .props{display:none}
+html[data-size="m"] .mchips{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+html[data-size="m"] .list{width:364px}
+html[data-size="m"] .detail{padding:24px}
+html[data-size="s"] .list{flex:1;width:auto;border:0}
+html[data-size="s"] .detail{display:none}
+html[data-size="s"][data-open="detail"] .detail{display:block;padding:16px}
+html[data-size="s"][data-open="detail"] .list{display:none}
+html[data-size="s"] .crow .city{display:none}
+html[data-size="m"] .crow .city{display:none}
+html[data-size="s"] .az{display:none}
+html:not([data-size="s"]) .only-detail{display:none!important}
+html[data-size="s"] .head{gap:16px}
+html[data-size="s"] .head h1{font-size:22px;line-height:28px}
+html[data-size="s"] .qa .btn{flex:1;justify-content:center}
+</style></head>
+<body>
+<div class="app" id="app"></div>
+<script>
+const sel=CONTACTS.find(c=>c.sel), open=document.documentElement.dataset.open;
+const letters='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+function rows(){
+  let out='',cur='';
+  byLast.forEach(c=>{
+    const L=lastName(c.n)[0].toUpperCase();
+    if(L!==cur){cur=L;const n=byLast.filter(x=>lastName(x.n)[0].toUpperCase()===L).length;out+=`<div class="lh">${L}<span class="n tab">${n}</span></div>`;}
+    out+=`<div class="crow${c===sel?' sel':''}${c.n==='Sophie Marchand'?' hov':''}">${av(c,36)}
+      <div class="grow"><div class="nm"><span class="f">${firstNames(c.n)}</span> <b>${lastName(c.n)}</b></div><div class="sub ell">${c.o||c.t}</div></div>
+      ${c.f?`<span class="st" title="Favorite">${ic('star','s14')}</span>`:''}${c.b===1?`<span class="t3" title="Read-only book">${ic('lock','s12')}</span>`:''}
+      <span class="city ell">${c.city}</span>
+      <div class="ra"><button class="iconbtn" title="Write an email">${ic('mail')}</button><button class="iconbtn" title="Call">${ic('phone')}</button><button class="iconbtn" title="Copy">${ic('copy')}</button></div></div>`;
+  });
+  return out;
+}
+function miniMap(){
+  return `<svg class="m" viewBox="0 0 640 148" preserveAspectRatio="xMidYMid slice"><rect width="640" height="148" fill="var(--m-land)"/>
+  <rect x="40" y="10" width="110" height="52" fill="var(--m-green)"/><rect x="470" y="86" width="150" height="50" fill="var(--m-green)"/>
+  <path d="M0 120 C120 100 200 140 330 112 S560 80 640 96" stroke="var(--m-water)" stroke-width="22" fill="none"/>
+  <g stroke="var(--m-road)" stroke-width="7" fill="none" stroke-linecap="round"><path d="M0 70H640"/><path d="M210 0V148"/><path d="M420 0V148"/></g>
+  <g stroke="var(--m-road2)" stroke-width="3" fill="none"><path d="M0 28H640"/><path d="M110 0V148"/><path d="M320 0V148"/><path d="M530 0V148"/><path d="M0 104H210"/></g>
+  <g fill="var(--m-road2)"><rect x="224" y="38" width="60" height="26" rx="2"/><rect x="292" y="38" width="20" height="26" rx="2"/><rect x="332" y="38" width="76" height="26" rx="2"/><rect x="226" y="80" width="40" height="16" rx="2"/><rect x="334" y="80" width="64" height="16" rx="2"/></g>
+  <text x="226" y="22" font-size="11" fill="var(--m-label)" font-family="Inter">Kastanienallee</text></svg>`;
+}
+function detail(){
+  if(open==='edit') return editForm();
+  const c=sel;
+  return `<div class="in">
+    <div class="head">${av(c,96)}
+      <div class="grow"><h1>${c.n}</h1><div class="role">${c.t} · ${c.o}</div>
+        <div class="pills"><span class="pill"><span class="dot" style="--c:var(--c0);width:6px;height:6px"></span>Contacts</span><span class="pill">${ic('tag')}Clients</span><span class="pill">${ic('star')}Favorite</span></div></div>
+      <button class="btn ghost not-s" style="align-self:flex-start">${ic('square-pen')}<span class="word">Edit</span></button></div>
+    <div class="mchips"><span class="chip"><span class="dot" style="--c:var(--c0)"></span>Contacts · Nextcloud</span><span class="chip">${ic('refresh-cw','s12')}Synced 3 min ago</span><span class="chip">${ic('history','s12')}Contacted 2 days ago</span></div>
+    <div class="qa"><button class="btn">${ic('mail')}<span class="word">Mail</span></button><button class="btn">${ic('phone')}<span class="word">Call</span></button><button class="btn">${ic('message-circle')}<span class="word">Talk</span></button><button class="btn">${ic('map-pin')}<span class="word">Map</span></button><button class="btn">${ic('copy')}<span class="word">Copy</span></button><button class="btn ghost">${ic('share-2')}<span class="word">Share…</span></button></div>
+
+    <div class="sect"><div class="cap">Phone</div>
+      <div class="pl"><span class="lab">mobile</span><span class="tab">+49 171 5550 1823</span><span class="pill" style="height:18px;margin-left:4px">preferred</span><div class="acts"><button class="iconbtn">${ic('phone')}</button><button class="iconbtn">${ic('copy')}</button></div></div>
+      <div class="pl"><span class="lab">work</span><span class="tab">+49 30 5550 1429</span><div class="acts"><button class="iconbtn">${ic('phone')}</button><button class="iconbtn">${ic('copy')}</button></div></div></div>
+    <div class="sect"><div class="cap">Email</div>
+      <div class="pl"><span class="lab">work</span><span>amelie@krause-verlag.example</span><div class="acts"><button class="iconbtn">${ic('mail')}</button><button class="iconbtn">${ic('copy')}</button></div></div>
+      <div class="pl"><span class="lab">home</span><span>amelie.krause@mailbox.example</span><div class="acts"><button class="iconbtn">${ic('mail')}</button><button class="iconbtn">${ic('copy')}</button></div></div></div>
+    <div class="sect"><div class="cap">Address</div>
+      <div class="pl"><span class="lab">work</span><span>Kastanienallee 42, 10435 Berlin, Germany</span><div class="acts"><button class="iconbtn">${ic('copy')}</button></div></div>
+      <div class="map">${miniMap()}<div class="pin"><div class="h"></div></div><button class="btn sm open">${ic('arrow-up-right','s14')}Open in Maps</button><span class="attr">© OpenStreetMap contributors</span></div></div>
+    <div class="sect"><div class="cap">Dates</div>
+      <div class="pl"><span class="lab">birthday</span><span>12 March 1988</span><span class="t3 meta" style="margin-left:auto">turns 39 in 136 days</span></div></div>
+    <div class="sect"><div class="cap">Note</div>
+      <div class="pl" style="align-items:flex-start;padding:6px 8px"><span class="t2">Met at the Leipzig book fair. Prefers Signal over phone calls. Assistant: Mia (mia@krause-verlag.example).</span></div></div>
+    <div class="sect"><div class="cap">${ic('sparkles','s14')} Connected in Torro <span class="n t3">4</span></div>
+      <div class="tl">${ic('mail','t3')}<span class="grow ell">Re: Cover proofs for the spring list</span><span class="when">Tue</span></div>
+      <div class="tl">${ic('mail','t3')}<span class="grow ell">Contract draft v3</span><span class="when">12 Oct</span></div>
+      <div class="tl">${ic('calendar-days','t3')}<span class="grow ell">Lunch with Amelie</span><span class="when">Thu 12:30</span></div>
+      <div class="tl">${ic('list-todo','t3')}<span class="grow ell">Send Krause the invoice</span><span class="when" style="color:var(--attn)">due Fri</span></div></div>
+  </div>`;
+}
+function editForm(){
+  const c=sel;
+  const row=(t,v,ph)=>`<div class="field-row"><button class="btn type">${t}${ic('chevron-down','s12')}</button><div class="field ${v&&v.f?'focus':''}"><span class="val">${v&&v.v||v||''}</span></div><button class="iconbtn sm">${ic('x','s14')}</button></div>`;
+  return `<div class="in">
+    <div class="head">${av(c,96)}<div class="grow"><div class="field-row"><div class="field" style="flex:1"><span class="val" style="font-size:22px;font-weight:600">Amelie</span></div><div class="field" style="flex:1"><span class="val" style="font-size:22px;font-weight:600">Krause</span></div></div>
+      <div class="field-row" style="margin:0"><div class="field"><span class="val">Managing editor</span></div><div class="field"><span class="val">Krause Verlag</span></div></div></div></div>
+    <div class="sect"><div class="cap">Phone</div>${row('mobile','+49 171 5550 1823')}${row('work','+49 30 5550 1429')}<button class="btn ghost sm">${ic('plus','s14')}Add phone</button></div>
+    <div class="sect"><div class="cap">Email</div>${row('work','amelie@krause-verlag.example')}${row('home',{v:'amelie.krause@mailbox.example<span style="border-left:1.5px solid var(--text);margin-left:1px"></span>',f:1})}<button class="btn ghost sm">${ic('plus','s14')}Add email</button></div>
+    <div class="sect"><div class="cap">Address</div>${row('work','Kastanienallee 42, 10435 Berlin')}<button class="btn ghost sm">${ic('plus','s14')}Add address</button></div>
+    <div class="sect"><div class="cap">Other</div><button class="btn ghost sm">${ic('plus','s14')}Add field…</button><span class="meta t3" style="margin-left:8px">Fields from other apps (IMPP, X-…) stay untouched.</span></div>
+  </div>
+  <div class="savebar"><span class="meta t2">2 changes · saved to Nextcloud over CardDAV</span><button class="btn ghost">Discard</button><button class="btn primary">Save</button></div>`;
+}
+function props(){
+  return `<aside class="props">
+    <h4>Address book</h4><div class="pr"><span class="dot" style="--c:var(--c0)"></span><span>Contacts</span><span class="t3">Nextcloud</span></div>
+    <h4>Groups</h4><div class="chips" style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip">${ic('tag','s14')}Clients${ic('x','s12 x')}</span><span class="chip" style="border-style:dashed;color:var(--text3)">${ic('plus','s14')}Add</span></div>
+    <h4>Activity</h4>
+    <div class="pr">${ic('history')}<span>Last contacted</span><span class="t3">2 days ago</span></div>
+    <div class="pr">${ic('mail')}<span>Mails exchanged</span><span class="t3 tab">37</span></div>
+    <div class="pr">${ic('calendar-days')}<span>Next event</span><span class="t3">Thu 12:30</span></div>
+    <h4>Sync</h4>
+    <div class="pr">${ic('refresh-cw','ok')}<span>Up to date</span><span class="t3">3 min ago</span></div>
+    <div class="pr">${ic('pencil')}<span>Last changed</span><span class="t3">by you, 14 Oct</span></div>
+    <div class="pr">${ic('cloud')}<span>Format</span><span class="t3">vCard 3.0</span></div>
+    <h4>Possible duplicate</h4>
+    <div class="dupe"><div style="display:flex;gap:10px;align-items:center">${ic('users','at')}<div class="grow"><div class="strong">A. Krause</div><div class="meta t3">Personal · Fastmail · same email</div></div></div>
+      <div style="display:flex;gap:8px;margin-top:10px"><button class="btn sm">Review &amp; merge</button><button class="btn sm ghost">Not a duplicate</button></div></div>
+  </aside>`;
+}
+function syncPop(){
+  return `<div class="menu syncpop">
+    <div class="hd">${ic('cloud','s20')}<div class="grow"><div class="strong">Nextcloud · anna@cloud.example</div><div class="meta t3">cloud.example · CardDAV (WebDAV), every 15 min</div></div><span class="pill ok">${ic('check')}Up to date</span></div>
+    <div class="bk"><span class="dot" style="--c:var(--c0)"></span><span class="grow">Contacts</span><span class="meta t3">212 · read/write</span></div>
+    <div class="bk"><span class="dot" style="--c:var(--c1)"></span><span class="grow">Team directory</span><span class="meta t3">54 · read-only</span></div>
+    <div class="bk"><span class="dot" style="--c:var(--text3)"></span><span class="grow t3">System address book · hidden</span><span class="meta t3">1 204</span></div>
+    <div class="hline" style="margin:4px 0"></div>
+    <div class="bk">${ic('cloud-off','at')} <span class="grow meta t2">1 change waiting — uploads when you are online</span></div>
+    <div class="ft"><button class="btn">${ic('refresh-cw')}Sync now</button><button class="btn ghost">Account settings…</button></div></div>`;
+}
+function quick(){
+  return `<div class="scrim"></div><div class="menu dlg">
+    <div class="top"><div class="cap t3" style="display:flex;gap:6px;align-items:center;margin-bottom:4px">${ic('wand-sparkles','s14')}New contact — just type</div>
+      <div class="typed"><mark>Lena Fischer</mark>, <mark style="background:color-mix(in srgb,var(--c1) 22%,transparent)">photographer</mark>, <mark style="background:color-mix(in srgb,var(--c2) 22%,transparent)">lena@fischer-foto.example</mark>, <mark style="background:color-mix(in srgb,var(--c3) 22%,transparent)">+49 341 5550 311</mark>, Leipzig<span style="border-left:1.5px solid var(--text);margin-left:1px"></span></div></div>
+    <div class="parsed"><span class="k">Name</span><span class="v">Lena Fischer</span><span class="k">Job title</span><span class="v">Photographer</span><span class="k">Email</span><span class="v">lena@fischer-foto.example <span class="pill" style="height:18px">work</span></span><span class="k">Phone</span><span class="v tab">+49 341 5550 311 <span class="pill" style="height:18px">mobile</span></span><span class="k">City</span><span class="v">Leipzig</span><span class="k">Saved in</span><span class="v"><span class="chip"><span class="dot" style="--c:var(--c0)"></span>Contacts · Nextcloud${ic('chevron-down','s12')}</span></span></div>
+    <div class="ft"><span class="meta t3">Pasted a signature or a vCard? That works too.</span><span class="grow"></span><button class="btn ghost">Cancel <kbd>Esc</kbd></button><button class="btn primary">Create contact <kbd style="color:#fff;border-color:rgba(255,255,255,.4)">↵</kbd></button></div></div>`;
+}
+document.getElementById('app').innerHTML=`${sidebar('all')}
+<main class="main">
+  <div class="header"><button class="btn only-ms">${ic('users')}<span class="word">All contacts</span>${ic('chevron-down','s12')}</button>
+    <div class="crumbs not-ms">${ic('users','t3')}<b>All contacts</b><span class="t3 tab">248</span></div><span class="grow"></span>
+    <button class="btn ghost">${ic('arrow-down-wide-narrow')}<span class="word">Last name</span></button><button class="btn ghost">${ic('list-filter')}<span class="word">Filter</span></button>
+    <button class="btn primary">${ic('plus')}<span class="word">New contact</span></button></div>
+  <div class="body">
+    <section class="list"><div class="search"><div class="field flat">${ic('search')}<input placeholder="Search name, company, phone, city…"><kbd>/</kbd></div></div>
+      <div class="az">${letters.map(l=>`<span${l==='K'?' class="on"':''}>${l}</span>`).join('')}</div>
+      <div class="scroll" id="sc">${rows()}</div></section>
+    <section class="detail">${detail()}</section>
+    ${props()}
+  </div>
+  ${open==='quick'?quick():''}
+</main>${open==='sync'?syncPop():''}`;
+document.querySelectorAll('[data-i]').length&&paintIcons();
+const s=document.querySelector('.crow.sel'); if(s) document.getElementById('sc').scrollTop=s.offsetTop-140;
+</script>
+</body></html>

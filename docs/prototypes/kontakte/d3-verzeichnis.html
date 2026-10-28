@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Contacts – Entwurf D3: Verzeichnis</title>
+<!-- Entwurf D3 „Verzeichnis“: das gedruckte Adressbuch, neu gedacht. Die Namen laufen in Spalten, große Buchstaben als Marken –
+     je breiter die Kachel, desto mehr Spalten (der 32:9-Monitor zeigt die ganze Liste auf einen Blick, ohne zu scrollen).
+     Oben springt eine Buchstabenleiste (vorhandene Buchstaben hell). Eintrag anklicken: Kontakt im Seitenpaneel.
+     Zustände: ?open=panel   ?map=on   ?size=l|m|s  ?theme=light -->
+<link rel="stylesheet" href="kontakte.css">
+<link rel="stylesheet" href="kontakte-list.css">
+<script src="icons.js"></script>
+<script src="kontakte.js"></script>
+<script src="kontakte-list.js"></script>
+<style>
+.cols{column-width:300px;column-gap:48px;padding:16px 32px 48px}
+.lg{break-inside:avoid;margin-bottom:24px}
+.lg .big{font-size:28px;line-height:36px;font-weight:600;color:var(--text3);letter-spacing:-.01em;display:flex;align-items:baseline;gap:8px;border-bottom:1px solid var(--line);padding:0 8px 4px;margin:0 -8px 4px}
+.lg .big .n{font-size:12px;line-height:16px;font-weight:400;font-family:"Inter Tabular",Inter,sans-serif}
+.en{display:flex;align-items:center;gap:12px;height:52px;padding:0 8px;margin:0 -8px;border-radius:var(--r);position:relative}
+.en:hover,.en.hov{background:var(--hover)}
+.en.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
+.en .sub{font-size:13px;line-height:18px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.en .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.en .ra{position:absolute;right:4px;top:50%;transform:translateY(-50%)}
+.en:hover .ra,.en.hov .ra{display:flex}
+.jump{display:flex;gap:0;font:500 12px/16px Inter,sans-serif}
+.jump span{width:20px;height:28px;display:grid;place-items:center;border-radius:var(--r);color:var(--text3);opacity:.45}
+.jump span.has{opacity:1;color:var(--text2)} .jump span.has:hover{background:var(--hover);color:var(--text)} .jump span.cur{background:var(--selected);color:var(--text);opacity:1}
+html[data-size="m"] .jump,html[data-size="s"] .jump{display:none}
+</style></head>
+<body><div class="app" id="app"></div>
+<script>
+const letters='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), have=new Set(byLast.map(c=>lastName(c.n)[0].toUpperCase()));
+const by={}; byLast.forEach(c=>{const L=lastName(c.n)[0].toUpperCase();(by[L]=by[L]||[]).push(c)});
+const entry=c=>`<div class="en${OPEN==='panel'&&c===SELECTED?' sel':''}${c.n==='Paul Lehmann'?' hov':''}">${av(c,32)}<div style="min-width:0;flex:1"><div class="nm"><span class="t2">${firstNames(c.n)}</span> <b class="strong">${lastName(c.n)}</b>${c.f?` <span class="st">${ic('star','s12')}</span>`:''}${lock(c)}</div><div class="sub">${[c.o||c.t,c.city].filter(Boolean).join(' · ')}</div></div>${actions}</div>`;
+const html=`<div class="scroll"><div class="cols">${Object.keys(by).sort().map(L=>`<div class="lg"><div class="big">${L}<span class="n">${by[L].length}</span></div>${by[L].map(entry).join('')}</div>`).join('')}</div></div>`;
+mount('index',html,`<div class="jump">${letters.map(l=>`<span class="${have.has(l)?'has':''}${l==='K'?' cur':''}">${l}</span>`).join('')}</div>`);
+</script></body></html>

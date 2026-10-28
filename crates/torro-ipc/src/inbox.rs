@@ -2334,7 +2334,7 @@ mod tests {
 pub struct CategoryInfo {
     /// The category on the wire: `invoice`, `service_notice`, `auto_reply` …
     pub category: Category,
-    /// Which of the four groups it belongs to.
+    /// Which of the five groups it belongs to.
     pub group: CategoryGroup,
     /// What a person reads for the category, in the core's language.
     pub label: String,

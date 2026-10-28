@@ -7944,6 +7944,58 @@ pub(crate) mod tests {
         assert_eq!(overrides, 0, "no empty built-in override stays behind");
     }
 
+    /// Issue #338: a catalogue kept before the groups changed needs no migration. A category whose
+    /// group the person never changed has no group stored and takes the suite's new one; one they
+    /// moved keeps where they put it, and so do their own categories in "junk", the key that stays.
+    #[test]
+    fn a_kept_catalogue_takes_the_new_groups_unless_the_person_moved_a_category() {
+        use torro_mail::{Category, CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let fresh = inbox_in(dir.path()).catalogue().expect("read");
+        let group_of = |catalogue: &[torro_mail::CategoryDef], category: Category| {
+            catalogue.iter().find(|def| def.category == category).map(|def| def.group)
+        };
+        assert_eq!(group_of(&fresh, Category::Other), Some(CategoryGroup::Unsorted));
+
+        let own = {
+            let inbox = inbox_in(dir.path());
+            let own = inbox
+                .create_category(
+                    CategoryGroup::Junk,
+                    "Cold calls",
+                    "Sales pitches.",
+                    false,
+                    CategoryIcon::Tag,
+                    at(8, 0),
+                )
+                .expect("made");
+            // Rows as they were written before #338: a group only where the person changed it.
+            inbox
+                .with(|db| {
+                    db.execute_batch(
+                        "INSERT INTO category_edits (category, grp, name) VALUES ('bounce', NULL, 'Returned');
+                         INSERT INTO category_edits (category, grp) VALUES ('other', 'info');
+                         INSERT INTO category_edits (category, grp) VALUES ('promotion', 'junk');",
+                    )?;
+                    Ok(())
+                })
+                .expect("written");
+            own.category
+        };
+
+        let catalogue = inbox_in(dir.path()).catalogue().expect("read");
+        assert_eq!(group_of(&catalogue, Category::Bounce), Some(CategoryGroup::WaitingForMe), "only renamed");
+        let bounce = catalogue.iter().find(|def| def.category == Category::Bounce).expect("held");
+        assert_eq!(bounce.name.as_deref(), Some("Returned"), "the name stays");
+        assert_eq!(group_of(&catalogue, Category::AutoReply), Some(CategoryGroup::Info), "never changed");
+        assert_eq!(group_of(&catalogue, Category::Other), Some(CategoryGroup::Info), "moved by the person");
+        assert_eq!(group_of(&catalogue, Category::Promotion), Some(CategoryGroup::Junk), "moved by the person");
+        assert_eq!(group_of(&catalogue, own), Some(CategoryGroup::Junk), "their own stays in junk");
+        assert_eq!(group_of(&catalogue, Category::Spam), Some(CategoryGroup::Junk));
+        assert_eq!(group_of(&catalogue, Category::Phishing), Some(CategoryGroup::Junk));
+    }
+
     /// Task E15.2: removing a category moves its entries and sorting rules, keeping where an
     /// entry's category came from; a removal cut short after its first step is still noted when
     /// the file is opened again, and the category is out of the catalogue meanwhile.
