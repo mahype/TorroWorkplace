@@ -1218,7 +1218,9 @@ async fn ask_model(
 /// held it ([`AiAccounts::known_models`]; the deciders just loaded it). A model that can do neither is
 /// refused before anything is sent.
 ///
-/// No effort is sent: the decider names only account and model, so the model's own default applies.
+/// No effort is sent: the decider names only account and model. At Ollama the fallback's turn goes with
+/// thinking switched off ([`AiAccounts::chat_to_decide`]): a model that thinks would otherwise run past the
+/// turn's tokens or the backlog's minute on one mail in three (live check of #325).
 async fn ask_decider(
     ai: &AiAccounts,
     engine: &str,
@@ -1236,7 +1238,7 @@ async fn ask_decider(
         return Err(torro_core::ai::AiError::Invalid(cannot_decide().to_string()));
     }
     let asked = torro_core::ai::decide_chat::request(&request, None);
-    let reply = ai.provider(engine).await?.chat(&asked, &mut |_| {}).await?;
+    let reply = ai.chat_to_decide(engine, &asked).await?;
     torro_core::ai::decide_chat::read(&reply, &request)
 }
 

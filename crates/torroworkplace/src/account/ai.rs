@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
@@ -72,6 +73,13 @@ const HEALTH_MAX: usize = 64 * 1024;
 /// one stuck model never holds up the list, and without the tags in time every model counts as
 /// elsewhere.
 const SHOW_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The effort that switches thinking off at Ollama's `/v1` ([`OpenAiCompatible::chat_without_thinking`]). A
+/// decision through a chat model needs no thought: left to think, qwen3.6:35b-a3b ran past the answer's
+/// 1024 tokens on one mail of three and on to 8192 tokens and 121 s on another, where it answers in 52
+/// tokens and under a second without (Ollama 0.40.11, issue #325). Ollama takes it from models that do
+/// not think too, unlike `low`, which they refuse.
+const NO_THINKING: &str = "none";
 
 /// The HTTP client for AI servers: no redirects (the key must not follow one to another host), no
 /// limit for a whole answer (streams run long), [`READ_TIMEOUT`] between two pieces of it. The
@@ -313,6 +321,25 @@ impl OpenAiCompatible {
         decoder.finish(on_text).map_err(|err| self.wire.scrubbed(err))
     }
 
+    /// `POST <base>/chat/completions` with `body`, its answer read as [`OpenAiCompatible::stream`] reads it.
+    async fn completions(&self, body: &Value, on_text: &mut (dyn FnMut(&str) + Send)) -> Result<ChatReply, AiError> {
+        let builder = self.wire.request(reqwest::Method::POST, "chat/completions").json(body);
+        let response = self.wire.send(builder).await?;
+        self.stream(response, on_text).await
+    }
+
+    /// One chat turn as [`Provider::chat`] sends it, at Ollama with thinking switched off
+    /// (`"reasoning_effort": "none"`, which its `/v1` takes as `think: false`) unless `request` names an
+    /// effort of its own. Only for Ollama, where it was tried (0.40.11); every other server gets the turn
+    /// as [`Provider::chat`] sends it, since an effort it does not know may be refused.
+    async fn chat_without_thinking(&self, request: &ChatRequest) -> Result<ChatReply, AiError> {
+        let mut body = openai::chat_body_for(self.provider, request, true);
+        if self.provider == AiProvider::Ollama && request.effort.is_none() {
+            body["reasoning_effort"] = json!(NO_THINKING);
+        }
+        self.completions(&body, &mut |_| {}).await
+    }
+
     /// OpenAI's Responses API uses a different body and stream format from Chat Completions.
     async fn stream_responses(
         &self,
@@ -381,10 +408,7 @@ impl Provider for OpenAiCompatible {
                     };
                 return self.stream_responses(response, on_text).await;
             }
-            let body = openai::chat_body_for(self.provider, request, true);
-            let builder = self.wire.request(reqwest::Method::POST, "chat/completions").json(&body);
-            let response = self.wire.send(builder).await?;
-            self.stream(response, on_text).await
+            self.completions(&openai::chat_body_for(self.provider, request, true), on_text).await
         })
     }
 
@@ -948,6 +972,17 @@ impl AiAccounts {
         request: &systemone::DecisionRequest,
     ) -> Result<systemone::DecisionReply, AiError> {
         self.client(id).await?.decide(request).await
+    }
+
+    /// One turn of a decision through a chat model (task MW.3, `torro_core::ai::decide_chat::request`) to
+    /// the account `id`: as [`Provider::chat`] sends it, but at Ollama with thinking switched off
+    /// ([`OpenAiCompatible::chat_without_thinking`]), so a model that thinks answers within the turn's
+    /// tokens and in a moment. Errors as [`AiAccounts::provider`] and [`Provider::chat`].
+    pub(crate) async fn chat_to_decide(&self, id: &str, request: &ChatRequest) -> Result<ChatReply, AiError> {
+        match self.client(id).await? {
+            AiClient::OpenAi(client) => client.chat_without_thinking(request).await,
+            client => client.chat(request, &mut |_| {}).await,
+        }
     }
 
     /// Checks the account with its server ([`OpenAiCompatible::check`]) and, when the server takes
@@ -1934,6 +1969,63 @@ pub(crate) mod tests {
             OpenAiCompatible::new(http(), AiProvider::OpenRouter, &server.url("/api/v1"), Some(Secret::new(KEY)));
         remote.chat(&high, &mut |_| {}).await.expect("openrouter answers");
         assert_eq!((ollama.calls_async().await, openrouter.calls_async().await), (1, 1));
+    }
+
+    /// Issue #325, checked against Ollama 0.40.11: a decision through a chat model goes to Ollama with
+    /// thinking switched off, and its answer – recorded from qwen3.6:35b-a3b – is read; an effort the
+    /// request names stays, and another server gets the turn without the field.
+    #[tokio::test]
+    async fn a_decision_through_a_chat_model_asks_ollama_not_to_think() {
+        let recorded = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/ai/ollama-decide-without-thinking.sse"),
+        )
+        .expect("fixture");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ai = service(dir.path(), &MemoryTokens::default(), Vec::new());
+        let ollama = fake_ollama().await;
+        let unthinking = ollama
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").json_body_includes(r#"{"reasoning_effort":"none"}"#);
+                then.status(200).header("content-type", "text/event-stream").body(&recorded);
+            })
+            .await;
+        let engine = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let reply = ai.chat_to_decide(&engine.id, &ask_calendar()).await.expect("an answer");
+        assert_eq!(reply.finish, Finish::ToolCalls);
+        assert_eq!(
+            reply.tool_calls.iter().map(|call| (call.name.as_str(), call.arguments.as_str())).collect::<Vec<_>>(),
+            [("answer", r#"{"category":"invoice","needs_reply":false,"urgency":1}"#)]
+        );
+        assert_eq!(unthinking.calls_async().await, 1);
+
+        let chosen = ollama
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").json_body_includes(r#"{"reasoning_effort":"high"}"#);
+                then.status(200).header("content-type", "text/event-stream").body(&recorded);
+            })
+            .await;
+        let high = ChatRequest { effort: Some(Effort::High), ..ask_calendar() };
+        ai.chat_to_decide(&engine.id, &high).await.expect("an answer with its own effort");
+        assert_eq!(chosen.calls_async().await, 1);
+
+        let other = MockServer::start_async().await;
+        other
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(json!({"object": "list", "data": [{"id": "qwen3:8b", "object": "model"}]}));
+            })
+            .await;
+        let plain = other
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").body_excludes("reasoning_effort");
+                then.status(200).header("content-type", "text/event-stream").body(&recorded);
+            })
+            .await;
+        let compatible =
+            ai.connect(AiProvider::OpenAiCompatible, Some(&other.url("/v1")), Secret::default()).await.expect("server");
+        ai.chat_to_decide(&compatible.id, &ask_calendar()).await.expect("an answer without the field");
+        assert_eq!(plain.calls_async().await, 1);
     }
 
     #[tokio::test]

@@ -29,8 +29,10 @@ use crate::i18n::tr;
 pub const TOOL: &str = "answer";
 
 /// The most tokens the answer may have. The answer itself needs well under a hundred; the rest is
-/// room for a model that thinks before it answers. An answer cut off at this length is refused, never
-/// read half ([`read`]).
+/// room for a model that thinks before it answers, where its server cannot switch thinking off. At Ollama
+/// the core sends the turn with thinking off (`torroworkplace::account::ai`): left to think, a model there
+/// ran past this length on one mail in three (issue #325). An answer cut off at this length is refused,
+/// never read half ([`read`]).
 pub const MAX_TOKENS: u32 = 1_024;
 
 /// The closing tag of the fence a caller draws around text from outside (`torroworkplace::categorize`).
