@@ -5227,6 +5227,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{text}; sorted mail stays on this computer", "{text}; sortierte Mail bleibt auf diesem Rechner"),
     ("Let {engine} ({model}) be the model for {slot}", "{engine} ({model}) für {slot} nehmen"),
     ("Sorting may no longer send mail to the cloud.", "Sortieren darf keine Mail mehr in die Cloud schicken."),
+    (
+        "The model for Sorting changed. Resume the run to sort with the new one.",
+        "Das Modell fürs Sortieren hat sich geändert. Setz den Lauf fort, um mit dem neuen zu sortieren.",
+    ),
     ("Turned off in {area}", "Abgeschaltet in {area}"),
     (
         "Turning the assistant on or off and what it may use are set under Access.",

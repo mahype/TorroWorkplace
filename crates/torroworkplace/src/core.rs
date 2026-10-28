@@ -1486,6 +1486,11 @@ async fn category_job_run(
                         category_job_error(&inbox, &id, generation, &account.account, why);
                         break;
                     }
+                    (None, Some(held)) if left_behind(&settings.current(), &job.scope, held) => {
+                        let why = tr("The model for Sorting changed. Resume the run to sort with the new one.");
+                        category_job_error(&inbox, &id, generation, &account.account, why);
+                        break;
+                    }
                     (None, Some((engine, model))) => {
                         asked = true;
                         match tokio::time::timeout(
@@ -1576,6 +1581,27 @@ async fn category_job_run(
     let mut active = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if active.as_ref() == Some(&(id, generation)) {
         *active = None;
+    }
+}
+
+/// Whether the person chose another model for sorting while a run without a model of its own goes
+/// (PR review of #325): it asked `held`, what sorted when it started or resumed, and now sorting uses
+/// another account or names another model, or nothing sorts. A run that names its model keeps it –
+/// the person chose that one for it. "Automatic" at the same account is the same choice.
+fn left_behind(
+    settings: &torro_core::settings::Settings,
+    scope: &torro_ipc::inbox::CategoryJobScope,
+    (engine, model): &(String, String),
+) -> bool {
+    if scope.model.is_some() {
+        return false;
+    }
+    let untagged = |id: &str| id.strip_suffix(":latest").unwrap_or(id).to_string();
+    match assignment_in_effect(settings, torro_core::ai::AiFunction::InboxCategorize) {
+        Some(now) if now.enabled && now.engine.as_deref() == Some(engine.as_str()) => {
+            now.model.is_some_and(|now| untagged(&now) != untagged(model))
+        }
+        _ => true,
     }
 }
 
@@ -23240,6 +23266,34 @@ mod tests {
         };
         assert_eq!(category_of("Odd one"), None, "kept for a later run");
         assert_eq!(category_of("Invoice 7").map(|held| held.category), Some(torro_mail::Category::Invoice));
+    }
+
+    /// PR review of #325: a run without a model of its own stops once the person chooses another model
+    /// for sorting – the account, the model or nothing; one that names its model keeps it, and
+    /// "Automatic" at the same account or Ollama's `:latest` is no change.
+    #[test]
+    fn a_run_without_its_own_model_follows_a_change_of_sorting() {
+        use torro_core::ai::{AiSlots, SlotModel};
+        let held = ("ai:ollama".to_string(), "nimble:latest".to_string());
+        let with = |engine: &str, model: Option<&str>| torro_core::settings::Settings {
+            ai_slots: AiSlots {
+                decide: Some(SlotModel { engine: engine.into(), model: model.map(Into::into), effort: None }),
+                ..AiSlots::default()
+            },
+            ..torro_core::settings::Settings::default()
+        };
+        let free = torro_ipc::inbox::CategoryJobScope::default();
+        assert!(!left_behind(&with("ai:ollama", Some("nimble")), &free, &held), "the same model");
+        assert!(!left_behind(&with("ai:ollama", None), &free, &held), "Automatic there");
+        assert!(left_behind(&with("ai:ollama", Some("qwen3:8b")), &free, &held), "another model");
+        assert!(left_behind(&with("ai:openrouter", Some("nimble")), &free, &held), "another account");
+        assert!(left_behind(&torro_core::settings::Settings::default(), &free, &held), "nothing sorts");
+        let own = torro_ipc::inbox::CategoryJobScope {
+            engine: Some("ai:ollama".into()),
+            model: Some("nimble:latest".into()),
+            ..Default::default()
+        };
+        assert!(!left_behind(&with("ai:ollama", Some("qwen3:8b")), &own, &held), "its own model");
     }
 
     /// PR review of #325: "Keep mail here" holds for a run already going – a run whose model computes
