@@ -819,12 +819,13 @@ pub struct Palette {
     pub chart: [Rgba; 4],
     /// The grey of the series "Other" in a chart: what is not one of the [`Palette::chart`] series.
     pub chart_other: Rgba,
-    /// The colours of the four groups of mail categories (task E12.7, `docs/kategorien.md`), in
-    /// the order of `torro_mail::CategoryGroup`: waiting for me, paper trail, info, junk. A mark
+    /// The colours of the five groups of mail categories (task E12.7, `docs/kategorien.md`), in
+    /// the order of `torro_mail::CategoryGroup`: waiting for me, paper trail, info, unwanted,
+    /// unsorted. A mark
     /// only – the dot and the border of a category pill – never a text colour, and checked as a
     /// set for colour blindness like [`Palette::chart`]. One colour per **group**, not per
     /// category: 23 colours could not stay distinguishable.
-    pub category: [Rgba; 4],
+    pub category: [Rgba; 5],
     /// The colour of the shadow under menus, cards and dialogs; offset (0, 12) and blur 32 stay
     /// fixed in `torro_gui` (geometry, not colour).
     pub shadow: Rgba,
@@ -1289,8 +1290,9 @@ const STANDARD_DARK: Palette = Palette {
     // ΔE ≥ 8 for every adjacent pair, ≥ 3:1. "Other" is ΔE ≥ 8 from each of the four.
     chart: [Rgba::hex(0x3B78D8), Rgba::hex(0xC9701E), Rgba::hex(0x2E9E6B), Rgba::hex(0xB5509A)],
     chart_other: Rgba::hex(0x5C6068),
-    // Waiting for me (blue), paper trail (amber), info (teal), junk (grey-violet).
-    category: [Rgba::hex(0x4C8DF0), Rgba::hex(0xCF8A2C), Rgba::hex(0x2BA39A), Rgba::hex(0xA99BD0)],
+    // Waiting for me (blue), paper trail (amber), info (teal), unwanted (grey-violet), unsorted
+    // (rosé, issue #338: a neutral grey would read like the teal for red-green colour blindness).
+    category: [Rgba::hex(0x4C8DF0), Rgba::hex(0xCF8A2C), Rgba::hex(0x2BA39A), Rgba::hex(0xA99BD0), Rgba::hex(0xD9739A)],
     shadow: Rgba::black(0.5),
     scrim: Rgba::black(0.62),
     night: Rgba::hex(0x121626),
@@ -1330,7 +1332,7 @@ const STANDARD_LIGHT: Palette = Palette {
     tint: 0.14,
     // The same hues stepped for the light panel, checked the same way (task E8.8b).
     chart: [Rgba::hex(0x2F6BC9), Rgba::hex(0xB8621A), Rgba::hex(0x2A9466), Rgba::hex(0xA8448C)],
-    category: [Rgba::hex(0x3D77CE), Rgba::hex(0xB1741F), Rgba::hex(0x238A82), Rgba::hex(0x756990)],
+    category: [Rgba::hex(0x3D77CE), Rgba::hex(0xB1741F), Rgba::hex(0x238A82), Rgba::hex(0x756990), Rgba::hex(0xB34A6E)],
     chart_other: Rgba::hex(0x50545B),
     shadow: Rgba::black(0.12),
     scrim: Rgba::black(0.3),

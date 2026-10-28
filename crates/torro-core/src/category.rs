@@ -9,8 +9,8 @@
 //!
 //! Every label goes through [`crate::i18n::trc`] with the context `category`, not plain `tr`:
 //! several of these English words already mean something else in the suite ("Task" is a to-do,
-//! "Order" is a sort order, "Event" is a calendar event, "Junk" is the spam folder). The context
-//! keeps those apart and makes a later collision impossible.
+//! "Order" is a sort order, "Event" is a calendar event). The context keeps those apart and makes
+//! a later collision impossible.
 //!
 //! [`suite_description`] is the odd one out: it is **not** translated. It travels to a decision
 //! model as the `criteria` of the `choice` question (task E12.3), and the model is prompted in
@@ -101,11 +101,12 @@ pub(crate) fn english_group_label(group: CategoryGroup) -> &'static str {
         CategoryGroup::WaitingForMe => "Waiting for me",
         CategoryGroup::PaperTrail => "Paper trail",
         CategoryGroup::Info => "Info",
-        CategoryGroup::Junk => "Junk",
+        CategoryGroup::Junk => "Unwanted",
+        CategoryGroup::Unsorted => "Unsorted",
     }
 }
 
-/// What a person reads for `group`: the four entries under "Categories" in the sidebar.
+/// What a person reads for `group`: the five entries under "Categories" in the sidebar.
 pub fn group_label(group: CategoryGroup) -> &'static str {
     crate::i18n::trc(CONTEXT, english_group_label(group))
 }
@@ -158,10 +159,8 @@ pub fn group_description(group: CategoryGroup) -> &'static str {
             "To read when I like: a newsletter, an offer, a notice of a service, a social \
                                 network or an event."
         }
-        CategoryGroup::Junk => {
-            "Technical mail and rubbish: an undeliverable mail, an automatic reply, spam, \
-                                phishing, or nothing that fits."
-        }
+        CategoryGroup::Junk => "Unwanted mail: spam, or an attempt to deceive me.",
+        CategoryGroup::Unsorted => "Mail no other group fits, or where it is unclear what it is.",
     }
 }
 
@@ -220,8 +219,8 @@ mod tests {
         assert_eq!(fallback_name(custom), crate::i18n::trf("Category {n}", &[("n", &"7")]));
     }
 
-    /// Task E12.1: the five English words the suite already uses for something else keep their
-    /// own German word under the context. That the table is *complete* is checked in `i18n`,
+    /// Task E12.1: the English words the suite already uses for something else keep their own
+    /// German word under the context. That the table is *complete* is checked in `i18n`,
     /// which can see it (`every_mail_category_is_translated`).
     #[test]
     fn german_keeps_the_clashing_words_apart() {
@@ -229,7 +228,10 @@ mod tests {
         assert_eq!(trc_in(Lang::De, CONTEXT, "Order"), "Bestellung", "the sort order stays \"Reihenfolge\"");
         assert_eq!(trc_in(Lang::De, CONTEXT, "Event"), "Veranstaltung", "the calendar event stays \"Termin\"");
         assert_eq!(trc_in(Lang::De, CONTEXT, "Other"), "Sonstiges", "\"Weitere\" is the other one");
-        assert_eq!(trc_in(Lang::De, CONTEXT, "Junk"), "Technik und Müll", "the folder stays \"Spam\"");
+        // Issue #338: the group is "Unerwünscht", so the category Spam reads "Spam", not like it.
+        assert_eq!(trc_in(Lang::De, CONTEXT, "Unwanted"), "Unerwünscht");
+        assert_eq!(trc_in(Lang::De, CONTEXT, "Unsorted"), "Nicht eingeordnet");
+        assert_eq!(trc_in(Lang::De, CONTEXT, "Spam"), "Spam");
         // Without the context those words still mean what they meant before.
         assert_eq!(crate::i18n::tr_in(Lang::De, "Task"), "Aufgabe");
         assert_eq!(crate::i18n::tr_in(Lang::De, "Order"), "Reihenfolge");

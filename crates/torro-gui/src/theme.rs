@@ -185,10 +185,10 @@ pub struct Palette {
     pub chart: [Color; 4],
     /// The grey of the series "Other" ([`ChartColor::Other`]).
     pub chart_other: Color,
-    /// The colours of the four groups of mail categories (task E12.7), in the order of
-    /// `torro_mail::CategoryGroup`: waiting for me, paper trail, info, junk. The dot and the
+    /// The colours of the five groups of mail categories (task E12.7), in the order of
+    /// `torro_mail::CategoryGroup`: waiting for me, paper trail, info, unwanted, unsorted. The dot and the
     /// border of a category pill ([`crate::widgets::category_pill`]), never text.
-    pub category: [Color; 4],
+    pub category: [Color; 5],
     /// The shadow under menus, floating cards and dialogs.
     pub shadow: Shadow,
     /// Dims the window behind a modal dialog.

@@ -275,7 +275,7 @@ Reihenfarben.
 |---|---|---|---|---|
 | `chart` | vier Reihen: Blau, Orange, Grün, Magenta | `#3B78D8` `#C9701E` `#2E9E6B` `#B5509A` | `#2F6BC9` `#B8621A` `#2A9466` `#A8448C` | eigene `calendar`-Farben in der Reihenfolge 1, 3, 2, 4; ohne eigene `calendar` die des Standards |
 | `chart_other` | alles, was keine der vier Reihen ist | `#5C6068` | `#50545B` | eigenes `text_3`, wenn das Paket `panel` ändert; sonst das des Standards |
-| `category` | vier Gruppen der Mail-Kategorien: wartet auf mich, Belege, Info, Müll | `#4C8DF0` `#CF8A2C` `#2BA39A` `#A99BD0` | `#3D77CE` `#B1741F` `#238A82` `#756990` | die des Standards |
+| `category` | fünf Gruppen der Mail-Kategorien: wartet auf mich, Belege, Info, unerwünscht, nicht eingeordnet (#338) | `#4C8DF0` `#CF8A2C` `#2BA39A` `#A99BD0` `#D9739A` | `#3D77CE` `#B1741F` `#238A82` `#756990` `#B34A6E` | die des Standards |
 
 - **Reihenfolge ist Teil der Prüfung.** Die vier Farben wurden als Satz mit dem Dataviz-Validator geprüft
   (Helligkeitsband, Sättigung, Unterscheidbarkeit benachbarter Paare bei Rot-Grün-Schwäche ΔE ≥ 8 und bei normalem
