@@ -269,7 +269,7 @@ MW.1 (Gerüst) ─┬─ MW.2 (Plätze wirken) ── MW.3 (Sortieren per Chat) 
   (Skill `torro-design`, Agent `torro-design-review`).
 
 ### MW.9 Doku und Prüfung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** MW.8 · **Dateien:** `docs/ki.md`, `docs/settings.md`, `docs/kategorien.md`,
   `docs/api.md`
 - `docs/ki.md`: Abschnitt „Plätze“ (Chat, Sortieren, Zurückfallen, Ausnahme je Funktion), „Empfehlung je Rechner“
