@@ -2588,7 +2588,10 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
         let properties = detail::properties(entry.item, reading.now, true);
         body = body.push(widgets::prop_section(tr("Properties"), properties));
     }
-    body.push(panel::bleed(line())).extend(panel_letter(reading)).spacing(space::l()).into()
+    // A HTML mail starts right under the line, so its background meets it (issue #377).
+    let gap = if html_edge(reading).is_some() { 0.0 } else { space::l() };
+    let letter = column(panel_letter(reading));
+    body.spacing(space::l()).push(column![panel::bleed(line()), letter].spacing(gap)).into()
 }
 
 /// The body of the panel with the split of task E9.4 ([`Bars::Split`], see [`body`]).
