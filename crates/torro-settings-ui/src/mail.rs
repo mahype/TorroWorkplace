@@ -187,8 +187,8 @@ pub fn attachments_escape(state: &State) -> Option<Message> {
 
 /// A send of the host came back (the window calls it on every `Sent`, not on a load): what was
 /// being saved is saved or failed, so the save bar of an account's page takes clicks again.
-pub fn sent(state: &mut State) {
-    accounts::sent(&mut state.accounts);
+pub fn sent(state: &mut State, success: bool) {
+    accounts::sent(&mut state.accounts, success);
     reading::sent(&mut state.reading);
 }
 
@@ -215,6 +215,7 @@ pub fn escape(state: &State) -> Option<Message> {
 
 /// The answer of a one-off preview request for the currently selected sorting scope.
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+    accounts::answered(&mut state.accounts, answer);
     categorization::answered(&mut state.categorization, answer);
     storage::answered(&mut state.storage, answer);
     editor::answered(&mut state.categorization.editor, answer);
@@ -299,11 +300,11 @@ pub mod accounts {
     };
     use torro_gui::{layout, style, typo, widgets};
     use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount};
-    use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request};
-    use torro_mail::{MailFormat, Role};
+    use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request, Secret};
+    use torro_mail::{Endpoint, MailFormat, Role, Security};
 
     use super::*;
-    use crate::parts::{chevron, field, pressable, row_frame};
+    use crate::parts::{chevron, field, pressable, row_frame, setting_row};
 
     /// Section state: the open account's draft, which is also what says that its page is open –
     /// one holds the other, so the page never stands without something to type into.
@@ -326,6 +327,9 @@ pub mod accounts {
         /// "Save" sent the name and the signature and the answer has not come yet: the save bar
         /// says "Saving…" and takes no second click.
         saving: bool,
+        /// One test or save of an account's server credentials, including when its page is closed.
+        pending_connection: Option<String>,
+        save_connection: Option<String>,
     }
 
     /// The parts of an account's page (task DS.6), "Overview" first.
@@ -386,6 +390,14 @@ pub mod accounts {
         Discard,
         /// Typing in the sender name.
         SenderName(String),
+        LoginName(String),
+        Password(Secret),
+        ManualServer(bool),
+        ServerHost(ServerKind, String),
+        ServerPort(ServerKind, String),
+        ServerSecurity(ServerKind, Security),
+        TestConnection,
+        SaveConnection,
         /// Typing in the signature.
         Signature(text_editor::Action),
         /// "Save" in the save bar: the sender name and the signature, as far as they differ from the
@@ -394,7 +406,10 @@ pub mod accounts {
         /// "Write new mail as" was set (issue #125).
         Format(MailFormat),
         /// "Use this folder" for a role the server left open.
-        PickFolder { role: Role, path: String },
+        PickFolder {
+            role: Role,
+            path: String,
+        },
         /// A row of the account's groups "Backup" and "Restore".
         Backup(backup::Message),
         /// A storage choice on this account's own page.
@@ -407,14 +422,106 @@ pub mod accounts {
         account: String,
         sender_name: String,
         signature: text_editor::Content,
+        connection: ConnectionDraft,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum ServerKind {
+        Imap,
+        Smtp,
+    }
+
+    impl ServerKind {
+        fn default_port(self, security: Security) -> u16 {
+            match (self, security) {
+                (Self::Imap, Security::Tls) => 993,
+                (Self::Imap, Security::StartTls) => 143,
+                (Self::Smtp, Security::Tls) => 465,
+                (Self::Smtp, Security::StartTls) => 587,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ServerDraft {
+        host: String,
+        port: String,
+        security: Security,
+    }
+
+    impl ServerDraft {
+        fn of(endpoint: &Endpoint) -> Self {
+            Self { host: endpoint.host.clone(), port: endpoint.port.to_string(), security: endpoint.security }
+        }
+        fn endpoint(&self) -> Option<Endpoint> {
+            let port = self.port.trim().parse::<u16>().ok().filter(|port| *port > 0)?;
+            let host = self.host.trim();
+            (!host.is_empty()).then(|| Endpoint { host: host.to_string(), port, security: self.security })
+        }
+        fn set_security(&mut self, kind: ServerKind, security: Security) {
+            if self.port.trim() == kind.default_port(self.security).to_string() {
+                self.port = kind.default_port(security).to_string();
+            }
+            self.security = security;
+        }
+    }
+
+    #[derive(Debug)]
+    struct ConnectionDraft {
+        login_name: String,
+        password: Secret,
+        imap: ServerDraft,
+        smtp: ServerDraft,
+        manual: bool,
+        tried: bool,
+        pending: bool,
+        status: Option<String>,
+    }
+
+    impl ConnectionDraft {
+        fn new(mail: &MailView, login_name: &str) -> Self {
+            Self {
+                login_name: login_name.to_string(),
+                password: Secret::new(""),
+                imap: ServerDraft::of(&mail.imap),
+                smtp: ServerDraft::of(&mail.smtp),
+                manual: false,
+                tried: false,
+                pending: false,
+                status: None,
+            }
+        }
+        fn server_mut(&mut self, kind: ServerKind) -> &mut ServerDraft {
+            match kind {
+                ServerKind::Imap => &mut self.imap,
+                ServerKind::Smtp => &mut self.smtp,
+            }
+        }
+        fn changed(&self, mail: &MailView, login_name: &str) -> bool {
+            self.login_name.trim() != login_name
+                || !self.password.is_blank()
+                || self.imap.endpoint().as_ref() != Some(&mail.imap)
+                || self.smtp.endpoint().as_ref() != Some(&mail.smtp)
+        }
+        fn request(&self, id: &str, save: bool) -> Option<Request> {
+            Some(Request::ReconfigureMail {
+                id: id.to_string(),
+                imap: self.imap.endpoint()?,
+                smtp: self.smtp.endpoint()?,
+                login_name: self.login_name.trim().to_string(),
+                password: (!self.password.is_blank()).then(|| self.password.clone()),
+                save,
+            })
+        }
     }
 
     impl Draft {
-        fn new(account: &str, mail: &MailView) -> Draft {
+        fn new(account: &str, mail: &MailView, login_name: &str) -> Draft {
             Draft {
                 account: account.to_string(),
                 sender_name: mail.sender_name.clone(),
                 signature: text_editor::Content::with_text(mail.settings.signature.as_deref().unwrap_or_default()),
+                connection: ConnectionDraft::new(mail, login_name),
             }
         }
 
@@ -481,7 +588,10 @@ pub mod accounts {
                             .unwrap_or_else(|| backup::State::from_preferences(&mail.settings.backup));
                     }
                     keep_draft(state, data);
-                    let draft = state.drafts_others.remove(&id).unwrap_or_else(|| Draft::new(&id, mail));
+                    let draft = state
+                        .drafts_others
+                        .remove(&id)
+                        .unwrap_or_else(|| Draft::new(&id, mail, login_of(data, &id, mail)));
                     state.draft = Some(draft);
                     state.tab = Tab::Overview;
                     state.more = false;
@@ -518,13 +628,14 @@ pub mod accounts {
             }
             Message::ServerSettings => {
                 state.more = false;
-                Action::ControlCentre("accounts".to_string())
+                state.tab = Tab::Writing;
+                Action::None
             }
             Message::Discard => {
                 if let Some(draft) = &state.draft
                     && let Some(mail) = mail_of(data, &draft.account)
                 {
-                    state.draft = Some(Draft::new(&draft.account, mail));
+                    state.draft = Some(Draft::new(&draft.account, mail, login_of(data, &draft.account, mail)));
                 }
                 Action::None
             }
@@ -533,6 +644,75 @@ pub mod accounts {
                     draft.sender_name = name;
                 }
                 Action::None
+            }
+            Message::LoginName(name) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.login_name = name;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::Password(password) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.password = password;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::ManualServer(manual) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.manual = manual;
+                }
+                Action::None
+            }
+            Message::ServerHost(kind, host) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.server_mut(kind).host = host;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::ServerPort(kind, port) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.server_mut(kind).port = port;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::ServerSecurity(kind, security) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.server_mut(kind).set_security(kind, security);
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::TestConnection | Message::SaveConnection
+                if state.pending_connection.is_some() || state.save_connection.is_some() =>
+            {
+                Action::None
+            }
+            Message::TestConnection | Message::SaveConnection => {
+                let save = matches!(message, Message::SaveConnection);
+                let Some(draft) = &mut state.draft else { return Action::None };
+                draft.connection.tried = true;
+                if draft.connection.login_name.trim().is_empty() {
+                    draft.connection.status = Some(tr("Enter the user name.").into());
+                    return Action::None;
+                }
+                let Some(request) = draft.connection.request(&draft.account, save) else {
+                    draft.connection.status =
+                        Some(tr("Enter a server name and a valid port for IMAP and SMTP.").into());
+                    return Action::None;
+                };
+                draft.connection.status = None;
+                draft.connection.pending = true;
+                if save {
+                    state.save_connection = Some(draft.account.clone());
+                    Action::send(request)
+                } else {
+                    state.pending_connection = Some(draft.account.clone());
+                    Action::Ask(request)
+                }
             }
             Message::Signature(action) => {
                 if let Some(draft) = &mut state.draft {
@@ -565,7 +745,9 @@ pub mod accounts {
     /// Takes the open draft off the page, kept for its account while it holds something unsaved.
     fn keep_draft(state: &mut State, data: &Data) {
         let Some(draft) = state.draft.take() else { return };
-        if mail_of(data, &draft.account).is_some_and(|mail| draft.changes(mail).is_some()) {
+        if mail_of(data, &draft.account).is_some_and(|mail| {
+            draft.changes(mail).is_some() || draft.connection.changed(mail, login_of(data, &draft.account, mail))
+        }) {
             state.drafts_others.insert(draft.account.clone(), draft);
         }
     }
@@ -582,8 +764,25 @@ pub mod accounts {
     }
 
     /// A send came back: "Save" is done, the save bar shows what is still different.
-    pub(super) fn sent(state: &mut State) {
+    pub(super) fn sent(state: &mut State, success: bool) {
         state.saving = false;
+        if let Some(id) = state.save_connection.take() {
+            let draft = if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
+                state.draft.as_mut()
+            } else {
+                state.drafts_others.get_mut(&id)
+            };
+            if let Some(draft) = draft {
+                draft.connection.pending = false;
+                if success {
+                    draft.connection.password = Secret::new("");
+                    draft.connection.status = Some(tr("Connection saved and tested.").into());
+                } else {
+                    draft.connection.status =
+                        Some(tr("The connection could not be saved. Check the account error above.").into());
+                }
+            }
+        }
     }
 
     /// The answer of a backup request for `account`, to its page whether it is open or not.
@@ -648,6 +847,52 @@ pub mod accounts {
     /// The mail account with this id, as far as the data holds it.
     fn mail_of<'a>(data: &'a Data, id: &str) -> Option<&'a MailView> {
         data.accounts.iter().find(|account| account.id == id).and_then(|account| account.mail.as_ref())
+    }
+
+    fn login_of<'a>(data: &'a Data, id: &str, mail: &'a MailView) -> &'a str {
+        data.accounts
+            .iter()
+            .find(|account| account.id == id)
+            .and_then(|account| {
+                if let torro_pim::AccountState::Connected { login_name, .. } = &account.state {
+                    Some(login_name.as_str())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(&mail.address)
+    }
+
+    pub(super) fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+        let Some(id) = state.pending_connection.as_deref() else { return };
+        match answer {
+            Ok(torro_ipc::Response::MailConnectionChecked { id: answered }) if answered != id => return,
+            Ok(torro_ipc::Response::MailConnected { account, .. }) if account.id != id => return,
+            Ok(
+                torro_ipc::Response::MailConnectionChecked { .. }
+                | torro_ipc::Response::MailConnected { .. }
+                | torro_ipc::Response::Error { .. },
+            )
+            | Err(_) => {}
+            _ => return,
+        }
+        let id = state.pending_connection.take().expect("checked above");
+        let draft = if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
+            state.draft.as_mut()
+        } else {
+            state.drafts_others.get_mut(&id)
+        };
+        let Some(draft) = draft else { return };
+        draft.connection.pending = false;
+        draft.connection.status = Some(match answer {
+            Ok(torro_ipc::Response::MailConnectionChecked { .. }) => tr("Connection successful.").into(),
+            Ok(torro_ipc::Response::MailConnected { .. }) => {
+                draft.connection.password = Secret::new("");
+                tr("Connection saved and tested.").into()
+            }
+            Ok(torro_ipc::Response::Error { message, .. }) | Err(message) => message.clone(),
+            _ => return,
+        });
     }
 
     /// The open draft with the stored account it measures itself against; `None` while the list is
@@ -1181,18 +1426,7 @@ pub mod accounts {
     /// Reading & writing, where they apply to the chosen sender account.
     fn account_settings<'a>(draft: &'a Draft, mail: &'a MailView, data: &'a Data) -> Element<'a, Message> {
         let dirty = draft.changes(mail).is_some();
-        let login = data
-            .accounts
-            .iter()
-            .find(|account| account.id == draft.account)
-            .and_then(|account| {
-                if let torro_pim::AccountState::Connected { login_name, .. } = &account.state {
-                    Some(login_name.as_str())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(mail.address.as_str());
+        let connection_changed = draft.connection.changed(mail, login_of(data, &draft.account, mail));
         let value = |label: &'static str, content: String| -> Element<'a, Message> {
             row_frame(
                 column![typo::text(typo::meta(), tr(label)).style(theme::text_2), typo::text(typo::body(), content)]
@@ -1215,44 +1449,69 @@ pub mod accounts {
                         false,
                     ),
                     value("Email address", mail.address.clone()),
-                    value("Username", login.to_string()),
                     row_frame(
-                        row![
-                            typo::text(typo::body(), tr("Password")),
-                            blank::horizontal(),
-                            widgets::text_button(
-                                None,
-                                tr("Change password…"),
-                                style::button::secondary,
-                                Some(Message::ServerSettings)
-                            ),
+                        column![
+                            typo::text(typo::meta(), tr("Username")).style(theme::text_2),
+                            field(tr("Username"), &draft.connection.login_name).on_input(Message::LoginName),
                         ]
-                        .align_y(Alignment::Center),
+                        .spacing(space::xs()),
                         false,
                     ),
-                ],
-                None,
-            );
-            let server = |label: &'static str, endpoint: &torro_mail::Endpoint| {
-                value(label, format!("{} · {} · {:?}", endpoint.host, endpoint.port, endpoint.security))
-            };
-            let connection = widgets::group(
-                tr("Connection"),
-                vec![
-                    server("IMAP server", &mail.imap),
-                    server("SMTP server", &mail.smtp),
                     row_frame(
-                        widgets::text_button(
-                            None,
-                            tr("Edit servers and test credentials"),
-                            style::button::secondary,
-                            Some(Message::ServerSettings),
-                        ),
+                        column![
+                            typo::text(typo::meta(), tr("Password")).style(theme::text_2),
+                            field(tr("Leave empty to keep the saved password"), draft.connection.password.expose())
+                                .secure(true)
+                                .on_input(|typed| Message::Password(Secret::new(typed))),
+                        ]
+                        .spacing(space::xs()),
                         false,
                     ),
                 ],
                 None,
             );
+            let mut server_rows: Vec<Element<'a, Message>> = vec![];
+            if draft.connection.manual {
+                server_rows.push(server_form(ServerKind::Imap, &draft.connection.imap));
+                server_rows.push(server_form(ServerKind::Smtp, &draft.connection.smtp));
+            } else {
+                let server = |label: &'static str, fields: &ServerDraft| {
+                    value(label, format!("{} · {} · {:?}", fields.host, fields.port, fields.security))
+                };
+                server_rows.push(server("IMAP server", &draft.connection.imap));
+                server_rows.push(server("SMTP server", &draft.connection.smtp));
+            }
+            server_rows.push(row_frame(
+                widgets::text_button(
+                    None,
+                    if draft.connection.manual { tr("Hide manual server fields") } else { tr("Edit servers manually") },
+                    style::button::secondary,
+                    Some(Message::ManualServer(!draft.connection.manual)),
+                ),
+                false,
+            ));
+            server_rows.push(row_frame(
+                row![
+                    widgets::text_button(
+                        None,
+                        if draft.connection.pending { tr("Checking…") } else { tr("Test credentials") },
+                        style::button::secondary,
+                        (!draft.connection.pending).then_some(Message::TestConnection)
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Save connection"),
+                        style::button::primary,
+                        (connection_changed && !draft.connection.pending).then_some(Message::SaveConnection)
+                    ),
+                ]
+                .spacing(space::s()),
+                false,
+            ));
+            if let Some(status) = &draft.connection.status {
+                server_rows.push(row_frame(typo::text(typo::body(), status.clone()), false));
+            }
+            let connection = widgets::group(tr("Connection"), server_rows, None);
             if room.width >= 820.0 {
                 row![
                     container(identity).width(Length::FillPortion(1)),
@@ -1267,6 +1526,38 @@ pub mod accounts {
         })
         .height(Length::Shrink)
         .into()
+    }
+
+    fn server_form<'a>(kind: ServerKind, server: &'a ServerDraft) -> Element<'a, Message> {
+        let title = match kind {
+            ServerKind::Imap => tr("Incoming mail (IMAP)"),
+            ServerKind::Smtp => tr("Outgoing mail (SMTP)"),
+        };
+        let host = field(tr("Server"), &server.host)
+            .on_input(move |value| Message::ServerHost(kind, value))
+            .width(Length::FillPortion(3));
+        let port = field(tr("Port"), &server.port)
+            .on_input(move |value| Message::ServerPort(kind, value))
+            .width(Length::FillPortion(1));
+        widgets::group(
+            title,
+            vec![
+                row_frame(row![host, port].spacing(space::s()), false),
+                setting_row(
+                    None,
+                    tr("Security"),
+                    None,
+                    widgets::segmented(
+                        [
+                            ("TLS", Message::ServerSecurity(kind, Security::Tls)),
+                            ("STARTTLS", Message::ServerSecurity(kind, Security::StartTls)),
+                        ],
+                        usize::from(server.security == Security::StartTls),
+                    ),
+                ),
+            ],
+            None,
+        )
     }
 
     /// The tab "Folders": the roles the server left open, one press picks (task M5.2), then every
@@ -1434,6 +1725,49 @@ pub mod accounts {
             assert_eq!(opened, Some("anna@example.org".to_string()));
             let _: Action<()> = update(&mut state, Message::Back, &data);
             assert!(page(&state, &data).sub_page.is_none());
+        }
+
+        #[test]
+        fn connection_can_be_tested_without_saving_and_saved_with_separate_server_fields() {
+            let data = data();
+            let mut state = opened(&data);
+            let test: Action<()> = update(&mut state, Message::TestConnection, &data);
+            assert!(matches!(test, Action::Ask(Request::ReconfigureMail { save: false, password: None, .. })));
+            answered(
+                &mut state,
+                &Ok(torro_ipc::Response::MailConnectionChecked { id: "mail:anna@example.org".into() }),
+            );
+            assert!(state.pending_connection.is_none());
+            let _: Action<()> = update(&mut state, Message::ManualServer(true), &data);
+            let _: Action<()> =
+                update(&mut state, Message::ServerHost(ServerKind::Imap, "mail.example.org".into()), &data);
+            let _: Action<()> =
+                update(&mut state, Message::ServerSecurity(ServerKind::Smtp, Security::StartTls), &data);
+            let _: Action<()> = update(&mut state, Message::Password(Secret::new("new-secret")), &data);
+            let save: Action<()> = update(&mut state, Message::SaveConnection, &data);
+            let Action::Send(mut requests) = save else { panic!("edited connection must be sent") };
+            let Request::ReconfigureMail { imap, smtp, password, save: true, .. } = requests.remove(0) else {
+                panic!("edited connection must be sent")
+            };
+            assert_eq!((imap.host.as_str(), imap.port), ("mail.example.org", 993));
+            assert_eq!((smtp.port, smtp.security), (587, Security::StartTls));
+            assert_eq!(password, Some(Secret::new("new-secret")));
+        }
+
+        #[test]
+        fn invalid_server_port_stays_on_the_page_and_a_failed_test_can_be_retried() {
+            let data = data();
+            let mut state = opened(&data);
+            let _: Action<()> = update(&mut state, Message::ServerPort(ServerKind::Imap, "abc".into()), &data);
+            let invalid: Action<()> = update(&mut state, Message::TestConnection, &data);
+            assert_eq!(invalid, Action::None);
+            assert!(state.pending_connection.is_none());
+            let _: Action<()> = update(&mut state, Message::ServerPort(ServerKind::Imap, "143".into()), &data);
+            let sent: Action<()> = update(&mut state, Message::TestConnection, &data);
+            assert!(matches!(sent, Action::Ask(Request::ReconfigureMail { .. })));
+            answered(&mut state, &Ok(torro_ipc::Response::Error { code: "auth".into(), message: "Bad login".into() }));
+            assert_eq!(state.draft.as_ref().unwrap().connection.status.as_deref(), Some("Bad login"));
+            assert!(state.pending_connection.is_none());
         }
 
         /// "Save" sends the sender name and the signature, each only when it differs; nothing
@@ -1617,7 +1951,7 @@ pub mod accounts {
             assert!(state.saving);
             let again: Action<()> = update(&mut state, Message::Save, &data);
             assert_eq!(again, Action::None, "one save at a time");
-            sent(&mut state);
+            sent(&mut state, true);
             assert!(!state.saving);
         }
 
@@ -1739,8 +2073,7 @@ pub mod accounts {
             assert_eq!(figures(&stats(&[], None)).len(), 4);
         }
 
-        /// The "…" menu opens and closes, and its entries lead to this account's storage tab and
-        /// the control centre.
+        /// The "…" menu opens and closes, and its entries lead to this account's own tabs.
         #[test]
         fn the_more_menu_leads_on() {
             let data = data();
@@ -1754,7 +2087,8 @@ pub mod accounts {
             assert_eq!(state.tab, Tab::Storage);
             assert!(overlay(&state).is_none());
             let server: Action<()> = update(&mut state, Message::ServerSettings, &data);
-            assert_eq!(server, Action::ControlCentre("accounts".into()));
+            assert_eq!(server, Action::None);
+            assert_eq!(state.tab, Tab::Writing);
         }
 
         /// A storage choice from an account tab sends that account's policy only after its value

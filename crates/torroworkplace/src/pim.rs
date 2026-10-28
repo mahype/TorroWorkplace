@@ -1263,6 +1263,7 @@ impl PimService {
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
             // task M2.1).
             Request::ConnectMail { .. }
+            | Request::ReconfigureMail { .. }
             | Request::UpdateMailAccount { .. }
             | Request::TorroMailAccounts
             | Request::ImportTorroMailAccount { .. }

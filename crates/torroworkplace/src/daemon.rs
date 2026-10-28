@@ -930,6 +930,7 @@ fn describe(request: &Request) -> String {
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of
         // task M2.1); message and folder ids would let lines be matched with a mailbox.
         Request::ConnectMail { .. } => "connect mail".into(),
+        Request::ReconfigureMail { .. } => "check or change mail connection".into(),
         Request::UpdateMailAccount { .. } => "update mail account".into(),
         Request::TorroMailAccounts => "torromail accounts".into(),
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),

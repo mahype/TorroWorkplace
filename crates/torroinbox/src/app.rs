@@ -4753,7 +4753,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if matches!(message, host::Message::Sent { .. })
                     && let SettingsState::Mail(state) = &mut pane.sections
                 {
-                    settings_mail::sent(state);
+                    let success = matches!(&message, host::Message::Sent { result, .. } if result.is_ok());
+                    settings_mail::sent(state, success);
                 }
                 let outcome = pane.host.update(message);
                 if let SettingsState::Mail(state) = &mut pane.sections {

@@ -581,6 +581,20 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         trusted_certificates: Vec<String>,
     },
+    /// Checks the IMAP and SMTP connection of an existing mail account with the entered values.
+    /// An omitted password uses the account's keychain secret. With `save: false` the connection
+    /// is only checked; `save: true` keeps the new endpoints, login and optional password after a
+    /// successful check. Only the app key may send this request. No password is returned.
+    #[serde(rename = "accounts.reconfigure_mail")]
+    ReconfigureMail {
+        id: String,
+        imap: Endpoint,
+        smtp: Endpoint,
+        login_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<Secret>,
+        save: bool,
+    },
     /// Changes the settings of the mail account `id` (tasks M2.1, M2.7): only the fields given, the
     /// others stay. Never servers or password: those change only with `accounts.connect_mail`, so
     /// no agent can steer the password to another server. Answered with [`Response::Ok`];
@@ -4090,7 +4104,8 @@ pub enum Response {
     /// What muting by an entry changed ([`Request::MuteItem`]): the rule (none for a conversation
     /// hidden or moved for good), whether it is new, and the entries it marked done or moved.
     Muted(Muted),
-    /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
+    /// A mail account just connected ([`Request::ConnectMail`] or a saved
+    /// [`Request::ReconfigureMail`]), never with its password.
     MailConnected {
         /// The account as [`Request::Accounts`] lists it: one entry, also when it syncs calendars
         /// and tasks too.
@@ -4104,6 +4119,10 @@ pub enum Response {
         /// with `accounts.update_mail_account` (`folder_roles`). Empty when every role is clear.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         open_roles: Vec<Role>,
+    },
+    /// The entered IMAP and SMTP values worked, without changing the account.
+    MailConnectionChecked {
+        id: String,
     },
     /// A server of a mail account showed a certificate the system does not trust (issue #284),
     /// for [`Request::ConnectMail`] and [`Request::ImportTorroMailAccount`]. The password did not

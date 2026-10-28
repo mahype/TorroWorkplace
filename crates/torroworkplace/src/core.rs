@@ -4747,6 +4747,13 @@ impl Core {
                 let _deciding = self.calendar_sign_ins.lock().await;
                 self.connect_mail(sign_in).await
             }
+            Request::ReconfigureMail { id, imap, smtp, login_name, password, save } => {
+                if !matches!(reach, Reach::Suite) {
+                    return Refused::Forbidden { command: "accounts.reconfigure_mail" }.response();
+                }
+                let _deciding = self.calendar_sign_ins.lock().await;
+                self.reconfigure_mail(&id, imap, smtp, &login_name, password, save).await
+            }
             // A client never reaches `connect_ai` either (`Rights::allows`, rule 5): it hands in a key.
             // Under the lock the other sign-ins take, so two connections never write `accounts.json`
             // over each other.
@@ -7746,6 +7753,74 @@ impl Core {
     /// password goes to the keychain and the servers only. The account keeps the trusted
     /// certificates a server showed at this sign-in ([`kept_certificates`]), so connecting again
     /// clears the ones no server uses any more and a fingerprint no server showed is never stored.
+    /// Checks edited server and login fields before changing a stored account. An empty password
+    /// field means the secret already in the system keychain; the reply never exposes it.
+    async fn reconfigure_mail(
+        &self,
+        id: &str,
+        imap: torro_mail::Endpoint,
+        smtp: torro_mail::Endpoint,
+        login_name: &str,
+        password: Option<torro_ipc::Secret>,
+        save: bool,
+    ) -> Response {
+        let stored = match self.mail.stored_accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        let Some(account) = stored.into_iter().find(|account| account.id == id && account.kind == AccountKind::Mail)
+        else {
+            return refusal("not-found", tr("This mail account no longer exists.").into());
+        };
+        let Some(mut config) = account.mail.clone() else {
+            return refusal("error", tr("The mail account has no server settings.").into());
+        };
+        let login_name = login_name.trim();
+        if login_name.is_empty() || login_name.contains('/') {
+            return refusal("error", tr("Enter the user name; it cannot contain \"/\".").into());
+        }
+        for (service, endpoint) in [("IMAP", &imap), ("SMTP", &smtp)] {
+            if endpoint.host.trim().is_empty() || endpoint.port == 0 {
+                return refusal("error", trf("Enter the {service} server and its port.", &[("service", &service)]));
+            }
+        }
+        let password = match password.filter(|password| !password.is_blank()) {
+            Some(password) => password,
+            None => match self.mail.password(&account).await {
+                Ok(Some(password)) => password,
+                Ok(None) => return refusal("error", tr("No saved password is available. Enter the password.").into()),
+                Err(message) => return refusal("error", message),
+            },
+        };
+        config.imap = imap.clone();
+        config.smtp = smtp.clone();
+        if !save {
+            let empty = std::collections::BTreeMap::new();
+            let chosen = if account.mail.as_ref().is_some_and(|old| old.imap != imap) {
+                &empty
+            } else {
+                account.mail_settings.as_ref().map_or(&empty, |settings| &settings.folder_roles)
+            };
+            if let Err(failed) = self.mail.check_sign_in(&config, login_name, &password, chosen).await {
+                return self.sign_in_refusal(failed, &config).await;
+            }
+            return Response::MailConnectionChecked { id: id.to_string() };
+        }
+        self.connect_mail(MailSignIn {
+            address: config.address,
+            sender_name: String::new(),
+            imap,
+            smtp,
+            login_name: login_name.to_string(),
+            password,
+            calendars: false,
+            tasks: false,
+            caldav: None,
+            trusted_certificates: Vec::new(),
+        })
+        .await
+    }
+
     async fn connect_mail(&self, sign_in: MailSignIn) -> Response {
         let MailSignIn {
             address,
@@ -7794,6 +7869,11 @@ impl Core {
             services: torro_mail::Services { mail: true, calendars, tasks },
             ..MailSettings::default()
         });
+        // Folder paths belong to one IMAP server. Rediscover them when that server changes;
+        // keeping a former server's role paths would make an otherwise valid sign-in fail.
+        if existing.and_then(|account| account.mail.as_ref()).is_some_and(|old| old.imap != imap) {
+            settings.folder_roles.clear();
+        }
         // Adding calendars and tasks later (task M3.5): at an account that exists they are switched
         // on, never off (that is `accounts.update_mail_account`).
         settings.services.calendars |= calendars;
@@ -18371,6 +18451,30 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), Request::MailFolders { account: None }).await, none, "reading: M3.1");
         let no_draft = ask(&core, Some(&app_key), Request::SendDraft { id: "m:1".into() }).await;
         assert_eq!(code(&no_draft), "not-found", "sending: M3.3, but there is no such draft");
+    }
+
+    #[tokio::test]
+    async fn only_the_app_can_test_or_change_a_saved_mail_connection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let (_, key) = client(&core, every_admin_switch()).await;
+        let endpoint =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let request = Request::ReconfigureMail {
+            id: "mail:anna@example.org".into(),
+            imap: endpoint.clone(),
+            smtp: endpoint,
+            login_name: "anna@example.org".into(),
+            password: Some(torro_ipc::Secret::new("test-secret")),
+            save: false,
+        };
+        let refused = ask(&core, Some(&key), request.clone()).await;
+        assert_eq!(code(&refused), "forbidden");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let missing = ask(&core, Some(&app_key), request).await;
+        assert_eq!(code(&missing), "error", "this test core has no mail home directory");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("audit log");
+        assert!(!log.contains("test-secret"), "the secret must never reach the audit log");
     }
 
     /// An account outside a client's `mail_accounts` is `not-found` before anything else, limits

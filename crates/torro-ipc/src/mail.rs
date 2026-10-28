@@ -701,7 +701,7 @@ fn valid_backup_filename(file_name: &str) -> bool {
 /// cursor and attachment part.
 fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
     let more: Vec<&str> = match request {
-        Request::UpdateMailAccount { id, .. } => vec![id],
+        Request::UpdateMailAccount { id, .. } | Request::ReconfigureMail { id, .. } => vec![id],
         Request::SearchMail { folder, cursor, .. } => folder.iter().chain(cursor).map(String::as_str).collect(),
         Request::MoveMail { to: MoveTarget::Folder(folder), .. } => vec![folder],
         Request::GetMailAttachment { attachment, .. } => vec![attachment],

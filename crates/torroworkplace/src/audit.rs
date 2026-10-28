@@ -358,7 +358,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         // Mail (security rule 3 of task M2.1): never the address signed in with, nor a search, a
         // subject, a recipient, a file or a folder name. The account as for collections; message,
         // draft and folder ids only hashed, so lines can be matched but not with a mailbox.
-        Request::ConnectMail { .. } => Vec::new(),
+        Request::ConnectMail { .. } | Request::ReconfigureMail { .. } => Vec::new(),
         // TorroMail's accounts (task M7.4): no address, and no id of another app's keychain.
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.

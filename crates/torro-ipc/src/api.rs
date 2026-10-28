@@ -1654,6 +1654,7 @@ impl Request {
             Request::GetStats { .. } => &GET_STATS,
             Request::GetQuiet => &GET_QUIET,
             Request::ConnectMail { .. } => &CONNECT_MAIL,
+            Request::ReconfigureMail { .. } => &RECONFIGURE_MAIL,
             Request::UpdateMailAccount { .. } => &UPDATE_MAIL_ACCOUNT,
             Request::TorroMailAccounts => &LIST_TORROMAIL_ACCOUNTS,
             Request::ImportTorroMailAccount { .. } => &IMPORT_TORROMAIL_ACCOUNT,
@@ -1842,6 +1843,7 @@ pub static CATALOGUE: &[&Command] = &[
     &DISCOVER_SERVICES,
     &CONNECT_CALDAV,
     &CONNECT_MAIL,
+    &RECONFIGURE_MAIL,
     &UPDATE_MAIL_ACCOUNT,
     &LIST_TORROMAIL_ACCOUNTS,
     &IMPORT_TORROMAIL_ACCOUNT,
@@ -2593,6 +2595,17 @@ static CONNECT_MAIL: Command = Command {
                   server a person typed, also on the local network; a certificate the system does not trust is \
                   answered with untrusted-certificate and works once the person trusts it (its fingerprint in \
                   trusted_certificates). Returns the account, never the password. Only the app key may use it.",
+};
+
+// The optional password comes only from the suite UI; clients never read or supply it.
+static RECONFIGURE_MAIL: Command = Command {
+    name: "accounts.reconfigure_mail",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Checks an existing mail account with edited IMAP and SMTP endpoints and login. An omitted password \
+                  uses the existing keychain secret. With save false nothing is stored; with save true the values are \
+                  stored after a successful sign-in. Only the app key may use it and the password is never returned.",
 };
 
 static UPDATE_MAIL_ACCOUNT: Command = Command {
@@ -5064,6 +5077,22 @@ mod tests {
             },
             Request::GetQuiet,
             connect_mail(),
+            Request::ReconfigureMail {
+                id: "mail:anna@mailbox.org".into(),
+                imap: torro_mail::Endpoint {
+                    host: "imap.mailbox.org".into(),
+                    port: 993,
+                    security: torro_mail::Security::Tls,
+                },
+                smtp: torro_mail::Endpoint {
+                    host: "smtp.mailbox.org".into(),
+                    port: 587,
+                    security: torro_mail::Security::StartTls,
+                },
+                login_name: "anna@mailbox.org".into(),
+                password: None,
+                save: false,
+            },
             Request::TorroMailAccounts,
             Request::ImportTorroMailAccount { id: "4c1d".into() },
             Request::UpdateMailAccount {
@@ -5414,6 +5443,7 @@ mod tests {
                         | "accounts.set_github_token"
                         | "accounts.connect_caldav"
                         | "accounts.connect_mail"
+                        | "accounts.reconfigure_mail"
                         | "accounts.import_torromail_account"
                         | "accounts.connect_ai"
                         | "accounts.set_ntfy_login"
@@ -6669,6 +6699,8 @@ mod tests {
                 "inbox.set_item_lane",
                 "inbox.mute_source",
                 "inbox.list_categories",
+                "inbox.create_category_group",
+                "inbox.update_category_group",
                 "inbox.set_item_category",
                 "inbox.classify_item",
                 "inbox.get_categorization",

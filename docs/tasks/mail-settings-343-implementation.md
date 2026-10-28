@@ -15,6 +15,7 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - „Lesen & Schreiben“ enthält die Standard-Absenderadresse, das Schreibformat und eine hohe Signaturfläche mit Formatierungsaktionen. Formatierte Signaturen werden sicher in HTML und als Textkopie versendet. Der Konto-Reiter zeigt Identität und Verbindung, ohne die Signatur zu duplizieren.
 - Die frühere Anhang-Vorabladeoption ist auch für alte gespeicherte Policies deaktiviert. Alte „Nur Kopfzeilen“-Konten werden ausdrücklich zur Auswahl einer der drei neuen Strategien aufgefordert.
 - Das Backup-Formular öffnet als Overlay; Quelle, Stichtag mit Kalenderwahl, Archivname und Ziel stehen zusammen. Fortschritt und Wiederherstellung bleiben im Konto-Reiter sichtbar.
+- Der Konto-Reiter enthält nun Benutzername und maskiertes Passwort direkt neben Name und Adresse. IMAP und SMTP lassen sich manuell mit getrennten Host-, Port- und TLS/STARTTLS-Feldern bearbeiten. „Zugangsdaten testen“ prüft die eingegebenen Werte ohne Speicherung; bei leerem Passwortfeld verwendet der Kern das vorhandene Keychain-Geheimnis. „Verbindung speichern“ prüft und speichert die Änderungen nach erfolgreicher Anmeldung. Der Test-/Speicherbefehl ist auf den App-Schlüssel beschränkt.
 - Die MB-Auswahl berechnet ihre Größenkante beim Synchronisieren nur einmal pro Stapel und zieht bereits gespeicherte Anhänge von der Grenze ab. Beim Ändern der Auswahl und im Cache-Job werden ältere Anhangdateien nötigenfalls entfernt und die Offline-Texte neu zugeschnitten. Die Auswahl bleibt dennoch eine RFC822-Größenschätzung; Index und Datenbankdatei sind noch keine hart begrenzten physischen Bytes.
 - Build und gezielte Tests laufen; native Sichtprüfung und die übrigen Anforderungen stehen noch aus.
 
@@ -27,8 +28,8 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 
 ## Konten und Verbindung
 
-- [ ] Anzeigename, Adresse, Benutzername und Passwort zusammen; Zugangsdaten testen.
-- [ ] IMAP/SMTP Host, Port und TLS/STARTTLS getrennt bearbeiten, automatische Erkennung und manuelle Angaben.
+- [x] Anzeigename, Adresse, Benutzername und Passwort zusammen; Zugangsdaten testen.
+- [x] IMAP/SMTP Host, Port und TLS/STARTTLS getrennt bearbeiten, automatische Erkennung und manuelle Angaben.
 - [ ] POP3 nur nach echter Unterstützung in Konto-, Synchronisations- und Ordnerlogik anbieten.
 - [ ] Systemordner bei IMAP sichtbar, bei POP3 nicht; Backup als Overlay mit Quelle, Zeitraum, Ziel, Archivname und Kalenderwahl.
 
