@@ -1240,8 +1240,11 @@ fn slot_summary(
     if let Some(effort) = effort {
         text = trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(effort))]);
     }
-    match facts.model.as_ref().filter(|_| model.is_some()) {
-        Some(known) if known.here => stays(text),
+    // "Automatic" ends it too: a client gets one only at an account here, since one elsewhere is the
+    // person's (`Core::turns_on_elsewhere`), and a person is never asked.
+    match (model, &facts.model) {
+        (None, _) => stays(text),
+        (Some(_), Some(known)) if known.here => stays(text),
         _ => text,
     }
 }
@@ -3889,7 +3892,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             summary(&slot(Some(account), None), &unknown),
-            trf("Let {engine} pick the model for {slot}", &named)
+            stays(trf("Let {engine} pick the model for {slot}", &named))
         );
         assert_eq!(
             summary(&slot(None, None), &Facts::default()),
