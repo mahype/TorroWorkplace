@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
@@ -72,6 +73,13 @@ const HEALTH_MAX: usize = 64 * 1024;
 /// one stuck model never holds up the list, and without the tags in time every model counts as
 /// elsewhere.
 const SHOW_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The effort that switches thinking off at Ollama's `/v1` ([`OpenAiCompatible::chat_without_thinking`]). A
+/// decision through a chat model needs no thought: left to think, qwen3.6:35b-a3b ran past the answer's
+/// 1024 tokens on one mail of three and on to 8192 tokens and 121 s on another, where it answers in 52
+/// tokens and under a second without (Ollama 0.40.11, issue #325). Ollama takes it from models that do
+/// not think too, unlike `low`, which they refuse.
+const NO_THINKING: &str = "none";
 
 /// The HTTP client for AI servers: no redirects (the key must not follow one to another host), no
 /// limit for a whole answer (streams run long), [`READ_TIMEOUT`] between two pieces of it. The
@@ -313,6 +321,27 @@ impl OpenAiCompatible {
         decoder.finish(on_text).map_err(|err| self.wire.scrubbed(err))
     }
 
+    /// `POST <base>/chat/completions` with `body`, its answer read as [`OpenAiCompatible::stream`] reads it.
+    async fn completions(&self, body: &Value, on_text: &mut (dyn FnMut(&str) + Send)) -> Result<ChatReply, AiError> {
+        let builder = self.wire.request(reqwest::Method::POST, "chat/completions").json(body);
+        let response = self.wire.send(builder).await?;
+        self.stream(response, on_text).await
+    }
+
+    /// One chat turn as [`Provider::chat`] sends it, at Ollama with thinking switched off
+    /// (`"reasoning_effort": "none"`, which its `/v1` takes as `think: false`) unless `request` names an
+    /// effort of its own. Only for Ollama, where it was tried (0.40.11); every other server gets the turn
+    /// as [`Provider::chat`] sends it, since an effort it does not know may be refused.
+    async fn chat_without_thinking(&self, request: &ChatRequest) -> Result<ChatReply, AiError> {
+        // Every other server through `chat`, so OpenAI keeps its Responses API.
+        if self.provider != AiProvider::Ollama || request.effort.is_some() {
+            return self.chat(request, &mut |_| {}).await;
+        }
+        let mut body = openai::chat_body_for(self.provider, request, true);
+        body["reasoning_effort"] = json!(NO_THINKING);
+        self.completions(&body, &mut |_| {}).await
+    }
+
     /// OpenAI's Responses API uses a different body and stream format from Chat Completions.
     async fn stream_responses(
         &self,
@@ -381,10 +410,7 @@ impl Provider for OpenAiCompatible {
                     };
                 return self.stream_responses(response, on_text).await;
             }
-            let body = openai::chat_body_for(self.provider, request, true);
-            let builder = self.wire.request(reqwest::Method::POST, "chat/completions").json(&body);
-            let response = self.wire.send(builder).await?;
-            self.stream(response, on_text).await
+            self.completions(&openai::chat_body_for(self.provider, request, true), on_text).await
         })
     }
 
@@ -698,7 +724,8 @@ pub struct Automatic {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub chat: bool,
     /// A function that needs a decision model, with mail allowed to the cloud: the first model that
-    /// decides, as sorting mail took it.
+    /// decides, as sorting mail took it – at an account on this computer the first that decides here
+    /// ([`Automatic::picks`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub decides: bool,
     /// The same while mail may not leave this computer: the first model that decides and computes here.
@@ -709,12 +736,27 @@ pub struct Automatic {
 impl Automatic {
     /// What "Automatic" was used for at a function: its decision model for one that needs one
     /// (only one on this computer for a function that reads mail while `mail_to_cloud` is off), else
-    /// the model a chat takes.
+    /// the model a chat takes. `mail_to_cloud` is the permission of the function's slot (issue #325,
+    /// `Settings::mail_to_cloud_in(function.slot())`), not the chat's.
     pub fn for_function(function: ai::AiFunction, mail_to_cloud: bool) -> Automatic {
         match function.needs_decision() {
             true if function.reads_mail() && !mail_to_cloud => Automatic { decides_here: true, ..Automatic::default() },
             true => Automatic { decides: true, ..Automatic::default() },
             false => Automatic { chat: true, ..Automatic::default() },
+        }
+    }
+
+    /// What "Automatic" is used for at a slot (issue #325) with no model named: the chat's model for
+    /// [`ai::AiSlot::Chat`]; for [`ai::AiSlot::Decide`] what sorting mail takes – the first model
+    /// that decides, only one on this computer while `mail_to_cloud` (the slot's permission,
+    /// `Settings::mail_to_cloud_in`) is off.
+    pub fn for_slot(slot: ai::AiSlot, mail_to_cloud: bool) -> Automatic {
+        match slot {
+            ai::AiSlot::Chat => Automatic { chat: true, ..Automatic::default() },
+            ai::AiSlot::Decide => match mail_to_cloud {
+                false => Automatic { decides_here: true, ..Automatic::default() },
+                true => Automatic { decides: true, ..Automatic::default() },
+            },
         }
     }
 
@@ -729,8 +771,16 @@ impl Automatic {
 
     /// The models of `models` (all of the account's, as its server lists them) that "Automatic"
     /// took for the uses marked, `place` saying where each computes; none for a use the account
-    /// offers nothing for.
-    pub fn picks(self, models: &[AiModel], place: impl Fn(&AiModel) -> crate::assistant::Place) -> Vec<AiModel> {
+    /// offers nothing for. `seat_here`: the account sits on this computer
+    /// ([`torro_core::ai::Seat::ThisComputer`]), where sorting with "Automatic" picks only models here
+    /// whatever the permission (`categorize::chosen`, review of #325) – so the decision model kept on
+    /// is one here too, never a `:cloud` model the account lists before it.
+    pub fn picks(
+        self,
+        models: &[AiModel],
+        place: impl Fn(&AiModel) -> crate::assistant::Place,
+        seat_here: bool,
+    ) -> Vec<AiModel> {
         let here = |model: &AiModel| place(model) == crate::assistant::Place::Local;
         let decides = |model: &&AiModel| model.decision == Some(true);
         let mut picks = Vec::new();
@@ -738,7 +788,7 @@ impl Automatic {
             picks.extend(crate::assistant::ModelAccess::automatic(models.to_vec(), &place).ok());
         }
         if self.decides {
-            picks.extend(models.iter().find(decides).cloned());
+            picks.extend(models.iter().filter(decides).find(|model| !seat_here || here(model)).cloned());
         }
         if self.decides_here {
             picks.extend(models.iter().filter(decides).find(|model| here(model)).cloned());
@@ -926,6 +976,17 @@ impl AiAccounts {
         self.client(id).await?.decide(request).await
     }
 
+    /// One turn of a decision through a chat model (task MW.3, `torro_core::ai::decide_chat::request`) to
+    /// the account `id`: as [`Provider::chat`] sends it, but at Ollama with thinking switched off
+    /// ([`OpenAiCompatible::chat_without_thinking`]), so a model that thinks answers within the turn's
+    /// tokens and in a moment. Errors as [`AiAccounts::provider`] and [`Provider::chat`].
+    pub(crate) async fn chat_to_decide(&self, id: &str, request: &ChatRequest) -> Result<ChatReply, AiError> {
+        match self.client(id).await? {
+            AiClient::OpenAi(client) => client.chat_without_thinking(request).await,
+            client => client.chat(request, &mut |_| {}).await,
+        }
+    }
+
     /// Checks the account with its server ([`OpenAiCompatible::check`]) and, when the server takes
     /// it, stores the key in the keychain (or removes an old one when there is none now) and the
     /// account in `accounts.json` (next to the others; the same provider at the same host replaces
@@ -1036,7 +1097,8 @@ impl AiAccounts {
         let mut changed = switches.clone();
         changed.automatic.remove(id);
         let mut kept = 0;
-        for model in automatic.picks(models, place) {
+        let seat_here = provider.seat() == torro_core::ai::Seat::ThisComputer;
+        for model in automatic.picks(models, place, seat_here) {
             if !changed.held.is_on(id, &model, place(&model) == crate::assistant::Place::Local) {
                 changed.held.turn_on(id, &model.id);
                 kept += 1;
@@ -1061,6 +1123,28 @@ impl AiAccounts {
                 eprintln!("torroworkplace: {id}: \"Automatic\" is taken over at its first list ({})", err.code());
             }
         }
+    }
+
+    /// Every account with all its models, what `ai.recommend` weighs (task MW.6,
+    /// [`super::recommend::suggest`]): in the order of `accounts.json`, each `local` when its server
+    /// runs on this computer ([`ai::is_this_computer`] on its address), its models as
+    /// [`AiAccounts::models`] lists them with closed weights too, `None` when that fails (no key on
+    /// this device, the server does not answer). One server after the other, so an account's list
+    /// is read through [`AiAccounts::models`] with what that keeps of it.
+    pub async fn connected(&self) -> Vec<super::recommend::Connected> {
+        let servers: Vec<(String, AiProvider, String)> = self
+            .slots
+            .read()
+            .await
+            .iter()
+            .map(|slot| (slot.account.id.clone(), slot.provider(), slot.account.server.clone()))
+            .collect();
+        let mut connected = Vec::with_capacity(servers.len());
+        for (id, provider, server) in servers {
+            let models = self.models(&id, true).await.ok();
+            connected.push(super::recommend::Connected { id, provider, local: ai::is_this_computer(&server), models });
+        }
+        connected
     }
 
     /// All models of the account `id` as its server last listed them ([`AiAccounts::models`]), asked
@@ -1344,8 +1428,8 @@ impl AiAccounts {
 
     /// The first start after the update that brought the switches (task S.24): when there was no
     /// `ai-models.json` at the core's first look ([`Switches::keep_used`]), the models the suite
-    /// already uses – `used` as pairs of account id and model id (the assistant's default for new
-    /// chats, the models of the bots and of the functions) – are turned on, so nothing that worked
+    /// already uses – `used` as pairs of account id and model id (the models of both slots, issue #325,
+    /// the models of the bots and of the functions) – are turned on, so nothing that worked
     /// stops, and the file is written with the mark gone. Afterwards it does nothing, and a model a
     /// module chooses later turns nothing on. Ids that are no AI account (`ai:…`) are left out, and
     /// so are accounts a person switched a model at already (#231): their switch wins. Lets the
@@ -1408,7 +1492,8 @@ impl AiAccounts {
         }
     }
 
-    fn http(&self) -> Result<&reqwest::Client, AiError> {
+    /// The HTTP client of the AI accounts, also for downloads of models ([`super::pull`]).
+    pub(crate) fn http(&self) -> Result<&reqwest::Client, AiError> {
         self.http.as_ref().ok_or_else(|| AiError::Format(tr("No HTTP client to ask AI servers with.").into()))
     }
 }
@@ -1886,6 +1971,80 @@ pub(crate) mod tests {
             OpenAiCompatible::new(http(), AiProvider::OpenRouter, &server.url("/api/v1"), Some(Secret::new(KEY)));
         remote.chat(&high, &mut |_| {}).await.expect("openrouter answers");
         assert_eq!((ollama.calls_async().await, openrouter.calls_async().await), (1, 1));
+    }
+
+    /// Issue #325, checked against Ollama 0.40.11: a decision through a chat model goes to Ollama with
+    /// thinking switched off, and its answer – recorded from qwen3.6:35b-a3b – is read; an effort the
+    /// request names stays, and another server gets the turn without the field.
+    #[tokio::test]
+    async fn a_decision_through_a_chat_model_asks_ollama_not_to_think() {
+        let recorded = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/ai/ollama-decide-without-thinking.sse"),
+        )
+        .expect("fixture");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ai = service(dir.path(), &MemoryTokens::default(), Vec::new());
+        let ollama = fake_ollama().await;
+        let unthinking = ollama
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").json_body_includes(r#"{"reasoning_effort":"none"}"#);
+                then.status(200).header("content-type", "text/event-stream").body(&recorded);
+            })
+            .await;
+        let engine = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let reply = ai.chat_to_decide(&engine.id, &ask_calendar()).await.expect("an answer");
+        assert_eq!(reply.finish, Finish::ToolCalls);
+        assert_eq!(
+            reply.tool_calls.iter().map(|call| (call.name.as_str(), call.arguments.as_str())).collect::<Vec<_>>(),
+            [("answer", r#"{"category":"invoice","needs_reply":false,"urgency":1}"#)]
+        );
+        assert_eq!(unthinking.calls_async().await, 1);
+
+        let chosen = ollama
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").json_body_includes(r#"{"reasoning_effort":"high"}"#);
+                then.status(200).header("content-type", "text/event-stream").body(&recorded);
+            })
+            .await;
+        let high = ChatRequest { effort: Some(Effort::High), ..ask_calendar() };
+        ai.chat_to_decide(&engine.id, &high).await.expect("an answer with its own effort");
+        assert_eq!(chosen.calls_async().await, 1);
+
+        let other = MockServer::start_async().await;
+        other
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(json!({"object": "list", "data": [{"id": "qwen3:8b", "object": "model"}]}));
+            })
+            .await;
+        let plain = other
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").body_excludes("reasoning_effort");
+                then.status(200).header("content-type", "text/event-stream").body(&recorded);
+            })
+            .await;
+        let compatible =
+            ai.connect(AiProvider::OpenAiCompatible, Some(&other.url("/v1")), Secret::default()).await.expect("server");
+        ai.chat_to_decide(&compatible.id, &ask_calendar()).await.expect("an answer without the field");
+        assert_eq!(plain.calls_async().await, 1);
+
+        // OpenAI keeps its Responses API, as every chat turn there.
+        let server = MockServer::start_async().await;
+        let responses = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/responses");
+                then.status(200).json_body(json!({
+                    "status":"completed",
+                    "output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"answer",
+                        "arguments":"{\"category\":\"invoice\"}"}]
+                }));
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        let reply = openai.chat_without_thinking(&ask_calendar()).await.expect("an answer through responses");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(responses.calls_async().await, 1);
     }
 
     #[tokio::test]
@@ -2644,17 +2803,29 @@ pub(crate) mod tests {
             model("here-tools", true, true, false, false),
         ];
         let place = |model: &AiModel| if model.remote == Some(true) { Place::Remote } else { Place::Local };
-        let ids = |uses: Automatic| uses.picks(&models, place).into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let ids = |uses: Automatic| uses.picks(&models, place, false).into_iter().map(|m| m.id).collect::<Vec<_>>();
         assert_eq!(ids(Automatic { chat: true, ..Automatic::default() }), ["here-tools"]);
         assert_eq!(ids(Automatic { decides: true, ..Automatic::default() }), ["cloud-decides"]);
         assert_eq!(ids(Automatic { decides_here: true, ..Automatic::default() }), ["here-decides"]);
         let both = Automatic { chat: true, ..Automatic::default() }
             .and(Automatic { decides_here: true, ..Automatic::default() });
         assert_eq!(ids(both), ["here-tools", "here-decides"]);
-        assert!(Automatic::default().picks(&models, place).is_empty());
+        assert!(Automatic::default().picks(&models, place, false).is_empty());
+        // Review of #325: at an account on this computer "Automatic" sorted only with models here
+        // (`categorize::chosen`), so that is the one kept on – `nimble`, never `nimble:cloud` before it.
+        let ollama = [model("nimble:cloud", false, true, true, true), model("nimble", false, true, true, false)];
+        let decides = Automatic { decides: true, ..Automatic::default() };
+        let kept =
+            |seat_here: bool| decides.picks(&ollama, place, seat_here).into_iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(kept(true), ["nimble"]);
+        assert_eq!(kept(false), ["nimble:cloud"], "an account elsewhere picks as it lists");
         let sorting = ai::AiFunction::InboxCategorize;
         assert_eq!(Automatic::for_function(sorting, false), Automatic { decides_here: true, ..Automatic::default() });
         assert_eq!(Automatic::for_function(sorting, true), Automatic { decides: true, ..Automatic::default() });
+        // Issue #325: a slot as the functions it serves.
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Chat, true), Automatic { chat: true, ..Automatic::default() });
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Decide, false), Automatic::for_function(sorting, false));
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Decide, true), Automatic::for_function(sorting, true));
     }
 
     /// #231: an account used with "Automatic" before the switches keeps that model on at its first

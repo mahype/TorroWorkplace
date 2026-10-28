@@ -136,12 +136,20 @@ impl SettingsStore {
     /// and one coming back later would otherwise belong to no account, or by chance to the first.
     /// So is a PDF template or folder that changes and does not fit, as `set_setting` refuses it
     /// (`torro_core::settings::PdfSettings::check_changes`).
+    ///
+    /// `decide_mail_to_cloud` (issue #325) is never stored unset: `new` without it – from an app
+    /// before the slots – keeps it as stored, since unset would take the old AI values over again at
+    /// the next load (`Settings::take_over_old_ai`).
     pub fn update(&self, new: Settings) -> Result<(), String> {
         let ids = new.hidden_collections.iter().chain(new.list_orders.keys());
         if let Some(bare) = ids.into_iter().find(|id| torro_pim::account::is_legacy_id(id)) {
             return Err(format!("{bare:?} is not a collection id; use the ids from accounts.list_accounts"));
         }
-        self.change(|settings| *settings = new)
+        self.change(|settings| {
+            let stored = settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide);
+            let decide_mail_to_cloud = Some(new.decide_mail_to_cloud.unwrap_or(stored));
+            *settings = Settings { decide_mail_to_cloud, ..new }
+        })
     }
 
     /// Like [`SettingsStore::update`], but the hidden collections, the orders of the task lists and
@@ -160,7 +168,12 @@ impl SettingsStore {
     /// Nor which model does which function (`ai_assignments`, task E12.5): those are checked
     /// against the accounts, the models and the data rule when they are set
     /// (`Core::set_ai_assignment`), and a whole-settings write would go round that check. They
-    /// change only through [`SettingsStore::set_ai_assignment`].
+    /// change only through [`SettingsStore::set_ai_assignment`]. Nor the model of a slot
+    /// (`ai_slots`, issue #325): `Core::set_ai_slot` checks it, and it changes only through
+    /// [`SettingsStore::set_ai_slot`]. The permission of the slot Sorting (`decide_mail_to_cloud`)
+    /// stays on only when it is on as stored and in `new`, like `mail_to_cloud`; a client from before
+    /// the slots, which sends none, switches it off – never back to unset, which would take the old
+    /// AI values over again at the next load (`Settings::take_over_old_ai`).
     ///
     /// Nor does a client switch on one of the assistant's own tools (point 9, issue #225): a tool
     /// stays on only when it is on as stored and in `new`, the PDF folder and the logos of the
@@ -189,6 +202,9 @@ impl SettingsStore {
             let enabled = settings.voice.enabled && new.voice.enabled;
             let voice = Voice { enabled, ..new.voice.clone() };
             let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
+            let ai_slots = std::mem::take(&mut settings.ai_slots);
+            let decide_out = settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide);
+            let decide_mail_to_cloud = Some(decide_out && new.decide_mail_to_cloud.unwrap_or(false));
             let allow_api_keys = settings.allow_api_keys && new.allow_api_keys;
             let allow_mcp = settings.allow_mcp && new.allow_mcp;
             let reminders = Reminders { calendars, ..new.reminders.clone() };
@@ -202,6 +218,8 @@ impl SettingsStore {
                 list_orders,
                 voice,
                 mail_to_cloud,
+                ai_slots,
+                decide_mail_to_cloud,
                 allow_api_keys,
                 allow_mcp,
                 reminders,
@@ -228,6 +246,31 @@ impl SettingsStore {
             }
             None => {
                 settings.ai_assignments.remove(&function);
+            }
+        })
+    }
+
+    /// Puts `chosen` in `slot`, or empties it with `None` (issue #325, `ai.set_slot`). The one way
+    /// `ai_slots` changes besides the old key `assistant_default` (the slot Chat): `Core::set_ai_slot`
+    /// checks the account, the model and who asks before it calls this.
+    ///
+    /// For [`torro_core::ai::AiSlot::Decide`] the same write sets `decide_mail_to_cloud` to
+    /// `elsewhere` – whether the model chosen computes elsewhere –, so the permission follows the
+    /// choice: a model elsewhere lets sorted mail out, one here or none keeps it here (`elsewhere`
+    /// is then `false`; for `None` it is taken as `false` whatever is passed). For
+    /// [`torro_core::ai::AiSlot::Chat`] `elsewhere` is ignored: the chat's permission is
+    /// `mail_to_cloud`, which only its own switch changes.
+    pub fn set_ai_slot(
+        &self,
+        slot: torro_core::ai::AiSlot,
+        chosen: Option<torro_core::ai::SlotModel>,
+        elsewhere: bool,
+    ) -> Result<(), String> {
+        self.change(|settings| match slot {
+            torro_core::ai::AiSlot::Chat => settings.ai_slots.chat = chosen.clone(),
+            torro_core::ai::AiSlot::Decide => {
+                settings.decide_mail_to_cloud = Some(elsewhere && chosen.is_some());
+                settings.ai_slots.decide = chosen.clone();
             }
         })
     }
@@ -572,7 +615,8 @@ enum Change {
     SpeakAnswers(bool),
     SttModel(Option<String>),
     Voice(Option<String>),
-    /// What a new chat of the assistant starts with (issue #131); `None` for the one used last.
+    /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
+    /// without the checks of `ai.set_slot`; `None` for the one used last.
     AssistantDefault(Option<AssistantDefault>),
     /// Where the first-run setup stands (task W.1); the version is recorded on the way in.
     Setup(SetupState),
@@ -591,6 +635,9 @@ enum Change {
     /// The data rule for mail (task C.17). Who may switch it on is the core's check
     /// (`Request::kept_for_people`).
     MailToCloud(bool),
+    /// The data rule for the mail the slot Sorting reads (issue #325), checked like
+    /// [`Change::MailToCloud`].
+    DecideMailToCloud(bool),
     /// Which mail categories the sidebar leaves out (task E12.10).
     HiddenCategories(Vec<torro_mail::Category>),
     /// "Allow API keys" (#231). Who may switch it on is the core's check
@@ -672,6 +719,9 @@ impl Change {
             }
             SettingKey::MailDownloadsFolder => Change::MailDownloadsFolder(MailAttachments::downloads_from(value)?),
             SettingKey::MailToCloud => Change::MailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::DecideMailToCloud => {
+                Change::DecideMailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             // Strict, like the night: the file's reading falls back to the defaults instead.
             SettingKey::HiddenCategories => {
                 Change::HiddenCategories(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -746,7 +796,7 @@ impl Change {
             Change::SpeakAnswers(speak) => settings.voice.speak_answers = speak,
             Change::SttModel(path) => settings.voice.stt_model = path,
             Change::Voice(path) => settings.voice.voice = path,
-            Change::AssistantDefault(default) => settings.assistant_default = default,
+            Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
             Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
             Change::MailView(format) => settings.mail_view = format,
@@ -754,6 +804,7 @@ impl Change {
             Change::MailAttachmentClick(click) => settings.mail_attachments.click = click,
             Change::MailDownloadsFolder(folder) => settings.mail_attachments.downloads = folder,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
+            Change::DecideMailToCloud(allowed) => settings.decide_mail_to_cloud = Some(allowed),
             Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
             Change::AllowApiKeys(allowed) => settings.allow_api_keys = allowed,
             Change::AllowMcp(allowed) => settings.allow_mcp = allowed,
@@ -876,6 +927,8 @@ fn load_from(path: &Path) -> Settings {
     });
     // A file without a font or colour scheme draws with the standard (task L.22).
     settings.fill_unnamed_parts(&Settings::default());
+    // The AI choices of a file from before the slots (issue #325).
+    settings.take_over_old_ai();
     settings
 }
 
@@ -1394,6 +1447,31 @@ mod tests {
         fs::write(folder.join("design.toml"), toml).expect("design.toml");
     }
 
+    /// Issue #325: the core takes a file from before the slots over like the apps do, and its next
+    /// write leaves `assistantDefault` out; the old key writes the slot Chat.
+    #[test]
+    fn a_file_from_before_the_slots_is_taken_over_and_written_without_the_old_field() {
+        let (dir, store) = store();
+        let file = dir.path().join("settings.json");
+        let old = json!({
+            "assistantDefault": {"engine": "claude-code"},
+            "aiAssignments": {"inbox.categorize": {"function": "inbox.categorize", "engine": "ai:a", "enabled": true}}
+        });
+        fs::write(&file, old.to_string()).expect("write");
+        let read = store.current();
+        assert_eq!(read.ai_slots.chat.map(|chosen| chosen.engine).as_deref(), Some("claude-code"));
+        assert_eq!(read.ai_slots.decide.map(|chosen| chosen.engine).as_deref(), Some("ai:a"));
+        assert!(read.ai_assignments.is_empty() && read.decide_mail_to_cloud == Some(false));
+
+        store.set(SettingKey::AssistantDefault, &json!({"engine": "ai:b", "model": "qwen3:8b"})).expect("a default");
+        let written: serde_json::Value = serde_json::from_str(&fs::read_to_string(&file).expect("read")).expect("json");
+        assert!(written.get("assistantDefault").is_none(), "{written}");
+        assert_eq!(written["aiSlots"]["chat"], json!({"engine": "ai:b", "model": "qwen3:8b"}));
+        assert_eq!(written["aiSlots"]["decide"], json!({"engine": "ai:a"}));
+        store.set(SettingKey::DecideMailToCloud, &json!(true)).expect("a flag");
+        assert!(store.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide));
+    }
+
     #[test]
     fn a_valid_design_is_stored_and_read_back() {
         let (_dir, store) = store();
@@ -1681,13 +1759,18 @@ mod tests {
                 color_scheme: "nord".into(),
                 assistant_retention: Retention::Forever,
                 voice: Voice::default(),
-                assistant_default: AssistantDefault::from_value(&default).expect("a default"),
+                ai_slots: torro_core::ai::AiSlots {
+                    chat: AssistantDefault::from_value(&default).expect("a default"),
+                    decide: None,
+                },
+                legacy_assistant_default: None,
                 setup: Setup { state: SetupState::Skipped, version: Setup::VERSION },
                 components_off: BTreeSet::from([Component::Mail]),
                 mail_view: MailFormat::Html,
                 mail_appearance: MailAppearance::App,
                 mail_attachments: MailAttachments::default(),
                 mail_to_cloud: false,
+                decide_mail_to_cloud: Some(false),
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 maps: Maps { open_with: torro_core::settings::MapsApp::Apple, ..Maps::default() },
                 ai_assignments: std::collections::BTreeMap::new(),
@@ -1704,13 +1787,17 @@ mod tests {
         Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
         assert!(settings.mail_to_cloud);
         assert!(Change::parse(SettingKey::MailToCloud, &json!("yes")).is_err(), "only true or false");
+        assert!(!settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide), "the chat's rule is not Sorting's");
+        Change::parse(SettingKey::DecideMailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
+        assert_eq!(settings.decide_mail_to_cloud, Some(true));
+        assert!(Change::parse(SettingKey::DecideMailToCloud, &json!(1)).is_err(), "only true or false");
         assert!(settings.reminders.all_day && settings.reminders.enabled, "the rest keeps its defaults");
         Change::parse(SettingKey::Reminders, &json!({"defaultLead": 5})).expect("valid").apply(&mut settings);
         assert!(settings.reminders.all_day, "a later change keeps what it does not name");
         assert_eq!(settings.reminders.default_lead, Some(5));
         assert!(Change::parse(SettingKey::Reminders, &json!({"defaultLead": -1})).is_err(), "a lead of minutes");
         Change::parse(SettingKey::AssistantDefault, &json!(null)).expect("none").apply(&mut settings);
-        assert_eq!(settings.assistant_default, None, "null goes back to the one used last");
+        assert_eq!(settings.ai_slots.chat, None, "null goes back to the one used last");
         assert!(Change::parse(SettingKey::AssistantDefault, &json!({"engine": " "})).is_err(), "an engine");
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
         assert!(Change::parse(SettingKey::AssistantRetention, &json!(0)).is_err(), "at least a day");
@@ -1840,6 +1927,73 @@ mod tests {
         sent.mail_to_cloud = false;
         store.update_keeping_hidden(sent).expect("written");
         assert!(!store.current().mail_to_cloud);
+    }
+
+    /// Issue #325 (task MW.2): a client's whole settings never change a slot – `ai.set_slot` checks
+    /// those – and never let sorted mail out, but may keep it here. A client from before the slots
+    /// sends no `decideMailToCloud`: that keeps it off, never unset (which would take the old values
+    /// over again at the next load).
+    #[test]
+    fn a_client_keeps_the_slots_and_never_lets_sorted_mail_out() {
+        use torro_core::ai::{AiSlot, SlotModel};
+        let (_dir, store) = store();
+        let decide = SlotModel { engine: "ai:a".into(), model: Some("nimble".into()), effort: None };
+        store.set_ai_slot(AiSlot::Decide, Some(decide.clone()), true).expect("a slot");
+        assert!(store.current().mail_to_cloud_in(AiSlot::Decide), "the slot elsewhere let it out");
+
+        let mut sent = store.current();
+        sent.ai_slots.decide = Some(SlotModel { engine: "ai:b".into(), model: None, effort: None });
+        sent.ai_slots.chat = Some(SlotModel { engine: "ai:c".into(), model: None, effort: None });
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert_eq!(store.current().ai_slots.decide, Some(decide.clone()), "as stored");
+        assert_eq!(store.current().ai_slots.chat, None, "as stored");
+        assert!(store.current().mail_to_cloud_in(AiSlot::Decide), "on stays on");
+
+        sent.decide_mail_to_cloud = None;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert_eq!(
+            store.current().decide_mail_to_cloud,
+            Some(false),
+            "an older client switches it off, never unsets it"
+        );
+        sent.decide_mail_to_cloud = Some(true);
+        store.update_keeping_hidden(sent).expect("written");
+        assert_eq!(store.current().decide_mail_to_cloud, Some(false), "a client never lets it out");
+
+        // The slot written here takes its permission along; emptied, nothing goes out.
+        store.set_ai_slot(AiSlot::Decide, Some(decide), false).expect("here");
+        assert_eq!(store.current().decide_mail_to_cloud, Some(false));
+        store.set_ai_slot(AiSlot::Decide, None, true).expect("emptied");
+        assert_eq!((store.current().ai_slots.decide, store.current().decide_mail_to_cloud), (None, Some(false)));
+        // The chat's slot leaves both permissions alone.
+        store.set(SettingKey::DecideMailToCloud, &json!(true)).expect("the person");
+        let chat = SlotModel { engine: "claude-code".into(), model: None, effort: None };
+        store.set_ai_slot(AiSlot::Chat, Some(chat.clone()), true).expect("chat");
+        let now = store.current();
+        assert_eq!((now.ai_slots.chat, now.decide_mail_to_cloud, now.mail_to_cloud), (Some(chat), Some(true), false));
+    }
+
+    /// Issue #325 (task MW.3): the person's whole settings without `decideMailToCloud` – an app from
+    /// before the slots – keep it as stored, so the file never holds it unset (which would take the old
+    /// AI values over again); with it, it is taken.
+    #[test]
+    fn the_person_s_whole_settings_never_unset_the_permission_of_sorting() {
+        use torro_core::ai::AiSlot;
+        let (dir, store) = store();
+        store.set(SettingKey::DecideMailToCloud, &json!(true)).expect("the person");
+        let mut sent = store.current();
+        sent.decide_mail_to_cloud = None;
+        store.update(sent.clone()).expect("written");
+        assert_eq!(store.current().decide_mail_to_cloud, Some(true), "kept as stored");
+        let file = std::fs::read_to_string(dir.path().join("settings.json")).expect("the file");
+        assert!(file.contains("\"decideMailToCloud\": true"), "{file}");
+
+        sent.decide_mail_to_cloud = Some(false);
+        store.update(sent.clone()).expect("written");
+        assert!(!store.current().mail_to_cloud_in(AiSlot::Decide), "taken when it is there");
+        sent.decide_mail_to_cloud = None;
+        store.update(sent).expect("written");
+        assert_eq!(store.current().decide_mail_to_cloud, Some(false));
     }
 
     /// #231: a client's whole settings never open the API or MCP again, but may close them; the

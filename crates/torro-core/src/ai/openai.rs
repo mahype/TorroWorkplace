@@ -288,12 +288,16 @@ impl StreamDecoder {
 ///   [`AiModel::reasoning`] whether it holds `reasoning`;
 /// - `hugging_face_id` (OpenRouter): [`AiModel::open_weights`] is whether it is a non-empty
 ///   text; a model without the field (any other server) leaves it unknown.
+///
+/// `"data": null` is an empty list: Ollama answers so while it holds no model (0.40.11, issue #325), and
+/// that server must still connect, so the suite can download its first model into it.
 pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
     let answer: Value = serde_json::from_slice(body).map_err(|_| not_json())?;
-    let list = answer
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format_error(tr("The answer has no model list.")))?;
+    let empty = Vec::new();
+    let list = match answer.get("data") {
+        Some(Value::Null) => &empty,
+        data => data.and_then(Value::as_array).ok_or_else(|| format_error(tr("The answer has no model list.")))?,
+    };
     Ok(list
         .iter()
         .filter_map(|model| {
@@ -722,6 +726,14 @@ mod tests {
             }]
         );
         assert!(matches!(parse_models(br#"{"models":[]}"#), Err(AiError::Format(_))));
+        assert!(matches!(parse_models(br#"{"object":"list","data":"none"}"#), Err(AiError::Format(_))));
+    }
+
+    /// Issue #325: an Ollama without any model – as 0.40.11 answers then, recorded – lists none; it is
+    /// no broken answer, so it can be connected and its first model downloaded.
+    #[test]
+    fn an_ollama_without_models_lists_none() {
+        assert_eq!(parse_models(br#"{"object":"list","data":null}"#).expect("an empty list"), []);
     }
 
     #[test]

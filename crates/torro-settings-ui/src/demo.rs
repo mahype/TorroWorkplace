@@ -129,11 +129,20 @@ impl Demo {
             appearance: Appearance::Dark,
             // An AI account with one of its models: the load's second round then really asks
             // `ai.list_models`, and the Model and Effort groups of General have rows to show.
-            assistant_default: Some(AssistantDefault {
-                engine: "ai:ollama@localhost:11434".into(),
-                model: Some("qwen3:8b".into()),
-                effort: None,
-            }),
+            ai_slots: torro_core::ai::AiSlots {
+                chat: Some(AssistantDefault {
+                    engine: "ai:ollama@localhost:11434".into(),
+                    model: Some("qwen3:8b".into()),
+                    effort: None,
+                }),
+                // Sorting mail with the local deciding model as the slot Sorting (issue #325), not as an
+                // exception of `inbox.categorize`.
+                decide: Some(AssistantDefault {
+                    engine: "ai:ollama@localhost:11434".into(),
+                    model: Some("nimble".into()),
+                    effort: None,
+                }),
+            },
             // So "Calendars" (task S.19) shows a hidden calendar too, with its switch off.
             hidden_collections: vec![SHARED_CALENDAR.into()],
             reminders,
@@ -716,25 +725,30 @@ impl Demo {
         ]
     }
 
-    /// What each function of the suite uses (`ai.list_assignments`): sorting mail is set up with
-    /// the local deciding model. Every function of the list, so a new one shows up here by
-    /// itself – unassigned until the sample says otherwise.
+    /// What each function of the suite uses (`ai.list_assignments`): no exception – sorting mail
+    /// takes the slot Sorting of the settings (issue #325). Every function of the list, so a new one
+    /// shows up here by itself – unassigned until the sample says otherwise.
     fn assignments(&self) -> Vec<torro_ipc::AiAssignmentInfo> {
         use torro_core::ai::{AiAssignment, AiFunction};
         AiFunction::ALL
             .into_iter()
-            .map(|function| {
-                let mut assignment = AiAssignment::none(function);
-                if function == AiFunction::InboxCategorize {
-                    assignment.engine = Some("ai:ollama@localhost:11434".into());
-                    assignment.model = Some("nimble".into());
-                    assignment.enabled = true;
-                }
-                torro_ipc::AiAssignmentInfo {
-                    assignment,
-                    label: function.label().to_string(),
-                    needs_decision: function.needs_decision(),
-                }
+            .map(|function| torro_ipc::AiAssignmentInfo {
+                assignment: AiAssignment::none(function),
+                label: function.label().to_string(),
+                needs_decision: function.needs_decision(),
+            })
+            .collect()
+    }
+
+    /// Both slots as the sample settings hold them (`ai.list_assignments`, issue #325).
+    fn slots(&self) -> Vec<torro_ipc::AiSlotInfo> {
+        torro_core::ai::AiSlot::ALL
+            .into_iter()
+            .map(|slot| torro_ipc::AiSlotInfo {
+                slot,
+                label: slot.label().to_string(),
+                chosen: self.settings.ai_slots.get(slot).cloned(),
+                mail_to_cloud: self.settings.mail_to_cloud_in(slot),
             })
             .collect()
     }
@@ -894,7 +908,7 @@ impl Backend for Demo {
             Request::ListExtensions => Response::Extensions { extensions: self.extensions() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
-            Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
+            Request::AiAssignments => Response::AiAssignments { assignments: self.assignments(), slots: self.slots() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
             Request::PreviewClearCategories => Response::CategoryClearPreview {
                 preview: CategoryClearPreview {

@@ -2335,6 +2335,44 @@ mod tests {
         );
     }
 
+    /// Issue #325: the slots, the recommendation and the downloads are one tool each, built from
+    /// the catalogue; recommending and listing downloads only read.
+    #[test]
+    fn slots_recommendation_and_downloads_are_one_tool_each() {
+        let slot =
+            request_for("ai_set_slot", args(json!({"slot": "decide", "engine": "ai:ollama@localhost:11434"})), &Utc);
+        assert_eq!(
+            slot,
+            Ok(Request::SetAiSlot {
+                slot: torro_core::ai::AiSlot::Decide,
+                engine: Some("ai:ollama@localhost:11434".into()),
+                model: None,
+                effort: None,
+            })
+        );
+        assert_eq!(request_for("ai_recommend", JsonObject::new(), &Utc), Ok(Request::AiRecommend));
+        let pull = request_for(
+            "ai_pull_model",
+            args(json!({"account": "ai:ollama@localhost:11434", "model": "qwen3:14b"})),
+            &Utc,
+        );
+        assert_eq!(
+            pull,
+            Ok(Request::PullAiModel { account: "ai:ollama@localhost:11434".into(), model: "qwen3:14b".into() })
+        );
+        assert_eq!(request_for("ai_list_pulls", JsonObject::new(), &Utc), Ok(Request::AiPulls));
+        assert_eq!(
+            request_for("ai_cancel_pull", args(json!({"id": "p1"})), &Utc),
+            Ok(Request::CancelAiPull { id: "p1".into() })
+        );
+        for (name, read_only) in
+            [("ai_recommend", true), ("ai_list_pulls", true), ("ai_set_slot", false), ("ai_pull_model", false)]
+        {
+            let hints = tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
+            assert_eq!(hints.and_then(|h| h.read_only_hint), Some(read_only), "{name}");
+        }
+    }
+
     #[test]
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);

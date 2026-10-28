@@ -143,6 +143,32 @@ where
     L: std::borrow::Borrow<[T]> + 'a,
     M: Clone + 'a,
 {
+    styled_pick_list(options, chosen, on_pick).into()
+}
+
+/// [`picker`] as wide as its row: for a narrow page where the list stands under its label and
+/// several lists should line up (the slots of the control centre's AI section). Never a fixed width:
+/// a pick list cuts a value that does not fit without "…".
+pub fn picker_fill<'a, T, L, M>(options: L, chosen: T, on_pick: impl Fn(T) -> M + 'a) -> Element<'a, M>
+where
+    T: std::fmt::Display + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    M: Clone + 'a,
+{
+    styled_pick_list(options, chosen, on_pick).width(Fill).into()
+}
+
+/// The pick list of [`picker`] and [`picker_fill`] in the suite's look.
+fn styled_pick_list<'a, T, L, M>(
+    options: L,
+    chosen: T,
+    on_pick: impl Fn(T) -> M + 'a,
+) -> iced::widget::PickList<'a, T, L, T, M>
+where
+    T: std::fmt::Display + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    M: Clone + 'a,
+{
     iced::widget::pick_list(options, Some(chosen), on_pick)
         .padding(style::pick_list_padding())
         .text_size(typo::caption().size)
@@ -150,5 +176,4 @@ where
         .font(typo::caption().font)
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
-        .into()
 }

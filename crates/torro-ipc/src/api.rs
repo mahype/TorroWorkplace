@@ -949,9 +949,9 @@ impl Lack {
             }
             Lack::NeverToAgents { area } => format!(
                 "{} is not given to a coding agent that drives the assistant: the person's data rule keeps it on \
-                 their own computers. Changing the rights does not change this; only the person can let it go to \
-                 cloud models, with \"Mail to cloud models\" in Torro Workplace, Assistant. Say so instead of \
-                 trying",
+                 their own computers. Changing the rights does not change this; only the person can let the chat \
+                 read it in the cloud, with \"Chat may read mail in the cloud\" in Torro Workplace, Settings › AI \
+                 (the permission of Sorting is for sorting mail only). Say so instead of trying",
                 area.name()
             ),
             Lack::ReadOnly => {
@@ -1148,7 +1148,8 @@ impl Request {
     /// Whether this request may come from the app key only because of a value it carries, while
     /// its command is open to clients with the right rights ([`Rights::allows_request`]): setting
     /// `voice_enabled` (point 6, the microphone), `mail_to_cloud` (task C.17, mail to models
-    /// outside the person's computers), `allow_api_keys` or `allow_mcp` (#231, a way a person
+    /// outside the person's computers) or `decide_mail_to_cloud` (issue #325, the same for the mail
+    /// the slot Sorting reads), `allow_api_keys` or `allow_mcp` (#231, a way a person
     /// closed) to anything but `false`, or `tool_enabled` (point 9, issue #225) or `search_provider`
     /// (point 6, issue #305, a web search provider) with `enabled` anything but `false`, or
     /// `allowed_folder` (point 9, issue #304) with any value, or `maps` (task TE.1, the place search and
@@ -1172,6 +1173,7 @@ impl Request {
                 key:
                     crate::SettingKey::VoiceEnabled
                     | crate::SettingKey::MailToCloud
+                    | crate::SettingKey::DecideMailToCloud
                     | crate::SettingKey::AllowApiKeys
                     | crate::SettingKey::AllowMcp,
                 value,
@@ -1662,6 +1664,11 @@ impl Request {
             Request::AiModels { .. } => &LIST_MODELS,
             Request::AiAssignments => &LIST_ASSIGNMENTS,
             Request::SetAiAssignment { .. } => &SET_ASSIGNMENT,
+            Request::SetAiSlot { .. } => &SET_SLOT,
+            Request::AiRecommend => &RECOMMEND,
+            Request::PullAiModel { .. } => &PULL_MODEL,
+            Request::AiPulls => &LIST_PULLS,
+            Request::CancelAiPull { .. } => &CANCEL_PULL,
             Request::FindAiServers => &FIND_LOCAL_SERVERS,
             Request::SetModelEnabled { .. } => &SET_MODEL_ENABLED,
             Request::MailFolders { .. } => &LIST_FOLDERS,
@@ -1888,6 +1895,11 @@ pub static CATALOGUE: &[&Command] = &[
     &MUTE_SOURCE,
     &LIST_ASSIGNMENTS,
     &SET_ASSIGNMENT,
+    &SET_SLOT,
+    &RECOMMEND,
+    &PULL_MODEL,
+    &LIST_PULLS,
+    &CANCEL_PULL,
     &LIST_CATEGORIES,
     &SET_ITEM_CATEGORY,
     &CLASSIFY_ITEM,
@@ -2749,8 +2761,12 @@ static LIST_ASSIGNMENTS: Command = Command {
     description: "Lists which AI account and model each function of the suite uses (`docs/ki.md`): the \
                   function's key (`inbox.categorize`), the words a person reads for it, the account \
                   (`ai:…`), the model, the effort and whether it is switched on. Functions nobody set up are \
-                  listed with empty fields, so the list is the whole truth. `needs_decision` marks a function \
-                  that only works with a model that decides instead of writing. No key or secret is in here.",
+                  listed with empty fields and `enabled: false`, so the list is the whole truth: that means no \
+                  exception of their own, not that they are off; they use their slot. `needs_decision` marks a function \
+                  that only works with a model that decides instead of writing. `slots` lists the two slots \
+                  (`chat`, `decide`) with their label, account, model and effort (absent while empty) and \
+                  `mail_to_cloud`, whether mail may leave this computer for that slot; a function without an \
+                  exception of its own uses its slot. No key or secret is in here.",
 };
 
 // Admin: it decides which account of the person works, and for how much.
@@ -2759,15 +2775,96 @@ static SET_ASSIGNMENT: Command = Command {
     area: Area::Ai,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Sets which AI account and model a function uses, or takes it back with `engine: null`; \
-                  returns the whole list. Needs the person's approval. `not-found` for a function this version \
-                  does not know or an account that does not exist; `error` for a model the account does not \
-                  offer, for a function that needs a decision model and a model that does not decide, and – \
-                  while mail may only go to models on this computer – for a model that runs elsewhere. That \
-                  last rule is the person's to lift, in the control centre, never an agent's. `unsupported` \
+    description: "Sets which AI account and model a function uses as an exception to the model of its slot \
+                  (ai_set_slot), or takes the exception back with `engine: null`, so the slot applies again; \
+                  `enabled: false` keeps the function off. Returns the whole list. Needs the person's approval. \
+                  A function that needs a decision takes a decision model or a chat model with tools, which \
+                  answers in a fixed format. Choosing a model that runs elsewhere for a function that reads \
+                  mail is for a person, in the control centre: an agent gets `forbidden`, also while sorted \
+                  mail may leave this computer, and also with `enabled: false` unless it names the account \
+                  and model the function uses now (its exception, else its slot), so an agent can switch \
+                  that off but never prepare another. With no model named, an account on this computer \
+                  counts as here: its \"Automatic\" picks only models that run on this computer, never one \
+                  elsewhere such as Ollama's `:cloud` models; an account elsewhere counts as elsewhere. \
+                  `not-found` for a function this version does not know or an account that does not exist; \
+                  `error` for a model the account does not offer or one that cannot decide; `unsupported` \
                   while the assignment is on for a model that is turned off (`ai.set_model_enabled`), or, \
-                  with no model named, for an account with no model on (for a function that needs a decision \
-                  model: none on that decides); a model turned off later is not used.",
+                  with no model named, for an account with no model on that fits (at an account on this \
+                  computer, none on that runs here); a model turned off later is not used.",
+};
+
+// Admin like `ai.set_assignment`: it decides which account of the person works for the whole suite.
+// A model elsewhere for Sorting is the person's alone (the core refuses every client, like
+// `decide_mail_to_cloud`), since that consent was given to one provider, not to whichever an agent names.
+static SET_SLOT: Command = Command {
+    name: "ai.set_slot",
+    area: Area::Ai,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Puts a model in one of the two slots, `chat` (the assistant and its bots; new chats start \
+                  with it) or `decide` (sorting mail into categories), or empties it with `engine: null`; \
+                  returns the list of ai_list_assignments with its `slots`. Functions without an assignment of \
+                  their own use the model of their slot. Needs the person's approval. `engine` is an account \
+                  id `ai:…` from accounts_list_accounts, `model` an id from ai_list_models; ai_recommend \
+                  suggests both; for `chat`, `engine` may also be an engine of assistant_list_engines. \
+                  Choosing a model that runs elsewhere for `decide` is for a person, in the control centre: an \
+                  agent gets `forbidden`. Putting a model or account on this computer in `decide`, or emptying \
+                  it, also switches off the permission for sorted mail to leave this computer \
+                  (`decide_mail_to_cloud`); a person choosing one elsewhere switches it on. `not-found` for an \
+                  unknown account; `error` for a model the account does not offer or one that cannot sort; \
+                  `unsupported` for a model that is turned off (ai_set_model_enabled).",
+};
+
+// Read access: it measures this computer and reads the accounts' model lists; nothing is stored. A
+// suggestion for Sorting only with mail the caller may read, so it tells no client that mail exists.
+static RECOMMEND: Command = Command {
+    name: "ai.recommend",
+    area: Area::Ai,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Suggests a model for each slot (`chat`, `decide`) on this computer: the computer as measured \
+                  (processor, memory, graphics card and its video memory), the tier of models that fits it and \
+                  per slot the account, model, whether it runs here, where it runs, its download size when the \
+                  model still has to be downloaded (`download_bytes`) and a short reason. Local models come \
+                  first; a cloud model only where no local one fits. `decide` only while a mail account this \
+                  key may read is connected. It sets nothing: use ai_pull_model and ai_set_slot.",
+};
+
+// Admin: it loads gigabytes onto the person's computer and changes what Ollama offers. Only models of
+// the recommendation list: a free name could make Ollama load from another registry.
+static PULL_MODEL: Command = Command {
+    name: "ai.pull_model",
+    area: Area::Ai,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Downloads a model into Ollama on this computer, in the background; returns the downloads as \
+                  ai_list_pulls does. Only Ollama on this computer, and only a model ai_recommend suggests as a \
+                  local Ollama model; its size is the suggestion's `download_bytes`. Needs the person's \
+                  approval. Follow it with ai_list_pulls; once `done`, ai_list_models lists the model, and \
+                  ai_set_slot can put it in a slot. `not-found` for an unknown account; `unsupported` for \
+                  another account or a model not suggested; `busy` while the same model downloads already; `offline` when Ollama does not \
+                  answer, unless the download was cancelled meanwhile: then the list with it `cancelled`.",
+};
+
+static LIST_PULLS: Command = Command {
+    name: "ai.list_pulls",
+    area: Area::Ai,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the downloads of models since Torro Workplace started, running and finished: id, \
+                  account, model, state (`running`, `done`, `failed`, `cancelled`) and the bytes loaded of all \
+                  (`completed`, `total`). Ask about once a second while one runs.",
+};
+
+// Write: it stops a download that was started; what Ollama loaded so far stays for a later try.
+static CANCEL_PULL: Command = Command {
+    name: "ai.cancel_pull",
+    area: Area::Ai,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Cancels a running download of a model by its id from ai_list_pulls; returns the downloads \
+                  with it as `cancelled`. A download that already ended stays as it is. `not-found` for an \
+                  unknown id.",
 };
 
 // Read access: it asks two fixed addresses on this computer for their models and stores nothing.
@@ -2795,7 +2892,10 @@ static GET_SETTINGS: Command = Command {
                   state pending, skipped or done, and its version), the components a person turned off \
                   (`componentsOff`; all others are on), how reminders of events come (`reminders`, with the \
                   style of each calendar you see), whether keys of scripts and of MCP clients work at all \
-                  (`allowApiKeys`, `allowMcp`), the modifiers of the template keys (`workspaces`) and the \
+                  (`allowApiKeys`, `allowMcp`), the model of each slot (`aiSlots`: `chat`, what new chats of \
+                  the assistant start with, and `decide`, what sorts mail), whether mail may go to models \
+                  elsewhere for the chat (`mailToCloud`) and for sorting (`decideMailToCloud`), the \
+                  modifiers of the template keys (`workspaces`) and the \
                   assistant's own tools (`tools`: the ones switched on in \
                   `enabled`, the PDF folder and the templates `letter`, `report` and `note`) and the web search \
                   providers switched on (`webSearch`; its SearXNG address only for a key that reaches the tool \
@@ -2839,12 +2939,14 @@ static SET_SETTING: Command = Command {
                   the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\") or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
-                  model and effort optional, or null for the one used last) or how mail shows in the inbox's \
+                  model and effort optional, or null for the one used last; it writes the slot `chat`, prefer \
+                  ai_set_slot) or how mail shows in the inbox's \
                   reader: `mail_view` (\"html\" formatted, the default, or \"text\"; where a mail with HTML \
                   starts) or `mail_appearance` (\"app\" like the suite, the default, \"light\" or \"dark\"; only \
                   the colours of the mail's content) or `mail_to_cloud` (only false: keeps mail with models on the \
                   person's own computers again; letting mail go to cloud models is for a person, true is \
-                  forbidden) or what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
+                  forbidden) or `decide_mail_to_cloud` (only false: the same for the mail the slot `decide` \
+                  sorts) or what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
                   default, \"downloads\", \"save_as\", \"suggested\" or {\"target\": \"<id from \
                   mail_list_save_targets>\"}) or `mail_downloads_folder` (null to save attachments in the \
                   system's Downloads folder again; choosing a folder is for a person) or `allow_api_keys` / \
@@ -3426,7 +3528,7 @@ static START_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
+    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
 };
 
 static GET_CATEGORY_JOB: Command = Command {
@@ -3442,7 +3544,7 @@ static CONTROL_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.",
+    description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. An agent may resume a job naming a model that runs elsewhere only while it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.",
 };
 
 static PREVIEW_CLEAR_CATEGORIES: Command = Command {
@@ -4688,7 +4790,7 @@ mod tests {
         }
         assert!(
             Lack::NeverToAgents { area: Area::Mail }.message().contains("not given to a coding agent")
-                && Lack::NeverToAgents { area: Area::Mail }.message().contains("Mail to cloud models")
+                && Lack::NeverToAgents { area: Area::Mail }.message().contains("Chat may read mail in the cloud")
         );
         assert!(Lack::SwitchedOff { area: Area::Mail }.message().contains("this conversation"));
         assert!(Lack::Level { area: Area::Mail, needs: Access::Delete }.message().contains("full access to mail"));
@@ -4960,6 +5062,16 @@ mod tests {
                 effort: None,
                 enabled: true,
             },
+            Request::SetAiSlot {
+                slot: torro_core::ai::AiSlot::Decide,
+                engine: Some("ai:ollama@localhost:11434".into()),
+                model: Some("nimble".into()),
+                effort: None,
+            },
+            Request::AiRecommend,
+            Request::PullAiModel { account: "ai:ollama@localhost:11434".into(), model: "qwen3:14b".into() },
+            Request::AiPulls,
+            Request::CancelAiPull { id: "p1".into() },
             Request::ListCategories { account: None },
             Request::SetItemCategory { id: "i1".into(), category: torro_mail::Category::Invoice, remember: true },
             Request::ClassifyItem { id: "i1".into() },
@@ -5587,6 +5699,34 @@ mod tests {
         );
         assert_eq!(Request::TestVoice.operation().command.mcp, Mcp::Never);
         assert_eq!(Request::VoiceStatus.operation().access, Access::Read);
+    }
+
+    /// Issue #325: no client lets the mail of the slot Sorting go to cloud models either, not even
+    /// with every right; keeping it local again is an ordinary admin change. Choosing the slots,
+    /// recommending and downloading are commands of `ai` with their tools.
+    #[test]
+    fn only_people_let_mail_go_to_the_cloud_for_sorting() {
+        use crate::SettingKey;
+        let rule = |value| Request::SetSetting { key: SettingKey::DecideMailToCloud, value };
+        let (on, off) = (rule(serde_json::json!(true)), rule(serde_json::json!(false)));
+        assert!(on.kept_for_people() && !off.kept_for_people());
+        assert!(rule(serde_json::json!("yes")).kept_for_people(), "anything but false counts as on");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        assert!(!rights.allows_request(&on) && rights.allows_request(&off));
+
+        for (name, access) in [
+            ("ai.set_slot", Access::Admin),
+            ("ai.recommend", Access::Read),
+            ("ai.pull_model", Access::Admin),
+            ("ai.list_pulls", Access::Read),
+            ("ai.cancel_pull", Access::Write),
+        ] {
+            let command = CATALOGUE.iter().find(|command| command.name == name).expect(name);
+            assert_eq!((command.area, command.access, command.mcp), (Area::Ai, access, Mcp::Tool), "{name}");
+        }
     }
 
     /// Task C.17: no client lets mail go to cloud models, not even with every
@@ -6442,6 +6582,7 @@ mod tests {
                 "mail_downloads_folder",
                 "mail_appearance",
                 "mail_to_cloud",
+                "decide_mail_to_cloud",
                 "reminders",
                 "hidden_categories",
                 "allow_api_keys",

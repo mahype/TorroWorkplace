@@ -3804,8 +3804,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Task C.17: the data rule for mail under Mail of the assistant and its bots.
     ("Mail to cloud models", "Mail an Cloud-Modelle"),
     (
-        "Off: only AI accounts on your own computers read mail",
-        "Aus: Nur KI-Konten auf deinen eigenen Rechnern lesen Mail",
+        "Off: the chat reads mail only with AI on your own computers",
+        "Aus: Der Chat liest Mail nur mit KI auf deinen eigenen Rechnern",
     ),
     (
         "Mail goes to the model's provider and can't be taken back",
@@ -4396,9 +4396,53 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die E-Mails ohne Kategorie mit der KI auf diesem Rechner einordnen",
     ),
     ("Stop sorting mail into categories", "Das Einordnen von E-Mails anhalten"),
-    ("Let {engine} ({model}) do “{function}”", "„{function}“ von {engine} ({model}) erledigen lassen"),
     ("Let no model do “{function}” any more", "„{function}“ von keinem Modell mehr erledigen lassen"),
-    ("a model it picks", "einem Modell seiner Wahl"),
+    (
+        "Let {engine} (a model it picks) do “{function}”",
+        "„{function}“ von {engine} (einem Modell seiner Wahl) erledigen lassen",
+    ),
+    (
+        "Let an unknown model of {engine} do “{function}”",
+        "„{function}“ von einem unbekannten Modell von {engine} erledigen lassen",
+    ),
+    (
+        "Let {engine} ({model}) do “{function}” (runs on this computer)",
+        "„{function}“ von {engine} ({model}) erledigen lassen (rechnet auf diesem Computer)",
+    ),
+    (
+        "Let {engine} ({model}) do “{function}” (runs elsewhere)",
+        "„{function}“ von {engine} ({model}) erledigen lassen (rechnet anderswo)",
+    ),
+    ("Let “{function}” follow {slot} again ({engine})", "„{function}“ wieder dem Platz {slot} überlassen ({engine})"),
+    (
+        "Let “{function}” follow {slot} again: {engine} ({model}), runs on this computer",
+        "„{function}“ wieder dem Platz {slot} überlassen: {engine} ({model}), rechnet auf diesem Computer",
+    ),
+    (
+        "Let “{function}” follow {slot} again: {engine} ({model}), runs elsewhere",
+        "„{function}“ wieder dem Platz {slot} überlassen: {engine} ({model}), rechnet anderswo",
+    ),
+    // The two slots of models (issue #325) and their approvals.
+    ("Chat", "Chat"),
+    ("Sorting", "Sortieren"),
+    ("Let no model be the model for {slot}", "Für {slot} kein Modell mehr nehmen"),
+    ("Let {engine} pick the model for {slot}", "{engine} das Modell für {slot} wählen lassen"),
+    ("{text}; effort: {effort}", "{text}; Aufwand: {effort}"),
+    (
+        "Let an unknown model of {engine} be the model for {slot}",
+        "Ein unbekanntes Modell von {engine} für {slot} nehmen",
+    ),
+    (
+        "Let {engine} ({model}) be the model for {slot} (runs on this computer)",
+        "{engine} ({model}) für {slot} nehmen (rechnet auf diesem Rechner)",
+    ),
+    (
+        "Let {engine} ({model}) be the model for {slot} (runs elsewhere)",
+        "{engine} ({model}) für {slot} nehmen (rechnet anderswo)",
+    ),
+    ("Download {model} ({size}) to {engine}", "{model} ({size}) in {engine} herunterladen"),
+    ("Download {model} to {engine}", "{model} in {engine} herunterladen"),
+    ("Download an unknown model to {engine}", "Ein unbekanntes Modell in {engine} herunterladen"),
     // Settings › Categorization of the mail window (E12.10).
     ("Categorization", "Kategorisierung"),
     ("Sort mail into categories", "E-Mails in Kategorien einordnen"),
@@ -4409,9 +4453,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
          wird versteckt, verschoben oder gelöscht, und jede Kategorie kannst du von Hand ändern.",
     ),
     (
-        "Only models on this computer are offered: mail stays here unless you allow more in the control centre.",
-        "Angeboten werden nur Modelle auf diesem Rechner: E-Mails bleiben hier, solange du in der Steuerzentrale \
-         nichts anderes erlaubst.",
+        "Only models on this computer are offered: mail stays here unless you choose a model elsewhere for Sorting in Settings › AI.",
+        "Angeboten werden nur Modelle auf diesem Rechner: E-Mails bleiben hier, solange du unter Einstellungen › KI \
+         für „Sortieren“ kein Modell anderswo wählst.",
     ),
     ("No model that can sort mail", "Kein Modell, das E-Mails einordnen kann"),
     (
@@ -4419,8 +4463,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Füge unter KI eine KI auf diesem Rechner hinzu, etwa Ollama, und lade ein Modell, das entscheidet.",
     ),
     (
-        "Mail may go to an AI elsewhere; every model that decides is offered.",
-        "E-Mails dürfen zu einer KI anderswo gehen; angeboten wird jedes Modell, das entscheidet.",
+        "Mail may go to an AI elsewhere for sorting; every model that can sort it is offered.",
+        "E-Mails dürfen zum Einordnen zu einer KI anderswo gehen; angeboten wird jedes Modell, das sie einordnen kann.",
     ),
     ("Catch up", "Altbestand"),
     ("Catch up now", "Jetzt nachrechnen"),
@@ -4685,7 +4729,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Cloud model: mail content leaves this computer.", "Cloud-Modell: E-Mail-Inhalte verlassen diesen Rechner."),
     ("Local model: mail content stays on this computer.", "Lokales Modell: E-Mail-Inhalte bleiben auf diesem Rechner."),
-    ("Choose a decision model above.", "Wähle oben ein Entscheidungsmodell."),
+    ("Choose a model above.", "Wähle oben ein Modell."),
     ("Error", "Fehler"),
     (
         "Choose all mail accounts to remove every category.",
@@ -4766,8 +4810,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("This AI account offers no model {id}.", "Dieses KI-Konto bietet kein Modell {id}."),
     (
-        "This model does not decide. Pick one that does, like nimble on Ollama.",
-        "Dieses Modell entscheidet nicht. Nimm eines, das es kann, etwa nimble auf Ollama.",
+        "This model can neither decide nor use tools. Pick one that can, like nimble or qwen3 on Ollama.",
+        "Dieses Modell kann weder entscheiden noch Werkzeuge nutzen. Nimm eines, das es kann, etwa nimble oder qwen3 auf Ollama.",
     ),
     ("This AI server does not offer decision models.", "Dieser KI-Server bietet keine Entscheidermodelle."),
     (
@@ -5069,8 +5113,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Every MCP client and its hooks are refused", "Jeder MCP-Client und seine Hooks werden abgewiesen"),
     ("Hide commands", "Befehle ausblenden"),
     (
-        "Holds for the assistant and all its bots, whatever their rights allow.",
-        "Gilt für den Assistenten und alle seine Bots, was immer ihre Rechte erlauben.",
+        "The switch holds for the assistant and all its bots, whatever their rights allow.",
+        "Der Schalter gilt für den Assistenten und alle seine Bots, was immer ihre Rechte erlauben.",
     ),
     ("Hooks without an agent", "Hooks ohne Agent"),
     ("Import from TorroMail", "Aus TorroMail übernehmen"),
@@ -5162,6 +5206,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Turn on a model of {provider} in Settings › AI.",
         "Schalte unter Einstellungen › KI ein Modell von {provider} an.",
     ),
+    (
+        "Turn on a model of {provider} that runs on this computer in Settings › AI.",
+        "Schalte unter Einstellungen › KI ein Modell von {provider} an, das auf diesem Computer läuft.",
+    ),
     ("Turn on an unknown model of {account}", "Ein unbekanntes Modell von {account} anschalten"),
     ("Turn on models in Settings › AI.", "Schalte Modelle unter Einstellungen › KI an."),
     ("Turn on “{model}” of {account} (runs elsewhere)", "„{model}“ von {account} anschalten (rechnet anderswo)"),
@@ -5170,6 +5218,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "„{model}“ von {account} anschalten (rechnet auf diesem Rechner)",
     ),
     ("Turned off in Settings › AI", "Abgeschaltet unter Einstellungen › KI"),
+    ("Turned off at {account}", "Abgeschaltet bei {account}"),
+    ("{text}; sorted mail stays on this computer", "{text}; sortierte Mail bleibt auf diesem Rechner"),
+    ("Let {engine} ({model}) be the model for {slot}", "{engine} ({model}) für {slot} nehmen"),
+    ("Sorting may no longer send mail to the cloud.", "Sortieren darf keine Mail mehr in die Cloud schicken."),
+    (
+        "The model for Sorting changed. Resume the run to sort with the new one.",
+        "Das Modell fürs Sortieren hat sich geändert. Setz den Lauf fort, um mit dem neuen zu sortieren.",
+    ),
     ("Turned off in {area}", "Abgeschaltet in {area}"),
     (
         "Turning the assistant on or off and what it may use are set under Access.",
@@ -5596,8 +5652,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Decides", "Entscheidet"),
     ("Can't use tools or decide", "Kann weder Werkzeuge nutzen noch entscheiden"),
     (
-        "No model of {provider} that decides is on. Turn one on in Settings › AI.",
-        "Kein Modell von {provider}, das entscheidet, ist an. Schalte eins unter Einstellungen › KI an.",
+        "No model of {provider} that can sort mail is on. Turn one on in Settings › AI.",
+        "Kein Modell von {provider}, das E-Mails einordnen kann, ist an. Schalte eins unter Einstellungen › KI an.",
     ),
     ("You turned this off for {bot} in {area}.", "Du hast das für {bot} in {area} abgeschaltet."),
     ("You turned this off in {area}.", "Du hast das in {area} abgeschaltet."),
@@ -6513,6 +6569,79 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Noch keine Antwort – sieh in „Gesendet“ nach, bevor du nochmal sendest.",
     ),
     ("No longer on Reply later.", "Nicht mehr auf „Später beantworten“."),
+    // Sorting through a chat model, the fallback of the slot Sorting (MW.3, issue #325).
+    (
+        "The AI model's answer could not be read. Try again or pick another model.",
+        "Die Antwort des KI-Modells ließ sich nicht lesen. Versuch es noch einmal oder nimm ein anderes Modell.",
+    ),
+    ("Only for sorting mail", "Nur zum Einordnen von E-Mails"),
+    ("Answers in a fixed format, slower", "Antwortet in festem Format, langsamer"),
+    // The tiers and reasons of the recommended models (MW.5, issue #325); "Medium", "This computer" and
+    // "Needs {program}" stand above.
+    ("Mac with large memory", "Mac mit viel Arbeitsspeicher"),
+    ("Graphics card", "Grafikkarte"),
+    ("Large", "Groß"),
+    ("Small", "Klein"),
+    ("Ready", "Bereit"),
+    ("Downloads first", "Wird zuerst heruntergeladen"),
+    ("No AI server runs on this computer", "Auf diesem Rechner läuft kein KI-Server"),
+    ("No server here offers a model for this computer", "Kein Server hier bietet ein Modell für diesen Rechner"),
+    ("No local model fits this computer", "Kein lokales Modell passt zu diesem Rechner"),
+    // Downloading models into Ollama (MW.7, issue #325); "There is no AI account {id}." stands above.
+    (
+        "Ollama could not download the model. Check the internet connection and the free disk space, then try again.",
+        "Ollama konnte das Modell nicht herunterladen. Prüfe die Internetverbindung und den freien Speicherplatz und versuch es dann noch einmal.",
+    ),
+    (
+        "Ollama's answer to the download could not be read. Try again.",
+        "Die Antwort von Ollama zum Download ließ sich nicht lesen. Versuch es noch einmal.",
+    ),
+    (
+        "The download stopped before it was complete. Try again.",
+        "Der Download brach vor dem Ende ab. Versuch es noch einmal.",
+    ),
+    ("This model is downloading to this account already.", "Dieses Modell wird schon in dieses Konto heruntergeladen."),
+    (
+        "Torro downloads only the models it suggests for this computer.",
+        "Torro lädt nur die Modelle herunter, die es für diesen Rechner vorschlägt.",
+    ),
+    (
+        "Models are downloaded only into Ollama on this computer.",
+        "Modelle werden nur in Ollama auf diesem Rechner heruntergeladen.",
+    ),
+    ("There is no download {id}.", "Es gibt keinen Download {id}."),
+    // The slots in the control centre's AI section (MW.8, issue #325); "Models", "Chat", "Sorting", "This
+    // computer", "Retry", "Saving…", "None", "Cancel", "Turned off in Settings › AI" and "Answers in a fixed
+    // format, slower" stand above.
+    ("Chat may read mail in the cloud", "Chat darf Mail in der Cloud lesen"),
+    ("Sorting sends mail to the cloud", "Sortieren schickt Mail in die Cloud"),
+    ("Sorting may send mail to the cloud", "Sortieren darf Mail in die Cloud schicken"),
+    ("The model that sorts now runs on this computer", "Das Modell, das jetzt sortiert, läuft auf diesem Rechner"),
+    ("Keep mail here", "Mail hier behalten"),
+    ("{tier} class", "Klasse {tier}"),
+    ("Wait until the download for {slot} has finished", "Warte, bis der Download für {slot} fertig ist"),
+    ("Wait until {slot} is saved", "Warte, bis {slot} gespeichert ist"),
+    (
+        "Torro suggests a model for each slot. Nothing changes until you choose one.",
+        "Torro schlägt für jeden Platz ein Modell vor. Nichts ändert sich, bis du eines wählst.",
+    ),
+    ("No suggestion right now", "Gerade kein Vorschlag"),
+    ("Measuring this computer…", "Rechner wird gemessen …"),
+    ("{size} video memory", "{size} Grafikspeicher"),
+    ("{size} shared memory", "{size} gemeinsamer Speicher"),
+    ("{size} memory", "{size} Arbeitsspeicher"),
+    ("Not measured", "Nicht gemessen"),
+    ("The assistant and its bots", "Der Assistent und seine Bots"),
+    ("Sorts mail into categories", "Sortiert Mail in Kategorien"),
+    ("Mail goes to {provider} ({seat}) for sorting only.", "Mail geht nur zum Sortieren an {provider} ({seat})."),
+    ("The chat still gets no mail.", "Der Chat bekommt weiterhin keine Mail."),
+    ("Suggested: {model}", "Vorschlag: {model}"),
+    ("Use suggestion", "Vorschlag nutzen"),
+    ("Use suggestion · {size}", "Vorschlag nutzen · {size}"),
+    ("Starting download…", "Download startet …"),
+    ("Downloading {done} of {total}", "{done} von {total} heruntergeladen"),
+    ("The account does not list {model}.", "Das Konto führt {model} nicht."),
+    ("The download stopped. Try again.", "Der Download wurde beendet. Versuch es noch einmal."),
     // Quick filters at the end of the mail search field (issue #336).
     ("Filters", "Filter"),
     ("Filtered: {filters}", "Gefiltert: {filters}"),

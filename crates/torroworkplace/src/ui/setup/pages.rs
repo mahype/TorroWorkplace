@@ -655,7 +655,7 @@ fn engine_choice<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Mes
         return None;
     }
     let current =
-        state.engine.clone().or_else(|| data.settings.assistant_default.as_ref().map(|default| default.engine.clone()));
+        state.engine.clone().or_else(|| data.settings.ai_slots.chat.as_ref().map(|default| default.engine.clone()));
     let selected = current.and_then(|id| engines.iter().find(|choice| choice.id == id).cloned());
     let pick = pick_list(engines, selected, |choice: Choice| Message::Engine(choice.id))
         .placeholder(tr("Choose"))

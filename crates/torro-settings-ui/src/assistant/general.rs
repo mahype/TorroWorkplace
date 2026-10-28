@@ -6,8 +6,9 @@
 //! is on. The group "Engines" is gone with the page it stood on: the engines are AI accounts, and
 //! accounts belong to the whole suite.
 //!
-//! **New chats** (issue #131): the engine, model and effort a new chat starts with
-//! (`settings.set_setting assistant_default`), or "The one used last" (`null`). The engines come
+//! **New chats** (issue #131): the engine, model and effort a new chat starts with – the slot *Chat*
+//! (`ai.set_slot chat` since issue #325, task MW.8; read from `aiSlots.chat`) –, or "The one used
+//! last" (the slot emptied). The engines come
 //! from `assistant.list_engines` – only AI accounts since issue #219; a coding agent would bring
 //! its own models –, an AI account's models from
 //! `ai.list_models` ([`super::models_request`]); the effort only where the model takes one. Each
@@ -23,6 +24,7 @@
 use iced::widget::{column, svg};
 use iced::{Element, Theme};
 
+use torro_core::ai::AiSlot;
 use torro_core::ai::{AiModel, Effort};
 use torro_core::i18n::tr;
 use torro_core::settings::AssistantDefault;
@@ -30,8 +32,8 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::theme::palette;
 use torro_gui::widgets::{self, Status};
+use torro_ipc::Request;
 use torro_ipc::assistant::EngineKind;
-use torro_ipc::{Request, SettingKey};
 
 use super::{AI_SECTION, Action, access};
 use crate::Data;
@@ -52,12 +54,18 @@ pub enum Message {
 pub fn update(message: Message, _data: &Data) -> Action {
     match message {
         Message::Access => Action::Open(access::ID),
-        Message::Default(default) => Action::send(Request::SetSetting {
-            key: SettingKey::AssistantDefault,
-            value: AssistantDefault::to_value(default.as_ref()),
-        }),
+        Message::Default(default) => Action::send(set_chat(default)),
         Message::ManageAi => Action::ControlCentre(AI_SECTION.to_string()),
     }
+}
+
+/// `ai.set_slot chat` with the whole default (issue #325), or with no engine for "The one used last".
+fn set_chat(default: Option<AssistantDefault>) -> Request {
+    let (engine, model, effort) = match default {
+        Some(AssistantDefault { engine, model, effort }) => (Some(engine), model, effort),
+        None => (None, None, None),
+    };
+    Request::SetAiSlot { slot: AiSlot::Chat, engine, model, effort }
 }
 
 // ----- Views --------------------------------------------------------------------------------
@@ -95,7 +103,8 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
     // everyone who had Claude Code there into this state; a removed AI account does the same.
     let current = data
         .settings
-        .assistant_default
+        .ai_slots
+        .chat
         .as_ref()
         .filter(|default| data.engines.iter().any(|engine| engine.id == default.engine));
     let footer = tr("What a new chat starts with. Each chat can pick another.");
@@ -260,17 +269,20 @@ mod tests {
     #[tokio::test]
     async fn the_default_of_new_chats_is_stored_whole() {
         let mut data = data().await;
-        let stored = data.settings.assistant_default.clone().expect("the demo sets one");
+        let stored = data.settings.ai_slots.chat.clone().expect("the demo sets one");
         let other = AssistantDefault { model: None, ..stored.clone() };
+        // Issue #325: the slot Chat, through `ai.set_slot`, no longer the old setting.
         assert_eq!(
             sent(update(Message::Default(Some(other.clone())), &data)),
-            vec![Request::SetSetting {
-                key: SettingKey::AssistantDefault,
-                value: AssistantDefault::to_value(Some(&other))
+            vec![Request::SetAiSlot {
+                slot: AiSlot::Chat,
+                engine: Some(other.engine.clone()),
+                model: None,
+                effort: other.effort
             }]
         );
         let last = sent(update(Message::Default(None), &data));
-        assert_eq!(last[0], Request::SetSetting { key: SettingKey::AssistantDefault, value: serde_json::Value::Null });
+        assert_eq!(last[0], Request::SetAiSlot { slot: AiSlot::Chat, engine: None, model: None, effort: None });
 
         // An AI account's models come from the load's second round; left to pick, nobody knows
         // whether the model thinks, so no effort is offered.
@@ -294,7 +306,7 @@ mod tests {
         assert!(!takes_effort(&quick, &data), "Haiku takes no effort");
 
         for default in [stored, on_agent, quick, closed] {
-            data.settings.assistant_default = Some(default);
+            data.settings.ai_slots.chat = Some(default);
             let _ = view(&data);
         }
         assert_eq!(effort_label(Some(Effort::Medium)), tr("Medium"));
@@ -316,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn new_chats_offer_only_models_that_are_on() {
         let mut data = data().await;
-        let stored = data.settings.assistant_default.clone().expect("the demo sets one");
+        let stored = data.settings.ai_slots.chat.clone().expect("the demo sets one");
         assert!(data.default_models.iter().any(|model| model.id == "llama3.3:70b" && !model.enabled));
         let ids: Vec<String> = default_models(&stored, &data).into_iter().map(|model| model.id).collect();
         assert_eq!(ids, ["qwen3:8b"], "llama3.3:70b is off, nimble cannot use tools");
@@ -329,14 +341,14 @@ mod tests {
         assert!(default_turned_off(&off, &data));
         let unknown = AssistantDefault { model: Some("gone:1b".into()), ..stored.clone() };
         assert!(default_turned_off(&unknown, &data), "a model the account no longer lists is not on either");
-        data.settings.assistant_default = Some(off);
+        data.settings.ai_slots.chat = Some(off);
         let _ = view(&data);
         let action = update(Message::ManageAi, &data);
         assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "Manage models…");
 
         // Nothing known about the account's models yet: no claim that the model is off.
         let unknown_list = Data { default_models: Vec::new(), ..data.clone() };
-        assert!(!default_turned_off(data.settings.assistant_default.as_ref().expect("set"), &unknown_list));
+        assert!(!default_turned_off(data.settings.ai_slots.chat.as_ref().expect("set"), &unknown_list));
     }
 
     /// Task S.26: AI accounts but no model on at any – the core lists no engine – reads "No model

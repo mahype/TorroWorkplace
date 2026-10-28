@@ -5,8 +5,8 @@
 //! [`read_event`]). Nothing is saved: the person checks the suggestion in the app and makes the
 //! task or event with `inbox.create_task_from_item` / `inbox.create_event_from_item`.
 //!
-//! Which AI ([`choose`]): the person's default of the assistant (`settings` › `assistant_default`,
-//! issue #131) with its model and effort, when that engine is an AI account; else the first AI
+//! Which AI ([`choose`]): the person's default of the assistant (`settings` › `aiSlots.chat`,
+//! issues #131, #325) with its model and effort, when that engine is an AI account; else the first AI
 //! account, its model the first that fits ([`pick_model`]) among those turned on (task S.24: the
 //! core picks it, it alone knows the switches; an account with none that fits is passed over).
 //! Coding agents (Claude Code) are no AI account and are passed over. Accounts with a known problem

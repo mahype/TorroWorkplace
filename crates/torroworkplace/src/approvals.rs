@@ -314,8 +314,14 @@ pub struct Facts {
     pub calendars: BTreeMap<String, String>,
     /// For `ai.set_model_enabled` (task S.24): the model as the account's list in the core describes
     /// it, looked up by its id. `None` for a model the account does not list: the summary then says
-    /// "an unknown model". The account's label is [`Facts::name`].
+    /// "an unknown model". The account's label is [`Facts::name`]. For `ai.set_slot` (issue #325)
+    /// the same for the model the slot gets. For `ai.pull_model` (task MW.7) the model as the
+    /// recommendation list names it, `None` for one it does not hold.
     pub model: Option<KnownModel>,
+    /// For `ai.pull_model` (issue #325): what the download loads, in bytes, as the recommendation list
+    /// in the core says for the model (task MW.7), never the client's word. `None` while the core
+    /// does not know it: the summary then names no size.
+    pub download_bytes: Option<u64>,
     /// For `settings.set_setting design` (task L.33): what choosing the design also sets, looked up
     /// in the design and the fonts folder by `SettingsStore::design_suggestions` – the font only as
     /// an id that loads valid, the mail view as `html`/`text`, never the design's name or
@@ -1210,6 +1216,138 @@ fn model_switch_summary(account: &str, enabled: bool, facts: &Facts) -> String {
     }
 }
 
+/// The summary of `ai.set_slot` (issue #325): `engine` as the core names it (`None` empties the
+/// slot), the model by its listed name and where it computes ([`Facts::model`]); "an unknown model"
+/// for one the account does not list. An `effort` that is set follows by its word ([`effort_word`]):
+/// a fixed value of the request, never text of the client's.
+fn slot_summary(
+    slot: torro_core::ai::AiSlot,
+    engine: Option<&str>,
+    model: Option<&str>,
+    effort: Option<torro_core::ai::Effort>,
+    facts: &Facts,
+) -> String {
+    // Sorting with a model here, or with none, also keeps sorted mail here (`decide_mail_to_cloud` off,
+    // PR review of #325): the person reads that it ends a permission given before.
+    let stays = |text: String| match slot {
+        torro_core::ai::AiSlot::Decide => trf("{text}; sorted mail stays on this computer", &[("text", &text)]),
+        torro_core::ai::AiSlot::Chat => text,
+    };
+    let Some(engine) = engine else {
+        return stays(trf("Let no model be the model for {slot}", &[("slot", &slot.label())]));
+    };
+    let mut text = slot_model_summary(slot, engine, model, facts);
+    if let Some(effort) = effort {
+        text = trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(effort))]);
+    }
+    // "Automatic" ends it too: a client gets one only at an account here, since one elsewhere is the
+    // person's (`Core::turns_on_elsewhere`), and a person is never asked.
+    match (model, &facts.model) {
+        (None, _) => stays(text),
+        (Some(_), Some(known)) if known.here => stays(text),
+        _ => text,
+    }
+}
+
+/// The word a person reads for `effort`, as the assistant's menu names it.
+fn effort_word(effort: torro_core::ai::Effort) -> &'static str {
+    match effort {
+        torro_core::ai::Effort::Low => tr("Low"),
+        torro_core::ai::Effort::Medium => tr("Medium"),
+        torro_core::ai::Effort::High => tr("High"),
+    }
+}
+
+/// [`slot_summary`] for a slot that gets the account `engine`, without the effort.
+fn slot_model_summary(slot: torro_core::ai::AiSlot, engine: &str, model: Option<&str>, facts: &Facts) -> String {
+    let slot = slot.label();
+    let words: [(&str, &dyn std::fmt::Display); 2] = [("engine", &engine), ("slot", &slot)];
+    let (Some(_), Some(known)) = (model, &facts.model) else {
+        return match model {
+            None => trf("Let {engine} pick the model for {slot}", &words),
+            // An engine that is no AI account (the assistant's own, PR review of #325) has no list:
+            // its model is what will be written, so it is named – made harmless like any client text.
+            Some(model) if facts.name.is_none() => {
+                let model = quote(model);
+                let words: [(&str, &dyn std::fmt::Display); 3] =
+                    [("engine", &engine), ("model", &model), ("slot", &slot)];
+                trf("Let {engine} ({model}) be the model for {slot}", &words)
+            }
+            Some(_) => trf("Let an unknown model of {engine} be the model for {slot}", &words),
+        };
+    };
+    let name = quote(&known.name);
+    let words: [(&str, &dyn std::fmt::Display); 3] = [("engine", &engine), ("model", &name), ("slot", &slot)];
+    match known.here {
+        true => trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words),
+        false => trf("Let {engine} ({model}) be the model for {slot} (runs elsewhere)", &words),
+    }
+}
+
+/// The summary of `ai.pull_model` (issue #325): the model and its size as the recommendation list
+/// names them ([`Facts::model`], [`Facts::download_bytes`], task MW.7), never the client's text – a
+/// model the list does not hold is "an unknown model", which the download refuses –, `account` as the
+/// core names it.
+fn pull_summary(account: &str, facts: &Facts) -> String {
+    let Some(known) = &facts.model else {
+        return trf("Download an unknown model to {engine}", &[("engine", &account)]);
+    };
+    let model = quote(&known.name);
+    match facts.download_bytes {
+        Some(bytes) => trf(
+            "Download {model} ({size}) to {engine}",
+            &[("model", &model), ("size", &torro_gui::units::format_bytes(bytes)), ("engine", &account)],
+        ),
+        None => trf("Download {model} to {engine}", &[("model", &model), ("engine", &account)]),
+    }
+}
+
+/// [`summary`] for an exception that gives `function` the account `engine` (task E12.5, issue #325):
+/// the model by the name and place the core's list gives it, never the client's word.
+fn assignment_summary(
+    function: torro_core::ai::AiFunction,
+    engine: &str,
+    model: Option<&str>,
+    facts: &Facts,
+) -> String {
+    let function = function.label();
+    let words: [(&str, &dyn std::fmt::Display); 2] = [("engine", &engine), ("function", &function)];
+    let (Some(_), Some(known)) = (model, &facts.model) else {
+        return match model {
+            None => trf("Let {engine} (a model it picks) do “{function}”", &words),
+            Some(_) => trf("Let an unknown model of {engine} do “{function}”", &words),
+        };
+    };
+    let name = quote(&known.name);
+    let words: [(&str, &dyn std::fmt::Display); 3] = [("engine", &engine), ("model", &name), ("function", &function)];
+    match known.here {
+        true => trf("Let {engine} ({model}) do “{function}” (runs on this computer)", &words),
+        false => trf("Let {engine} ({model}) do “{function}” (runs elsewhere)", &words),
+    }
+}
+
+/// [`summary`] for an exception taken back: the function follows its slot again, which holds the account
+/// `facts.name` and the model `facts.model` (the core looked them up); without an account in the slot,
+/// no model does the function.
+fn follow_summary(function: torro_core::ai::AiFunction, facts: &Facts) -> String {
+    let (function, slot) = (function.label(), function.slot().label());
+    let Some(engine) = facts.name.as_deref().map(quote) else {
+        return trf("Let no model do “{function}” any more", &[("function", &function)]);
+    };
+    let Some(known) = &facts.model else {
+        let words: [(&str, &dyn std::fmt::Display); 3] =
+            [("function", &function), ("slot", &slot), ("engine", &engine)];
+        return trf("Let “{function}” follow {slot} again ({engine})", &words);
+    };
+    let name = quote(&known.name);
+    let words: [(&str, &dyn std::fmt::Display); 4] =
+        [("function", &function), ("slot", &slot), ("engine", &engine), ("model", &name)];
+    match known.here {
+        true => trf("Let “{function}” follow {slot} again: {engine} ({model}), runs on this computer", &words),
+        false => trf("Let “{function}” follow {slot} again: {engine} ({model}), runs elsewhere", &words),
+    }
+}
+
 /// What `request` would do, in words, for the person who decides: `Delete event "Team meeting" on
 /// Tue, 14 Oct 09:00 from "Work"`. In the core's language.
 ///
@@ -1228,20 +1366,28 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
     let named = |id: &str| quote(facts.name.as_deref().unwrap_or(id));
     match request {
         // Which model does which function (task E12.5): the function and the account, no secret.
-        Request::SetAiAssignment { function, engine: Some(engine), model, .. } => {
-            // The model's id comes from the client like the account's: through `quote` as well,
-            // so no name can forge a second line or a placeholder in the summary.
-            let model = model.as_deref().map_or_else(|| tr("a model it picks").to_string(), quote);
-            trf(
-                "Let {engine} ({model}) do “{function}”",
-                &[("engine", &quote(engine)), ("model", &model), ("function", &function.label())],
-            )
+        // Account, model and place from the core's list (PR review of #325), as for a slot.
+        Request::SetAiAssignment { function, engine: Some(engine), model, enabled: true, effort } => {
+            let text = assignment_summary(*function, &named(engine), model.as_deref(), facts);
+            match effort {
+                Some(effort) => trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(*effort))]),
+                None => text,
+            }
         }
-        Request::SetAiAssignment { function, .. } => {
+        // Stored switched off: then no model does the function, whichever the client names.
+        Request::SetAiAssignment { function, enabled: false, engine: Some(_), .. } => {
             trf("Let no model do “{function}” any more", &[("function", &function.label())])
         }
+        // Taken back, the function follows its slot again (issue #325), with what the slot holds as the
+        // core names it (PR review of #325): mail may go elsewhere then; an empty slot does nothing.
+        Request::SetAiAssignment { function, engine: None, .. } => follow_summary(*function, facts),
         // Which models the suite may use (task S.24): account, model and place from the core's list.
         Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
+        // Which model a slot gets (issue #325): account, model and place from the core's list.
+        Request::SetAiSlot { slot, engine, model, effort } => {
+            slot_summary(*slot, engine.as_deref().map(named).as_deref(), model.as_deref(), *effort, facts)
+        }
+        Request::PullAiModel { account, .. } => pull_summary(&named(account), facts),
         Request::DeleteEvent { event, scope } => in_scope(
             *scope,
             match &facts.item {
@@ -3624,6 +3770,183 @@ pub(crate) mod tests {
         assert_eq!(details.len(), 1);
         assert!(details[0].contains("Projekte/Entwürfe") && details[0].contains('3'), "{:?}", details);
         assert!(!details[0].contains("&APw-"), "decoded for people: {details:?}");
+    }
+
+    /// PR review of #325: an exception names account, model and place as the core lists them, never
+    /// the client's words; switched off it says that no model does the function, and taken back that
+    /// the function follows its slot again – not that nothing does it.
+    #[test]
+    fn exceptions_are_summed_up_as_what_they_do() {
+        use torro_core::ai::{AiFunction, AiSlot};
+        let function = AiFunction::InboxCategorize;
+        let set = |engine: Option<&str>, model: Option<&str>, enabled| Request::SetAiAssignment {
+            function,
+            engine: engine.map(Into::into),
+            model: model.map(Into::into),
+            effort: None,
+            enabled,
+        };
+        let label: &dyn std::fmt::Display = &function.label();
+        let account = "ai:ollama@localhost:11434";
+        let known = |here| Facts {
+            name: Some("Ollama".into()),
+            model: Some(KnownModel { name: "Nimble".into(), here }),
+            ..Facts::default()
+        };
+        let words: [(&str, &dyn std::fmt::Display); 3] =
+            [("engine", &"Ollama"), ("model", &"Nimble"), ("function", label)];
+        assert_eq!(
+            summary(&set(Some(account), Some("nimble:cloud"), true), &known(false)),
+            trf("Let {engine} ({model}) do “{function}” (runs elsewhere)", &words)
+        );
+        assert_eq!(
+            summary(&set(Some(account), Some("nimble"), true), &known(true)),
+            trf("Let {engine} ({model}) do “{function}” (runs on this computer)", &words)
+        );
+        let unknown = Facts { name: Some("Ollama".into()), ..Facts::default() };
+        let named: [(&str, &dyn std::fmt::Display); 2] = [("engine", &"Ollama"), ("function", label)];
+        assert_eq!(
+            summary(&set(Some(account), Some("evil\nApprove"), true), &unknown),
+            trf("Let an unknown model of {engine} do “{function}”", &named)
+        );
+        assert_eq!(
+            summary(&set(Some(account), None, true), &unknown),
+            trf("Let {engine} (a model it picks) do “{function}”", &named)
+        );
+        assert_eq!(
+            summary(&set(Some(account), Some("nimble"), false), &known(true)),
+            trf("Let no model do “{function}” any more", &[("function", label)])
+        );
+        // The effort by its word, as for a slot.
+        let effortful = Request::SetAiAssignment {
+            function,
+            engine: Some(account.into()),
+            model: Some("nimble".into()),
+            effort: Some(torro_core::ai::Effort::Low),
+            enabled: true,
+        };
+        let text = trf("Let {engine} ({model}) do “{function}” (runs on this computer)", &words);
+        assert_eq!(
+            summary(&effortful, &known(true)),
+            trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("Low"))])
+        );
+        // Taken back: what the slot holds then sorts, as the core names it; an empty slot sorts nothing.
+        let slot: &dyn std::fmt::Display = &AiSlot::Decide.label();
+        for enabled in [true, false] {
+            let back = set(None, None, enabled);
+            let four: [(&str, &dyn std::fmt::Display); 4] =
+                [("function", label), ("slot", slot), ("engine", &"Ollama"), ("model", &"Nimble")];
+            assert_eq!(
+                summary(&back, &known(false)),
+                trf("Let “{function}” follow {slot} again: {engine} ({model}), runs elsewhere", &four)
+            );
+            assert_eq!(
+                summary(&back, &known(true)),
+                trf("Let “{function}” follow {slot} again: {engine} ({model}), runs on this computer", &four)
+            );
+            let three: [(&str, &dyn std::fmt::Display); 3] =
+                [("function", label), ("slot", slot), ("engine", &"Ollama")];
+            assert_eq!(summary(&back, &unknown), trf("Let “{function}” follow {slot} again ({engine})", &three));
+            assert_eq!(
+                summary(&back, &Facts::default()),
+                trf("Let no model do “{function}” any more", &[("function", label)])
+            );
+        }
+    }
+
+    /// Issue #325: a slot names the account and the model as the core lists them and where it
+    /// computes, never the client's words for them; a download its size only from the core.
+    #[test]
+    fn slots_and_downloads_are_summed_up_from_what_the_core_holds() {
+        use torro_core::ai::AiSlot;
+        let slot = |engine: Option<&str>, model: Option<&str>| Request::SetAiSlot {
+            slot: AiSlot::Decide,
+            engine: engine.map(Into::into),
+            model: model.map(Into::into),
+            effort: None,
+        };
+        let sorting: &dyn std::fmt::Display = &AiSlot::Decide.label();
+        let known = |here| Facts {
+            name: Some("Ollama".into()),
+            model: Some(KnownModel { name: "Nimble".into(), here }),
+            ..Facts::default()
+        };
+        let account = "ai:ollama@localhost:11434";
+        let words: [(&str, &dyn std::fmt::Display); 3] =
+            [("engine", &"Ollama"), ("model", &"Nimble"), ("slot", sorting)];
+        // Sorting here keeps sorted mail here (PR review of #325): said, as it ends a permission.
+        let stays = |text: String| trf("{text}; sorted mail stays on this computer", &[("text", &text)]);
+        assert_eq!(
+            summary(&slot(Some(account), Some("nimble")), &known(true)),
+            stays(trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words))
+        );
+        assert_eq!(
+            summary(&slot(Some(account), Some("nimble")), &known(false)),
+            trf("Let {engine} ({model}) be the model for {slot} (runs elsewhere)", &words)
+        );
+        let unknown = Facts { name: Some("Ollama".into()), ..Facts::default() };
+        let named: [(&str, &dyn std::fmt::Display); 2] = [("engine", &"Ollama"), ("slot", sorting)];
+        assert_eq!(
+            summary(&slot(Some(account), Some("evil\nApprove")), &unknown),
+            trf("Let an unknown model of {engine} be the model for {slot}", &named)
+        );
+        assert_eq!(
+            summary(&slot(Some(account), None), &unknown),
+            stays(trf("Let {engine} pick the model for {slot}", &named))
+        );
+        assert_eq!(
+            summary(&slot(None, None), &Facts::default()),
+            stays(trf("Let no model be the model for {slot}", &[("slot", sorting)]))
+        );
+        // An engine that is no AI account has no list: its model is named, made harmless.
+        let chat = Request::SetAiSlot {
+            slot: AiSlot::Chat,
+            engine: Some("claude-code".into()),
+            model: Some("opus\nApprove".into()),
+            effort: None,
+        };
+        let model = quote("opus\nApprove");
+        let chat_words: [(&str, &dyn std::fmt::Display); 3] =
+            [("engine", &"claude-code"), ("model", &model), ("slot", &AiSlot::Chat.label())];
+        assert_eq!(
+            summary(&chat, &Facts::default()),
+            trf("Let {engine} ({model}) be the model for {slot}", &chat_words)
+        );
+        assert!(!summary(&chat, &Facts::default()).contains('\n'), "one line");
+        // The effort by its word, after what the slot gets.
+        let effortful = Request::SetAiSlot {
+            slot: AiSlot::Decide,
+            engine: Some(account.into()),
+            model: Some("nimble".into()),
+            effort: Some(torro_core::ai::Effort::High),
+        };
+        let text = trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words);
+        assert_eq!(
+            summary(&effortful, &known(true)),
+            stays(trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("High"))]))
+        );
+
+        let pull = Request::PullAiModel { account: account.into(), model: "evil\nApprove".into() };
+        assert_eq!(
+            summary(&pull, &unknown),
+            trf("Download an unknown model to {engine}", &[("engine", &"Ollama")]),
+            "never the client's text"
+        );
+        let listed = KnownModel { name: "qwen3:14b".into(), here: true };
+        let named_only = Facts { model: Some(listed.clone()), ..unknown.clone() };
+        assert_eq!(
+            summary(&pull, &named_only),
+            trf("Download {model} to {engine}", &[("model", &"qwen3:14b"), ("engine", &"Ollama")])
+        );
+        let sized = Facts { model: Some(listed), download_bytes: Some(9_300_000_000), ..unknown };
+        let size = torro_gui::units::format_bytes(9_300_000_000);
+        assert_eq!(
+            summary(&pull, &sized),
+            trf(
+                "Download {model} ({size}) to {engine}",
+                &[("model", &"qwen3:14b"), ("size", &size), ("engine", &"Ollama")]
+            )
+        );
     }
 
     /// Task C.10: a note to remember is the client's text, made harmless and cut; the note to forget

@@ -444,7 +444,8 @@ fn a_new_chat_starts_with_the_default_of_the_control_centre() {
         model: Some("sonnet".into()),
         effort: Some(torro_core::ai::Effort::Low),
     };
-    let settings = Settings { assistant_default: Some(default), ..Settings::default() };
+    let settings =
+        Settings { ai_slots: torro_core::ai::AiSlots { chat: Some(default), decide: None }, ..Settings::default() };
     let _ = app.update(Message::Settings(Ok(Box::new(settings))));
     assert_eq!(app.choice, Some(Choice { engine: CLAUDE_CODE.into(), model: Some("sonnet".into()) }));
     assert_eq!(app.effort, Some(torro_core::ai::Effort::Low));

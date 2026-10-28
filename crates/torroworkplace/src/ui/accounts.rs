@@ -12,8 +12,21 @@
 //! its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while
 //! TorroMail has an account to take over: the page asks for TorroMail's accounts when it opens
 //! ([`opened`]) and after the dialog closes, not with every reload. Under AI stands the data rule
-//! "Mail to cloud models" (`settings.set_setting mail_to_cloud`, task C.17), for the assistant and
-//! all its bots.
+//! "Chat may read mail in the cloud" (`settings.set_setting mail_to_cloud`, task C.17), for the
+//! assistant and all its bots.
+//!
+//! **The two slots (issue #325, task MW.8).** Above the data rule the AI section has the group
+//! "Models" ([`slots_group`]): the computer as measured, then *Chat* and *Sorting*, each with the
+//! model chosen as a pick list of the models turned on that serve the slot ("None" empties it,
+//! `ai.set_slot`), and under it what Torro suggests (`ai.recommend`) with "Use suggestion". That button
+//! runs a chain ([`Using`]): a local model the account does not list yet is downloaded first
+//! (`ai.pull_model`, then `ai.list_pulls` every second while it runs, "Cancel" with `ai.cancel_pull`),
+//! then the account's models are read again (`ai.list_models`), the model turned on if it is off
+//! (`ai.set_model_enabled`) and put in the slot (`ai.set_slot`). A step that fails stops the chain and
+//! shows why with "Retry". These requests go with [`Action::AskAi`] and come back tagged ([`Asked`],
+//! [`ai_answered`]), so an answer is never taken for another one's. Where *Sorting* sends mail to a
+//! model elsewhere – chosen or suggested –, the group says so; the data rule then shows that
+//! permission with "Keep mail here" (`settings.set_setting decide_mail_to_cloud false`).
 //!
 //! A detail page per account has groups for the status ("Sync now"), the calendars and task lists
 //! (a switch each for showing them in the apps, read-only ones marked) and the connection, and
@@ -83,22 +96,26 @@
 //! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` / `ConnectMail` for "Change
 //! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the services of a mail
 //! account, `OpenApp` for the buttons that open a window, `TorroMailAccounts` for the import,
-//! `SetSetting { key: MailToCloud }` for the data rule and `AiModels` / `SetModelEnabled` for an AI
-//! account's models. The pure parts (relative time, status text,
+//! `SetSetting { key: MailToCloud | DecideMailToCloud }` for the data rule, `AiModels` /
+//! `SetModelEnabled` for an AI account's models, and for the slots `AiRecommend`, `PullAiModel`,
+//! `AiPulls`, `CancelAiPull`, `SetAiSlot` and – before a model goes into Sorting – `AiAssignments` and
+//! `SetAiAssignment`, which take a stored exception of sorting back. The pure parts (relative time, status text,
 //! whether a collection is shown, which accounts are listed, the groups) are plain functions with
 //! unit tests.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{Space, column, container, row, scrollable, svg, text, toggler};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::widget::{Space, column, container, responsive, row, scrollable, svg, text, toggler};
+use iced::{Alignment, Element, Fill, Subscription, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
-use torro_core::ai::{AiModel, AiProvider};
+use torro_core::ai::hardware::Hardware;
+use torro_core::ai::{AiFunction, AiModel, AiProvider, AiSlot, Effort, Seat};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_gui::dialog::frame as dialog_frame;
@@ -111,11 +128,13 @@ use torro_gui::{style, typo};
 use torro_inbox::item::SourceHealth;
 use torro_inbox::{SourceKind, SourceRef};
 use torro_ipc::{
-    AccountInfo, MailView, NtfyTopicView, NtfyView, Request, Response, ServiceState, SettingKey, TopicName,
-    TorroMailAccount,
+    AccountInfo, AiPull, AiPullState, AiRecommendation, MailView, NtfyTopicView, NtfyView, Request, Response,
+    ServiceState, SettingKey, SlotSuggestion, TopicName, TorroMailAccount,
 };
 use torro_mail::{MailFormat, Notify, Role, Security, Services};
 use torro_pim::AccountState;
+
+use torro_settings_ui::parts::{picker, picker_fill};
 
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, Header, chevron, confirm, dialog, notice, pressable, row_frame, setting_row, wizard};
@@ -159,6 +178,128 @@ pub struct State {
     /// or an error; a refusal turns the oldest one back ([`answered`]). Kept when the page closes,
     /// so a late refusal still corrects the count in the list.
     switching: VecDeque<ModelSwitch>,
+    /// The group "Models" of the AI section (issue #325, task MW.8): the suggestion, the downloads and
+    /// what "Use suggestion" or a slot's list is doing.
+    pub slots: SlotsPage,
+}
+
+/// The state of the group "Models" in the AI section (task MW.8) beside the models themselves
+/// ([`State::models`]). What was asked is forgotten when the section closes ([`leave`]), so it asks
+/// again when it opens; a chain under way and the downloads stay, since they run in the core.
+#[derive(Debug, Default)]
+pub struct SlotsPage {
+    /// The last answer to `ai.recommend`; `None` until one came.
+    pub recommendation: Option<AiRecommendation>,
+    /// `ai.recommend` was sent and has not answered: the first answer can take a while (the core
+    /// measures the computer and asks every account for its models), so the row waits quietly.
+    pub recommending: bool,
+    /// Why `ai.recommend` failed, in the core's words: a row with "Retry".
+    pub recommend_error: Option<String>,
+    /// `ai.recommend` and `ai.list_pulls` were asked since the section opened.
+    asked: bool,
+    /// The AI accounts whose models were asked for since the section opened, answered or not: a
+    /// list that cannot be read is not asked for again with every reload.
+    asked_models: BTreeSet<String>,
+    /// The downloads as the core last listed them (`ai.pull_model`, `ai.list_pulls`,
+    /// `ai.cancel_pull`), oldest first.
+    pub pulls: Vec<AiPull>,
+    /// `ai.list_pulls` is out: the next tick of [`subscription`] waits for it.
+    polling: bool,
+    /// "Use suggestion" or a choice in a slot's list under way; at most one at a time.
+    pub using: Option<Using>,
+    /// Why the last step failed: a row under its slot with "Retry".
+    pub failed: Option<SlotFailure>,
+}
+
+/// A model on its way into a slot (task MW.8): "Use suggestion" or a choice in the slot's list. The
+/// chain runs [`UseStep`] by [`UseStep`]; each answer starts the next request ([`ai_answered`]).
+#[derive(Debug, Clone)]
+pub struct Using {
+    pub slot: AiSlot,
+    /// The account (`ai:…`); `None` empties the slot.
+    pub engine: Option<String>,
+    /// The model; once the account listed it, its id as listed (`nimble:latest` for `nimble`).
+    pub model: Option<String>,
+    /// How hard it thinks: the chat keeps the effort it has, sorting takes none.
+    effort: Option<Effort>,
+    /// The exception of `inbox.categorize` stored when the chain started, for Sorting (review of #325):
+    /// before `ai.set_slot decide` it is taken back ([`UseStep::TakeBack`]), as Settings › Categorization
+    /// does, so the slot sorts – one switched off would keep sorting off, one elsewhere would sort
+    /// instead. Taken back first, so meanwhile no exception the person stopped sorts again. Whether it
+    /// still stands is asked at that step ([`UseStep::Check`]): one the person changed or set while a
+    /// download ran is theirs and stays.
+    displaces: Option<torro_core::ai::AiAssignment>,
+    /// `ai.list_pulls` was out when `ai.pull_model` went out: its answer may predate the start and
+    /// lack the new download, so it is dropped (review of #325) – never a reason to stop the chain.
+    stale_poll: bool,
+    pub step: UseStep,
+    /// What "Retry" sends after a step failed: the press that started the chain.
+    retry: Box<Message>,
+}
+
+/// Where a [`Using`] stands: the request that is out (or, while downloading, the download it waits
+/// for).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UseStep {
+    /// `ai.pull_model` is out (`None`) or the download with this id runs; `ai.list_pulls` follows it.
+    Pull(Option<String>),
+    /// `ai.pull_model` answered `busy` (the sentence): `ai.list_pulls` is out to find the download of
+    /// the model that runs already (another window, an agent), which the chain then follows by its id
+    /// (review of #325); without one it stops with that sentence.
+    Join(String),
+    /// `ai.list_models` for the account: the model's id as listed and whether it is on.
+    List,
+    /// `ai.set_model_enabled` turns the model on.
+    Enable,
+    /// `ai.list_assignments`: whether the exception the chain started with still stands as it was
+    /// ([`Using::displaces`]), just before the slot is set.
+    Check,
+    /// `ai.set_assignment inbox.categorize` with `engine: null` takes the stored exception back, so the
+    /// slot Sorting sorts ([`Using::displaces`]); `ai.set_slot` follows.
+    TakeBack,
+    /// `ai.set_slot` puts it in the slot.
+    Set,
+}
+
+impl UseStep {
+    /// The chain waits for a download: one it starts, joins or follows.
+    fn downloading(&self) -> bool {
+        matches!(self, UseStep::Pull(_) | UseStep::Join(_))
+    }
+}
+
+/// A step of a [`Using`] (or "Cancel") that failed: the sentence under the slot and what "Retry"
+/// sends.
+#[derive(Debug, Clone)]
+pub struct SlotFailure {
+    pub slot: AiSlot,
+    pub message: String,
+    retry: Box<Message>,
+}
+
+/// What a request of the group "Models" was for ([`Action::AskAi`]), so its answer finds its way back
+/// ([`ai_answered`]) and is never taken for another one's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    /// `ai.recommend`.
+    Recommend,
+    /// `ai.list_pulls`, every second while a download runs.
+    Pulls,
+    /// `ai.list_models` of this account, for the lists of the slots.
+    Models(String),
+    /// A step of the chain of [`SlotsPage::using`] for this slot.
+    Slot(AiSlot),
+    /// "Cancel" of the download with this id shown under this slot: "Retry" after a refusal aims at
+    /// the same download, never at another one that runs.
+    Cancel(AiSlot, String),
+}
+
+impl Asked {
+    /// The answer may have changed the settings (a slot, `decideMailToCloud`, a model turned on): the
+    /// shell reloads after it. Reading answers do not, so polling every second stays light.
+    pub fn changes(&self) -> bool {
+        matches!(self, Asked::Slot(_))
+    }
 }
 
 /// The state of the group "Models" on an AI account's page (task S.31) beside the models
@@ -438,6 +579,42 @@ pub enum Message {
     ModelSearch(String),
     /// "Show closed models" of OpenRouter, on or off.
     ShowClosed(bool),
+    /// A model chosen in a slot's list (task MW.8), or "None": `ai.set_slot`. Ignored while another
+    /// choice or suggestion is under way, and for what the slot has already.
+    PickSlot(AiSlot, SlotChoice),
+    /// "Use suggestion" of a slot: the chain of [`Using`] for the suggestion of `ai.recommend`.
+    UseSuggestion(AiSlot),
+    /// "Cancel" of a download shown under a slot, by the download's id: `ai.cancel_pull`.
+    CancelPull(AiSlot, String),
+    /// The tick of [`subscription`] while a download runs: `ai.list_pulls`.
+    PollPulls,
+    /// "Retry" after `ai.recommend` failed.
+    Recommend,
+    /// "Retry" after a step failed: what started it, again.
+    RetrySlot,
+    /// "Keep mail here" of the permission of *Sorting* in the data rule: `decide_mail_to_cloud` off.
+    StopSortingMail,
+}
+
+/// A choice in a slot's list (task MW.8): a model of an AI account, or "None" (both `None`). Two
+/// choices are the same when account and model are; `label` is what the list shows.
+#[derive(Debug, Clone, Eq)]
+pub struct SlotChoice {
+    pub engine: Option<String>,
+    pub model: Option<String>,
+    pub label: String,
+}
+
+impl PartialEq for SlotChoice {
+    fn eq(&self, other: &Self) -> bool {
+        self.engine == other.engine && self.model == other.model
+    }
+}
+
+impl fmt::Display for SlotChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
 }
 
 /// What Escape means on this page right now: close the add-account dialog, the password or server
@@ -480,6 +657,9 @@ pub fn leave(state: &mut State) {
     state.selected = None;
     state.models_page = ModelsPage::default();
     close_dialogs(state);
+    // The section asks again when it opens; a chain under way and the downloads go on in the core.
+    state.slots.asked = false;
+    state.slots.asked_models.clear();
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
@@ -544,6 +724,20 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.models_page.show_closed = on;
             Action::None
         }
+        Message::PickSlot(slot, choice) => pick_slot(state, data, slot, choice),
+        Message::UseSuggestion(slot) => use_suggestion(state, data, slot),
+        Message::CancelPull(slot, id) => ask_ai(Asked::Cancel(slot, id.clone()), Request::CancelAiPull { id }),
+        Message::PollPulls => poll_pulls(state),
+        Message::Recommend => recommend(state),
+        Message::RetrySlot => match state.slots.failed.take() {
+            Some(failure) => update(state, *failure.retry, data),
+            None => Action::None,
+        },
+        // Only a person lets mail out; anyone may stop it (`Request::kept_for_people`).
+        Message::StopSortingMail => Action::Send(Request::SetSetting {
+            key: SettingKey::DecideMailToCloud,
+            value: serde_json::Value::Bool(false),
+        }),
         Message::SyncNow => Action::Send(Request::Sync),
         Message::OpenApp(app) => Action::Send(Request::OpenApp { app: app.to_string(), target: None }),
         // Only an open detail page has an account to remove.
@@ -779,6 +973,512 @@ fn models_answered(state: &mut State, result: &Result<Response, String>) -> bool
             true
         }
         _ => false,
+    }
+}
+
+// ----- The slots (issue #325, task MW.8) ---------------------------------------------------------
+
+/// One request of the group "Models", tagged with what it is for.
+fn ask_ai(asked: Asked, request: Request) -> Action {
+    Action::AskAi(vec![(asked, request)])
+}
+
+/// The AI accounts the section lists (not a sign-in in progress), in the order of the list.
+fn ai_accounts(data: &Data) -> impl Iterator<Item = &AccountInfo> {
+    listed(&data.accounts).filter(|account| account.kind == AI_KIND && !account.id.is_empty())
+}
+
+/// The AI section is shown (chosen, or reloaded while open): asks for what the group "Models" still
+/// lacks – the suggestion and the downloads once per opening, and the models of every AI account
+/// not asked for yet (`all`, as an account's page asks, so both share [`State::models`]). The shell
+/// calls it when the section is chosen, with every good reload while it is open, and at a start on
+/// it. Without an AI account there is no group, so nothing is asked.
+pub fn ai_shown(state: &mut State, data: &Data) -> Action {
+    let accounts: Vec<String> = ai_accounts(data).map(|account| account.id.clone()).collect();
+    if accounts.is_empty() {
+        return Action::None;
+    }
+    let mut asks = Vec::new();
+    if !state.slots.asked {
+        state.slots.asked = true;
+        if !state.slots.recommending {
+            state.slots.recommending = true;
+            asks.push((Asked::Recommend, Request::AiRecommend));
+        }
+        if !state.slots.polling {
+            state.slots.polling = true;
+            asks.push((Asked::Pulls, Request::AiPulls));
+        }
+    }
+    for account in accounts {
+        if !state.models.contains_key(&account) && state.slots.asked_models.insert(account.clone()) {
+            asks.push((Asked::Models(account.clone()), Request::AiModels { account, all: true }));
+        }
+    }
+    if asks.is_empty() { Action::None } else { Action::AskAi(asks) }
+}
+
+/// "Retry" after `ai.recommend` failed, and the fresh suggestion after a slot changed.
+fn recommend(state: &mut State) -> Action {
+    if state.slots.recommending {
+        return Action::None;
+    }
+    state.slots.recommending = true;
+    ask_ai(Asked::Recommend, Request::AiRecommend)
+}
+
+/// A tick while a download runs: `ai.list_pulls`, unless the last one has not answered.
+fn poll_pulls(state: &mut State) -> Action {
+    if state.slots.polling || !running(&state.slots.pulls) {
+        return Action::None;
+    }
+    state.slots.polling = true;
+    ask_ai(Asked::Pulls, Request::AiPulls)
+}
+
+/// A download runs: [`subscription`] ticks.
+fn running(pulls: &[AiPull]) -> bool {
+    pulls.iter().any(|pull| pull.state == AiPullState::Running)
+}
+
+/// Every second while a download runs (task MW.8, `ai.list_pulls`), else nothing: the page does not
+/// tick while it waits for nothing.
+pub fn subscription(state: &State) -> Subscription<Message> {
+    match running(&state.slots.pulls) {
+        true => iced::time::every(Duration::from_secs(1)).map(|_| Message::PollPulls),
+        false => Subscription::none(),
+    }
+}
+
+/// `name` with its tag, as Ollama lists it: `nimble` → `nimble:latest`. Only the part after the last
+/// `/` holds a tag, since a registry host may name a port (`host:5000/x`).
+fn with_tag(name: &str) -> String {
+    let last = name.rsplit('/').next().unwrap_or(name);
+    if last.contains(':') { name.to_string() } else { format!("{name}:latest") }
+}
+
+/// Two names are one model: equal once a name without a tag has the tag `latest`. The suggestion and a
+/// download name a model as the list of recommended models does (`nimble`), the account by the id it
+/// lists (`nimble:latest`).
+pub fn same_model(a: &str, b: &str) -> bool {
+    a == b || with_tag(a) == with_tag(b)
+}
+
+/// The suggestion of `ai.recommend` for `slot`, if there is one.
+fn suggestion_of(state: &State, slot: AiSlot) -> Option<&SlotSuggestion> {
+    state.slots.recommendation.as_ref()?.slots.iter().find(|suggestion| suggestion.slot == slot)
+}
+
+/// The latest download of `model` into `account` the core listed.
+fn pull_of<'a>(pulls: &'a [AiPull], account: &str, model: &str) -> Option<&'a AiPull> {
+    pulls.iter().rev().find(|pull| pull.account == account && same_model(&pull.model, model))
+}
+
+/// The effort a model put in `slot` keeps: the chat keeps the one it has (as Assistant › General
+/// does), sorting takes none – a decision model ignores it.
+fn kept_effort(data: &Data, slot: AiSlot) -> Option<Effort> {
+    match slot {
+        AiSlot::Chat => data.settings.ai_slots.chat.as_ref().and_then(|chosen| chosen.effort),
+        AiSlot::Decide => None,
+    }
+}
+
+/// The slot has this account and model already (the model by [`same_model`]); `None` and `None` for an
+/// empty slot.
+fn holds(data: &Data, slot: AiSlot, engine: Option<&str>, model: Option<&str>) -> bool {
+    let chosen = data.settings.ai_slots.get(slot);
+    match (chosen, engine) {
+        (None, None) => true,
+        (Some(chosen), Some(engine)) => {
+            chosen.engine == engine
+                && match (chosen.model.as_deref(), model) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => same_model(a, b),
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+/// The exception of sorting a chain for `slot` takes back before `ai.set_slot` ([`Using::displaces`]):
+/// the one stored, on or off, for Sorting only – while it is, the slot Sorting does not sort. The
+/// settings hold it as the core weighs it (`assignment_in_effect`).
+fn displaced(data: &Data, slot: AiSlot) -> Option<torro_core::ai::AiAssignment> {
+    let stored = data.settings.ai_assignments.get(&AiFunction::InboxCategorize);
+    stored.filter(|held| slot == AiSlot::Decide && held.engine.is_some()).cloned()
+}
+
+/// A choice in a slot's list: `ai.set_slot` at once – for Sorting the stored exception taken back first,
+/// from the data of the press, which is now –, with "Retry" sending the same choice. Nothing while
+/// another chain runs, or for what the slot has already while no exception stands in its way.
+fn pick_slot(state: &mut State, data: &Data, slot: AiSlot, choice: SlotChoice) -> Action {
+    let displaces = displaced(data, slot);
+    let held = holds(data, slot, choice.engine.as_deref(), choice.model.as_deref());
+    if state.slots.using.is_some() || (held && displaces.is_none()) {
+        return Action::None;
+    }
+    state.slots.failed = None;
+    let take_back = displaces.is_some();
+    let mut using = Using {
+        slot,
+        engine: choice.engine.clone(),
+        model: choice.model.clone(),
+        effort: kept_effort(data, slot),
+        displaces,
+        stale_poll: false,
+        step: UseStep::Set,
+        retry: Box::new(Message::PickSlot(slot, choice)),
+    };
+    let request = match take_back {
+        true => {
+            using.step = UseStep::TakeBack;
+            no_exception()
+        }
+        false => set_slot_request(&using),
+    };
+    state.slots.using = Some(using);
+    ask_ai(Asked::Slot(slot), request)
+}
+
+/// "Use suggestion": a model to download starts with `ai.pull_model` – or waits for a download of it
+/// that runs already (another window, an agent; only one that is `running`; one the core knows of but
+/// the page not yet is joined when the start answers `busy`, [`UseStep::Join`]) –, any other with
+/// `ai.list_models`. For Sorting a stored exception is taken back before the slot is set, if it still
+/// stands then ([`Using::displaces`]).
+/// Nothing while another chain runs, without a suggestion or for one without an account (it shows why
+/// instead).
+fn use_suggestion(state: &mut State, data: &Data, slot: AiSlot) -> Action {
+    if state.slots.using.is_some() {
+        return Action::None;
+    }
+    let Some(suggestion) = suggestion_of(state, slot).cloned() else { return Action::None };
+    let Some(engine) = suggestion.engine.clone() else { return Action::None };
+    state.slots.failed = None;
+    let mut using = Using {
+        slot,
+        engine: Some(engine.clone()),
+        model: suggestion.model.clone(),
+        effort: kept_effort(data, slot),
+        displaces: displaced(data, slot),
+        stale_poll: false,
+        step: UseStep::List,
+        retry: Box::new(Message::UseSuggestion(slot)),
+    };
+    let download = suggestion.download_bytes.and(suggestion.model.clone());
+    let action = match download {
+        Some(model) => match pull_of(&state.slots.pulls, &engine, &model).filter(|p| p.state == AiPullState::Running) {
+            Some(pull) => {
+                using.step = UseStep::Pull(Some(pull.id.clone()));
+                Action::None
+            }
+            None => {
+                using.step = UseStep::Pull(None);
+                using.stale_poll = state.slots.polling;
+                ask_ai(Asked::Slot(slot), Request::PullAiModel { account: engine, model })
+            }
+        },
+        None => ask_ai(Asked::Slot(slot), Request::AiModels { account: engine, all: true }),
+    };
+    state.slots.using = Some(using);
+    action
+}
+
+/// `ai.set_slot` for the chain's account and model.
+fn set_slot_request(using: &Using) -> Request {
+    Request::SetAiSlot {
+        slot: using.slot,
+        engine: using.engine.clone(),
+        model: using.model.clone(),
+        effort: using.effort,
+    }
+}
+
+/// The model is ready for the slot: `ai.set_slot` – for Sorting, while the chain started with an
+/// exception, first `ai.list_assignments`, whose answer says whether that one still stands
+/// ([`UseStep::Check`]).
+fn toward_slot(using: &mut Using) -> Action {
+    let slot = using.slot;
+    if using.displaces.is_some() {
+        using.step = UseStep::Check;
+        return ask_ai(Asked::Slot(slot), Request::AiAssignments);
+    }
+    using.step = UseStep::Set;
+    ask_ai(Asked::Slot(slot), set_slot_request(using))
+}
+
+/// The chain stops at a step that failed: the sentence under its slot with "Retry".
+fn stop(state: &mut State, message: String) -> Action {
+    if let Some(using) = state.slots.using.take() {
+        state.slots.failed = Some(SlotFailure { slot: using.slot, message, retry: using.retry });
+    }
+    Action::None
+}
+
+/// The answer to a request of the group "Models" ([`Action::AskAi`]), by what it was for. The chain
+/// of [`SlotsPage::using`] goes on with the next step or stops with the reason; a list of downloads
+/// may finish the download it waits for. Returns the next request, if any.
+pub fn ai_answered(state: &mut State, asked: Asked, result: &Result<Response, String>) -> Action {
+    match asked {
+        Asked::Recommend => {
+            state.slots.recommending = false;
+            match result {
+                Ok(Response::AiRecommendation { recommendation }) => {
+                    state.slots.recommendation = Some(recommendation.clone());
+                    state.slots.recommend_error = None;
+                }
+                _ => state.slots.recommend_error = failure(result, |_| false),
+            }
+            Action::None
+        }
+        Asked::Pulls => {
+            state.slots.polling = false;
+            match result {
+                Ok(Response::AiPulls { pulls }) => polled(state, pulls.clone()),
+                // A list that could not be read leaves the last one; the next tick asks again. It was
+                // the poll that went out before a start, if one did: the next answer is no older.
+                _ => {
+                    if let Some(using) = state.slots.using.as_mut() {
+                        using.stale_poll = false;
+                    }
+                    Action::None
+                }
+            }
+        }
+        // An account whose models cannot be read offers none in the lists; asked once per opening.
+        Asked::Models(_) => {
+            if let Ok(Response::AiModels { account, models }) = result {
+                state.models.insert(account.clone(), models.clone());
+            }
+            Action::None
+        }
+        Asked::Cancel(slot, id) => match result {
+            Ok(Response::AiPulls { pulls }) => pulls_answered(state, pulls.clone()),
+            _ => {
+                let message = failure(result, |_| false).unwrap_or_default();
+                // The download may still run: the chain waiting for it stays, and "Retry" cancels the
+                // same one again – never another that runs (review of #325).
+                let still = state.slots.pulls.iter().any(|pull| pull.id == id && pull.state == AiPullState::Running);
+                let retry = Box::new(match still {
+                    true => Message::CancelPull(slot, id),
+                    false => Message::PollPulls,
+                });
+                state.slots.failed = Some(SlotFailure { slot, message, retry });
+                Action::None
+            }
+        },
+        Asked::Slot(slot) => step_answered(state, slot, result),
+    }
+}
+
+/// The answer to the step of the chain under `slot`; a stale one (the chain has stopped) is dropped.
+fn step_answered(state: &mut State, slot: AiSlot, result: &Result<Response, String>) -> Action {
+    let Some(step) = state.slots.using.as_ref().filter(|using| using.slot == slot).map(|using| using.step.clone())
+    else {
+        return Action::None;
+    };
+    match step {
+        // Another window or an agent downloads the model already: the chain joins that download.
+        UseStep::Pull(None) if is_busy(result) => {
+            let message = failure(result, |_| false).unwrap_or_default();
+            if let Some(using) = state.slots.using.as_mut() {
+                using.step = UseStep::Join(message);
+            }
+            ask_ai(Asked::Slot(slot), Request::AiPulls)
+        }
+        UseStep::Pull(_) => match failure(result, |response| matches!(response, Response::AiPulls { .. })) {
+            Some(message) => stop(state, message),
+            None => match result {
+                Ok(Response::AiPulls { pulls }) => started(state, pulls.clone()),
+                _ => Action::None,
+            },
+        },
+        UseStep::Join(busy) => match (failure(result, |response| matches!(response, Response::AiPulls { .. })), result)
+        {
+            (None, Ok(Response::AiPulls { pulls })) => joined(state, pulls.clone(), busy),
+            (message, _) => stop(state, message.unwrap_or(busy)),
+        },
+        UseStep::List => match (failure(result, |response| matches!(response, Response::AiModels { .. })), result) {
+            (None, Ok(Response::AiModels { account, models })) => {
+                state.models.insert(account.clone(), models.clone());
+                model_listed(state, models)
+            }
+            (message, _) => stop(state, message.unwrap_or_default()),
+        },
+        UseStep::Enable => match failure(result, |response| matches!(response, Response::Ok)) {
+            Some(message) => stop(state, message),
+            None => {
+                let Some(using) = state.slots.using.as_mut() else { return Action::None };
+                let (engine, model) = (using.engine.clone().unwrap_or_default(), using.model.clone());
+                let next = toward_slot(using);
+                let models = state.models.get_mut(&engine).into_iter().flatten();
+                for entry in models.filter(|entry| Some(&entry.id) == model.as_ref()) {
+                    entry.enabled = true;
+                }
+                next
+            }
+        },
+        UseStep::Check => {
+            match (failure(result, |response| matches!(response, Response::AiAssignments { .. })), result) {
+                (None, Ok(Response::AiAssignments { assignments, .. })) => {
+                    let stored = assignments
+                        .iter()
+                        .map(|info| &info.assignment)
+                        .find(|held| held.function == AiFunction::InboxCategorize && held.engine.is_some());
+                    let Some(using) = state.slots.using.as_mut() else { return Action::None };
+                    // Only the exception the chain started with, as it was: one changed or set meanwhile is
+                    // the person's newer choice and stays.
+                    match stored.is_some() && stored == using.displaces.as_ref() {
+                        true => {
+                            using.step = UseStep::TakeBack;
+                            ask_ai(Asked::Slot(slot), no_exception())
+                        }
+                        false => {
+                            using.step = UseStep::Set;
+                            ask_ai(Asked::Slot(slot), set_slot_request(using))
+                        }
+                    }
+                }
+                (message, _) => stop(state, message.unwrap_or_default()),
+            }
+        }
+        // Taken back: now the slot. Refused: the chain stops, the slot stays as it was.
+        UseStep::TakeBack => match failure(result, |response| matches!(response, Response::AiAssignments { .. })) {
+            Some(message) => stop(state, message),
+            None => {
+                let Some(using) = state.slots.using.as_mut() else { return Action::None };
+                using.step = UseStep::Set;
+                ask_ai(Asked::Slot(slot), set_slot_request(using))
+            }
+        },
+        UseStep::Set => match failure(result, |response| matches!(response, Response::AiAssignments { .. })) {
+            Some(message) => stop(state, message),
+            None => finished(state),
+        },
+    }
+}
+
+/// The core refused with `busy`: for `ai.pull_model`, the same model downloads to the same account.
+fn is_busy(result: &Result<Response, String>) -> bool {
+    matches!(result, Ok(Response::Error { code, .. }) if code == "busy")
+}
+
+/// The list of downloads after a start that was `busy` ([`UseStep::Join`]): the newest download of the
+/// chain's model that runs is the one it follows from now on, by its id; without one it stops with the
+/// core's sentence `busy`.
+fn joined(state: &mut State, pulls: Vec<AiPull>, busy: String) -> Action {
+    let Some(using) = state.slots.using.as_mut() else { return Action::None };
+    let (engine, model) = (using.engine.clone().unwrap_or_default(), using.model.clone().unwrap_or_default());
+    let runs = pulls
+        .iter()
+        .rev()
+        .find(|pull| pull.state == AiPullState::Running && pull.account == engine && same_model(&pull.model, &model));
+    match runs {
+        Some(pull) => {
+            using.step = UseStep::Pull(Some(pull.id.clone()));
+            pulls_answered(state, pulls)
+        }
+        None => {
+            state.slots.pulls = pulls;
+            stop(state, busy)
+        }
+    }
+}
+
+/// The chain is through: nothing more to send but a fresh suggestion, which may have changed with it (a
+/// model downloaded, the slot taken).
+fn finished(state: &mut State) -> Action {
+    state.slots.using = None;
+    recommend(state)
+}
+
+/// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back, as Settings ›
+/// Categorization sends it.
+fn no_exception() -> Request {
+    Request::SetAiAssignment {
+        function: AiFunction::InboxCategorize,
+        engine: None,
+        model: None,
+        effort: None,
+        enabled: false,
+    }
+}
+
+/// The account listed its models for the chain: the model by the id it lists (`nimble:latest`), turned
+/// on first if it is off, then put in the slot. One the account does not list stops the chain; an
+/// account left to pick a model (`model: None`) goes straight to `ai.set_slot`.
+fn model_listed(state: &mut State, models: &[AiModel]) -> Action {
+    let Some(using) = state.slots.using.as_mut() else { return Action::None };
+    let slot = using.slot;
+    let Some(wanted) = using.model.clone() else { return toward_slot(using) };
+    let Some(model) = models.iter().find(|model| same_model(&model.id, &wanted)) else {
+        return stop(state, trf("The account does not list {model}.", &[("model", &wanted)]));
+    };
+    using.model = Some(model.id.clone());
+    if model.enabled {
+        return toward_slot(using);
+    }
+    using.step = UseStep::Enable;
+    let account = using.engine.clone().unwrap_or_default();
+    ask_ai(Asked::Slot(slot), Request::SetModelEnabled { account, model: model.id.clone(), enabled: true })
+}
+
+/// The answer to `ai.pull_model`: the downloads of the run, the newest of the chain's model the one it
+/// started – from here on the chain follows that id alone ([`pulls_answered`]).
+fn started(state: &mut State, pulls: Vec<AiPull>) -> Action {
+    let Some(using) = state.slots.using.as_mut().filter(|using| using.step == UseStep::Pull(None)) else {
+        return pulls_answered(state, pulls);
+    };
+    let (engine, model) = (using.engine.clone().unwrap_or_default(), using.model.clone().unwrap_or_default());
+    match pull_of(&pulls, &engine, &model) {
+        Some(pull) => {
+            using.step = UseStep::Pull(Some(pull.id.clone()));
+            pulls_answered(state, pulls)
+        }
+        None => {
+            state.slots.pulls = pulls;
+            stop(state, tr("The download stopped. Try again.").to_string())
+        }
+    }
+}
+
+/// The answer to a tick's `ai.list_pulls` (review of #325). Dropped while the chain's own start is out
+/// (it does not know its download yet, and an older one of the same model must never stand in) and when
+/// it was asked before that start went out (it may lack the new download). Else as every list.
+fn polled(state: &mut State, pulls: Vec<AiPull>) -> Action {
+    if let Some(using) = state.slots.using.as_mut()
+        && (std::mem::take(&mut using.stale_poll) || using.step == UseStep::Pull(None))
+    {
+        return Action::None;
+    }
+    pulls_answered(state, pulls)
+}
+
+/// The core listed its downloads: they replace the last list, and the download the chain waits for
+/// (by its id, [`started`]) moves it on – `done` to `ai.list_models`, `failed` stops it with the core's
+/// reason, `cancelled` ends it quietly (the person pressed "Cancel"). A download the list no longer has
+/// (the core started again) stops it too.
+fn pulls_answered(state: &mut State, pulls: Vec<AiPull>) -> Action {
+    state.slots.pulls = pulls;
+    let Some(using) = state.slots.using.as_mut() else { return Action::None };
+    let UseStep::Pull(Some(id)) = &using.step else { return Action::None };
+    let engine = using.engine.clone().unwrap_or_default();
+    let Some(pull) = state.slots.pulls.iter().find(|pull| &pull.id == id).cloned() else {
+        return stop(state, tr("The download stopped. Try again.").to_string());
+    };
+    match pull.state {
+        AiPullState::Running => Action::None,
+        AiPullState::Done => {
+            using.step = UseStep::List;
+            ask_ai(Asked::Slot(using.slot), Request::AiModels { account: engine, all: true })
+        }
+        AiPullState::Failed => {
+            stop(state, pull.error.unwrap_or_else(|| tr("The download stopped. Try again.").to_string()))
+        }
+        AiPullState::Cancelled => {
+            state.slots.using = None;
+            Action::None
+        }
     }
 }
 
@@ -1091,16 +1791,17 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, palette: &Pa
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, !beside(class), palette, false),
+        None => list(state, data, now, !beside(class), palette, false, false),
     }
 }
 
-/// The dedicated AI section uses the same account details, model switches and add dialog.
-pub fn ai_view<'a>(state: &'a State, data: &'a Data, palette: &Palette) -> Element<'a, Message> {
+/// The dedicated AI section uses the same account details, model switches and add dialog; in the
+/// narrow `class` the lists of the slots stand under their names (task MW.8).
+pub fn ai_view<'a>(state: &'a State, data: &'a Data, class: SizeClass, palette: &Palette) -> Element<'a, Message> {
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, false, palette, true),
+        None => list(state, data, now, false, palette, true, !beside(class)),
     }
 }
 
@@ -1577,6 +2278,7 @@ fn list<'a>(
     chips: bool,
     palette: &Palette,
     ai: bool,
+    stacked: bool,
 ) -> Element<'a, Message> {
     let entries = entries(data);
     let groups = account_providers(&entries);
@@ -1602,7 +2304,17 @@ fn list<'a>(
     }
     page = page.push(widgets::group(tr("Accounts"), rows, None));
     if shown == Listed::Fixed(Group::Ai) {
-        page = page.push(data_rule_group(data.settings.mail_to_cloud));
+        // Stacked also where the page is narrower than a form (design review of #325): beside each
+        // other, a model's name, the computer's line or where mail goes would be cut off there.
+        let groups = responsive(move |room: iced::Size| {
+            let stacked = stacked || room.width < size::form_max();
+            column![]
+                .push(slots_group(state, data, stacked))
+                .push(data_rule_group(data, &state.models, stacked))
+                .spacing(layout::section_gap())
+                .into()
+        });
+        page = page.push(groups.height(iced::Length::Shrink));
     }
     page.into()
 }
@@ -1665,18 +2377,541 @@ fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
     row_frame(on_axis(buttons.into()), false)
 }
 
-/// "Mail to cloud models" in the AI section (task C.17, here since S.30): off, only AI accounts
-/// on the person's own computers read mail; on, models elsewhere too. The sentence under it says
-/// that it holds for the assistant and every bot.
-fn data_rule_group<'a>(mail_to_cloud: bool) -> Element<'a, Message> {
-    let switch = toggler(mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
-    let detail = match mail_to_cloud {
-        false => tr("Off: only AI accounts on your own computers read mail"),
+/// The data rule in the AI section (task C.17, here since S.30; the permission per slot since issue
+/// #325): "Chat may read mail in the cloud" – off, the chat reads mail only with AI on the person's own
+/// computers; on, with models elsewhere too. The sentence under the group says that the switch holds
+/// for the assistant and every bot. While *Sorting* may send mail elsewhere (`decide_mail_to_cloud`, set
+/// by choosing a model elsewhere for it), a row offers "Keep mail here"; it is never switched on here.
+/// The row says "Sorting sends mail to the cloud" and where mail goes only while the model that sorts
+/// now computes elsewhere ([`sorting_now`]), else that it may (review of #325: the permission can
+/// outlast a model elsewhere, as after the take-over of an old `mailToCloud`) – with "The model that
+/// sorts now runs on this computer" only while one here sorts, without a line while nothing sorts.
+///
+/// `stacked` (narrow page): the row of *Sorting* puts "Keep mail here" under its text, which wraps – where
+/// mail goes is read whole ([`models_row`]).
+fn data_rule_group<'a>(data: &Data, models: &BTreeMap<String, Vec<AiModel>>, stacked: bool) -> Element<'a, Message> {
+    let settings = &data.settings;
+    let switch =
+        toggler(settings.mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
+    let detail = match settings.mail_to_cloud {
+        false => tr("Off: the chat reads mail only with AI on your own computers"),
         true => tr("Mail goes to the model's provider and can't be taken back"),
     };
-    let row = setting_row(None, tr("Mail to cloud models"), Some(detail.to_string()), switch);
-    let footer = tr("Holds for the assistant and all its bots, whatever their rights allow.");
-    widgets::group(tr("Data rule"), vec![row], Some(footer.to_string()))
+    let mut rows = vec![setting_row(None, tr("Chat may read mail in the cloud"), Some(detail.to_string()), switch)];
+    if settings.mail_to_cloud_in(AiSlot::Decide) {
+        let keep =
+            widgets::text_button(None, tr("Keep mail here"), style::button::secondary, Some(Message::StopSortingMail));
+        let may = tr("Sorting may send mail to the cloud");
+        let (label, detail) = match sorting_now(data, models) {
+            SortingNow::Elsewhere(provider, seat) => {
+                (tr("Sorting sends mail to the cloud"), Some(mail_sentence(provider, seat)))
+            }
+            SortingNow::Here => (may, Some(tr("The model that sorts now runs on this computer").to_string())),
+            SortingNow::Nothing => (may, None),
+        };
+        let row = models_row(None, label, detail, false, Some(keep), stacked);
+        rows.push(row);
+    }
+    let footer = tr("The switch holds for the assistant and all its bots, whatever their rights allow.");
+    widgets::group(tr("Data rule"), rows, Some(footer.to_string()))
+}
+
+/// What sorts mail now, as the data rule says it (review of #325).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortingNow<'a> {
+    /// No model sorts: the slot Sorting is empty, the exception is switched off, or its model is turned
+    /// off at its account.
+    Nothing,
+    /// The model that sorts computes on this computer.
+    Here,
+    /// The model that sorts computes elsewhere: its provider ("OpenRouter"; the account's id for a
+    /// provider Torro does not know) and where that runs ("Cloud · US").
+    Elsewhere(&'a str, &'static str),
+}
+
+/// What sorts now, weighed as the core does (`assignment_in_effect`): the exception of
+/// `inbox.categorize` while one is stored (switched off, nothing sorts), else the slot Sorting; where
+/// its model computes by [`sorts_elsewhere`].
+fn sorting_now<'a>(data: &'a Data, models: &BTreeMap<String, Vec<AiModel>>) -> SortingNow<'a> {
+    let settings = &data.settings;
+    let (engine, model) = match settings.ai_assignments.get(&AiFunction::InboxCategorize) {
+        Some(own) if own.engine.is_some() => match own.engine.as_deref().filter(|_| own.enabled) {
+            Some(engine) => (engine, own.model.as_deref()),
+            None => return SortingNow::Nothing,
+        },
+        _ => match settings.ai_slots.get(AiSlot::Decide) {
+            Some(slot) => (slot.engine.as_str(), slot.model.as_deref()),
+            None => return SortingNow::Nothing,
+        },
+    };
+    // A model its account lists turned off sorts nothing (seen in the check of #325 on the Mac).
+    let listed = model.and_then(|id| models.get(engine)?.iter().find(|known| same_model(&known.id, id)));
+    if listed.is_some_and(|known| !known.enabled) {
+        return SortingNow::Nothing;
+    }
+    if !sorts_elsewhere(data, models, engine, model) {
+        return SortingNow::Here;
+    }
+    let provider = ai_provider(engine);
+    let name = provider.map_or(engine, |provider| provider.name());
+    let seat = provider.map_or(tr("Cloud"), |provider| seat_of(provider, false));
+    SortingNow::Elsewhere(name, seat)
+}
+
+/// Where *Sorting* sends mail while it may (`decide_mail_to_cloud`): the provider and the seat of the
+/// model that sorts now ([`SortingNow::Elsewhere`]). `None` while mail stays here, nothing sorts (no
+/// model, the exception switched off) or that model computes on this computer.
+fn sorting_place<'a>(data: &'a Data, models: &BTreeMap<String, Vec<AiModel>>) -> Option<(&'a str, &'static str)> {
+    if !data.settings.mail_to_cloud_in(AiSlot::Decide) {
+        return None;
+    }
+    match sorting_now(data, models) {
+        SortingNow::Elsewhere(name, seat) => Some((name, seat)),
+        SortingNow::Here | SortingNow::Nothing => None,
+    }
+}
+
+/// Whether mail sorted with `model` of the AI account `engine` leaves this computer, as the core weighs
+/// it (`elsewhere_of`): a model the account lists by where it computes ([`place_of`]); one not listed
+/// yet at an account on this computer only by a cloud name (`:cloud`), elsewhere as the rule assumes in
+/// doubt; naming no model ("Automatic") by the account's seat – at an account here it picks only models
+/// here (review of #325). An unknown provider computes elsewhere.
+fn sorts_elsewhere(data: &Data, models: &BTreeMap<String, Vec<AiModel>>, engine: &str, model: Option<&str>) -> bool {
+    let Some(provider) = ai_provider(engine) else { return true };
+    let Some(id) = model else { return provider.seat() != Seat::ThisComputer };
+    let server = data.accounts.iter().find(|account| account.id == engine).map_or("", account_server);
+    let listed = models.get(engine).and_then(|models| models.iter().find(|known| same_model(&known.id, id)));
+    match listed {
+        Some(known) => place_of(provider, server, known) != Place::Local,
+        None if provider.seat() == Seat::ThisComputer => torro_core::ai::openai::ollama_cloud_name(id),
+        None => place_of(provider, server, &AiModel::named(id)) != Place::Local,
+    }
+}
+
+/// The base address of an AI account as its state names it; empty while it is not connected.
+fn account_server(account: &AccountInfo) -> &str {
+    match &account.state {
+        AccountState::Connected { server, .. } | AccountState::SigningIn { server, .. } => server.as_str(),
+        AccountState::NotConnected => "",
+    }
+}
+
+/// "Mail goes to OpenRouter (Cloud · US) for sorting only.": the one sentence for where *Sorting* sends
+/// mail, under "Models" and in the data rule.
+fn mail_sentence(provider: &str, seat: &str) -> String {
+    trf("Mail goes to {provider} ({seat}) for sorting only.", &[("provider", &provider), ("seat", &seat)])
+}
+
+/// The group "Models" of the AI section (issue #325, task MW.8): the computer as measured, then per
+/// slot its row with the list of models, why the last step failed, where *Sorting* sends mail, and
+/// what Torro suggests. Not shown without an AI account: the section's "Add" comes first. `stacked`
+/// (narrow): every row puts its control under its text ([`models_row`]).
+fn slots_group<'a>(state: &'a State, data: &'a Data, stacked: bool) -> Option<Element<'a, Message>> {
+    ai_accounts(data).next()?;
+    let mut rows = vec![computer_row(&state.slots, stacked)];
+    for slot in AiSlot::ALL {
+        rows.push(slot_row(state, data, slot, stacked));
+        if let Some(failure) = state.slots.failed.as_ref().filter(|failure| failure.slot == slot) {
+            rows.push(failure_row(failure, stacked));
+        }
+        if slot == AiSlot::Decide
+            && let Some((provider, seat)) = sorting_place(data, &state.models)
+        {
+            rows.push(mail_note(provider, seat, data.settings.mail_to_cloud));
+        }
+        if let Some(suggestion) = suggestion_of(state, slot).filter(|suggestion| {
+            !holds(data, slot, suggestion.engine.as_deref(), suggestion.model.as_deref()) || suggestion.engine.is_none()
+        }) {
+            rows.push(suggestion_row(state, suggestion, stacked));
+            if slot == AiSlot::Decide && !suggestion.local {
+                rows.push(mail_note(suggestion.provider.name(), &suggestion.seat, data.settings.mail_to_cloud));
+            }
+        }
+    }
+    let footer = tr("Torro suggests a model for each slot. Nothing changes until you choose one.");
+    Some(widgets::group(tr("Models"), rows, Some(footer.to_string())))
+}
+
+/// A row of "Models": `mark` in front (or nothing), `label` over `detail`, and `control`. Beside each
+/// other with the metrics of [`setting_row`], each line cut with "…" and a tooltip; `stacked` (narrow)
+/// the control stands under the text, on its axis, and the detail wraps – a model's name, a download's
+/// progress or a reason do not fit beside a button there, and must not be cut. `alert` puts a
+/// `CircleAlert` in the attention colour before the detail: something about the row needs a look.
+fn models_row<'a>(
+    mark: Option<Element<'a, Message>>,
+    label: impl IntoFragment<'a>,
+    detail: Option<String>,
+    alert: bool,
+    control: Option<Element<'a, Message>>,
+    stacked: bool,
+) -> Element<'a, Message> {
+    if !stacked && !alert {
+        return setting_row(mark, label, detail, control.unwrap_or_else(|| Space::new().into()));
+    }
+    let detail = detail.map(|detail| {
+        let line: Element<'a, Message> = match stacked {
+            true => typo::text(typo::meta(), detail).style(theme::text_2).width(Fill).into(),
+            false => widgets::ellipsized(typo::meta(), detail, theme::text_2),
+        };
+        match alert {
+            true => row![attention_mark(icon::SIZE_SM), line].spacing(space::xs()).align_y(Alignment::Center).into(),
+            false => line,
+        }
+    });
+    let tall = detail.is_some();
+    let lines = column![widgets::ellipsized(typo::body(), label, theme::text)].push(detail);
+    if !stacked {
+        let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
+        return row_frame(row![text.width(Fill)].push(control).spacing(space::l()).align_y(Alignment::Center), tall);
+    }
+    // The mark stays beside the label's line, not the middle of text and control.
+    let first_line = typo::body().line_height.to_absolute(typo::body().size).0;
+    let mark = mark.map(|mark| container(mark).center_y(first_line));
+    // Without a control nothing is added under the text, so no room is left below it.
+    let text = column![lines].push(control).spacing(space::s()).width(Fill);
+    container(row![].push(mark).push(text).spacing(space::m())).width(Fill).padding([space::m(), space::l()]).into()
+}
+
+/// `CircleAlert` at `size` in the attention colour.
+fn attention_mark<'a>(size: f32) -> Element<'a, Message> {
+    icon::icon(Icon::CircleAlert, size)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) })
+        .into()
+}
+
+/// Where a model of `provider` runs, for a sentence about mail: the provider's seat ("Cloud · US"),
+/// and "Cloud" for a model elsewhere of a provider whose seat is this computer (an Ollama cloud model).
+fn seat_of(provider: AiProvider, local: bool) -> &'static str {
+    match provider.seat() {
+        Seat::ThisComputer if !local => tr("Cloud"),
+        seat => seat.label(),
+    }
+}
+
+/// The first row of "Models": the computer as `ai.recommend` measured it ("GeForce RTX 4070 · 12 GB
+/// video memory · 64 GB memory") with the class of models that fits it at the right ("Graphics card
+/// class"; not in the narrow class, where the line wraps instead); while the first answer is on its way
+/// "Measuring this computer…" (it can take a while), after a failure the reason with "Retry".
+fn computer_row<'a>(slots: &'a SlotsPage, stacked: bool) -> Element<'a, Message> {
+    let mark =
+        icon::icon(Icon::Monitor, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    if let Some(problem) = slots.recommend_error.as_ref().filter(|_| !slots.recommending) {
+        let retry = widgets::text_button(None, tr("Retry"), style::button::secondary, Some(Message::Recommend));
+        let (label, detail) = (tr("No suggestion right now"), Some(problem.clone()));
+        return models_row(Some(mark.into()), label, detail, false, Some(retry), stacked);
+    }
+    match &slots.recommendation {
+        Some(recommendation) => {
+            let tier = (!stacked).then(|| {
+                typo::text(typo::meta(), trf("{tier} class", &[("tier", &recommendation.tier_label)]))
+                    .style(theme::text_3)
+                    .into()
+            });
+            let line = hardware_line(&recommendation.hardware);
+            models_row(Some(mark.into()), tr("This computer"), Some(line), false, tier, stacked)
+        }
+        None => {
+            let detail = tr("Measuring this computer…").to_string();
+            models_row(Some(mark.into()), tr("This computer"), Some(detail), false, None, stacked)
+        }
+    }
+}
+
+/// The computer in one line: the graphics card (else the processor), its video memory, the memory –
+/// "shared memory" where processor and graphics share it (Apple silicon). What was not measured is
+/// left out; with nothing measured "Not measured".
+pub fn hardware_line(hardware: &Hardware) -> String {
+    let gpu = hardware.gpu.as_ref();
+    let name = gpu.and_then(|gpu| gpu.name.clone()).or_else(|| hardware.cpu.clone());
+    let vram = gpu
+        .and_then(|gpu| gpu.vram_bytes)
+        .map(|bytes| trf("{size} video memory", &[("size", &torro_gui::units::format_bytes(bytes))]));
+    let memory = hardware.memory_bytes.map(|bytes| {
+        let size = torro_gui::units::format_bytes(bytes);
+        match hardware.unified_memory {
+            true => trf("{size} shared memory", &[("size", &size)]),
+            false => trf("{size} memory", &[("size", &size)]),
+        }
+    });
+    let parts: Vec<String> = [name, vram, memory].into_iter().flatten().collect();
+    if parts.is_empty() { tr("Not measured").to_string() } else { parts.join(" · ") }
+}
+
+/// What a slot is for, under its name.
+fn slot_about(slot: AiSlot) -> &'static str {
+    match slot {
+        AiSlot::Chat => tr("The assistant and its bots"),
+        AiSlot::Decide => tr("Sorts mail into categories"),
+    }
+}
+
+/// What a sorting model through the fallback adds to its line ([`AiModel::decides_by_chat`], task
+/// MW.3), in the words of Settings › Mail › Categorization.
+fn by_chat_note() -> &'static str {
+    tr("Answers in a fixed format, slower")
+}
+
+/// The line under a slot's name: "Saving…" while a choice is on its way; "Turned off at Ollama"
+/// (with the alert, `true`) while the model it holds is not among those turned on ([`held_model`]);
+/// else what the slot is for, for *Sorting* with a chat model "· Answers in a fixed format, slower".
+fn slot_detail(state: &State, data: &Data, slot: AiSlot) -> (String, bool) {
+    let busy = state.slots.using.as_ref().is_some_and(|using| using.slot == slot && !using.step.downloading());
+    if busy {
+        return (tr("Saving…").to_string(), false);
+    }
+    match held_model(state, data, slot) {
+        // On this page already: the account where it is turned on again (design review of #325).
+        Held::Off(engine) => {
+            let account = ai_accounts(data).find(|account| account.id == engine).map(|account| account.label.as_str());
+            (trf("Turned off at {account}", &[("account", &account.unwrap_or(engine))]), true)
+        }
+        Held::On(model) if slot == AiSlot::Decide && model.decides_by_chat() => {
+            (format!("{} · {}", slot_about(slot), by_chat_note()), false)
+        }
+        _ => (slot_about(slot).to_string(), false),
+    }
+}
+
+/// What a slot holds, as far as its account's list says.
+enum Held<'a> {
+    /// Nothing, the account picks, or its models are not in yet.
+    Unknown,
+    /// A model the account lists turned on.
+    On(&'a AiModel),
+    /// A model the account (its id) lists turned off, or lacks: the slot does nothing with it.
+    Off(&'a str),
+}
+
+/// What `slot` holds ([`Held`]), the model's id matched as Ollama lists it ([`same_model`]).
+fn held_model<'a>(state: &'a State, data: &'a Data, slot: AiSlot) -> Held<'a> {
+    let Some(stored) = data.settings.ai_slots.get(slot) else { return Held::Unknown };
+    let (Some(id), Some(models)) = (&stored.model, state.models.get(&stored.engine)) else { return Held::Unknown };
+    match models.iter().find(|model| same_model(&model.id, id)) {
+        Some(model) if model.enabled => Held::On(model),
+        _ => Held::Off(&stored.engine),
+    }
+}
+
+/// A slot's row: its name, the line under it ([`slot_detail`]) and the list of models
+/// ([`slot_choices`]); `stacked` (narrow) the list under the text, as wide as the row, so both slots'
+/// lists line up.
+fn slot_row<'a>(state: &'a State, data: &'a Data, slot: AiSlot, stacked: bool) -> Element<'a, Message> {
+    let (choices, chosen) = slot_choices(state, data, slot);
+    let (detail, alert) = slot_detail(state, data, slot);
+    let on_pick = move |choice: SlotChoice| Message::PickSlot(slot, choice);
+    let pick = match stacked {
+        true => picker_fill(choices, chosen, on_pick),
+        false => picker(choices, chosen, on_pick),
+    };
+    models_row(None, slot.label(), Some(detail), alert, Some(pick), stacked)
+}
+
+/// The list of a slot and what it has (task MW.8): "None", then the models turned on of every AI
+/// account that serve the slot – *Chat* those that can use tools (or do not say), *Sorting* those that
+/// decide or can use tools ([`AiModel::can_decide`]; how one sorts stands under the slot's name, so the
+/// list stays narrow) –, by account and name, the account's name only with more than one AI account.
+/// A chosen model the lists do not hold (turned off, not listed yet) stands right after "None", by its
+/// name where its account lists it, so the list shows it.
+pub fn slot_choices(state: &State, data: &Data, slot: AiSlot) -> (Vec<SlotChoice>, SlotChoice) {
+    let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
+    let several = accounts.len() > 1;
+    let label = |account: Option<&AccountInfo>, model: Option<&AiModel>, id: &str| {
+        let mut parts = vec![shown_id(model.map_or(id, |model| model.name.as_str()))];
+        if several && let Some(account) = account {
+            parts.push(account.label.clone());
+        }
+        parts.join(" · ")
+    };
+    // An empty *Chat* is no "off": the assistant takes the model used last, as Assistant › General says.
+    let empty = match slot {
+        AiSlot::Chat => tr("The one used last"),
+        AiSlot::Decide => tr("None"),
+    };
+    let none = SlotChoice { engine: None, model: None, label: empty.to_string() };
+    let mut choices = vec![none.clone()];
+    for account in &accounts {
+        let mut models: Vec<&AiModel> =
+            state.models.get(&account.id).into_iter().flatten().filter(|model| serves(model, slot)).collect();
+        models.sort_by_cached_key(|model| (model.name.to_lowercase(), model.id.clone()));
+        choices.extend(models.into_iter().map(|model| SlotChoice {
+            engine: Some(account.id.clone()),
+            model: Some(model.id.clone()),
+            label: label(Some(account), Some(model), &model.id),
+        }));
+    }
+    let Some(stored) = data.settings.ai_slots.get(slot) else { return (choices, none) };
+    let found = choices.iter().find(|choice| {
+        choice.engine.as_deref() == Some(stored.engine.as_str())
+            && match (&choice.model, &stored.model) {
+                (Some(a), Some(b)) => same_model(a, b),
+                (a, b) => a == b,
+            }
+    });
+    if let Some(found) = found {
+        return (choices.clone(), found.clone());
+    }
+    let account = accounts.iter().copied().find(|account| account.id == stored.engine);
+    let known = stored
+        .model
+        .as_ref()
+        .and_then(|id| state.models.get(&stored.engine)?.iter().find(|model| same_model(&model.id, id)));
+    let name = match &stored.model {
+        Some(id) => label(account, known, id),
+        // The account picks: its name says which.
+        None => account.map_or_else(|| stored.engine.clone(), |account| account.label.clone()),
+    };
+    let chosen = SlotChoice { engine: Some(stored.engine.clone()), model: stored.model.clone(), label: name };
+    choices.insert(1, chosen.clone());
+    (choices, chosen)
+}
+
+/// A model turned on that can take `slot`.
+fn serves(model: &AiModel, slot: AiSlot) -> bool {
+    model.enabled
+        && match slot {
+            AiSlot::Chat => model.tools != Some(false),
+            AiSlot::Decide => model.can_decide(),
+        }
+}
+
+/// Why the last step under a slot failed, in the core's words, with "Retry".
+fn failure_row<'a>(failure: &'a SlotFailure, stacked: bool) -> Element<'a, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+    let retry = widgets::text_button(None, tr("Retry"), style::button::secondary, Some(Message::RetrySlot));
+    match stacked {
+        // The core's sentence is long: it wraps above "Retry" instead of being cut.
+        true => models_row(Some(alert.into()), failure.message.as_str(), None, false, Some(retry), true),
+        false => setting_row(Some(alert.into()), failure.message.as_str(), None, retry),
+    }
+}
+
+/// Where *Sorting* sends mail, said where the choice is made: "Mail goes to OpenRouter (Cloud · US) for
+/// sorting only." and, while the chat may read none, "The chat still gets no mail." As high as the rows
+/// around it ([`row_frame`]); wraps rather than cutting off: it is the one sentence here that must be
+/// read whole.
+fn mail_note<'a>(provider: &str, seat: &str, chat_reads_mail: bool) -> Element<'a, Message> {
+    let mut sentence = mail_sentence(provider, seat);
+    if !chat_reads_mail {
+        sentence = format!("{sentence} {}", tr("The chat still gets no mail."));
+    }
+    let mark = icon::icon(Icon::Cloud, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let line = typo::text(typo::meta(), sentence).style(theme::text_2).width(Fill);
+    row_frame(row![mark, line].spacing(space::m()).align_y(Alignment::Center), false)
+}
+
+/// What Torro suggests for a slot: the model (or, where the account picks one, the provider), where it
+/// runs and why, and "Use suggestion" – "Use suggestion · 5.2 GB" where it downloads first. While its
+/// download runs the progress with "Cancel"; while the chain saves "Saving…"; while the chain of the
+/// other slot runs the button is off and its tooltip says what it waits for; without an account to run
+/// it (no Ollama) the reason stands there instead of the button. No mark: the suggestion comes from
+/// Torro's fixed list, not from a model, so it has no Sparkles – only their room, so it lines up with
+/// the rows around it. `stacked` (narrow): the control under the text ([`models_row`]).
+fn suggestion_row<'a>(state: &'a State, suggestion: &'a SlotSuggestion, stacked: bool) -> Element<'a, Message> {
+    let slot = suggestion.slot;
+    let name = match (&suggestion.engine, &suggestion.model) {
+        (Some(engine), Some(id)) => state
+            .models
+            .get(engine)
+            .and_then(|models| models.iter().find(|model| same_model(&model.id, id)))
+            .map_or_else(|| shown_id(id), |model| shown_id(&model.name)),
+        (None, Some(id)) => shown_id(id),
+        (_, None) => suggestion.provider.name().to_string(),
+    };
+    let label = trf("Suggested: {model}", &[("model", &name)]);
+    let mut detail = vec![suggestion.seat.clone()];
+    if suggestion.engine.is_some() {
+        detail.push(suggestion.reason.clone());
+    }
+    if suggestion.by_chat {
+        detail.push(by_chat_note().to_string());
+    }
+    let room = || Some(Space::new().width(icon::SIZE).into());
+    let Some(engine) = &suggestion.engine else {
+        let reason = typo::text(typo::meta(), suggestion.reason.as_str()).style(theme::text_2);
+        return models_row(room(), label, Some(detail.join(" · ")), false, Some(reason.into()), stacked);
+    };
+    let model = suggestion.model.as_deref().unwrap_or_default();
+    let pull = pull_of(&state.slots.pulls, engine, model).filter(|pull| pull.state == AiPullState::Running);
+    let using = state.slots.using.as_ref();
+    let control: Element<'a, Message> = match (pull, using.filter(|using| using.slot == slot)) {
+        (Some(pull), _) if suggestion.download_bytes.is_some() => {
+            detail = vec![download_text(pull)];
+            download_control(slot, pull)
+        }
+        (_, Some(using)) if !using.step.downloading() => widgets::busy_button(tr("Saving…"), style::button::secondary),
+        (_, Some(_)) => widgets::busy_button(tr("Starting download…"), style::button::secondary),
+        _ => {
+            let words = match suggestion.download_bytes {
+                Some(bytes) => trf("Use suggestion · {size}", &[("size", &torro_gui::units::format_bytes(bytes))]),
+                None => tr("Use suggestion").to_string(),
+            };
+            let free = using.is_none().then_some(Message::UseSuggestion(slot));
+            let button = widgets::text_button(None, words, style::button::secondary, free);
+            match using {
+                // Said in the line too: an off button's tooltip is only seen by pointing at it.
+                Some(other) => {
+                    detail.push(waits_for(other));
+                    widgets::with_tooltip(button, waits_for(other))
+                }
+                None => button,
+            }
+        }
+    };
+    models_row(room(), label, Some(detail.join(" · ")), false, Some(control), stacked)
+}
+
+/// A model's name as a person reads it: Ollama's default tag `:latest` left out – Ollama lists a model
+/// pulled without a tag by its id, so its name carries the tag too.
+fn shown_id(id: &str) -> String {
+    id.strip_suffix(":latest").unwrap_or(id).to_string()
+}
+
+/// Why "Use suggestion" is off while the chain of another slot runs: "Wait until the download for
+/// Chat has finished", or "Wait until Chat is saved" once the download is done.
+fn waits_for(other: &Using) -> String {
+    let slot = other.slot.label();
+    match other.step.downloading() {
+        true => trf("Wait until the download for {slot} has finished", &[("slot", &slot)]),
+        false => trf("Wait until {slot} is saved", &[("slot", &slot)]),
+    }
+}
+
+/// How far a download is: "Downloading 3.9 GB of 9.3 GB", or "Starting download…" before Ollama
+/// names a size.
+fn download_text(pull: &AiPull) -> String {
+    match (pull.completed, pull.total) {
+        (Some(done), Some(total)) => trf(
+            "Downloading {done} of {total}",
+            &[("done", &torro_gui::units::format_bytes(done)), ("total", &torro_gui::units::format_bytes(total))],
+        ),
+        _ => tr("Starting download…").to_string(),
+    }
+}
+
+/// The share of a download in per mille and as "41%"; `None` before Ollama names a size. The total
+/// can grow while layers are added, so the share never passes 100 %.
+pub fn download_share(pull: &AiPull) -> Option<(usize, String)> {
+    let (done, total) = (pull.completed?, pull.total.filter(|total| *total > 0)?);
+    let per_mille = (done.min(total) * 1000 / total) as usize;
+    Some((per_mille, format!("{}%", per_mille / 10)))
+}
+
+/// The progress of a running download with "Cancel": the bar and the share, tabular so it does not
+/// jump; before Ollama names a size only "Cancel".
+fn download_control<'a>(slot: AiSlot, pull: &AiPull) -> Element<'a, Message> {
+    let cancel = widgets::text_button(
+        None,
+        tr("Cancel"),
+        style::button::ghost,
+        Some(Message::CancelPull(slot, pull.id.clone())),
+    );
+    let mut parts = row![].spacing(space::s()).align_y(Alignment::Center);
+    if let Some((per_mille, share)) = download_share(pull) {
+        parts = parts.push(widgets::progress_bar(per_mille, 1000));
+        parts = parts.push(typo::text(typo::meta().tabular(), share).style(theme::text_3));
+    }
+    parts.push(cancel).into()
 }
 
 /// A sign-in in progress: attention dot, the server and "Signing in…". Not pressable: there is
@@ -2231,10 +3466,7 @@ fn models_group<'a>(state: &'a State, account: &'a AccountInfo) -> Element<'a, M
     let page = &state.models_page;
     let provider = ai_provider(&account.id);
     let closed_filter = provider == Some(AiProvider::OpenRouter);
-    let server = match &account.state {
-        AccountState::Connected { server, .. } | AccountState::SigningIn { server, .. } => server.as_str(),
-        AccountState::NotConnected => "",
-    };
+    let server = account_server(account);
     let models = state.models.get(&account.id);
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
     if models.is_some() {
@@ -2915,7 +4147,7 @@ mod tests {
         // Every page builds: no accounts, accounts, an unknown kind.
         draw(&State::default(), &Data::default());
         draw(&State::default(), &Data { accounts: vec![slack, github, a], ..Data::default() });
-        drop(ai_view(&State::default(), &Data::default(), &Palette::dark()));
+        drop(ai_view(&State::default(), &Data::default(), SizeClass::Wide, &Palette::dark()));
     }
 
     /// Task S.30: a mail provider's CalDAV account stands in the group Mail and says "CalDAV".
@@ -3005,8 +4237,15 @@ mod tests {
             let action = update(&mut State::default(), Message::MailToCloud(on), &data);
             let Action::Send(Request::SetSetting { key, value }) = action else { panic!("a setting") };
             assert_eq!((key, value), (SettingKey::MailToCloud, serde_json::json!(on)));
-            drop(data_rule_group(on));
+            let settings = Settings { mail_to_cloud: on, ..Settings::default() };
+            drop(data_rule_group(&Data { settings, ..Data::default() }, &BTreeMap::new(), false));
         }
+        // Issue #325: the permission of Sorting is only stopped here, never switched on.
+        let action = update(&mut State::default(), Message::StopSortingMail, &data);
+        let Action::Send(Request::SetSetting { key, value }) = action else { panic!("a setting") };
+        assert_eq!((key, value), (SettingKey::DecideMailToCloud, serde_json::json!(false)));
+        let settings = Settings { decide_mail_to_cloud: Some(true), ..Settings::default() };
+        drop(data_rule_group(&Data { settings, ..Data::default() }, &BTreeMap::new(), false));
     }
 
     #[test]
@@ -4002,5 +5241,609 @@ mod tests {
         let account = data.accounts.iter().find(|account| account.id == NTFY).cloned().expect("demo ntfy");
         assert!(answered(&mut state, &Ok(Response::Account { account })));
         assert!(state.login.is_none());
+    }
+
+    // ----- The slots (issue #325, task MW.8) -----------------------------------------------------
+
+    use super::super::launch::{DEMO_OLLAMA, DEMO_OPENROUTER, demo_answer, demo_data, demo_ollama, demo_ollama_models};
+
+    /// The requests of an [`Action::AskAi`], with what each is for.
+    fn asks(action: Action) -> Vec<(Asked, Request)> {
+        match action {
+            Action::AskAi(asks) => asks,
+            Action::None => Vec::new(),
+            other => panic!("expected requests of the group Models, got {other:?}"),
+        }
+    }
+
+    /// The one request of an [`Action::AskAi`].
+    fn ask(action: Action) -> (Asked, Request) {
+        let mut all = asks(action);
+        assert_eq!(all.len(), 1, "one request: {all:?}");
+        all.remove(0)
+    }
+
+    fn pull(id: &str, state: AiPullState) -> AiPull {
+        AiPull {
+            id: id.into(),
+            account: DEMO_OLLAMA.into(),
+            model: "qwen3:14b".into(),
+            state,
+            completed: Some(400),
+            total: Some(1000),
+            error: None,
+        }
+    }
+
+    /// The demo with its Ollama, the section shown and every answer of the demo taken: the suggestion,
+    /// the downloads (with `pulls` the demo's running one) and the models of both accounts.
+    fn shown(pulls: bool) -> (State, Data) {
+        let mut data = demo_data();
+        demo_ollama(&mut data);
+        let mut state = State::default();
+        for (asked, request) in asks(ai_shown(&mut state, &data)) {
+            let answer = match (&request, pulls) {
+                (Request::AiPulls, false) => Response::AiPulls { pulls: Vec::new() },
+                _ => demo_answer(&request, &data).expect("the demo answers"),
+            };
+            assert!(matches!(ai_answered(&mut state, asked, &Ok(answer)), Action::None));
+        }
+        (state, data)
+    }
+
+    /// Opening the section asks for the suggestion, the downloads and the models of every AI account
+    /// once; a reload asks again only for an account that came with it, and leaving forgets it.
+    #[test]
+    fn the_section_asks_once_for_what_the_slots_need() {
+        let mut data = demo_data();
+        let mut state = State::default();
+        let first: Vec<Asked> = asks(ai_shown(&mut state, &data)).into_iter().map(|(asked, _)| asked).collect();
+        assert_eq!(first, [Asked::Recommend, Asked::Pulls, Asked::Models(OPENROUTER.into())]);
+        assert!(state.slots.recommending);
+        assert!(asks(ai_shown(&mut state, &data)).is_empty(), "a reload asks nothing again");
+        demo_ollama(&mut data);
+        let new = ask(ai_shown(&mut state, &data));
+        assert_eq!(
+            new,
+            (Asked::Models(DEMO_OLLAMA.into()), Request::AiModels { account: DEMO_OLLAMA.into(), all: true })
+        );
+        leave(&mut state);
+        // Opened again while the first answers are out: only the models, whose lists never came.
+        let again: Vec<Asked> = asks(ai_shown(&mut state, &data)).into_iter().map(|(asked, _)| asked).collect();
+        assert_eq!(again, [Asked::Models(OPENROUTER.into()), Asked::Models(DEMO_OLLAMA.into())]);
+        let _ = ai_answered(&mut state, Asked::Recommend, &Err("No answer".into()));
+        let _ = ai_answered(&mut state, Asked::Pulls, &Err("No answer".into()));
+        leave(&mut state);
+        let third: Vec<Asked> = asks(ai_shown(&mut state, &data)).into_iter().map(|(asked, _)| asked).collect();
+        assert!(third.starts_with(&[Asked::Recommend, Asked::Pulls]), "{third:?}");
+        let none = Data { accounts: Vec::new(), ..demo_data() };
+        assert!(asks(ai_shown(&mut State::default(), &none)).is_empty(), "no AI account, no group");
+    }
+
+    /// "Use suggestion" with a download: `ai.pull_model`, `ai.list_pulls` every second while it runs,
+    /// then the account's models, the model turned on and put in the slot – in this order – and a fresh
+    /// suggestion after it.
+    #[test]
+    fn use_suggestion_downloads_then_turns_on_and_sets() {
+        let (mut state, data) = shown(false);
+        let (asked, request) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        assert_eq!(asked, Asked::Slot(AiSlot::Chat));
+        assert_eq!(request, Request::PullAiModel { account: DEMO_OLLAMA.into(), model: "qwen3:14b".into() });
+        assert!(asks(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data)).is_empty(), "one at a time");
+        // The start answer lists every download of the run: the newest of this model is the one.
+        let older = pull("p0", AiPullState::Failed);
+        let started = Response::AiPulls { pulls: vec![older, pull("p1", AiPullState::Running)] };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(started)), Action::None));
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(Some("p1".into()))));
+        assert!(running(&state.slots.pulls), "the page ticks");
+        assert_eq!(ask(update(&mut state, Message::PollPulls, &data)), (Asked::Pulls, Request::AiPulls));
+        assert!(asks(update(&mut state, Message::PollPulls, &data)).is_empty(), "the last poll is still out");
+        let still = Response::AiPulls { pulls: vec![pull("p1", AiPullState::Running)] };
+        assert!(matches!(ai_answered(&mut state, Asked::Pulls, &Ok(still)), Action::None));
+        draw_ai(&state, &data);
+
+        let done = Response::AiPulls { pulls: vec![pull("p1", AiPullState::Done)] };
+        let mut order = vec![ask(ai_answered(&mut state, Asked::Pulls, &Ok(done)))];
+        let mut models = demo_ollama_models();
+        models.push(AiModel { tools: Some(true), remote: Some(false), ..AiModel::named("qwen3:14b") });
+        let listed = Response::AiModels { account: DEMO_OLLAMA.into(), models };
+        order.push(ask(ai_answered(&mut state, Asked::Slot(AiSlot::Chat), &Ok(listed))));
+        draw_ai(&state, &data);
+        order.push(ask(ai_answered(&mut state, Asked::Slot(AiSlot::Chat), &Ok(Response::Ok))));
+        let set = Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() };
+        order.push(ask(ai_answered(&mut state, Asked::Slot(AiSlot::Chat), &Ok(set))));
+        let chat = Asked::Slot(AiSlot::Chat);
+        assert_eq!(
+            order,
+            [
+                (chat.clone(), Request::AiModels { account: DEMO_OLLAMA.into(), all: true }),
+                (
+                    chat.clone(),
+                    Request::SetModelEnabled { account: DEMO_OLLAMA.into(), model: "qwen3:14b".into(), enabled: true }
+                ),
+                (
+                    chat,
+                    Request::SetAiSlot {
+                        slot: AiSlot::Chat,
+                        engine: Some(DEMO_OLLAMA.into()),
+                        model: Some("qwen3:14b".into()),
+                        effort: Some(Effort::High),
+                    }
+                ),
+                (Asked::Recommend, Request::AiRecommend),
+            ]
+        );
+        assert!(state.slots.using.is_none() && state.slots.failed.is_none());
+        assert!(state.models[DEMO_OLLAMA].iter().any(|model| model.id == "qwen3:14b" && model.enabled));
+    }
+
+    /// A model the account lists already and turned on goes straight to `ai.set_slot`, by the id the
+    /// account lists (`nimble:latest` for `nimble`).
+    #[test]
+    fn a_listed_model_is_set_by_its_listed_id() {
+        let (mut state, data) = shown(false);
+        let (asked, request) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data));
+        assert_eq!(request, Request::AiModels { account: DEMO_OLLAMA.into(), all: true });
+        let mut models = demo_ollama_models();
+        models.iter_mut().for_each(|model| model.enabled = true);
+        let listed = Response::AiModels { account: DEMO_OLLAMA.into(), models };
+        let (_, request) = ask(ai_answered(&mut state, asked, &Ok(listed)));
+        assert_eq!(
+            request,
+            Request::SetAiSlot {
+                slot: AiSlot::Decide,
+                engine: Some(DEMO_OLLAMA.into()),
+                model: Some("nimble:latest".into()),
+                effort: None
+            }
+        );
+        assert!(same_model("nimble", "nimble:latest") && !same_model("qwen3", "qwen3:14b"));
+        assert!(!same_model("host:5000/x", "host:5000/x:5000"), "a port is no tag");
+    }
+
+    /// A step that fails stops the chain: nothing more is sent, the reason stands under its slot, a late
+    /// answer is dropped, and "Retry" starts the chain again from its first step.
+    #[test]
+    fn a_failed_step_stops_the_chain() {
+        let (mut state, data) = shown(false);
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data));
+        let listed = Response::AiModels { account: DEMO_OLLAMA.into(), models: demo_ollama_models() };
+        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(listed)));
+        assert!(matches!(request, Request::SetModelEnabled { ref model, .. } if model == "nimble:latest"));
+        let refused = Response::Error { code: "forbidden".into(), message: "Only you can do that.".into() };
+        assert!(matches!(ai_answered(&mut state, asked.clone(), &Ok(refused)), Action::None));
+        assert!(state.slots.using.is_none());
+        let failure = state.slots.failed.as_ref().expect("the reason shows");
+        assert_eq!((failure.slot, failure.message.as_str()), (AiSlot::Decide, "Only you can do that."));
+        draw_ai(&state, &data);
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(Response::Ok)), Action::None), "a late answer is dropped");
+        let (_, again) = ask(update(&mut state, Message::RetrySlot, &data));
+        assert_eq!(again, Request::AiModels { account: DEMO_OLLAMA.into(), all: true });
+        assert!(state.slots.failed.is_none());
+
+        // A download the core refuses at once comes back `failed`, with the core's own sentence.
+        let (mut state, data) = shown(false);
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        let failed = AiPull { error: Some("Ollama does not answer.".into()), ..pull("p1", AiPullState::Failed) };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(Response::AiPulls { pulls: vec![failed] })), Action::None));
+        assert_eq!(state.slots.failed.as_ref().map(|f| f.message.as_str()), Some("Ollama does not answer."));
+        // No answer at all stops it too.
+        let (mut state, data) = shown(false);
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        assert!(matches!(ai_answered(&mut state, asked, &Err("No home directory".into())), Action::None));
+        assert!(state.slots.using.is_none() && state.slots.failed.is_some());
+    }
+
+    /// "Use suggestion" while the model downloads already waits for that download; "Cancel" ends it
+    /// quietly and the page stops ticking.
+    #[test]
+    fn cancel_ends_the_download_quietly() {
+        let (mut state, data) = shown(true);
+        assert!(running(&state.slots.pulls), "the demo's download runs");
+        draw_ai(&state, &data);
+        assert!(asks(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data)).is_empty(), "it waits");
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(Some("p1".into()))));
+        let (asked, request) = ask(update(&mut state, Message::CancelPull(AiSlot::Chat, "p1".into()), &data));
+        let cancel = Asked::Cancel(AiSlot::Chat, "p1".into());
+        assert_eq!((asked.clone(), request), (cancel, Request::CancelAiPull { id: "p1".into() }));
+        let cancelled = Response::AiPulls { pulls: vec![pull("p1", AiPullState::Cancelled)] };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(cancelled)), Action::None));
+        assert!(state.slots.using.is_none() && state.slots.failed.is_none() && !running(&state.slots.pulls));
+        assert!(asks(update(&mut state, Message::PollPulls, &data)).is_empty(), "nothing runs: no poll");
+        // A cancel the core refuses keeps the chain and says why.
+        let (mut state, data) = shown(true);
+        let _ = update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data);
+        let refused = Response::Error { code: "not-found".into(), message: "No such download.".into() };
+        let _ = ai_answered(&mut state, Asked::Cancel(AiSlot::Chat, "p1".into()), &Ok(refused));
+        assert!(state.slots.using.is_some());
+        assert_eq!(state.slots.failed.as_ref().map(|f| f.message.as_str()), Some("No such download."));
+    }
+
+    /// A choice in a slot's list sends `ai.set_slot` at once; "None" empties it; what the slot has
+    /// already sends nothing.
+    #[test]
+    fn a_choice_in_the_list_sets_the_slot() {
+        let (mut state, data) = shown(false);
+        let (choices, chosen) = slot_choices(&state, &data, AiSlot::Decide);
+        assert_eq!(chosen.model.as_deref(), Some("qwen/qwen3-235b-a22b"));
+        assert!(asks(update(&mut state, Message::PickSlot(AiSlot::Decide, chosen), &data)).is_empty());
+        let none = choices[0].clone();
+        assert_eq!(none.label, tr("None"));
+        // An empty Chat takes the model used last, as Assistant › General names it.
+        assert_eq!(slot_choices(&state, &data, AiSlot::Chat).0[0].label, tr("The one used last"));
+        let (asked, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, none), &data));
+        assert_eq!(asked, Asked::Slot(AiSlot::Decide));
+        assert_eq!(request, Request::SetAiSlot { slot: AiSlot::Decide, engine: None, model: None, effort: None });
+        assert!(asked.changes() && !Asked::Pulls.changes());
+    }
+
+    /// Chat offers models turned on that can use tools; Sorting those that decide or can use tools, each
+    /// with how it sorts, and the account's name with more than one AI account. A chosen model the lists
+    /// do not hold stands after "None".
+    #[test]
+    fn the_lists_offer_what_serves_the_slot() {
+        let (state, mut data) = shown(false);
+        let (chat, chosen) = slot_choices(&state, &data, AiSlot::Chat);
+        assert_eq!(chosen.model.as_deref(), Some("qwen/qwen3-32b"), "not listed, still shown");
+        assert_eq!(chat[1], chosen);
+        let models: Vec<&str> = chat.iter().filter_map(|choice| choice.model.as_deref()).collect();
+        assert!(models.contains(&"qwen3:8b") && models.contains(&"qwen/qwen3-235b-a22b"));
+        assert!(!models.contains(&"nimble:latest") && !models.contains(&"deepseek/deepseek-chat-v3.1"), "{models:?}");
+        assert!(chat.iter().any(|choice| choice.label == format!("qwen3:8b · {}", "Ollama")));
+        let (decide, _) = slot_choices(&state, &data, AiSlot::Decide);
+        let qwen =
+            decide.iter().find(|choice| choice.model.as_deref() == Some("qwen/qwen3-235b-a22b")).expect("listed");
+        assert_eq!(qwen.label, "Qwen3 235B A22B · OpenRouter", "how it sorts stands under the slot's name");
+        assert!(!decide.iter().any(|choice| choice.model.as_deref() == Some("nimble:latest")), "nimble is off");
+        data.accounts.retain(|account| account.id != DEMO_OLLAMA);
+        let (one, _) = slot_choices(&state, &data, AiSlot::Chat);
+        assert!(one.iter().any(|choice| choice.label == "Qwen3 235B A22B"), "one account: no account name");
+    }
+
+    /// Design review of #325: a model Ollama lists by an id with `:latest` reads without that tag; any
+    /// other tag stays, it says which build.
+    #[test]
+    fn the_default_tag_is_left_out_of_names() {
+        assert_eq!(shown_id("nimble:latest"), "nimble");
+        assert_eq!(shown_id("nimble:9b-q4_K_M"), "nimble:9b-q4_K_M");
+        assert_eq!(shown_id("Qwen3 235B A22B"), "Qwen3 235B A22B");
+    }
+
+    /// The line under a slot's name: a model the account lists off (or lacks) says so with the alert,
+    /// Sorting through a chat model says how it sorts, and a choice on its way "Saving…".
+    #[test]
+    fn the_slot_says_what_its_model_does() {
+        let (mut state, mut data) = shown(false);
+        // The account by its name, where it is turned on again on this page (design review of #325).
+        let off = (trf("Turned off at {account}", &[("account", &"OpenRouter")]), true);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), off, "qwen3-32b is not on");
+        let sorting = format!("{} · {}", tr("Sorts mail into categories"), tr("Answers in a fixed format, slower"));
+        assert_eq!(slot_detail(&state, &data, AiSlot::Decide), (sorting, false));
+        // A model turned off but listed shows by its name.
+        if let Some(chat) = data.settings.ai_slots.chat.as_mut() {
+            chat.model = Some("deepseek/deepseek-chat-v3.1".into());
+        }
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), off);
+        assert_eq!(slot_choices(&state, &data, AiSlot::Chat).1.label, "DeepSeek V3.1 · OpenRouter");
+        // A model turned on says what the slot is for; before the account's models are in, too.
+        if let Some(chat) = data.settings.ai_slots.chat.as_mut() {
+            chat.model = Some("qwen/qwen3-235b-a22b".into());
+        }
+        let chat = (tr("The assistant and its bots").to_string(), false);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), chat);
+        state.models.remove(OPENROUTER);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), chat, "not known yet: no alert");
+        let none = slot_choices(&state, &data, AiSlot::Chat).0[0].clone();
+        let _ = update(&mut state, Message::PickSlot(AiSlot::Chat, none), &data);
+        assert_eq!(slot_detail(&state, &data, AiSlot::Chat), (tr("Saving…").to_string(), false));
+        draw_ai(&state, &data);
+    }
+
+    /// Sorting's place in the data rule and under "Models", and why "Use suggestion" waits.
+    #[test]
+    fn the_rows_name_where_mail_goes_and_what_waits() {
+        let (mut state, mut data) = shown(true);
+        assert_eq!(sorting_place(&data, &state.models), Some(("OpenRouter", tr("Cloud · US"))));
+        let _ = update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data);
+        draw_ai(&state, &data);
+        let using = state.slots.using.as_ref().expect("the chat's download runs");
+        assert_eq!(waits_for(using), trf("Wait until the download for {slot} has finished", &[("slot", &tr("Chat"))]));
+        let saving = Using { step: UseStep::Set, ..using.clone() };
+        assert_eq!(waits_for(&saving), trf("Wait until {slot} is saved", &[("slot", &tr("Chat"))]));
+        data.settings.decide_mail_to_cloud = Some(false);
+        assert_eq!(sorting_place(&data, &state.models), None, "mail stays here");
+    }
+
+    /// The computer in one line, the share of a download, and the group in every state.
+    #[test]
+    fn the_group_says_the_computer_and_the_download() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let gpu = Hardware {
+            cpu: Some("AMD Ryzen 9 7950X".into()),
+            memory_bytes: Some(64 * GIB),
+            gpu: Some(torro_core::ai::hardware::Gpu {
+                name: Some("GeForce RTX 4070".into()),
+                vram_bytes: Some(12 * GIB),
+            }),
+            unified_memory: false,
+        };
+        let line = hardware_line(&gpu);
+        let (vram, memory) = (
+            trf("{size} video memory", &[("size", &torro_gui::units::format_bytes(12 * GIB))]),
+            trf("{size} memory", &[("size", &torro_gui::units::format_bytes(64 * GIB))]),
+        );
+        assert_eq!(line, format!("GeForce RTX 4070 · {vram} · {memory}"));
+        let mac = Hardware {
+            cpu: Some("Apple M3 Max".into()),
+            memory_bytes: Some(36 * GIB),
+            gpu: None,
+            unified_memory: true,
+        };
+        assert!(hardware_line(&mac).starts_with("Apple M3 Max · "));
+        assert_eq!(hardware_line(&Hardware::default()), tr("Not measured"));
+
+        assert_eq!(download_share(&pull("p1", AiPullState::Running)), Some((400, "40%".into())));
+        let grown = AiPull { completed: Some(1200), ..pull("p1", AiPullState::Running) };
+        assert_eq!(download_share(&grown).map(|(share, _)| share), Some(1000), "never past the whole");
+        assert_eq!(download_share(&AiPull { total: None, ..grown }), None);
+
+        let (mut state, data) = shown(true);
+        draw_ai(&state, &data);
+        state.slots.recommendation = None;
+        state.slots.recommending = true;
+        draw_ai(&state, &data);
+        state.slots.recommending = false;
+        state.slots.recommend_error = Some("No answer.".into());
+        draw_ai(&state, &data);
+        assert_eq!(ask(update(&mut state, Message::Recommend, &data)), (Asked::Recommend, Request::AiRecommend));
+        let (mut base_state, base) = {
+            let data = demo_data();
+            let mut state = State::default();
+            for (asked, request) in asks(ai_shown(&mut state, &data)) {
+                let answer = demo_answer(&request, &data).expect("answered");
+                let _ = ai_answered(&mut state, asked, &Ok(answer));
+            }
+            (state, data)
+        };
+        let decide = suggestion_of(&base_state, AiSlot::Decide).expect("Sorting waits for Ollama");
+        assert!(decide.engine.is_none(), "no Ollama: the reason instead of the button");
+        assert!(asks(update(&mut base_state, Message::UseSuggestion(AiSlot::Decide), &base)).is_empty());
+        draw_ai(&base_state, &base);
+    }
+
+    /// An exception of sorting mail, `enabled` or not, at `engine` with `model`.
+    fn with_exception(data: &mut Data, engine: &str, model: &str, enabled: bool) {
+        let exception = torro_core::ai::AiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(engine.into()),
+            model: Some(model.into()),
+            effort: None,
+            enabled,
+        };
+        data.settings.ai_assignments.insert(AiFunction::InboxCategorize, exception);
+    }
+
+    /// Review of #325 (F2, R6): while an exception of sorting is stored, putting a model into Sorting – from
+    /// the list or by "Use suggestion" – takes it back first, then `ai.set_slot`, as Settings ›
+    /// Categorization does, so the slot sorts and meanwhile no exception the person stopped sorts again;
+    /// also for the model the slot has already. A take-back that fails stops with its reason and sets no
+    /// slot. The chat's slot never touches it.
+    #[test]
+    fn a_model_for_sorting_takes_a_stored_exception_back() {
+        let (mut state, mut data) = shown(false);
+        with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", false);
+        let (_, chosen) = slot_choices(&state, &data, AiSlot::Decide);
+        let (asked, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, chosen.clone()), &data));
+        assert_eq!(request, no_exception(), "held, but the exception sorts: it goes first");
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::TakeBack));
+        assert!(asked.changes(), "the shell reloads the settings after it");
+        let set = || Ok(Response::AiAssignments { assignments: Vec::new(), slots: Vec::new() });
+        let (asked, request) = ask(ai_answered(&mut state, asked, &set()));
+        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "{request:?}");
+        assert_eq!(ask(ai_answered(&mut state, asked, &set())), (Asked::Recommend, Request::AiRecommend));
+        assert!(state.slots.using.is_none() && state.slots.failed.is_none());
+
+        // The take-back refused: the chain stops there, the slot is not set.
+        let (mut state, _) = shown(false);
+        let (asked, _) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, chosen), &data));
+        let refused = Response::Error { code: "error".into(), message: "Settings cannot be written.".into() };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(refused)), Action::None), "no ai.set_slot");
+        assert_eq!(state.slots.failed.as_ref().map(|f| f.message.as_str()), Some("Settings cannot be written."));
+        assert!(state.slots.using.is_none());
+
+        // "Use suggestion" for Sorting: listed, on – then asked whether the exception still stands, taken
+        // back, and only then the slot.
+        let (mut state, _) = shown(false);
+        with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", true);
+        let exception = data.settings.ai_assignments[&AiFunction::InboxCategorize].clone();
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data));
+        let mut models = demo_ollama_models();
+        models.iter_mut().for_each(|model| model.enabled = true);
+        let listed = Response::AiModels { account: DEMO_OLLAMA.into(), models };
+        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(listed.clone())));
+        assert_eq!(request, Request::AiAssignments, "what stands now, not at the start");
+        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(stored(Some(exception.clone())))));
+        assert_eq!(request, no_exception());
+        let (asked, request) = ask(ai_answered(&mut state, asked, &set()));
+        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "{request:?}");
+        assert_eq!(ask(ai_answered(&mut state, asked, &set())), (Asked::Recommend, Request::AiRecommend));
+
+        // Taken back already, or changed by the person while the chain ran (a long download): theirs, it
+        // stays – straight to the slot.
+        for now in [None, Some(torro_core::ai::AiAssignment { enabled: false, ..exception.clone() })] {
+            let (mut state, _) = shown(false);
+            let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data));
+            let (asked, _) = ask(ai_answered(&mut state, asked, &Ok(listed.clone())));
+            let (_, request) = ask(ai_answered(&mut state, asked, &Ok(stored(now))));
+            assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "{request:?}");
+        }
+
+        // The chat's slot leaves the exception as it is.
+        let (mut state, _) = shown(false);
+        let none = slot_choices(&state, &data, AiSlot::Chat).0[0].clone();
+        let (asked, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Chat, none), &data));
+        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Chat, .. }), "{request:?}");
+        assert_eq!(ask(ai_answered(&mut state, asked, &set())), (Asked::Recommend, Request::AiRecommend));
+    }
+
+    /// The answer of `ai.list_assignments` with `exception` stored for sorting, or none.
+    fn stored(exception: Option<torro_core::ai::AiAssignment>) -> Response {
+        let assignment = exception.unwrap_or_else(|| torro_core::ai::AiAssignment::none(AiFunction::InboxCategorize));
+        let info = torro_ipc::AiAssignmentInfo { assignment, label: "Sorting mail".into(), needs_decision: true };
+        Response::AiAssignments { assignments: vec![info], slots: Vec::new() }
+    }
+
+    /// Review of #325 (R5): "Use suggestion" whose start the core answers `busy` (another window or an
+    /// agent downloads the model) joins that download by its id; with none running it stops with the
+    /// core's sentence.
+    #[test]
+    fn use_suggestion_joins_a_download_that_runs_already() {
+        let (mut state, data) = shown(false);
+        let (asked, request) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        assert!(matches!(request, Request::PullAiModel { .. }), "{request:?}");
+        let busy = Response::Error { code: "busy".into(), message: "It downloads already.".into() };
+        let (asked, request) = ask(ai_answered(&mut state, asked, &Ok(busy.clone())));
+        assert_eq!((asked.clone(), request), (Asked::Slot(AiSlot::Chat), Request::AiPulls));
+        assert!(state.slots.using.as_ref().is_some_and(|using| using.step.downloading()), "still the download");
+        let other = AiPull { model: "gemma3:12b".into(), ..pull("p8", AiPullState::Running) };
+        let runs = vec![pull("p5", AiPullState::Failed), pull("p7", AiPullState::Running), other];
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(Response::AiPulls { pulls: runs })), Action::None));
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(Some("p7".into()))));
+        assert!(state.slots.failed.is_none());
+        draw_ai(&state, &data);
+        let done = Response::AiPulls { pulls: vec![pull("p7", AiPullState::Done)] };
+        let (_, request) = ask(ai_answered(&mut state, Asked::Pulls, &Ok(done)));
+        assert_eq!(request, Request::AiModels { account: DEMO_OLLAMA.into(), all: true }, "followed to its end");
+
+        // None of the model runs (one cancelled while its request is on the way holds it): the sentence.
+        let (mut state, data) = shown(false);
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        let (asked, _) = ask(ai_answered(&mut state, asked, &Ok(busy)));
+        let cancelled = Response::AiPulls { pulls: vec![pull("p7", AiPullState::Cancelled)] };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(cancelled)), Action::None));
+        assert!(state.slots.using.is_none());
+        assert_eq!(state.slots.failed.as_ref().map(|f| f.message.as_str()), Some("It downloads already."));
+    }
+
+    /// Review of #325 (F3): the data rule and "Models" say that sorting sends mail to the cloud only while
+    /// the model that sorts now computes elsewhere – the exception before the slot, by where the model
+    /// computes; with the permission on and a model here, "Keep mail here" stays without the sentence.
+    #[test]
+    fn mail_goes_to_the_cloud_only_with_a_model_elsewhere_in_effect() {
+        let (state, mut data) = shown(false);
+        let cloud = Some(("OpenRouter", tr("Cloud · US")));
+        assert_eq!(sorting_place(&data, &state.models), cloud, "the demo sorts at OpenRouter");
+        // The take-over of an old `mailToCloud` with nimble here: the permission is on, mail stays here.
+        let nimble =
+            torro_core::ai::SlotModel { engine: DEMO_OLLAMA.into(), model: Some("nimble:latest".into()), effort: None };
+        data.settings.ai_slots.decide = Some(nimble.clone());
+        assert_eq!(sorting_place(&data, &state.models), None, "nimble computes here");
+        assert_eq!(sorting_place(&data, &BTreeMap::new()), None, "also before the models are in");
+        drop(data_rule_group(&data, &state.models, false));
+        // "Automatic" at the Ollama here stays here; a `:cloud` model named goes out.
+        data.settings.ai_slots.decide = Some(torro_core::ai::SlotModel { model: None, ..nimble.clone() });
+        assert_eq!(sorting_place(&data, &state.models), None, "Automatic here");
+        let named_cloud = torro_core::ai::SlotModel { model: Some("glm-5.3:cloud".into()), ..nimble.clone() };
+        data.settings.ai_slots.decide = Some(named_cloud);
+        assert_eq!(sorting_place(&data, &BTreeMap::new()), Some(("Ollama", tr("Cloud"))));
+        // An exception goes before the slot: on elsewhere it is where mail goes, off nothing sorts.
+        data.settings.ai_slots.decide = Some(nimble);
+        with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", true);
+        assert_eq!(sorting_place(&data, &state.models), cloud, "the exception sorts");
+        with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", false);
+        assert_eq!(sorting_place(&data, &state.models), None, "switched off, nothing sorts");
+        with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", true);
+        assert_eq!(sorting_place(&data, &state.models), None);
+        data.settings.decide_mail_to_cloud = Some(false);
+        with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", true);
+        assert_eq!(sorting_place(&data, &state.models), None, "the permission is off");
+
+        // The line under "Sorting may send mail to the cloud" (R4): "runs on this computer" only while a
+        // model here sorts; nothing while the exception is off or the slot is empty.
+        data.settings.decide_mail_to_cloud = Some(true);
+        with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", true);
+        // nimble is off at the demo's Ollama: then it sorts nothing.
+        assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "turned off at its account");
+        let mut models = state.models.clone();
+        for model in models.get_mut(DEMO_OLLAMA).into_iter().flatten() {
+            model.enabled = true;
+        }
+        assert_eq!(sorting_now(&data, &models), SortingNow::Here);
+        with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", false);
+        assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "switched off");
+        drop(data_rule_group(&data, &state.models, false));
+        data.settings.ai_assignments.clear();
+        data.settings.ai_slots.decide = None;
+        assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "the slot is empty");
+        drop(data_rule_group(&data, &state.models, false));
+    }
+
+    /// Review of #325 (F4): while the start of a download is out, a list of downloads is dropped – an older
+    /// download of the same model never stands in; the poll that was out when the start went is dropped
+    /// too, so it cannot stop the chain. From the start answer on, the chain follows that id alone.
+    #[test]
+    fn use_suggestion_follows_only_the_download_it_started() {
+        let (mut state, data) = shown(false);
+        state.slots.pulls = vec![AiPull { model: "gemma3:12b".into(), ..pull("px", AiPullState::Running) }];
+        assert_eq!(ask(update(&mut state, Message::PollPulls, &data)), (Asked::Pulls, Request::AiPulls));
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(None)));
+        // The poll that was out answers before the start: dropped, with its older failed download.
+        let old = Response::AiPulls { pulls: vec![pull("p0", AiPullState::Failed)] };
+        assert!(matches!(ai_answered(&mut state, Asked::Pulls, &Ok(old.clone())), Action::None));
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(None)));
+        assert!(state.slots.failed.is_none());
+        // Another tick while the start is out: dropped as well.
+        assert_eq!(ask(update(&mut state, Message::PollPulls, &data)), (Asked::Pulls, Request::AiPulls));
+        assert!(matches!(ai_answered(&mut state, Asked::Pulls, &Ok(old)), Action::None));
+        assert!(state.slots.using.as_ref().is_some_and(|using| using.step == UseStep::Pull(None)));
+        let started =
+            Response::AiPulls { pulls: vec![pull("p0", AiPullState::Failed), pull("p1", AiPullState::Running)] };
+        assert!(matches!(ai_answered(&mut state, asked, &Ok(started)), Action::None));
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(Some("p1".into()))));
+        // A list that names the older download only still stops: the one started is gone.
+        let gone = Response::AiPulls { pulls: vec![pull("p0", AiPullState::Done)] };
+        assert!(matches!(ai_answered(&mut state, Asked::Pulls, &Ok(gone)), Action::None));
+        assert!(state.slots.using.is_none() && state.slots.failed.is_some());
+
+        // The poll out at the start answers after it, without the new download: dropped, the chain goes on.
+        let (mut state, data) = shown(false);
+        state.slots.pulls = vec![AiPull { model: "gemma3:12b".into(), ..pull("px", AiPullState::Running) }];
+        let _ = update(&mut state, Message::PollPulls, &data);
+        let (asked, _) = ask(update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data));
+        let started =
+            Response::AiPulls { pulls: vec![pull("p0", AiPullState::Running), pull("p1", AiPullState::Running)] };
+        let _ = ai_answered(&mut state, asked, &Ok(started));
+        let before = Response::AiPulls { pulls: vec![pull("p0", AiPullState::Running)] };
+        assert!(matches!(ai_answered(&mut state, Asked::Pulls, &Ok(before)), Action::None));
+        assert_eq!(state.slots.using.as_ref().map(|using| using.step.clone()), Some(UseStep::Pull(Some("p1".into()))));
+        assert!(state.slots.failed.is_none() && state.slots.pulls.iter().any(|pull| pull.id == "p1"));
+    }
+
+    /// Review of #325 (F5): "Retry" after a refused cancel aims at the download the chain wanted to
+    /// cancel, never at another one that runs; once that one runs no more, it only asks for the list.
+    #[test]
+    fn retry_after_a_refused_cancel_aims_at_the_same_download() {
+        let (mut state, data) = shown(true);
+        let _ = update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data);
+        let other = AiPull { model: "gemma3:12b".into(), ..pull("p2", AiPullState::Running) };
+        state.slots.pulls.push(other);
+        let (asked, _) = ask(update(&mut state, Message::CancelPull(AiSlot::Chat, "p1".into()), &data));
+        let refused = Response::Error { code: "busy".into(), message: "Try again.".into() };
+        let _ = ai_answered(&mut state, asked.clone(), &Ok(refused.clone()));
+        let (_, again) = ask(update(&mut state, Message::RetrySlot, &data));
+        assert_eq!(again, Request::CancelAiPull { id: "p1".into() }, "not the newest that runs");
+        state.slots.pulls.retain(|pull| pull.id != "p1");
+        let _ = ai_answered(&mut state, asked, &Ok(refused));
+        let failure = state.slots.failed.as_ref().expect("the reason shows");
+        assert!(matches!(*failure.retry, Message::PollPulls), "{:?}", failure.retry);
+    }
+
+    fn draw_ai(state: &State, data: &Data) {
+        for palette in [Palette::dark(), Palette::light()] {
+            for class in [SizeClass::Wide, SizeClass::Narrow] {
+                drop(ai_view(state, data, class, &palette));
+            }
+        }
     }
 }

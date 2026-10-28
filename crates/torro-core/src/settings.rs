@@ -99,11 +99,19 @@ pub struct Settings {
     /// person switches it on in the control centre ([`Voice`]).
     #[serde(default)]
     pub voice: Voice,
-    /// What a new chat of the assistant starts with (issue #131): engine, model and effort, set in
-    /// the control centre › Assistant. `None` (the default): the engine and model used last. Read
-    /// leniently: a value that does not read is `None`, never a settings file that fails.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_default")]
-    pub assistant_default: Option<AssistantDefault>,
+    /// The model of each slot (issue #325, `docs/tasks/ki-modellwahl.md`): `chat` is what a new chat
+    /// of the assistant starts with (issue #131, `None`: the engine and model used last), `decide`
+    /// what sorts mail unless `inbox.categorize` has an assignment of its own. Read leniently: a slot
+    /// that does not read is empty, never a settings file that fails.
+    #[serde(default, skip_serializing_if = "crate::ai::AiSlots::is_empty", deserialize_with = "lenient")]
+    pub ai_slots: crate::ai::AiSlots,
+    /// What a new chat started with before the slots (issue #131, `assistantDefault`): only read from
+    /// a file of an older version, never written, and taken over into [`Settings::ai_slots`] when the
+    /// file is loaded ([`Settings::take_over_old_ai`]). Named so that no reader of the old field is
+    /// left over.
+    #[serde(default, rename = "assistantDefault", skip_serializing, deserialize_with = "crate::ai::lenient_slot")]
+    #[schemars(skip)]
+    pub legacy_assistant_default: Option<AssistantDefault>,
     /// Where the first-run setup stands (task W.1, `docs/einrichtung.md`): not finished yet,
     /// put off or done, and the version of the setup last finished or put off. Read leniently: a
     /// value that does not read is the default, never a settings file that fails.
@@ -150,6 +158,14 @@ pub struct Settings {
     /// may switch it off.
     #[serde(default)]
     pub mail_to_cloud: bool,
+    /// The data rule for the slot Sorting (issue #325, `aiSlots.decide`): `true` lets the mail it
+    /// sorts go to a model elsewhere, `false` keeps it on this computer; `mailToCloud` stays the
+    /// rule of the chat. Only a person switches it on (`settings.set_setting decide_mail_to_cloud`,
+    /// app key only; choosing a model elsewhere for Sorting sets it with the choice); any client
+    /// allowed to change settings may switch it off. Missing only in a file of a version before the
+    /// slots, which loading fills in (`Settings::take_over_old_ai`); counts as `false` until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decide_mail_to_cloud: Option<bool>,
     /// Reminders of events (task ER1.2, `docs/erinnerungen.md`): whether they come, which events,
     /// and per calendar as a notification or over the whole screen. Read leniently: a value that
     /// does not read gives the defaults, never a settings file that fails.
@@ -608,55 +624,9 @@ fn lenient_maps<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Maps, D::E
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
-/// What a new chat of the assistant starts with (issue #131, `settings.set_setting
-/// assistant_default`): `{"engine": "ai:ollama@localhost:11434", "model": "qwen3:8b", "effort":
-/// "high"}`. The chat window takes it while the engine is offered (`assistant.list_engines`) and
-/// otherwise falls back to the one used last; the person can still pick another per message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct AssistantDefault {
-    /// The engine's id from `assistant.list_engines`.
-    pub engine: String,
-    /// The model of that engine; `None` lets the engine pick one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// How hard the model thinks; `None` leaves it to the model.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<crate::ai::Effort>,
-}
-
-impl AssistantDefault {
-    /// The longest engine or model id it takes, as `assistant.send_message` does.
-    pub const MAX_ID_BYTES: usize = 300;
-
-    /// The default in `value`, `None` for `null`, or why it does not fit: an object with a
-    /// non-blank `engine`, ids of at most [`AssistantDefault::MAX_ID_BYTES`] on one line, an effort
-    /// of [`crate::ai::Effort`]. For `settings.set_setting`.
-    pub fn from_value(value: &serde_json::Value) -> Result<Option<AssistantDefault>, String> {
-        if value.is_null() {
-            return Ok(None);
-        }
-        let default: AssistantDefault = serde_json::from_value(value.clone()).map_err(|err| {
-            format!("{value} is not a default for the assistant: send engine, model and effort, or null ({err})")
-        })?;
-        let fits = |id: &str| !id.trim().is_empty() && id.len() <= Self::MAX_ID_BYTES && !id.contains(['\n', '\r']);
-        if !fits(&default.engine) || default.model.as_deref().is_some_and(|model| !fits(model)) {
-            return Err(format!("an engine or model id is one line of 1 to {} bytes", Self::MAX_ID_BYTES));
-        }
-        Ok(Some(default))
-    }
-
-    /// The default as `settings.set_setting` takes it; `null` for none.
-    pub fn to_value(default: Option<&AssistantDefault>) -> serde_json::Value {
-        default.and_then(|default| serde_json::to_value(default).ok()).unwrap_or(serde_json::Value::Null)
-    }
-}
-
-/// `assistantDefault` as written, or `None` when it does not read: a damaged default must not
-/// cost the other settings.
-fn lenient_default<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<AssistantDefault>, D::Error> {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(AssistantDefault::from_value(&value).ok().flatten())
-}
+/// What a new chat of the assistant starts with (issue #131): the model of the slot Chat
+/// ([`crate::ai::SlotModel`]), under its old name for the readers from before the slots.
+pub type AssistantDefault = crate::ai::SlotModel;
 
 /// The value as written, or the default when it does not read: one damaged setting must not cost
 /// the others.
@@ -725,6 +695,51 @@ impl Settings {
             self.maps = stored.maps.clone();
         }
     }
+
+    /// Whether mail may go to a model elsewhere for `slot` (issue #325): the chat's rule
+    /// [`Settings::mail_to_cloud`] for [`crate::ai::AiSlot::Chat`], [`Settings::decide_mail_to_cloud`]
+    /// (`false` while unset) for [`crate::ai::AiSlot::Decide`].
+    pub fn mail_to_cloud_in(&self, slot: crate::ai::AiSlot) -> bool {
+        match slot {
+            crate::ai::AiSlot::Chat => self.mail_to_cloud,
+            crate::ai::AiSlot::Decide => self.decide_mail_to_cloud.unwrap_or(false),
+        }
+    }
+
+    /// Takes the AI choices of a file from before the slots over (issue #325), once, right after it
+    /// was read: `assistantDefault` becomes the slot Chat; the assignment of `inbox.categorize` that
+    /// is switched on (and names an account) becomes the slot Sorting and is no exception any more –
+    /// one switched off stays, so sorting stays off; `decideMailToCloud` becomes
+    /// [`Settings::mail_to_cloud`] when a slot Sorting was taken over (the person had let that very
+    /// model read mail), else `false`.
+    ///
+    /// A file this version wrote already has `decideMailToCloud`; then nothing is taken over, so an
+    /// assignment of `inbox.categorize` set later stays the exception it is. A slot that is set is
+    /// never written over. `assistantDefault` is dropped in any case: it is never written again.
+    pub fn take_over_old_ai(&mut self) {
+        let legacy = self.legacy_assistant_default.take();
+        if self.decide_mail_to_cloud.is_some() {
+            return;
+        }
+        if self.ai_slots.chat.is_none() {
+            self.ai_slots.chat = legacy;
+        }
+        let function = crate::ai::AiFunction::InboxCategorize;
+        let ready = self.ai_assignments.get(&function).filter(|assigned| assigned.is_ready()).cloned();
+        let taken = match (ready, &self.ai_slots.decide) {
+            (Some(assigned), None) => {
+                self.ai_assignments.remove(&function);
+                self.ai_slots.decide = assigned.engine.map(|engine| crate::ai::SlotModel {
+                    engine,
+                    model: assigned.model,
+                    effort: assigned.effort,
+                });
+                true
+            }
+            _ => false,
+        };
+        self.decide_mail_to_cloud = Some(taken && self.mail_to_cloud);
+    }
 }
 
 /// `true`, for settings that are on unless the file says otherwise.
@@ -749,13 +764,16 @@ impl Default for Settings {
             color_scheme: standard_design(),
             assistant_retention: Retention::default(),
             voice: Voice::default(),
-            assistant_default: None,
+            ai_slots: crate::ai::AiSlots::default(),
+            legacy_assistant_default: None,
             setup: Setup::default(),
             components_off: BTreeSet::new(),
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
             mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
+            // Written by this version: nothing to take over from before the slots.
+            decide_mail_to_cloud: Some(false),
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -2298,6 +2316,8 @@ fn load_from(path: &Path) -> Settings {
         Settings::default()
     });
     settings.fill_unnamed_parts(&Settings::default());
+    // The AI choices of a file from before the slots (issue #325).
+    settings.take_over_old_ai();
     settings
 }
 
@@ -2451,22 +2471,23 @@ mod tests {
         assert_eq!(edited.assistant_retention, Retention::Forever);
     }
 
-    /// Issue #131: the assistant's default is none unless set, checked from outside and read
-    /// leniently from a file.
+    /// Issue #131, #325: the model of a slot is none unless set, checked from outside and read
+    /// leniently from a file, each slot on its own.
     #[test]
-    fn the_assistants_default_is_checked_and_read_leniently() {
+    fn the_models_of_the_slots_are_checked_and_read_leniently() {
+        use crate::ai::{AiSlot, SlotModel};
         use serde_json::json;
-        assert_eq!(Settings::default().assistant_default, None);
-        let set = AssistantDefault::from_value(&json!({"engine": "claude-code", "model": "opus", "effort": "high"}));
-        let expected = AssistantDefault {
+        assert!(Settings::default().ai_slots.is_empty());
+        let set = SlotModel::from_value(&json!({"engine": "claude-code", "model": "opus", "effort": "high"}));
+        let expected = SlotModel {
             engine: "claude-code".into(),
             model: Some("opus".into()),
             effort: Some(crate::ai::Effort::High),
         };
         assert_eq!(set, Ok(Some(expected.clone())));
-        assert_eq!(AssistantDefault::to_value(Some(&expected))["model"], "opus");
-        assert_eq!(AssistantDefault::to_value(None), json!(null));
-        assert_eq!(AssistantDefault::from_value(&json!(null)), Ok(None));
+        assert_eq!(SlotModel::to_value(Some(&expected))["model"], "opus");
+        assert_eq!(SlotModel::to_value(None), json!(null));
+        assert_eq!(SlotModel::from_value(&json!(null)), Ok(None));
         for refused in [
             json!({"engine": ""}),
             json!({"engine": "a\nb"}),
@@ -2474,16 +2495,96 @@ mod tests {
             json!({"engine": "x", "effort": "max"}),
             json!("claude-code"),
         ] {
-            assert!(AssistantDefault::from_value(&refused).is_err(), "{refused}");
+            assert!(SlotModel::from_value(&refused).is_err(), "{refused}");
         }
-        let settings = Settings { assistant_default: Some(expected.clone()), ..Settings::default() };
+        let mut settings = Settings::default();
+        settings.ai_slots.chat = Some(expected.clone());
         let written = serde_json::to_value(&settings).expect("json");
-        assert_eq!(written["assistantDefault"]["effort"], "high");
+        assert_eq!(written["aiSlots"]["chat"]["effort"], "high");
+        assert!(written["aiSlots"].get("decide").is_none(), "an empty slot is left out");
         let read: Settings = serde_json::from_value(written).expect("reads");
-        assert_eq!(read.assistant_default, Some(expected));
-        let damaged: Settings = serde_json::from_str(r#"{"assistantDefault": 7, "zoom": 1.1}"#).expect("lenient");
-        assert_eq!(damaged.assistant_default, None);
-        assert!(serde_json::to_value(Settings::default()).expect("json").get("assistantDefault").is_none());
+        assert_eq!(read.ai_slots.get(AiSlot::Chat), Some(&expected));
+        let damaged: Settings =
+            serde_json::from_str(r#"{"aiSlots": {"chat": 7, "decide": {"engine": "ai:x"}}, "zoom": 1.1}"#)
+                .expect("lenient");
+        assert_eq!(damaged.ai_slots.chat, None, "a slot that does not read is empty");
+        assert_eq!(damaged.ai_slots.decide.map(|chosen| chosen.engine).as_deref(), Some("ai:x"), "the other stays");
+        let wrong: Settings = serde_json::from_str(r#"{"aiSlots": [1], "zoom": 1.1}"#).expect("lenient");
+        assert!(wrong.ai_slots.is_empty());
+        assert!(serde_json::to_value(Settings::default()).expect("json").get("aiSlots").is_none());
+    }
+
+    /// Issue #325: a file from before the slots is taken over when it loads – `assistantDefault`
+    /// as the slot Chat, the assignment of `inbox.categorize` that is on as the slot Sorting (and
+    /// no exception any more), the data rule of Sorting from `mailToCloud` only with that slot –
+    /// and `assistantDefault` is never written again.
+    #[test]
+    fn a_file_from_before_the_slots_is_taken_over_when_it_loads() {
+        use crate::ai::{AiFunction, AiSlot, Effort};
+        let dir = TempDir::new("take-over-ai");
+        let path = dir.file("settings.json");
+        let load = |json: &str| {
+            fs::write(&path, json).expect("write");
+            load_from(&path)
+        };
+        let on = r#"{"function": "inbox.categorize", "engine": "ai:ollama@localhost:11434", "model": "nimble", "enabled": true}"#;
+        let old = format!(
+            r#"{{"assistantDefault": {{"engine": "claude-code", "model": "opus", "effort": "high"}},
+                "mailToCloud": true, "aiAssignments": {{"inbox.categorize": {on}}}}}"#
+        );
+        let read = load(&old);
+        let chat = read.ai_slots.get(AiSlot::Chat).expect("the default became the chat");
+        assert_eq!(
+            (chat.engine.as_str(), chat.model.as_deref(), chat.effort),
+            ("claude-code", Some("opus"), Some(Effort::High))
+        );
+        let decide = read.ai_slots.get(AiSlot::Decide).expect("the assignment became the slot");
+        assert_eq!((decide.engine.as_str(), decide.model.as_deref()), ("ai:ollama@localhost:11434", Some("nimble")));
+        assert!(!read.ai_assignments.contains_key(&AiFunction::InboxCategorize), "no exception any more");
+        assert_eq!(read.decide_mail_to_cloud, Some(true), "the person had let that model read mail");
+        assert!(read.mail_to_cloud_in(AiSlot::Decide) && read.mail_to_cloud_in(AiSlot::Chat));
+        assert_eq!(read.legacy_assistant_default, None);
+
+        let written = serde_json::to_value(&read).expect("json");
+        assert!(written.get("assistantDefault").is_none(), "never written again");
+        assert_eq!(written["decideMailToCloud"], serde_json::json!(true));
+        assert_eq!(load(&written.to_string()), read, "taken over once: the new file reads as it is");
+
+        // Switched off, the assignment stays and so sorting stays off; without a slot taken over the
+        // rule of Sorting is off whatever the chat's says.
+        let off = on.replace(r#""enabled": true"#, r#""enabled": false"#);
+        let read = load(&format!(r#"{{"mailToCloud": true, "aiAssignments": {{"inbox.categorize": {off}}}}}"#));
+        assert!(read.ai_slots.is_empty());
+        assert!(!read.ai_assignments[&AiFunction::InboxCategorize].enabled, "kept, still off");
+        assert_eq!(read.decide_mail_to_cloud, Some(false));
+        assert!(read.mail_to_cloud_in(AiSlot::Chat) && !read.mail_to_cloud_in(AiSlot::Decide));
+
+        // Taken over with the chat's rule off: Sorting keeps mail here too.
+        let read = load(&format!(r#"{{"aiAssignments": {{"inbox.categorize": {on}}}}}"#));
+        assert!(read.ai_slots.decide.is_some() && read.decide_mail_to_cloud == Some(false));
+    }
+
+    /// Issue #325: a file without old AI values reads as it would without the takeover, and one this
+    /// version wrote keeps an assignment of `inbox.categorize` as the exception it is.
+    #[test]
+    fn a_file_without_old_ai_values_stays_as_it_is() {
+        use crate::ai::AiFunction;
+        let dir = TempDir::new("no-old-ai");
+        let path = dir.file("settings.json");
+        fs::write(&path, "{}").expect("write");
+        assert_eq!(load_from(&path), Settings::default());
+
+        let mut written = Settings::default();
+        written.ai_slots.decide = Some(crate::ai::SlotModel { engine: "ai:a".into(), model: None, effort: None });
+        let exception = crate::ai::AiAssignment {
+            engine: Some("ai:b".into()),
+            model: Some("nimble".into()),
+            enabled: true,
+            ..crate::ai::AiAssignment::none(AiFunction::InboxCategorize)
+        };
+        written.ai_assignments.insert(AiFunction::InboxCategorize, exception);
+        fs::write(&path, serde_json::to_string(&written).expect("json")).expect("write");
+        assert_eq!(load_from(&path), written, "a file of this version is not taken over again");
     }
 
     /// Task C.9: voice is off unless switched on, answers are spoken unless turned off, and the
@@ -2585,13 +2686,15 @@ mod tests {
             color_scheme: "torro".into(),
             assistant_retention: Retention::DEFAULT,
             voice: Voice::default(),
-            assistant_default: None,
+            ai_slots: crate::ai::AiSlots::default(),
+            legacy_assistant_default: None,
             setup: Setup::default(),
             components_off: BTreeSet::new(),
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
             mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
+            decide_mail_to_cloud: Some(false),
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -2848,7 +2951,15 @@ mod tests {
                 voice: Some("/voices/de_DE-thorsten-medium.onnx".into()),
                 ..Voice::default()
             },
-            assistant_default: None,
+            ai_slots: crate::ai::AiSlots {
+                chat: Some(crate::ai::SlotModel { engine: "claude-code".into(), model: None, effort: None }),
+                decide: Some(crate::ai::SlotModel {
+                    engine: "ai:ollama@localhost:11434".into(),
+                    model: Some("nimble".into()),
+                    effort: None,
+                }),
+            },
+            legacy_assistant_default: None,
             setup: Setup { state: SetupState::Skipped, version: 1 },
             components_off: BTreeSet::from([Component::Mail, Component::Assistant]),
             mail_view: MailFormat::Text,
@@ -2858,6 +2969,7 @@ mod tests {
                 downloads: Some("/Users/anna/Ablage".into()),
             },
             mail_to_cloud: true,
+            decide_mail_to_cloud: Some(true),
             reminders: Reminders {
                 default_lead: None,
                 calendars: BTreeMap::from([("work".to_string(), CalendarReminders::FullScreen)]),

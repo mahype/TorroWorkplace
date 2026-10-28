@@ -326,6 +326,13 @@ pub enum Action {
     /// outcome themselves ([`connections::answered`]). Then reload, as for [`Action::Send`]. The
     /// demo answers from [`launch::demo_answer`].
     AskConnections(connections::Asked, Request),
+    /// Send these requests for the AI section's group "Models" (issue #325, task MW.8) and hand each
+    /// answer back to it only, with what it was for ([`accounts::Asked`], [`accounts::ai_answered`]), as
+    /// the core gave it: a refusal stays a `Response::Error`, so a step of "Use suggestion" that fails
+    /// stops its chain instead of becoming the notice. They go at once; after an answer that may have
+    /// changed the settings ([`accounts::Asked::changes`]) the shell reloads. The demo answers from
+    /// [`launch::demo_answer`].
+    AskAi(Vec<(accounts::Asked, Request)>),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -456,6 +463,9 @@ pub enum Message {
     /// The answer to an [`Action::AskConnections`], with what it was for; `Err` only when no answer
     /// came.
     ConnectionsAnswered(connections::Asked, Result<Response, String>),
+    /// The answer to one request of an [`Action::AskAi`], with what it was for; `Err` only when no answer
+    /// came.
+    AiAnswered(accounts::Asked, Result<Response, String>),
     /// The catalog of MCP servers (`extensions.list_catalog`), asked for only while the section MCP servers is
     /// open ([`Ui::reload`]): the core looks for programs on disk for it each time.
     Catalog(connections::Listing<torro_ipc::extensions::CatalogEntry>),
@@ -630,6 +640,14 @@ impl Ui {
             true => ui.perform(mcp::opened()),
             false => Task::none(),
         };
+        // The demo's start on AI asks for the suggestion and the models as choosing it does (task MW.8).
+        let slots = match demo && ui.section == Section::Ai {
+            true => {
+                let ask = accounts::ai_shown(&mut ui.accounts, &ui.data);
+                ui.perform(ask)
+            }
+            false => Task::none(),
+        };
         // The size, and the traffic lights onto the title band's line (U.11).
         let size = Task::batch([
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
@@ -644,6 +662,7 @@ impl Ui {
             designs,
             import,
             hooks,
+            slots,
         ]);
         (ui, task)
     }
@@ -718,6 +737,14 @@ impl Ui {
                 let mut messages = vec![Message::Select(Section::Ai)];
                 messages.extend(ai.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
                 messages
+            }
+            // Ollama on this computer, the chat's "Use suggestion" pressed: its download runs (task MW.8).
+            Open::AiModels => {
+                launch::demo_ollama(&mut self.data);
+                vec![
+                    Message::Select(Section::Ai),
+                    Message::Accounts(accounts::Message::UseSuggestion(torro_core::ai::AiSlot::Chat)),
+                ]
             }
             Open::GithubDetail => {
                 let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
@@ -1092,6 +1119,8 @@ impl Ui {
             // Tick only while a change of a client's rights waits to be saved.
             api::subscription(&self.api).map(Message::Api),
             mcp::subscription(&self.mcp).map(Message::Mcp),
+            // Every second while a model downloads (task MW.8).
+            accounts::subscription(&self.accounts).map(Message::Accounts),
             // A second start of the control centre brings this window to the front (issue #279).
             torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
@@ -1120,6 +1149,8 @@ impl Ui {
                     Section::Appearance => Action::ListLooks,
                     // Whether TorroMail has an account to import (task S.30).
                     Section::Accounts => accounts::opened(&mut self.accounts),
+                    // The suggestion, the downloads and the models for the slots (task MW.8).
+                    Section::Ai => accounts::ai_shown(&mut self.accounts, &self.data),
                     // Which agent each hook client reports for (task S.35).
                     Section::Mcp => mcp::opened(),
                     // The catalog is asked for only while the section is open (task MA.8).
@@ -1229,11 +1260,20 @@ impl Ui {
                     true => self.perform(mcp::opened()),
                     false => Task::none(),
                 };
+                // The AI section asks for what its group "Models" lacks once the core answers, and for
+                // the models of an AI account that came with this reload (task MW.8).
+                let slots = match self.section == Section::Ai && ready {
+                    true => {
+                        let ask = accounts::ai_shown(&mut self.accounts, &self.data);
+                        self.perform(ask)
+                    }
+                    false => Task::none(),
+                };
                 // No canvas keeps a cache: the next frame draws with the new design, the task
                 // loads its fonts.
                 let design = design.map_or_else(Task::none, |task| task.map(Message::Design));
                 let unhook = unhook.map_or_else(Task::none, |action| self.perform(action));
-                return Task::batch([import, hooks, design, unhook, providers]);
+                return Task::batch([import, hooks, slots, design, unhook, providers]);
             }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
@@ -1278,6 +1318,12 @@ impl Ui {
             Message::ConnectionsAnswered(asked, result) => {
                 let next = connections::answered(&mut self.connections, asked, &result);
                 return Task::batch([self.perform(next), self.reload()]);
+            }
+            // Only the group "Models" gets these: it shows a refusal under its slot itself.
+            Message::AiAnswered(asked, result) => {
+                let reload = if asked.changes() { self.reload() } else { Task::none() };
+                let next = accounts::ai_answered(&mut self.accounts, asked, &result);
+                return Task::batch([self.perform(next), reload]);
             }
             Message::Catalog(catalog) => {
                 self.data.catalog = catalog;
@@ -1416,8 +1462,25 @@ impl Ui {
 
     /// The demo stores nothing, yet a web search provider switched in the setup shows as switched in the demo's
     /// list (issue #305): the setup's "Continue" waits until the list carries a switch, and in the demo no reload
-    /// ever brings one. Every other request leaves the demo's data as it is.
+    /// ever brings one. A model put in a slot (task MW.8) stays in it the same way, with the permission of
+    /// *Sorting* following it as the core sets it. Every other request leaves the demo's data as it is.
     fn demo_keep(&mut self, request: &Request) {
+        if let Request::SetAiSlot { slot, engine, model, effort } = request {
+            let chosen = engine.clone().map(|engine| torro_core::ai::SlotModel {
+                engine,
+                model: model.clone(),
+                effort: *effort,
+            });
+            if *slot == torro_core::ai::AiSlot::Decide {
+                let elsewhere = chosen.as_ref().is_some_and(|chosen| !launch::demo_is_local(&chosen.engine));
+                self.data.settings.decide_mail_to_cloud = Some(elsewhere);
+            }
+            match slot {
+                torro_core::ai::AiSlot::Chat => self.data.settings.ai_slots.chat = chosen,
+                torro_core::ai::AiSlot::Decide => self.data.settings.ai_slots.decide = chosen,
+            }
+            return;
+        }
         let Request::SetSetting { key: torro_ipc::SettingKey::SearchProvider, value } = request else { return };
         let Ok(switch) = serde_json::from_value::<torro_core::settings::SearchProviderSwitch>(value.clone()) else {
             return;
@@ -1469,6 +1532,20 @@ impl Ui {
             Action::AskConnections(asked, request) => {
                 ask(request, move |result| Message::ConnectionsAnswered(asked, result))
             }
+            Action::AskAi(asks) if self.launch.demo => {
+                let mut tasks = Vec::new();
+                for (asked, request) in asks {
+                    self.demo_keep(&request);
+                    if let Some(response) = launch::demo_answer(&request, &self.data) {
+                        tasks.push(self.update(Message::AiAnswered(asked, Ok(response))));
+                    }
+                }
+                Task::batch(tasks)
+            }
+            Action::AskAi(asks) => Task::batch(
+                asks.into_iter()
+                    .map(|(asked, request)| ask(request, move |result| Message::AiAnswered(asked.clone(), result))),
+            ),
             Action::CheckAddress(request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
                 Some(response) => self.update(Message::Checked(Ok(response))),
                 None => Task::none(),
@@ -1852,7 +1929,7 @@ impl Ui {
         let page: Element<'_, Message> = match self.section {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
             Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
-            Section::Ai => accounts::ai_view(&self.accounts, &self.data, &palette).map(Message::Accounts),
+            Section::Ai => accounts::ai_view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data, class).map(Message::Workspaces),
             Section::Api => api::view(&self.api, &self.data).map(Message::Api),
             Section::Mcp => mcp::view(&self.mcp, &self.data).map(Message::Mcp),
@@ -3227,6 +3304,16 @@ mod tests {
         assert_eq!(ai.section, Section::Ai);
         assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
         assert!(ai.accounts.models.contains_key("ai:openrouter@openrouter.ai") && !ai.accounts.models_page.loading);
+        // Task MW.8: the group "Models" with the chat's download running and its chain waiting for it.
+        let models = started(&["--demo", "--open", "ai-models"]);
+        assert_eq!(models.section, Section::Ai);
+        let using = models.accounts.slots.using.as_ref().expect("the chat's suggestion is in use");
+        assert_eq!(using.step, accounts::UseStep::Pull(Some("p1".into())));
+        assert!(
+            models.accounts.slots.recommendation.is_some() && models.accounts.models.contains_key(launch::DEMO_OLLAMA)
+        );
+        let section = started(&["--demo", "--section", "ai"]);
+        assert!(section.accounts.slots.recommendation.is_some(), "a start on AI asks as choosing it does");
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
         for state in ["ntfy-detail", "ntfy-topic", "ntfy-login"] {

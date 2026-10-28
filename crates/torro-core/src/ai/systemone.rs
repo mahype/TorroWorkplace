@@ -153,6 +153,10 @@ pub struct DecisionReply {
     pub answers: BTreeMap<String, Answer>,
     /// What the server counted, when it says.
     pub usage: Option<super::Usage>,
+    /// The answers come from an ordinary chat model through the fallback (task MW.3,
+    /// [`super::decide_chat`]), not from a decision model: they carry no confidence of their own
+    /// (each counts as 1.0), so a caller keeps none for them. `false` for a decision model's reply.
+    pub by_chat: bool,
 }
 
 impl DecisionReply {
@@ -226,7 +230,7 @@ pub fn read_decision(body: &[u8]) -> Result<DecisionReply, AiError> {
     if read.is_empty() {
         return Err(unreadable());
     }
-    Ok(DecisionReply { answers: read, usage: usage_of(&value) })
+    Ok(DecisionReply { answers: read, usage: usage_of(&value), by_chat: false })
 }
 
 /// One answer, by what its `type` says; `None` for one this version cannot read, so a reply with
