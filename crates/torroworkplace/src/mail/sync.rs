@@ -14,7 +14,7 @@
 //! 3. Headers of the new messages, **newest first, in batches** of [`HEADER_BATCH`]: a first sync
 //!    of a large inbox shows the latest mail at once, and the command connection is handed back
 //!    between batches, so commands run in between.
-//! 4. Texts of the new messages of the last [`BODY_RETENTION_DAYS`] days, newest first (the core
+//! 4. Texts selected by the account's offline policy, newest first (the core
 //!    decides, task M2.5); bigger than [`BODY_PREFETCH_MAX`], or older, they are fetched when
 //!    someone opens them (task M3.1). Fetched with `BODY.PEEK[]`: syncing never marks mail read.
 //! 5. Only a folder synced to the end remembers its HIGHESTMODSEQ, so an interrupted sync starts
@@ -34,7 +34,7 @@
 //! Every step that found something sends a [`MailChange`].
 //!
 //! **Older texts for the search** ([`backfill`], issue #136): the texts the sync does not fetch
-//! ahead (older than [`BODY_RETENTION_DAYS`], or bigger than [`BODY_PREFETCH_MAX`]) are fetched
+//! ahead (outside the offline policy, or bigger than [`BODY_PREFETCH_MAX`]) are fetched
 //! afterwards by the account's indexer task, newest first, a message at a time, and put into the
 //! search index: older ones only into the index, recent ones kept to read as well.
 //!
@@ -44,7 +44,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex as StdMutex, PoisonError};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use torro_ipc::mail::{MailCacheMode, MailQuota};
 use torro_mail::{Flag, Role};
@@ -54,7 +54,7 @@ use torro_mail_imap::mime::{self, ReadMessage};
 
 use super::MailStoreError;
 use super::service::{Command, FlagsUnderway, MailChange, MailError, Mailbox, SharedStore};
-use super::store::{BODY_RETENTION_DAYS, Body, MailStore, NewMessage, ORIGINAL_MAX_BYTES, UidValidity};
+use super::store::{Body, MailStore, NewMessage, ORIGINAL_MAX_BYTES, UidValidity};
 
 /// How many headers one `UID FETCH` asks for.
 pub const HEADER_BATCH: usize = 100;
@@ -236,27 +236,18 @@ pub(crate) async fn sync_inbox(session: &mut Session, mailbox: &Mailbox) -> Resu
 pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) -> Result<usize, MailError> {
     let store = mailbox.store()?;
     let policy = store.run(|store| store.cache_policy()).await?;
-    let mode = policy.mode;
     let todo = store.run(move |store| store.unindexed(limit)).await?;
     mailbox.note_indexing(!todo.is_empty());
-    let recent_since = now - Duration::days(BODY_RETENTION_DAYS);
-    for (place, date) in &todo {
+    let ids: Vec<String> = todo.iter().map(|(place, _)| place.id.clone()).collect();
+    let policy_to_check = policy.clone();
+    let keep = store.run(move |store| store.should_cache_bodies(&ids, &policy_to_check, now)).await?;
+    for ((place, _date), keep) in todo.iter().zip(keep) {
         let fetched = fetch_text(mailbox, place).await;
         if fetched.is_err() {
             mailbox.note_indexing(false);
         }
         let raw = fetched?;
-        if policy.prefetch_attachments
-            && let Some(raw) = raw.as_deref()
-        {
-            let _ = prefetch_attachments(mailbox, &place.id, raw).await;
-        }
         let id = place.id.clone();
-        let keep = match mode {
-            MailCacheMode::HeadersOnly => false,
-            MailCacheMode::Recent90Days => *date >= recent_since,
-            MailCacheMode::AllOffline => true,
-        };
         store
             .run(move |store| {
                 let Some(raw) = raw else { return store.mark_unindexable(&id).map(drop) };
@@ -592,7 +583,6 @@ async fn sync_folder(
     let new: Vec<u32> = on_server.iter().rev().filter(|uid| !known.messages.contains_key(uid)).copied().collect();
     let policy = store.run(|store| store.cache_policy()).await?;
     let mode = policy.mode;
-    let recent_since = now - Duration::days(BODY_RETENTION_DAYS);
     let mut ahead: Vec<(String, FetchedHeader)> = Vec::new();
     for batch in new.chunks(HEADER_BATCH) {
         let mut lease = conn.lease().await?;
@@ -630,17 +620,18 @@ async fn sync_folder(
             })
             .await?;
         held |= kept;
+        let ids: Vec<String> = stored.iter().map(|(id, _, _)| id.clone()).collect();
+        let policy_to_check = policy.clone();
+        let keep = store.run(move |store| store.should_cache_bodies(&ids, &policy_to_check, now)).await?;
         let ids = stored.iter().map(|(id, _, _)| id.clone()).collect();
-        ahead.extend(
-            stored
-                .into_iter()
-                .filter(|(_, date, header)| match mode {
-                    MailCacheMode::HeadersOnly => false,
-                    MailCacheMode::Recent90Days => *date >= recent_since && header.size <= BODY_PREFETCH_MAX,
-                    MailCacheMode::AllOffline => header.size <= BODY_PREFETCH_MAX,
-                })
-                .map(|(id, _, header)| (id, header)),
-        );
+        for ((id, _date, header), keep) in stored.into_iter().zip(keep) {
+            if header.size > BODY_PREFETCH_MAX {
+                continue;
+            }
+            if keep {
+                ahead.push((id, header));
+            }
+        }
         mailbox.announce(change(ids, Vec::new(), Vec::new()));
     }
 

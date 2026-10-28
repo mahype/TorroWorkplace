@@ -287,6 +287,7 @@ impl MailChange {
             id: id.to_string(),
             sender_name: self.sender_name,
             signature: self.signature,
+            signature_format: None,
             notify: self.notify,
             services: self.services,
             folder_roles: self.folder_roles,

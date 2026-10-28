@@ -3789,7 +3789,7 @@ static ACCOUNT_STATS: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals; only `quota` and `server_bytes` below come from the server. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop. `quota` (used and limit bytes, and `checked`, when the sync asked) is `null` unless the server supports IMAP QUOTA and reports a STORAGE limit. Each folder's `server_bytes` is the sum of the sizes the server reported (`RFC822.SIZE`) for the messages stored locally, `null` until all of them have one (a message the server gives no size for counts as 0); after an interrupted sync it covers only the messages stored so far. Both are as of the last sync, not live values. `months` counts stored messages and offline texts per month by message date in UTC. `originals` and `original_bytes` count only kept originals of mail still on the server; the folder values need not add up to the account's, for example for a folder renamed since the last sync.",
+    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals. `known_mail_bytes`, `offline_mail_bytes`, `planned_mail_bytes` and `indexed_offline_mail_bytes` all use the same server-reported RFC822.SIZE measure; all are null until every known message has a size. They are suitable for a relative mail inventory bar, not for measuring physical disk use. The separate `database_bytes` includes metadata and indexes. `quota` is a different server limit and must not be presented as the mail inventory. An interrupted sync covers only messages stored so far. `months` counts stored messages and offline texts per UTC month. `originals` and `original_bytes` count kept originals of mail still on the server.",
 };
 
 static GET_CACHE_POLICY: Command = Command {
@@ -3797,21 +3797,21 @@ static GET_CACHE_POLICY: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.",
+    description: "Reads one account's offline mail and attachment policy. Search indexing and header synchronization remain active. `mode` is `all_offline`, `since_date` (requires ISO `since_date`), or `max_size` (requires `max_local_mb`, selecting newest messages by server-reported RFC822.SIZE); `headers_only` and `recent90_days` remain readable for older saved policies. Downloaded attachments can be kept for 0, 1–365 days, or all (`4294967295`).",
 };
 static SET_CACHE_POLICY: Command = Command {
     name: "mail.set_cache_policy",
     area: Area::Mail,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Sets an account's offline body and attachment retention policy after a mail.preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.",
+    description: "Sets one account's offline body and attachment retention policy. `since_date` must be YYYY-MM-DD and `max_local_mb` 1–1000000 when their modes are selected. A size cap selects newest messages by RFC822.SIZE; physical disk usage can differ because metadata, search indexes and attachment files are separate. The change persists per account; automatic sync uses it, and `mail.start_cache_job` with `apply_policy` applies it to already synchronized mail. Server mail, drafts and search text are not deleted.",
 };
 static PREVIEW_CACHE: Command = Command {
     name: "mail.preview_cache",
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything. Returns the current body count, the bodies to fetch or remove and the estimated download and reclaim bytes. The average locally kept text size is used because IMAP sizes are not stored.",
+    description: "Estimates how many message bodies a mode will fetch or remove without changing anything. The request accepts a mode, so date and size parameters come from the currently saved policy. Byte estimates use the average size of local reading texts and may differ from the download or the SQLite file's physical change.",
 };
 static START_CACHE_JOB: Command = Command {
     name: "mail.start_cache_job",
@@ -5041,6 +5041,7 @@ mod tests {
                 id: "mail:anna@mailbox.org".into(),
                 sender_name: None,
                 signature: Some("Anna".into()),
+                signature_format: None,
                 notify: Some(torro_mail::Notify::ForMeOnly),
                 services: None,
                 folder_roles: None,
@@ -5052,6 +5053,8 @@ mod tests {
                 policy: crate::mail::MailCachePolicy {
                     account: "mail:anna@mailbox.org".into(),
                     mode: crate::mail::MailCacheMode::Recent90Days,
+                    since_date: None,
+                    max_local_mb: None,
                     prefetch_attachments: false,
                     attachment_retention_days: 1,
                 },
@@ -6438,6 +6441,7 @@ mod tests {
                 "mail_attachment_click",
                 "mail_downloads_folder",
                 "mail_appearance",
+                "mail_sender",
                 "mail_to_cloud",
                 "reminders",
                 "hidden_categories",

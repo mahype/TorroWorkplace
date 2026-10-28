@@ -335,7 +335,18 @@ pub fn senders_of(accounts: &[AccountInfo]) -> Vec<Sender> {
                 account: account.id.clone(),
                 address: view.address.clone(),
                 name: view.sender_name.clone(),
-                signature: view.settings.signature.clone().filter(|signature| !signature.trim().is_empty()),
+                signature: view
+                    .settings
+                    .signature
+                    .as_ref()
+                    .map(|signature| {
+                        if view.settings.signature_format {
+                            torro_mail::html::to_text(&torro_mail::markup::to_html(signature, None))
+                        } else {
+                            signature.clone()
+                        }
+                    })
+                    .filter(|signature| !signature.trim().is_empty()),
                 html: view.settings.format == MailFormat::Html,
             })
         })
@@ -385,6 +396,11 @@ pub trait ComposeSource: Send + Sync {
     /// ([`senders_of`]). Empty without a mail account.
     fn senders(&self) -> impl Future<Output = Result<Vec<Sender>, ComposeError>> + Send;
 
+    /// Preferred account for a new message. Sources without suite settings use the first sender.
+    fn default_sender(&self) -> impl Future<Output = Result<Option<String>, ComposeError>> + Send {
+        async { Ok(None) }
+    }
+
     /// `mail.get_message` with its text: the message to answer or pass on.
     fn get_mail(&self, id: String) -> impl Future<Output = Result<Mail, ComposeError>> + Send;
 
@@ -424,6 +440,13 @@ impl ComposeSource for InboxClient {
     async fn senders(&self) -> Result<Vec<Sender>, ComposeError> {
         match ask(self, Request::Accounts).await? {
             Response::Accounts { accounts } => Ok(senders_of(&accounts)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn default_sender(&self) -> Result<Option<String>, ComposeError> {
+        match ask(self, Request::Settings).await? {
+            Response::Settings { settings } => Ok(settings.mail_sender),
             other => Err(unexpected(other)),
         }
     }
@@ -711,6 +734,16 @@ pub fn opening(kind: &Kind, message: Option<&Mail>, own: &[String]) -> Opening {
 /// The account to write from: the one asked for with `--account`, else the one the message came
 /// to (its account, else the one named among its recipients), else the first. `None` without any.
 pub fn pick_sender(senders: &[Sender], wanted: Option<&str>, message: Option<&Mail>) -> Option<usize> {
+    pick_sender_with_default(senders, wanted, message, None)
+}
+
+/// Explicit account, then the account of a reply/forward, then the saved default for new mail.
+pub fn pick_sender_with_default(
+    senders: &[Sender],
+    wanted: Option<&str>,
+    message: Option<&Mail>,
+    default: Option<&str>,
+) -> Option<usize> {
     let find = |account: &str| senders.iter().position(|sender| sender.account == account);
     let by_recipient = |message: &Mail| {
         let named = message.summary.to.iter().chain(&message.cc);
@@ -719,6 +752,7 @@ pub fn pick_sender(senders: &[Sender], wanted: Option<&str>, message: Option<&Ma
     wanted
         .and_then(find)
         .or_else(|| message.and_then(|message| find(&message.summary.account).or_else(|| by_recipient(message))))
+        .or_else(|| default.and_then(find))
         .or((!senders.is_empty()).then_some(0))
 }
 
@@ -826,6 +860,7 @@ type Answer = fn(String) -> Kind;
 pub struct Prepared {
     pub senders: Vec<Sender>,
     pub message: Option<Box<Mail>>,
+    pub default_sender: Option<String>,
 }
 
 /// Where the window stands before it can be written in.
@@ -1243,8 +1278,13 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         let own: Vec<String> = prepared.senders.iter().map(|sender| sender.address.to_lowercase()).collect();
         let opened = opening(&self.start.kind, prepared.message.as_deref(), &own);
-        self.from =
-            pick_sender(&prepared.senders, self.start.account.as_deref(), prepared.message.as_deref()).unwrap_or(0);
+        self.from = pick_sender_with_default(
+            &prepared.senders,
+            self.start.account.as_deref(),
+            prepared.message.as_deref(),
+            prepared.default_sender.as_deref(),
+        )
+        .unwrap_or(0);
         self.senders = prepared.senders;
         self.to = format_addresses(&opened.to);
         self.cc = format_addresses(&opened.cc);
@@ -1595,11 +1635,12 @@ fn key(event: iced::Event, _status: iced::event::Status, _window: iced::window::
 /// The accounts, and the message to answer when there is one.
 pub async fn prepare<S: ComposeSource>(source: Arc<S>, kind: Kind) -> Result<Prepared, ComposeError> {
     let senders = source.senders().await?;
+    let default_sender = source.default_sender().await?;
     let message = match kind.message() {
         Some(id) => Some(Box::new(source.get_mail(id.to_owned()).await?)),
         None => None,
     };
-    Ok(Prepared { senders, message })
+    Ok(Prepared { senders, message, default_sender })
 }
 
 /// Saves `draft`; a draft that is gone (`NotFound` for the id it carries) is saved as a new one,
@@ -2555,6 +2596,16 @@ mod tests {
             "--account wins"
         );
         assert_eq!(pick_sender(&senders, Some("mail:nobody@example.org"), None), Some(0), "unknown: the first");
+        assert_eq!(
+            pick_sender_with_default(&senders, None, None, Some("mail:anna@example.org")),
+            Some(1),
+            "a new message uses the saved default"
+        );
+        assert_eq!(
+            pick_sender_with_default(&senders, None, Some(&message), Some("mail:anna@work.example.org")),
+            Some(1),
+            "a reply keeps the received account"
+        );
         let mut moved = message;
         moved.summary.account = "mail:old@example.org".into();
         moved.summary.to = vec![who("", "ANNA@example.org")];

@@ -602,6 +602,9 @@ pub enum Request {
         /// The signature under new mail, replies and forwards; an empty text removes it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        /// Whether `signature` uses the mail editor's formatting marks. Left out: unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature_format: Option<bool>,
         /// Which new mail becomes an inbox entry: `all`, `for_me_only` or `off`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notify: Option<Notify>,
@@ -3565,6 +3568,9 @@ pub enum SettingKey {
     /// dark background, pictures unchanged). Only the mail, never the rest of the window. Open
     /// windows follow (`torro_core::settings::MailAppearance`).
     MailAppearance,
+    /// Account id (`mail:<address>`) used as the sender of a new mail. `null` restores the first
+    /// available account. Replies and forwards keep their message's account unless chosen anew.
+    MailSender,
     /// The data rule for mail (task C.17): `false` (the default) keeps mail with models on the
     /// person's own computers; `true` lets it go to models elsewhere as well, and to any coding
     /// agent that drives the assistant where one is offered (none since task C.18, issue #219).

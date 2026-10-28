@@ -1094,6 +1094,7 @@ pub(crate) mod tests {
             id: "mail:anna@mailbox.org".into(),
             sender_name: Some("Anna Example".into()),
             signature: None,
+            signature_format: None,
             notify: None,
             services: None,
             folder_roles: None,

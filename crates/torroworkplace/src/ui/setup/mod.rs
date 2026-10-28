@@ -872,6 +872,7 @@ fn source_requests(source: &SourceRef, on: bool, data: &Data) -> Action {
         id: account.id.clone(),
         sender_name: None,
         signature: None,
+        signature_format: None,
         notify: Some(if on { switched_on(mail_notify(data, source)) } else { Notify::Off }),
         services: None,
         folder_roles: None,

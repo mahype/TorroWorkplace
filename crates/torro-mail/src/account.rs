@@ -217,6 +217,10 @@ pub struct MailSettings {
     /// Text put under new mail, replies and forwards; `None` for none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// The signature is written with the compose editor's safe markup. Legacy signatures remain
+    /// plain text; an editor turns this on when a formatting command is used.
+    #[serde(default)]
+    pub signature_format: bool,
     /// Which new mail becomes an inbox entry.
     #[serde(default)]
     pub notify: Notify,

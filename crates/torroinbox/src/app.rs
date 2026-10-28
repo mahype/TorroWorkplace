@@ -1537,6 +1537,8 @@ pub enum Open {
     AccountFolders,
     /// That page at the tab "Writing" with the sender name changed, so the save bar stands.
     AccountWriting,
+    /// That account's offline selection and storage comparison.
+    AccountStorage,
     /// That page's overview with its open questions: the open folder role and the sync problem.
     AccountQuestion,
     /// "With attachments" with the demo's invoice open (task M12.6) and the menu of its first
@@ -1569,7 +1571,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 65] = [
+    const ALL: [(&'static str, Open); 66] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1623,6 +1625,7 @@ impl Open {
         ("account", Open::Account),
         ("account-folders", Open::AccountFolders),
         ("account-writing", Open::AccountWriting),
+        ("account-storage", Open::AccountStorage),
         ("account-question", Open::AccountQuestion),
         ("attachment-menu", Open::AttachmentMenu),
         ("save-all-menu", Open::SaveAllMenu),
@@ -1656,6 +1659,7 @@ impl Open {
             Open::Account | Open::AccountQuestion => Some(AccountScene::Overview),
             Open::AccountFolders => Some(AccountScene::Folders),
             Open::AccountWriting => Some(AccountScene::Writing),
+            Open::AccountStorage => Some(AccountScene::Storage),
             _ => None,
         }
     }
@@ -1668,6 +1672,7 @@ enum AccountScene {
     Folders,
     /// "Writing" with a changed sender name, so the save bar stands.
     Writing,
+    Storage,
 }
 
 impl AccountScene {
@@ -1678,6 +1683,7 @@ impl AccountScene {
             AccountScene::Overview => Vec::new(),
             AccountScene::Folders => vec![Account::Tab(Tab::Folders.index())],
             AccountScene::Writing => vec![Account::Tab(Tab::Writing.index()), Account::SenderName(DEMO_SENDER.into())],
+            AccountScene::Storage => vec![Account::Tab(Tab::Storage.index())],
         }
     }
 }
@@ -2390,6 +2396,7 @@ fn wrap_settings<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -
         sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
         actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
         save_bar: page.save_bar.map(|bar| bar.map(into)),
+        max_width: page.max_width,
     }
 }
 
@@ -4749,6 +4756,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     settings_mail::sent(state);
                 }
                 let outcome = pane.host.update(message);
+                if let SettingsState::Mail(state) = &mut pane.sections {
+                    settings_mail::loaded(state, pane.host.data());
+                }
                 if loaded {
                     self.show_staged_backup();
                 }
@@ -7152,6 +7162,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
             actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
             save_bar: page.save_bar.map(|bar| bar.map(Message::SettingsPage)),
+            max_width: page.max_width,
         };
         pane.host.view(class, page, Message::SettingsHost)
     }
@@ -18667,8 +18678,8 @@ mod tests {
         for (words, ids) in [
             (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
-            // Mail settings include attachments (task M12.7), categorization and storage controls.
-            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization", "storage"]),
+            // Storage controls live inside each account.
+            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization"]),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();

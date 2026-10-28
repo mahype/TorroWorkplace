@@ -1744,13 +1744,29 @@ impl MailService {
     }
 
     pub async fn set_cache_policy(&self, policy: MailCachePolicy) -> Result<MailCachePolicy, MailError> {
-        if policy.attachment_retention_days == 0 || policy.attachment_retention_days > 365 {
+        if policy.attachment_retention_days > 365 && policy.attachment_retention_days != u32::MAX {
             return Err(MailError::Store(MailStoreError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "attachment retention must be 1–365 days",
+                "attachment retention must be none, 1–365 days, or all",
+            ))));
+        }
+        let valid_selection = match policy.mode {
+            MailCacheMode::SinceDate => policy.since_date.as_deref().is_some_and(|date| {
+                chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    .is_ok_and(|parsed| parsed.format("%Y-%m-%d").to_string() == date)
+            }),
+            MailCacheMode::MaxSize => policy.max_local_mb.is_some_and(|mb| (1..=1_000_000).contains(&mb)),
+            _ => true,
+        };
+        if !valid_selection {
+            return Err(MailError::Store(MailStoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "offline policy needs a valid date or a size from 1 to 1000000 MiB",
             ))));
         }
         let store = self.store(&policy.account).await?;
+        let mut policy = policy;
+        policy.prefetch_attachments = false;
         let saved = policy.clone();
         store.run(move |store| store.set_cache_policy(&saved)).await?;
         Ok(policy)
@@ -1785,7 +1801,7 @@ impl MailService {
             return Ok(existing);
         }
         let policy = store.run(|store| store.cache_policy()).await?;
-        let estimate = store.run(move |store| store.cache_estimate(policy.mode)).await?;
+        let estimate = store.run(move |store| store.cache_estimate_for_policy(&policy)).await?;
         let total = match action {
             MailCacheAction::ApplyPolicy => estimate.bodies_to_fetch + estimate.bodies_to_remove,
             MailCacheAction::FetchMissingBodies => estimate.bodies_to_fetch,
@@ -1874,42 +1890,54 @@ impl MailService {
             let original = job.clone();
             let result: Result<bool, MailError> = match job.action {
                 MailCacheAction::ApplyPolicy => {
-                    let mode = match store.run(|store| store.cache_policy()).await {
-                        Ok(policy) => policy.mode,
+                    let policy = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy,
                         Err(err) => {
                             self.fail_cache_job(&store, original, job, err.into()).await;
                             return;
                         }
                     };
-                    match store.run(move |store| store.prune_bodies_for(mode, Utc::now(), 100)).await {
+                    match store.run(move |store| store.prune_bodies_for_policy(&policy, Utc::now(), 100)).await {
                         Ok(count) if count > 0 => {
                             job.processed += count as u64;
                             Ok(true)
                         }
-                        Ok(_) => match store.run(move |store| store.cached_body_missing(job.cursor, mode, 1)).await {
-                            Ok(rows) => match rows.into_iter().next() {
-                                Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
-                                    job.cursor = Some(cursor);
-                                    job.processed += 1;
-                                    true
-                                }),
-                                None => Ok(false),
-                            },
-                            Err(err) => Err(err.into()),
-                        },
+                        Ok(_) => {
+                            let policy = match store.run(|store| store.cache_policy()).await {
+                                Ok(policy) => policy,
+                                Err(err) => {
+                                    self.fail_cache_job(&store, original, job, err.into()).await;
+                                    return;
+                                }
+                            };
+                            match store
+                                .run(move |store| store.cached_body_missing_for_policy(job.cursor, &policy, 1))
+                                .await
+                            {
+                                Ok(rows) => match rows.into_iter().next() {
+                                    Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
+                                        job.cursor = Some(cursor);
+                                        job.processed += 1;
+                                        true
+                                    }),
+                                    None => Ok(false),
+                                },
+                                Err(err) => Err(err.into()),
+                            }
+                        }
                         Err(err) => Err(err.into()),
                     }
                 }
                 MailCacheAction::CleanCache => {
-                    let mode = match store.run(|store| store.cache_policy()).await {
-                        Ok(policy) => policy.mode,
+                    let policy = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy,
                         Err(err) => {
                             self.fail_cache_job(&store, original, job, err.into()).await;
                             return;
                         }
                     };
                     store
-                        .run(move |store| store.prune_bodies_for(mode, Utc::now(), 100))
+                        .run(move |store| store.prune_bodies_for_policy(&policy, Utc::now(), 100))
                         .await
                         .map(|count| {
                             job.processed += count as u64;
@@ -1924,14 +1952,14 @@ impl MailService {
                     })
                 }
                 MailCacheAction::FetchMissingBodies => {
-                    let mode = match store.run(|store| store.cache_policy()).await {
-                        Ok(policy) => policy.mode,
+                    let policy = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy,
                         Err(err) => {
                             self.fail_cache_job(&store, original, job, err.into()).await;
                             return;
                         }
                     };
-                    match store.run(move |store| store.cached_body_missing(job.cursor, mode, 1)).await {
+                    match store.run(move |store| store.cached_body_missing_for_policy(job.cursor, &policy, 1)).await {
                         Ok(rows) => match rows.into_iter().next() {
                             Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
                                 job.cursor = Some(cursor);

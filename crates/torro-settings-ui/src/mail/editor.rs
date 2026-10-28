@@ -22,7 +22,7 @@
 //! resetting a category, leaving a page with changes – asks on the page first.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, space as blank, text_editor};
+use iced::widget::{column, container, responsive, row, space as blank, text_editor};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
@@ -55,6 +55,10 @@ impl State {
     /// A page of the editor is open: the section shows it instead of its list.
     pub fn is_open(&self) -> bool {
         self.form.is_some()
+    }
+
+    pub fn is_rule_open(&self) -> bool {
+        matches!(self.form.as_ref(), Some(Form::Rule(_)))
     }
 }
 
@@ -190,6 +194,10 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::NewRule => {
+            if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
+                state.asking = Some(Ask::Discard);
+                return Action::None;
+            }
             state.asking = None;
             state.form = Some(Form::Rule(RuleForm {
                 id: None,
@@ -202,6 +210,15 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::EditRule(id) => {
+            if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
+                state.asking = Some(Ask::Discard);
+                return Action::None;
+            }
+            if matches!(state.form.as_ref(), Some(Form::Rule(form)) if form.id.as_deref() == Some(id.as_str())) {
+                state.form = None;
+                state.asking = None;
+                return Action::None;
+            }
             if let Some(rule) = data.sort_rules.iter().find(|rule| rule.id == id) {
                 state.asking = None;
                 state.form = Some(Form::Rule(RuleForm::of(rule)));
@@ -573,7 +590,9 @@ impl RuleForm {
         };
         let (conditions, exceptions) = (kept(&self.conditions), kept(&self.exceptions));
         Some(match &self.id {
-            None => Request::CreateSortRule { category, conditions, exceptions, position: None, enabled: self.enabled },
+            None => {
+                Request::CreateSortRule { category, conditions, exceptions, position: Some(0), enabled: self.enabled }
+            }
             Some(id) => Request::UpdateSortRule {
                 id: id.clone(),
                 category,
@@ -655,37 +674,56 @@ fn question<'a>(asked: Ask) -> Element<'a, Message> {
     widgets::group(title, vec![setting_row(None, detail, None, buttons)], None)
 }
 
-/// "Sorting rules": the rules in their order, each opening its page; "New sorting rule" last.
-pub fn rules_group(data: &Data) -> Element<'_, Message> {
-    let mut rows: Vec<Element<'_, Message>> = data
-        .sort_rules
-        .iter()
-        .map(|rule| {
-            // What the rule files as first: that is what one looks for in the list.
-            let category = crate::category_name_in(&data.categories, rule.category);
-            let mut detail = conditions_line(&rule.conditions);
-            if !rule.exceptions.is_empty() {
-                detail = trf(
-                    "{conditions}, except {exceptions}",
-                    &[("conditions", &detail), ("exceptions", &conditions_line(&rule.exceptions))],
-                );
-            }
-            if !rule.enabled {
-                detail = trf("Off · {rule}", &[("rule", &detail)]);
-            }
-            let row = setting_row(None, category, Some(detail), chevron());
-            pressable(row, Some(Message::EditRule(rule.id.clone())))
-        })
-        .collect();
-    rows.push(add_row(tr("New sorting rule"), Message::NewRule));
+/// "Sorting rules": a button to add a rule, then the rules in their checking order.
+pub fn rules_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let add = widgets::text_button(None, tr("New sorting rule"), style::button::secondary, Some(Message::NewRule));
+    let mut rows: Vec<Element<'_, Message>> = vec![row_frame(add, false)];
+    if matches!(state.form.as_ref(), Some(Form::Rule(RuleForm { id: None, .. }))) {
+        rows.push(inline_rule(state, data));
+    }
+    for rule in &data.sort_rules {
+        // What the rule files as first: that is what one looks for in the list.
+        let category = crate::category_name_in(&data.categories, rule.category);
+        let mut detail = conditions_line(&rule.conditions);
+        if !rule.exceptions.is_empty() {
+            detail = trf(
+                "{conditions}, except {exceptions}",
+                &[("conditions", &detail), ("exceptions", &conditions_line(&rule.exceptions))],
+            );
+        }
+        if !rule.enabled {
+            detail = trf("Off · {rule}", &[("rule", &detail)]);
+        }
+        let row = setting_row(None, category, Some(detail), chevron());
+        rows.push(pressable(row, Some(Message::EditRule(rule.id.clone()))));
+        if matches!(&state.form, Some(Form::Rule(form)) if form.id.as_deref() == Some(rule.id.as_str())) {
+            rows.push(inline_rule(state, data));
+        }
+    }
     widgets::group(
-        tr("Sorting rules"),
+        tr("1. Rules"),
         rows,
-        Some(
-            tr("The first rule that fits files new mail, before the headers and the AI. What you filed by hand stays as it is.")
-                .to_string(),
-        ),
+        Some(tr("Rules are checked from top to bottom. The first match wins; only then does the model use category descriptions.").to_string()),
     )
+}
+
+/// The editor remains directly under the rule that was clicked, inside the same list card.
+fn inline_rule<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let Some(Form::Rule(form)) = state.form.as_ref() else { return blank().into() };
+    let ready = match &form.id {
+        None => true,
+        Some(id) => data.sort_rules.iter().find(|rule| &rule.id == id).is_none_or(|stored| !form.same_as(stored)),
+    };
+    let actions = row![
+        save_button(ready, Message::SaveRule),
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Back)),
+    ]
+    .spacing(space::s());
+    let mut body = column![rule_page(form, data), actions].spacing(layout::section_gap());
+    if let Some(asked) = state.asking {
+        body = body.push(question(asked));
+    }
+    container(body).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 /// "Categories": "New category" with what the list is for, then one group per group of
@@ -693,14 +731,8 @@ pub fn rules_group(data: &Data) -> Element<'_, Message> {
 /// for the AI, or hidden from the sidebar.
 pub fn categories_groups(data: &Data) -> Vec<Element<'_, Message>> {
     let hidden = &data.settings.hidden_categories;
-    let mut groups = vec![widgets::group(
-        tr("Categories"),
-        vec![add_row(tr("New category"), Message::NewCategory)],
-        Some(
-            tr("Rename any category, move it to another group, or make your own. The description is what the AI reads.")
-                .to_string(),
-        ),
-    )];
+    let mut groups =
+        vec![widgets::group(tr("All categories"), vec![add_row(tr("New category"), Message::NewCategory)], None)];
     for group in CategoryGroup::ALL {
         let rows: Vec<Element<'_, Message>> = data
             .categories
@@ -909,21 +941,30 @@ impl std::fmt::Display for CategoryIconChoice {
 
 fn icon_picker<'a>(
     selected: CategoryIcon,
-    on_pick: impl Fn(CategoryIcon) -> Message + 'a,
-    group: CategoryGroup,
+    on_pick: fn(CategoryIcon) -> Message,
+    _group: CategoryGroup,
 ) -> Element<'a, Message> {
-    let choices: Vec<_> = CategoryIcon::ALL.into_iter().map(CategoryIconChoice).collect();
-    let color_at = CategoryGroup::ALL.iter().position(|held| *held == group).unwrap_or(0);
-    let icon = torro_gui::icon::icon(category_icon(selected), torro_gui::icon::SIZE)
-        .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
-    let pick = iced::widget::pick_list(choices, Some(CategoryIconChoice(selected)), move |choice| on_pick(choice.0))
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu);
-    row![icon, pick].spacing(space::m()).align_y(Alignment::Center).into()
+    responsive(move |room| {
+        // A visible palette lets people recognise the symbol before choosing it. Keep each
+        // button's spoken name and tooltip; narrow windows simply use fewer columns.
+        let columns = ((room.width / 42.0).floor() as usize).clamp(3, 8);
+        let mut lines = column![].spacing(space::s());
+        for icons in CategoryIcon::ALL.chunks(columns) {
+            let mut line = row![].spacing(space::s());
+            for &icon in icons {
+                let name = CategoryIconChoice(icon).to_string();
+                let button = if icon == selected {
+                    widgets::compact_button(category_icon(icon), name, style::button::primary, Some(on_pick(icon)))
+                } else {
+                    widgets::boxed_button(category_icon(icon), name, Some(on_pick(icon)))
+                };
+                line = line.push(button);
+            }
+            lines = lines.push(line);
+        }
+        lines.into()
+    })
+    .into()
 }
 
 fn category_icon(icon: CategoryIcon) -> Icon {
@@ -1381,7 +1422,7 @@ mod tests {
                 category: Category::Booking,
                 conditions: vec![SortCondition { field: SortField::Domain, value: "rail.example".into() }],
                 exceptions: vec![SortCondition { field: SortField::Subject, value: "delay".into() }],
-                position: None,
+                position: Some(0),
                 enabled: true,
             }]
         );
@@ -1431,7 +1472,7 @@ mod tests {
     fn the_pages_draw() {
         let (data, mut state) = (data(), State::default());
         let _ = categories_groups(&data);
-        let _ = rules_group(&data);
+        let _ = rules_group(&State::default(), &data);
         for open in [Message::NewCategory, Message::EditCategory(Category::Invoice), Message::EditCategory(tax())] {
             let _ = update::<()>(&mut state, open, &data);
             let _ = update::<()>(&mut state, Message::Remove, &data);

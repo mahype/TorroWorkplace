@@ -545,6 +545,12 @@ pub struct MailStore {
     db: Connection,
 }
 
+#[derive(Clone, Copy)]
+struct CacheWindow {
+    date: i64,
+    seq: i64,
+}
+
 impl MailStore {
     /// Opens the store of `account` (`mail:<address>`) in `dirs.data`, creating the directory
     /// (0700), the file (0600) and the tables if needed. Fails with [`MailStoreError::NoFullText`]
@@ -1080,6 +1086,22 @@ impl MailStore {
             });
         }
         let messages = folders.iter().map(|stats| u64::from(stats.folder.total)).sum();
+        // All four shares use RFC822.SIZE for the same known message inventory. The SQLite file
+        // includes metadata and index pages and must never be divided by the server's mail bytes.
+        let window = self.cache_window(&self.cache_policy()?, Utc::now())?;
+        let (sizes_complete, known, offline, planned, indexed_offline): (bool, i64, i64, i64, i64) =
+            self.db.query_row(
+                "SELECT count(*) = count(m.size), coalesce(sum(m.size), 0),
+                    coalesce(sum(CASE WHEN b.seq IS NOT NULL THEN m.size ELSE 0 END), 0),
+                    coalesce(sum(CASE WHEN m.date > ?1 OR (m.date = ?1 AND m.seq >= ?2)
+                        THEN m.size ELSE 0 END), 0),
+                    coalesce(sum(CASE WHEN b.seq IS NOT NULL AND m.indexed = 1
+                        AND m.index_partial_or_unverified = 0 THEN m.size ELSE 0 END), 0)
+                 FROM messages m LEFT JOIN bodies b ON b.seq = m.seq",
+                params![window.date, window.seq],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )?;
+        let size = |value: i64| sizes_complete.then(|| u64::try_from(value).unwrap_or(0));
         let read = folders.iter().map(|stats| stats.read).sum();
         let oldest_known = folders.iter().filter_map(|stats| stats.oldest_known).min();
         let newest_known = folders.iter().filter_map(|stats| stats.newest_known).max();
@@ -1113,6 +1135,10 @@ impl MailStore {
         Ok(MailAccountStats {
             account: self.account.clone(),
             messages,
+            known_mail_bytes: size(known),
+            offline_mail_bytes: size(offline),
+            planned_mail_bytes: size(planned),
+            indexed_offline_mail_bytes: size(indexed_offline),
             read,
             unread: messages.saturating_sub(read),
             oldest_known,
@@ -1651,12 +1677,87 @@ impl MailStore {
         Ok(self.db.execute("UPDATE messages SET invite_answer = ?2 WHERE id = ?1", params![id, answer])? > 0)
     }
 
+    /// Inclusive lower edge of the messages selected for local reading. For a size limit, it is
+    /// the oldest message fitting within the budget when messages are ordered newest first. A
+    /// missing RFC822.SIZE is conservatively counted as 16 KiB until synchronization fills it.
+    fn cache_window(&self, policy: &MailCachePolicy, now: DateTime<Utc>) -> Result<CacheWindow, MailStoreError> {
+        let edge = match policy.mode {
+            MailCacheMode::HeadersOnly => CacheWindow { date: i64::MAX, seq: i64::MAX },
+            MailCacheMode::Recent90Days => {
+                CacheWindow { date: (now - Duration::days(BODY_RETENTION_DAYS)).timestamp(), seq: i64::MIN }
+            }
+            MailCacheMode::AllOffline => CacheWindow { date: i64::MIN, seq: i64::MIN },
+            MailCacheMode::SinceDate => {
+                let date = policy
+                    .since_date
+                    .as_deref()
+                    .and_then(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok())
+                    .ok_or_else(|| MailStoreError::Corrupt("offline policy has no valid date".into()))?;
+                CacheWindow { date: date.and_hms_opt(0, 0, 0).expect("midnight").and_utc().timestamp(), seq: i64::MIN }
+            }
+            MailCacheMode::MaxSize => {
+                let limit = policy
+                    .max_local_mb
+                    .and_then(|mb| mb.checked_mul(1024 * 1024))
+                    .and_then(|bytes| i64::try_from(bytes).ok())
+                    .ok_or_else(|| MailStoreError::Corrupt("offline policy has no valid size".into()))?;
+                let selected = self
+                    .db
+                    .query_row(
+                        "SELECT date, seq FROM (
+                        SELECT date, seq, sum(coalesce(size, 16384)) OVER
+                            (ORDER BY date DESC, seq DESC) AS cumulative_bytes
+                        FROM messages
+                     ) WHERE cumulative_bytes <= ?1 ORDER BY date, seq LIMIT 1",
+                        [limit],
+                        |row| Ok(CacheWindow { date: row.get(0)?, seq: row.get(1)? }),
+                    )
+                    .optional()?;
+                selected.unwrap_or(CacheWindow { date: i64::MAX, seq: i64::MAX })
+            }
+        };
+        Ok(edge)
+    }
+
+    /// Whether a known message belongs to the policy's local-reading set. Search indexing is
+    /// independent and still fetches the message text when this is false.
+    pub fn should_cache_body(
+        &self,
+        id: &str,
+        policy: &MailCachePolicy,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        Ok(self.should_cache_bodies(&[id.to_string()], policy, now)?.into_iter().next().unwrap_or(false))
+    }
+
+    /// Evaluate a sync batch against one size/date edge. In size mode calculating the edge for
+    /// each message would repeatedly scan the whole mailbox as its headers arrive.
+    pub fn should_cache_bodies(
+        &self,
+        ids: &[String],
+        policy: &MailCachePolicy,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<bool>, MailStoreError> {
+        let window = self.cache_window(policy, now)?;
+        let mut statement =
+            self.db.prepare("SELECT date > ?2 OR (date = ?2 AND seq >= ?3) FROM messages WHERE id = ?1")?;
+        ids.iter()
+            .map(|id| {
+                statement
+                    .query_row(params![id, window.date, window.seq], |row| row.get::<_, bool>(0))
+                    .optional()
+                    .map(|selected| selected.unwrap_or(false))
+                    .map_err(MailStoreError::from)
+            })
+            .collect()
+    }
+
     /// Drops the texts to read of messages sent more than [`BODY_RETENTION_DAYS`] before `now`;
     /// their headers stay, and so do their words in the search index (issue #136).
     /// `Message::text` is `None` again until someone fetches it. Returns how many texts went. Run
     /// it after a sync and now and then.
     pub fn prune_bodies(&self, now: DateTime<Utc>) -> Result<usize, MailStoreError> {
-        self.prune_bodies_for(self.cache_policy()?.mode, now, usize::MAX)
+        self.prune_bodies_for_policy(&self.cache_policy()?, now, usize::MAX)
     }
 
     /// Drop reading texts in bounded steps according to the account policy. The FTS index stays.
@@ -1666,19 +1767,29 @@ impl MailStore {
         now: DateTime<Utc>,
         batch: usize,
     ) -> Result<usize, MailStoreError> {
-        if mode == MailCacheMode::AllOffline {
+        let mut policy = self.cache_policy()?;
+        policy.mode = mode;
+        self.prune_bodies_for_policy(&policy, now, batch)
+    }
+
+    pub fn prune_bodies_for_policy(
+        &self,
+        policy: &MailCachePolicy,
+        now: DateTime<Utc>,
+        batch: usize,
+    ) -> Result<usize, MailStoreError> {
+        if policy.mode == MailCacheMode::AllOffline {
             return Ok(0);
         }
-        let limit = (now - Duration::days(BODY_RETENTION_DAYS)).timestamp();
+        let window = self.cache_window(policy, now)?;
         let tx = self.db.unchecked_transaction()?;
         let old: Vec<i64> = {
             let mut statement =
-                tx.prepare("SELECT b.seq FROM bodies b JOIN messages m ON m.seq = b.seq JOIN folders f ON f.id = m.folder_id LEFT JOIN drafts d ON d.id = m.id WHERE (?1 = 1 OR m.date < ?2) AND f.role IS NOT 'drafts' AND d.id IS NULL LIMIT ?3")?;
+                tx.prepare("SELECT b.seq FROM bodies b JOIN messages m ON m.seq = b.seq JOIN folders f ON f.id = m.folder_id LEFT JOIN drafts d ON d.id = m.id WHERE (m.date < ?1 OR (m.date = ?1 AND m.seq < ?2)) AND f.role IS NOT 'drafts' AND d.id IS NULL LIMIT ?3")?;
             statement
-                .query_map(
-                    params![mode == MailCacheMode::HeadersOnly, limit, i64::try_from(batch).unwrap_or(i64::MAX)],
-                    |row| row.get(0),
-                )?
+                .query_map(params![window.date, window.seq, i64::try_from(batch).unwrap_or(i64::MAX)], |row| {
+                    row.get(0)
+                })?
                 .collect::<Result<_, _>>()?
         };
         for seq in &old {
@@ -1694,10 +1805,18 @@ impl MailStore {
             .query_row("SELECT value FROM cache_control WHERE key = 'policy'", [], |row| row.get(0))
             .optional()?;
         match raw {
-            Some(raw) => Ok(serde_json::from_str(&raw)?),
+            Some(raw) => {
+                let mut policy: MailCachePolicy = serde_json::from_str(&raw)?;
+                // The preloading control was removed. Old saved policies must not keep silently
+                // downloading attachments after the person can no longer see that choice.
+                policy.prefetch_attachments = false;
+                Ok(policy)
+            }
             None => Ok(MailCachePolicy {
                 account: self.account.clone(),
                 mode: MailCacheMode::Recent90Days,
+                since_date: None,
+                max_local_mb: None,
                 prefetch_attachments: false,
                 attachment_retention_days: 1,
             }),
@@ -1710,7 +1829,9 @@ impl MailStore {
     }
 
     pub fn set_cache_policy(&self, policy: &MailCachePolicy) -> Result<(), MailStoreError> {
-        self.db.execute("INSERT INTO cache_control (key, value) VALUES ('policy', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [serde_json::to_string(policy)?])?;
+        let mut policy = policy.clone();
+        policy.prefetch_attachments = false;
+        self.db.execute("INSERT INTO cache_control (key, value) VALUES ('policy', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [serde_json::to_string(&policy)?])?;
         Ok(())
     }
 
@@ -1738,10 +1859,27 @@ impl MailStore {
     /// 2`), and in `AllOffline` every header without an original, as
     /// [`known_missing_originals`](Self::known_missing_originals) counts them.
     pub fn cache_estimate(&self, mode: MailCacheMode) -> Result<MailCacheEstimate, MailStoreError> {
-        let now = Utc::now();
-        let cutoff = (now - Duration::days(BODY_RETENTION_DAYS)).timestamp();
+        let mut policy = self.cache_policy()?;
+        policy.mode = mode;
+        self.cache_estimate_for_policy(&policy)
+    }
+
+    pub fn cache_estimate_for_policy(&self, policy: &MailCachePolicy) -> Result<MailCacheEstimate, MailStoreError> {
+        let window = self.cache_window(policy, Utc::now())?;
         let (current, bytes): (i64, i64) = self.db.query_row("SELECT count(*), coalesce(sum(length(text) + coalesce(length(html), 0) + length(attachments_json) + length(filenames)), 0) FROM bodies", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        let (missing, remove): (i64, i64) = self.db.query_row("SELECT coalesce(sum(((b.seq IS NULL AND m.indexed <> 2) OR (?1 = 2 AND o.seq IS NULL)) AND (?1 = 2 OR (?1 = 1 AND m.date >= ?2))), 0), coalesce(sum(b.seq IS NOT NULL AND (?1 = 0 OR (?1 = 1 AND m.date < ?2)) AND f.role IS NOT 'drafts' AND d.id IS NULL), 0) FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid LEFT JOIN drafts d ON d.id = m.id", params![mode as i64, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let (missing, remove): (i64, i64) = self.db.query_row(
+            "SELECT coalesce(sum(((b.seq IS NULL AND m.indexed <> 2) OR (?3 = 1 AND o.seq IS NULL))
+                    AND (m.date > ?1 OR (m.date = ?1 AND m.seq >= ?2))), 0),
+                    coalesce(sum(b.seq IS NOT NULL
+                    AND (m.date < ?1 OR (m.date = ?1 AND m.seq < ?2))
+                    AND f.role IS NOT 'drafts' AND d.id IS NULL), 0)
+             FROM messages m JOIN folders f ON f.id = m.folder_id
+             LEFT JOIN bodies b ON b.seq = m.seq
+             LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid
+             LEFT JOIN drafts d ON d.id = m.id",
+            params![window.date, window.seq, policy.mode == MailCacheMode::AllOffline],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         let average = if current > 0 { bytes.max(0) as u64 / current as u64 } else { 16 * 1024 };
         Ok(MailCacheEstimate {
             account: self.account.clone(),
@@ -1761,22 +1899,36 @@ impl MailStore {
         mode: MailCacheMode,
         limit: u32,
     ) -> Result<Vec<(i64, MessageRef)>, MailStoreError> {
-        let cutoff = (Utc::now() - Duration::days(BODY_RETENTION_DAYS)).timestamp();
-        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid WHERE ((b.seq IS NULL AND m.indexed <> 2) OR (?2 = 2 AND o.seq IS NULL)) AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) AND (?2 = 2 OR (?2 = 1 AND m.date >= ?3)) ORDER BY m.seq DESC LIMIT ?4")?;
-        let rows = statement.query_map(params![before, mode as i64, cutoff, limit], |row| {
-            Ok((
-                row.get(0)?,
-                MessageRef {
-                    id: row.get(1)?,
-                    account: self.account.clone(),
-                    folder: row.get(2)?,
-                    folder_path: row.get(3)?,
-                    uidvalidity: row.get(4)?,
-                    uid: row.get(5)?,
-                    rfc_message_id: row.get(6)?,
-                },
-            ))
-        })?;
+        let mut policy = self.cache_policy()?;
+        policy.mode = mode;
+        self.cached_body_missing_for_policy(before, &policy, limit)
+    }
+
+    pub fn cached_body_missing_for_policy(
+        &self,
+        before: Option<i64>,
+        policy: &MailCachePolicy,
+        limit: u32,
+    ) -> Result<Vec<(i64, MessageRef)>, MailStoreError> {
+        let window = self.cache_window(policy, Utc::now())?;
+        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid WHERE ((b.seq IS NULL AND m.indexed <> 2) OR (?4 = 1 AND o.seq IS NULL)) AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) AND (m.date > ?2 OR (m.date = ?2 AND m.seq >= ?3)) ORDER BY m.seq DESC LIMIT ?5")?;
+        let rows = statement.query_map(
+            params![before, window.date, window.seq, policy.mode == MailCacheMode::AllOffline, limit],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    MessageRef {
+                        id: row.get(1)?,
+                        account: self.account.clone(),
+                        folder: row.get(2)?,
+                        folder_path: row.get(3)?,
+                        uidvalidity: row.get(4)?,
+                        uid: row.get(5)?,
+                        rfc_message_id: row.get(6)?,
+                    },
+                ))
+            },
+        )?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -4012,6 +4164,66 @@ mod tests {
         store.set_size(&inbox, 2, 2000).expect("set");
         assert_eq!(sizes(&store)[0], ("INBOX".to_string(), Some(6000)));
         assert_eq!(store.uids_without_size(&empty, 10).expect("asked"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn account_mail_coverage_uses_the_same_server_size_for_each_share() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let first = add(&store, &inbox, &message(1, "first"));
+        add(&store, &inbox, &message(2, "second"));
+        store.set_size(&inbox, 1, 1000).expect("size");
+        let unknown = store.account_stats().expect("stats");
+        assert_eq!(unknown.known_mail_bytes, None);
+        assert_eq!(unknown.offline_mail_bytes, None);
+        store.set_size(&inbox, 2, 3000).expect("size");
+        let body = Body { text: "kept".into(), from_html: false, html: None, attachments: vec![], invite: None };
+        store.set_body(&first, &body).expect("body");
+        store.db.execute("UPDATE messages SET indexed = 1 WHERE id = ?1", [&first]).expect("index");
+        let stats = store.account_stats().expect("stats");
+        assert_eq!(stats.known_mail_bytes, Some(4000));
+        assert_eq!(stats.offline_mail_bytes, Some(1000));
+        assert_eq!(stats.indexed_offline_mail_bytes, Some(1000));
+        assert_eq!(stats.planned_mail_bytes, Some(4000), "recent messages are planned");
+        assert_ne!(stats.database_bytes, stats.known_mail_bytes.unwrap(), "the SQLite file is a different unit");
+    }
+
+    #[test]
+    fn date_and_size_policies_select_newest_mail_and_prune_only_older_texts() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 12, 0, 0).single().expect("date");
+        let mut ids = Vec::new();
+        for day in 1..=3 {
+            let date = Utc.with_ymd_and_hms(2026, 1, day, 12, 0, 0).single().expect("date");
+            let id = add(&store, &inbox, &NewMessage { date, ..message(day, "mail") });
+            store.set_size(&inbox, day, 1024 * 1024).expect("size");
+            let body = Body { text: "kept".into(), from_html: false, html: None, attachments: vec![], invite: None };
+            store.set_body(&id, &body).expect("body");
+            ids.push(id);
+        }
+        let mut policy = store.cache_policy().expect("policy");
+        policy.mode = MailCacheMode::SinceDate;
+        policy.since_date = Some("2026-01-02".into());
+        assert!(!store.should_cache_body(&ids[0], &policy, now).expect("old"));
+        assert!(store.should_cache_body(&ids[1], &policy, now).expect("middle"));
+        assert!(store.should_cache_body(&ids[2], &policy, now).expect("new"));
+        assert_eq!(store.prune_bodies_for_policy(&policy, now, 10).expect("prune"), 1);
+        policy.mode = MailCacheMode::MaxSize;
+        policy.max_local_mb = Some(2);
+        assert_eq!(
+            store.should_cache_bodies(&ids, &policy, now).expect("batch"),
+            [false, true, true],
+            "one size edge applies to the whole synchronization batch"
+        );
+        assert!(!store.should_cache_body(&ids[0], &policy, now).expect("old"));
+        assert!(store.should_cache_body(&ids[1], &policy, now).expect("middle"));
+        assert!(store.should_cache_body(&ids[2], &policy, now).expect("new"));
+        assert_eq!(store.cache_estimate_for_policy(&policy).expect("estimate").bodies_to_fetch, 0);
+        policy.max_local_mb = Some(1);
+        assert!(!store.should_cache_body(&ids[1], &policy, now).expect("middle"));
+        assert!(store.should_cache_body(&ids[2], &policy, now).expect("new"));
+        assert_eq!(store.prune_bodies_for_policy(&policy, now, 10).expect("prune"), 1);
     }
 
     #[test]

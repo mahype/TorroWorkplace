@@ -1134,7 +1134,7 @@ Lists the folders of the mail accounts this key may see, or of one `account` (`m
 
 Zugriff `read` · MCP-Tool `mail_account_stats`
 
-Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals; only `quota` and `server_bytes` below come from the server. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop. `quota` (used and limit bytes, and `checked`, when the sync asked) is `null` unless the server supports IMAP QUOTA and reports a STORAGE limit. Each folder's `server_bytes` is the sum of the sizes the server reported (`RFC822.SIZE`) for the messages stored locally, `null` until all of them have one (a message the server gives no size for counts as 0); after an interrupted sync it covers only the messages stored so far. Both are as of the last sync, not live values. `months` counts stored messages and offline texts per month by message date in UTC. `originals` and `original_bytes` count only kept originals of mail still on the server; the folder values need not add up to the account's, for example for a folder renamed since the last sync.
+Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals. `known_mail_bytes`, `offline_mail_bytes`, `planned_mail_bytes` and `indexed_offline_mail_bytes` all use the same server-reported RFC822.SIZE measure; all are null until every known message has a size. They are suitable for a relative mail inventory bar, not for measuring physical disk use. The separate `database_bytes` includes metadata and indexes. `quota` is a different server limit and must not be presented as the mail inventory. An interrupted sync covers only messages stored so far. `months` counts stored messages and offline texts per UTC month. `originals` and `original_bytes` count kept originals of mail still on the server.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1144,7 +1144,7 @@ Returns locally known message, read/unread, folder, body-cache and index counts,
 
 Zugriff `read` · MCP-Tool `mail_get_cache_policy`
 
-Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.
+Reads one account's offline mail and attachment policy. Search indexing and header synchronization remain active. `mode` is `all_offline`, `since_date` (requires ISO `since_date`), or `max_size` (requires `max_local_mb`, selecting newest messages by server-reported RFC822.SIZE); `headers_only` and `recent90_days` remain readable for older saved policies. Downloaded attachments can be kept for 0, 1–365 days, or all (`4294967295`).
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1154,26 +1154,28 @@ Reads one mail account's body and attachment cache strategy. Search indexing is 
 
 Zugriff `read` · MCP-Tool `mail_preview_cache`
 
-Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything. Returns the current body count, the bodies to fetch or remove and the estimated download and reclaim bytes. The average locally kept text size is used because IMAP sizes are not stored.
+Estimates how many message bodies a mode will fetch or remove without changing anything. The request accepts a mode, so date and size parameters come from the currently saved policy. Byte estimates use the average size of local reading texts and may differ from the download or the SQLite file's physical change.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | ja |  |
-| `mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
+| `mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` \| `"since_date"` \| `"max_size"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
 
 ### `mail.set_cache_policy`
 
 Zugriff `admin` · MCP-Tool `mail_set_cache_policy`
 
-Sets an account's offline body and attachment retention policy after a mail.preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.
+Sets one account's offline body and attachment retention policy. `since_date` must be YYYY-MM-DD and `max_local_mb` 1–1000000 when their modes are selected. A size cap selects newest messages by RFC822.SIZE; physical disk usage can differ because metadata, search indexes and attachment files are separate. The change persists per account; automatic sync uses it, and `mail.start_cache_job` with `apply_policy` applies it to already synchronized mail. Server mail, drafts and search text are not deleted.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `policy` | object | ja | Per-account local storage choice, persisted with the mail store. |
 | `policy.account` | string | ja |  |
 | `policy.attachment_retention_days` | integer | nein, Standard `1` | Attachment files are removed after this many days; 1 by default. |
-| `policy.mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
-| `policy.prefetch_attachments` | boolean | nein, Standard `false` | Fetch attachment parts in advance, separately from message texts. |
+| `policy.max_local_mb` | integer | nein, Standard `null` | Maximum mail content in MiB for `MaxSize`, with newest messages selected first. |
+| `policy.mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` \| `"since_date"` \| `"max_size"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
+| `policy.prefetch_attachments` | boolean | nein, Standard `false` | Legacy wire field. The service ignores it and always returns `false`: attachment files are fetched only when opened, then kept according to `attachment_retention_days`. |
+| `policy.since_date` | string | nein, Standard `null` | Inclusive ISO calendar date for `SinceDate`; all known headers remain available. |
 
 ### `mail.start_cache_job`
 
@@ -1626,6 +1628,7 @@ Changes the settings of a mail account (`mail:<address>` from list_accounts): se
 | `services.mail` | boolean | ja | Mail (IMAP and SMTP). |
 | `services.tasks` | boolean | ja | The task lists of the CalDAV address. |
 | `signature` | string | nein | The signature under new mail, replies and forwards; an empty text removes it. |
+| `signature_format` | boolean | nein | Whether `signature` uses the mail editor's formatting marks. Left out: unchanged. |
 
 ### `accounts.list_torromail_accounts`
 
@@ -2295,7 +2298,7 @@ Changes one suite-wide setting: `language` ("system", "english", "german"), `app
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `key` | `"language"` \| `"appearance"` \| `"start_at_login"` \| `"zoom"` \| `"night"` \| `"working_hours"` \| `"list_order"` \| `"quiet_when_busy"` \| `"design"` \| `"font"` \| `"color_scheme"` \| `"assistant_retention"` \| `"voice_enabled"` \| `"wake_word"` \| `"microphone"` \| `"speak_answers"` \| `"stt_model"` \| `"voice"` \| `"assistant_default"` \| `"setup"` \| `"component"` \| `"mail_view"` \| `"mail_attachment_click"` \| `"mail_downloads_folder"` \| `"mail_appearance"` \| `"mail_to_cloud"` \| `"reminders"` \| `"hidden_categories"` \| `"allow_api_keys"` \| `"allow_mcp"` \| `"tool_enabled"` \| `"pdf_folder"` \| `"allowed_folder"` \| `"pdf_template"` \| `"workspace_shortcuts"` \| `"maps"` \| `"search_provider"` \| `"searxng_address"` | ja | A setting [`Request::SetSetting`] can change, with the `value` it takes. |
+| `key` | `"language"` \| `"appearance"` \| `"start_at_login"` \| `"zoom"` \| `"night"` \| `"working_hours"` \| `"list_order"` \| `"quiet_when_busy"` \| `"design"` \| `"font"` \| `"color_scheme"` \| `"assistant_retention"` \| `"voice_enabled"` \| `"wake_word"` \| `"microphone"` \| `"speak_answers"` \| `"stt_model"` \| `"voice"` \| `"assistant_default"` \| `"setup"` \| `"component"` \| `"mail_view"` \| `"mail_attachment_click"` \| `"mail_downloads_folder"` \| `"mail_appearance"` \| `"mail_sender"` \| `"mail_to_cloud"` \| `"reminders"` \| `"hidden_categories"` \| `"allow_api_keys"` \| `"allow_mcp"` \| `"tool_enabled"` \| `"pdf_folder"` \| `"allowed_folder"` \| `"pdf_template"` \| `"workspace_shortcuts"` \| `"maps"` \| `"search_provider"` \| `"searxng_address"` | ja | A setting [`Request::SetSetting`] can change, with the `value` it takes. |
 | `value` | any | ja | The new value; its type depends on `key`. |
 
 ### `settings.set_collection_shown`
@@ -2379,6 +2382,7 @@ Replaces all suite-wide settings at once. Prefer set_setting and set_collection_
 | `settings.mailAttachments` | object | nein, Standard `{"click":"open"}` | What a click on an attachment's name does and where "Save to Downloads" puts files (issue #290, [`MailAttachments`]). The save targets themselves are not here but in their own file (`mail.list_save_targets`), so `settings.update_settings` never writes them. Read leniently: a value that does not read gives the defaults (open, the system's Downloads folder). |
 | `settings.mailAttachments.click` | `"open"` \| `"downloads"` \| `"save_as"` \| `"suggested"` \| object | nein, Standard `"open"` | What a click on an attachment's name does. |
 | `settings.mailAttachments.downloads` | string | nein | The folder "Save to Downloads" saves in, an absolute path; `None` for the system's Downloads folder. Only a person sets one (point 9 of "Was nie nach außen geht", like the PDF folder); anyone allowed to change settings may remove it. |
+| `settings.mailSender` | string | nein | Account id used for a newly composed mail when no account was requested explicitly. Replies keep the account of the message. A removed account is ignored by the composer. |
 | `settings.mailToCloud` | boolean | nein, Standard `false` | The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps mail with models on the person's own computers; `true` lets it go to models elsewhere (OpenRouter, a provider's server) as well. Only a person switches it on (`settings.set_setting mail_to_cloud`, app key only); any client allowed to change settings may switch it off. |
 | `settings.mailView` | `"html"` \| `"text"` | nein, Standard `"html"` | How a mail that has HTML first shows in the reader (task M9.5, decision 9 in `docs/mail.md`): formatted ([`MailFormat::Html`], the default) or as plain text. The reader can switch a mail it shows; this is where it starts. Read leniently: a value that does not read is the default. |
 | `settings.maps` | object | nein | The small map and the place search of the event editor (task TE.1, [`Maps`]): off until a person turns them on. Read leniently: a value that does not read gives the defaults (off). Left out of `settings.update_settings`, the stored ones stay. |

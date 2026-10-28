@@ -4778,8 +4778,8 @@ impl Core {
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
-            Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles, format } => {
-                let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles, format };
+            Request::UpdateMailAccount { id, sender_name, signature, signature_format, notify, services, folder_roles, format } => {
+                let change = MailSettingsChange { sender_name, signature, signature_format, notify, services, folder_roles, format };
                 self.update_mail_account(&id, change).await
             }
             Request::GetMailCachePolicy { account } => match self.mail.cache_policy(&account).await {
@@ -8043,7 +8043,8 @@ impl Core {
     ///
     /// Answered with [`Response::Ok`]; `not-found` for an id that is no mail account.
     async fn update_mail_account(&self, id: &str, change: MailSettingsChange) -> Response {
-        let MailSettingsChange { sender_name, signature, notify, services, folder_roles, format } = change;
+        let MailSettingsChange { sender_name, signature, signature_format, notify, services, folder_roles, format } =
+            change;
         if let Some(refused) = mail_text_refusal(sender_name.as_deref(), signature.as_deref()) {
             return refused;
         }
@@ -8093,6 +8094,9 @@ impl Core {
                 let settings = account.mail_settings.get_or_insert_with(MailSettings::default);
                 if let Some(signature) = signature {
                     settings.signature = (!signature.trim().is_empty()).then_some(signature);
+                }
+                if let Some(formatted) = signature_format {
+                    settings.signature_format = formatted;
                 }
                 if let Some(notify) = notify {
                     settings.notify = notify;
@@ -9663,6 +9667,7 @@ fn trusted_fingerprints(typed: &[String]) -> Option<Vec<String>> {
 struct MailSettingsChange {
     sender_name: Option<String>,
     signature: Option<String>,
+    signature_format: Option<bool>,
     notify: Option<torro_mail::Notify>,
     services: Option<torro_mail::Services>,
     folder_roles: Option<std::collections::BTreeMap<torro_mail::Role, String>>,
@@ -20298,6 +20303,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: Some("Anna Example".into()),
             signature: Some("-- \nAnna".into()),
+            signature_format: None,
             notify: Some(torro_mail::Notify::ForMeOnly),
             services: None,
             folder_roles: None,
@@ -20331,6 +20337,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services,
             folder_roles,
@@ -20409,6 +20416,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
             folder_roles: None,
@@ -20575,6 +20583,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
             folder_roles: None,
@@ -20758,6 +20767,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: None,
             folder_roles: Some(std::collections::BTreeMap::from([(Role::Junk, path.to_string())])),
@@ -20803,6 +20813,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
             folder_roles: None,
@@ -21007,12 +21018,15 @@ mod tests {
         let policy = |mode, prefetch_attachments| MailCachePolicy {
             account: ANNA.into(),
             mode,
+            since_date: None,
+            max_local_mb: None,
             prefetch_attachments,
             attachment_retention_days: 3,
         };
         let headers = policy(MailCacheMode::HeadersOnly, true);
         let set = Request::SetMailCachePolicy { policy: headers.clone() };
-        assert_eq!(ask(&core, Some(&app_key), set).await, Response::MailCachePolicy { policy: headers.clone() });
+        let normalized = MailCachePolicy { prefetch_attachments: false, ..headers.clone() };
+        assert_eq!(ask(&core, Some(&app_key), set).await, Response::MailCachePolicy { policy: normalized });
         let start = Request::StartMailCacheJob { account: ANNA.into(), action: MailCacheAction::RebuildIndex };
         let Response::MailCacheJob { job: Some(job) } = ask(&core, Some(&app_key), start).await else {
             panic!("the job that started")
@@ -21031,6 +21045,8 @@ mod tests {
         let policy = |mode| MailCachePolicy {
             account: ANNA.into(),
             mode,
+            since_date: None,
+            max_local_mb: None,
             prefetch_attachments: false,
             attachment_retention_days: 3,
         };
