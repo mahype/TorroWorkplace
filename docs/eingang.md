@@ -384,7 +384,11 @@ im Eingang, nur die Oberfläche teilt sich auf.
   mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**. Das Menü
   der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „Unfiltered“. Die Smart views
   „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
-  Mail mit Anhang findet das Filter-Icon im Suchfeld (#336).
+  Mail mit Anhang findet das Filter-Icon im Suchfeld (#336). Die ausgeklappte Seitenleiste lässt sich am rechten
+  Rand mit der Maus breiter und schmaler ziehen (#376): zwischen drei Vierteln und dem Doppelten der Breite des
+  Designs, Liste und Lesebereich behalten ihre Mindestbreite; ein Doppelklick auf den Rand stellt die Standardbreite
+  her. Die Breite gilt für alle Fenster des Eingangs und bleibt in `ui.json` (Schlüssel `split.sidebar`), wie die
+  Breite der Liste nur Ansichtszustand ohne API und MCP. Leiste und Schublade behalten ihre feste Breite.
 
 ### Dichte
 

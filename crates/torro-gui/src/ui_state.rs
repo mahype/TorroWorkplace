@@ -4,7 +4,8 @@
 //! columns of the inbox's overview (task E3.11, [`unfolded_from`]), and in which order each window
 //! of the inbox lists by arrival
 //! (task E8.15, [`order_from`]), how wide the list beside the reader is (issue #130,
-//! [`split_from`]), the mail searches last made (issue #136, [`searches_from`]) and whether the
+//! [`split_from`]; the inbox keeps the width of its expanded sidebar there too, under the key
+//! `"sidebar"`, issue #376), the mail searches last made (issue #136, [`searches_from`]) and whether the
 //! action rail of a mail is expanded (task E14.1, [`actions_from`]), which mail accounts are
 //! selected ([`mail_accounts_from`]) and which folders are pinned ([`pinned_mail_folders_from`]). `ui.json` in
 //! the app's state directory

@@ -59,7 +59,11 @@ aus einem Guss wirkt:
   Breit wählt der Nutzer ausgeklappt oder Leiste – Knopf `panel-left` („Collapse sidebar“/„Expand
   sidebar“) und Taste `[` wie Linear; jede App merkt sich die Wahl in `ui.json` im State-Verzeichnis
   (`torro_gui::ui_state`). Mittel zeigt immer die Leiste, der Knopf öffnet die ausgeklappte
-  Seitenleiste als Schublade; Schmal nur Schublade.
+  Seitenleiste als Schublade; Schmal nur Schublade. Eine App kann die ausgeklappte Seitenleiste am rechten Rand
+  ziehbar machen (#376, zuerst der Eingang): `Shell::sidebar_width` legt einen Griff wie den Trenner von
+  `torro_gui::split` darüber (Doppelpfeil, Doppelklick = Standard, beim Ziehen die Linie in `LINE_SELECTED`),
+  `shell::sidebar_limits` hält die Breite zwischen ¾ und 2 × `size::sidebar()` und lässt dem Inhalt seinen Rest.
+  Leiste, Schublade und Titelband behalten `size::sidebar()` bzw. `shell::rail()`.
 - **Fensterknöpfe im Titelband** (macOS, U.10/U.11, wie Claude/Slack): der Knopf `panel-left` rechts
   neben der Ampel, die Einstellungen (Zahnrad, „Settings“) in der Ecke oben rechts –
   `shell::TitleButtons` an `shell::titlebar`. Alles auf einer Linie: Ampel (verschoben mit
