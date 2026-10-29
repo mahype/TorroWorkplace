@@ -55,12 +55,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Alle drei müssen ohne Fehler durchlaufen. Melde ehrlich, was nicht geht.
+Alle drei müssen ohne Fehler durchlaufen. Melde ehrlich, was nicht geht. Das gilt für Implementierung, PR und
+Release. Der Push-Hook und kleine Änderungen (`issue-small`, `quick-fix`) prüfen nach Umfang der Änderung:
+`scripts/ci-local.sh --changed <bereich>` wählt Schnell (nur fmt und Design), i18n, Gezielt (clippy und test der
+geänderten Crates, beide Sprachen) oder Voll; `--scope <bereich>` prüft die Crates eines Bereichs. Stufen:
+[`docs/issue-workflow.md`](docs/issue-workflow.md), Abschnitt „Prüfen“.
 
 GitHub Actions läuft nur bei Releases (Tags), jede Minute kostet Geld. Einzige Ausnahme ist die Action
 „Phasen-Labels“ des Plugins (`enon-phasen-labels.yml`, einige Sekunden je geschlossenem Issue).
 Die CI läuft deshalb lokal: `scripts/ci-local.sh` (dieselben Schritte wie `ci.yml`). Einmal pro Klon `git config core.hooksPath .githooks`,
-dann prüft `pre-commit` Format und Design, `pre-push` alles. Starte keine Workflows auf GitHub von Hand.
+dann prüft `pre-commit` Format und Design, `pre-push` nach Umfang des Push-Bereichs. Starte keine Workflows auf GitHub von Hand.
 
 ## Code
 
