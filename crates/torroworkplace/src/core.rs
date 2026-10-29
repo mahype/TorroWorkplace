@@ -1167,8 +1167,9 @@ async fn category_job_decider(
 /// (task E12.6): the category, and the two answers the same call brings along. The options are
 /// the person's catalogue (task E15.4), asked in one call or two ([`categorize::decide`]).
 ///
-/// `Ok(None)` when the model said nothing readable – then the mail keeps no category, so a later
-/// run can still catch it. The audit log already holds the request that started this, with the
+/// `Ok(None)` only when the mail's content is not at hand or clearing the categories is running –
+/// then the mail keeps no category, so a later run can still catch it. A model that names no
+/// category gives `other` (issue #398). The audit log already holds the request that started this, with the
 /// entry's id and nothing of its content (security rule 7); the call adds no line of its own.
 async fn decide_mail_with(
     ai: &AiAccounts,

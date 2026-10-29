@@ -354,9 +354,11 @@ fn side_questions() -> BTreeMap<String, Question> {
 }
 
 /// Asks the model what `content` is, as [`plan`] says for `catalogue` (task E15.4): one call, or
-/// the group and then the category. `ask` sends one call. `Ok(None)` when the model said nothing
-/// readable or there was nothing to choose between – then nothing is kept and a later run tries
-/// again.
+/// the group and then the category. `ask` sends one call. `Ok(None)` only when there was nothing
+/// to choose between. A model that answered without naming a category or a group said none fits:
+/// that is `other` (issue #398). An answer that could not be read at all is an error
+/// ([`AiError::Format`]) – then nothing is kept and a later run tries again, so a model set up
+/// wrongly does not make every mail `other`.
 pub async fn decide<F, Fut>(
     model: &str,
     content: &Content,
@@ -369,17 +371,13 @@ where
 {
     match plan(catalogue) {
         Plan::Nothing => Ok(None),
-        Plan::One(offered) => Ok(read(&ask(request(model, content, &offered)).await?, &offered)),
+        Plan::One(offered) => Ok(Some(read(&ask(request(model, content, &offered)).await?, &offered))),
         Plan::ByGroup(groups) => {
             let first = ask(group_request(model, content, &groups)).await?;
             let by_chat = first.by_chat;
-            // A chat model that named no group it was offered is "other" (task MW.3); a decision
-            // model that answered nothing has said nothing, and a later run tries again.
-            let group = match first.choice(GROUP) {
-                Some(answer) => Some(answer),
-                None if by_chat => None,
-                None => return Ok(None),
-            };
+            // A model that named no group it was offered is "other": a chat model (task MW.3) as
+            // much as a decision model that left the question out (issue #398).
+            let group = first.choice(GROUP);
             let sure = group.map_or(0.0, |(_, sure)| sure);
             let (needs_reply, urgency) = side_answers(&first);
             let decided = |category: Category| {
@@ -398,7 +396,7 @@ where
                 return Ok(decided(only.category));
             }
             let second = ask(narrow_request(model, content, offered)).await?;
-            let Some(narrowed) = read(&second, offered) else { return Ok(None) };
+            let narrowed = read(&second, offered);
             // As sure as the less sure of the two answers; a chat model's says nothing of it.
             let category = match narrowed.category.confidence {
                 Some(percent) => MailCategory {
@@ -455,21 +453,18 @@ fn state_of(content: &Content) -> String {
     state
 }
 
-/// What the model said, measured against [`CONFIDENCE_MIN`]; `None` when a decision model answered
-/// no category at all – then nothing is kept and a later run tries again. `offered` are the options
-/// it was given: a name it made up is no category.
+/// What the model said, measured against [`CONFIDENCE_MIN`]. `offered` are the options it was
+/// given: a name it made up is no category. A decision model that answered no category at all
+/// said none fits: `other` with a confidence of 0, with the side answers it gave (issue #398).
 ///
 /// A chat model's answer ([`DecisionReply::by_chat`], task MW.3) is not measured – it gives no
 /// confidence – and the category keeps none. Its reply was read before
 /// (`torro_core::ai::decide_chat::read`): a category it left out or answered with something not
 /// offered was dropped there, which is `other` here, since the model answered another question; an
 /// object that answered none usably was refused there, so it never comes here.
-pub fn read(reply: &DecisionReply, offered: &[Offer]) -> Option<Decided> {
+pub fn read(reply: &DecisionReply, offered: &[Offer]) -> Decided {
     let (needs_reply, urgency) = side_answers(reply);
     let said = reply.choice(CATEGORY);
-    if said.is_none() && !reply.by_chat {
-        return None;
-    }
     let chosen =
         said.and_then(|(choice, _)| offered.iter().find(|offer| offer.name == choice)).map(|offer| offer.category);
     let confidence = said.map_or(0.0, |(_, confidence)| confidence);
@@ -477,10 +472,11 @@ pub fn read(reply: &DecisionReply, offered: &[Offer]) -> Option<Decided> {
         Some(category) if reply.by_chat || confidence >= CONFIDENCE_MIN => {
             categorized(category, confidence, reply.by_chat)
         }
-        // Too unsure, or an option nobody offered: "other", with what the model said about it.
+        // Too unsure, an option nobody offered or none named: "other", with what the model said
+        // about it.
         _ => categorized(Category::Other, confidence, reply.by_chat),
     };
-    Some(Decided { category, needs_reply, urgency })
+    Decided { category, needs_reply, urgency }
 }
 
 /// The two side answers of a reply: whether an answer is waited for (a probability of 0.5 or
@@ -589,7 +585,7 @@ mod tests {
                  "needs_reply": {"type": "noul", "noul": 0.2},
                  "urgency": {"type": "score", "score": 0.4, "confidence": 0.8}}}"#,
         );
-        let decided = read(&sure, &defaults()).expect("a decision");
+        let decided = read(&sure, &defaults());
         assert_eq!(decided.category.category, Category::Invoice);
         assert_eq!(decided.category.source, CategorySource::Model);
         assert_eq!(decided.category.confidence, Some(91));
@@ -601,7 +597,7 @@ mod tests {
             r#"{"answers": {"category": {"type": "choice", "choice": "invoice",
                  "probabilities": {"invoice": 0.4}, "confidence": 0.4}}}"#,
         );
-        let decided = read(&unsure, &defaults()).expect("a decision");
+        let decided = read(&unsure, &defaults());
         assert_eq!(decided.category.category, Category::Other, "below the threshold");
         assert_eq!(decided.category.confidence, Some(40), "what it said is kept all the same");
         assert_eq!(decided.needs_reply, None);
@@ -615,17 +611,17 @@ mod tests {
             r#"{{"answers": {{"category": {{"type": "choice", "choice": "shipping",
                "probabilities": {{"shipping": {CONFIDENCE_MIN}}}, "confidence": {CONFIDENCE_MIN}}}}}}}"#
         );
-        let decided = read(&reply(&at_threshold), &defaults()).expect("a decision");
+        let decided = read(&reply(&at_threshold), &defaults());
         assert_eq!(decided.category.category, Category::Shipping);
 
         let invented = r#"{"answers": {"category": {"type": "choice", "choice": "nonsense",
             "probabilities": {"nonsense": 0.99}, "confidence": 0.99}}}"#;
-        assert_eq!(read(&reply(invented), &defaults()).expect("a decision").category.category, Category::Other);
+        assert_eq!(read(&reply(invented), &defaults()).category.category, Category::Other);
 
         // A category the headers decide is no option, so a model naming it is not believed.
         let by_rule = r#"{"answers": {"category": {"type": "choice", "choice": "invitation",
             "probabilities": {"invitation": 0.99}, "confidence": 0.99}}}"#;
-        assert_eq!(read(&reply(by_rule), &defaults()).expect("a decision").category.category, Category::Other);
+        assert_eq!(read(&reply(by_rule), &defaults()).category.category, Category::Other);
     }
 
     #[test]
@@ -636,7 +632,7 @@ mod tests {
                    "probabilities": {{"request": 0.9}}, "confidence": 0.9}},
                    "urgency": {{"type": "score", "score": {value}, "confidence": 0.5}}}}}}"#
             );
-            read(&reply(&json), &defaults()).expect("a decision").urgency
+            read(&reply(&json), &defaults()).urgency
         };
         assert_eq!(score("0.0"), Some(0));
         assert_eq!(score("1.4"), Some(1));
@@ -645,10 +641,16 @@ mod tests {
         assert_eq!(score("-3.0"), Some(0), "clamped to the lowest");
     }
 
+    /// Issue #398: a decision model that names no category said none fits – "other", sure of
+    /// nothing, with the side answers it gave.
     #[test]
-    fn an_answer_without_a_category_decides_nothing() {
+    fn an_answer_without_a_category_is_other() {
         let only_reply = reply(r#"{"answers": {"needs_reply": {"type": "noul", "noul": 0.9}}}"#);
-        assert_eq!(read(&only_reply, &defaults()), None, "nothing kept, so a later run tries again");
+        let decided = read(&only_reply, &defaults());
+        assert_eq!(decided.category.category, Category::Other);
+        assert_eq!(decided.category.source, CategorySource::Model);
+        assert_eq!(decided.category.confidence, Some(0));
+        assert_eq!(decided.needs_reply, Some(true), "the side answer stays");
     }
 
     /// A model as a server lists it; `remote` is what the data rule weighs.
@@ -816,7 +818,7 @@ mod tests {
     fn a_chat_model_s_category_has_no_confidence_and_a_wrong_one_is_other() {
         let asked = request("qwen3:8b", &content(), &defaults());
         let said = by_chat(r#"{"category": "invoice", "needs_reply": true, "urgency": 2}"#, &asked);
-        let decided = read(&said, &defaults()).expect("a decision");
+        let decided = read(&said, &defaults());
         assert_eq!(
             (decided.category.category, decided.category.source, decided.category.confidence),
             (Category::Invoice, CategorySource::Model, None)
@@ -829,7 +831,7 @@ mod tests {
             r#"{"category": 7, "urgency": 1}"#,
             r#"{"urgency": 1}"#,
         ] {
-            let decided = read(&by_chat(wrong, &asked), &defaults()).expect("the model answered");
+            let decided = read(&by_chat(wrong, &asked), &defaults());
             assert_eq!((decided.category.category, decided.category.confidence), (Category::Other, None), "{wrong}");
         }
         // An object that answers no question usably is no answer (PR review of #325): no category is
@@ -961,7 +963,7 @@ mod tests {
             r#"{"answers": {"category": {"type": "choice", "choice": "verein_0", "probabilities": {"verein_0": 0.9},
                  "confidence": 0.9}}}"#,
         );
-        let decided = read(&answer, &offered).expect("a decision");
+        let decided = read(&answer, &offered);
         assert_eq!(decided.category.category, Category::Custom(torro_mail::CustomCategory::new(1).expect("a number")));
         decide_body_for(&asked).expect("a legal call");
     }
@@ -1098,5 +1100,18 @@ mod tests {
         let decided = decide("nimble", &content(), &catalogue, |request| one.ask(request)).await.expect("asked");
         assert_eq!(decided.map(|decided| decided.category.category), Some(Category::Request));
         assert_eq!(one.asked.lock().expect("lock").len(), 1);
+    }
+
+    /// Issue #398: a decision model that names no group is "other", sure of nothing, without a
+    /// second call – as a chat model's is; the side answers stay.
+    #[tokio::test]
+    async fn no_group_named_is_other() {
+        let catalogue = with_own(5, false);
+        let nameless = Script::new(&[r#"{"answers": {"needs_reply": {"type": "noul", "noul": 0.7}}}"#]);
+        let decided = decide("nimble", &content(), &catalogue, |request| nameless.ask(request)).await.expect("asked");
+        let decided = decided.expect("a decision");
+        assert_eq!((decided.category.category, decided.category.confidence), (Category::Other, Some(0)));
+        assert_eq!(decided.needs_reply, Some(true));
+        assert_eq!(nameless.asked.lock().expect("lock").len(), 1);
     }
 }
