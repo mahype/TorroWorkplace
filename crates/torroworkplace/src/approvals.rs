@@ -2663,10 +2663,10 @@ fn group_name(facts: &InboxFacts, group: torro_mail::CategoryGroup) -> String {
 fn colour_word(color: u8) -> String {
     match color {
         0 => tr("Blue").to_string(),
-        1 => tr("Purple").to_string(),
-        2 => tr("Green").to_string(),
-        3 => tr("Red").to_string(),
-        4 => tr("Pink").to_string(),
+        1 => tr("Amber").to_string(),
+        2 => tr("Teal").to_string(),
+        3 => tr("Violet").to_string(),
+        4 => tr("Rose").to_string(),
         other => other.to_string(),
     }
 }
@@ -6338,7 +6338,7 @@ pub(crate) mod tests {
             inbox_summary(&create, &facts),
             trf(
                 "Add the main mail category {name} with icon {icon} and colour {color}",
-                &[("name", &"\"Club\""), ("icon", &"Users"), ("color", &tr("Pink"))]
+                &[("name", &"\"Club\""), ("icon", &"Users"), ("color", &tr("Rose"))]
             )
         );
         let rename =

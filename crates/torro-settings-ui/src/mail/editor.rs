@@ -1042,14 +1042,15 @@ fn subcategory_card<'a>(state: &'a State, info: &'a CategoryInfo, color_at: usiz
 fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
     let Some(form) = &state.group_form else { return blank().into() };
     let name = field(tr("Name"), &form.name).on_input(Message::GroupName).on_submit(Message::SaveGroup);
-    let colors = row![
-        choice(tr("Blue"), form.color == 0, Message::GroupColor(0)),
-        choice(tr("Purple"), form.color == 1, Message::GroupColor(1)),
-        choice(tr("Green"), form.color == 2, Message::GroupColor(2)),
-        choice(tr("Red"), form.color == 3, Message::GroupColor(3)),
-        choice(tr("Pink"), form.color == 4, Message::GroupColor(4)),
-    ]
-    .spacing(space::s());
+    // The five colours of the group palette (`Palette::category`), named as the standard design
+    // draws them; chips, so the check stays at the name.
+    let colors = widgets::chip_row(
+        [tr("Blue"), tr("Amber"), tr("Teal"), tr("Violet"), tr("Rose")]
+            .into_iter()
+            .zip(0u8..)
+            .map(|(name, at)| widgets::choice_chip(name, None, form.color == at, Some(Message::GroupColor(at))))
+            .collect(),
+    );
     let mut body = column![
         typo::text(typo::caption(), tr("Main category")),
         name,
@@ -1273,7 +1274,7 @@ fn icon_picker<'a>(
             for &icon in icons {
                 let name = CategoryIconChoice(icon).to_string();
                 let button = if icon == selected {
-                    widgets::compact_button(category_icon(icon), name, style::button::primary, Some(on_pick(icon)))
+                    widgets::compact_button(category_icon(icon), name, style::button::icon_chosen, Some(on_pick(icon)))
                 } else {
                     widgets::boxed_button(category_icon(icon), name, Some(on_pick(icon)))
                 };

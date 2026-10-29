@@ -1285,7 +1285,11 @@ pub mod accounts {
                 server_rows.push(server_form(ServerKind::Smtp, &draft.connection.smtp));
             } else {
                 let server = |label: &'static str, fields: &ServerDraft| {
-                    value(label, format!("{} · {} · {:?}", fields.host, fields.port, fields.security))
+                    let security = match fields.security {
+                        Security::Tls => "TLS",
+                        Security::StartTls => "STARTTLS",
+                    };
+                    value(label, format!("{} · {} · {security}", fields.host, fields.port))
                 };
                 server_rows.push(server("IMAP server", &draft.connection.imap));
                 server_rows.push(server("SMTP server", &draft.connection.smtp));
@@ -3938,7 +3942,10 @@ pub mod categorization {
         rows.push(setting_row(
             None,
             tr("Categories on mail"),
-            Some(trf("{count} assignments across all accounts and folders", &[("count", &count)])),
+            Some(trf(
+                "{count} assignments across all accounts and folders",
+                &[("count", &torro_gui::units::format_count(count))],
+            )),
             ask,
         ));
         if state.asking_clear {
