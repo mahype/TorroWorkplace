@@ -373,6 +373,10 @@ bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummsc
   Mail wurde trotzdem zugestellt und wird gefiltert. Nur eine Kopie in einem anderen Ordner (Spam, ein eigener Ordner)
   hält den Filter ab. Die Kehrseite: Holt der Mensch Mail aus dem Archiv zurück in den Posteingang, kann ein Filter sie
   erneut verschieben; dann hilft es, den Filter enger zu fassen oder auszuschalten.
+  Der Dienst sieht dafür nur seinen eigenen Speicher, nicht den Server: Verschiebt der Mensch die Mail in Torro
+  zurück, kennt er sie sicher. Verschiebt er sie in einem anderen Mail-Programm und gleicht der Dienst den
+  Quellordner vor dem Posteingang ab, ist die Kopie dort schon fort; dann gilt die Mail als zugestellt, und ein Filter
+  kann sie wieder hinausnehmen.
 - Beim Eintreffen kennt der Dienst Betreff und Adressen, meist aber noch nicht den Text. Einfache Wörter einer Suche
   prüft ein Filter bei neuer Mail deshalb nur dort. Vorschau und Anwenden durchsuchen auch den Text und können mehr
   treffen.
