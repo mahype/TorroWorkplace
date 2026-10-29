@@ -675,11 +675,12 @@ impl Store {
     }
 
     /// Whether a contact in a book that is not hidden holds `address` as one of its mail
-    /// addresses (issue #390), whatever its case; no aliases. Hidden books such as "Recently
+    /// addresses (issue #390), whatever its case, also beyond ASCII ("JÖRG" is "jörg", as the sender
+    /// keys of the inbox are lowered); no aliases. Hidden books such as "Recently
     /// contacted" do not count: everyone ever written to stands there. The search only picks the
     /// candidates; the vCard decides, so "anna@x.de" never matches "hanna@x.de".
     pub fn knows_address(&self, address: &str) -> Result<bool, StoreError> {
-        let address = address.trim();
+        let address = address.trim().to_lowercase();
         if address.is_empty() {
             return Ok(false);
         }
@@ -687,10 +688,10 @@ impl Store {
             "SELECT c.vcard FROM cards c JOIN books b ON b.id = c.book
              WHERE b.hidden = 0 AND c.id IN (SELECT s.card FROM search s WHERE s.text LIKE ?1 ESCAPE '\\')",
         )?;
-        let cards = statement.query_map([like(&folded(address))], |row| row.get::<_, String>(0))?;
+        let cards = statement.query_map([like(&folded(&address))], |row| row.get::<_, String>(0))?;
         for raw in cards {
             let contact = vcard::read(&raw?).unwrap_or_default();
-            if contact.emails.iter().any(|email| email.value.trim().eq_ignore_ascii_case(address)) {
+            if contact.emails.iter().any(|email| email.value.trim().to_lowercase() == address) {
                 return Ok(true);
             }
         }
@@ -863,6 +864,9 @@ mod tests {
         assert!(knows("berg@firma.example"));
         assert!(knows("jo.berg@privat.example"), "the second address counts, whatever its case");
         assert!(knows("  JO.BERG@PRIVAT.EXAMPLE "));
+        let umlaut = vcard("Jörg", "4", "EMAIL:JÖRG@Beispiel.example\r\n");
+        store.put_card(&card(&work.id, "d", &umlaut)).expect("card");
+        assert!(knows("jörg@beispiel.example"), "case beyond ASCII too");
         assert!(!knows("stranger@elsewhere.example"), "a hidden book does not count");
         assert!(knows("hanna@x.de"));
         assert!(!knows("anna@x.de"), "only part of hanna@x.de");
