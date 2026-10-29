@@ -270,6 +270,28 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UnpinIssue { collection: list, url } | Request::AddLink { collection: list, url } => {
             vec![collection(list), format!("item:{}", hashed(url))]
         }
+        // Contacts (`docs/kontakte.md`): books like collections, contacts hashed; never a group, a
+        // search or a field (a contact's id holds its book and uid only, hashed all the same).
+        Request::ListAddressBooks { account: name } => name.iter().map(|name| account(name)).collect(),
+        Request::ListContacts { book, .. } | Request::ListContactGroups { book } => {
+            book.iter().map(|book| collection(book)).collect()
+        }
+        Request::UpcomingBirthdays { .. } => Vec::new(),
+        Request::CreateContact { book, .. } => vec![collection(book)],
+        Request::GetContact { id: contact }
+        | Request::GetContactPhoto { id: contact, .. }
+        | Request::AddToContact { id: contact, .. }
+        | Request::UpdateContact { id: contact, .. }
+        | Request::SetContactFavorite { id: contact, .. }
+        | Request::AddContactToGroup { id: contact, .. }
+        | Request::RemoveContactFromGroup { id: contact, .. }
+        | Request::MarkContactUsed { id: contact }
+        | Request::SetContactPhoto { id: contact, .. }
+        | Request::DeleteContact { id: contact, .. }
+        | Request::ResolveContactConflict { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
+        Request::MoveContact { id: contact, to_book, .. } => {
+            vec![format!("item:{}", hashed(contact)), collection(to_book)]
+        }
         Request::SetSetting { key, .. } => {
             let key = serde_json::to_value(key).ok().and_then(|key| key.as_str().map(str::to_string));
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()
@@ -876,6 +898,38 @@ pub(crate) mod tests {
         let key = super::ids(&Request::SetTemplateShortcut { id: "secret-plans".into(), key: Some(3) });
         assert_eq!(key, template);
         assert_eq!(taken_from_id("mail-day"), format!("taken-from:{}", hashed("mail-day")));
+        // Issue #351: contacts hashed, books like collections; never a search, a group or a field.
+        let book = "nextcloud:anna@cloud.example.org/contacts";
+        let contact = format!("{book}/anna-berg");
+        let fields = torro_contacts::ContactFields {
+            display_name: Some("Anna Berg".into()),
+            note: Some("Salary talk".into()),
+            ..torro_contacts::ContactFields::default()
+        };
+        for request in [
+            Request::ListContacts {
+                book: Some(book.into()),
+                group: Some("Lovers".into()),
+                favorites: false,
+                recent: false,
+                query: Some("Anna".into()),
+                limit: None,
+                cursor: None,
+            },
+            Request::CreateContact { book: book.into(), fields: fields.clone() },
+            Request::UpdateContact { id: contact.clone(), etag: "e".into(), fields },
+            Request::AddContactToGroup { id: contact.clone(), etag: "e".into(), group: "Lovers".into() },
+            Request::MoveContact { id: contact.clone(), etag: "e".into(), to_book: format!("{book}-old") },
+        ] {
+            let ids = super::ids(&request).join(" ");
+            for word in ["Anna", "anna-berg", "Lovers", "Salary", "contacts"] {
+                assert!(!ids.contains(word), "{word} in {ids}");
+            }
+        }
+        assert_eq!(
+            super::ids(&Request::GetContact { id: contact.clone() }),
+            vec![format!("item:{}", hashed(&contact))]
+        );
         let preview = Request::PreviewFilter { account: "github:anna".into(), queries: vec!["is:open salary".into()] };
         assert_eq!(super::ids(&preview), vec!["account:github:anna".to_string()]);
         // The account, and a repository's name only hashed (task G.9), the same in any case.

@@ -340,11 +340,26 @@ pub struct Facts {
     /// folders (`crate::tools::organize::Plan`), never the client's text. `None` when the core could not resolve
     /// them: the summary then names an unknown file.
     pub paths: Option<PathFacts>,
+    /// For the `contacts.*` commands (issue #351): the contact and its book as the core's store holds
+    /// them, looked up by the contact's id, never by the client's text. `None` for other commands.
+    /// Boxed: a contact is large, and the facts travel through the core's futures.
+    pub contact: Option<Box<ContactFacts>>,
     /// For `mail.create_filter`, `mail.update_filter`, `mail.remove_filter` and `mail.apply_filter`
     /// (issue #339): the stored filter and how its account and folder read, from the core's file and
     /// stores (`crate::mail::filters::to_approve`). The account, folder and count of what the request
     /// sets are in [`Facts::mail`]. Boxed: the facts are held across awaits, deep in the stack.
     pub filter: Option<Box<FilterFacts>>,
+}
+
+/// What the core's store holds about the contact a `contacts.*` command names ([`Facts::contact`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContactFacts {
+    /// The contact as stored; `None` when the store does not hold it (or for a new one).
+    pub contact: Option<torro_contacts::Contact>,
+    /// The name of the contact's book, or of the book a new contact goes to.
+    pub book: Option<String>,
+    /// For a move: the name of the book it goes to.
+    pub to_book: Option<String>,
 }
 
 /// A mail filter as the core stores it, for the summaries of the filter commands ([`Facts::filter`],
@@ -1819,9 +1834,158 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::SetExtensionEnabled { id, enabled: false } => {
             trf("Switch off MCP server “{name}”", &[("name", &named(id))])
         }
+        request @ (Request::CreateContact { .. }
+        | Request::AddToContact { .. }
+        | Request::UpdateContact { .. }
+        | Request::SetContactFavorite { .. }
+        | Request::AddContactToGroup { .. }
+        | Request::RemoveContactFromGroup { .. }
+        | Request::MarkContactUsed { .. }
+        | Request::SetContactPhoto { .. }
+        | Request::MoveContact { .. }
+        | Request::DeleteContact { .. }
+        | Request::ResolveContactConflict { .. }) => contact_summary(request, facts.contact.as_deref()),
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The summary of a writing `contacts.*` command (issue #351): the contact by its name in the store
+/// and its book, what comes in, and for a change each field "old → new". What comes in is what will
+/// be written, so it is the client's text, made harmless ([`quote`]).
+fn contact_summary(request: &Request, facts: Option<&ContactFacts>) -> String {
+    let empty = ContactFacts::default();
+    let facts = facts.unwrap_or(&empty);
+    let name = match &facts.contact {
+        Some(contact) => format!("\"{}\"", quote(&contact.shown_name())),
+        None => tr("an unknown contact").to_string(),
+    };
+    let book_of = |book: &Option<String>| match book {
+        Some(book) => format!("\"{}\"", quote(book)),
+        None => tr("an unknown address book").to_string(),
+    };
+    let book = book_of(&facts.book);
+    match request {
+        Request::CreateContact { fields, .. } => {
+            trf("Create a contact in {book}: {fields}", &[("book", &book), ("fields", &field_words(fields))])
+        }
+        Request::AddToContact { fields, .. } => {
+            trf("Add to {name}: {fields}", &[("name", &name), ("fields", &field_words(fields))])
+        }
+        Request::UpdateContact { fields, .. } => trf(
+            "Change {name}: {changes}",
+            &[("name", &name), ("changes", &field_changes(facts.contact.as_ref(), fields))],
+        ),
+        Request::SetContactFavorite { favorite: true, .. } => trf("Mark {name} as a favourite", &[("name", &name)]),
+        Request::SetContactFavorite { favorite: false, .. } => {
+            trf("Take {name} off the favourites", &[("name", &name)])
+        }
+        Request::AddContactToGroup { group, .. } => {
+            trf("Add {name} to the group \"{group}\"", &[("name", &name), ("group", &quote(group))])
+        }
+        Request::RemoveContactFromGroup { group, .. } => {
+            trf("Take {name} out of the group \"{group}\"", &[("name", &name), ("group", &quote(group))])
+        }
+        Request::MarkContactUsed { .. } => trf("Note {name} as used", &[("name", &name)]),
+        Request::SetContactPhoto { data: Some(_), .. } => trf("{name}: photo replaced", &[("name", &name)]),
+        Request::SetContactPhoto { data: None, .. } => trf("{name}: photo removed", &[("name", &name)]),
+        Request::MoveContact { .. } => trf(
+            "Move {name} from {from} to {to}",
+            &[("name", &name), ("from", &book), ("to", &book_of(&facts.to_book))],
+        ),
+        Request::DeleteContact { .. } => {
+            trf("Delete the contact {name} from {book}", &[("name", &name), ("book", &book)])
+        }
+        Request::ResolveContactConflict { keep: torro_contacts::Keep::Mine, .. } => {
+            trf("Keep this device's version of {name}; the server's version is dropped", &[("name", &name)])
+        }
+        Request::ResolveContactConflict { keep: torro_contacts::Keep::Theirs, .. } => {
+            trf("Keep the server's version of {name}; the changes made on this device are dropped", &[("name", &name)])
+        }
+        Request::ResolveContactConflict { keep: torro_contacts::Keep::Both, .. } => {
+            trf("Keep both versions of {name}", &[("name", &name)])
+        }
+        other => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The text of the field `field` (a name of [`torro_contacts::ContactFields::names`]) of `contact`.
+fn contact_field_text(contact: &torro_contacts::Contact, field: &str) -> String {
+    let list = |values: Vec<String>| values.join(", ");
+    match field {
+        "name" => contact.name.full(),
+        "display_name" => contact.display_name.clone(),
+        "nickname" => contact.nickname.clone().unwrap_or_default(),
+        "org" => contact.org.clone().unwrap_or_default(),
+        "title" => contact.title.clone().unwrap_or_default(),
+        "emails" => list(contact.emails.iter().map(|v| v.value.clone()).collect()),
+        "phones" => list(contact.phones.iter().map(|v| v.value.clone()).collect()),
+        "addresses" => list(contact.addresses.iter().map(|v| v.value.one_line()).collect()),
+        "urls" => list(contact.urls.iter().map(|v| v.value.clone()).collect()),
+        "impps" => list(contact.impps.iter().map(|v| v.value.clone()).collect()),
+        "birthday" => contact.birthday.map(|d| d.to_string()).unwrap_or_default(),
+        "anniversary" => contact.anniversary.map(|d| d.to_string()).unwrap_or_default(),
+        "note" => contact.note.clone().unwrap_or_default(),
+        "groups" => list(contact.groups.clone()),
+        _ => String::new(),
+    }
+}
+
+/// The name of a contact's field for people.
+fn contact_field_label(field: &str) -> &'static str {
+    match field {
+        "name" => tr("name"),
+        "display_name" => tr("display name"),
+        "nickname" => tr("nickname"),
+        "org" => tr("company"),
+        "title" => tr("position"),
+        "emails" => tr("mail"),
+        "phones" => tr("number"),
+        "addresses" => tr("address"),
+        "urls" => tr("link"),
+        "impps" => tr("messenger"),
+        "birthday" => tr("birthday"),
+        "anniversary" => tr("anniversary"),
+        "note" => tr("note"),
+        "groups" => tr("groups"),
+        _ => "",
+    }
+}
+
+/// What `fields` bring, field by field: "mail max@example.org, number +49 30 1".
+fn field_words(fields: &torro_contacts::ContactFields) -> String {
+    let mut sent = torro_contacts::Contact::default();
+    // A date that does not read fails the command itself; here it is just left out.
+    let _ = fields.apply(&mut sent);
+    let words: Vec<String> = fields
+        .names()
+        .into_iter()
+        .map(|field| format!("{} {}", contact_field_label(field), quote(&contact_field_text(&sent, field))))
+        .collect();
+    match words.is_empty() {
+        true => tr("nothing").to_string(),
+        false => words.join(", "),
+    }
+}
+
+/// Each field `fields` replaces in `contact` as "label: old → new"; without the contact, what comes in.
+fn field_changes(contact: Option<&torro_contacts::Contact>, fields: &torro_contacts::ContactFields) -> String {
+    let Some(before) = contact else { return field_words(fields) };
+    let mut after = before.clone();
+    let _ = fields.apply(&mut after);
+    let changes: Vec<String> = fields
+        .names()
+        .into_iter()
+        .filter_map(|field| {
+            let (old, new) = (contact_field_text(before, field), contact_field_text(&after, field));
+            let shown = |text: &str| if text.is_empty() { tr("(empty)").to_string() } else { quote(text) };
+            (old != new).then(|| format!("{}: {} → {}", contact_field_label(field), shown(&old), shown(&new)))
+        })
+        .collect();
+    match changes.is_empty() {
+        true => tr("nothing").to_string(),
+        false => changes.join("; "),
     }
 }
 

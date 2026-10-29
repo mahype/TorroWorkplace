@@ -716,3 +716,13 @@ async fn the_model_and_the_effort_go_to_claude_code() {
     let (summary, _) = read(&setup.assistant, &conversation.id, None).await;
     assert_eq!((summary.model.as_deref(), summary.effort), (Some("opus"), Some(torro_core::ai::Effort::High)));
 }
+
+/// Decision 5 in `docs/kontakte.md`: contacts are not kept from agents; what one sees is decided by
+/// the address books ticked for it alone, so a person who does not want a book at an AI provider
+/// leaves it out there.
+#[test]
+fn contacts_are_not_kept_from_agents() {
+    assert!(!NEVER_TO_AGENTS.contains(&Area::Contacts));
+    assert!(!never_given("claude-code").contains(&Area::Contacts));
+    assert!(!withheld_from_agents(DataRule::default()).contains(&Area::Contacts));
+}

@@ -25,6 +25,8 @@ torro-core.workspace = true
 torro-pim.workspace = true
 torro-inbox.workspace = true
 torro-pim-caldav.workspace = true
+# Contacts over CardDAV (issue #351).
+torro-contacts.workspace = true
 torro-pim-github.workspace = true
 # Nextcloud's notifications and Talk for the inbox (tasks E5.8, E5.9).
 torro-nextcloud.workspace = true

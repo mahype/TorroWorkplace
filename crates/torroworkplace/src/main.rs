@@ -39,6 +39,7 @@ mod categorize;
 mod cli;
 mod client_setup;
 mod clients;
+mod contacts;
 mod core;
 mod daemon;
 mod designs;

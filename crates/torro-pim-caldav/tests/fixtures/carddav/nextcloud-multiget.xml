@@ -1,0 +1,62 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/card-000.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;e000&quot;</d:getetag>
+    <card:address-data>BEGIN:VCARD&#13;
+VERSION:3.0&#13;
+PRODID:-//Sabre//Sabre VObject 4.5.4//EN&#13;
+UID:card-000&#13;
+FN:Ben Beispiel&#13;
+N:Beispiel;Ben;;;&#13;
+EMAIL;TYPE=WORK:ben@example.org&#13;
+END:VCARD&#13;
+</card:address-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/card-001.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;e001&quot;</d:getetag>
+    <card:address-data>BEGIN:VCARD&#13;
+VERSION:4.0&#13;
+UID:card-001&#13;
+FN:Carla Muster&#13;
+TEL;TYPE=cell:+49 30 1234567&#13;
+END:VCARD&#13;
+</card:address-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/card-002.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag/>
+    <card:address-data/>
+   </d:prop>
+   <d:status>HTTP/1.1 404 Not Found</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>https://evil.example.org/remote.php/dav/addressbooks/users/anna/contacts/card-003.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;x&quot;</d:getetag>
+    <card:address-data>BEGIN:VCARD&#13;
+VERSION:3.0&#13;
+UID:card-003&#13;
+FN:Not from this server&#13;
+END:VCARD&#13;
+</card:address-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+</d:multistatus>

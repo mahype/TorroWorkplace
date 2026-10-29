@@ -6950,6 +6950,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-contacts"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "torro-core"
 version = "0.1.0"
 dependencies = [
@@ -7038,6 +7051,7 @@ dependencies = [
 name = "torro-ipc"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "interprocess",
  "schemars",
@@ -7046,6 +7060,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "torro-contacts",
  "torro-core",
  "torro-inbox",
  "torro-mail",
@@ -7155,6 +7170,7 @@ dependencies = [
  "rrule",
  "serde",
  "tokio",
+ "torro-contacts",
  "torro-core",
  "torro-pim",
 ]
@@ -7339,6 +7355,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "toml",
+ "torro-contacts",
  "torro-core",
  "torro-gui",
  "torro-inbox",

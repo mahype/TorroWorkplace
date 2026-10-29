@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+    <d:sync-token>http://sabre.io/ns/sync/42</d:sync-token>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+  <d:propstat>
+   <d:prop><d:getetag/></d:prop>
+   <d:status>HTTP/1.1 404 Not Found</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/anna-1.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;0c3b5a4d3a7e9f1e2b6d8c4a1f0e9d8c&quot;</d:getetag>
+    <d:resourcetype/>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+  <d:propstat>
+   <d:prop><d:sync-token/></d:prop>
+   <d:status>HTTP/1.1 404 Not Found</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/ben.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;b1&quot;</d:getetag>
+    <d:resourcetype/>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/carla%20b.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;c1&quot;</d:getetag>
+    <d:resourcetype/>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/sub/</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;s1&quot;</d:getetag>
+    <d:resourcetype><d:collection/></d:resourcetype>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>https://evil.example.org/remote.php/dav/addressbooks/users/anna/contacts/evil.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;x1&quot;</d:getetag>
+    <d:resourcetype/>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/other/outside.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;x2&quot;</d:getetag>
+    <d:resourcetype/>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/addressbooks/users/anna/contacts/sub/nested.vcf</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>&quot;x3&quot;</d:getetag>
+    <d:resourcetype/>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+</d:multistatus>

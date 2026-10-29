@@ -1,0 +1,20 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iPhone OS 17.0//EN
+N:Keller;Jonas;;;
+FN:Jonas Keller
+ORG:Keller & Söhne;
+item1.EMAIL;type=INTERNET;type=pref:jonas@example.com
+item1.X-ABLabel:_$!<Other>!$_
+TEL;type=CELL;type=VOICE;type=pref:+41 79 123 45 67
+item2.TEL:+41 44 765 43 21
+item2.X-ABLabel:Boat
+item3.ADR;type=HOME;type=pref:;;Seestrasse 5;Zürich;;8002;Switzerland
+item3.X-ABADR:ch
+BDAY;X-APPLE-OMIT-YEAR=1604:1604-07-02
+PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a
+ HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIy
+ MjIyMjIy
+X-ADDRESSBOOKSERVER-KIND:individual
+UID:8E4F2B1C-3D5A-4E6F-9A8B-7C6D5E4F3A2B
+END:VCARD

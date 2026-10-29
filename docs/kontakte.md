@@ -16,7 +16,8 @@ Adressen lassen sich auf einer **Karte** zeigen. Kacheln und Ortssuche kommen vo
 ohne Schlüssel, ohne Konto, ohne Gebühren, unter deren Nutzungsregeln.
 
 **Was „modern“ hier heißt:**
-- Suche über alles (Name, Firma, Mail, Telefon, Ort, Notiz) beim Tippen, aus dem lokalen Index.
+- Suche über alles (Name, Firma, Mail, Telefon, Ort, Notiz) beim Tippen, aus dem lokalen Index; Groß- und
+  Kleinschreibung und Akzente zählen nicht („MULLER“ findet „Müller“). Listen sortieren „König“ unter K wie „Koch“.
 - Schnellaktionen in jeder Zeile: Mail schreiben, anrufen (`tel:`), Adresse kopieren, auf der Karte zeigen.
 - Favoriten, zuletzt benutzte Kontakte, anstehende Geburtstage.
 - Gruppen, Fotos, mehrere Adressbücher und Konten in einer Liste.
@@ -205,7 +206,10 @@ torrocontacts (App)  ── IPC ──▶  torroworkplace (Kern)
 
 **Kennungen:**
 - **Adressbuch:** `<konto-id>/<name>`, zum Beispiel `nextcloud:anna@cloud.example/contacts`. Der Name
-  ist das letzte Pfadsegment der Sammlung, getrennt am ersten `/` wie die Kalender.
+  ist das letzte Pfadsegment der Sammlung. Kennungen werden **nie am `/` zerlegt**: Konto-Kennungen
+  enthalten selbst `/` (eine Nextcloud in einem Unterpfad, `nextcloud:anna@example.org/nextcloud`).
+  Konto und Buch findet der Kern, indem er die Kennung mit den bekannten Konten und Büchern vergleicht
+  (die längste passende gewinnt, `torro_contacts::model::book_of`).
 - **Kontakt:** `<buch-id>/<uid>`. Die `UID` der vCard ist stabil und vom Dateinamen unabhängig. Den
   Pfad (`href`) merkt sich der Kern. Ein offline angelegter Kontakt bekommt sofort eine echte UUID als
   `UID`, deshalb muss sich die Kennung später nicht ändern.
@@ -231,8 +235,10 @@ Einstellung, nicht mit `forbidden`: Das hieße für Agenten „Rechte fehlen“.
   `Write` anhält: Name, Buch, was dazukommt, je geändertes Feld „alt → neu“, Quelle und Ziel beim
   Verschieben, Zahl und Buch beim Import, beim Zusammenführen welche Kontakte wegfallen. Bei
   `maps.tile_url` die URL, bei `maps.geocoding` „Address lookup off“ (einschalten kann ein Agent sie nicht).
-- **Fotos:** höchstens 5 MB beim Hochladen, nur PNG und JPEG, der Kern rechnet sie auf 512 px herunter
-  und entfernt Metadaten (EXIF mit Ort).
+- **Fotos:** höchstens 700 KB beim Hochladen über API und MCP (Issue #351: der Dienst nimmt keine
+  Anfrage über 1 MB an, Base64 macht ein Drittel mehr daraus; größere Bilder verkleinert die App vor
+  dem Senden), nur PNG und JPEG, der Kern rechnet sie auf 512 px herunter, schreibt sie als JPEG und
+  entfernt Metadaten (EXIF mit Ort).
 - **Links in Kontakten** (`URL`, `IMPP`, `SOCIALPROFILE`) öffnen sich nur nach einem Klick und nur
   mit `https`, `mailto`, `tel`, `sms`, `xmpp`, `matrix`. Andere Schemata werden als Text gezeigt.
 - **Import:** eine vCard-Datei höchstens 20 MB und 10.000 Kontakte. Der Import zeigt vorher, was

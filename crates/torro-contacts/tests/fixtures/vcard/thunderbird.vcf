@@ -1,0 +1,10 @@
+BEGIN:VCARD
+VERSION:4.0
+PRODID:-//Thunderbird//NONSGML Thunderbird 128//EN
+UID:5b1d8f3e-2c4a-4b6d-8e9f-0a1b2c3d4e5f
+FN:Pierre Martin
+N:Martin;Pierre;;;
+EMAIL;PREF=1:pierre.martin@example.fr
+TEL;VALUE=TEXT;TYPE=work:+33 1 23 45 67 89
+NOTE:Thunderbird card
+END:VCARD

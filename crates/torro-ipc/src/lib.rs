@@ -25,6 +25,7 @@ pub mod api;
 pub mod assistant;
 pub mod bots;
 pub mod client;
+pub mod contacts;
 pub mod extensions;
 pub mod inbox;
 pub mod mail;
@@ -1278,6 +1279,136 @@ pub enum Request {
         /// `…/pull/12`), `owner/repo#12` or its link id `github:owner/repo#12`.
         url: String,
     },
+
+    /// The address books the client reaches, with how many contacts each holds and whether it may
+    /// be written ([`Response::AddressBooks`]); of one account (`account`, as `accounts.list_accounts`
+    /// lists it) or all. Book ids are `<account-id>/<name>`. Hidden books (Nextcloud's system address
+    /// book, "Recently contacted") come only when the client's rights name them one by one. An
+    /// unknown account is an empty list. Book names are `untrusted`.
+    #[serde(rename = "contacts.list_address_books")]
+    ListAddressBooks {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// One page of contacts as a list shows them ([`Response::Contacts`]), sorted by family name,
+    /// or the ones used last first with `recent`. Contacts of books the client does not reach are
+    /// left out before the search, the counting and the paging. Codes: `not-found` for a book the
+    /// client does not reach, `error` for a `cursor` that is not one of an earlier answer.
+    #[serde(rename = "contacts.list_contacts")]
+    ListContacts {
+        /// Only this address book.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        book: Option<String>,
+        /// Only contacts in this group.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        /// Only favourites.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        favorites: bool,
+        /// Only the contacts used last (`contacts.mark_used`), the latest first.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        recent: bool,
+        /// Search text: names, company, mail, numbers (also as digits only, "0171 234" finds
+        /// "+49 171 2345678"), town and note.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// The most contacts in the answer: 1 to 500, 100 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 500))]
+        limit: Option<u32>,
+        /// `next_cursor` of the answer before, for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    /// One contact with every field and the `etag` to change it with ([`Response::Contact`]); in
+    /// `conflict` also the server's version (`server`). Code `not-found` for a contact the client
+    /// does not reach.
+    #[serde(rename = "contacts.get_contact")]
+    GetContact { id: String },
+    /// A contact's picture as PNG ([`Response::Image`]): `small` (64 pixels) for lists, `large`
+    /// (256) for the contact. Code `not-found` without a picture or for a contact the client does
+    /// not reach.
+    #[serde(rename = "contacts.get_photo")]
+    GetContactPhoto { id: String, size: torro_contacts::PhotoSize },
+    /// The groups of one address book or of every book the client reaches, with how many
+    /// contacts each holds ([`Response::ContactGroups`]). Code `not-found` for a book the client
+    /// does not reach.
+    #[serde(rename = "contacts.list_groups")]
+    ListContactGroups {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        book: Option<String>,
+    },
+    /// Birthdays within `days` days from today (14 when left out, at most 366), the soonest
+    /// first ([`Response::Birthdays`]), of the books the client reaches.
+    #[serde(rename = "contacts.upcoming_birthdays")]
+    UpcomingBirthdays {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(max = 366))]
+        days: Option<u32>,
+    },
+    /// Creates a contact in `book` with the fields sent ([`Response::Contact`]); offline it is
+    /// kept and written later (`state: pending`). Codes: `not-found` for a book the client does not
+    /// reach, `unsupported` for a read-only book, `error` for a date that does not read or no name,
+    /// mail address or number at all.
+    #[serde(rename = "contacts.create_contact")]
+    CreateContact { book: String, fields: torro_contacts::ContactFields },
+    /// Adds to a contact without changing what is there ([`Response::Contact`]): new mail
+    /// addresses, numbers, addresses, links and groups come after the ones there and are never
+    /// preferred, a note becomes a new line, a single field is only filled in where it is empty.
+    /// Codes: `not-found`, `unsupported` (read-only book, or a field that holds a value already:
+    /// `contacts.update_contact` replaces it), `conflict` (it changed twice meanwhile), `error`.
+    #[serde(rename = "contacts.add_to_contact")]
+    AddToContact { id: String, fields: torro_contacts::ContactFields },
+    /// Replaces the fields sent ([`Response::Contact`]); fields left out stay. `etag` is the
+    /// version the client showed (`contacts.get_contact`). Codes: `not-found`, `conflict` (the
+    /// contact changed meanwhile: reload), `unsupported` (read-only book), `error`.
+    #[serde(rename = "contacts.update_contact")]
+    UpdateContact { id: String, etag: String, fields: torro_contacts::ContactFields },
+    /// Marks a contact as a favourite or not, on this device only; also in a read-only book.
+    #[serde(rename = "contacts.set_favorite")]
+    SetContactFavorite { id: String, favorite: bool },
+    /// Puts a contact into the group `group` of its book ([`Response::Contact`]). Codes as for
+    /// [`Request::UpdateContact`].
+    #[serde(rename = "contacts.add_to_group")]
+    AddContactToGroup { id: String, etag: String, group: String },
+    /// Takes a contact out of the group `group` ([`Response::Contact`]). Codes as for
+    /// [`Request::UpdateContact`].
+    #[serde(rename = "contacts.remove_from_group")]
+    RemoveContactFromGroup { id: String, etag: String, group: String },
+    /// Notes that a contact was just used, for "Recent" (`contacts.list_contacts` with `recent`);
+    /// on this device only, the last 50 are kept.
+    #[serde(rename = "contacts.mark_used")]
+    MarkContactUsed { id: String },
+    /// Replaces a contact's picture ([`Response::Contact`]): `data` is a PNG or JPEG, Base64, at
+    /// most [`contacts::MAX_PHOTO_BYTES`] bytes before Base64; the core scales it to at most 512
+    /// pixels and drops what the file says besides the picture (place, camera). Without `data` the
+    /// picture is removed. Codes: `not-found`, `conflict`, `unsupported` (read-only book), `error`
+    /// (not a PNG or JPEG, too large).
+    #[serde(rename = "contacts.set_photo")]
+    SetContactPhoto {
+        id: String,
+        etag: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+    },
+    /// Moves a contact to the address book `to_book` ([`Response::ContactMoved`]): written there,
+    /// then deleted in its book. When the old book refuses to delete it, it is in both and the
+    /// answer says so. Codes: `not-found` (contact or target the client does not reach),
+    /// `conflict`, `unsupported` (a read-only book on either side).
+    #[serde(rename = "contacts.move_contact")]
+    MoveContact { id: String, etag: String, to_book: String },
+    /// Deletes a contact on the server; it cannot be restored. Codes: `not-found`, `conflict`,
+    /// `unsupported` (read-only book).
+    #[serde(rename = "contacts.delete_contact")]
+    DeleteContact { id: String, etag: String },
+    /// Settles a contact in `conflict` ([`Response::ContactsResolved`]): `mine` writes this
+    /// device's version over the server's, `theirs` drops this device's changes, `both` keeps the
+    /// server's and this device's as a new contact. `etag` is the contact's as `get_contact` showed
+    /// it; in a conflict that is the version of the server's side shown beside it. Codes:
+    /// `not-found`, `conflict` (the server changed again: reload), `unsupported` (not in conflict,
+    /// read-only book).
+    #[serde(rename = "contacts.resolve_conflict")]
+    ResolveContactConflict { id: String, keep: torro_contacts::Keep, etag: String },
 
     /// The suite-wide settings ([`Response::Settings`]).
     #[serde(rename = "settings.get_settings")]
@@ -3605,6 +3736,11 @@ pub enum SettingKey {
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.
     QuietWhenBusy,
+    /// Show the hidden address books in the contacts app (`docs/kontakte.md`): `true` or `false`
+    /// (the default). Nextcloud's system address book and "Recently contacted"; only what the app
+    /// shows, a client's rights stay as they are.
+    #[serde(rename = "contacts.show_hidden_books")]
+    ContactsShowHiddenBooks,
     /// The design every window draws with (spacing, sizes, radii, type scale): its id from
     /// `settings.list_designs`, `"torro"` for the standard. A design that is not there or breaks a
     /// rule is refused with `error` and its reasons, and nothing changes; an id that is only a font
@@ -3927,10 +4063,37 @@ pub enum Response {
     Places {
         places: Vec<Place>,
     },
-    /// A picture: the map of [`Request::MapPreview`].
+    /// A picture: the map of [`Request::MapPreview`], a contact's picture of `contacts.get_photo`
+    /// ([`Request::GetContactPhoto`]).
     Image {
         /// The PNG file, Base64 (standard alphabet, with padding).
         png: String,
+    },
+    /// The address books of [`Request::ListAddressBooks`].
+    AddressBooks {
+        books: Vec<torro_contacts::AddressBook>,
+    },
+    /// One page of [`Request::ListContacts`].
+    Contacts(torro_contacts::ContactPage),
+    /// One contact as the core holds it now: [`Request::GetContact`] and every change of a
+    /// contact.
+    Contact {
+        // Boxed: a contact is large, and every future that holds an answer would carry its size.
+        contact: Box<torro_contacts::Contact>,
+    },
+    /// The groups of [`Request::ListContactGroups`].
+    ContactGroups {
+        groups: Vec<torro_contacts::Group>,
+    },
+    /// The birthdays of [`Request::UpcomingBirthdays`], the soonest first.
+    Birthdays {
+        birthdays: Vec<torro_contacts::Birthday>,
+    },
+    /// What [`Request::MoveContact`] did.
+    ContactMoved(Box<torro_contacts::Moved>),
+    /// The contacts that stay after [`Request::ResolveContactConflict`]: one, or two with `both`.
+    ContactsResolved {
+        contacts: Vec<torro_contacts::Contact>,
     },
     Todo {
         todo: Todo,
@@ -4629,6 +4792,8 @@ pub enum ServerService {
     Deck,
     /// Nextcloud Notes.
     Notes,
+    /// Address books (CardDAV, `docs/kontakte.md`): the account has an address book home.
+    Contacts,
     /// A service a newer core names that this version does not know; shown as nothing.
     #[serde(other)]
     Other,

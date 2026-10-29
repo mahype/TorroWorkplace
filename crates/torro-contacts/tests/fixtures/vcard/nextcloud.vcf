@@ -1,0 +1,20 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Sabre//Sabre VObject 4.5.4//EN
+UID:7f3c1a52-9b0e-4c1d-8e2a-5d6f7a8b9c0d
+FN:Anna Berg
+N:Berg;Anna;;;
+ORG:Example GmbH;Research
+TITLE:Engineer
+EMAIL;TYPE=WORK:anna.berg@example.org
+EMAIL;TYPE=HOME:anna@example.net
+TEL;TYPE=CELL:+49 171 2345678
+TEL;TYPE=WORK,VOICE:+49 30 1234567
+ADR;TYPE=HOME:;;Hauptstr. 1;Berlin;;10115;Germany
+BDAY:1990-04-15
+NOTE:Met at the conference\, 2024.\nLikes tea.
+CATEGORIES:Friends,Work
+X-SOCIALPROFILE;TYPE=mastodon:https://social.example/@anna
+X-CUSTOM-FIELD;X-PARAM="a,b":keep me exactly
+REV;VALUE=DATE-AND-OR-TIME:20260101T120000Z
+END:VCARD

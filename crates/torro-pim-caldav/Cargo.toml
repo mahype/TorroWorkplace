@@ -5,13 +5,14 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "CalDAV/iCalendar provider (VEVENT, VTODO) for torro-pim: Nextcloud, iCloud, Radicale and others."
+description = "CalDAV/iCalendar provider (VEVENT, VTODO) for torro-pim and CardDAV provider for torro-contacts: Nextcloud, iCloud, Radicale and others."
 
 [lints]
 workspace = true
 
 [dependencies]
 torro-core.workspace = true
+torro-contacts.workspace = true
 torro-pim.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true

@@ -970,8 +970,9 @@ impl Clients {
     /// Takes the account `id` out of every client's rights before the account is removed
     /// (`accounts.remove_account`, task M2.7b): its id from `mail_accounts` and `inbox_sources`
     /// (a mail, GitHub, Nextcloud or ntfy account's id is also its inbox source, task E5.2; a
-    /// Nextcloud account's Talk, `talk:<login>@<host>`, goes with it), and its collections
-    /// (`<id>/<url>`) from `calendars` and `task_lists`. Otherwise an agent would get its reach
+    /// Nextcloud account's Talk, `talk:<login>@<host>`, goes with it), its collections
+    /// (`<id>/<url>`) from `calendars` and `task_lists`, and its address books (`<id>/<name>`) from
+    /// `address_books` and `hidden_address_books` (issue #351). Otherwise an agent would get its reach
     /// back without asking when the same address is connected again. Works for every kind of
     /// account (Nextcloud, CalDAV, GitHub's filter lists, mail); `All` stays `All`.
     ///
@@ -996,16 +997,51 @@ impl Clients {
             for entry in &mut state.clients {
                 let rights = &mut entry.record.rights;
                 let old = rights.clone();
-                for selection in [&mut rights.calendars, &mut rights.task_lists] {
+                for selection in [&mut rights.calendars, &mut rights.task_lists, &mut rights.address_books] {
                     if let Selection::Only(ids) = selection {
                         ids.retain(|collection| !belongs(collection));
                     }
                 }
+                rights.hidden_address_books.retain(|book| !belongs(book));
                 for selection in [&mut rights.mail_accounts, &mut rights.inbox_sources] {
                     if let Selection::Only(ids) = selection {
                         ids.retain(|selected| selected != id && Some(selected.as_str()) != talk.as_deref());
                     }
                 }
+                if *rights != old {
+                    before.push((entry.record.id.clone(), old));
+                }
+            }
+            before
+        };
+        if before.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = self.persist().await {
+            for (client, old) in before {
+                let _ = self.with_client(&client, |record| record.rights = old);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Takes the address books `books` out of every client's rights (issue #351): a book its server
+    /// no longer lists is gone, and one of the same name made later must not open to an agent
+    /// unasked. Writes `clients.json` only when something changed; when that fails, memory goes back
+    /// as well and the error says so.
+    pub async fn forget_address_books(&self, books: &[String]) -> Result<(), ClientsError> {
+        let _changing = self.shared.changing.lock().await;
+        let before: Vec<(String, Rights)> = {
+            let mut state = self.lock();
+            let mut before = Vec::new();
+            for entry in &mut state.clients {
+                let rights = &mut entry.record.rights;
+                let old = rights.clone();
+                if let Selection::Only(ids) = &mut rights.address_books {
+                    ids.retain(|book| !books.contains(book));
+                }
+                rights.hidden_address_books.retain(|book| !books.contains(book));
                 if *rights != old {
                     before.push((entry.record.id.clone(), old));
                 }
@@ -2540,6 +2576,25 @@ pub(crate) mod tests {
         let reopened = open_in(dir.path());
         let stored = reopened.records().into_iter().find(|record| record.id == agent.id).expect("stored").rights;
         expected(&stored);
+    }
+
+    /// Issue #351: a removed account takes its address books out of every client's rights, hidden
+    /// ones too; a book gone from its server leaves them as well, the others stay.
+    #[tokio::test]
+    async fn address_books_leave_the_rights_with_their_account_or_alone() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (cloud, nested) = ("nextcloud:anna@cloud.example.org", "nextcloud:anna@cloud.example.org/nc");
+        let mut rights = read_only();
+        rights.address_books =
+            Selection::Only(vec![format!("{cloud}/contacts"), format!("{nested}/contacts"), format!("{nested}/old")]);
+        rights.hidden_address_books = vec![format!("{cloud}/z-server-generated--system")];
+        let (agent, _) = clients.add("Agent", "claude-code", rights).await.expect("added");
+        clients.forget_account(cloud, &[cloud.to_string(), nested.to_string()]).await.expect("forgotten");
+        clients.forget_address_books(&[format!("{nested}/old")]).await.expect("forgotten");
+        let rights = clients.list().into_iter().find(|client| client.id == agent.id).expect("listed").rights;
+        assert_eq!(rights.address_books, Selection::Only(vec![format!("{nested}/contacts")]));
+        assert!(rights.hidden_address_books.is_empty());
     }
 
     /// Issue #133: a `forbidden` from the gate names its cause – the engine that never gets mail, an
