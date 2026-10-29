@@ -618,8 +618,7 @@ fn mail_sorting_choice<'a>(state: &'a State, data: &'a Data) -> Element<'a, Mess
             Some(tr("Connect a decision model here, or choose one later in Mail settings.").to_string()),
         );
     }
-    let stored = data.settings.ai_assignments.get(&torro_core::ai::AiFunction::InboxCategorize);
-    let enabled = state.sort_mail.unwrap_or_else(|| stored.is_none_or(|assignment| assignment.enabled));
+    let enabled = super::mail_sorting_on(state, data);
     let switch = toggler(enabled).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::SortMail);
     let chosen = super::selected_mail_decider(state, data).and_then(|(account, model)| {
         options.iter().find(|option| option.account == *account && option.model == model.id).cloned()

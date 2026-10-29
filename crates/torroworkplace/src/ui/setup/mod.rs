@@ -45,7 +45,7 @@ use iced::widget::{column, container, row, rule, scrollable, svg};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
-use torro_core::ai::{AiFunction, AiModel, AiProvider};
+use torro_core::ai::{AiAssignment, AiFunction, AiModel, AiProvider, AiSlot};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState, ToolId};
 use torro_gui::icon::{self, Icon};
@@ -563,7 +563,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             if let Some(next) = state.neighbour(true) {
                 state.go(next);
             }
-            stay(assignment.map_or(Action::None, Action::Send))
+            stay(assignment.unwrap_or(Action::None))
         }
         Message::Next => match state.neighbour(true) {
             Some(next) => {
@@ -1084,7 +1084,7 @@ fn mail_deciders(data: &Data) -> Vec<(&String, &AiModel)> {
             if !model.enabled || model.decision != Some(true) {
                 return false;
             }
-            if data.settings.mail_to_cloud {
+            if data.settings.mail_to_cloud_in(AiSlot::Decide) {
                 return true;
             }
             let Some((provider_id, server)) = account.strip_prefix("ai:").and_then(|id| id.split_once('@')) else {
@@ -1106,40 +1106,94 @@ fn ai_models_wait(data: &Data) -> bool {
         .ne(data.ai_deciders_from.iter())
 }
 
-/// The wizard recommends the first eligible model unless an assignment or an explicit choice exists.
+/// The exception stored for sorting mail (`ai.set_assignment inbox.categorize`), on or off; `None`
+/// when none names a model.
+fn stored_mail_exception(data: &Data) -> Option<&AiAssignment> {
+    data.settings.ai_assignments.get(&AiFunction::InboxCategorize).filter(|held| held.engine.is_some())
+}
+
+/// What sorts mail now, as the core weighs it (issue #325) and the mail settings show it: the
+/// exception while one is stored – one switched off keeps sorting off –, else the slot Sorting as an
+/// assignment that is on; nothing assigned when neither is set.
+fn mail_sorting_in_effect(data: &Data) -> AiAssignment {
+    if let Some(own) = stored_mail_exception(data) {
+        return own.clone();
+    }
+    match data.settings.ai_slots.get(AiSlot::Decide) {
+        Some(slot) => AiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(slot.engine.clone()),
+            model: slot.model.clone(),
+            effort: slot.effort,
+            enabled: true,
+        },
+        None => AiAssignment::none(AiFunction::InboxCategorize),
+    }
+}
+
+/// Whether the switch "Use model sorting" stands on: as the person set it here, else as it is now;
+/// on while nothing sorts yet, which is the recommendation.
+fn mail_sorting_on(state: &State, data: &Data) -> bool {
+    let held = mail_sorting_in_effect(data);
+    state.sort_mail.unwrap_or(held.engine.is_none() || held.enabled)
+}
+
+/// The wizard recommends the first eligible model unless one sorts already or one was chosen here.
 fn selected_mail_decider<'a>(state: &State, data: &'a Data) -> Option<(&'a String, &'a AiModel)> {
     let candidates = mail_deciders(data);
-    let stored = data.settings.ai_assignments.get(&AiFunction::InboxCategorize);
     if let Some((engine, model)) = &state.sort_model {
         return candidates.into_iter().find(|(account, candidate)| *account == engine && candidate.id == *model);
     }
-    if let Some(stored) = stored
-        && let Some(engine) = &stored.engine
-    {
+    let held = mail_sorting_in_effect(data);
+    if let Some(engine) = &held.engine {
         return candidates.into_iter().find(|(account, candidate)| {
-            *account == engine && stored.model.as_ref().is_none_or(|model| candidate.id == *model)
+            *account == engine && held.model.as_ref().is_none_or(|model| candidate.id == *model)
         });
     }
     candidates.into_iter().next()
 }
 
-fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
-    let stored = data.settings.ai_assignments.get(&AiFunction::InboxCategorize);
-    let enabled = state.sort_mail.unwrap_or_else(|| stored.is_none_or(|assignment| assignment.enabled));
+/// What "Continue" on the AI step sends for sorting mail, as on main's mail settings (issue #325):
+/// a model chosen or recommended goes into the slot Sorting, and an exception stored is taken back so
+/// the slot sorts; "off" is the exception switched off with what sorts now; nothing changed, nothing
+/// sent.
+fn mail_sorting_request(state: &State, data: &Data) -> Option<Action> {
+    let enabled = mail_sorting_on(state, data);
     let (account, model) = selected_mail_decider(state, data)?;
-    if stored.is_some_and(|assignment| {
-        assignment.enabled == enabled
-            && assignment.engine.as_deref() == Some(account.as_str())
-            && assignment.model.as_deref() == Some(model.id.as_str())
-    }) {
+    let held = mail_sorting_in_effect(data);
+    let same = held.engine.as_deref() == Some(account.as_str()) && held.model.as_deref() == Some(model.id.as_str());
+    if same && held.enabled == enabled {
         return None;
     }
-    Some(Request::SetAiAssignment {
-        function: AiFunction::InboxCategorize,
+    if !enabled {
+        return Some(Action::Send(Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(account.clone()),
+            model: Some(model.id.clone()),
+            effort: if same { held.effort } else { None },
+            enabled: false,
+        }));
+    }
+    let effort =
+        data.settings.ai_slots.decide.as_ref().filter(|slot| slot.engine == *account).and_then(|slot| slot.effort);
+    let slot = Request::SetAiSlot {
+        slot: AiSlot::Decide,
         engine: Some(account.clone()),
         model: Some(model.id.clone()),
-        effort: None,
-        enabled,
+        effort,
+    };
+    Some(match stored_mail_exception(data) {
+        Some(_) => Action::SendAll(vec![
+            slot,
+            Request::SetAiAssignment {
+                function: AiFunction::InboxCategorize,
+                engine: None,
+                model: None,
+                effort: None,
+                enabled: false,
+            },
+        ]),
+        None => Action::Send(slot),
     })
 }
 
@@ -1693,6 +1747,9 @@ mod tests {
         assert!(matches!(sent(&engine), Some((SettingKey::AssistantDefault, _))));
     }
 
+    /// The AI step recommends a local model for sorting mail and stores it as main's mail settings
+    /// do (issue #325, #397): the model chosen or recommended goes into the slot Sorting, an exception
+    /// stored is taken back with it, "off" is the exception switched off, nothing changed sends nothing.
     #[test]
     fn the_ai_step_recommends_a_local_decision_model_for_mail() {
         let local = "ai:ollama@localhost:11434".to_string();
@@ -1704,6 +1761,9 @@ mod tests {
             ..AiModel::named(id)
         };
         let mut data = data();
+        data.settings.ai_slots.decide = None;
+        data.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
+        data.settings.decide_mail_to_cloud = Some(false);
         let mut local_account =
             data.accounts.iter().find(|account| account.kind == "ai").expect("demo AI account").clone();
         local_account.id = local.clone();
@@ -1728,40 +1788,61 @@ mod tests {
         assert_eq!(not_ready.step, Step::Ai);
         assert_eq!(mail_deciders(&data).len(), 2, "cloud and disabled models are not recommended");
         let mut setup = state(Step::Ai);
-        let Outcome::Stay(Action::Send(Request::SetAiAssignment { engine, model, enabled, .. })) =
+        let Outcome::Stay(Action::Send(Request::SetAiSlot { slot, engine, model, .. })) =
             update(&mut setup, Message::Next, &data)
         else {
-            panic!("the recommended model is saved when continuing");
+            panic!("the recommended model goes into the slot Sorting when continuing");
         };
-        assert_eq!((engine.as_deref(), model.as_deref(), enabled), (Some(local.as_str()), Some("nimble"), true));
+        assert_eq!((slot, engine.as_deref(), model.as_deref()), (AiSlot::Decide, Some(local.as_str()), Some("nimble")));
         assert_eq!(setup.step, Step::Web);
 
         let mut chosen = state(Step::Ai);
         update(&mut chosen, Message::SortModel(local.clone(), "another".into()), &data);
         update(&mut chosen, Message::SortMail(false), &data);
-        let Outcome::Stay(Action::Send(Request::SetAiAssignment { model, enabled, .. })) =
+        let Outcome::Stay(Action::Send(Request::SetAiAssignment { engine, model, enabled, .. })) =
             update(&mut chosen, Message::Next, &data)
         else {
-            panic!("the explicit off choice is saved");
+            panic!("the explicit off choice is the exception switched off");
         };
-        assert_eq!((model.as_deref(), enabled), (Some("another"), false));
+        assert_eq!((engine.as_deref(), model.as_deref(), enabled), (Some(local.as_str()), Some("another"), false));
 
-        data.settings.ai_assignments.insert(
-            AiFunction::InboxCategorize,
-            torro_core::ai::AiAssignment {
-                function: AiFunction::InboxCategorize,
-                engine: Some(local.clone()),
-                model: Some("another".into()),
-                effort: None,
-                enabled: false,
-            },
-        );
+        // What sorts already, chosen again: nothing to send.
+        let mut slotted = data.clone();
+        slotted.settings.ai_slots.decide =
+            Some(torro_core::ai::SlotModel { engine: local.clone(), model: Some("another".into()), effort: None });
+        let mut again = state(Step::Ai);
+        assert!(matches!(update(&mut again, Message::Next, &slotted), Outcome::Stay(Action::None)));
+
+        let off = AiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(local.clone()),
+            model: Some("another".into()),
+            effort: None,
+            enabled: false,
+        };
+        data.settings.ai_assignments.insert(AiFunction::InboxCategorize, off);
         let mut reopened = state(Step::Ai);
+        assert!(!mail_sorting_on(&reopened, &data), "the switch shows the stored off");
         assert!(matches!(update(&mut reopened, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(reopened.step, Step::Web, "repeating setup preserves the stored off choice");
 
-        data.settings.mail_to_cloud = true;
-        assert_eq!(mail_deciders(&data).len(), 3, "the cloud model needs explicit mail permission");
+        // On again with that exception stored: the slot sorts, the exception is taken back.
+        let mut on_again = state(Step::Ai);
+        update(&mut on_again, Message::SortMail(true), &data);
+        let sent = requests(update(&mut on_again, Message::Next, &data));
+        assert!(
+            matches!(
+                &sent[..],
+                [
+                    Request::SetAiSlot { slot: AiSlot::Decide, model: Some(_), .. },
+                    Request::SetAiAssignment { engine: None, .. }
+                ]
+            ),
+            "{sent:?}"
+        );
+
+        data.settings.decide_mail_to_cloud = Some(true);
+        assert_eq!(mail_deciders(&data).len(), 3, "the cloud model needs Sorting's mail permission");
         data.ai_deciders.clear();
         let mut empty = state(Step::Ai);
         assert!(matches!(update(&mut empty, Message::Next, &data), Outcome::Stay(Action::None)));
