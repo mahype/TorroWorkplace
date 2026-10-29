@@ -644,6 +644,8 @@ enum Change {
     /// The data rule for the mail the slot Sorting reads (issue #325), checked like
     /// [`Change::MailToCloud`].
     DecideMailToCloud(bool),
+    /// "Mail from contacts is personal" (issue #390).
+    MailContactsPersonal(bool),
     /// Which mail categories the sidebar leaves out (task E12.10).
     HiddenCategories(Vec<torro_mail::Category>),
     /// "Allow API keys" (#231). Who may switch it on is the core's check
@@ -742,6 +744,9 @@ impl Change {
             SettingKey::DecideMailToCloud => {
                 Change::DecideMailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
+            SettingKey::MailContactsPersonal => {
+                Change::MailContactsPersonal(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             // Strict, like the night: the file's reading falls back to the defaults instead.
             SettingKey::HiddenCategories => {
                 Change::HiddenCategories(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -827,6 +832,7 @@ impl Change {
             Change::MailDownloadsFolder(folder) => settings.mail_attachments.downloads = folder,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
             Change::DecideMailToCloud(allowed) => settings.decide_mail_to_cloud = Some(allowed),
+            Change::MailContactsPersonal(on) => settings.mail_contacts_personal = on,
             Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
             Change::AllowApiKeys(allowed) => settings.allow_api_keys = allowed,
             Change::AllowMcp(allowed) => settings.allow_mcp = allowed,
@@ -1795,6 +1801,7 @@ mod tests {
                 mail_attachments: MailAttachments::default(),
                 mail_to_cloud: false,
                 decide_mail_to_cloud: Some(false),
+                mail_contacts_personal: true,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 maps: Maps { open_with: torro_core::settings::MapsApp::Apple, ..Maps::default() },
                 ai_assignments: std::collections::BTreeMap::new(),
@@ -1815,6 +1822,9 @@ mod tests {
         Change::parse(SettingKey::DecideMailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
         assert_eq!(settings.decide_mail_to_cloud, Some(true));
         assert!(Change::parse(SettingKey::DecideMailToCloud, &json!(1)).is_err(), "only true or false");
+        Change::parse(SettingKey::MailContactsPersonal, &json!(false)).expect("valid flag").apply(&mut settings);
+        assert!(!settings.mail_contacts_personal);
+        assert!(Change::parse(SettingKey::MailContactsPersonal, &json!("off")).is_err(), "only true or false");
         assert!(settings.reminders.all_day && settings.reminders.enabled, "the rest keeps its defaults");
         Change::parse(SettingKey::Reminders, &json!({"defaultLead": 5})).expect("valid").apply(&mut settings);
         assert!(settings.reminders.all_day, "a later change keeps what it does not name");

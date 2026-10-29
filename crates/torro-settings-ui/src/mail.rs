@@ -3252,6 +3252,27 @@ mod tests {
         assert_eq!(value, &serde_json::json!(["promotion"]), "only the ones still hidden");
     }
 
+    /// Issue #390: the switch "Mail from contacts is personal" sends exactly that setting, on or off.
+    #[test]
+    fn the_contacts_switch_sends_its_setting() {
+        for on in [false, true] {
+            let action = categorization::update::<()>(
+                &mut Default::default(),
+                categorization::Message::ContactsPersonal(on),
+                &Data::default(),
+            );
+            let Action::Send(requests) = action else { panic!("a request") };
+            assert_eq!(
+                requests,
+                [torro_ipc::Request::SetSetting {
+                    key: torro_ipc::SettingKey::MailContactsPersonal,
+                    value: serde_json::json!(on),
+                }]
+            );
+        }
+        assert!(Data::default().settings.mail_contacts_personal, "on unless turned off");
+    }
+
     /// The slot Sorting with `model` of the local Ollama (task MW.3).
     fn slot(model: &str) -> torro_core::ai::SlotModel {
         torro_core::ai::SlotModel {
@@ -3546,6 +3567,7 @@ mod tests {
 ///
 /// ```text
 /// Sort mail into categories   on/off
+/// Contacts                    "Mail from contacts is personal" on/off (issue #390)
 /// Model                       the models of the AI accounts that can sort: decision models, and
 ///                             chat models that answer in a fixed format (task MW.3)
 /// Catch up                    how far the backlog has come, "Catch up now" / "Cancel"
@@ -3632,6 +3654,9 @@ pub mod categorization {
         Tab(usize),
         /// The switch: sorting mail on or off.
         Enabled(bool),
+        /// "Mail from contacts is personal" on or off (issue #390, `settings.set_setting
+        /// mail_contacts_personal`).
+        ContactsPersonal(bool),
         /// A model picked for sorting mail.
         Model(String, String),
         /// "Catch up now" (`false`) or "Cancel" (`true`).
@@ -3741,6 +3766,10 @@ pub mod categorization {
                 state.job_expanded = show;
                 Action::None
             }
+            Message::ContactsPersonal(on) => Action::send(Request::SetSetting {
+                key: torro_ipc::SettingKey::MailContactsPersonal,
+                value: serde_json::json!(on),
+            }),
             Message::Enabled(true) => switched_on(data),
             // Off is the exception switched off, with what sorts now: it goes before the slot and
             // keeps sorting off, also while the slot changes. Nothing sorts, nothing to switch off.
@@ -3883,6 +3912,21 @@ pub mod categorization {
         // The rules first: they decide before the model (the mockup's order, `docs/kategorien.md`).
         // "Always for this sender?" keeps its senders among them (task E15.3).
         let sorting_rules = super::editor::rules_group(&state.editor, data).map(Message::Editor);
+        // Issue #390: mail from the address books goes to Personal after the rules and before the
+        // model, with a model or without one – so it stands between the two.
+        let contacts = widgets::group(
+            tr("Contacts"),
+            vec![setting_row(
+                None,
+                tr("Mail from contacts is personal"),
+                None,
+                switch(data.settings.mail_contacts_personal, Message::ContactsPersonal),
+            )],
+            Some(
+                tr("Mail from an address in your address books goes to Personal. Newsletters, invitations and automatic replies are sorted as before.")
+                    .to_string(),
+            ),
+        );
         let mut model_choices = vec![switch_row];
         model_choices.extend(model_rows(data, &held));
         let cloud = match data.settings.mail_to_cloud_in(AiSlot::Decide) {
@@ -3895,7 +3939,7 @@ pub mod categorization {
         };
         let note = format!("{cloud} {}", model_note(data));
         let models = widgets::group(tr("2. Model sorting"), model_choices, Some(note));
-        column![tabs, sorting_rules, models, job_group(state, data)].spacing(layout::section_gap()).into()
+        column![tabs, sorting_rules, contacts, models, job_group(state, data)].spacing(layout::section_gap()).into()
     }
 
     fn toggle(selected: &mut Vec<String>, id: String) {

@@ -2423,14 +2423,22 @@ impl MailService {
     pub async fn sorting_facts(&self, account: &str, message: &str) -> Result<Option<SortingFacts>, MailError> {
         let store = self.mailbox_of(account).await?.store()?;
         let wanted = message.to_string();
-        let (held, size_bytes) =
-            store.run(move |store| Ok((store.message(&wanted)?, store.message_size(&wanted)?))).await?;
-        let Some(held) = held else { return Ok(None) };
+        let held = store
+            .run(move |store| {
+                let Some(held) = store.message(&wanted)? else { return Ok(None) };
+                let junk = store.folder_by_role(Role::Junk)?.is_some_and(|folder| folder.id == held.summary.folder);
+                let size_bytes = store.message_size(&wanted)?;
+                Ok(Some((held, junk, size_bytes)))
+            })
+            .await?;
+        let Some((held, junk, size_bytes)) = held else { return Ok(None) };
         let Some(content) = self.content_for_category(account, message).await? else { return Ok(None) };
         Ok(Some(SortingFacts {
             sender: held.summary.from.as_ref().map(|from| from.address.trim().to_lowercase()),
             invite: held.summary.invite.is_some(),
             auto_submitted: held.traits.auto_submitted.clone(),
+            bulk: super::inbox_feed::bulk_reason(&held.traits).is_some(),
+            junk,
             category: held.summary.category,
             content,
             sort_facts: torro_inbox::rules::SortFacts {
@@ -2682,6 +2690,12 @@ pub struct SortingFacts {
     pub invite: bool,
     /// What `Auto-Submitted` says, if anything.
     pub auto_submitted: Option<String>,
+    /// Sent automatically or to a list ([`super::inbox_feed::bulk_reason`]): never Personal for
+    /// being from a contact (issue #390).
+    pub bulk: bool,
+    /// It lies in the folder the server keeps junk in: never Personal for being from a contact
+    /// either.
+    pub junk: bool,
     /// The category it has now.
     pub category: Option<torro_mail::MailCategory>,
     /// What a model reads of it.

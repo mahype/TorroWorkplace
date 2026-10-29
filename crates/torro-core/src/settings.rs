@@ -175,6 +175,13 @@ pub struct Settings {
     /// slots, which loading fills in (`Settings::take_over_old_ai`); counts as `false` until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decide_mail_to_cloud: Option<bool>,
+    /// "Mail from contacts is personal" (issue #390, `docs/kategorien.md` "Vorrang"): while on,
+    /// new mail from an address in the person's address books goes to the group Personal ("From
+    /// people") before any model, which may then only choose within that group. Mail filters,
+    /// sorting rules, newsletters, invitations and automatic replies still come first. On unless a
+    /// person turned it off.
+    #[serde(default = "on")]
+    pub mail_contacts_personal: bool,
     /// Reminders of events (task ER1.2, `docs/erinnerungen.md`): whether they come, which events,
     /// and per calendar as a notification or over the whole screen. Read leniently: a value that
     /// does not read gives the defaults, never a settings file that fails.
@@ -785,6 +792,7 @@ impl Default for Settings {
             mail_to_cloud: false,
             // Written by this version: nothing to take over from before the slots.
             decide_mail_to_cloud: Some(false),
+            mail_contacts_personal: on(),
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -2708,6 +2716,7 @@ mod tests {
             mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
             decide_mail_to_cloud: Some(false),
+            mail_contacts_personal: true,
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -2985,6 +2994,7 @@ mod tests {
             },
             mail_to_cloud: true,
             decide_mail_to_cloud: Some(true),
+            mail_contacts_personal: false,
             reminders: Reminders {
                 default_lead: None,
                 calendars: BTreeMap::from([("work".to_string(), CalendarReminders::FullScreen)]),

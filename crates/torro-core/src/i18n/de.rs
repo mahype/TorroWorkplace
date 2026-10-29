@@ -4490,6 +4490,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Rules are checked first; the model uses category descriptions only when no rule matches.",
         "Zuerst gelten die Regeln. Nur wenn keine passt, nutzt das Modell die Kategoriebeschreibungen.",
     ),
+    // Issue #390: mail from the address books is personal.
+    ("Mail from contacts is personal", "Mail von Kontakten ist persönlich"),
+    (
+        "Mail from an address in your address books goes to Personal. Newsletters, invitations and automatic \
+         replies are sorted as before.",
+        "Mail von einer Adresse aus deinen Adressbüchern landet unter Persönlich. Newsletter, Einladungen und \
+         automatische Antworten werden wie bisher eingeordnet.",
+    ),
     (
         "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved \
          or deleted, and you can change any category by hand.",
