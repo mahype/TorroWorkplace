@@ -18,7 +18,8 @@
 //! M9.4). Here every answer goes back under the URL Blitz asked for.
 //!
 //! Every request Blitz makes gets an answer, also a refusal (empty bytes): Blitz holds back painting while a
-//! style sheet it counts as critical is pending, and an answer that never comes would leave the mail blank. Empty bytes are an empty style sheet, a font or picture that fails to decode.
+//! style sheet it counts as critical is pending, and an answer that never comes would leave the mail blank.
+//! Empty bytes are an empty style sheet, a font or picture that fails to decode.
 //!
 //! The fetches of all mails run on one small tokio runtime of this library, never on the UI thread; the
 //! picture is decoded there too (Blitz decodes in the handler).
