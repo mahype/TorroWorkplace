@@ -4073,7 +4073,9 @@ static CREATE_MAIL_FILTER: Command = Command {
                   mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in \
                   mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and \
                   at least one action: `file`, `mark_read`, `category`. A folder needs `account`. A filter for every \
-                  account needs access to every mail account, a category admin access to the inbox. Needs the \
+                  account needs access to every mail account, a category admin access to the inbox; marking as \
+                  read, the archive and a folder need write access to mail, the trash delete access (as \
+                  mail_set_flags, mail_move_messages and mail_delete_messages would), else `forbidden`. Needs the \
                   person's approval.",
 };
 
@@ -4085,7 +4087,8 @@ static UPDATE_MAIL_FILTER: Command = Command {
     description: "Changes a mail filter and returns it: `query`, `account` and the actions as given (left out, the \
                   account is every account and an action none), `enabled` where given (left out, it stays). Its \
                   place stays. `not-found` for a filter that is not there or out of reach, otherwise as \
-                  mail_create_filter. Needs the person's approval.",
+                  mail_create_filter, the rights for its actions included; a category or folder it has already \
+                  is not checked again. Needs the person's approval.",
 };
 
 static REMOVE_MAIL_FILTER: Command = Command {
@@ -4116,7 +4119,8 @@ static APPLY_MAIL_FILTER: Command = Command {
     description: "Runs a mail filter once on the mail in the inbox now (also when it is switched off): up to the 500 \
                   newest it finds that still need one of its actions are marked as read, filed and moved. Returns \
                   how many were done and failed, and `more` when there are others: call again. Moving to the trash \
-                  can be undone from there. Needs the person's approval, which names how many mails it changes: \
+                  can be undone from there. Needs write access to mail for its actions, delete access for the \
+                  trash, else `forbidden`. Needs the person's approval, which names how many mails it changes: \
                   when the filter finds other mail by the time the person allows it, it ends `conflict`.",
 };
 

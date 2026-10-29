@@ -21,8 +21,9 @@
 //! and one for every account only when it reaches every account; any other filter behaves as if it
 //! were not there (`not-found`). Making a filter for every account without reaching every account is
 //! `forbidden`, and so is a category from a client without admin access to `inbox` (the category
-//! works like a sorting rule). The core checks this before anyone is asked to approve and again when
-//! an approved call runs.
+//! works like a sorting rule), and an action the client could not do by hand with the single mail
+//! commands ([`actions_refusal`]: write access to `mail`, delete access for the trash). The core
+//! checks this before anyone is asked to approve and again when an approved call runs.
 //!
 //! **Finding mail** ([`preview`], [`apply`], [`matching`]): a [`SearchQuery`] over the inbox folder
 //! (`in_inbox`) of every account the caller reaches and the filter names. `mail.apply_filter` takes
@@ -411,6 +412,9 @@ pub fn changes_filters(request: &Request) -> bool {
 ///   and [`visible`]: else `not-found`;
 /// - a new or changed filter for every account needs every account, and a category (also one that
 ///   `mail.apply_filter` would set) admin access to `inbox`: else `forbidden`;
+/// - what a new, changed or applied filter does with the mail needs the rights the single mail
+///   commands would need ([`actions_refusal`]: write access, delete access for the trash): else
+///   `forbidden`;
 /// - a new or changed filter passes [`check`] and [`check_folder`] (a change only with what it brings
 ///   anew, [`spec_refusal`]): else `error`, nothing to approve.
 pub async fn client_refusal(
@@ -431,16 +435,68 @@ pub async fn client_refusal(
     };
     if let Some(stored) = &stored
         && matches!(request, Request::ApplyMailFilter { .. })
-        && stored.category.is_some()
-        && !sets_category(reach)
     {
-        return Some(no_category().response());
+        if stored.category.is_some() && !sets_category(reach) {
+            return Some(no_category().response());
+        }
+        let account = stored.account.as_deref();
+        return actions_refusal(mail, rights, account, stored.mark_read, stored.file.as_ref())
+            .await
+            .err()
+            .map(|err| err.response());
     }
     let spec = FilterSpec::of(request)?;
     if let Err(err) = spec_refusal(mail, reach, &spec, stored.as_ref(), categories).await {
         return Some(err.response());
     }
-    None
+    let account = spec.account.as_deref();
+    actions_refusal(mail, rights, account, spec.mark_read, spec.file.as_ref()).await.err().map(|err| err.response())
+}
+
+/// `forbidden` unless a client with `rights` may do one by one what a filter does with the mail:
+/// `mail.set_flags` for `mark_read`, `mail.move_messages` for the archive and a folder of
+/// `account`, `mail.delete_messages` for the trash – and for a folder whose role is trash, as
+/// `mail.move_messages` asks delete access there (`super::write`). The filter commands need admin
+/// access only, and a filter's changes run as the suite's ([`carry_out`]), so without this a client
+/// could have mail moved to the trash or changed that it may not delete or change itself.
+async fn actions_refusal(
+    mail: &MailService,
+    rights: &Rights,
+    account: Option<&str>,
+    mark_read: bool,
+    file: Option<&FilterFile>,
+) -> Result<(), FilterError> {
+    let to_trash = match (file, account) {
+        (Some(FilterFile::Trash), _) => true,
+        (Some(FilterFile::Folder { id }), Some(account)) => folder_role(mail, account, id).await == Some(Role::Trash),
+        _ => false,
+    };
+    if to_trash && !rights.allows_request(&Request::DeleteMail { ids: Vec::new(), permanent: false }) {
+        return Err(FilterError::Forbidden(
+            tr("A mail filter that moves mail to the trash needs delete access to mail.").into(),
+        ));
+    }
+    let moves = match file {
+        Some(FilterFile::Folder { id }) => Some(MoveTarget::Folder(id.clone())),
+        Some(FilterFile::Archive) => Some(MoveTarget::Role(MoveRole::Archive)),
+        Some(FilterFile::Trash) | None => None,
+    };
+    let reads = Request::SetMailFlags { ids: Vec::new(), add: vec![Flag::Seen], remove: Vec::new() };
+    let refused = moves.is_some_and(|to| !rights.allows_request(&Request::MoveMail { ids: Vec::new(), to }))
+        || (mark_read && !rights.allows_request(&reads));
+    if refused {
+        return Err(FilterError::Forbidden(
+            tr("A mail filter that moves mail or marks it as read needs write access to mail.").into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The role of the folder `id` of `account` in its store; `None` when it has none or is not there.
+async fn folder_role(mail: &MailService, account: &str, id: &str) -> Option<Role> {
+    let store = mail.store(account).await.ok()?;
+    let id = id.to_string();
+    store.run(move |store| store.folder(&id)).await.ok().flatten().and_then(|folder| folder.role)
 }
 
 /// `forbidden`, `not-found` or `error` for a filter `spec` from `reach` (see [`client_refusal`]).

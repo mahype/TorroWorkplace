@@ -854,7 +854,10 @@ Aktion brauchen, Antwort `applied`, `failed`, `more` (dann erneut aufrufen); der
 von Hand gesetzte Kategorie bleibt. **Reichweite:** Ein Client sieht Filter der Konten in `mail_accounts`, einen für
 alle Konten nur mit Zugriff auf alle Mail-Konten; jeder andere ist `not-found`. Einen Filter für alle Konten ohne diesen
 Zugriff anzulegen oder zu ändern ist `forbidden`, ebenso eine Kategorie (auch beim Anwenden) ohne `Admin` in `inbox`,
-denn sie wirkt wie eine Sortierregel. Suche, Aktionen, Ordner (muss zum Konto gehören, nicht der Posteingang) und
+denn sie wirkt wie eine Sortierregel. Neben `Admin` braucht ein Client in `mail` die Rechte, die die Aktionen einzeln
+bräuchten, denn der Dienst führt sie selbst aus: `Write` für `mark_read`, Archiv und Ordner (wie `set_flags` und
+`move_messages`), `Delete` für den Papierkorb (wie `delete_messages`, auch für einen Ordner mit der Rolle Papierkorb);
+sonst ist Anlegen, Ändern und Anwenden `forbidden`. Suche, Aktionen, Ordner (muss zum Konto gehören, nicht der Posteingang) und
 Kategorie (aus dem Katalog) prüft der Dienst vor der Freigabe (`error`) und noch einmal bei der Ausführung. Die
 Freigabe nennt den gespeicherten Filter mit Adresse und Ordnernamen aus dem Speicher des Dienstes, beim Ändern alt und
 neu, beim Anwenden „up to n“ Mails; sie ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die

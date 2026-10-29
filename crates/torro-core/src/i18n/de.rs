@@ -5813,6 +5813,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "A mail filter that moves mail to a folder needs an account.",
         "Ein Mail-Filter, der Mails in einen Ordner verschiebt, braucht ein Konto.",
     ),
+    (
+        "A mail filter that moves mail or marks it as read needs write access to mail.",
+        "Ein Mail-Filter, der Mails verschiebt oder als gelesen markiert, braucht Schreibzugriff auf Mail.",
+    ),
+    (
+        "A mail filter that moves mail to the trash needs delete access to mail.",
+        "Ein Mail-Filter, der Mails in den Papierkorb verschiebt, braucht Löschzugriff auf Mail.",
+    ),
     ("No such mail filter.", "Diesen Mail-Filter gibt es nicht."),
     (
         "Setting a category with a mail filter needs admin access to the Notification Hub.",

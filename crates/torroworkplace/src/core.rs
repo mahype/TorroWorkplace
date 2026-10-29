@@ -13440,6 +13440,62 @@ mod tests {
         }
     }
 
+    /// Issue #339, review: a filter needs what its actions would need one by one – admin access to
+    /// mail is not enough. Write access marks as read and moves, the trash needs delete access; this
+    /// holds for making, changing and applying a filter, before anyone is asked.
+    #[tokio::test]
+    async fn a_filter_needs_the_rights_its_actions_need() {
+        use torro_mail::FilterFile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_mail_data(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let anna = "mail:anna@example.org";
+        let make = |file: Option<FilterFile>, mark_read: bool| Request::CreateMailFilter {
+            query: "from:shop.example".into(),
+            account: Some(anna.into()),
+            file,
+            mark_read,
+            category: None,
+            enabled: true,
+        };
+        let trash = mail_filter(ask(&core, Some(&app_key), make(Some(FilterFile::Trash), false)).await);
+        let reading = mail_filter(ask(&core, Some(&app_key), make(None, true)).await);
+        let keyed = |level: Level| {
+            let mut rights = RightsTemplate::FullAccess.rights();
+            rights.areas.insert(Area::Mail, AreaRights { level, admin: true });
+            rights
+        };
+
+        let (_, writes) = client(&core, keyed(Level::Write)).await;
+        let change = Request::UpdateMailFilter {
+            id: trash.id.clone(),
+            query: trash.query.clone(),
+            account: trash.account.clone(),
+            file: trash.file.clone(),
+            mark_read: false,
+            category: None,
+            enabled: Some(false),
+        };
+        for request in [make(Some(FilterFile::Trash), false), change, Request::ApplyMailFilter { id: trash.id.clone() }]
+        {
+            assert_eq!(code(&ask(&core, Some(&writes), request.clone()).await), "forbidden", "{request:?}");
+        }
+        waits(ask(&core, Some(&writes), make(Some(FilterFile::Archive), true)).await);
+
+        let (_, reads) = client(&core, keyed(Level::Read)).await;
+        for request in [
+            make(None, true),
+            make(Some(FilterFile::Archive), false),
+            Request::ApplyMailFilter { id: reading.id.clone() },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&reads), request.clone()).await), "forbidden", "{request:?}");
+        }
+        assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), 1, "only the allowed one");
+
+        let (_, full) = client(&core, keyed(Level::Full)).await;
+        waits(ask(&core, Some(&full), make(Some(FilterFile::Trash), true)).await);
+    }
+
     /// Issue #339: the preview counts what a filter's search finds in the inbox; applying it marks
     /// and moves exactly that mail, once – a second run finds nothing left to do. A client's run
     /// waits for a person and says how many mails it changes.

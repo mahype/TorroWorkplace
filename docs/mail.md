@@ -410,6 +410,11 @@ nicht nur das Löschen.
   eine Kategorie ohne Admin im Bereich `inbox` (sie wirkt wie eine Sortierregel), auch beim Anwenden eines Filters mit
   Kategorie. Der Dienst prüft das vor der Freigabe und noch einmal bei der Ausführung, ebenso Suche, Aktionen,
   Ordner und Kategorie (`error`, dann gibt es nichts freizugeben).
+- **Rechte der Aktionen:** Admin auf `mail` allein reicht nicht. Weil der Dienst die Aktionen eines Filters selbst
+  ausführt, braucht ein Client dazu die Rechte, die sie einzeln bräuchten: Schreiben für „gelesen“, Archiv und Ordner
+  (wie `mail.set_flags` und `mail.move_messages`), Löschen für den Papierkorb (wie `mail.delete_messages`, auch für
+  einen Ordner mit der Rolle Papierkorb). Sonst ist Anlegen, Ändern und Anwenden `forbidden`, vor der Freigabe und
+  noch einmal bei der Ausführung.
 - Die Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos und dem Namen des Ordners aus dem Speicher
   des Dienstes, nie die Worte des Clients außer der neuen Suche: beim Ändern alt und neu, beim Anwenden „up to n“. Sie
   ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die er da fand: Hat ihn jemand
