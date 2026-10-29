@@ -670,8 +670,8 @@ pub mod accounts {
         /// What the save bar says changed; `None` when nothing did (then there is no save bar).
         fn summary(&self, mail: &MailView) -> Option<&'static str> {
             match self.changed(mail) {
-                (Some(_), Some(_)) => Some(tr("Sender name and signature changed")),
-                (Some(_), None) => Some(tr("Sender name changed")),
+                (Some(_), Some(_)) => Some(tr("Display name and signature changed")),
+                (Some(_), None) => Some(tr("Display name changed")),
                 (None, Some(_)) => Some(tr("Signature changed")),
                 (None, None) => None,
             }
