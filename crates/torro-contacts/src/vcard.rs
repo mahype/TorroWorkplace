@@ -437,7 +437,9 @@ fn read_doc(doc: &Doc) -> (Contact, Index) {
             "TITLE" => contact.title = Some(prop.text().trim().to_string()).filter(|t| !t.is_empty()),
             "NOTE" => contact.note = Some(prop.text()).filter(|n| !n.trim().is_empty()),
             "BDAY" => contact.birthday = PartialDate::parse(&prop.text()),
-            "ANNIVERSARY" | "X-ANNIVERSARY" if contact.anniversary.is_none() => {
+            // The standard line wins over Apple's wherever it stands; `patch` changes that one.
+            "ANNIVERSARY" => contact.anniversary = PartialDate::parse(&prop.text()).or(contact.anniversary),
+            "X-ANNIVERSARY" if contact.anniversary.is_none() || doc.first("ANNIVERSARY").is_none() => {
                 contact.anniversary = PartialDate::parse(&prop.text())
             }
             "CATEGORIES" => {
@@ -840,8 +842,8 @@ fn encode_text(value: &String, _: Version) -> (String, Option<String>) {
     (escape(value), None)
 }
 
-/// The address's parts, and its `LABEL` (vCard 4 only; 3.0 keeps it in a line of its own).
-fn encode_address(address: &PostalAddress, version: Version) -> (String, Option<String>) {
+/// The address's parts, and its `LABEL` parameter.
+fn encode_address(address: &PostalAddress, _: Version) -> (String, Option<String>) {
     let parts = [
         &address.po_box,
         &address.extended,
@@ -855,7 +857,8 @@ fn encode_address(address: &PostalAddress, version: Version) -> (String, Option<
     .map(|p| escape(p))
     .collect::<Vec<_>>()
     .join(";");
-    let label = address.label.clone().filter(|l| !l.trim().is_empty() && version == Version::V4);
+    // Read from the `LABEL` parameter in every version, so written back in every version too.
+    let label = address.label.clone().filter(|l| !l.trim().is_empty());
     (parts, label)
 }
 
@@ -930,7 +933,12 @@ pub fn patch(raw: &str, before: &Contact, after: &Contact) -> String {
             continue;
         }
         match new {
-            None => edit.set_single(name, None, &[]),
+            None if name == "BDAY" => edit.set_single(name, None, &[]),
+            // Gone means gone in both lines a card may have.
+            None => {
+                edit.set_single("ANNIVERSARY", None, &[]);
+                edit.set_single("X-ANNIVERSARY", None, &[]);
+            }
             Some(date) => {
                 let (value, params) = date_value(&date, version);
                 match edit.doc.first(name).map(|(i, _)| i) {
@@ -1258,6 +1266,12 @@ mod tests {
         let changed = patch(raw, &before, &after);
         assert_eq!(read(&changed).expect("card").anniversary, PartialDate::parse("2011-02-02"), "{changed}");
         assert_eq!(changed.matches("ANNIVERSARY").count(), 1, "{changed}");
+        let both = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:X\r\nX-ANNIVERSARY:2010-01-01\r\nANNIVERSARY:2012-03-03\r\nEND:VCARD\r\n";
+        let before_both = read(both).expect("card");
+        assert_eq!(before_both.anniversary, PartialDate::parse("2012-03-03"), "the standard line wins");
+        let mut gone = before_both.clone();
+        gone.anniversary = None;
+        assert!(!patch(both, &before_both, &gone).contains("ANNIVERSARY"), "both lines go");
         after.anniversary = None;
         let removed = patch(raw, &before, &after);
         assert!(!removed.contains("ANNIVERSARY"), "{removed}");
