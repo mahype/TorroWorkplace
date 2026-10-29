@@ -175,8 +175,14 @@ impl ContactsService {
         }
     }
 
-    /// Answers a `contacts.*` request for `reach` (its rights and reach checked before).
+    /// Answers a `contacts.*` request for `reach` (its rights and reach checked before). A command
+    /// that writes runs whole under the lock of the rounds, from its checks to the answer, so no
+    /// round sends or merges the same contact in between.
     pub async fn handle(&self, request: Request, reach: Reach<'_>) -> Response {
+        let _round = match request.operation().access {
+            torro_ipc::api::Access::Read => None,
+            _ => Some(self.rounds.lock().await),
+        };
         let answer = match request {
             Request::ListAddressBooks { account } => self.list_books(reach, account.as_deref()),
             Request::ListContacts { book, group, favorites, recent, query, limit, cursor } => {
@@ -329,13 +335,11 @@ impl ContactsService {
     }
 
     /// Sends the queued change of `card` now and then brings `book` in step (plan of issue #351:
-    /// a round after every write), under the lock of the rounds, so a round never sends the same
-    /// change at once. `None` when the change could not go yet (offline, no connection, a passing
+    /// a round after every write); the caller holds the lock of the rounds ([`ContactsService::handle`]). `None` when the change could not go yet (offline, no connection, a passing
     /// failure): it waits in the queue.
     async fn send_now(&self, book: &BookRow, card: &str) -> Result<Option<Sent>, ContactsError> {
         let store = self.store()?;
         let Some(remote) = self.remote(&book.account).await else { return Ok(None) };
-        let _round = self.rounds.lock().await;
         let sent = match sync::send_card(store, &remote, book, card).await {
             Ok(Sent::Waits) => return Ok(None),
             Ok(sent) => sent,
@@ -354,11 +358,10 @@ impl ContactsService {
         Ok(Some(sent))
     }
 
-    /// A round for `book` now, under the lock of the rounds.
+    /// A round for `book` now; the caller holds the lock of the rounds.
     async fn push(&self, book: &BookRow) {
         let Ok(store) = self.store() else { return };
         let Some(remote) = self.remote(&book.account).await else { return };
-        let _round = self.rounds.lock().await;
         match sync::sync_book(store, &remote, book).await {
             Ok(()) | Err(ContactsError::Offline) => {}
             Err(ContactsError::Auth) => self.refused(&book.account).await,
@@ -383,7 +386,16 @@ impl ContactsService {
             })
         })?;
         match self.send_now(book, &id).await? {
-            Some(Sent::Conflict) => Err(ContactsError::Conflict { server_vcard: None, etag: None }),
+            // The round after it may have merged the change after all (a 412 whose GET failed).
+            Some(Sent::Conflict) => {
+                let state = with(self.store()?, |s| s.card(&id))?.map(|card| card.state);
+                match state {
+                    Some(ContactState::Conflict) | None => {
+                        Err(ContactsError::Conflict { server_vcard: None, etag: None })
+                    }
+                    Some(_) => self.answer(&id, book),
+                }
+            }
             Some(Sent::Refused(err)) => Err(err),
             Some(Sent::Written | Sent::Waits) | None => self.answer(&id, book),
         }
@@ -545,8 +557,6 @@ impl ContactsService {
             return Err(ContactsError::Conflict { server_vcard: None, etag: None });
         }
         let remote = self.remote(&target.account).await.ok_or(ContactsError::Offline)?;
-        // No round sends this contact meanwhile.
-        let _round = self.rounds.lock().await;
         let Stored { href, etag: new_etag } =
             remote.put(&target.href, None, &found.card.uid, &found.card.vcard, None).await.inspect_err(|err| {
                 if *err == ContactsError::Auth {
@@ -608,10 +618,18 @@ impl ContactsService {
             }
             Ok(())
         })?;
-        // Changed on the server meanwhile or refused: the round after it brought the contact back.
         match self.send_now(&found.book, id).await? {
-            Some(Sent::Conflict) => Err(ContactsError::Conflict { server_vcard: None, etag: None }),
-            Some(Sent::Refused(err)) => Err(err),
+            // Changed on the server meanwhile: the round after it brought it back. Gone there too
+            // (a 412 for a card no longer there): deleted all the same.
+            Some(Sent::Conflict) => match with(self.store()?, |s| s.card(id))? {
+                Some(_) => Err(ContactsError::Conflict { server_vcard: None, etag: None }),
+                None => Ok(Response::Ok),
+            },
+            // Refused: the contact stays, here as there.
+            Some(Sent::Refused(err)) => {
+                with(self.store()?, |s| s.put_card(&found.card))?;
+                Err(err)
+            }
             Some(Sent::Written | Sent::Waits) | None => Ok(Response::Ok),
         }
     }
