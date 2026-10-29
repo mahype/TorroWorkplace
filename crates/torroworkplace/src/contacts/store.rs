@@ -673,6 +673,30 @@ impl Store {
         let rows = statement.query_map([books], card_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    /// Whether a contact in a book that is not hidden holds `address` as one of its mail
+    /// addresses (issue #390), whatever its case, also beyond ASCII ("JÖRG" is "jörg", as the sender
+    /// keys of the inbox are lowered); no aliases. Hidden books such as "Recently
+    /// contacted" do not count: everyone ever written to stands there. The search only picks the
+    /// candidates; the vCard decides, so "anna@x.de" never matches "hanna@x.de".
+    pub fn knows_address(&self, address: &str) -> Result<bool, StoreError> {
+        let address = address.trim().to_lowercase();
+        if address.is_empty() {
+            return Ok(false);
+        }
+        let mut statement = self.db.prepare(
+            "SELECT c.vcard FROM cards c JOIN books b ON b.id = c.book
+             WHERE b.hidden = 0 AND c.id IN (SELECT s.card FROM search s WHERE s.text LIKE ?1 ESCAPE '\\')",
+        )?;
+        let cards = statement.query_map([like(&folded(&address))], |row| row.get::<_, String>(0))?;
+        for raw in cards {
+            let contact = vcard::read(&raw?).unwrap_or_default();
+            if contact.emails.iter().any(|email| email.value.trim().to_lowercase() == address) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 fn serde_json_groups(groups: &[String]) -> String {
@@ -821,6 +845,34 @@ mod tests {
             ["solmaz", "bruhl", "konig", "kurz", "mazzo", "zander"],
             "no family name sorts by the name shown, umlauts by their letter, punctuation is skipped"
         );
+    }
+
+    #[test]
+    fn known_addresses_are_any_of_a_contacts_addresses_in_a_shown_book() {
+        let dir = tempfile::tempdir().expect("dir");
+        let store = Store::open(&dir.path().join("contacts")).expect("store");
+        let work = book("nextcloud:anna@cloud.example.org", "contacts");
+        let recent = BookRow { hidden: true, ..book("nextcloud:anna@cloud.example.org", "z-app-generated--recent") };
+        store.put_book(&work).expect("book");
+        store.put_book(&recent).expect("book");
+        let two = "EMAIL;TYPE=WORK:berg@firma.example\r\nEMAIL;TYPE=HOME:Jo.Berg@Privat.example\r\n";
+        store.put_card(&card(&work.id, "a", &vcard("Berg", "1", two))).expect("card");
+        store.put_card(&card(&work.id, "b", &vcard("Hanna", "2", "EMAIL:hanna@x.de\r\n"))).expect("card");
+        let only_recent = vcard("Stranger", "3", "EMAIL:stranger@elsewhere.example\r\n");
+        store.put_card(&card(&recent.id, "c", &only_recent)).expect("card");
+        let knows = |address: &str| store.knows_address(address).expect("asked");
+        assert!(knows("berg@firma.example"));
+        assert!(knows("jo.berg@privat.example"), "the second address counts, whatever its case");
+        assert!(knows("  JO.BERG@PRIVAT.EXAMPLE "));
+        let umlaut = vcard("Jörg", "4", "EMAIL:JÖRG@Beispiel.example\r\n");
+        store.put_card(&card(&work.id, "d", &umlaut)).expect("card");
+        assert!(knows("jörg@beispiel.example"), "case beyond ASCII too");
+        assert!(!knows("stranger@elsewhere.example"), "a hidden book does not count");
+        assert!(knows("hanna@x.de"));
+        assert!(!knows("anna@x.de"), "only part of hanna@x.de");
+        assert!(!knows("hanna@x"), "a part of an address is no address");
+        assert!(!knows("Berg"), "a name is no address");
+        assert!(!knows(" "));
     }
 
     #[test]

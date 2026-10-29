@@ -3837,6 +3837,10 @@ pub enum SettingKey {
     /// "Was nie nach außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights.
     /// Any client allowed to change settings may send `false`.
     DecideMailToCloud,
+    /// "Mail from contacts is personal" (issue #390): `true` (the default) or `false`. While on,
+    /// new mail from an address in the address books goes to the group Personal before any model;
+    /// mail filters, sorting rules, newsletters, invitations and automatic replies still come first.
+    MailContactsPersonal,
     /// How reminders of events come (task ER1.2), as one object; it changes only the fields it
     /// names, and in `calendars` only the calendars it names (`torro_core::settings::Reminders`);
     /// a calendar the client does not see is `not-found`: `{"enabled": true, "defaultLead": 1 (minutes
