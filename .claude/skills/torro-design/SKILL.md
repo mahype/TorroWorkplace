@@ -458,6 +458,9 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `icon::SIZE` + `space::s()` (24) eingerückt, Icon `icon::SIZE_SM` (14), eine 1-px-Linie in der Farbe der
   Gruppe mittig unter deren Icon; die Leiste zeigt keine Kinder. Im Menü sind Kinder `MenuItem::nested()`
   (gleich eingerückt, kleineres Icon, ohne Linie).
+  Eine zweite, leisere Zeile unter dem Namen (gepinnter Ordner mit der Adresse seines Kontos, #398) gibt
+  `widgets::sidebar_item_detail_in`: Unterzeile `typo::meta()` in `TEXT_3`, beide Zeilen mit „…“ gekürzt, damit die
+  Seitenleiste nicht breiter wird; die Zeile ist um eine Metazeile höher; in der Leiste steht die Unterzeile im Tooltip.
 - **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
   Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `typo::meta()` tabellarisch
