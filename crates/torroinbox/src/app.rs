@@ -2443,6 +2443,9 @@ pub struct App<S> {
     /// What the mail window keeps of its settings while they are closed: each account's backup page
     /// and the backup requests on their way ([`settings_mail::kept`]).
     saved_mail_settings: Option<Box<settings_mail::State>>,
+    /// What the settings showed when they last closed, for the next time they open (issue #394):
+    /// they are there at once with it and update in place.
+    settings_memory: torro_settings_ui::Memory,
     /// The demo page of `--open backup…`, put on the first mail account once the settings have
     /// loaded the accounts.
     staged_backup: Option<settings_mail::BackupScene>,
@@ -3766,6 +3769,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             suite,
             settings: None,
             saved_mail_settings: None,
+            settings_memory: torro_settings_ui::Memory::default(),
             staged_backup: open.and_then(Open::backup_scene),
             staged_account: open.and_then(Open::account_scene),
             opened: false,
@@ -4566,7 +4570,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     settings_mail::poll_request(state)
                 });
                 let backup_poll = backup_poll.map_or_else(Task::none, |request| self.ask_mail_backup(request));
-                let settings = self.settings.as_ref().map(|pane| pane.host.reload().map(Message::SettingsHost));
+                let settings = self.settings.as_mut().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 return Task::batch([
                     self.fetch_appearance(),
                     self.fetch_look(),
@@ -7074,7 +7078,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// [`App::settings_backend`] and never over this window's own source.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
         let kind = self.launch.kind;
-        let (mut host, load) = Host::new(self.settings_backend(), kind.settings_sections(), kind.settings_wanted());
+        let (mut host, load) = Host::with_memory(
+            self.settings_backend(),
+            kind.settings_sections(),
+            kind.settings_wanted(),
+            self.settings_memory.clone(),
+        );
         if let Some(id) = section {
             host.open(id);
         }

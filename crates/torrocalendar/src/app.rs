@@ -567,6 +567,9 @@ pub struct App {
     working_hours: WorkingHours,
     /// The settings in the content area, while they are open (task S.19).
     settings: Option<SettingsPane>,
+    /// What the settings showed when they last closed, for the next time they open (issue #394):
+    /// they are there at once with it and update in place.
+    settings_memory: torro_settings_ui::Memory,
     /// The suite's maps settings for the editor (task TE.8); `None` until read. The demo has no core
     /// and shows maps on, with its own places and map ([`App::search_places`], [`App::editor_map`]).
     maps: Option<Maps>,
@@ -797,6 +800,7 @@ impl App {
             night_card: None,
             working_hours: WorkingHours::DEFAULT,
             settings: None,
+            settings_memory: torro_settings_ui::Memory::default(),
             maps: None,
         };
         if app.source.is_demo() {
@@ -2096,7 +2100,12 @@ impl App {
     /// an unknown word leaves the first section open) – a fresh [`Host`] and its first load,
     /// which goes over [`App::settings_backend`] and never over this window's own requests.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
-        let (mut host, load) = Host::new(self.settings_backend(), SETTINGS_SECTIONS.to_vec(), settings_wanted());
+        let (mut host, load) = Host::with_memory(
+            self.settings_backend(),
+            SETTINGS_SECTIONS.to_vec(),
+            settings_wanted(),
+            self.settings_memory.clone(),
+        );
         if let Some(id) = section {
             host.open(id);
         }
