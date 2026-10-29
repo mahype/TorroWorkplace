@@ -187,7 +187,7 @@ impl ContactsService {
         if self.store.is_none() {
             return removed;
         }
-        self.forget_gone().await;
+        removed.extend(self.forget_gone().await);
         for (account, _) in self.remotes().await {
             let (gone, result) = self.sync_account(&account).await;
             removed.extend(gone);
@@ -215,50 +215,68 @@ impl ContactsService {
         if result == Err(ContactsError::Auth) {
             self.refused(account).await;
             // A remote wipe forgot the account: its contacts go now, not with the next round.
-            self.forget_gone().await;
+            removed.extend(self.forget_gone().await);
         }
         (removed, result)
     }
 
     /// Everything of `account` on this device: contacts, queue, favourites, recents, previews.
-    pub async fn forget_account(&self, account: &str) {
+    /// Returns its books, which leave every client's rights: a wiped account was never removed by
+    /// a person, so nothing else takes them out.
+    pub async fn forget_account(&self, account: &str) -> Vec<String> {
         let _round = self.rounds.lock().await;
-        if let Some(store) = &self.store
-            && let Err(err) = sync::with(store, |s| s.forget_account(account))
-        {
-            eprintln!("torroworkplace: contacts of a removed account could not be removed: {err}");
+        let mut books = Vec::new();
+        if let Some(store) = &self.store {
+            let forgotten = sync::with(store, |s| {
+                books = s.books(Some(account))?.into_iter().map(|book| book.id).collect();
+                s.forget_account(account)
+            });
+            if let Err(err) = forgotten {
+                eprintln!("torroworkplace: contacts of a removed account could not be removed: {err}");
+            }
         }
         self.previews.forget_account(account);
+        books
     }
 
     /// Forgets what this device holds of accounts that no longer exist. The calendar service tells
     /// of each removed or wiped account ([`PimService::on_forget`]), but such a message can be
     /// missed (a full channel, the daemon stopped in between): this runs with every round, the
     /// first at the start, and after a missed message. Without a readable account list nothing
-    /// counts as gone.
-    pub async fn forget_gone(&self) {
-        let Some(store) = &self.store else { return };
-        let Some(known) = self.known_accounts() else { return };
+    /// counts as gone. Returns the books forgotten ([`ContactsService::forget_account`]).
+    pub async fn forget_gone(&self) -> Vec<String> {
+        let mut books = Vec::new();
+        let Some(store) = &self.store else { return books };
+        let Some(known) = self.known_accounts().await else { return books };
         let held = sync::with(store, |s| s.accounts()).unwrap_or_default();
         for account in held.iter().filter(|account| !known.contains(account)) {
-            self.forget_account(account).await;
+            books.extend(self.forget_account(account).await);
         }
-        self.previews.keep_only(&known);
+        // Asked again: an account connected while the ones above waited keeps its previews.
+        if let Some(known) = self.known_accounts().await {
+            self.previews.keep_only(&known);
+        }
+        books
     }
 
-    /// The id of every account on this device (`accounts.json`), `None` when it cannot be read.
-    fn known_accounts(&self) -> Option<Vec<String>> {
-        match &self.remotes {
+    /// The id of every account on this device, `None` when the list cannot be read: those in
+    /// `accounts.json` and those the calendar service still serves. An account counts as gone
+    /// only when it is in neither, so a list that went missing while the service runs costs
+    /// nothing, and an account being removed goes once the service let go of it too.
+    async fn known_accounts(&self) -> Option<Vec<String>> {
+        let mut known: Vec<String> = match &self.remotes {
             Remotes::Pim(_) => match torro_core::account::load() {
-                Ok(accounts) => Some(accounts.into_iter().map(|account| account.id).collect()),
+                Ok(accounts) => accounts.into_iter().map(|account| account.id).collect(),
                 Err(err) => {
                     eprintln!("torroworkplace: contacts: the accounts cannot be read: {err}");
-                    None
+                    return None;
                 }
             },
             #[cfg(test)]
-            Remotes::Fixed(servers) => Some(servers.iter().map(|(id, _)| id.clone()).collect()),
-        }
+            Remotes::Fixed(_) => Vec::new(),
+        };
+        known.extend(self.remotes().await.into_iter().map(|(id, _)| id));
+        Some(known)
     }
 
     /// Whether `account` has address books on this device.
@@ -291,7 +309,11 @@ mod tests {
         assert!(service.sync_all().await.is_empty());
         assert!(service.has_books(account));
         std::fs::create_dir_all(dir.path().join("photos").join(crate::audit::hashed(account))).expect("previews");
-        service.forget_account(account).await;
+        assert_eq!(
+            service.forget_account(account).await,
+            [format!("{account}/contacts")],
+            "its books leave the rights"
+        );
         assert!(!service.has_books(account));
         assert!(!dir.path().join("photos").join(crate::audit::hashed(account)).exists());
         assert!(file_in(dir.path()).exists(), "the store stays for the other accounts");

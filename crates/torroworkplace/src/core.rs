@@ -2728,9 +2728,15 @@ impl Core {
         tokio::spawn(async move {
             loop {
                 match forgotten.recv().await {
-                    Ok(account) => core.contacts.forget_account(&account).await,
+                    Ok(account) => {
+                        let books = core.contacts.forget_account(&account).await;
+                        core.forget_address_books(&books).await;
+                    }
                     // Messages were missed: whatever account is gone goes now.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => core.contacts.forget_gone().await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let books = core.contacts.forget_gone().await;
+                        core.forget_address_books(&books).await;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -2752,8 +2758,14 @@ impl Core {
     /// client's rights ([`Clients::forget_address_books`]).
     async fn sync_contacts(&self) {
         let removed = self.contacts.sync_all().await;
-        if !removed.is_empty()
-            && let Err(err) = self.clients.forget_address_books(&removed).await
+        self.forget_address_books(&removed).await;
+    }
+
+    /// Takes the address books `books`, gone from their server or with their account, out of every
+    /// client's rights, so a book made later under the same id is not open to clients nobody asked.
+    async fn forget_address_books(&self, books: &[String]) {
+        if !books.is_empty()
+            && let Err(err) = self.clients.forget_address_books(books).await
         {
             eprintln!("torroworkplace: removed address books stay in the clients' rights: {err}");
         }
