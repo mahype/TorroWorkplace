@@ -3464,16 +3464,41 @@ pub fn ellipsized<'a, M: 'a>(
     one_line(level, text, colour)
 }
 
+/// [`ellipsized`] set against the end of its room: a value in a column of values right of their
+/// labels (the system folders of a mail account, issue #397), each ending at the same edge.
+pub fn ellipsized_end<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    one_line_at(level, text, colour, iced::alignment::Horizontal::Right)
+}
+
 fn one_line<'a, M: 'a>(
     level: typo::Level,
     text: impl IntoFragment<'a>,
     colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    one_line_at(level, text, colour, iced::alignment::Horizontal::Left)
+}
+
+fn one_line_at<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+    align: iced::alignment::Horizontal,
 ) -> Element<'a, M> {
     let full = text.into_fragment().into_owned();
     responsive(move |room| {
         let shown = typo::ellipsize(&full, level, room.width);
         let cut = shown != full;
         let line = container(typo::text(level, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+        // Only against the end does the line take its room: at the start it keeps its own width,
+        // as every [`ellipsized`] did before, so a tooltip covers the text only.
+        let line = match align {
+            iced::alignment::Horizontal::Left => line,
+            _ => line.width(Length::Fill).align_x(align),
+        };
         if cut { with_tooltip(line, full.clone()) } else { line.into() }
     })
     .height(Length::Shrink)

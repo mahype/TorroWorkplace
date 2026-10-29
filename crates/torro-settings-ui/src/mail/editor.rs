@@ -986,11 +986,11 @@ pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a
         if !children.is_empty() {
             rows.push(
                 responsive(move |room| {
-                    // Two cards a line where two fit at a form's width each.
-                    let columns = if room.width >= size::form_max() { 2 } else { 1 };
-                    let mut grid = column![].spacing(space::s());
+                    // Two cards a line where two fit at half a form's width each, the cards' gap apart.
+                    let columns = if room.width >= size::form_max() * 1.5 { 2 } else { 1 };
+                    let mut grid = column![].spacing(size::card_gap());
                     for pair in children.chunks(columns) {
-                        let mut line = row![].spacing(space::s());
+                        let mut line = row![].spacing(size::card_gap());
                         for info in pair {
                             line = line
                                 .push(container(subcategory_card(state, info, color_at)).width(Length::FillPortion(1)));
@@ -1095,7 +1095,7 @@ fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
     container(body).width(Fill).padding([space::m(), space::l()]).into()
 }
 
-/// The last row of a list: "+ New …".
+/// A row "+ New …" of a list, as in Filters and Attachments.
 fn add_row<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
     let plus = torro_gui::icon::icon(Icon::Plus, torro_gui::icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_2) });
@@ -1182,7 +1182,7 @@ fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Mess
         widgets::group(tr("Group"), groups, Some(tr("The group sets the category colour.").to_string())),
         widgets::group(
             tr("Icon"),
-            vec![icon_picker(form.icon, Message::Icon, form.group)],
+            vec![container(icon_picker(form.icon, Message::Icon, form.group)).padding([space::m(), space::l()]).into()],
             Some(tr("The icon is shown in the colour of its group.").to_string()),
         ),
         checked_group(

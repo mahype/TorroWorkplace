@@ -226,14 +226,21 @@ fn section_update(state: &mut State, message: Message, data: &Data) -> Action<Ap
 /// The page of the section with this id, as the host takes it. An id no section has shows
 /// Accounts, the section the gear lands on; the host only ever asks for one of [`SECTIONS`].
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
-    let page = match section {
+    match section {
         "reading" => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
         "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         FILTERS_SECTION => wrap(filters::page(&state.filters, data), Message::Filters),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
-        _ => wrap(accounts::page_with_storage(&state.accounts, &state.storage, data), Message::Accounts),
-    };
-    page.max_width(1200.0)
+        // Only an account's page is wider than the usual reading width: identity and connection
+        // stand side by side there, two forms and the gap between them (issue #343).
+        _ => {
+            let page = wrap(accounts::page_with_storage(&state.accounts, &state.storage, data), Message::Accounts);
+            match accounts::current_account(&state.accounts) {
+                Some(_) => page.max_width(2.0 * torro_gui::theme::size::form_max() + torro_gui::theme::space::l()),
+                None => page,
+            }
+        }
+    }
 }
 
 /// The dialog of the section with this id over the window – the editor of a save target with its
@@ -1352,26 +1359,24 @@ pub mod accounts {
             let identity = widgets::group(
                 tr("Account details"),
                 vec![
-                    row_frame(
+                    field_row(
                         column![
                             typo::text(typo::meta(), tr("Display name")).style(theme::text_2),
-                            field("Anna Example", &draft.sender_name)
+                            field(tr("Your name"), &draft.sender_name)
                                 .on_input(Message::SenderName)
                                 .on_submit_maybe(dirty.then_some(Message::Save)),
                         ]
                         .spacing(space::xs()),
-                        false,
                     ),
                     value("Email address", mail.address.clone()),
-                    row_frame(
+                    field_row(
                         column![
                             typo::text(typo::meta(), tr("Username")).style(theme::text_2),
                             field(tr("Username"), &draft.connection.login_name).on_input(Message::LoginName),
                         ]
                         .spacing(space::xs()),
-                        false,
                     ),
-                    row_frame(
+                    field_row(
                         column![
                             typo::text(typo::meta(), tr("Password")).style(theme::text_2),
                             // A short placeholder, the rule as a line below: the long one was cut off.
@@ -1381,7 +1386,6 @@ pub mod accounts {
                             typo::text(typo::meta(), tr("Leave empty to keep the saved password")).style(theme::text_2),
                         ]
                         .spacing(space::xs()),
-                        false,
                     ),
                 ],
                 None,
@@ -1467,6 +1471,12 @@ pub mod accounts {
 
     /// Show the resolved IMAP roles beside the server settings. Ambiguous roles link to the
     /// existing folder picker; a missing first sync is reported instead of guessed.
+    /// A row of a group with a label above its field (and a hint below): as high as it needs, not
+    /// the fixed height of [`row_frame`], which leaves a label and a field 3 px and a hint none.
+    fn field_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+        container(content).width(Length::Fill).padding([space::m(), space::l()]).into()
+    }
+
     fn system_folders<'a>(mail: &'a MailView, stats: Option<&'a MailAccountStats>) -> Element<'a, Message> {
         let roles = [
             (Role::Inbox, "Inbox"),
@@ -1499,9 +1509,8 @@ pub mod accounts {
                     row_frame(
                         row![
                             container(typo::text(typo::body(), tr(label))).width(Length::FillPortion(2)),
-                            container(widgets::ellipsized(typo::body(), detail.to_string(), theme::text_2))
-                                .width(Length::FillPortion(3))
-                                .align_x(iced::alignment::Horizontal::Right),
+                            container(widgets::ellipsized_end(typo::body(), detail.to_string(), theme::text_2))
+                                .width(Length::FillPortion(3)),
                         ]
                         .spacing(space::s())
                         .align_y(Alignment::Center),
