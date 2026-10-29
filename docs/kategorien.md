@@ -238,7 +238,12 @@ Die Darstellung mit Gruppenfarben und individuellen Kategorie-Icons gehört zu
   wählen“. Umbenennen ändert die Kennung nicht, Mail und Regeln bleiben gültig. Eine mitgelieferte
   Kategorie lässt sich auf die Worte der Suite zurücksetzen, aber nicht entfernen.
 - Die **fünf Gruppen** bleiben fest und erhalten je eine Farbe aus der Gruppenpalette des aktiven
-  Designs. Jede Unterkategorie hat ein einfarbiges Icon in der Farbe ihrer Gruppe. Die 23
+  Designs. Seit #343 heißen sie in den Mail-Einstellungen **Hauptkategorien**, und der Mensch legt
+  eigene dazu an (`custom_group_<n>`, `<n>` ab 6, nie neu vergeben): mit Name, Icon und einer der
+  fünf Farben (0–4). Name, Icon und Farbe lassen sich bei jeder Hauptkategorie ändern, die
+  Kennung bleibt; eine mitgelieferte bekommt mit leerem Namen die Worte der Suite zurück. Eigene
+  Hauptkategorien halten Unterkategorien wie die mitgelieferten; „Nicht eingeordnet“ bleibt die
+  Gruppe für das, was nichts trifft. Höchstens 20 Hauptkategorien. Jede Unterkategorie hat ein einfarbiges Icon in der Farbe ihrer Gruppe. Die 23
   mitgelieferten Kategorien haben feste Standard-Icons; bei eigenen Kategorien kann das Icon
   gewählt werden. Die Icon-Auswahl ist auch für mitgelieferte Kategorien verfügbar. Gruppenname
   und Einrückung zeigen die Hierarchie zusätzlich zur Farbe.
@@ -296,6 +301,8 @@ Schwelle 0,6 gilt für beide Antworten.
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Katalog lesen | Einstellungen › Categorization, Seitenleiste, Menü | `inbox.list_categories` · Read | `inbox_list_categories` |
+| Hauptkategorie anlegen (#343) | Einstellungen › Categorization › Categories | `inbox.create_category_group` · Admin | `inbox_create_category_group` |
+| Hauptkategorie ändern (#343) | Einstellungen › Categorization › Categories | `inbox.update_category_group` · Admin | `inbox_update_category_group` |
 | Kategorie anlegen | Einstellungen › Categorization | `inbox.create_category` · Admin | `inbox_create_category` |
 | Kategorie ändern | Einstellungen › Categorization | `inbox.update_category` · Admin | `inbox_update_category` |
 | Kategorie entfernen | Einstellungen › Categorization | `inbox.remove_category` · Admin | `inbox_remove_category` |

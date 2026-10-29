@@ -145,7 +145,7 @@ immer sichtbare Abschnitt zum Zuordnen.
 Was wir aus TorroMail außerdem **nicht** übernehmen: Regeln je Ordner für Agenten, den Schalter
 `per_folder`, Lesestufen „nur Kopfzeilen / ganze Nachricht / mit Anhängen“ für Agenten
 (für sie reicht Lesen ja/nein je Konto), Dock- und Menüleisten-Schalter. Seit #263
-ist die Cache-Strategie je Konto unter Mail-Einstellungen › Storage & index wählbar:
+ist die Cache-Strategie je Konto wählbar, seit #343 im Konto unter Mail-Einstellungen › Accounts › Storage & search:
 nur Kopfzeilen, Mailtexte der letzten 90 Tage oder alle Mailtexte offline. Der Suchindex bleibt
 unabhängig vom Lesecache; Anhänge haben eigene Vorladeoption und Aufbewahrung.
 Im Modus „alle Mailtexte offline“ hält der Dienst seit #267 zusätzlich die vollständigen
@@ -217,7 +217,7 @@ Ein-Konto-Limit bei Nextcloud.
 Entschieden 2026-10-22 (#284, Aufgaben M11 in [tasks/mail.md](tasks/mail.md)): Ein Mail-Konto nimmt jeden Server,
 den ein Mensch einträgt, wie er ist – beim Anbieter, im lokalen Netz (NAS, eigener Mail-Server) oder auf diesem
 Rechner (`localhost`, etwa eine Bridge). Es gibt keinen Schalter dafür. Das ist sicher, weil Server eines
-Mail-Kontos nur über `accounts.connect_mail` hineinkommen, das nur der App-Schlüssel schicken darf: Kein Agent kann
+Mail-Kontos nur über `accounts.connect_mail` und `accounts.reconfigure_mail` hineinkommen, die nur der App-Schlüssel schicken darf: Kein Agent kann
 ein Konto auf ein Ziel im lokalen Netz richten ([api.md](api.md), „Was nie nach außen geht“, Punkt 5). Die
 Dienstsuche (`discover_services`), die Anmeldung reiner CalDAV-Konten (`connect_caldav`) an einer von ihr
 gefundenen Adresse und `torro-htmlview` bleiben bei „nur öffentliche Adressen“.
@@ -281,11 +281,12 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Mail-Konto einrichten | Steuerzentrale › Accounts › Add | `accounts.connect_mail` · Admin | `accounts_connect_mail`: nimmt nur die Adresse, öffnet die Einrichtung in der Steuerzentrale; das Passwort tippt der Mensch dort (wie bei `connect_nextcloud`, Geheimnisse nie über den Agenten) |
+| Zugangsdaten prüfen und speichern (#343) | Mail-Einstellungen › Accounts, im Konto › Settings: „Test credentials“, „Save connection“ | `accounts.reconfigure_mail` · Admin, nur App-Schlüssel | **Never** (Liste Punkt 5: ein Passwort geht hinein) |
 | Ordner auflisten | Mail-Seitenleiste | `mail.list_folders` · Read | `mail_list_folders` |
 | Suchen / Liste | Mail-Liste, Suche, Filter-Icon im Suchfeld (#336) | `mail.search_messages` · Read | `mail_search_messages` |
 | Stand des Suchindex (#136) | Suchfeld: Hinweis „12 400 von 18 000 indiziert“ (Schritt 5 von #136) | `mail.index_status` · Read | `mail_index_status` |
-| Bestand und lokaler Cache (#263) | Mail-Einstellungen › Accounts und Storage & index | `mail.account_stats`, `mail.get_cache_policy`, `mail.preview_cache` · Read; `mail.set_cache_policy` · Admin | entsprechende `mail_*`-Tools |
-| Cache und Index warten (#263) | Mail-Einstellungen › Storage & index | `mail.start_cache_job`, `mail.control_cache_job` · Write; `mail.cache_job_status` · Read | entsprechende `mail_*`-Tools |
+| Bestand und lokaler Cache (#263) | Mail-Einstellungen › Accounts, im Konto › Storage & search (#343) | `mail.account_stats`, `mail.get_cache_policy`, `mail.preview_cache` · Read; `mail.set_cache_policy` · Admin | entsprechende `mail_*`-Tools |
+| Cache und Index warten (#263) | Mail-Einstellungen › Accounts, im Konto › Storage & search (#343) | `mail.start_cache_job`, `mail.control_cache_job` · Write; `mail.cache_job_status` · Read | entsprechende `mail_*`-Tools |
 | Nachricht lesen | Lesebereich | `mail.get_message` · Read | `mail_get_message` |
 | Unterhaltung | Lesebereich | `mail.get_thread` · Read | `mail_get_thread` |
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |
