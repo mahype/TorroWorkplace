@@ -3246,8 +3246,7 @@ impl Core {
         // A mail filter the client does not see, one for every account or with a category it may not
         // set, or one that could not be stored, is nothing to approve (issue #339).
         if crate::mail::filters::changes_filters(&request)
-            && let Some(refused) =
-                crate::mail::filters::client_refusal(&self.mail, &rights, &request, &self.filter_categories()).await
+            && let Some(refused) = self.filter_refusal(&rights, &request).await
         {
             return Ok(refused);
         }
@@ -3771,9 +3770,7 @@ impl Core {
                 | Request::ApplyMailFilter { .. },
                 _,
             ) => {
-                let catalogue = self.category_catalogue();
-                let (mail, filter, pinned) =
-                    crate::mail::filters::to_approve(&self.mail, Reach::Client(rights), &request, catalogue).await;
+                let (mail, filter, pinned) = self.filter_to_approve(rights, &request).await;
                 let facts = Facts { mail: Some(mail), filter: Some(Box::new(filter)), ..Facts::default() };
                 fingerprint = pinned.map(|pinned| (pinned, Vec::new()));
                 let summary = crate::approvals::summary(&request, &facts);
@@ -4208,6 +4205,43 @@ impl Core {
         }
     }
 
+    /// A mail filter request approved for a client (issue #339): its reach and checks as they are
+    /// now, and a change, removal or run only of the filter – and for a run the mails – the person
+    /// was shown; an approval without a fingerprint matches none. Kept out of
+    /// [`Core::run_approved`] so its frame stays small: that one sits deep in every approved call.
+    fn approved_filter_refusal<'a>(
+        &'a self,
+        rights: &'a torro_ipc::api::Rights,
+        request: &'a Request,
+        fingerprint: Option<&'a str>,
+    ) -> torro_core::ai::BoxFuture<'a, Option<Response>> {
+        Box::pin(self.approved_filter_refusal_now(rights, request, fingerprint))
+    }
+
+    /// The body of [`Core::approved_filter_refusal`].
+    async fn approved_filter_refusal_now(
+        &self,
+        rights: &torro_ipc::api::Rights,
+        request: &Request,
+        fingerprint: Option<&str>,
+    ) -> Option<Response> {
+        let categories = self.filter_categories();
+        if let Some(refused) = crate::mail::filters::client_refusal(&self.mail, rights, request, &categories).await {
+            return Some(refused);
+        }
+        let pinned = matches!(
+            request,
+            Request::UpdateMailFilter { .. } | Request::RemoveMailFilter { .. } | Request::ApplyMailFilter { .. }
+        );
+        let now = crate::mail::filters::fingerprint_now(&self.mail, Reach::Client(rights), request, &categories).await;
+        if pinned && now.as_deref() != Some(fingerprint.unwrap_or_default()) {
+            let message = "the mail filter or the mail it finds changed after the approval was asked for; nothing \
+                           was done, ask again";
+            return Some(Response::Error { code: "conflict".into(), message: message.into() });
+        }
+        None
+    }
+
     /// Runs an allowed request of the client `client` with its rights and collections of now,
     /// not of when it asked: steps 1 and 2 of [`Core::handle_from`] once more, since a person may
     /// have narrowed the rights, removed the client or hidden a collection meanwhile. The approval
@@ -4289,7 +4323,8 @@ impl Core {
             return Response::Ok;
         }
         if request.operation().area() == Area::Inbox {
-            return self.inbox_request(request, Some(&info), pin).await;
+            // Boxed for the stack of a debug build, as in `answer_within` (issue #339).
+            return Box::pin(self.inbox_request(request, Some(&info), pin)).await;
         }
         let reach = Reach::Client(rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
@@ -4305,25 +4340,10 @@ impl Core {
         if let Some(refused) = mail_out_of_reach(rights, &request) {
             return refused;
         }
-        // A mail filter (issue #339): its reach and checks as they are now, and a change, removal or
-        // run only of the filter the person was shown; an approval without a fingerprint matches none.
         if crate::mail::filters::changes_filters(&request)
-            && let Some(refused) =
-                crate::mail::filters::client_refusal(&self.mail, rights, &request, &self.filter_categories()).await
+            && let Some(refused) = self.approved_filter_refusal(rights, &request, fingerprint).await
         {
             return refused;
-        }
-        if matches!(
-            request,
-            Request::UpdateMailFilter { .. } | Request::RemoveMailFilter { .. } | Request::ApplyMailFilter { .. }
-        ) && crate::mail::filters::fingerprint_now(&self.mail, reach, &request, &self.filter_categories())
-            .await
-            .as_deref()
-            != Some(fingerprint.unwrap_or_default())
-        {
-            let message = "the mail filter or the mail it finds changed after the approval was asked for; nothing \
-                           was done, ask again";
-            return Response::Error { code: "conflict".into(), message: message.into() };
         }
         let tool_files = self.tool_files(reach);
         if let Some(refused) = crate::mail::write::client_refusal(&self.mail, client, reach, &request, tool_files).await
@@ -4999,7 +5019,10 @@ impl Core {
             | Request::GetStats { .. }
             | Request::GetQuiet) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
-                Reach::Suite => self.inbox_request(request, None, None).await,
+                // Boxed: `inbox_request` is a large future, and an approved call passes through this
+                // function twice; held inline it pushed a debug build past a test thread's 2 MiB
+                // (an approved call of a server tool, issue #339).
+                Reach::Suite => Box::pin(self.inbox_request(request, None, None)).await,
             },
             // A client never reaches `connect_mail` (`Rights::allows`, as for `connect_caldav`).
             Request::ConnectMail {
@@ -5144,17 +5167,14 @@ impl Core {
             | Request::SaveMailAttachments { .. }) => Box::pin(self.save_request(request, reach)).await,
             // Running a mail filter (issue #339) also puts the category it set on the inbox entries
             // of those mails, as the category jobs do.
-            request @ Request::ApplyMailFilter { .. } => Box::pin(self.apply_mail_filter(request, reach)).await,
+            request @ Request::ApplyMailFilter { .. } => self.apply_mail_filter(request, reach).await,
             // Mail filters (issue #339): rights, reach and what is nothing to approve were checked
             // before for a client; the handler checks the reach again. Boxed as reading mail is.
             request @ (Request::ListMailFilters
             | Request::CreateMailFilter { .. }
             | Request::UpdateMailFilter { .. }
             | Request::RemoveMailFilter { .. }
-            | Request::PreviewMailFilter { .. }) => {
-                let categories = self.filter_categories();
-                Box::pin(crate::mail::filters::answer(&self.mail, reach, &categories, request)).await
-            }
+            | Request::PreviewMailFilter { .. }) => self.filter_request(request, reach).await,
             // Sending (task M3.3): the person sends any draft; a client's send carries its id and
             // never reaches here unnamed (`Core::handle_client`, `Core::run_approved`).
             request @ Request::SendDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
@@ -7271,12 +7291,54 @@ impl Core {
     /// `mail.apply_filter` for `reach` (issue #339, [`crate::mail::filters::answer_apply`]), with the
     /// category the run set put on the inbox entries of those mails ([`Core::mirror_filter_categories`]).
     /// Its own function, boxed where it is called, so the big match of the requests stays small.
-    async fn apply_mail_filter(&self, request: Request, reach: Reach<'_>) -> Response {
-        let categories = self.filter_categories();
-        let (response, categorised) =
-            Box::pin(crate::mail::filters::answer_apply(&self.mail, reach, &categories, request)).await;
-        self.mirror_filter_categories(&categorised);
-        response
+    ///
+    /// Like [`Core::filter_request`] it hands back its future boxed: the filter code's futures are
+    /// built in a frame of their own, not in the dispatch's, which every request passes through.
+    fn apply_mail_filter<'a>(&'a self, request: Request, reach: Reach<'a>) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            let categories = self.filter_categories();
+            let (response, categorised) =
+                crate::mail::filters::answer_apply(&self.mail, reach, &categories, request).await;
+            self.mirror_filter_categories(&categorised);
+            response
+        })
+    }
+
+    /// The other mail filter requests for `reach` (issue #339, [`crate::mail::filters::answer`]).
+    /// The future comes back boxed, built in this frame: in the frame of the dispatch, which every
+    /// request's poll passes through, the filter code's futures would cost each call stack in debug
+    /// builds (an approved call of a server tool overflowed its test's stack).
+    fn filter_request<'a>(&'a self, request: Request, reach: Reach<'a>) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            let categories = self.filter_categories();
+            crate::mail::filters::answer(&self.mail, reach, &categories, request).await
+        })
+    }
+
+    /// [`crate::mail::filters::client_refusal`] for a client's `rights`, boxed in a frame of its own
+    /// for the reason of [`Core::filter_request`].
+    fn filter_refusal<'a>(
+        &'a self,
+        rights: &'a torro_ipc::api::Rights,
+        request: &'a Request,
+    ) -> torro_core::ai::BoxFuture<'a, Option<Response>> {
+        Box::pin(async move {
+            crate::mail::filters::client_refusal(&self.mail, rights, request, &self.filter_categories()).await
+        })
+    }
+
+    /// [`crate::mail::filters::to_approve`] for a client's `rights`, boxed in a frame of its own for
+    /// the reason of [`Core::filter_request`].
+    fn filter_to_approve<'a>(
+        &'a self,
+        rights: &'a torro_ipc::api::Rights,
+        request: &'a Request,
+    ) -> torro_core::ai::BoxFuture<'a, (crate::approvals::MailFacts, crate::approvals::FilterFacts, Option<String>)>
+    {
+        Box::pin(async move {
+            let catalogue = self.category_catalogue();
+            crate::mail::filters::to_approve(&self.mail, Reach::Client(rights), request, catalogue).await
+        })
     }
 
     /// Puts the category a run of a mail filter set (`mail.apply_filter`, issue #339) on the inbox
