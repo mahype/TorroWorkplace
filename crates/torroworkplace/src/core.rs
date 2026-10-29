@@ -1237,14 +1237,14 @@ fn from_contact(
     facts: &crate::mail::service::SortingFacts,
 ) -> bool {
     let Some(known) = known else { return false };
-    let own = account.strip_prefix("mail:").unwrap_or(account);
+    let own = account.strip_prefix("mail:").unwrap_or(account).to_lowercase();
     let ruled = facts.category.is_some_and(|held| {
         held.source == torro_mail::CategorySource::Rule && held.category != torro_mail::Category::Personal
     });
     !facts.bulk
         && !facts.junk
         && !ruled
-        && facts.sender.as_deref().is_some_and(|sender| !sender.eq_ignore_ascii_case(own) && known(sender))
+        && facts.sender.as_deref().is_some_and(|sender| sender.to_lowercase() != own && known(sender))
 }
 
 /// Personal, as the contacts give it (issue #390): set by a rule, not by a model.

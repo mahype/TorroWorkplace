@@ -278,9 +278,11 @@ weiter erreichbar.
    Adressbücher, die nicht ausgeblendet sind („Kürzlich kontaktiert“ zählt nicht). Mail an Listen oder
    von Maschinen (`List-Id`, `Precedence`, `Auto-Submitted`) bleibt außen vor: Der Newsletter eines
    Kontakts ist keine persönliche Mail. Die Stufe gilt für neue Mail und für „Sort again“ und
-   Sortieraufträge; Mail mit einer Kategorie ordnet sie nicht von selbst um, und eine Kategorie aus
-   einer Regel oder einem Filter lässt auch „Sort again“ stehen. Mail der eigenen Adresse (etwa im
-   Ordner „Gesendet“ eines Sortierauftrags) zählt nie als Mail eines Kontakts.
+   Sortieraufträge; Mail mit einer Kategorie ordnet sie nicht von selbst um. Eine Kategorie aus einer
+   Regel oder einem Filter überschreibt die Stufe auch bei „Sort again“ nicht (ein Modell kann das
+   dort weiterhin, wie vor Issue #390). Mail von der Adresse des Kontos selbst (eine eigene Karte im
+   Adressbuch, etwa im Ordner „Gesendet“ eines Sortierauftrags) zählt nicht als Mail eines Kontakts;
+   andere Adressen und Aliase der Person erkennt die Stufe nicht.
 6. **Modell** (`model`), nur für Kategorien, die es wählen darf. Bei Mail eines Kontakts bietet der
    Dienst nur die Kategorien der Gruppe von `personal` und `phishing` an, damit ein gefälschter
    Absender erkennbar bleibt; ist sich das Modell unsicher oder nennt es etwas anderes, bleibt

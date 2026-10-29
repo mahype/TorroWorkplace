@@ -915,15 +915,17 @@ impl Feed {
     }
 
     /// Whether `mail` goes to Personal for being a contact's (issue #390): no filter gave it a
-    /// category, it was not sent automatically or to a list, its sender is known, and clearing all
-    /// categories does not hold sorting back (the rules are held back then too).
+    /// category, it was not sent automatically or to a list, its sender is known and not the
+    /// account itself (a card of one's own in the address books), and clearing all categories does
+    /// not hold sorting back (the rules are held back then too).
     fn is_from_contact(&self, mail: &NewMail) -> bool {
         let Some(known) = &self.known else { return false };
         if mail.category.is_some() || mail.bulk.is_some() || mail.junk {
             return false;
         }
         let Some(sender) = torro_inbox::rules::sender_key(mail.from.as_ref()) else { return false };
-        known(&sender) && !self.inbox.category_clear_blocked().unwrap_or(true)
+        let own = mail.account.strip_prefix("mail:").unwrap_or(&mail.account).to_lowercase();
+        sender != own && known(&sender) && !self.inbox.category_clear_blocked().unwrap_or(true)
     }
 
     /// Marks done the open entries of `account` (with `touching`, only those holding one of these
@@ -2561,9 +2563,9 @@ pub(crate) mod tests {
         (decide, asked)
     }
 
-    /// Who the address books know: Carla and Dora.
+    /// Who the address books know: Carla, Dora and Anna herself.
     fn contacts() -> KnownSender {
-        Arc::new(|address: &str| matches!(address, "carla@example.com" | "dora@rules.example"))
+        Arc::new(|address: &str| matches!(address, "carla@example.com" | "dora@rules.example" | "anna@example.org"))
     }
 
     /// Issue #390: new mail of a contact goes to Personal as a rule's, on the mail and on the entry,
@@ -2580,6 +2582,7 @@ pub(crate) mod tests {
         let list = "List-Id: <club.example.com>\r\n";
         server.add("INBOX", &letter("Club news", "Carla <carla@example.com>", 0, list, None), &[]);
         server.add("INBOX", &letter("Your bill", "Dora <dora@rules.example>", 0, "", None), &[]);
+        server.add("INBOX", &letter("Note to self", "Anna <Anna@Example.org>", 0, "", None), &[]);
         let (inbox, mail, feed) = quiet(dir.path(), &server).await;
         let rule = Request::CreateSortRule {
             category: Category::Invoice,
@@ -2593,7 +2596,7 @@ pub(crate) mod tests {
         let feed = Feed { decide: Some(decide), known: Some(contacts()), ..feed };
         let all = by_subject(&mail).await;
 
-        let new = [&all["Hello"], &all["Offer"], &all["Club news"], &all["Your bill"]];
+        let new = [&all["Hello"], &all["Offer"], &all["Club news"], &all["Your bill"], &all["Note to self"]];
         feed.take(arrived(&new), Utc::now()).await;
         let personal = Some(MailCategory::by_rule(Category::Personal));
         let items = entries(&inbox);
@@ -2603,13 +2606,15 @@ pub(crate) mod tests {
         assert_eq!(kept["Offer"].category, None, "a stranger's waits for the model");
         assert_eq!(kept["Club news"].category, None, "a contact's newsletter is no personal mail");
         assert_eq!(kept["Your bill"].category, Some(MailCategory::by_rule(Category::Invoice)), "the rule first");
-        eventually("asked", || async { asked.lock().expect("lock").len() == 3 }).await;
+        assert_eq!(kept["Note to self"].category, None, "one's own address is no contact's");
+        eventually("asked", || async { asked.lock().expect("lock").len() == 4 }).await;
         let mut asked = asked.lock().expect("lock").clone();
         asked.sort();
         let mut expected = vec![
             (all["Hello"].id.clone(), true),
             (all["Offer"].id.clone(), false),
             (all["Club news"].id.clone(), false),
+            (all["Note to self"].id.clone(), false),
         ];
         expected.sort();
         assert_eq!(asked, expected, "the model hears which mail is a contact's");
