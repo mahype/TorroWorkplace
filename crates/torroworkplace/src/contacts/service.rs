@@ -196,7 +196,11 @@ impl ContactsService {
             Request::CreateContact { book, fields } => Box::pin(self.create(&book, &fields)).await,
             Request::AddToContact { id, fields } => Box::pin(self.add_to(&id, &fields)).await,
             Request::UpdateContact { id, etag, fields } => {
-                Box::pin(self.change(&id, &etag, |_, contact| fields.apply(contact).map_err(fields_error))).await
+                Box::pin(self.change(&id, &etag, |book, contact| {
+                    Self::no_group_cards(book, Some(&fields))?;
+                    fields.apply(contact).map_err(fields_error)
+                }))
+                .await
             }
             Request::SetContactFavorite { id, favorite } => self.set_favorite(&id, favorite),
             Request::AddContactToGroup { id, etag, group } => Box::pin(self.group(&id, &etag, &group, true)).await,
@@ -915,6 +919,32 @@ mod tests {
         let favorite = Request::SetContactFavorite { id: bob.clone(), favorite: true };
         assert_eq!(setup.service.handle(favorite, Reach::Suite).await, Response::Ok, "a favourite stays here");
         assert!(contact(setup.service.handle(Request::GetContact { id: bob }, Reach::Suite).await).favorite);
+    }
+
+    /// Review of #351: groups kept as group cards (iCloud) are not written as `CATEGORIES`, by no
+    /// command, `update_contact` included.
+    #[tokio::test]
+    async fn a_book_with_group_cards_refuses_group_changes_on_every_way() {
+        let setup = setup().await;
+        setup.server.put_card(
+            &setup.work,
+            "friends",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:friends\r\nFN:Friends\r\nX-ADDRESSBOOKSERVER-KIND:group\r\nX-ADDRESSBOOKSERVER-MEMBER:urn:uuid:anna\r\nEND:VCARD\r\n",
+        );
+        setup.service.sync_all().await;
+        let anna = id("contacts", "anna");
+        let etag = || async {
+            let shown = contact(setup.service.handle(Request::GetContact { id: anna.clone() }, Reach::Suite).await);
+            shown.etag.expect("etag")
+        };
+        let groups = ContactFields { groups: Some(vec!["Friends".into()]), ..ContactFields::default() };
+        let update = Request::UpdateContact { id: anna.clone(), etag: etag().await, fields: groups };
+        assert_eq!(code(&setup.service.handle(update, Reach::Suite).await), "unsupported");
+        let add = Request::AddContactToGroup { id: anna.clone(), etag: etag().await, group: "Friends".into() };
+        assert_eq!(code(&setup.service.handle(add, Reach::Suite).await), "unsupported");
+        let org = ContactFields { org: Some("Acme".into()), ..ContactFields::default() };
+        let update = Request::UpdateContact { id: anna.clone(), etag: etag().await, fields: org };
+        assert_eq!(code(&setup.service.handle(update, Reach::Suite).await), "ok", "other fields still change");
     }
 
     /// Review of #351: a contact made offline is changed with an empty `etag`; a refusal of the
