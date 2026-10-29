@@ -157,9 +157,9 @@ pub struct DecisionReply {
     /// [`super::decide_chat`]), not from a decision model: they carry no confidence of their own
     /// (each counts as 1.0), so a caller keeps none for them. `false` for a decision model's reply.
     pub by_chat: bool,
-    /// The questions the model answered in a form this version cannot read, kept apart from those
-    /// it left out (issue #398): a caller may take a question left out as "none fits", but an
-    /// answer it could not read says nothing. Empty for a chat model's reply.
+    /// The names under which the reply holds an answer this version cannot read, kept apart from the
+    /// questions it left out (issue #398): a caller may take a question left out as "none fits", but
+    /// an answer it could not read says nothing. Empty for a chat model's reply.
     pub unreadable: BTreeSet<String>,
 }
 
@@ -399,7 +399,7 @@ mod tests {
         let reply = read_decision(body).expect("a decision");
         assert_eq!(reply.choice("c"), None);
         assert!(reply.unreadable.contains("c"), "a choice without a confidence cannot be read");
-        assert!(!reply.unreadable.contains("left_out") && !reply.unreadable.contains("n"));
+        assert_eq!(reply.unreadable.len(), 1, "a readable answer is not among them");
         assert!((reply.noul("n").expect("a noul") - 0.9).abs() < 0.001);
     }
 
