@@ -397,19 +397,33 @@ fn reads_mail(reach: Reach<'_>) -> bool {
 
 /// The store of one account, shared by its sync and the mail commands. Every call runs on a
 /// blocking thread ([`SharedStore::run`]), so a slow disk never stalls the runtime.
+///
+/// Beside the one connection that writes there is a second that only reads (issue #395,
+/// [`SharedStore::read`]), opened on first use: what reads the whole store for a person waiting –
+/// the statistics, the category previews – goes there and does not queue behind the sync.
 #[derive(Debug, Clone)]
-pub struct SharedStore(Arc<StdMutex<MailStore>>);
+pub struct SharedStore {
+    writer: Arc<StdMutex<MailStore>>,
+    /// The reading connection, `None` until the first [`SharedStore::read`] (or while it cannot be
+    /// opened). It goes with the last clone, together with the writer.
+    reader: Arc<StdMutex<Option<MailStore>>>,
+    /// The account and the file, taken when the store was opened: the reader opens the same file
+    /// without waiting for the writer's lock to ask it.
+    place: Arc<(String, PathBuf)>,
+}
 
 impl SharedStore {
     fn new(store: MailStore) -> SharedStore {
-        SharedStore(Arc::new(StdMutex::new(store)))
+        let place = Arc::new((store.account().to_string(), store.path().to_path_buf()));
+        SharedStore { writer: Arc::new(StdMutex::new(store)), reader: Arc::new(StdMutex::new(None)), place }
     }
 
     /// Waits until every handle of this store is dropped, at most `limit`: the sync, the inbox
     /// feed and running commands each hold one for a moment. Windows cannot delete a database
-    /// that is still open, so [`MailService::remove`] waits here before deleting the files.
+    /// that is still open, so [`MailService::remove`] waits here before deleting the files. A read
+    /// holds a whole handle while it runs ([`SharedStore::read`]), so the reader is closed too.
     async fn closed(self, limit: Duration) {
-        let store = Arc::downgrade(&self.0);
+        let store = Arc::downgrade(&self.writer);
         drop(self);
         let deadline = tokio::time::Instant::now() + limit;
         while store.strong_count() > 0 && tokio::time::Instant::now() < deadline {
@@ -424,11 +438,43 @@ impl SharedStore {
         T: Send + 'static,
         F: FnOnce(&MailStore) -> Result<T, MailStoreError> + Send + 'static,
     {
-        let store = Arc::clone(&self.0);
+        let store = Arc::clone(&self.writer);
         tokio::task::spawn_blocking(move || {
             // A panic in a query leaves the connection usable; SQLite rolled back what was open.
             let store = store.lock().unwrap_or_else(PoisonError::into_inner);
             work(&store)
+        })
+        .await
+        .map_err(|err| MailStoreError::Io(io::Error::other(format!("the mail store task failed: {err}"))))?
+    }
+
+    /// [`SharedStore::run`] for `work` that only reads, over the second connection (issue #395):
+    /// it sees the last committed state and waits neither for the sync nor for the indexing. One
+    /// read at a time per account. Should the reader not open, `work` runs on the writer as before.
+    pub async fn read<T, F>(&self, work: F) -> Result<T, MailStoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&MailStore) -> Result<T, MailStoreError> + Send + 'static,
+    {
+        // The whole handle, not only the reader: [`SharedStore::closed`] counts the writer's.
+        let shared = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut reader = shared.reader.lock().unwrap_or_else(PoisonError::into_inner);
+            if reader.is_none() {
+                let (account, path) = &*shared.place;
+                match MailStore::open_reader(account, path) {
+                    Ok(store) => *reader = Some(store),
+                    Err(err) => eprintln!("torroworkplace: mail store of {account} reads over the writer: {err}"),
+                }
+            }
+            match reader.as_ref() {
+                Some(store) => work(store),
+                None => {
+                    drop(reader);
+                    let store = shared.writer.lock().unwrap_or_else(PoisonError::into_inner);
+                    work(&store)
+                }
+            }
         })
         .await
         .map_err(|err| MailStoreError::Io(io::Error::other(format!("the mail store task failed: {err}"))))?
@@ -1133,7 +1179,15 @@ pub struct MailService {
     /// The mail filters (issue #339): `<data>/mail/filters.json`, beside the stores; none without a
     /// data directory.
     filters: super::filters::MailFilters,
+    /// The last statistics of each account (issue #395, `mail.account_stats`).
+    stats: KeptStats,
 }
+
+/// The last statistics of each mail account by its id (issue #395): what was counted, when the
+/// counting began, and whether a new one runs in the background now. `mail.account_stats` answers
+/// from here and counts anew when they are older than a minute; only in memory, never on disk.
+pub type KeptStats =
+    Arc<StdMutex<std::collections::HashMap<String, (torro_ipc::mail::MailAccountStats, DateTime<Utc>, bool)>>>;
 
 struct CacheWorkerGuard {
     service: Arc<MailService>,
@@ -1188,7 +1242,13 @@ impl MailService {
             cache_jobs_lock: Mutex::new(()),
             save_targets,
             filters,
+            stats: Arc::default(),
         }
+    }
+
+    /// The last statistics of each account ([`KeptStats`]).
+    pub fn kept_stats(&self) -> KeptStats {
+        Arc::clone(&self.stats)
     }
 
     /// Notes whether mail is turned off (task W.2) before [`MailService::start`]: the workers then
@@ -1628,6 +1688,8 @@ impl MailService {
             store = entry.mailbox.store.clone();
             drop(entry);
         }
+        // Its statistics go before its store: a count still running then keeps nothing.
+        self.stats.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
         // Others may still hold it for a moment (the inbox feed, a running command).
         if let Some(store) = store {
             store.closed(Duration::from_secs(5)).await;
@@ -2116,7 +2178,7 @@ impl MailService {
             }
             let store = mailbox.store()?;
             let selected = scope.clone();
-            let (preview, maximum) = store.run(move |store| store.category_job_preview(&selected)).await?;
+            let (preview, maximum) = store.read(move |store| store.category_job_preview(&selected)).await?;
             result.push((mailbox.id().to_string(), preview, maximum));
         }
         Ok(result)
@@ -2140,7 +2202,7 @@ impl MailService {
     pub async fn category_clear_preview(&self, reach: Reach<'_>) -> Result<Vec<(String, u64, i64)>, MailError> {
         let mut accounts = Vec::new();
         for mailbox in self.reachable(reach, None).await {
-            let (count, maximum) = mailbox.store()?.run(|store| store.category_clear_preview()).await?;
+            let (count, maximum) = mailbox.store()?.read(|store| store.category_clear_preview()).await?;
             accounts.push((mailbox.id().to_string(), count, maximum));
         }
         Ok(accounts)
@@ -2635,6 +2697,31 @@ pub(crate) mod tests {
 
     async fn synced(service: &MailService, id: &str) -> bool {
         state_of(&info_of(service, id).await).0.is_some()
+    }
+
+    /// #395: a read goes over its own connection – it neither waits while the writer is held, as a
+    /// long step of the sync holds it, nor misses what the writer committed before.
+    #[tokio::test]
+    async fn a_read_does_not_wait_for_the_writer() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dirs = MailDirs::new(&tmp.path().join("data"), &tmp.path().join("cache"));
+        let store = SharedStore::new(MailStore::open(&dirs, "mail:anna@example.org").expect("store"));
+        store.run(|store| store.upsert_folder("INBOX", "INBOX", Some(Role::Inbox))).await.expect("a folder");
+
+        let (held, (locked, release)) = (Arc::clone(&store.writer), std::sync::mpsc::channel());
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let blocker = std::thread::spawn(move || {
+            let _writer = held.lock().unwrap_or_else(PoisonError::into_inner);
+            locked.send(()).expect("told");
+            let _ = wait.recv();
+        });
+        release.recv().expect("the writer is held");
+        let read = tokio::time::timeout(Duration::from_secs(3), store.read(|store| store.folders())).await;
+        go.send(()).expect("let go");
+        blocker.join().expect("the blocker ends");
+        let folders = read.expect("the read did not wait for the writer").expect("read");
+        assert_eq!(folders.len(), 1, "it sees what the writer committed");
+        assert!(store.reader.lock().unwrap_or_else(PoisonError::into_inner).is_some(), "over its own connection");
     }
 
     async fn subjects(service: &MailService, id: &str) -> Vec<String> {
