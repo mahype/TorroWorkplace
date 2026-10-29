@@ -808,7 +808,18 @@ impl Inbox {
             }
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
             // Nobody is asked about a sorting rule the client may not see (task E15.3).
-            Request::UpdateSortRule { id, .. } | Request::RemoveSortRule { id } | Request::MoveSortRule { id, .. } => {
+            // Nor about one on a mail account it does not see (issue #343).
+            Request::UpdateSortRule { id, conditions, exceptions, .. } => {
+                let stored = visible_sort_rule(db, id, Some(client))?;
+                unseen_account_in(
+                    Some(client),
+                    conditions.iter().chain(exceptions.as_ref().unwrap_or(&stored.exceptions)),
+                )
+            }
+            Request::CreateSortRule { conditions, exceptions, .. } => {
+                unseen_account_in(Some(client), conditions.iter().chain(exceptions))
+            }
+            Request::RemoveSortRule { id } | Request::MoveSortRule { id, .. } => {
                 visible_sort_rule(db, id, Some(client)).map(drop)
             }
             // Nobody is asked to let the AI read an entry the client may not see (issue #120).
@@ -2462,6 +2473,7 @@ fn answer(
         // without read access to mail sees none, as it counts no category either.
         Request::ListSortRules => Ok(Response::SortRules { rules: sort_rules_for(db, client)? }),
         Request::CreateSortRule { category, conditions, exceptions, position, enabled } => {
+            unseen_account_in(client, conditions.iter().chain(&exceptions))?;
             let words = catalogue::RuleWords { category, conditions, exceptions, enabled };
             let position = full_position(db, client, position)?;
             let (rule, _) = catalogue::create_rule(db, words, position, now)?;
@@ -2472,6 +2484,7 @@ fn answer(
             // What the request leaves out stays as it is.
             let stored = visible_sort_rule(db, &id, client)?;
             let exceptions = exceptions.unwrap_or(stored.exceptions);
+            unseen_account_in(client, conditions.iter().chain(&exceptions))?;
             let words =
                 catalogue::RuleWords { category, conditions, exceptions, enabled: enabled.unwrap_or(stored.enabled) };
             let (rule, _) = catalogue::update_rule(db, &id, words)?;
@@ -4751,11 +4764,35 @@ fn sort_rules_for(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<to
     let rules = catalogue::list_rules(db)?;
     let mut shown = Vec::with_capacity(rules.len());
     for rule in rules {
-        if sees_source(&scope, catalogue::source_of(db, &rule.id)?.as_deref()) {
+        let conditions = rule.conditions.iter().chain(&rule.exceptions);
+        if sees_source(&scope, catalogue::source_of(db, &rule.id)?.as_deref())
+            && conditions.into_iter().all(|condition| sees_account_in(client, condition))
+        {
             shown.push(rule);
         }
     }
     Ok(shown)
+}
+
+/// `not-found` when one of `conditions` names a mail account `client` does not see
+/// ([`sees_account_in`]): a rule it could not list afterwards, about an account that looks unknown.
+fn unseen_account_in<'a>(
+    client: Option<&ClientInfo>,
+    mut conditions: impl Iterator<Item = &'a torro_inbox::SortCondition>,
+) -> Result<(), Failure> {
+    match conditions.all(|condition| sees_account_in(client, condition)) {
+        true => Ok(()),
+        false => Err(Failure::NotFound(tr("This mail account no longer exists.").into())),
+    }
+}
+
+/// Whether `client` may see `condition` (issue #343): one on the mail account (`SortField::Account`)
+/// names a collection, so a client outside it does not see the rule, as the account itself looks
+/// unknown to it. Its value is the address; a key that reaches every account sees all of them.
+fn sees_account_in(client: Option<&ClientInfo>, condition: &torro_inbox::SortCondition) -> bool {
+    let Some(client) = client else { return true };
+    condition.field != torro_inbox::SortField::Account
+        || client.rights.reaches_mail_account(&format!("mail:{}", condition.value.trim().to_lowercase()))
 }
 
 /// The place in the full order of the rule that stands at `position` in the list `client` sees
@@ -7475,6 +7512,44 @@ pub(crate) mod tests {
         rights.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
         let blind = client("c0ffee01", "agent", rights);
         assert_eq!(inbox.handle(Request::ListSortRules, Some(&blind), at(9, 0)), Response::SortRules { rules: vec![] });
+    }
+
+    /// Issue #397: a sorting rule on a mail account (`SortField::Account`) names that account, so a
+    /// key outside it neither sees the rule nor makes one on it; nobody is asked about it either.
+    #[test]
+    fn a_rule_on_another_mail_account_stays_out_of_reach() {
+        use torro_inbox::{SortCondition, SortField};
+        use torro_mail::Category;
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let on = |address: &str| Request::CreateSortRule {
+            category: Category::Promotion,
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Is,
+                field: SortField::Account,
+                value: address.into(),
+            }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert!(matches!(inbox.handle(on("bob@example.org"), None, at(8, 0)), Response::SortRule { .. }));
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
+        let anna_only = client("c0ffee03", "agent", rights);
+        assert_eq!(
+            inbox.handle(Request::ListSortRules, Some(&anna_only), at(9, 0)),
+            Response::SortRules { rules: vec![] }
+        );
+        assert_eq!(inbox.refusal(&on("bob@example.org"), Some(&anna_only)).as_ref().map(code), Some("not-found"));
+        assert_eq!(code(&inbox.handle(on("Bob@Example.org"), Some(&anna_only), at(9, 1))), "not-found");
+        let anna = ANNA.strip_prefix("mail:").expect("an address");
+        assert_eq!(inbox.refusal(&on(anna), Some(&anna_only)), None, "its own account");
+        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, None, at(9, 2)) else {
+            panic!("rules")
+        };
+        assert_eq!(rules.len(), 1, "the person sees the rule");
     }
 
     /// API review of #255: a rule "Always for this sender?" kept in a mail account a key may not
