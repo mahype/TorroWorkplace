@@ -4548,8 +4548,12 @@ impl Core {
             }
             // Only shown task lists in the selection: hidden lists and calendars look unknown.
             // The default sender only among the mail accounts it sees (#397).
+            // Also not cleared while it names one outside: `null` would remove it unseen.
             (Reach::Client(rights), Request::SetSetting { key: SettingKey::MailSender, value }) => {
-                value.as_str().filter(|id| !rights.reaches_mail_account(id)).map(str::to_string)
+                match value.as_str() {
+                    Some(id) => (!rights.reaches_mail_account(id)).then(|| id.to_string()),
+                    None => self.settings.current().mail_sender.filter(|id| !rights.reaches_mail_account(id)),
+                }
             }
             (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
                 let list = list_of(value)?;
@@ -15479,6 +15483,8 @@ mod tests {
         let answer = core.handle_within(Request::UpdateSettings { settings: seen }, Reach::Client(&rights)).await;
         assert_eq!(answer, Response::Ok);
         assert_eq!(settings(&core).await.mail_sender.as_deref(), Some("mail:bob@example.org"), "sent back, kept");
+        let clear = Request::SetSetting { key: SettingKey::MailSender, value: serde_json::Value::Null };
+        assert_eq!(code(&ask(&core, Some(&key), clear).await), "not-found", "nor cleared unseen");
         waits(ask(&core, Some(&key), sender("mail:anna@example.org")).await);
     }
 
