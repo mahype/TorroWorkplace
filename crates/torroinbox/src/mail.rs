@@ -4610,8 +4610,8 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
     }
 
-    /// Issue #397: a main category's mark comes from the catalogue – Unsorted in the fifth colour,
-    /// one the person made in the icon and colour they chose –, the suite's without an entry.
+    /// Issue #397: a main category's mark comes from the catalogue – one the person made in the icon
+    /// and colour they chose –, the suite's without an entry (Unsorted: the fifth colour).
     #[test]
     fn a_main_category_is_marked_as_the_catalogue_holds_it() {
         use torro_mail::{Category, CategoryDef, CategoryGroupDef, CategoryIcon, CustomCategory};

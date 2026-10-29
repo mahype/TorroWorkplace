@@ -897,6 +897,13 @@ pub mod accounts {
     }
 
     pub(super) fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+        // The answer of a save names its account: it is taken also when another section's answer
+        // (which carries no account) already ended the wait.
+        if state.pending_connection.is_none()
+            && let Ok(torro_ipc::Response::MailConnected { account, .. }) = answer
+        {
+            state.pending_connection = Some(account.id.clone());
+        }
         let Some(id) = state.pending_connection.as_deref() else { return };
         match answer {
             Ok(torro_ipc::Response::MailConnectionChecked { id: answered }) if answered != id => return,
@@ -910,7 +917,7 @@ pub mod accounts {
             | Err(_) => {}
             _ => return,
         }
-        let id = state.pending_connection.take().expect("checked above");
+        let Some(id) = state.pending_connection.take() else { return };
         let draft = if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
             state.draft.as_mut()
         } else {

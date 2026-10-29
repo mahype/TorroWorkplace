@@ -7123,7 +7123,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 {
                     settings_mail::answered(state, &answer);
                 }
-                Task::none()
+                // A saved mail connection (`accounts.reconfigure_mail`, asked so a certificate
+                // question comes back) changed the account: load as after a send, so the page
+                // compares with the new servers and the list shows them at once.
+                match (answer.as_ref(), self.settings.as_ref()) {
+                    (Ok(torro_ipc::Response::MailConnected { .. }), Some(pane)) => {
+                        Task::batch([pane.host.reload().map(Message::SettingsHost), self.load()])
+                    }
+                    _ => Task::none(),
+                }
             }
             Outcome::ControlCentre(section) => {
                 connect::open_section(&section);
