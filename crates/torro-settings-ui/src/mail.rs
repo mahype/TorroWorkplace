@@ -167,7 +167,6 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
     let page = match section {
         "reading" => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
         "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
-        "storage" => wrap(storage::page(&state.storage, data), Message::Storage),
         FILTERS_SECTION => wrap(filters::page(&state.filters, data), Message::Filters),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
         _ => wrap(accounts::page_with_storage(&state.accounts, &state.storage, data), Message::Accounts),
@@ -1930,7 +1929,6 @@ pub mod accounts {
             let _ = crate::mail::update(&mut state, show(), &data);
             assert_eq!(state.accounts.tab, Tab::Overview);
             assert!(page(&state.accounts, &data).save_bar.is_some(), "the typed name stays");
-            let _ = crate::mail::page(&state, &data, "storage").body;
         }
 
         /// Every role has its question, and every page builds – with and without an account.
@@ -2635,16 +2633,6 @@ pub mod storage {
 
     fn button<'a>(label: &'static str, message: Option<Message>) -> Element<'a, Message> {
         widgets::text_button(None, tr(label), style::button::secondary, message)
-    }
-
-    pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
-        let Some(account) = selected(state, data) else {
-            return Page::new(widgets::empty_state(
-                tr("No mail account"),
-                tr("Add a mail account in Torro Workplace, under Accounts."),
-            ));
-        };
-        Page::new(account_view(state, data, account))
     }
 
     /// The account's own storage tab; no account switcher or repeated account statistics.
