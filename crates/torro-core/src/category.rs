@@ -98,7 +98,7 @@ pub fn description_of(def: &CategoryDef) -> String {
 /// The English word for `group`, untranslated; see [`english_label`].
 pub(crate) fn english_group_label(group: CategoryGroup) -> &'static str {
     match group {
-        CategoryGroup::WaitingForMe => "Waiting for me",
+        CategoryGroup::WaitingForMe => "Personal",
         CategoryGroup::PaperTrail => "Paper trail",
         CategoryGroup::Info => "Info",
         CategoryGroup::Junk => "Unwanted",
