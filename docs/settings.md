@@ -190,11 +190,13 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
   und -Auftrag, `ai.list_models`). Bis zu ihrer ersten Antwort zeigt ihr Teil der Seite
   „Updating…“ statt eines Leerzustands. Eine Anfrage, die noch unterwegs ist, schickt das Neuladen im
   Takt nicht noch einmal; jede Antwort trägt die Runde, für die sie gefragt wurde, und eine ältere
-  überschreibt nie eine neuere. Ein Fehler steht mit der letzten Antwort der Runde über der Seite.
+  überschreibt nie eine neuere. Ein Fehler steht über der Seite, sobald alle Anfragen der Runde außer den
+  Hintergrund-Anfragen zurück sind.
   Eine Änderung (`Action::Send`) schickt nur ihre Requests, danach lädt der Host Antwort für Antwort neu
   und meldet den Abschnitten und der App das Senden wie bisher, sobald die Seite frisch ist.
 - **Gedächtnis:** Jede App hält ein `Memory` und gibt es jedem Host mit. Schließt sie die
-  Einstellungen, bleibt der letzte Stand darin (ohne Fehler und ohne „wird aktualisiert“); beim
+  Einstellungen, bleibt der letzte Stand darin (ohne Fehler und ohne „wird aktualisiert“), sofern die
+  Seite schon stand und mindestens eine Antwort ankam; beim
   nächsten Öffnen steht er sofort da und wird im Hintergrund aufgefrischt. Nur im Arbeitsspeicher,
   solange die App läuft; nichts wird auf die Platte geschrieben.
 - **Mail-Statistik (#395):** Der Mail-Dienst liest Statistik und Kategorie-Vorschauen über eine zweite,

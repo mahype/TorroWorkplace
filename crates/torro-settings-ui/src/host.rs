@@ -321,7 +321,8 @@ impl Host {
 
     /// [`Host::new`], starting from what the app's `memory` kept of the last settings it showed
     /// (issue #394): the page is there at once with that state and says "Updating…" until the
-    /// fresh answers are in. When the host goes, it leaves its data there for the next one.
+    /// fresh answers are in. When the host goes, it leaves its data there for the next one – once
+    /// its page stood and something real was known ([`Drop`]).
     pub fn with_memory(
         backend: Arc<dyn Backend>,
         sections: Vec<Section>,
@@ -467,7 +468,10 @@ impl Host {
             self.applied.retain(|(held, _)| *held != request);
             self.applied.push((request.clone(), generation));
         }
-        self.data.updating.retain(|held| *held != request);
+        // An answer of closed settings does not end "Updating…" while this host's own is still out.
+        if !self.flight.iter().any(|(held, _)| *held == request) {
+            self.data.updating.retain(|held| *held != request);
+        }
         let tasks = self.pump();
         // Nothing but the background is out: the load's first failure stands over the page now, or
         // none does. Not only once all is back: a slow AI server asked again on every tick would
@@ -1193,8 +1197,9 @@ mod tests {
         assert_eq!(host.change, Some(true));
     }
 
-    /// #394: a failure stands over the page with the load's last answer, not before – a load that
-    /// is half in does not blink an error that its next answer would take back.
+    /// #394: a failure stands over the page once every request of the load that is not in the
+    /// background is back, not before – a load that is half in does not blink an error that its
+    /// next answer would take back.
     #[tokio::test]
     async fn a_failure_stands_with_the_last_answer() {
         let backend: Arc<dyn Backend> = Arc::new(Down);
