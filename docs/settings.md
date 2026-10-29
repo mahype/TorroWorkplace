@@ -195,9 +195,10 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
   Eine Änderung (`Action::Send`) schickt nur ihre Requests, danach lädt der Host Antwort für Antwort neu
   und meldet den Abschnitten und der App das Senden wie bisher, sobald die Seite frisch ist.
 - **Gedächtnis:** Jede App hält ein `Memory` und gibt es jedem Host mit. Schließt sie die
-  Einstellungen, bleibt der letzte Stand darin (ohne Fehler und ohne „wird aktualisiert“), sofern die
-  Seite schon stand und mindestens eine Antwort ankam; beim
-  nächsten Öffnen steht er sofort da und wird im Hintergrund aufgefrischt. Nur im Arbeitsspeicher,
+  Einstellungen, bleibt der letzte Stand darin (ohne Fehler und ohne „wird aktualisiert“), sofern
+  mindestens eine Antwort ankam, zusammen mit den Anfragen, die geantwortet haben. Beim nächsten Öffnen
+  steht er sofort da und wird im Hintergrund aufgefrischt, wenn er jeden Teil enthält, auf den die
+  Seite wartet; sonst zeigt die Seite „Loading“, bis diese Antworten da sind. Nur im Arbeitsspeicher,
   solange die App läuft; nichts wird auf die Platte geschrieben.
 - **Mail-Statistik (#395):** Der Mail-Dienst liest Statistik und Kategorie-Vorschauen über eine zweite,
   nur lesende Verbindung und wartet nicht auf Synchronisierung oder Indizierung. Die Statistik merkt er

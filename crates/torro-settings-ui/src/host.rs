@@ -321,8 +321,9 @@ impl Host {
 
     /// [`Host::new`], starting from what the app's `memory` kept of the last settings it showed
     /// (issue #394): the page is there at once with that state and says "Updating…" until the
-    /// fresh answers are in. When the host goes, it leaves its data there for the next one – once
-    /// its page stood and something real was known ([`Drop`]).
+    /// fresh answers are in – when that state holds every part the page waits for, else the page
+    /// waits for those. When the host goes, it leaves its data there for the next one, with the
+    /// requests that answered into it, once at least one did ([`Drop`]).
     pub fn with_memory(
         backend: Arc<dyn Backend>,
         sections: Vec<Section>,
