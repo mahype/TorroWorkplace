@@ -219,11 +219,14 @@ async fn account_stats(mail: &MailService, reach: Reach<'_>, account: Option<&st
                 (stats, at)
             }
             None => {
-                let stats = count_stats(&id, store, mail.attachment_cache()).await?;
-                // Removed while it was counted ([`MailService::remove`]): nothing is kept of it.
+                // The store stays held until the count is kept: [`MailService::remove`] waits for
+                // it and takes the entry away afterwards, so an account removed meanwhile keeps
+                // nothing. One removed before the count was kept is not looked up any more.
+                let stats = count_stats(&id, store.clone(), mail.attachment_cache()).await?;
                 if mail.store(&id).await.is_ok() {
                     kept.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone(), (stats.clone(), now, false));
                 }
+                drop(store);
                 (stats, now)
             }
         };
@@ -253,21 +256,25 @@ async fn count_stats(id: &str, store: SharedStore, attachments: Option<Attachmen
 }
 
 /// Counts the statistics of `id` anew in the background and keeps them, unless the account went
-/// meanwhile ([`MailService::remove`] drops its entry). A failure keeps the old ones for the next
-/// try; the log names the account only.
+/// meanwhile ([`MailService::remove`] drops its entry; the store is held until then). A failure
+/// drops the kept ones: the next call counts while the caller waits and so reports why, instead
+/// of old numbers without end. The log names the account only.
 fn recount(kept: KeptStats, id: String, store: SharedStore, attachments: Option<AttachmentCache>) {
     tokio::spawn(async move {
         let begun = Utc::now();
-        let counted = count_stats(&id, store, attachments).await;
-        let mut kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(entry) = kept.get_mut(&id) else { return };
-        match counted {
-            Ok(stats) => *entry = (stats, begun, false),
-            Err(_) => {
-                entry.2 = false;
-                eprintln!("torroworkplace: the mail statistics of {id} could not be counted anew");
+        let counted = count_stats(&id, store.clone(), attachments).await;
+        let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = held.get_mut(&id) {
+            match counted {
+                Ok(stats) => *entry = (stats, begun, false),
+                Err(_) => {
+                    held.remove(&id);
+                    eprintln!("torroworkplace: the mail statistics of {id} could not be counted anew");
+                }
             }
         }
+        drop(held);
+        drop(store);
     });
 }
 

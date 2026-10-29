@@ -404,9 +404,9 @@ fn reads_mail(reach: Reach<'_>) -> bool {
 #[derive(Debug, Clone)]
 pub struct SharedStore {
     writer: Arc<StdMutex<MailStore>>,
-    /// The reading connection, `None` until the first [`SharedStore::read`] (or while it cannot be
-    /// opened). It goes with the last clone, together with the writer.
-    reader: Arc<StdMutex<Option<MailStore>>>,
+    /// The reading connection, opened by the first [`SharedStore::read`]. It goes with the last
+    /// clone, together with the writer.
+    reader: Arc<StdMutex<Reader>>,
     /// The account and the file, taken when the store was opened: the reader opens the same file
     /// without waiting for the writer's lock to ask it.
     place: Arc<(String, PathBuf)>,
@@ -415,7 +415,7 @@ pub struct SharedStore {
 impl SharedStore {
     fn new(store: MailStore) -> SharedStore {
         let place = Arc::new((store.account().to_string(), store.path().to_path_buf()));
-        SharedStore { writer: Arc::new(StdMutex::new(store)), reader: Arc::new(StdMutex::new(None)), place }
+        SharedStore { writer: Arc::new(StdMutex::new(store)), reader: Arc::new(StdMutex::new(Reader::Closed)), place }
     }
 
     /// Waits until every handle of this store is dropped, at most `limit`: the sync, the inbox
@@ -450,36 +450,68 @@ impl SharedStore {
 
     /// [`SharedStore::run`] for `work` that only reads, over the second connection (issue #395):
     /// it sees the last committed state and waits neither for the sync nor for the indexing. One
-    /// read at a time per account. Should the reader not open, `work` runs on the writer as before.
+    /// read at a time per account.
+    ///
+    /// Should the reader not open, or `work` fail on it, `work` runs on the writer as before, and
+    /// the reader is closed. It is opened again at the next read, but after a failed opening only
+    /// once [`READER_RETRY`] has passed – one line in the log per try, not one per read.
     pub async fn read<T, F>(&self, work: F) -> Result<T, MailStoreError>
     where
         T: Send + 'static,
-        F: FnOnce(&MailStore) -> Result<T, MailStoreError> + Send + 'static,
+        F: Fn(&MailStore) -> Result<T, MailStoreError> + Send + 'static,
     {
         // The whole handle, not only the reader: [`SharedStore::closed`] counts the writer's.
         let shared = self.clone();
         tokio::task::spawn_blocking(move || {
+            let (account, path) = &*shared.place;
             let mut reader = shared.reader.lock().unwrap_or_else(PoisonError::into_inner);
-            if reader.is_none() {
-                let (account, path) = &*shared.place;
-                match MailStore::open_reader(account, path) {
-                    Ok(store) => *reader = Some(store),
-                    Err(err) => eprintln!("torroworkplace: mail store of {account} reads over the writer: {err}"),
+            let due = match &*reader {
+                Reader::Open(_) => false,
+                Reader::Closed => true,
+                Reader::Failed(at) => at.elapsed() >= READER_RETRY,
+            };
+            if due {
+                *reader = match MailStore::open_reader(account, path) {
+                    Ok(store) => Reader::Open(store),
+                    Err(err) => {
+                        eprintln!("torroworkplace: mail store of {account} reads over the writer: {err}");
+                        Reader::Failed(std::time::Instant::now())
+                    }
+                };
+            }
+            if let Reader::Open(store) = &*reader {
+                match work(store) {
+                    Ok(answer) => return Ok(answer),
+                    Err(err) => {
+                        eprintln!(
+                            "torroworkplace: a read of the mail store of {account} failed, asking the writer: {err}"
+                        );
+                        *reader = Reader::Closed;
+                    }
                 }
             }
-            match reader.as_ref() {
-                Some(store) => work(store),
-                None => {
-                    drop(reader);
-                    let store = shared.writer.lock().unwrap_or_else(PoisonError::into_inner);
-                    work(&store)
-                }
-            }
+            drop(reader);
+            let store = shared.writer.lock().unwrap_or_else(PoisonError::into_inner);
+            work(&store)
         })
         .await
         .map_err(|err| MailStoreError::Io(io::Error::other(format!("the mail store task failed: {err}"))))?
     }
 }
+
+/// The reading connection of a [`SharedStore`].
+#[derive(Debug)]
+enum Reader {
+    /// Not opened yet, or closed after a read failed on it.
+    Closed,
+    Open(MailStore),
+    /// It could not be opened at this moment: the reads go over the writer until
+    /// [`READER_RETRY`] has passed.
+    Failed(std::time::Instant),
+}
+
+/// How long the reads of a store go over its writer after its reader could not be opened.
+const READER_RETRY: Duration = Duration::from_secs(60);
 
 /// The command connection of one account, taken by one command at a time
 /// ([`MailService::command`]). Other commands, and the sync's next step, wait until it is
@@ -1694,6 +1726,9 @@ impl MailService {
         if let Some(store) = store {
             store.closed(Duration::from_secs(5)).await;
         }
+        // And once more after it: a first count holds the store until it kept what it counted
+        // (`mail.account_stats`), so whatever it kept is gone now as well.
+        self.stats.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
         let Some(dirs) = self.dirs.clone() else { return Ok(()) };
         // Sent copies that wait for its Sent folder hold whole messages: they go too (task M3.3).
         if let Ok(outbox) = self.outbox().await {
@@ -2699,6 +2734,22 @@ pub(crate) mod tests {
         state_of(&info_of(service, id).await).0.is_some()
     }
 
+    /// #395: a reader that does not open leaves the reads to the writer, and it is not tried again
+    /// with every read but after [`READER_RETRY`].
+    #[tokio::test]
+    async fn a_read_falls_back_to_the_writer() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dirs = MailDirs::new(&tmp.path().join("data"), &tmp.path().join("cache"));
+        let mut store = SharedStore::new(MailStore::open(&dirs, "mail:anna@example.org").expect("store"));
+        store.run(|store| store.upsert_folder("INBOX", "INBOX", Some(Role::Inbox))).await.expect("a folder");
+        store.place = Arc::new(("mail:anna@example.org".into(), tmp.path().join("missing").join("store.sqlite")));
+        for _ in 0..2 {
+            let folders = store.read(|store| store.folders()).await.expect("read over the writer");
+            assert_eq!(folders.len(), 1);
+            assert!(matches!(*store.reader.lock().unwrap_or_else(PoisonError::into_inner), Reader::Failed(_)));
+        }
+    }
+
     /// #395: a read goes over its own connection – it neither waits while the writer is held, as a
     /// long step of the sync holds it, nor misses what the writer committed before.
     #[tokio::test]
@@ -2721,7 +2772,10 @@ pub(crate) mod tests {
         blocker.join().expect("the blocker ends");
         let folders = read.expect("the read did not wait for the writer").expect("read");
         assert_eq!(folders.len(), 1, "it sees what the writer committed");
-        assert!(store.reader.lock().unwrap_or_else(PoisonError::into_inner).is_some(), "over its own connection");
+        assert!(
+            matches!(*store.reader.lock().unwrap_or_else(PoisonError::into_inner), Reader::Open(_)),
+            "over its own connection"
+        );
     }
 
     async fn subjects(service: &MailService, id: &str) -> Vec<String> {
