@@ -845,10 +845,19 @@ pub mod accounts {
             return if updating { page.into() } else { page.push(no_statistics()).into() };
         };
         page.push(widgets::stat_grid(figures(stats)))
+            .extend(as_of(stats, now))
             .push(storage_card(stats))
             .push(time_card(stats, now))
             .push(index_card(stats, now))
             .into()
+    }
+
+    /// "As of Today 10:32" under the figures (issue #395): when the service counted them, the exact
+    /// moment as the tooltip. Nothing from a core that does not say.
+    pub(super) fn as_of<'a, M: 'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Option<Element<'a, M>> {
+        let at = stats.as_of?;
+        let words = trf("As of {time}", &[("time", &format_moment(at, now))]);
+        Some(widgets::with_tooltip(typo::text(typo::meta(), words).style(theme::text_3), format_exact(at)))
     }
 
     /// What stands where the numbers would before the mail service has them.
@@ -1470,7 +1479,12 @@ pub mod accounts {
         fn a_tab_sends_nothing_and_every_tab_builds() {
             let mut with = data();
             with.mail_stats = vec![stats(&[("INBOX", 30, 8, Some(4096)), ("Sent", 10, 2, None)], None)];
-            for data in [data(), with] {
+            // #394: and while the statistics are on their way, with what was known and without.
+            let mut updating = [data(), with.clone()];
+            for data in &mut updating {
+                data.updating = vec![Request::MailAccountStats { account: None }];
+            }
+            for data in [data(), with].into_iter().chain(updating) {
                 let mut state = opened(&data);
                 for tab in Tab::ALL {
                     let action: Action<()> = update(&mut state, Message::Tab(tab.index()), &data);
@@ -1479,6 +1493,15 @@ pub mod accounts {
                     let _ = page(&state, &data).body;
                 }
             }
+        }
+
+        /// #395: "As of …" stands under the figures only when the core says when it counted them.
+        #[test]
+        fn the_moment_of_the_figures_shows_when_known() {
+            let mut counted = stats(&[("INBOX", 30, 8, None)], None);
+            assert!(as_of::<Message>(&counted, Utc::now()).is_none(), "a core before #395 says nothing");
+            counted.as_of = Some(Utc::now());
+            assert!(as_of::<Message>(&counted, Utc::now()).is_some());
         }
 
         /// What is typed stays when the page is left: "Back" and another account keep it, and the
@@ -2064,6 +2087,8 @@ pub mod storage {
             page = page.push(widgets::refresh_note(tr("Updating…")));
         }
         page = page.push(widgets::group(tr("Mail account"), account_rows, None));
+        let stats = data.mail_stats.iter().find(|stats| stats.account == account);
+        page = page.extend(stats.and_then(|stats| super::accounts::as_of(stats, chrono::Utc::now())));
         let mut policy_rows = vec![
             line(
                 "Current strategy",
