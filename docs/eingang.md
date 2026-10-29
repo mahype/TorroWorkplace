@@ -372,12 +372,14 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
-- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337): oben die **Kategorien** ohne Überschrift (die Gruppen mit
-  ihren Kategorien, sobald eine Mail eine Kategorie hat), als letzter Eintrag **Unfiltered** (bis #337 „All“: der
+- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398): oben die **Kategorien** ohne Überschrift (die Gruppen mit
+  ihren Kategorien, sobald eine Mail eine Kategorie hat; „Unsorted“ ist eine einfache Zeile ohne Aufklappen, ein Klick
+  zeigt ihre Mails), als letzter Eintrag **Unfiltered** (bis #337 „All“: der
   Posteingang aller gezeigten Konten, mit der Zahl ungelesener Mails; ohne Kategorien allein oben). Darunter, nur durch
   Abstand getrennt (in der Leiste durch eine Linie), **Reply later** und **Set aside** (die beiden Stapel, mit der
   Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“; „Hidden“ darunter ist mit #339 entfallen), dann **Folders**
-  mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern und **Open folders ›**. Das Menü
+  mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern (der Ordnername, darunter klein die Adresse des Kontos, wenn das Fenster Ordner aus mehr
+  als einem Konto hat) und **Pin folders ›** (deutsch „Ordner pinnen“). Das Menü
   der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „Unfiltered“. Die Smart views
   „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
   Mail mit Anhang findet das Filter-Icon im Suchfeld (#336). Die ausgeklappte Seitenleiste lässt sich am rechten

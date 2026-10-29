@@ -1207,7 +1207,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("With attachments", "Mit Anhang"),
     // Mail window sidebar (#337)
     ("Unfiltered", "Ungefiltert"),
-    ("Open folders", "Ordner öffnen"),
+    ("Pin folders", "Ordner pinnen"),
     ("Pin folder", "Ordner anpinnen"),
     ("Unpin folder", "Ordner lösen"),
     ("Shown mail accounts", "Angezeigte E-Mail-Konten"),

@@ -97,7 +97,7 @@ pub fn read(reply: &ChatReply, asked: &DecisionRequest) -> Result<DecisionReply,
     if answers.is_empty() {
         return Err(unreadable());
     }
-    Ok(DecisionReply { answers, usage: reply.usage, by_chat: true })
+    Ok(DecisionReply { answers, usage: reply.usage, by_chat: true, unreadable: Default::default() })
 }
 
 /// The answer's object out of a call to [`TOOL`] a model wrote as text – `{"name": "answer",

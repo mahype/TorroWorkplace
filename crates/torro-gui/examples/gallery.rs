@@ -1385,6 +1385,16 @@ impl Gallery {
         ));
         items.push(widgets::sidebar_group("Accounts", Some((true, Msg::Noop))));
         items.push(widgets::sidebar_item(Icon::Cloud, "cloud.example.org", Trail::Dot(p.ok), false, Msg::Noop));
+        // A row with a second, quieter line (issue #398): a pinned folder with its account.
+        items.push(widgets::sidebar_item_detail_in(
+            mode,
+            Icon::Folder,
+            "Invoices",
+            "anna@work.example.org",
+            Trail::Count(3),
+            false,
+            Msg::Noop,
+        ));
         shell::sidebar(
             shell::app_switcher(AppId::TASKS, switcher, Msg::Switcher),
             items,
