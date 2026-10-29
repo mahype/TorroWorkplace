@@ -8466,40 +8466,13 @@ impl Core {
         }
     }
 
-    /// `accounts.connect_mail` (task M2.7; app key only, `Rights::allows` keeps every client key
-    /// out): checks the sign-in, stores it and starts the account. In this order:
-    ///
-    /// 1. what was given: the address ([`torro_mail::account_id`]), login, password, sender name,
-    ///    the form of the trusted certificates (issue #284) and servers (`error`); then the stored
-    ///    accounts (`error` without a home directory, before any server is asked);
-    /// 2. connecting an account that exists keeps its settings, hidden collections and rights, but
-    ///    `calendars` and `tasks` switch those services on (task M3.5: adding calendars to an
-    ///    account connected for mail only; never off). Without `caldav` the stored CalDAV address
-    ///    stays, also while calendars and tasks are off, and with an empty `sender_name` the stored
-    ///    sender name (task M2.8). Calendars or tasks without a CalDAV address are `not-found`;
-    /// 3. IMAP and SMTP ([`MailService::check_sign_in`]), then the CalDAV address when calendars or
-    ///    tasks are wanted or it is new ([`Core::check_caldav`]); every host goes, wherever it is
-    ///    (issue #284: the servers come from a person). A refusal is `auth` and names the server;
-    ///    nothing is stored before all of them took the password. Each server trusts the system's
-    ///    certificates, the account's stored ones and those of `trusted_certificates`; a server
-    ///    with another certificate is answered with [`Response::UntrustedCertificate`]
-    ///    ([`Core::sign_in_refusal`]) before the password went to it, and nothing is stored;
-    /// 4. once the account syncs calendars or tasks, the CalDAV account of the same sign-in
-    ///    (`account::caldav_sign_in`), if there is one, is taken over: the list names the mail
-    ///    account instead in the same write
-    ///    ([`MailService::save_account`]), its collections keep their settings and selections
-    ///    under the new ids ([`Core::take_over_choices`], hidden ones before anything is stored),
-    ///    and the calendar service swaps the two in one step ([`PimService::put_mail_account`]),
-    ///    so they never sync side by side;
-    /// 5. the mail sync starts anew ([`MailService::restart`]), also after a refused password.
-    ///
-    /// Answered with [`Response::MailConnected`]: the account as `accounts.list_accounts` lists
-    /// it, what the CalDAV address offers and the folder roles the server leaves open. The
-    /// password goes to the keychain and the servers only. The account keeps the trusted
-    /// certificates a server showed at this sign-in ([`kept_certificates`]), so connecting again
-    /// clears the ones no server uses any more and a fingerprint no server showed is never stored.
-    /// Checks edited server and login fields before changing a stored account. An empty password
-    /// field means the secret already in the system keychain; the reply never exposes it.
+    /// `accounts.reconfigure_mail` (issue #343; app key only): checks edited server and login fields
+    /// of a stored mail account, and with `save` stores them through [`Core::connect_mail`]. An
+    /// empty password field means the secret already in the system keychain; the reply never
+    /// exposes it. Saving changes the connection only: the sender name, calendars, tasks and the
+    /// CalDAV address come from the stored account, and so do its trusted certificates while both
+    /// servers stay the same – a server in the local network keeps the certificate the person
+    /// confirmed (issue #284).
     async fn reconfigure_mail(
         &self,
         id: &str,
@@ -8551,21 +8524,59 @@ impl Core {
             }
             return Response::MailConnectionChecked { id: id.to_string() };
         }
+        let old = account.mail.as_ref();
+        let same_servers = old.is_some_and(|old| old.imap.host == imap.host && old.smtp.host == smtp.host);
+        let services = account.mail_settings.as_ref().map(|settings| settings.services).unwrap_or_default();
         self.connect_mail(MailSignIn {
             address: config.address,
-            sender_name: String::new(),
+            sender_name: old.map(|old| old.sender_name.clone()).unwrap_or_default(),
             imap,
             smtp,
             login_name: login_name.to_string(),
             password,
-            calendars: false,
-            tasks: false,
-            caldav: None,
-            trusted_certificates: Vec::new(),
+            calendars: services.calendars,
+            tasks: services.tasks,
+            caldav: old.and_then(|old| old.caldav.clone()),
+            trusted_certificates: match same_servers {
+                true => old.map(|old| old.trusted_certificates.clone()).unwrap_or_default(),
+                false => Vec::new(),
+            },
         })
         .await
     }
 
+    /// `accounts.connect_mail` (task M2.7; app key only, `Rights::allows` keeps every client key
+    /// out): checks the sign-in, stores it and starts the account. In this order:
+    ///
+    /// 1. what was given: the address ([`torro_mail::account_id`]), login, password, sender name,
+    ///    the form of the trusted certificates (issue #284) and servers (`error`); then the stored
+    ///    accounts (`error` without a home directory, before any server is asked);
+    /// 2. connecting an account that exists keeps its settings, hidden collections and rights, but
+    ///    `calendars` and `tasks` switch those services on (task M3.5: adding calendars to an
+    ///    account connected for mail only; never off). Without `caldav` the stored CalDAV address
+    ///    stays, also while calendars and tasks are off, and with an empty `sender_name` the stored
+    ///    sender name (task M2.8). Calendars or tasks without a CalDAV address are `not-found`;
+    /// 3. IMAP and SMTP ([`MailService::check_sign_in`]), then the CalDAV address when calendars or
+    ///    tasks are wanted or it is new ([`Core::check_caldav`]); every host goes, wherever it is
+    ///    (issue #284: the servers come from a person). A refusal is `auth` and names the server;
+    ///    nothing is stored before all of them took the password. Each server trusts the system's
+    ///    certificates, the account's stored ones and those of `trusted_certificates`; a server
+    ///    with another certificate is answered with [`Response::UntrustedCertificate`]
+    ///    ([`Core::sign_in_refusal`]) before the password went to it, and nothing is stored;
+    /// 4. once the account syncs calendars or tasks, the CalDAV account of the same sign-in
+    ///    (`account::caldav_sign_in`), if there is one, is taken over: the list names the mail
+    ///    account instead in the same write
+    ///    ([`MailService::save_account`]), its collections keep their settings and selections
+    ///    under the new ids ([`Core::take_over_choices`], hidden ones before anything is stored),
+    ///    and the calendar service swaps the two in one step ([`PimService::put_mail_account`]),
+    ///    so they never sync side by side;
+    /// 5. the mail sync starts anew ([`MailService::restart`]), also after a refused password.
+    ///
+    /// Answered with [`Response::MailConnected`]: the account as `accounts.list_accounts` lists
+    /// it, what the CalDAV address offers and the folder roles the server leaves open. The
+    /// password goes to the keychain and the servers only. The account keeps the trusted
+    /// certificates a server showed at this sign-in ([`kept_certificates`]), so connecting again
+    /// clears the ones no server uses any more and a fingerprint no server showed is never stored.
     async fn connect_mail(&self, sign_in: MailSignIn) -> Response {
         let MailSignIn {
             address,
@@ -19809,6 +19820,43 @@ mod tests {
     /// Trusted, it connects, and the account keeps exactly that certificate, not one no server
     /// showed. When the server shows another certificate later, the account has a problem a person
     /// must look at, and the server never sees a login.
+    /// Issue #397: "Save connection" in the account's page changes the connection only – the sender
+    /// name and the certificate the person confirmed for a server in the local network stay, so the
+    /// next sign-in still trusts it.
+    #[tokio::test]
+    async fn saving_a_connection_keeps_the_sender_name_and_the_trusted_certificate() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let untrusting = torro_mail_imap::imap::Trust::Only(Vec::new());
+        let (mail, _smtp) = service_trusting(dir.path(), &secrets, MAIL_PASSWORD, untrusting);
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let shown = fake_imap_certificate();
+        let mut first = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
+        let Request::ConnectMail { trusted_certificates, smtp, .. } = &mut first else { panic!("a sign-in") };
+        *trusted_certificates = vec![shown.clone()];
+        let smtp = smtp.clone();
+        let connected = ask(&core, Some(&app_key), first).await;
+        assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+
+        let save = Request::ReconfigureMail {
+            id: ANNA_MAIL.into(),
+            imap: server.endpoint.clone(),
+            smtp,
+            login_name: "anna".into(),
+            password: None,
+            save: true,
+        };
+        let saved = ask(&core, Some(&app_key), save).await;
+        assert!(matches!(saved, Response::MailConnected { .. }), "{saved:?}");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let config = stored[0].mail.clone().expect("a mail account");
+        assert_eq!(config.sender_name, "Anna", "the sender name stays");
+        assert_eq!(config.trusted_certificates, std::slice::from_ref(&shown), "the confirmed certificate stays");
+        nowhere(dir.path(), MAIL_PASSWORD, &[&connected, &saved]);
+    }
+
     #[tokio::test]
     async fn a_certificate_the_person_trusts_is_kept_and_another_one_stops_the_sync() {
         let dir = tempfile::tempdir().expect("temp dir");
