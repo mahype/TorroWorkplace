@@ -57,6 +57,128 @@ const CLICK_SLOP: f32 = 4.0;
 /// 0.6): below half size text is no longer readable, and the rest is cut off on the right instead.
 const MIN_ZOOM: f32 = 0.5;
 
+/// Imported CSS never reaches the mail renderer (the fetcher accepts pictures only). Remove the
+/// rules before Blitz parses them: its stylesheet loader unwraps an unresolved import URL.
+fn without_css_imports(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut cursor = 0;
+    let mut scan = 0;
+    while let Some(offset) = html[scan..].find('<') {
+        let start = scan + offset;
+        if html[start..].starts_with("<!--") {
+            scan = html[start + 4..].find("-->").map_or(html.len(), |offset| start + 4 + offset + 3);
+            continue;
+        }
+        if html.as_bytes()[start..].get(..6).is_none_or(|part| !part.eq_ignore_ascii_case(b"<style")) {
+            scan = start + 1;
+            continue;
+        }
+        let after_name = start + "<style".len();
+        if html.as_bytes().get(after_name).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'-') {
+            scan = after_name;
+            continue;
+        }
+        let Some(open_end) = html[after_name..].find('>').map(|offset| after_name + offset + 1) else { break };
+        let Some(close) = find_ascii_case_insensitive(&html[open_end..], b"</style").map(|offset| open_end + offset)
+        else {
+            break;
+        };
+        result.push_str(&html[cursor..open_end]);
+        result.push_str(&without_import_rules(&html[open_end..close]));
+        cursor = close;
+        scan = close;
+    }
+    result.push_str(&html[cursor..]);
+    result
+}
+
+fn find_ascii_case_insensitive(text: &str, needle: &[u8]) -> Option<usize> {
+    text.as_bytes().windows(needle.len()).position(|part| part.eq_ignore_ascii_case(needle))
+}
+
+/// Remove `@import` through its semicolon, respecting strings, comments and `url(…)` arguments.
+fn without_import_rules(css: &str) -> String {
+    let bytes = css.as_bytes();
+    let mut result = String::with_capacity(css.len());
+    let mut cursor = 0;
+    let mut index = 0;
+    let mut quote = None;
+    let mut comment = false;
+    while index < bytes.len() {
+        if comment {
+            if bytes[index..].starts_with(b"*/") {
+                comment = false;
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(mark) = quote {
+            match bytes[index] {
+                b'\\' => index = (index + 2).min(bytes.len()),
+                byte if byte == mark => {
+                    quote = None;
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        } else if bytes[index..].starts_with(b"/*") {
+            comment = true;
+            index += 2;
+        } else if matches!(bytes[index], b'\'' | b'"') {
+            quote = Some(bytes[index]);
+            index += 1;
+        } else if bytes[index..].get(..7).is_some_and(|part| part.eq_ignore_ascii_case(b"@import"))
+            && !bytes.get(index + 7).is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            result.push_str(&css[cursor..index]);
+            index = import_end(bytes, index + 7);
+            cursor = index;
+        } else {
+            index += 1;
+        }
+    }
+    result.push_str(&css[cursor..]);
+    result
+}
+
+fn import_end(bytes: &[u8], mut index: usize) -> usize {
+    let mut quote = None;
+    let mut comment = false;
+    let mut parens: usize = 0;
+    while index < bytes.len() {
+        if comment {
+            if bytes[index..].starts_with(b"*/") {
+                comment = false;
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else if let Some(mark) = quote {
+            match bytes[index] {
+                b'\\' => index = (index + 2).min(bytes.len()),
+                byte if byte == mark => {
+                    quote = None;
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        } else if bytes[index..].starts_with(b"/*") {
+            comment = true;
+            index += 2;
+        } else {
+            match bytes[index] {
+                b'\'' | b'"' => quote = Some(bytes[index]),
+                b'(' => parens += 1,
+                b')' => parens = parens.saturating_sub(1),
+                b';' if parens == 0 => return index + 1,
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+    index
+}
+
 /// One mail, parsed and ready to draw with [`crate::HtmlView`].
 ///
 /// Keep it in the app state while the mail is shown; build a new one for another mail. Its pictures start
@@ -247,6 +369,9 @@ impl Content {
     }
 
     pub(crate) fn build(html: &str, fetcher: Fetcher) -> Self {
+        // Blitz panics when an @import has no resolvable URL (for example `url("")`). Imported
+        // stylesheets are not used here anyway: the fetcher only hands pictures back to Blitz.
+        let html = without_css_imports(html);
         let config = DocumentConfig {
             viewport: Some(Fit::new(1.0, 1.0, Scheme::Light).viewport(1.0)),
             net_provider: Some(Arc::new(fetcher.clone())),
@@ -255,7 +380,7 @@ impl Content {
             style_threading: StyleThreading::Sequential,
             ..Default::default()
         };
-        let mut doc = HtmlDocument::from_html(html, config).into_inner();
+        let mut doc = HtmlDocument::from_html(&html, config).into_inner();
         doc.add_user_agent_stylesheet(MAIL_DEFAULTS);
         let inner = Inner {
             doc,

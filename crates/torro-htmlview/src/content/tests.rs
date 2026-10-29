@@ -305,6 +305,28 @@ fn a_refused_style_sheet_does_not_blank_the_mail() {
     assert!(painted(&snapshot, Scheme::Light) > 20);
 }
 
+#[test]
+fn an_empty_css_import_does_not_crash_the_mail() {
+    let tricky = r#"<!-- A description of the <style> block and its @import rule. -->
+        <style type="text/css">@import url(""); @import url("https://fonts.example/a;b.css");
+        /* @import url("kept"); */ p::before { content: "@import url('kept');"; }
+        p { color: red; }</style><p>Still here</p>"#;
+    let cleaned = without_css_imports(tricky);
+    assert!(!cleaned.contains("@import url(\"\");"));
+    assert!(cleaned.contains("/* @import url(\"kept\"); */"));
+    assert!(cleaned.contains("<style type=\"text/css\">"));
+    assert!(cleaned.contains("p { color: red; }"));
+
+    for html in [
+        "<style>@import url(\"\"); p { color: red; }</style><p>Still here</p>",
+        "<style>@IMPORT \"mail.css\"; p { color: red; }</style><p>Still here</p>",
+    ] {
+        let content = content(html);
+        let snapshot = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 60.0);
+        assert!(painted(&snapshot, Scheme::Light) > 20);
+    }
+}
+
 const LINKS: &str = "<a href=\"https://example.com/x\" style=\"display:block;width:200px;height:30px\">Example</a>\
      <a href=\"javascript:alert(1)\" style=\"display:block;width:200px;height:30px\">Script</a>\
      <a href=\"mailto:sam@example.com\" style=\"display:block;width:200px;height:30px\">Mail</a>\
