@@ -109,13 +109,23 @@ pub struct Insights {
     pub range: StatsRange,
     /// "Table view": the numbers as tables instead of charts.
     pub table: bool,
-    /// The answer for `range`: `None` while it loads.
+    /// The last answer: `None` until the first came. It stays while another span loads (issue
+    /// #396), so the page keeps its numbers and says "Updating…" over them.
     pub stats: Option<Result<InboxStats, String>>,
+    /// The span `stats` is for; another than `range` while the chosen span's answer is on its way.
+    pub stats_range: Option<StatsRange>,
 }
 
 impl Default for Insights {
     fn default() -> Insights {
-        Insights { shown: false, range: StatsRange::Week, table: false, stats: None }
+        Insights { shown: false, range: StatsRange::Week, table: false, stats: None, stats_range: None }
+    }
+}
+
+impl Insights {
+    /// The chosen span's answer is on its way: what stands is another span's, or nothing yet.
+    pub fn updating(&self) -> bool {
+        self.stats_range != Some(self.range)
     }
 }
 
@@ -500,17 +510,25 @@ pub fn controls<'a>(insights: &Insights) -> Vec<Element<'a, Message>> {
 }
 
 /// The page: loading, the error with "Retry", the empty span, or the figures, the charts (or their
-/// tables) and the suggestions, at most two reading widths wide and scrolling.
+/// tables) and the suggestions, at most two reading widths wide and scrolling. While another span
+/// loads, the numbers of the last one stay with "Updating…" over them (issue #396); loading stands
+/// only where none came yet.
 pub fn view(data: InsightsData<'_>) -> Element<'_, Message> {
     let narrow = is_narrow(data.class);
+    let updating = data.insights.updating();
     let stats = match &data.insights.stats {
         None => return widgets::loading(),
+        // The last span failed and the chosen one is on its way: its answer decides.
+        Some(Err(_)) if updating => return widgets::loading(),
         Some(Err(_)) => return widgets::error_state(tr("Couldn't load the numbers."), Message::Refresh),
         Some(Ok(stats)) => stats,
     };
     let mut blocks: Vec<Element<'_, Message>> = Vec::new();
     if narrow {
         blocks.push(row(controls(data.insights)).spacing(space::s()).align_y(Alignment::Center).into());
+    }
+    if updating {
+        blocks.push(widgets::refresh_note(tr("Updating…")));
     }
     if stats.totals.new == 0 && stats.suggestions.is_empty() {
         blocks.push(widgets::empty_state(

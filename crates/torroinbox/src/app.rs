@@ -277,6 +277,9 @@ fn account_key(account: &str) -> String {
 /// entry or a time in the list changed.
 const REFRESH: Duration = Duration::from_secs(10);
 
+/// How many folders the mail window keeps the last list of (issue #396, `App::folder_cache`).
+const FOLDER_CACHE: usize = 8;
+
 /// How long a message the core moved stays out of what loads in its old folder, and its entry
 /// out of the lists (issue #205): long enough for a load asked before the answer and for the core
 /// to settle the entry; an entry still open after it (another unread mail of the conversation)
@@ -2616,6 +2619,10 @@ pub struct App<S> {
     /// The folder whose messages `messages` holds; another folder's view shows loading until its
     /// messages are in.
     listed: Option<String>,
+    /// The last lists of the folders and views visited, by their listing ([`View::listing`]),
+    /// newest first, at most [`FOLDER_CACHE`] (issue #396): a folder visited before shows them at
+    /// once while its fresh messages load. Only while the window runs; never a search.
+    folder_cache: Vec<(String, Vec<MessageSummary>)>,
     /// What is typed into the search field over the list (issue #136).
     search: String,
     /// When what is typed should be searched for: [`search::DEBOUNCE`] after the last key.
@@ -3882,6 +3889,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             letter: None,
             text: Selectable::default(),
             listed: None,
+            folder_cache: Vec::new(),
             search: String::new(),
             search_due: None,
             search_from: None,
@@ -4233,9 +4241,32 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         if view != self.view {
             self.view = view;
+            // The error line was the last list's; the new one says its own (issue #396).
+            self.error = None;
+            self.recall_listing();
             return self.load();
         }
         Task::none()
+    }
+
+    /// Keeps the messages just listed for the next visit of their folder (issue #396), in front of
+    /// the others; a search's results are not kept, they belong to what was typed.
+    fn remember_listing(&mut self) {
+        let Some(listing) = self.listed.clone().filter(|listing| listing != "search") else { return };
+        self.folder_cache.retain(|(held, _)| *held != listing);
+        self.folder_cache.insert(0, (listing, self.messages.clone()));
+        self.folder_cache.truncate(FOLDER_CACHE);
+    }
+
+    /// Shows what the view listed when it was last open (issue #396), while its fresh messages
+    /// load; without "Load more", whose cursor belonged to that load. A view never open keeps its
+    /// loading state.
+    fn recall_listing(&mut self) {
+        let Some(listing) = self.view.listing() else { return };
+        let Some((_, messages)) = self.folder_cache.iter().find(|(held, _)| *held == listing) else { return };
+        self.messages = messages.clone();
+        self.listed = Some(listing);
+        self.more = None;
     }
 
     /// Asks the core for the mail settings (task M9.7), on every tick like the appearance.
@@ -5263,9 +5294,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::StartMail(id, result) => return self.show_start_mail(id, result),
             Message::ShowInsights => return self.show_insights(),
             Message::StatsRange(range) => {
+                // The last span's numbers stay until the new ones come (issue #396).
                 if range != self.insights.range {
                     self.insights.range = range;
-                    self.insights.stats = None;
                     return self.load_stats();
                 }
             }
@@ -5273,6 +5304,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Stats(range, stats) => {
                 if range == self.insights.range {
                     self.insights.stats = Some(stats);
+                    self.insights.stats_range = Some(range);
                 }
             }
         }
@@ -7214,6 +7246,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             keep_pile(listed, &mut mail.summary);
         }
         self.listed = self.view.listing();
+        self.remember_listing();
         self.loaded = true;
         // The forced error line stays over every load, so it can be photographed.
         self.error = (self.launch.open == Some(Open::Failed))
@@ -10095,14 +10128,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.shows_search() {
             content = content.push(self.search_bar(filters));
         }
-        if let Some(failure) = &self.error {
+        // Another folder's messages are still held until this one's come: show loading – or, when
+        // they could not be loaded, why, with "Retry" (issue #396), not a loading without end.
+        let listing = self.view.listing();
+        let waiting = self.view.is_mail() && listing.is_some() && self.listed != listing;
+        if let Some(failure) = self.error.as_ref().filter(|_| !waiting) {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
         }
         let rows = if self.view.is_mail() {
-            // Another folder's messages are still held until this one's come: show loading.
-            let listing = self.view.listing();
-            if listing.is_some() && self.listed != listing {
-                widgets::loading()
+            if waiting {
+                self.error.as_ref().map_or_else(widgets::loading, failure_state)
             } else {
                 mail::list(mail::MailList {
                     messages: &self.messages,
@@ -17216,6 +17251,45 @@ mod tests {
         assert_eq!(app.menu, None, "nothing in the archive");
     }
 
+    /// Issue #396: a folder visited before shows its last list at once while its fresh messages
+    /// load; one never visited shows loading, and when its load fails, the error with "Retry"
+    /// instead of a loading without end.
+    #[test]
+    fn a_folder_visited_before_shows_its_last_list_at_once() {
+        let mut app = mail_window(Density::Compact, &[]);
+        load(&mut app);
+        let folder = |app: &App<DemoSource>, id: &str| {
+            View::Folder(FolderView::of(
+                &app.folders.iter().find(|held| held.id == id).cloned().expect("a demo folder"),
+            ))
+        };
+        let (inbox, sent) = (folder(&app, "f:work-inbox"), folder(&app, "f:work-sent"));
+        let _ = app.update(Message::Show(inbox.clone()));
+        load(&mut app);
+        let listed = app.messages.clone();
+        assert!(!listed.is_empty());
+
+        let _ = app.update(Message::Show(sent.clone()));
+        assert_ne!(app.listed, sent.listing(), "Sent was never open: it loads");
+        load(&mut app);
+        let _ = app.update(Message::Show(inbox.clone()));
+        assert_eq!(app.listed, inbox.listing(), "the inbox stands at once");
+        assert_eq!(app.messages, listed, "with what it listed");
+        assert!(app.more.is_none(), "without the cursor of an older load");
+        draw_everywhere(&mut app);
+
+        // A folder whose first load fails says so.
+        let archive = folder(&app, "f:work-archive");
+        let _ = app.update(Message::Show(archive.clone()));
+        let _ = app.update(Message::Loaded(archive, Err(DEMO_ERROR.into())));
+        assert!(app.error.is_some() && app.listed != app.view.listing(), "the error stands for the list");
+        draw_everywhere(&mut app);
+        // Kept at most for eight folders, the last one loaded first.
+        assert!(app.folder_cache.len() <= FOLDER_CACHE);
+        assert_eq!(app.folder_cache.first().map(|(listing, _)| Some(listing.clone())), Some(sent.listing()));
+        assert!(app.folder_cache.iter().any(|(listing, _)| Some(listing.clone()) == inbox.listing()));
+    }
+
     /// Review of PR #327: `w` and `b` put no mail of the trash or spam on a pile, but mail of the
     /// archive and the inbox.
     #[test]
@@ -19762,10 +19836,14 @@ mod tests {
         deliver_stats(&mut hub);
         let week = hub.insights.stats.clone();
         let _ = hub.update(Message::StatsRange(torro_ipc::StatsRange::Quarter));
-        assert!(hub.insights.stats.is_none(), "the quarter loads");
+        // Issue #396: the week's numbers stay, with "Updating…" over them, while the quarter loads.
+        assert!(hub.insights.updating(), "the quarter loads");
+        assert_eq!(hub.insights.stats, week, "the week's numbers stay meanwhile");
+        draw_everywhere(&mut hub);
         let _ = hub.update(Message::Stats(torro_ipc::StatsRange::Week, week.clone().expect("loaded")));
-        assert!(hub.insights.stats.is_none(), "the week's late answer is dropped");
+        assert!(hub.insights.updating(), "the week's late answer is dropped");
         deliver_stats(&mut hub);
+        assert!(!hub.insights.updating());
         assert!(matches!(&hub.insights.stats, Some(Ok(stats)) if stats.days.len() == 90));
         let _ = hub.update(Message::StatsTable(true));
         assert!(hub.insights.table && hub.insights.stats.is_some());
