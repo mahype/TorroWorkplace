@@ -79,10 +79,9 @@ fn without_css_imports(html: &str) -> String {
             continue;
         }
         let Some(open_end) = html[after_name..].find('>').map(|offset| after_name + offset + 1) else { break };
-        let Some(close) = find_ascii_case_insensitive(&html[open_end..], b"</style").map(|offset| open_end + offset)
-        else {
-            break;
-        };
+        // A cut-off mail has no closing tag: the parser reads the rest of the document as the style.
+        let close =
+            find_ascii_case_insensitive(&html[open_end..], b"</style").map_or(html.len(), |offset| open_end + offset);
         result.push_str(&html[cursor..open_end]);
         result.push_str(&without_import_rules(&html[open_end..close]));
         cursor = close;
@@ -115,7 +114,8 @@ fn without_import_rules(css: &str) -> String {
         } else if let Some(mark) = quote {
             match bytes[index] {
                 b'\\' => index = (index + 2).min(bytes.len()),
-                byte if byte == mark => {
+                // An unescaped line break ends a string in CSS, so a stray quote cannot hide the rest.
+                byte if byte == mark || byte == b'\n' => {
                     quote = None;
                     index += 1;
                 }
@@ -156,7 +156,8 @@ fn import_end(bytes: &[u8], mut index: usize) -> usize {
         } else if let Some(mark) = quote {
             match bytes[index] {
                 b'\\' => index = (index + 2).min(bytes.len()),
-                byte if byte == mark => {
+                // An unescaped line break ends a string in CSS, so a stray quote cannot hide the rest.
+                byte if byte == mark || byte == b'\n' => {
                     quote = None;
                     index += 1;
                 }

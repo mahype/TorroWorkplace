@@ -317,6 +317,8 @@ fn an_empty_css_import_does_not_crash_the_mail() {
     assert!(cleaned.contains("<style type=\"text/css\">"));
     assert!(cleaned.contains("p { color: red; }"));
 
+    assert!(!without_css_imports("<style>@import url(\"\");").contains("@import"));
+    assert!(!without_css_imports("<style>p { font-family: 'Foo; }\n@import url(\"\");</style>").contains("@import"));
     for html in [
         "<style>@import url(\"\"); p { color: red; }</style><p>Still here</p>",
         "<style>@IMPORT \"mail.css\"; p { color: red; }</style><p>Still here</p>",
