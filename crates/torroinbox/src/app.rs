@@ -8903,7 +8903,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let edit = |remember| Message::SetCategory(id(), category, remember);
                 let sender = Self::mail_sender_of(item).unwrap_or_else(|| item.source.label().to_string());
                 let always = trf("Always for {sender}", &[("sender", &sender)]);
-                let mark = mail::group_mark(mail::category_look(&self.categories, category).1).0;
+                let mark = mail::group_look(&self.categories, mail::category_look(&self.categories, category).1).0;
                 vec![
                     choice(mark, tr("Only this mail").to_owned(), edit(false)),
                     choice(Icon::Repeat, always, edit(true)),
@@ -10397,7 +10397,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
             // four colours are learnt. The line of its branch takes it too (issue #300).
             let mark = mail::category_symbol(of_group[0].group_icon);
-            let at = usize::from(of_group[0].group_color.min(3));
+            let at = usize::from(of_group[0].group_color.min(4));
             let line = self.category_colour(at);
             let entry = NavEntry {
                 mark: Mark::Tinted(mark, line),
@@ -10955,7 +10955,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 continue;
             }
             let group_icon = mail::category_symbol(of_group[0].group_icon);
-            let color_at = usize::from(of_group[0].group_color.min(3));
+            let color_at = usize::from(of_group[0].group_color.min(4));
             let color = palette(&self.theme()).category[color_at];
             let group_heading = row![
                 icon::icon(group_icon, icon::SIZE).style(move |_, _| iced::widget::svg::Style { color: Some(color) }),
