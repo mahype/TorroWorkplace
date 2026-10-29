@@ -2,10 +2,11 @@
 //! `data:` decoded here, `cid:` from the app ([`CidSource`]); every other scheme is refused. Only pictures go
 //! back to Blitz (PNG, JPEG, GIF, WebP by their first bytes).
 //!
-//! Blitz asks for more than the pictures of `<img>`: style sheets (`<link>`, `@import`), fonts (`@font-face`)
-//! and pictures in CSS `url()`. Its [`Request`] carries only the URL, not what kind of resource it wants, so
+//! Blitz asks for more than the pictures of `<img>`: style sheets (`<link>`), fonts (`@font-face`) and
+//! pictures in CSS `url()`. Its [`Request`] carries only the URL, not what kind of resource it wants, so
 //! such a request cannot be told from a picture's and goes out like one; only its answer is refused. The
-//! core's cleaning already drops `<link>`, a `<style>` of the mail may still name the others.
+//! core's cleaning already drops `<link>`, a `<style>` of the mail may still name the others. `@import` is
+//! removed before Blitz parses the mail (`Content::build`), so it never gets here.
 //!
 //! Web requests reach only public hosts (review of M9.6): an IP literal or `localhost` that is not public is
 //! refused before the request, every redirect is checked the same way ([`Guard`]), and host names resolve
@@ -17,8 +18,7 @@
 //! M9.4). Here every answer goes back under the URL Blitz asked for.
 //!
 //! Every request Blitz makes gets an answer, also a refusal (empty bytes): Blitz holds back painting while a
-//! style sheet it counts as critical (`@import`) is pending, and an answer that never comes would leave the
-//! mail blank. Empty bytes are an empty style sheet, a font or picture that fails to decode.
+//! style sheet it counts as critical is pending, and an answer that never comes would leave the mail blank. Empty bytes are an empty style sheet, a font or picture that fails to decode.
 //!
 //! The fetches of all mails run on one small tokio runtime of this library, never on the UI thread; the
 //! picture is decoded there too (Blitz decodes in the handler).
