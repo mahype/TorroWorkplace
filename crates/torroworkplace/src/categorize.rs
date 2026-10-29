@@ -279,6 +279,27 @@ pub fn plan(catalogue: &[CategoryDef]) -> Plan {
     Plan::ByGroup(groups)
 }
 
+/// The part of `catalogue` a model chooses from for mail of a contact (issue #390): the group
+/// [`Category::Personal`] stands in now, and [`Category::Phishing`], so a forged sender stays
+/// recognisable. Whether a model may choose each stays the person's ([`CategoryDef::model`]).
+/// Without "Other" on offer, an answer that fits none of them keeps the mail where the contacts
+/// put it ([`for_contact_kept`]).
+pub fn for_contact(catalogue: &[CategoryDef]) -> Vec<CategoryDef> {
+    let personal = catalogue.iter().find(|def| def.category == Category::Personal).map(|def| def.group);
+    catalogue.iter().filter(|def| Some(def.group) == personal || def.category == Category::Phishing).cloned().collect()
+}
+
+/// What a model said about mail of a contact (issue #390), held to [`for_contact`]: "other" (the
+/// model was unsure, or named something not offered) and anything outside the part keeps
+/// [`Category::Personal`] as the contacts set it, with the side answers the model gave.
+pub fn for_contact_kept(decided: Decided, part: &[CategoryDef]) -> Decided {
+    let offered = part.iter().any(|def| def.category == decided.category.category && def.model);
+    if offered && decided.category.category != Category::Other {
+        return decided;
+    }
+    Decided { category: MailCategory::by_rule(Category::Personal), ..decided }
+}
+
 /// The one call that decides what `content` is: the three questions of `docs/kategorien.md`,
 /// with `offered` as the options of the category.
 pub fn request(model: &str, content: &Content, offered: &[Offer]) -> DecisionRequest {
@@ -1098,5 +1119,63 @@ mod tests {
         let decided = decide("nimble", &content(), &catalogue, |request| one.ask(request)).await.expect("asked");
         assert_eq!(decided.map(|decided| decided.category.category), Some(Category::Request));
         assert_eq!(one.asked.lock().expect("lock").len(), 1);
+    }
+
+    /// Issue #390: mail of a contact is asked about the group Personal stands in and Phishing only,
+    /// with the person's own category there and their switches; "other" and anything outside keep
+    /// Personal.
+    #[test]
+    fn a_contact_s_mail_is_asked_about_its_group_and_phishing() {
+        let mut catalogue = with_own(1, false);
+        catalogue.push(CategoryDef {
+            category: Category::Custom(torro_mail::CustomCategory::new(9).expect("a number")),
+            group: CategoryGroup::WaitingForMe,
+            name: Some("Family".into()),
+            description: Some("Mail of the family.".into()),
+            model: true,
+            icon: torro_mail::CategoryIcon::Tag,
+        });
+        if let Some(task) = catalogue.iter_mut().find(|def| def.category == Category::Task) {
+            task.model = false;
+        }
+        let part = for_contact(&catalogue);
+        let offered: Vec<Category> = offers(&part).into_iter().map(|offer| offer.category).collect();
+        assert_eq!(
+            offered,
+            [
+                Category::Request,
+                Category::Approval,
+                Category::Security,
+                Category::Personal,
+                Category::Phishing,
+                Category::Custom(torro_mail::CustomCategory::new(9).expect("a number")),
+            ],
+            "no paper trail, no info, no other; the switched-off task stays out"
+        );
+        assert!(part.iter().any(|def| def.category == Category::Task && !def.model), "the switches stay");
+
+        let said = |category: Category| Decided {
+            category: MailCategory::by_model(category, 0.9),
+            needs_reply: Some(true),
+            urgency: Some(2),
+        };
+        assert_eq!(for_contact_kept(said(Category::Request), &part), said(Category::Request));
+        assert_eq!(for_contact_kept(said(Category::Phishing), &part), said(Category::Phishing));
+        let kept = for_contact_kept(said(Category::Other), &part);
+        assert_eq!(kept.category, MailCategory::by_rule(Category::Personal), "unsure keeps the contacts' word");
+        assert_eq!((kept.needs_reply, kept.urgency), (Some(true), Some(2)), "with the side answers");
+        let outside = for_contact_kept(said(Category::Invoice), &part);
+        assert_eq!(outside.category, MailCategory::by_rule(Category::Personal));
+        let off = for_contact_kept(said(Category::Task), &part);
+        assert_eq!(off.category, MailCategory::by_rule(Category::Personal), "a category switched off is none");
+
+        // The person moved Personal: its new group is what the contacts decide.
+        let mut moved = CategoryDef::defaults();
+        if let Some(personal) = moved.iter_mut().find(|def| def.category == Category::Personal) {
+            personal.group = CategoryGroup::Info;
+        }
+        let part = for_contact(&moved);
+        assert!(part.iter().any(|def| def.category == Category::Newsletter));
+        assert!(!part.iter().any(|def| def.category == Category::Request));
     }
 }

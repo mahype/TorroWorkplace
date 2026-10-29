@@ -155,10 +155,17 @@ fn name_part(part: &str) -> bool {
 ///
 /// `decide` asks a decision model what new mail is that the fixed rules could not sort (task
 /// E12.6); `None` leaves such mail without a category – exactly what happens when nobody set a
-/// model up.
-pub fn start_with(inbox: Arc<Inbox>, mail: Arc<MailService>, accounts_file: Option<PathBuf>, decide: Option<Decider>) {
+/// model up. `known` tells whether a sender is a contact whose mail goes to Personal before the
+/// model (issue #390); `None` knows nobody.
+pub fn start_with(
+    inbox: Arc<Inbox>,
+    mail: Arc<MailService>,
+    accounts_file: Option<PathBuf>,
+    decide: Option<Decider>,
+    known: Option<KnownSender>,
+) {
     let changes = mail.subscribe();
-    tokio::spawn(Feed { inbox, mail, accounts_file, decide }.run(changes));
+    tokio::spawn(Feed { inbox, mail, accounts_file, decide, known }.run(changes));
 }
 
 /// How long one mail may keep the decision model busy, and how long the run waits before the
@@ -169,10 +176,11 @@ const DECIDE_PAUSE: Duration = Duration::from_millis(250);
 
 /// Asks the model about `messages` of `account`, one at a time, and puts what it says on their
 /// entries too (task E12.6). Runs beside the filing, never in it: the entries are there already,
-/// and the category reaches them as soon as the model answered.
-async fn decide_later(decide: Decider, inbox: Arc<Inbox>, account: String, messages: Vec<String>) {
-    for message in messages {
-        let asked = decide(account.clone(), message.clone());
+/// and the category reaches them as soon as the model answered. Each message comes with whether it
+/// is a contact's, in Personal already (issue #390).
+async fn decide_later(decide: Decider, inbox: Arc<Inbox>, account: String, messages: Vec<(String, bool)>) {
+    for (message, contact) in messages {
+        let asked = decide(account.clone(), message.clone(), contact);
         let category = match tokio::time::timeout(DECIDE_TIMEOUT, asked).await {
             Ok(category) => category,
             Err(_) => {
@@ -192,10 +200,18 @@ async fn decide_later(decide: Decider, inbox: Arc<Inbox>, account: String, messa
 }
 
 /// Asks a decision model what the mail `message` of `account` is and keeps the answer with it
-/// (task E12.6); `Ok(None)` when nothing could be said. The core wires `Core::decide_new_mail`
-/// in here, so the feed need not know about AI accounts, assignments or the data rule.
-pub type Decider =
-    Arc<dyn Fn(String, String) -> std::pin::Pin<Box<dyn Future<Output = Option<MailCategory>> + Send>> + Send + Sync>;
+/// (task E12.6); `Ok(None)` when nothing could be said. The third argument says the mail is a
+/// contact's, in Personal already: the model then only chooses within that group (issue #390). The
+/// core wires `Core::decide_new_mail` in here, so the feed need not know about AI accounts,
+/// assignments or the data rule.
+pub type Decider = Arc<
+    dyn Fn(String, String, bool) -> std::pin::Pin<Box<dyn Future<Output = Option<MailCategory>> + Send>> + Send + Sync,
+>;
+
+/// Whether a sender's address (in small letters, `torro_inbox::rules::sender_key`) belongs to a
+/// contact whose mail goes to Personal (issue #390). The core wires the address books and the
+/// setting "Mail from contacts is personal" in here, so the feed need not know about contacts.
+pub type KnownSender = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Marks the mail of `item` read on its server, in the background, when `item` is a mail entry
 /// the inbox just marked done (task E4.1), or a done GitHub entry with GitHub mail filed with it
@@ -468,6 +484,8 @@ struct Feed {
     /// Asks a decision model about mail the fixed rules could not sort (task E12.6); `None`
     /// leaves such mail without a category.
     decide: Option<Decider>,
+    /// Whether a sender is a contact whose mail goes to Personal (issue #390); `None` knows nobody.
+    known: Option<KnownSender>,
     inbox: Arc<Inbox>,
     mail: Arc<MailService>,
     accounts_file: Option<PathBuf>,
@@ -835,7 +853,7 @@ impl Feed {
         // What the fixed rules make of each mail (task E12.2): kept with the mail, so the list,
         // the search and the sidebar show it, and put on the entry by `file_mail` as well. Mail
         // nothing can be said about yet stays without one until a model is asked (task E12.6).
-        let decided: Vec<(String, MailCategory)> = mails
+        let mut decided: Vec<(String, MailCategory)> = mails
             .iter()
             .filter(|mail| !held.contains(&mail.message))
             .filter_map(|mail| match self.inbox.mail_category_of(mail) {
@@ -847,7 +865,21 @@ impl Feed {
                 }
             })
             .collect();
-        let sorted: Vec<String> = decided.iter().map(|(message, _)| message.clone()).collect();
+        // Mail of a contact that no filter, rule or header sorted goes to Personal (issue #390):
+        // a model asked after only chooses within that group.
+        let mut contacts: Vec<String> = Vec::new();
+        for mail in &mut mails {
+            let ruled = decided.iter().any(|(message, _)| *message == mail.message);
+            if held.contains(&mail.message) || ruled || !self.is_from_contact(mail) {
+                continue;
+            }
+            let personal = MailCategory::by_rule(torro_mail::Category::Personal);
+            mail.category = Some(personal);
+            decided.push((mail.message.clone(), personal));
+            contacts.push(mail.message.clone());
+        }
+        let sorted: Vec<String> =
+            decided.iter().map(|(message, _)| message.clone()).filter(|message| !contacts.contains(message)).collect();
         if !decided.is_empty()
             && let Err(err) = store
                 .run(move |store| {
@@ -870,16 +902,28 @@ impl Feed {
         // task of its own (task E12.6). New mail must stand in the list at once; a local model
         // takes seconds per mail, and waiting here would hold up every entry of this round.
         if let Some(decide) = &self.decide {
-            let undecided: Vec<String> = mails
+            let undecided: Vec<(String, bool)> = mails
                 .iter()
                 .filter(|mail| !sorted.contains(&mail.message) && !held.contains(&mail.message))
-                .map(|mail| mail.message.clone())
+                .map(|mail| (mail.message.clone(), contacts.contains(&mail.message)))
                 .collect();
             if !undecided.is_empty() {
                 let (decide, inbox, owner) = (Arc::clone(decide), Arc::clone(&self.inbox), account.to_string());
                 tokio::spawn(decide_later(decide, inbox, owner, undecided));
             }
         }
+    }
+
+    /// Whether `mail` goes to Personal for being a contact's (issue #390): no filter gave it a
+    /// category, it was not sent automatically or to a list, its sender is known, and clearing all
+    /// categories does not hold sorting back (the rules are held back then too).
+    fn is_from_contact(&self, mail: &NewMail) -> bool {
+        let Some(known) = &self.known else { return false };
+        if mail.category.is_some() || mail.bulk.is_some() || mail.junk {
+            return false;
+        }
+        let Some(sender) = torro_inbox::rules::sender_key(mail.from.as_ref()) else { return false };
+        known(&sender) && !self.inbox.category_clear_blocked().unwrap_or(true)
     }
 
     /// Marks done the open entries of `account` (with `touching`, only those holding one of these
@@ -1145,7 +1189,7 @@ pub(crate) mod tests {
     async fn fed(dir: &Path, secrets: &MemoryTokens) -> (Arc<Inbox>, Arc<MailService>) {
         let inbox = Arc::new(inbox_in(dir));
         let mail = Arc::new(service_in(dir, secrets));
-        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)), None);
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)), None, None);
         mail.reload().await;
         (inbox, mail)
     }
@@ -1255,7 +1299,7 @@ pub(crate) mod tests {
         let review = crate::inbox::tests::remote(SourceRef::github("anna-berg"), "42", &["101"], Utc::now());
         let github_entry = crate::inbox::tests::filed_remote(&inbox, &review, Utc::now());
         let mail = Arc::new(service_in(dir.path(), &secrets));
-        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None);
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None);
         mail.reload().await;
 
         eventually("filed", || async { entries(&inbox).len() == 2 }).await;
@@ -1453,7 +1497,8 @@ pub(crate) mod tests {
             removed: Vec::new(),
             initial: false,
         };
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
 
         feed.take(change(&of("Re Offer mine"), Some(Role::Sent)), Utc::now()).await;
         assert_eq!(state("Offer", Utc::now()), (State::Snoozed { until }, true), "one's own mail is no reply");
@@ -1518,7 +1563,8 @@ pub(crate) mod tests {
             removed: Vec::new(),
             initial: false,
         };
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
 
         feed.take(change(&of("Re Offer mine"), Some(Role::Sent)), Utc::now()).await;
         assert_eq!(pile_of("Offer"), None, "answered");
@@ -1576,7 +1622,8 @@ pub(crate) mod tests {
             })
             .await
             .expect("changed");
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
         let removed = MailChange {
             account: ANNA.into(),
             folder: of("Deleted").folder,
@@ -1625,7 +1672,8 @@ pub(crate) mod tests {
         let until = Utc::now() + TimeDelta::hours(1);
         let request = Request::SnoozeItem { id: plan, until: Some(until), unless_reply: true, keep_open: false };
         assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
         let change = MailChange {
             account: ANNA.into(),
             folder: of("Offer").folder,
@@ -1730,7 +1778,8 @@ pub(crate) mod tests {
             initial: false,
         };
         let accounts_file = Some(accounts_file(dir.path()));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file, decide: None, known: None };
 
         feed.take(change(&of("Re Offer bcc"), Some(Role::Inbox)), Utc::now()).await;
         assert_eq!(inbox.messages_of(&entry).expect("read").len(), 2, "filed into the conversation");
@@ -1787,7 +1836,8 @@ pub(crate) mod tests {
             removed: Vec::new(),
             initial: false,
         };
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
 
         for draft in ["Re Offer draft", "Re Plan draft"] {
             feed.take(change(&of(draft), Some(Role::Drafts)), Utc::now()).await;
@@ -1840,7 +1890,8 @@ pub(crate) mod tests {
                 other => panic!("the entry, got {other:?}"),
             };
         assert_eq!(entry("Offer", Utc::now()).state, State::New, "the reply opened it");
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
 
         // Both replies read: the follow-ups stand.
         let read: Vec<String> = ["Re Offer", "Re Plan"].iter().map(|subject| of(subject).id).collect();
@@ -1924,7 +1975,8 @@ pub(crate) mod tests {
                 Response::Item { item } => item.state,
                 other => panic!("the entry, got {other:?}"),
             };
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
 
         // 1. In the sent folder it waits, after a catch-up and after a flag changed on it.
         feed.catch_up(Utc::now()).await;
@@ -2014,7 +2066,8 @@ pub(crate) mod tests {
             Utc::now(),
         );
 
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None, known: None };
         let store = mail.store(ANNA).await.expect("the store");
         feed.settle(&store, ANNA, None, Utc::now()).await;
         let items = entries(&inbox);
@@ -2127,7 +2180,8 @@ pub(crate) mod tests {
         let (inbox, mail) = fed(dir.path(), &secrets).await;
         eventually("filed", || async { entries(&inbox).len() == 1 }).await;
         let file = Some(accounts_file(dir.path()));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None, known: None };
         feed.retire(Utc::now()).await;
         assert_eq!(entries(&inbox)[0].state, State::New, "the account syncs: its entry stays");
 
@@ -2163,7 +2217,8 @@ pub(crate) mod tests {
         mail.reload().await;
         eventually("synced", || synced(&mail)).await;
         let file = Some(accounts_file(dir.path()));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None, known: None };
 
         feed.catch_up(Utc::now()).await;
         let titles: Vec<String> = entries(&inbox).into_iter().map(|item| item.title).collect();
@@ -2188,7 +2243,8 @@ pub(crate) mod tests {
         mail.reload().await;
         mail.sync_all(Reach::Suite).await.expect("synced");
         let file = Some(accounts_file(dir));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
+        let feed =
+            Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None, known: None };
         (inbox, mail, feed)
     }
 
@@ -2398,7 +2454,7 @@ pub(crate) mod tests {
         let mail = Arc::new(service_in(dir.path(), &secrets));
         let archive = |spec: &mut super::super::filters::FilterSpec| spec.file = Some(FilterFile::Archive);
         make_filter(&inbox, &mail, "from:bernd", None, archive);
-        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None);
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None);
         mail.reload().await;
 
         eventually("the first sync filed", || async { entries(&inbox).len() == 1 }).await;
@@ -2486,5 +2542,101 @@ pub(crate) mod tests {
         let none = super::super::filters::on_arrival(&mail, &store, ANNA, &ids, &[]).await;
         assert!(none.is_empty(), "not in the catalogue: skipped");
         assert_eq!(by_subject(&mail).await["Offer"].category, None, "nothing set");
+    }
+
+    // ----- mail from contacts (issue #390) -----
+
+    /// What a decider was asked: each message and whether it is a contact's.
+    type Asked = Arc<std::sync::Mutex<Vec<(String, bool)>>>;
+
+    /// A decider that keeps what it was asked – the message and whether it is a contact's – and
+    /// says nothing, as a model that found no answer.
+    fn listening() -> (Decider, Asked) {
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = Arc::clone(&asked);
+        let decide: Decider = Arc::new(move |_account: String, message: String, contact: bool| {
+            kept.lock().expect("lock").push((message, contact));
+            Box::pin(async { None })
+        });
+        (decide, asked)
+    }
+
+    /// Who the address books know: Carla and Dora.
+    fn contacts() -> KnownSender {
+        Arc::new(|address: &str| matches!(address, "carla@example.com" | "dora@rules.example"))
+    }
+
+    /// Issue #390: new mail of a contact goes to Personal as a rule's, on the mail and on the entry,
+    /// and a model is asked only within that group; a stranger's mail and a contact's newsletter
+    /// stay as before; a sorting rule comes first.
+    #[tokio::test]
+    async fn a_contact_s_mail_is_personal_before_the_model() {
+        use torro_inbox::{SortCondition, SortField};
+        use torro_mail::Category;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &from("Carla", "Hello"), &[]);
+        server.add("INBOX", &bernd("Offer", 0), &[]);
+        let list = "List-Id: <club.example.com>\r\n";
+        server.add("INBOX", &letter("Club news", "Carla <carla@example.com>", 0, list, None), &[]);
+        server.add("INBOX", &letter("Your bill", "Dora <dora@rules.example>", 0, "", None), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let rule = Request::CreateSortRule {
+            category: Category::Invoice,
+            conditions: vec![SortCondition { field: SortField::Domain, value: "rules.example".into() }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert!(matches!(inbox.handle(rule, None, Utc::now()), Response::SortRule { .. }));
+        let (decide, asked) = listening();
+        let feed = Feed { decide: Some(decide), known: Some(contacts()), ..feed };
+        let all = by_subject(&mail).await;
+
+        let new = [&all["Hello"], &all["Offer"], &all["Club news"], &all["Your bill"]];
+        feed.take(arrived(&new), Utc::now()).await;
+        let personal = Some(MailCategory::by_rule(Category::Personal));
+        let items = entries(&inbox);
+        assert_eq!(entry(&items, "Hello").category, personal, "on the entry");
+        let kept = by_subject(&mail).await;
+        assert_eq!(kept["Hello"].category, personal, "kept with the mail");
+        assert_eq!(kept["Offer"].category, None, "a stranger's waits for the model");
+        assert_eq!(kept["Club news"].category, None, "a contact's newsletter is no personal mail");
+        assert_eq!(kept["Your bill"].category, Some(MailCategory::by_rule(Category::Invoice)), "the rule first");
+        eventually("asked", || async { asked.lock().expect("lock").len() == 3 }).await;
+        let mut asked = asked.lock().expect("lock").clone();
+        asked.sort();
+        let mut expected = vec![
+            (all["Hello"].id.clone(), true),
+            (all["Offer"].id.clone(), false),
+            (all["Club news"].id.clone(), false),
+        ];
+        expected.sort();
+        assert_eq!(asked, expected, "the model hears which mail is a contact's");
+        assert_eq!(by_subject(&mail).await["Hello"].category, personal, "no answer leaves Personal");
+    }
+
+    /// Issue #390: knowing nobody – the setting off, or no contacts – new mail is sorted as before;
+    /// a filter's category comes before the contacts.
+    #[tokio::test]
+    async fn without_contacts_or_with_a_filter_mail_is_sorted_as_before() {
+        use torro_mail::Category;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &from("Carla", "Hello"), &[]);
+        server.add("INBOX", &from("Carla", "Your invoice"), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let all = by_subject(&mail).await;
+
+        feed.take(arrived(&[&all["Hello"]]), Utc::now()).await;
+        assert_eq!(by_subject(&mail).await["Hello"].category, None, "nobody known");
+        assert_eq!(entry(&entries(&inbox), "Hello").category, None);
+
+        let feed = Feed { known: Some(contacts()), ..feed };
+        make_filter(&inbox, &mail, "subject:invoice", None, |spec| spec.category = Some(Category::Invoice));
+        feed.take(arrived(&[&all["Your invoice"]]), Utc::now()).await;
+        let invoice = Some(MailCategory::by_rule(Category::Invoice));
+        assert_eq!(by_subject(&mail).await["Your invoice"].category, invoice, "the filter's");
+        assert_eq!(entry(&entries(&inbox), "Your invoice").category, invoice);
     }
 }
