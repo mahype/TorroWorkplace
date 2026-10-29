@@ -5144,13 +5144,7 @@ impl Core {
             | Request::SaveMailAttachments { .. }) => Box::pin(self.save_request(request, reach)).await,
             // Running a mail filter (issue #339) also puts the category it set on the inbox entries
             // of those mails, as the category jobs do.
-            request @ Request::ApplyMailFilter { .. } => {
-                let categories = self.filter_categories();
-                let (response, categorised) =
-                    Box::pin(crate::mail::filters::answer_apply(&self.mail, reach, &categories, request)).await;
-                self.mirror_filter_categories(&categorised);
-                response
-            }
+            request @ Request::ApplyMailFilter { .. } => Box::pin(self.apply_mail_filter(request, reach)).await,
             // Mail filters (issue #339): rights, reach and what is nothing to approve were checked
             // before for a client; the handler checks the reach again. Boxed as reading mail is.
             request @ (Request::ListMailFilters
@@ -7272,6 +7266,17 @@ impl Core {
     /// The categories a mail filter may set (issue #339): those of [`Core::category_catalogue`].
     fn filter_categories(&self) -> Vec<torro_mail::Category> {
         self.category_catalogue().into_iter().map(|def| def.category).collect()
+    }
+
+    /// `mail.apply_filter` for `reach` (issue #339, [`crate::mail::filters::answer_apply`]), with the
+    /// category the run set put on the inbox entries of those mails ([`Core::mirror_filter_categories`]).
+    /// Its own function, boxed where it is called, so the big match of the requests stays small.
+    async fn apply_mail_filter(&self, request: Request, reach: Reach<'_>) -> Response {
+        let categories = self.filter_categories();
+        let (response, categorised) =
+            Box::pin(crate::mail::filters::answer_apply(&self.mail, reach, &categories, request)).await;
+        self.mirror_filter_categories(&categorised);
+        response
     }
 
     /// Puts the category a run of a mail filter set (`mail.apply_filter`, issue #339) on the inbox

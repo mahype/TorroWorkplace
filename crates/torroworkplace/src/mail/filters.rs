@@ -603,12 +603,12 @@ pub async fn answer_apply(
     request: Request,
 ) -> (Response, Vec<(String, String, MailCategory)>) {
     let Request::ApplyMailFilter { id } = &request else {
-        return (answer(mail, reach, categories, request).await, Vec::new());
+        return (Box::pin(answer(mail, reach, categories, request)).await, Vec::new());
     };
     if let Some(refused) = limit_refusal(&request) {
         return (refused, Vec::new());
     }
-    match run_apply(mail, reach, categories, id).await {
+    match Box::pin(run_apply(mail, reach, categories, id)).await {
         Ok(applied) => {
             let response = applied.response();
             (response, applied.categorised)
