@@ -109,6 +109,21 @@ impl Previews {
         Some(png)
     }
 
+    /// Removes the previews of every account but those in `known`.
+    pub fn keep_only(&self, known: &[String]) {
+        let Some(dir) = self.dir.as_ref() else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let kept: Vec<String> = known.iter().map(|account| hashed(account)).collect();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !kept.contains(&name)
+                && let Err(err) = std::fs::remove_dir_all(entry.path())
+            {
+                eprintln!("torroworkplace: contacts: previews of a removed account stay: {}", err.kind());
+            }
+        }
+    }
+
     /// Removes every preview of `account`.
     pub fn forget_account(&self, account: &str) {
         let Some(dir) = self.dir.as_ref().map(|dir| dir.join(hashed(account))) else { return };

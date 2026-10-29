@@ -35,7 +35,8 @@ pub fn with<T>(store: &Mutex<Store>, work: impl FnOnce(&Store) -> Result<T, Stor
     })
 }
 
-/// What one round of an account did.
+/// What one round of an account did (tests; the service calls [`round`]).
+#[cfg(test)]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Synced {
     /// Books that are gone from the server, with everything of them gone here too.
@@ -43,20 +44,33 @@ pub struct Synced {
 }
 
 /// One round for `account` with `provider`; see the module docs.
+#[cfg(test)]
 pub async fn sync_account<P: ContactsProvider>(
     store: &Mutex<Store>,
     account: &str,
     provider: &P,
 ) -> Result<Synced, ContactsError> {
+    let mut removed_books = Vec::new();
+    round(store, account, provider, &mut removed_books).await.map(|()| Synced { removed_books })
+}
+
+/// [`sync_account`], naming the books gone from the server in `removed` even when a later book
+/// fails: they are gone here already, and the core must take them out of every client's rights,
+/// or a book made later under the same name would stand open to clients nobody asked.
+pub async fn round<P: ContactsProvider>(
+    store: &Mutex<Store>,
+    account: &str,
+    provider: &P,
+    removed: &mut Vec<String>,
+) -> Result<(), ContactsError> {
     let remote = match provider.address_books().await {
         Ok(books) => books,
         // No address book home: no contacts, and nothing to delete.
-        Err(ContactsError::NotFound) => return Ok(Synced::default()),
+        Err(ContactsError::NotFound) => return Ok(()),
         Err(err) => return Err(err),
     };
     let rows: Vec<BookRow> = remote.iter().map(|book| row_of(account, book)).collect();
-    let removed_books = with(store, |s| {
-        let mut removed = Vec::new();
+    with(store, |s| {
         for known in s.books(Some(account))? {
             if !rows.iter().any(|row| row.id == known.id) {
                 s.remove_book(&known.id)?;
@@ -66,7 +80,7 @@ pub async fn sync_account<P: ContactsProvider>(
         for row in &rows {
             s.put_book(row)?;
         }
-        Ok(removed)
+        Ok(())
     })?;
     let mut first_error = None;
     for row in &rows {
@@ -83,7 +97,7 @@ pub async fn sync_account<P: ContactsProvider>(
     }
     match first_error {
         Some(err) => Err(err),
-        None => Ok(Synced { removed_books }),
+        None => Ok(()),
     }
 }
 
@@ -437,6 +451,8 @@ pub mod fake {
         pub puts: Vec<String>,
         /// Every write fails with this while it is set.
         pub put_error: Option<ContactsError>,
+        /// Reading the changes of this book (href) fails with an error of the server.
+        pub broken_book: Option<String>,
     }
 
     #[derive(Debug, Default)]
@@ -512,6 +528,9 @@ pub mod fake {
 
         async fn changes(&self, book: &str, _since: Option<&SyncToken>) -> Result<Changes, ContactsError> {
             let state = self.check()?;
+            if state.broken_book.as_deref() == Some(book) {
+                return Err(ContactsError::Other("broken".into()));
+            }
             let cards = &state.books.get(book).ok_or(ContactsError::NotFound)?.3;
             let all = cards.iter().map(|(href, (etag, _))| Entry { href: href.clone(), etag: etag.clone() }).collect();
             Ok(Changes { listing: Listing::Full(all), token: Some(SyncToken(state.version.to_string())) })
@@ -519,6 +538,9 @@ pub mod fake {
 
         async fn fetch(&self, book: &str, hrefs: &[String]) -> Result<Vec<RemoteCard>, ContactsError> {
             let state = self.check()?;
+            if state.broken_book.as_deref() == Some(book) {
+                return Err(ContactsError::Other("broken".into()));
+            }
             let cards = &state.books.get(book).ok_or(ContactsError::NotFound)?.3;
             Ok(hrefs
                 .iter()

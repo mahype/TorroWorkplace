@@ -9,7 +9,9 @@
 //!   One round at a time.
 //! - A server that refuses the password starts the remote wipe check of the calendar service
 //!   (`PimService::on_refused`). An account removed or wiped takes its contacts, previews and
-//!   queue with it ([`ContactsService::forget_account`], told by `PimService::on_forget`).
+//!   queue with it ([`ContactsService::forget_account`], told by `PimService::on_forget`); every
+//!   round first clears accounts no longer in `accounts.json`, so a missed message or a stop in
+//!   between leaves nothing behind ([`ContactsService::forget_gone`]).
 //! - Books a server no longer lists go with their contacts; [`ContactsService::sync_all`] names
 //!   them, and the core takes them out of every client's rights.
 
@@ -178,32 +180,44 @@ impl ContactsService {
     }
 
     /// One round for every account; returns the books that are gone. One account failing does not
-    /// keep the others; its error is logged (never with a name or a field).
+    /// keep the others; its error is logged (never with a name or a field). First goes what this
+    /// device still holds of accounts that no longer exist ([`ContactsService::forget_gone`]).
     pub async fn sync_all(&self) -> Vec<String> {
         let mut removed = Vec::new();
         if self.store.is_none() {
             return removed;
         }
+        self.forget_gone().await;
         for (account, _) in self.remotes().await {
-            match self.sync_account(&account).await {
-                Ok(synced) => removed.extend(synced.removed_books),
-                Err(ContactsError::Offline) => {}
+            let (gone, result) = self.sync_account(&account).await;
+            removed.extend(gone);
+            match result {
+                Ok(()) | Err(ContactsError::Offline) => {}
                 Err(err) => eprintln!("torroworkplace: contacts of {account} did not sync: {err}"),
             }
         }
         removed
     }
 
-    /// One round for `account`.
-    pub async fn sync_account(&self, account: &str) -> Result<sync::Synced, ContactsError> {
-        let store = self.store()?;
-        let Some(remote) = self.remote(account).await else { return Ok(sync::Synced::default()) };
-        let _round = self.rounds.lock().await;
-        let result = sync::sync_account(store, account, &remote).await;
+    /// One round for `account`: the books gone from its server, told even when the round failed
+    /// later (they are gone here already), and how the round ended.
+    pub async fn sync_account(&self, account: &str) -> (Vec<String>, Result<(), ContactsError>) {
+        let mut removed = Vec::new();
+        let store = match self.store() {
+            Ok(store) => store,
+            Err(err) => return (removed, Err(err)),
+        };
+        let Some(remote) = self.remote(account).await else { return (removed, Ok(())) };
+        let result = {
+            let _round = self.rounds.lock().await;
+            sync::round(store, account, &remote, &mut removed).await
+        };
         if result == Err(ContactsError::Auth) {
             self.refused(account).await;
+            // A remote wipe forgot the account: its contacts go now, not with the next round.
+            self.forget_gone().await;
         }
-        result
+        (removed, result)
     }
 
     /// Everything of `account` on this device: contacts, queue, favourites, recents, previews.
@@ -215,6 +229,36 @@ impl ContactsService {
             eprintln!("torroworkplace: contacts of a removed account could not be removed: {err}");
         }
         self.previews.forget_account(account);
+    }
+
+    /// Forgets what this device holds of accounts that no longer exist. The calendar service tells
+    /// of each removed or wiped account ([`PimService::on_forget`]), but such a message can be
+    /// missed (a full channel, the daemon stopped in between): this runs with every round, the
+    /// first at the start, and after a missed message. Without a readable account list nothing
+    /// counts as gone.
+    pub async fn forget_gone(&self) {
+        let Some(store) = &self.store else { return };
+        let Some(known) = self.known_accounts() else { return };
+        let held = sync::with(store, |s| s.accounts()).unwrap_or_default();
+        for account in held.iter().filter(|account| !known.contains(account)) {
+            self.forget_account(account).await;
+        }
+        self.previews.keep_only(&known);
+    }
+
+    /// The id of every account on this device (`accounts.json`), `None` when it cannot be read.
+    fn known_accounts(&self) -> Option<Vec<String>> {
+        match &self.remotes {
+            Remotes::Pim(_) => match torro_core::account::load() {
+                Ok(accounts) => Some(accounts.into_iter().map(|account| account.id).collect()),
+                Err(err) => {
+                    eprintln!("torroworkplace: contacts: the accounts cannot be read: {err}");
+                    None
+                }
+            },
+            #[cfg(test)]
+            Remotes::Fixed(servers) => Some(servers.iter().map(|(id, _)| id.clone()).collect()),
+        }
     }
 
     /// Whether `account` has address books on this device.
@@ -251,5 +295,45 @@ mod tests {
         assert!(!service.has_books(account));
         assert!(!dir.path().join("photos").join(crate::audit::hashed(account)).exists());
         assert!(file_in(dir.path()).exists(), "the store stays for the other accounts");
+    }
+
+    /// Review of #351: a book gone from the server is told even when another book fails.
+    #[tokio::test]
+    async fn a_book_gone_is_told_although_another_fails() {
+        let dir = tempfile::tempdir().expect("dir");
+        let server = Arc::new(sync::fake::Server::default());
+        server.add_book("contacts", true, false);
+        let old = server.add_book("old", true, false);
+        let broken = server.add_book("broken", true, false);
+        let account = "nextcloud:anna@cloud.example.org";
+        let service = ContactsService::in_dir(dir.path(), vec![(account.into(), Arc::clone(&server))]);
+        assert!(service.sync_all().await.is_empty());
+        server.lock().books.remove(&old);
+        server.lock().broken_book = Some(broken);
+        assert_eq!(service.sync_all().await, [format!("{account}/old")]);
+    }
+
+    /// Review of #351: contacts of an account removed while nobody listened (a missed message, a
+    /// stop in between) go with the next round.
+    #[tokio::test]
+    async fn contacts_of_an_account_gone_meanwhile_go_with_the_next_round() {
+        let dir = tempfile::tempdir().expect("dir");
+        let server = Arc::new(sync::fake::Server::default());
+        let book = server.add_book("contacts", true, false);
+        server.put_card(&book, "a", "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:a\r\nFN:Anna\r\nEND:VCARD\r\n");
+        let (gone, stays) = ("nextcloud:anna@cloud.example.org", "nextcloud:ben@cloud.example.org");
+        let both = vec![(gone.to_string(), Arc::clone(&server)), (stays.to_string(), Arc::clone(&server))];
+        let service = ContactsService::in_dir(dir.path(), both);
+        service.sync_all().await;
+        let previews = dir.path().join("photos");
+        for account in [gone, stays] {
+            std::fs::create_dir_all(previews.join(crate::audit::hashed(account))).expect("previews");
+        }
+        drop(service);
+        let service = ContactsService::in_dir(dir.path(), vec![(stays.to_string(), Arc::clone(&server))]);
+        service.sync_all().await;
+        assert!(!service.has_books(gone) && service.has_books(stays));
+        assert!(!previews.join(crate::audit::hashed(gone)).exists());
+        assert!(previews.join(crate::audit::hashed(stays)).exists());
     }
 }

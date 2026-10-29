@@ -348,6 +348,9 @@ impl Store {
         let _mode: String = db.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
         db.execute_batch("PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;")?;
         migrate(&db)?;
+        // The search index keeps its own pages: without this option a removed contact's trigrams
+        // would stay in them although `secure_delete` wipes the tables' (SQLite 3.44+, bundled).
+        db.execute("INSERT INTO search(search, rank) VALUES ('secure-delete', 1)", [])?;
         let store = Store { db, path };
         store.restrict_files()?;
         Ok(store)
@@ -423,6 +426,15 @@ impl Store {
         self.db.execute("DELETE FROM recent WHERE account = ?1", [account])?;
         self.db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
+    }
+
+    /// Every account this store holds something of.
+    pub fn accounts(&self) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT account FROM books UNION SELECT account FROM favorites UNION SELECT account FROM recent",
+        )?;
+        let accounts = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        Ok(accounts)
     }
 
     /// How many contacts the book holds.
@@ -737,6 +749,11 @@ mod tests {
             assert_eq!(mode(&dir.path().join("contacts")), 0o700);
             assert_eq!(mode(&dir.path().join("contacts/contacts.sqlite")), 0o600);
         }
+        let secure: i64 = store
+            .db
+            .query_row("SELECT v FROM search_config WHERE k = 'secure-delete'", [], |row| row.get(0))
+            .expect("option");
+        assert_eq!(secure, 1, "the search index wipes what it removes");
         let work = book("nextcloud:anna@cloud.example.org", "contacts");
         let other = book("nextcloud:anna@cloud.example.org", "private");
         store.put_book(&work).expect("book");
