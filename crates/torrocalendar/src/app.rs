@@ -2112,6 +2112,8 @@ impl App {
     /// an unknown word leaves the first section open) – a fresh [`Host`] and its first load,
     /// which goes over [`App::settings_backend`] and never over this window's own requests.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
+        // Settings open already leave their state in the memory first, for the new host.
+        drop(self.settings.take());
         let (mut host, load) = Host::with_memory(
             self.settings_backend(),
             SETTINGS_SECTIONS.to_vec(),

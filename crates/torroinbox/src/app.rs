@@ -4265,6 +4265,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let Some(listing) = self.view.listing() else { return };
         let Some((_, messages)) = self.folder_cache.iter().find(|(held, _)| *held == listing) else { return };
         self.messages = messages.clone();
+        // What changed here since it was kept, as a load would have it ([`App::take`]): answers on
+        // their way, mail read, mail moved away.
+        for message in &mut self.messages {
+            keep_answer(&self.answers, message);
+            if self.seen_mail.contains(&message.id) && !message.flags.contains(&Flag::Seen) {
+                message.flags.push(Flag::Seen);
+            }
+        }
+        self.keep_out_leaving();
         self.listed = Some(listing);
         self.more = None;
     }
@@ -7110,6 +7119,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// [`App::settings_backend`] and never over this window's own source.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
         let kind = self.launch.kind;
+        // Settings open already leave their state in the memory first, for the new host.
+        drop(self.settings.take());
         let (mut host, load) = Host::with_memory(
             self.settings_backend(),
             kind.settings_sections(),

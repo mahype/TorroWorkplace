@@ -1810,6 +1810,8 @@ impl App {
     /// sections and its first load, which goes over [`Backend::settings`] and never over this
     /// window's own requests.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
+        // Settings open already leave their state in the memory first, for the new host.
+        drop(self.settings.take());
         let (mut host, load) = Host::with_memory(
             self.backend.settings(),
             settings::SECTIONS.to_vec(),
