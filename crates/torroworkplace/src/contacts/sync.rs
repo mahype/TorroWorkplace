@@ -225,7 +225,14 @@ pub fn merged(local: &CardRow, theirs_raw: &str) -> Option<String> {
     let mine = vcard::read(&local.vcard).ok()?;
     let base = local.base.as_deref().and_then(|b| vcard::read(b).ok()).unwrap_or_else(|| theirs.clone());
     match merge(&base, &mine, &theirs) {
-        Merge::Merged(contact) => Some(vcard::patch(theirs_raw, &theirs, &contact)),
+        Merge::Merged(contact) => {
+            let raw = vcard::patch(theirs_raw, &theirs, &contact);
+            // `patch` never writes the picture: one changed here goes in on its own.
+            Some(match contact.photo != theirs.photo {
+                true => vcard::set_photo(&raw, vcard::photo(&local.vcard).as_ref()),
+                false => raw,
+            })
+        }
         Merge::Conflict { .. } => None,
     }
 }
@@ -251,47 +258,88 @@ fn uid_of_href(href: &str) -> String {
     name.strip_suffix(".vcf").unwrap_or(name).to_string()
 }
 
-/// Sends the queue of `book`, oldest first. Stops at `offline` and `auth`; the rest stays queued.
+/// What became of one queued change ([`send`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sent {
+    /// On the server (or nothing was left to send).
+    Written,
+    /// The server has another version: merged where it could be, else the contact is in conflict
+    /// (or waits for the next listing to bring the server's version).
+    Conflict,
+    /// The server refuses it for good (read-only, too large): taken back to the server's version,
+    /// a new contact dropped.
+    Refused(ContactsError),
+    /// Something else went wrong; the change stays queued for the next round.
+    Waits,
+}
+
+/// Sends the queue of `book`, oldest first. Stops at `offline` and `auth`; a change the server
+/// refuses otherwise stays queued and the others go on, so one card never blocks its book.
 pub async fn flush<P: ContactsProvider>(
     store: &Mutex<Store>,
     provider: &P,
     book: &BookRow,
 ) -> Result<(), ContactsError> {
     for queued in with(store, |s| s.queued(&book.id))? {
-        match queued.op {
-            Op::Delete => {
-                let Some(href) = queued.href.as_deref() else {
-                    with(store, |s| s.dequeue(&queued.card))?;
-                    continue;
-                };
-                match provider.delete(&book.href, href, queued.etag.as_deref()).await {
-                    // Changed on the server meanwhile, or not to be deleted: it comes back with
-                    // the next listing, the person sees it again.
-                    Ok(())
-                    | Err(ContactsError::NotFound | ContactsError::Conflict { .. } | ContactsError::ReadOnly) => {
-                        with(store, |s| s.dequeue(&queued.card))?
-                    }
-                    Err(err @ (ContactsError::Offline | ContactsError::Auth)) => return Err(err),
-                    Err(err) => {
-                        eprintln!("torroworkplace: contacts: a deletion waits: {err}");
-                        return Err(err);
-                    }
-                }
-            }
-            Op::Put => {
-                let Some(card) = with(store, |s| s.card(&queued.card))? else {
-                    with(store, |s| s.dequeue(&queued.card))?;
-                    continue;
-                };
-                if card.state == ContactState::Conflict {
-                    with(store, |s| s.dequeue(&card.id))?;
-                    continue;
-                }
-                put(store, provider, book, card).await?;
-            }
-        }
+        send(store, provider, book, &queued).await?;
     }
     Ok(())
+}
+
+/// Sends the queued change of the contact `card`, if there is one.
+pub async fn send_card<P: ContactsProvider>(
+    store: &Mutex<Store>,
+    provider: &P,
+    book: &BookRow,
+    card: &str,
+) -> Result<Sent, ContactsError> {
+    let queued = with(store, |s| s.queued(&book.id))?.into_iter().find(|q| q.card == card);
+    match queued {
+        Some(queued) => send(store, provider, book, &queued).await,
+        None => Ok(Sent::Written),
+    }
+}
+
+/// Sends one queued change. `Err` only for `offline` and `auth`: then it stays queued.
+pub async fn send<P: ContactsProvider>(
+    store: &Mutex<Store>,
+    provider: &P,
+    book: &BookRow,
+    queued: &super::store::Queued,
+) -> Result<Sent, ContactsError> {
+    match queued.op {
+        Op::Delete => {
+            let Some(href) = queued.href.as_deref() else {
+                with(store, |s| s.dequeue(&queued.card))?;
+                return Ok(Sent::Written);
+            };
+            let sent = match provider.delete(&book.href, href, queued.etag.as_deref()).await {
+                Ok(()) | Err(ContactsError::NotFound) => Sent::Written,
+                // Changed on the server meanwhile, or not to be deleted: it comes back with the
+                // next listing, and the person sees it again.
+                Err(ContactsError::Conflict { .. }) => Sent::Conflict,
+                Err(err @ ContactsError::ReadOnly) => Sent::Refused(err),
+                Err(err @ (ContactsError::Offline | ContactsError::Auth)) => return Err(err),
+                Err(err) => {
+                    eprintln!("torroworkplace: contacts: a deletion waits: {err}");
+                    return Ok(Sent::Waits);
+                }
+            };
+            with(store, |s| s.dequeue(&queued.card))?;
+            Ok(sent)
+        }
+        Op::Put => {
+            let Some(card) = with(store, |s| s.card(&queued.card))? else {
+                with(store, |s| s.dequeue(&queued.card))?;
+                return Ok(Sent::Written);
+            };
+            if card.state == ContactState::Conflict {
+                with(store, |s| s.dequeue(&card.id))?;
+                return Ok(Sent::Conflict);
+            }
+            put(store, provider, book, card).await
+        }
+    }
 }
 
 /// Writes one card; a newer version on the server is merged and written once more.
@@ -300,13 +348,13 @@ async fn put<P: ContactsProvider>(
     provider: &P,
     book: &BookRow,
     card: CardRow,
-) -> Result<(), ContactsError> {
+) -> Result<Sent, ContactsError> {
     let mut card = card;
     for attempt in 0..2 {
         let answer = provider.put(&book.href, card.href.as_deref(), &card.uid, &card.vcard, card.etag.as_deref()).await;
         match answer {
             Ok(stored) => {
-                return with(store, |s| {
+                with(store, |s| {
                     s.dequeue(&card.id)?;
                     s.put_card(&CardRow {
                         href: Some(stored.href),
@@ -317,35 +365,49 @@ async fn put<P: ContactsProvider>(
                         server_etag: None,
                         ..card
                     })
-                });
+                })?;
+                return Ok(Sent::Written);
             }
             Err(ContactsError::Conflict { server_vcard: Some(server), etag }) if attempt == 0 => {
                 match merged(&card, &server) {
-                    Some(vcard) => {
-                        card = CardRow { vcard, base: Some(server), etag, ..card };
+                    Some(vcard) => card = CardRow { vcard, base: Some(server), etag, ..card },
+                    None => {
+                        with(store, |s| conflict(s, card, Some(server), etag))?;
+                        return Ok(Sent::Conflict);
                     }
-                    None => return with(store, |s| conflict(s, card, Some(server), etag)),
                 }
             }
-            Err(ContactsError::Conflict { server_vcard, etag }) => {
-                return with(store, |s| conflict(s, card, server_vcard, etag));
+            Err(ContactsError::Conflict { server_vcard: Some(server), etag }) => {
+                with(store, |s| conflict(s, card, Some(server), etag))?;
+                return Ok(Sent::Conflict);
             }
+            // The server has another version it did not hand over (its GET failed): the change
+            // waits, and the next listing brings that version to merge with.
+            Err(ContactsError::Conflict { server_vcard: None, .. }) => return Ok(Sent::Conflict),
             // Changed here, deleted there.
-            Err(ContactsError::NotFound) => return with(store, |s| conflict(s, card, None, None)),
+            Err(ContactsError::NotFound) => {
+                with(store, |s| conflict(s, card, None, None))?;
+                return Ok(Sent::Conflict);
+            }
             Err(err @ (ContactsError::ReadOnly | ContactsError::TooLarge)) => {
                 eprintln!("torroworkplace: contacts: the server refused a change, taken back: {err}");
-                return with(store, |s| {
+                with(store, |s| {
                     s.dequeue(&card.id)?;
                     match card.base.clone() {
                         Some(base) => s.put_card(&CardRow { vcard: base, state: ContactState::Synced, ..card }),
                         None => s.remove_card(&card.id),
                     }
-                });
+                })?;
+                return Ok(Sent::Refused(err));
             }
-            Err(err) => return Err(err),
+            Err(err @ (ContactsError::Offline | ContactsError::Auth)) => return Err(err),
+            Err(err) => {
+                eprintln!("torroworkplace: contacts: a change waits: {err}");
+                return Ok(Sent::Waits);
+            }
         }
     }
-    Ok(())
+    Ok(Sent::Waits)
 }
 
 #[cfg(test)]
@@ -373,6 +435,8 @@ pub mod fake {
         pub no_home: bool,
         /// Hrefs written, for the tests.
         pub puts: Vec<String>,
+        /// Every write fails with this while it is set.
+        pub put_error: Option<ContactsError>,
     }
 
     #[derive(Debug, Default)]
@@ -474,6 +538,9 @@ pub mod fake {
             etag: Option<&str>,
         ) -> Result<Stored, ContactsError> {
             let mut state = self.check()?;
+            if let Some(err) = state.put_error.clone() {
+                return Err(err);
+            }
             state.version += 1;
             let version = format!("\"{}\"", state.version);
             let (_, writable, _, cards) = state.books.get_mut(book).ok_or(ContactsError::NotFound)?;
@@ -671,6 +738,46 @@ mod tests {
         assert!(row.vcard.contains("NOTE:mine") && row.server.as_deref().is_some_and(|s| s.contains("NOTE:theirs")));
         let (_, kept) = server.card(&book, &format!("{book}a.vcf")).expect("card");
         assert!(kept.contains("NOTE:theirs"), "nothing overwritten");
+    }
+
+    /// Review of #351: a picture set offline survives the merge with a change on the server, and a
+    /// card the server keeps refusing does not keep the book from syncing.
+    #[tokio::test]
+    async fn a_picture_set_offline_survives_the_merge_and_a_refused_card_blocks_nothing() {
+        let (_dir, store) = open();
+        let server = Server::default();
+        let book = server.add_book("contacts", true, false);
+        server.put_card(&book, "a", &card("a", "Berg", "1", "one"));
+        sync_account(&store, ACCOUNT, &server).await.expect("synced");
+        let id = format!("{ACCOUNT}/contacts/a");
+        server.lock().offline = true;
+        with(&store, |s| {
+            let row = s.card(&id)?.expect("card");
+            let photo = vcard::Photo { data: vec![0xff, 0xd8, 0xff], mime: "image/jpeg".into() };
+            let vcard = vcard::set_photo(&row.vcard, Some(&photo));
+            s.put_card(&CardRow { vcard, state: ContactState::Pending, ..row.clone() })?;
+            s.enqueue(&super::super::store::Queued {
+                card: row.id.clone(),
+                book: row.book.clone(),
+                op: Op::Put,
+                uid: row.uid.clone(),
+                href: row.href.clone(),
+                etag: row.etag.clone(),
+            })
+        })
+        .expect("photo set");
+        server.lock().offline = false;
+        server.put_card(&book, "a", &card("a", "Berg", "1", "from elsewhere"));
+        sync_account(&store, ACCOUNT, &server).await.expect("synced");
+        let (_, written) = server.card(&book, &format!("{book}a.vcf")).expect("card");
+        assert!(written.contains("PHOTO") && written.contains("NOTE:from elsewhere"), "{written}");
+
+        server.lock().put_error = Some(ContactsError::Other("415".into()));
+        change_here(&store, &id, |c| c.title = Some("Boss".into()));
+        server.put_card(&book, "b", &card("b", "Keller", "2", "new there"));
+        sync_account(&store, ACCOUNT, &server).await.expect("the book syncs");
+        assert!(with(&store, |s| s.card(&format!("{ACCOUNT}/contacts/b"))).expect("read").is_some());
+        assert_eq!(with(&store, |s| s.queued(&format!("{ACCOUNT}/contacts"))).expect("queue").len(), 1, "it waits");
     }
 
     #[tokio::test]

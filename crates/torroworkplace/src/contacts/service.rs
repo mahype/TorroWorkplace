@@ -27,7 +27,7 @@ use torro_ipc::contacts::{BIRTHDAY_DAYS, MAX_BIRTHDAY_DAYS};
 use torro_ipc::{Request, Response};
 
 use super::store::{BookRow, CardRow, Op, Query, Queued, Store};
-use super::sync::{self, with};
+use super::sync::{self, Sent, with};
 use super::{ContactsService, photo};
 use crate::pim::Reach;
 
@@ -102,6 +102,12 @@ pub fn contact_of(s: &Store, card: &CardRow, book: &BookRow) -> Contact {
         });
     }
     contact
+}
+
+/// Whether `sent` is the version of `card` the client showed; a contact not on the server yet has
+/// none, and the client sends it empty.
+fn same_version(card: &CardRow, sent: &str) -> bool {
+    card.etag.as_deref().unwrap_or("") == sent
 }
 
 /// The vCard version most cards of `book` are written in; 3.0 when none (every server reads it).
@@ -322,19 +328,47 @@ impl ContactsService {
         Ok(Response::Birthdays { birthdays })
     }
 
-    /// Sends what waits for `book` now; offline it keeps waiting.
+    /// Sends the queued change of `card` now and then brings `book` in step (plan of issue #351:
+    /// a round after every write), under the lock of the rounds, so a round never sends the same
+    /// change at once. `None` when the change could not go yet (offline, no connection, a passing
+    /// failure): it waits in the queue.
+    async fn send_now(&self, book: &BookRow, card: &str) -> Result<Option<Sent>, ContactsError> {
+        let store = self.store()?;
+        let Some(remote) = self.remote(&book.account).await else { return Ok(None) };
+        let _round = self.rounds.lock().await;
+        let sent = match sync::send_card(store, &remote, book, card).await {
+            Ok(Sent::Waits) => return Ok(None),
+            Ok(sent) => sent,
+            Err(ContactsError::Auth) => {
+                self.refused(&book.account).await;
+                return Ok(None);
+            }
+            Err(_) => return Ok(None),
+        };
+        if let Some(fresh) = with(store, |s| s.book(&book.id))?
+            && let Err(err) = sync::sync_book(store, &remote, &fresh).await
+            && err != ContactsError::Offline
+        {
+            eprintln!("torroworkplace: contacts: a book did not sync after a change: {err}");
+        }
+        Ok(Some(sent))
+    }
+
+    /// A round for `book` now, under the lock of the rounds.
     async fn push(&self, book: &BookRow) {
         let Ok(store) = self.store() else { return };
         let Some(remote) = self.remote(&book.account).await else { return };
-        match sync::flush(store, &remote, book).await {
+        let _round = self.rounds.lock().await;
+        match sync::sync_book(store, &remote, book).await {
             Ok(()) | Err(ContactsError::Offline) => {}
             Err(ContactsError::Auth) => self.refused(&book.account).await,
             Err(err) => eprintln!("torroworkplace: contacts: a change waits: {err}"),
         }
     }
 
-    /// Writes `vcard` as the new version of `card`, queues it and sends it; answers the contact as
-    /// it is then (written, or still `pending`).
+    /// Writes `vcard` as the new version of `card`, queues it and sends it. Answers the contact as
+    /// it is then (written, or still `pending` when it could not go yet); a newer version the server
+    /// keeps is `conflict`, a refusal of the server its error.
     async fn write(&self, card: CardRow, book: &BookRow, vcard: String) -> Result<Response, ContactsError> {
         let id = card.id.clone();
         with(self.store()?, |s| {
@@ -348,17 +382,16 @@ impl ContactsService {
                 etag: card.etag.clone(),
             })
         })?;
-        self.push(book).await;
-        self.answer(&id, book)
+        match self.send_now(book, &id).await? {
+            Some(Sent::Conflict) => Err(ContactsError::Conflict { server_vcard: None, etag: None }),
+            Some(Sent::Refused(err)) => Err(err),
+            Some(Sent::Written | Sent::Waits) | None => self.answer(&id, book),
+        }
     }
 
     fn answer(&self, id: &str, book: &BookRow) -> Result<Response, ContactsError> {
         let contact = with(self.store()?, |s| Ok(s.card(id)?.map(|card| contact_of(s, &card, book))))?;
-        match contact {
-            Some(contact) => Ok(Response::Contact { contact: Box::new(contact) }),
-            // The server refused a new contact for good: it is gone again.
-            None => Err(ContactsError::ReadOnly),
-        }
+        contact.map(|contact| Response::Contact { contact: Box::new(contact) }).ok_or(ContactsError::NotFound)
     }
 
     fn writable(book: &BookRow) -> Result<(), ContactsError> {
@@ -408,7 +441,7 @@ impl ContactsService {
     fn changeable(&self, id: &str, etag: Option<&str>) -> Result<Found, ContactsError> {
         let found = self.find(id)?;
         if let Some(etag) = etag
-            && found.card.etag.as_deref() != Some(etag)
+            && !same_version(&found.card, etag)
         {
             return Err(ContactsError::Conflict { server_vcard: None, etag: found.card.etag.clone() });
         }
@@ -512,6 +545,8 @@ impl ContactsService {
             return Err(ContactsError::Conflict { server_vcard: None, etag: None });
         }
         let remote = self.remote(&target.account).await.ok_or(ContactsError::Offline)?;
+        // No round sends this contact meanwhile.
+        let _round = self.rounds.lock().await;
         let Stored { href, etag: new_etag } =
             remote.put(&target.href, None, &found.card.uid, &found.card.vcard, None).await.inspect_err(|err| {
                 if *err == ContactsError::Auth {
@@ -555,7 +590,7 @@ impl ContactsService {
 
     async fn delete(&self, id: &str, etag: &str) -> Result<Response, ContactsError> {
         let found = self.find(id)?;
-        if found.card.etag.as_deref() != Some(etag) {
+        if !same_version(&found.card, etag) {
             return Err(ContactsError::Conflict { server_vcard: None, etag: found.card.etag.clone() });
         }
         Self::writable(&found.book)?;
@@ -573,13 +608,17 @@ impl ContactsService {
             }
             Ok(())
         })?;
-        self.push(&found.book).await;
-        Ok(Response::Ok)
+        // Changed on the server meanwhile or refused: the round after it brought the contact back.
+        match self.send_now(&found.book, id).await? {
+            Some(Sent::Conflict) => Err(ContactsError::Conflict { server_vcard: None, etag: None }),
+            Some(Sent::Refused(err)) => Err(err),
+            Some(Sent::Written | Sent::Waits) | None => Ok(Response::Ok),
+        }
     }
 
     async fn resolve(&self, id: &str, keep: Keep, etag: &str) -> Result<Response, ContactsError> {
         let found = self.find(id)?;
-        if found.card.etag.as_deref() != Some(etag) {
+        if !same_version(&found.card, etag) {
             return Err(ContactsError::Conflict { server_vcard: None, etag: found.card.etag.clone() });
         }
         Self::writable(&found.book)?;
@@ -858,6 +897,41 @@ mod tests {
         let favorite = Request::SetContactFavorite { id: bob.clone(), favorite: true };
         assert_eq!(setup.service.handle(favorite, Reach::Suite).await, Response::Ok, "a favourite stays here");
         assert!(contact(setup.service.handle(Request::GetContact { id: bob }, Reach::Suite).await).favorite);
+    }
+
+    /// Review of #351: a contact made offline is changed with an empty `etag`; a refusal of the
+    /// server comes back as its error, not as the old contact.
+    #[tokio::test]
+    async fn made_offline_changes_and_refusals_are_told() {
+        let setup = setup().await;
+        setup.server.lock().offline = true;
+        let fields = ContactFields { display_name: Some("Max Neu".into()), ..ContactFields::default() };
+        let created = contact(
+            setup
+                .service
+                .handle(Request::CreateContact { book: format!("{ACCOUNT}/contacts"), fields }, Reach::Suite)
+                .await,
+        );
+        assert_eq!(created.etag, None);
+        let update = Request::UpdateContact {
+            id: created.id.clone(),
+            etag: String::new(),
+            fields: ContactFields { org: Some("Acme".into()), ..ContactFields::default() },
+        };
+        let changed = contact(setup.service.handle(update, Reach::Suite).await);
+        assert_eq!((changed.org.as_deref(), changed.state), (Some("Acme"), ContactState::Pending));
+        setup.server.lock().offline = false;
+        setup.server.lock().put_error = Some(ContactsError::TooLarge);
+        let anna =
+            contact(setup.service.handle(Request::GetContact { id: id("contacts", "anna") }, Reach::Suite).await);
+        let note = Request::UpdateContact {
+            id: anna.id.clone(),
+            etag: anna.etag.clone().expect("etag"),
+            fields: ContactFields { note: Some("long".into()), ..ContactFields::default() },
+        };
+        assert_eq!(code(&setup.service.handle(note, Reach::Suite).await), "error", "too large is an error");
+        let kept = contact(setup.service.handle(Request::GetContact { id: anna.id }, Reach::Suite).await);
+        assert_eq!((kept.note, kept.state), (None, ContactState::Synced), "taken back to the server's");
     }
 
     #[tokio::test]
