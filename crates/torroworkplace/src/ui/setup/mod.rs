@@ -563,7 +563,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             if let Some(next) = state.neighbour(true) {
                 state.go(next);
             }
-            stay(assignment.unwrap_or(Action::None))
+            stay(assignment.map_or(Action::None, Action::Send))
         }
         Message::Next => match state.neighbour(true) {
             Some(next) => {
@@ -1153,48 +1153,43 @@ fn selected_mail_decider<'a>(state: &State, data: &'a Data) -> Option<(&'a Strin
     candidates.into_iter().next()
 }
 
-/// What "Continue" on the AI step sends for sorting mail, as on main's mail settings (issue #325):
-/// a model chosen or recommended goes into the slot Sorting, and an exception stored is taken back so
-/// the slot sorts; "off" is the exception switched off with what sorts now; nothing changed, nothing
-/// sent.
-fn mail_sorting_request(state: &State, data: &Data) -> Option<Action> {
+/// What "Continue" on the AI step sends for sorting mail, as main's mail settings weigh it (issue
+/// #325): one request, so none can go through while another is refused.
+///
+/// - On, with the model chosen or recommended: into the slot Sorting – or, while an exception is
+///   stored, into that exception switched on, which stands before the slot anyway.
+/// - Off: the exception switched off, with the model chosen here or what sorts now – also one the
+///   step does not offer (a model elsewhere), so "off" is never lost.
+/// - Nothing changed: nothing sent.
+fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
     let enabled = mail_sorting_on(state, data);
-    let (account, model) = selected_mail_decider(state, data)?;
     let held = mail_sorting_in_effect(data);
-    let same = held.engine.as_deref() == Some(account.as_str()) && held.model.as_deref() == Some(model.id.as_str());
-    if same && held.enabled == enabled {
+    let chosen = selected_mail_decider(state, data).map(|(account, model)| (account.clone(), model.id.clone()));
+    let exception = |engine: String, model: Option<String>, enabled: bool| {
+        let effort = if held.engine.as_deref() == Some(engine.as_str()) { held.effort } else { None };
+        Request::SetAiAssignment { function: AiFunction::InboxCategorize, engine: Some(engine), model, effort, enabled }
+    };
+    if !enabled {
+        let (engine, model) = match chosen {
+            Some((engine, model)) => (engine, Some(model)),
+            None => (held.engine.clone()?, held.model.clone()),
+        };
+        if !held.enabled && held.engine.as_deref() == Some(engine.as_str()) && held.model == model {
+            return None;
+        }
+        return Some(exception(engine, model, false));
+    }
+    let (engine, model) = chosen?;
+    if held.enabled && held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.as_str())
+    {
         return None;
     }
-    if !enabled {
-        return Some(Action::Send(Request::SetAiAssignment {
-            function: AiFunction::InboxCategorize,
-            engine: Some(account.clone()),
-            model: Some(model.id.clone()),
-            effort: if same { held.effort } else { None },
-            enabled: false,
-        }));
+    if stored_mail_exception(data).is_some() {
+        return Some(exception(engine, Some(model), true));
     }
     let effort =
-        data.settings.ai_slots.decide.as_ref().filter(|slot| slot.engine == *account).and_then(|slot| slot.effort);
-    let slot = Request::SetAiSlot {
-        slot: AiSlot::Decide,
-        engine: Some(account.clone()),
-        model: Some(model.id.clone()),
-        effort,
-    };
-    Some(match stored_mail_exception(data) {
-        Some(_) => Action::SendAll(vec![
-            slot,
-            Request::SetAiAssignment {
-                function: AiFunction::InboxCategorize,
-                engine: None,
-                model: None,
-                effort: None,
-                enabled: false,
-            },
-        ]),
-        None => Action::Send(slot),
-    })
+        data.settings.ai_slots.decide.as_ref().filter(|slot| slot.engine == engine).and_then(|slot| slot.effort);
+    Some(Request::SetAiSlot { slot: AiSlot::Decide, engine: Some(engine), model: Some(model), effort })
 }
 
 /// Escape: stop waiting for the browser or adding another Nextcloud, else one step back; nothing
@@ -1826,18 +1821,25 @@ mod tests {
         assert!(matches!(update(&mut reopened, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(reopened.step, Step::Web, "repeating setup preserves the stored off choice");
 
-        // On again with that exception stored: the slot sorts, the exception is taken back.
+        // On again with that exception stored: one request, the exception switched on with the model.
         let mut on_again = state(Step::Ai);
         update(&mut on_again, Message::SortMail(true), &data);
         let sent = requests(update(&mut on_again, Message::Next, &data));
         assert!(
-            matches!(
-                &sent[..],
-                [
-                    Request::SetAiSlot { slot: AiSlot::Decide, model: Some(_), .. },
-                    Request::SetAiAssignment { engine: None, .. }
-                ]
-            ),
+            matches!(&sent[..], [Request::SetAiAssignment { model: Some(model), enabled: true, .. }] if model == "another"),
+            "{sent:?}"
+        );
+
+        // A model elsewhere sorts, which the step does not offer: "off" still switches it off.
+        let mut elsewhere = data.clone();
+        elsewhere.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
+        elsewhere.settings.ai_slots.decide =
+            Some(torro_core::ai::SlotModel { engine: cloud.clone(), model: Some("cloud".into()), effort: None });
+        let mut off = state(Step::Ai);
+        update(&mut off, Message::SortMail(false), &elsewhere);
+        let sent = requests(update(&mut off, Message::Next, &elsewhere));
+        assert!(
+            matches!(&sent[..], [Request::SetAiAssignment { engine: Some(engine), enabled: false, .. }] if *engine == cloud),
             "{sent:?}"
         );
 
