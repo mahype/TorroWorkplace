@@ -3172,7 +3172,8 @@ static GET_SETTINGS: Command = Command {
                   style of each calendar you see), whether keys of scripts and of MCP clients work at all \
                   (`allowApiKeys`, `allowMcp`), the model of each slot (`aiSlots`: `chat`, what new chats of \
                   the assistant start with, and `decide`, what sorts mail), whether mail may go to models \
-                  elsewhere for the chat (`mailToCloud`) and for sorting (`decideMailToCloud`), the \
+                  elsewhere for the chat (`mailToCloud`) and for sorting (`decideMailToCloud`), whether mail \
+                  from an address in the address books goes to Personal (`mailContactsPersonal`), the \
                   modifiers of the template keys (`workspaces`) and the \
                   assistant's own tools (`tools`: the ones switched on in \
                   `enabled`, the PDF folder and the templates `letter`, `report` and `note`) and the web search \
@@ -3224,7 +3225,10 @@ static SET_SETTING: Command = Command {
                   the colours of the mail's content) or `mail_to_cloud` (only false: keeps mail with models on the \
                   person's own computers again; letting mail go to cloud models is for a person, true is \
                   forbidden) or `decide_mail_to_cloud` (only false: the same for the mail the slot `decide` \
-                  sorts) or what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
+                  sorts) or `mail_contacts_personal` (true, the default, or false; while on, new mail from an \
+                  address in the address books goes to the group Personal, after mail filters, sorting rules, \
+                  newsletters, invitations and automatic replies, and a model only chooses within that group) or \
+                  what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
                   default, \"downloads\", \"save_as\", \"suggested\" or {\"target\": \"<id from \
                   mail_list_save_targets>\"}) or `mail_downloads_folder` (null to save attachments in the \
                   system's Downloads folder again; choosing a folder is for a person) or `allow_api_keys` / \
@@ -7077,6 +7081,7 @@ mod tests {
                 "mail_appearance",
                 "mail_to_cloud",
                 "decide_mail_to_cloud",
+                "mail_contacts_personal",
                 "reminders",
                 "hidden_categories",
                 "allow_api_keys",
