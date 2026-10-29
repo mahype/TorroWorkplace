@@ -184,6 +184,23 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
   neu. Jede App lädt beim Öffnen der Einstellungen nur, was ihre Abschnitte brauchen.
   Den Weg zum Dienst gibt die App dem Host; mit `--demo` antwortet er im Speicher und ändert nichts
   Echtes.
+- **Sofort da (#393, #394):** Der Host schickt jede Anfrage einzeln und setzt jede Antwort ein, sobald
+  sie kommt (Teilantworten). Die Seite steht, sobald alle Anfragen außer den **Hintergrund-Anfragen**
+  zurück sind; das sind die teuren (`mail.account_stats`, die beiden Kategorie-Vorschauen, Cache-Strategie
+  und -Auftrag, `ai.list_models`). Bis zu ihrer ersten Antwort zeigt ihr Teil der Seite
+  „Updating…“ statt eines Leerzustands. Eine Anfrage, die noch unterwegs ist, schickt das Neuladen im
+  Takt nicht noch einmal; jede Antwort trägt die Runde, für die sie gefragt wurde, und eine ältere
+  überschreibt nie eine neuere. Ein Fehler steht mit der letzten Antwort der Runde über der Seite.
+  Eine Änderung (`Action::Send`) schickt nur ihre Requests, danach lädt der Host Antwort für Antwort neu
+  und meldet den Abschnitten und der App das Senden wie bisher, sobald die Seite frisch ist.
+- **Gedächtnis:** Jede App hält ein `Memory` und gibt es jedem Host mit. Schließt sie die
+  Einstellungen, bleibt der letzte Stand darin (ohne Fehler und ohne „wird aktualisiert“); beim
+  nächsten Öffnen steht er sofort da und wird im Hintergrund aufgefrischt. Nur im Arbeitsspeicher,
+  solange die App läuft; nichts wird auf die Platte geschrieben.
+- **Mail-Statistik (#395):** Der Mail-Dienst liest Statistik und Kategorie-Vorschauen über eine zweite,
+  nur lesende Verbindung und wartet nicht auf Synchronisierung oder Indizierung. Die Statistik merkt er
+  sich je Konto; `mail.account_stats` antwortet aus diesem Stand mit seinem Zeitpunkt (`as_of`, auf der
+  Seite „As of …“) und rechnet im Hintergrund neu, wenn er älter als eine Minute ist.
 - „Open“ unter General › Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
   `torro-inbox-mail`).
 - Der Schlüssel eines neuen Clients gelangt nie in einen App-Prozess. Bis #231 hieß das: Apps senden keine
