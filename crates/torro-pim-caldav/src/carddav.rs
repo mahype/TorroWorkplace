@@ -513,8 +513,11 @@ fn text_of(node: roxmltree::Node<'_, '_>) -> Option<String> {
     node.text().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)
 }
 
-/// `<book>/<uid>.vcf`, the uid one path segment: a `/` or `%` in it is escaped, not read as a
-/// folder or an escape.
+/// `<book>/<name>.vcf` for a new card: the uid itself when it is plain (letters, digits, `-`, `_`,
+/// `.`, `@`), else a name made of it. A uid from elsewhere (`move_contact` keeps it) may hold `/`
+/// or `\`; escaped as `%2F` they would make an address every later read and write refuses
+/// (`write::item_url`). The name is made the same way each time, so sending again after a lost
+/// answer finds the card instead of making a second one.
 fn new_card_url(book: &Url, uid: &str) -> Result<Url, ContactsError> {
     if uid.trim().is_empty() {
         return Err(ContactsError::Other("a new contact needs a uid".into()));
@@ -523,8 +526,26 @@ fn new_card_url(book: &Url, uid: &str) -> Result<Url, ContactsError> {
     url.path_segments_mut()
         .map_err(|()| ContactsError::Other("the address book cannot hold contacts".into()))?
         .pop_if_empty()
-        .push(&format!("{uid}.vcf"));
+        .push(&format!("{}.vcf", card_name(uid)));
     Ok(url)
+}
+
+/// The file name of a new card with `uid`; see [`new_card_url`].
+fn card_name(uid: &str) -> String {
+    let plain = !uid.starts_with('.')
+        && uid.len() <= 200
+        && uid.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'));
+    if plain {
+        return uid.to_string();
+    }
+    // The uid's bytes in hex; a long one is cut and its whole told apart by a checksum (FNV-1a).
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let bytes = uid.as_bytes();
+    if bytes.len() <= 64 {
+        return format!("torro-{}", hex(bytes));
+    }
+    let sum = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+    format!("torro-{}-{sum:016x}", hex(&bytes[..64]))
 }
 
 fn parse(xml: &str) -> Result<roxmltree::Document<'_>, ContactsError> {
@@ -815,7 +836,17 @@ mod tests {
             .await;
         let stored = client(&server).put(&server.url(BOOK_PATH), None, "a/b c", VCARD, None).await.expect("stored");
         assert_eq!(created.calls_async().await, 1);
-        assert_eq!(stored, Stored { href: card(&server, "a%2Fb%20c.vcf"), etag: Some("\"n1\"".into()) });
+        let name = "torro-612f622063.vcf";
+        assert_eq!(stored, Stored { href: card(&server, name), etag: Some("\"n1\"".into()) });
+        assert!(
+            crate::write::item_url(&server.url(BOOK_PATH), &stored.href).is_some(),
+            "a uid with a / gets an address later reads and writes take"
+        );
+        assert_eq!(card_name("a/b c"), card_name("a/b c"), "the same name every time");
+        assert_eq!(card_name("4f1c-anna@example.org"), "4f1c-anna@example.org");
+        assert_eq!(card_name(".."), "torro-2e2e");
+        let long = card_name(&"\\".repeat(300));
+        assert!(long.len() < 160 && long != card_name(&"\\".repeat(301)), "{long}");
 
         let changed = server
             .mock_async(|when, then| {
