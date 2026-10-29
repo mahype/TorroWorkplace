@@ -13391,6 +13391,55 @@ mod tests {
         assert_eq!(core.mail.filters().list().expect("read").len(), 2);
     }
 
+    /// Issue #339, review: a filter whose category the person removed, or whose folder is gone from
+    /// the server, can still be switched off – by the person and by a client –, as the switch in the
+    /// list sends what the filter holds; a category or folder a change brings anew is still checked.
+    #[tokio::test]
+    async fn a_filter_whose_category_or_folder_is_gone_can_still_be_switched_off() {
+        use torro_mail::{Category, CustomCategory, FilterFile};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_mail_data(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let anna = "mail:anna@example.org";
+        let gone = Category::Custom(CustomCategory::new(9).expect("a number"));
+        let spec = crate::mail::filters::FilterSpec {
+            query: "from:shop.example".into(),
+            account: Some(anna.into()),
+            file: Some(FilterFile::Folder { id: "f:9".into() }),
+            mark_read: false,
+            category: Some(gone),
+            enabled: None,
+        };
+        // Made while the category and the folder were there; neither is now.
+        let stored = core.mail.filters().create(spec, &[gone], Utc::now()).expect("stored");
+        let switched =
+            |enabled: bool, file: Option<FilterFile>, category: Option<Category>| Request::UpdateMailFilter {
+                id: stored.id.clone(),
+                query: stored.query.clone(),
+                account: stored.account.clone(),
+                file,
+                mark_read: false,
+                category,
+                enabled: Some(enabled),
+            };
+        let off = ask(&core, Some(&app_key), switched(false, stored.file.clone(), stored.category)).await;
+        assert!(!mail_filter(off).enabled, "the person switches it off");
+
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
+        rights.mail_accounts = Selection::Only(vec![anna.into()]);
+        let (_, key) = client(&core, rights).await;
+        waits(ask(&core, Some(&key), switched(true, stored.file.clone(), stored.category)).await);
+
+        let other = Some(Category::Custom(CustomCategory::new(8).expect("a number")));
+        let elsewhere = Some(FilterFile::Folder { id: "f:8".into() });
+        for request in [switched(true, stored.file.clone(), other), switched(true, elsewhere, stored.category)] {
+            assert_eq!(code(&ask(&core, Some(&app_key), request.clone()).await), "error", "{request:?}");
+            assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "error", "{request:?}");
+        }
+    }
+
     /// Issue #339: the preview counts what a filter's search finds in the inbox; applying it marks
     /// and moves exactly that mail, once – a second run finds nothing left to do. A client's run
     /// waits for a person and says how many mails it changes.

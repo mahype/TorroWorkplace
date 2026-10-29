@@ -13,7 +13,9 @@
 //! `in:` (a filter looks at the inbox only) or `filename:` (the names of attachments are not known
 //! when mail arrives); at least one action; a folder only with an account, and one of that account
 //! that is not its inbox ([`check_folder`]); a category of the catalogue; at most
-//! [`torro_mail::FILTERS_MAX`] filters.
+//! [`torro_mail::FILTERS_MAX`] filters. A change checks only what it brings anew: the category and
+//! the folder a filter has already pass as they are, even when the person removed the category or
+//! the folder is gone from the server, so such a filter can still be switched off or changed.
 //!
 //! **Reach** ([`visible`], [`client_refusal`]): a client sees a filter of an account it reaches,
 //! and one for every account only when it reaches every account; any other filter behaves as if it
@@ -244,14 +246,17 @@ impl MailFilters {
     }
 
     /// Changes the filter `id` to `spec`; its id, place and age stay, and its switch unless `spec`
-    /// names one. `NotFound` for an unknown id, `Invalid` as for [`MailFilters::create`].
+    /// names one. `NotFound` for an unknown id, `Invalid` as for [`MailFilters::create`] – but the
+    /// category the filter has already passes even when it is no longer in `categories`
+    /// ([`with_kept`]), so a filter whose category the person removed can still be switched off.
     pub fn update(&self, id: &str, spec: FilterSpec, categories: &[Category]) -> Result<MailFilter, FilterError> {
         let _held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut stored = self.read()?;
         let at = stored.filters.iter().position(|filter| filter.id == id).ok_or(FilterError::NotFound)?;
         let old = &stored.filters[at];
+        let known = with_kept(categories, Some(old));
         let filter = spec.into_filter(old.id.clone(), old.enabled, old.created);
-        check(&filter, categories)?;
+        check(&filter, &known)?;
         stored.filters[at] = filter.clone();
         self.write(&stored)?;
         Ok(filter)
@@ -328,6 +333,28 @@ pub fn check(filter: &MailFilter, categories: &[Category]) -> Result<(), FilterE
     Ok(())
 }
 
+/// The catalogue `categories` with the category of `stored` (the filter as it is stored) added:
+/// a change of a filter checks only a category it brings anew. Removing a category the person made
+/// must not lock the filters that set it – the switch in the list sends the category it holds.
+/// Filters skip a category that is gone when they run ([`category_due`], [`on_arrival`]).
+fn with_kept(categories: &[Category], stored: Option<&MailFilter>) -> Vec<Category> {
+    let mut known = categories.to_vec();
+    known.extend(stored.and_then(|filter| filter.category).filter(|kept| !categories.contains(kept)));
+    known
+}
+
+/// Whether `spec` moves its mail to the same folder of the same account as `stored`: then the
+/// folder is not looked up again ([`spec_refusal`]). A folder gone from the server (renamed,
+/// removed) must not lock the filter; when it runs, the move fails and is logged (`failed` for
+/// `mail.apply_filter`), the mail stays.
+fn same_folder(spec: &FilterSpec, stored: Option<&MailFilter>) -> bool {
+    stored.is_some_and(|stored| {
+        matches!(spec.file, Some(FilterFile::Folder { .. }))
+            && stored.file == spec.file
+            && stored.account == spec.account
+    })
+}
+
 /// Whether the folder `spec` moves its mail to is a folder of its account other than the inbox
 /// (`Invalid` otherwise). Nothing to check without a folder; without an account [`check`] refuses
 /// it already.
@@ -384,7 +411,8 @@ pub fn changes_filters(request: &Request) -> bool {
 ///   and [`visible`]: else `not-found`;
 /// - a new or changed filter for every account needs every account, and a category (also one that
 ///   `mail.apply_filter` would set) admin access to `inbox`: else `forbidden`;
-/// - a new or changed filter passes [`check`] and [`check_folder`]: else `error`, nothing to approve.
+/// - a new or changed filter passes [`check`] and [`check_folder`] (a change only with what it brings
+///   anew, [`spec_refusal`]): else `error`, nothing to approve.
 pub async fn client_refusal(
     mail: &MailService,
     rights: &Rights,
@@ -409,17 +437,21 @@ pub async fn client_refusal(
         return Some(no_category().response());
     }
     let spec = FilterSpec::of(request)?;
-    if let Err(err) = spec_refusal(mail, reach, &spec, categories).await {
+    if let Err(err) = spec_refusal(mail, reach, &spec, stored.as_ref(), categories).await {
         return Some(err.response());
     }
     None
 }
 
 /// `forbidden`, `not-found` or `error` for a filter `spec` from `reach` (see [`client_refusal`]).
+/// `stored` is the filter a change replaces (`None` for a new one): its category and folder pass
+/// unchanged without being looked up again ([`with_kept`], [`same_folder`]); everything else is
+/// checked as for a new filter.
 async fn spec_refusal(
     mail: &MailService,
     reach: Reach<'_>,
     spec: &FilterSpec,
+    stored: Option<&MailFilter>,
     categories: &[Category],
 ) -> Result<(), FilterError> {
     match &spec.account {
@@ -436,7 +468,10 @@ async fn spec_refusal(
         return Err(no_category());
     }
     let candidate = spec.clone().into_filter(filter_id(1), true, DateTime::<Utc>::UNIX_EPOCH);
-    check(&candidate, categories)?;
+    check(&candidate, &with_kept(categories, stored))?;
+    if same_folder(spec, stored) {
+        return Ok(());
+    }
     check_folder(mail, spec).await
 }
 
@@ -478,14 +513,14 @@ async fn answered(
         Request::ListMailFilters => Ok(Response::MailFilters { filters: seen(filters.list()?, reach) }),
         request @ Request::CreateMailFilter { .. } => {
             let spec = FilterSpec::of(&request).ok_or(FilterError::NotFound)?;
-            spec_refusal(mail, reach, &spec, categories).await?;
+            spec_refusal(mail, reach, &spec, None, categories).await?;
             Ok(Response::MailFilter { filter: filters.create(spec, categories, Utc::now())? })
         }
         request @ Request::UpdateMailFilter { .. } => {
             let Request::UpdateMailFilter { id, .. } = &request else { return Err(FilterError::NotFound) };
-            visible_filter(mail, reach, id)?;
+            let stored = visible_filter(mail, reach, id)?;
             let spec = FilterSpec::of(&request).ok_or(FilterError::NotFound)?;
-            spec_refusal(mail, reach, &spec, categories).await?;
+            spec_refusal(mail, reach, &spec, Some(&stored), categories).await?;
             Ok(Response::MailFilter { filter: filters.update(id, spec, categories)? })
         }
         Request::RemoveMailFilter { id } => {
@@ -1165,6 +1200,22 @@ mod tests {
             "Bernd's mail matches none; a search that no filter may have is skipped"
         );
         assert!(matching(&store, &filters, &[]).await.expect("nothing").is_empty());
+    }
+
+    /// A change checks only a category it brings anew: the one a filter has passes after the person
+    /// removed it from the catalogue, so the filter can still be switched off; another is checked.
+    #[test]
+    fn a_change_keeps_a_category_gone_from_the_catalogue() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let filters = at(&dir);
+        let gone = Category::Custom(torro_mail::CustomCategory::new(9).expect("a number"));
+        let held = FilterSpec { category: Some(gone), ..spec("from:x") };
+        filters.create(held.clone(), &[gone], Utc::now()).expect("made while it was there");
+        let off = filters.update("f1", FilterSpec { enabled: Some(false), ..held }, &[]).expect("switched off");
+        assert!(!off.enabled && off.category == Some(gone));
+        let other = Category::Custom(torro_mail::CustomCategory::new(8).expect("a number"));
+        let changed = FilterSpec { category: Some(other), ..spec("from:x") };
+        assert_eq!(code(filters.update("f1", changed, &[]).expect_err("not in the catalogue")), "error");
     }
 
     /// The fingerprint changes with every field of the stored filter.
