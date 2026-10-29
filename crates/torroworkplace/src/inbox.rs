@@ -1201,8 +1201,14 @@ impl Inbox {
                 Request::CreateCategory { .. }
                 | Request::UpdateCategory { .. }
                 | Request::RemoveCategory { .. }
-                | Request::CreateSortRule { .. } => {
-                    InboxFacts { categories: catalogue::catalogue_in(db)?, ..InboxFacts::default() }
+                | Request::CreateSortRule { .. } => InboxFacts {
+                    categories: catalogue::catalogue_in(db)?,
+                    groups: catalogue::groups_in(db)?,
+                    ..InboxFacts::default()
+                },
+                // A main category is named as the catalogue calls it (issue #343).
+                Request::UpdateCategoryGroup { .. } => {
+                    InboxFacts { groups: catalogue::groups_in(db)?, ..InboxFacts::default() }
                 }
                 Request::UpdateSortRule { id, .. }
                 | Request::RemoveSortRule { id }

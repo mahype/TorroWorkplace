@@ -2621,6 +2621,10 @@ pub struct InboxFacts {
     /// uses for a category already there. Empty for requests that name none; a category not in
     /// it is named by the suite's word ([`category_name`]).
     pub categories: Vec<torro_mail::CategoryDef>,
+    /// The main categories as the inbox keeps them (issue #343): the names a summary uses for a
+    /// main category already there, also one the person made. Empty for requests that name none; a
+    /// built-in one not in it is named by the suite's word ([`group_name`]).
+    pub groups: Vec<torro_mail::CategoryGroupDef>,
     /// The sorting rule `inbox.update_sort_rule`, `inbox.remove_sort_rule` or
     /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
     /// held across the awaits of asking for an approval, deep in the stack.
@@ -2639,6 +2643,32 @@ fn category_name(facts: &InboxFacts, category: torro_mail::Category) -> String {
         None => torro_core::category::fallback_name(category),
     };
     format!("\"{}\"", quote(&name))
+}
+
+/// What a person reads for the main category `group` in a summary (issue #343): its name in the
+/// catalogue the inbox keeps, quoted – the suite's word for a built-in one nobody renamed, the
+/// person's own name for one they made, never one the client sent. A main category of the person's
+/// that is not there is named by its key.
+fn group_name(facts: &InboxFacts, group: torro_mail::CategoryGroup) -> String {
+    let held = facts.groups.iter().find(|def| def.group == group).and_then(|def| def.name.as_deref());
+    let name = match (held.map(str::trim).filter(|name| !name.is_empty()), group) {
+        (Some(name), _) => name.to_string(),
+        (None, torro_mail::CategoryGroup::Custom(_)) => group.key().into_owned(),
+        (None, _) => torro_core::category::group_label(group).to_string(),
+    };
+    format!("\"{}\"", quote(&name))
+}
+
+/// The colour `color` of a main category as the editor in the mail settings names it.
+fn colour_word(color: u8) -> String {
+    match color {
+        0 => tr("Blue").to_string(),
+        1 => tr("Purple").to_string(),
+        2 => tr("Green").to_string(),
+        3 => tr("Red").to_string(),
+        4 => tr("Pink").to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// The conditions of a sorting rule in words (task E15.1): "from billing@shop.example and with
@@ -2903,10 +2933,48 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             "Add the mail category {name} to {group} with icon {icon}",
             &[
                 ("name", &format!("\"{}\"", quote(name))),
-                ("group", &format!("\"{}\"", torro_core::category::group_label(*group))),
+                ("group", &group_name(facts, *group)),
                 ("icon", &format!("{:?}", icon)),
             ],
         ),
+        // The main categories (issue #343): a new one as it will be written, one already there by
+        // its name in the catalogue, then every field that changes.
+        Request::CreateCategoryGroup { name, icon, color } => trf(
+            "Add the main mail category {name} with icon {icon} and colour {color}",
+            &[
+                ("name", &format!("\"{}\"", quote(name))),
+                ("icon", &format!("{:?}", icon)),
+                ("color", &colour_word(*color)),
+            ],
+        ),
+        Request::UpdateCategoryGroup { group, name, icon, color } => {
+            let held = facts.groups.iter().find(|def| def.group == *group);
+            let mut changes: Vec<String> = Vec::new();
+            match name.trim() {
+                "" if held.is_none_or(|def| def.name.is_some()) => {
+                    changes.push(tr("put back the suite's name").to_string());
+                }
+                "" => {}
+                name if held.is_none_or(|def| def.name.as_deref() != Some(name)) => {
+                    changes.push(trf("call it {name}", &[("name", &format!("\"{}\"", quote(name)))]));
+                }
+                _ => {}
+            }
+            if held.is_none_or(|def| def.icon != *icon) {
+                changes.push(trf("set its icon to {icon}", &[("icon", &format!("{:?}", icon))]));
+            }
+            if held.is_none_or(|def| def.color != *color) {
+                changes.push(trf("set its colour to {color}", &[("color", &colour_word(*color))]));
+            }
+            let group = group_name(facts, *group);
+            match changes.is_empty() {
+                true => trf("Change the main mail category {group}", &[("group", &group)]),
+                false => trf(
+                    "Change the main mail category {group}: {changes}",
+                    &[("group", &group), ("changes", &changes.join(", "))],
+                ),
+            }
+        }
         // Every field that changes is named (API review of #255): a new description steers the
         // model, a group or the model switch decides what is offered – none of it hidden behind
         // "change".
@@ -2918,8 +2986,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 None => {}
             }
             if let Some(group) = group {
-                let group = format!("\"{}\"", torro_core::category::group_label(*group));
-                changes.push(trf("move it to {group}", &[("group", &group)]));
+                changes.push(trf("move it to {group}", &[("group", &group_name(facts, *group))]));
             }
             if let Some(icon) = icon {
                 changes.push(trf("set its icon to {icon}", &[("icon", &format!("{:?}", icon))]));
@@ -6248,6 +6315,75 @@ pub(crate) mod tests {
         }
         assert_eq!(question_refusal("Bash", &"ä".repeat(QUESTION_DETAILS_MAX)), None, "characters, not bytes");
         assert_eq!(refused("Bash", &"x".repeat(QUESTION_DETAILS_MAX + 1)), "error");
+    }
+
+    /// Issue #343, #397: a main category is named as the catalogue calls it – a built-in one by the
+    /// suite's word or the person's, one the person made by its name –, and no summary of the
+    /// catalogue falls back to "Run …".
+    #[test]
+    fn main_categories_are_named_from_the_inbox() {
+        use torro_mail::{Category, CategoryGroup, CategoryGroupDef, CategoryIcon};
+
+        let own = CategoryGroup::Custom(6);
+        let mut groups = CategoryGroupDef::defaults();
+        groups.push(CategoryGroupDef {
+            group: own,
+            name: Some("Private".into()),
+            icon: CategoryIcon::Paperclip,
+            color: 4,
+        });
+        let facts = InboxFacts { groups, ..InboxFacts::default() };
+        let create = Request::CreateCategoryGroup { name: "Club".into(), icon: CategoryIcon::Users, color: 4 };
+        assert_eq!(
+            inbox_summary(&create, &facts),
+            trf(
+                "Add the main mail category {name} with icon {icon} and colour {color}",
+                &[("name", &"\"Club\""), ("icon", &"Users"), ("color", &tr("Pink"))]
+            )
+        );
+        let rename =
+            Request::UpdateCategoryGroup { group: own, name: "Family".into(), icon: CategoryIcon::Paperclip, color: 4 };
+        assert_eq!(
+            inbox_summary(&rename, &facts),
+            trf(
+                "Change the main mail category {group}: {changes}",
+                &[("group", &"\"Private\""), ("changes", &trf("call it {name}", &[("name", &"\"Family\"")]))]
+            ),
+            "the old name from the inbox, only what changes"
+        );
+        let unsorted = Request::UpdateCategoryGroup {
+            group: CategoryGroup::Unsorted,
+            name: String::new(),
+            icon: CategoryIcon::CircleDashed,
+            color: 4,
+        };
+        let label = format!("\"{}\"", torro_core::category::group_label(CategoryGroup::Unsorted));
+        assert_eq!(
+            inbox_summary(&unsorted, &facts),
+            trf("Change the main mail category {group}", &[("group", &label)])
+        );
+        let into_own = Request::CreateCategory {
+            group: own,
+            name: "Tax".into(),
+            description: "For the tax return.".into(),
+            model: true,
+            icon: CategoryIcon::Tag,
+        };
+        assert!(inbox_summary(&into_own, &facts).contains("\"Private\""), "a group of the person's by its name");
+        let moved = Request::UpdateCategory {
+            category: Category::Invoice,
+            group: Some(own),
+            name: None,
+            description: None,
+            model: None,
+            icon: None,
+        };
+        assert!(inbox_summary(&moved, &facts).contains("\"Private\""));
+        let generic = trf("Run {command}", &[("command", &"")]);
+        for request in [create, rename, unsorted, into_own, moved] {
+            let words = inbox_summary(&request, &facts);
+            assert!(!words.starts_with(&generic), "{words}");
+        }
     }
 
     /// Task E15.1: a summary names a category already there by its name in the catalogue and a

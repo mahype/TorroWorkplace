@@ -17283,6 +17283,27 @@ mod tests {
         assert_eq!(code(&run), "forbidden", "the backlog run needs the admin switch");
     }
 
+    /// Issue #343, #397: a new main category waits for the person, with a summary that names it,
+    /// and nothing is there until they allow it.
+    #[tokio::test]
+    async fn a_new_main_category_waits_for_the_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, inbox_admin()).await;
+        let create =
+            Request::CreateCategoryGroup { name: "Club".into(), icon: torro_mail::CategoryIcon::Users, color: 1 };
+        let asked = waits(ask(&core, Some(&key), create).await);
+        assert_eq!(asked.command, "inbox.create_category_group");
+        assert!(asked.summary.contains("\"Club\""), "{}", asked.summary);
+        let Response::Categories { groups, .. } =
+            ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
+        else {
+            panic!("the catalogue");
+        };
+        assert_eq!(groups.len(), torro_mail::CategoryGroup::ALL.len(), "nothing made before the person allows it");
+    }
+
     /// Full access with the admin switch of the inbox on, so muting waits for a person.
     fn inbox_admin() -> Rights {
         let mut rights = RightsTemplate::FullAccess.rights();
