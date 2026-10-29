@@ -10,7 +10,10 @@
 //!   entry per contact; it survives a restart.
 //! - **Search:** an FTS5 table with the trigram tokenizer over names, company, mail addresses,
 //!   numbers as written and as digits only, places and the note: any three characters find what
-//!   holds them, and "0171 234" finds "+49 171 2345678" through the digits.
+//!   holds them, whatever their case and accents ("MULLER" finds "Müller", [`folded`]), and
+//!   "0171 234" finds "+49 171 2345678" through the digits.
+//! - **Lists** sort by family name, or by the name shown when there is none, the same way folded:
+//!   "König" between "Koch" and "Kurz".
 //! - **Favourites** and the **contacts used last** (at most [`RECENT_MAX`]), on this device only.
 //!
 //! `secure_delete` is on, so removed contacts do not linger in free pages; removing an account
@@ -220,6 +223,45 @@ pub fn digits(text: &str) -> String {
     text.chars().filter(char::is_ascii_digit).collect()
 }
 
+/// `text` as searches and lists compare it: lower case, accents and umlaut dots taken off ("ß"
+/// becomes "ss"). SQLite folds only ASCII letters, so "BRÜHL" would miss "Brühl" and "König"
+/// would sort behind "Kurz"; both sides of a comparison go through here instead.
+pub fn folded(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars().flat_map(char::to_lowercase) {
+        match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'æ' => out.push_str("ae"),
+            'ç' | 'ć' | 'č' => out.push('c'),
+            'ď' | 'đ' => out.push('d'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'ğ' => out.push('g'),
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => out.push('i'),
+            'ł' | 'ľ' | 'ĺ' => out.push('l'),
+            'ñ' | 'ń' | 'ň' => out.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => out.push('o'),
+            'œ' => out.push_str("oe"),
+            'ŕ' | 'ř' => out.push('r'),
+            'ß' => out.push_str("ss"),
+            'ś' | 'š' | 'ş' | 'ș' => out.push('s'),
+            'ť' | 'ţ' | 'ț' => out.push('t'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' | 'ų' => out.push('u'),
+            'ý' | 'ÿ' => out.push('y'),
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            // Combining marks, as in a decomposed "u\u{308}" or the lower case of "İ".
+            '\u{300}'..='\u{36f}' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// What a list sorts `name` by: [`folded`], without leading punctuation, so "(mazzo)" stands
+/// under M and not before A.
+fn sort_key(name: &str) -> String {
+    folded(name).trim_start_matches(|c: char| !c.is_alphanumeric()).to_string()
+}
+
 /// The digits a search for a number looks for: the digits of `query` without leading zeros (a
 /// number typed with its trunk prefix, "0171", finds the stored "+49 171"); `None` below three.
 pub fn query_digits(query: &str) -> Option<String> {
@@ -252,7 +294,7 @@ fn search_text(contact: &Contact) -> (String, String) {
     text.extend(contact.addresses.iter().map(|a| a.value.one_line()));
     text.extend(contact.note.clone());
     let numbers = contact.phones.iter().map(|p| digits(&p.value)).collect::<Vec<_>>().join(" ");
-    (text.join("\n"), numbers)
+    (folded(&text.join("\n")), numbers)
 }
 
 fn book_row(row: &Row<'_>) -> rusqlite::Result<BookRow> {
@@ -423,6 +465,7 @@ impl Store {
     pub fn put_card(&self, card: &CardRow) -> Result<(), StoreError> {
         let contact = vcard::read(&card.vcard).unwrap_or_default();
         let (text, numbers) = search_text(&contact);
+        let shown = contact.shown_name();
         let groups = serde_json_groups(&contact.groups);
         let birthday = contact.birthday.map(|b| b.to_string());
         let tx = self.db.unchecked_transaction()?;
@@ -443,9 +486,11 @@ impl Store {
                 state_name(card.state),
                 card.server,
                 card.server_etag,
-                contact.name.family.to_lowercase(),
-                contact.name.given.to_lowercase(),
-                contact.shown_name().to_lowercase(),
+                // Without a family name a contact stands under the name it shows ("Ali Solmaz"
+                // under A), not behind Z.
+                sort_key(if contact.name.family.trim().is_empty() { &shown } else { &contact.name.family }),
+                sort_key(&contact.name.given),
+                sort_key(&shown),
                 groups,
                 birthday,
             ],
@@ -562,7 +607,7 @@ impl Store {
         }
         if let Some(text) = query.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
             let mut words = Vec::new();
-            for word in text.split_whitespace() {
+            for word in folded(text).split_whitespace() {
                 values.push(like(word).into());
                 words.push(format!("s.text LIKE ?{} ESCAPE '\\'", values.len()));
             }
@@ -576,7 +621,7 @@ impl Store {
         sql.push_str(if query.recent {
             " ORDER BY r.used DESC, c.id"
         } else {
-            " ORDER BY c.family = '', c.family, c.given, c.shown, c.id"
+            " ORDER BY c.family, c.given, c.shown, c.id"
         });
         values.push((query.limit as i64 + 1).into());
         sql.push_str(&format!(" LIMIT ?{}", values.len()));
@@ -722,6 +767,52 @@ mod tests {
         assert_eq!((first[0].uid.as_str(), more), ("a", true));
         let (second, more) = store.query(&Query { offset: 1, ..page }).expect("page");
         assert_eq!((second[0].uid.as_str(), more), ("b", false));
+    }
+
+    #[test]
+    fn searches_ignore_case_and_umlauts_and_lists_sort_by_letters() {
+        let dir = tempfile::tempdir().expect("dir");
+        let store = Store::open(&dir.path().join("contacts")).expect("store");
+        let work = book("nextcloud:anna@cloud.example.org", "contacts");
+        store.put_book(&work).expect("book");
+        let cards = [
+            ("zander", vcard("Zander", "1", "")),
+            ("kurz", vcard("Kurz", "2", "NOTE:Hauptstraße 1\r\n")),
+            ("konig", vcard("König", "3", "")),
+            ("bruhl", vcard("Brühl", "4", "")),
+            (
+                "mazzo",
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:Matthias (mazzo)\r\nN:(mazzo);Matthias;;;\r\nEND:VCARD\r\n"
+                    .into(),
+            ),
+            ("solmaz", "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:Ali Solmaz\r\nEND:VCARD\r\n".into()),
+        ];
+        for (uid, raw) in &cards {
+            store.put_card(&card(&work.id, uid, raw)).expect("card");
+        }
+        let find = |text: Option<&str>| {
+            let query =
+                Query { books: vec![work.id.clone()], text: text.map(Into::into), limit: 10, ..Query::default() };
+            store.query(&query).expect("query").0.into_iter().map(|c| c.uid).collect::<Vec<_>>()
+        };
+        assert_eq!(find(Some("BRÜHL")), ["bruhl"]);
+        assert_eq!(find(Some("bruhl")), ["bruhl"], "without the dots");
+        assert_eq!(find(Some("KÖNIG")), ["konig"]);
+        assert_eq!(find(Some("STRASSE")), ["kurz"], "ß is ss");
+        assert_eq!(
+            find(None),
+            ["solmaz", "bruhl", "konig", "kurz", "mazzo", "zander"],
+            "no family name sorts by the name shown, umlauts by their letter, punctuation is skipped"
+        );
+    }
+
+    #[test]
+    fn folding_takes_off_case_and_accents() {
+        assert_eq!(folded("Müller-Lüdenscheidt"), "muller-ludenscheidt");
+        assert_eq!(folded("STRASSE Straße"), "strasse strasse");
+        assert_eq!(folded("Çelik Øster Dvořák"), "celik oster dvorak");
+        assert_eq!(folded("u\u{308}"), "u", "a combining mark goes");
+        assert_eq!(sort_key("(mazzo)"), "mazzo)", "only the start counts for the order");
     }
 
     #[test]
