@@ -214,6 +214,7 @@ pub mod sources {
             id,
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: Some(notify),
             services: None,
             folder_roles: None,

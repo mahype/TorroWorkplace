@@ -1536,7 +1536,16 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             *subscribed,
         ),
         Request::RemoveAccount { id } => trf("Remove the account {account}", &[("account", &named(id))]),
-        Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles, format } => trf(
+        Request::UpdateMailAccount {
+            id,
+            sender_name,
+            signature,
+            signature_format,
+            notify,
+            services,
+            folder_roles,
+            format,
+        } => trf(
             "Change the mail account {account}: {changes}",
             &[
                 ("account", &named(id)),
@@ -1545,6 +1554,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                     &mail_account_changes(
                         sender_name.as_deref(),
                         signature.as_deref(),
+                        *signature_format,
                         notify.is_some(),
                         services.as_ref(),
                         folder_roles.as_ref(),
@@ -2638,11 +2648,53 @@ fn conditions_words(conditions: &[torro_inbox::SortCondition]) -> String {
         .iter()
         .map(|condition| {
             let value = format!("\"{}\"", quote(&condition.value));
-            match condition.field {
-                torro_inbox::SortField::Sender => trf("from {sender}", &[("sender", &value)]),
-                torro_inbox::SortField::Domain => trf("from anyone at {domain}", &[("domain", &value)]),
-                torro_inbox::SortField::Subject => trf("with {text} in the subject", &[("text", &value)]),
-                torro_inbox::SortField::Text => trf("with {text} in the text", &[("text", &value)]),
+            let comparison = if condition.comparison == torro_inbox::SortComparison::Auto {
+                condition.field.default_comparison()
+            } else {
+                condition.comparison
+            };
+            let field = match condition.field {
+                torro_inbox::SortField::Sender => tr("Sender address"),
+                torro_inbox::SortField::Domain => tr("Sender domain"),
+                torro_inbox::SortField::ReplyTo => tr("Reply address"),
+                torro_inbox::SortField::Recipient => tr("Recipient (To/Cc)"),
+                torro_inbox::SortField::Subject => tr("Subject"),
+                torro_inbox::SortField::Text => tr("Message text"),
+                torro_inbox::SortField::Attachment => tr("Attachment"),
+                torro_inbox::SortField::AttachmentName => tr("Attachment name or type"),
+                torro_inbox::SortField::Size => tr("Message size"),
+                torro_inbox::SortField::ListId => tr("Mailing list (List-ID)"),
+                torro_inbox::SortField::Account => tr("Email account"),
+            };
+            let compared = match comparison {
+                torro_inbox::SortComparison::Auto => tr("matches"),
+                torro_inbox::SortComparison::Is => tr("is"),
+                torro_inbox::SortComparison::IsNot => tr("is not"),
+                torro_inbox::SortComparison::Contains => tr("contains"),
+                torro_inbox::SortComparison::NotContains => tr("does not contain"),
+                torro_inbox::SortComparison::StartsWith => tr("starts with"),
+                torro_inbox::SortComparison::EndsWith => tr("ends with"),
+                torro_inbox::SortComparison::Present => tr("present"),
+                torro_inbox::SortComparison::Absent => tr("not present"),
+                torro_inbox::SortComparison::GreaterThan => tr("larger than"),
+                torro_inbox::SortComparison::LessThan => tr("smaller than"),
+            };
+            match (condition.comparison, condition.field) {
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Sender) => {
+                    trf("from {sender}", &[("sender", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Domain) => {
+                    trf("from anyone at {domain}", &[("domain", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Subject) => {
+                    trf("with {text} in the subject", &[("text", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Text) => {
+                    trf("with {text} in the text", &[("text", &value)])
+                }
+                (_, torro_inbox::SortField::Attachment) => format!("{field} {compared}"),
+                (_, torro_inbox::SortField::Size) => format!("{field} {compared} {value} MB"),
+                _ => format!("{field} {compared} {value}"),
             }
         })
         .collect();
@@ -3289,6 +3341,7 @@ fn when(start: &EventTime, today: chrono::NaiveDate) -> String {
 fn mail_account_changes(
     sender_name: Option<&str>,
     signature: Option<&str>,
+    signature_format: Option<bool>,
     notify: bool,
     services: Option<&torro_mail::Services>,
     folder_roles: Option<&BTreeMap<Role, String>>,
@@ -3304,6 +3357,9 @@ fn mail_account_changes(
         Some("") => changes.push(tr("no signature").to_string()),
         Some(text) => changes.push(trf("signature \"{start}\"", &[("start", &quote(text))])),
         None => {}
+    }
+    if let Some(formatted) = signature_format {
+        changes.push(if formatted { tr("formatted signature") } else { tr("plain signature") }.to_string());
     }
     if notify {
         changes.push(tr("new mail in the Notification Hub").to_string());
@@ -3342,15 +3398,25 @@ fn mail_cache_account(facts: &Facts, id: &str) -> String {
 fn mail_cache_changes(policy: &torro_ipc::mail::MailCachePolicy) -> String {
     use torro_ipc::mail::MailCacheMode;
     let mode = match policy.mode {
-        MailCacheMode::HeadersOnly => tr("keep no mail texts"),
-        MailCacheMode::Recent90Days => tr("keep the mail texts of the last 90 days"),
-        MailCacheMode::AllOffline => tr("keep all mail texts"),
+        MailCacheMode::HeadersOnly => tr("keep no mail texts").to_string(),
+        MailCacheMode::Recent90Days => tr("keep the mail texts of the last 90 days").to_string(),
+        MailCacheMode::AllOffline => tr("keep all mail texts").to_string(),
+        MailCacheMode::SinceDate => {
+            trf("keep mail texts from {date}", &[("date", &policy.since_date.as_deref().unwrap_or("?"))])
+        }
+        MailCacheMode::MaxSize => {
+            trf("keep the newest mail up to {mb} MiB", &[("mb", &policy.max_local_mb.unwrap_or(0))])
+        }
     };
     let attachments = match policy.prefetch_attachments {
         true => tr("download attachments in advance"),
         false => tr("download attachments only when opened"),
     };
-    let days = trf("delete downloaded attachments after {days} days", &[("days", &policy.attachment_retention_days)]);
+    let days = match policy.attachment_retention_days {
+        0 => tr("keep no downloaded attachments").to_string(),
+        u32::MAX => tr("keep all downloaded attachments").to_string(),
+        days => trf("delete downloaded attachments after {days} days", &[("days", &days)]),
+    };
     format!("{mode}, {attachments}, {days}")
 }
 
@@ -4949,6 +5015,8 @@ pub(crate) mod tests {
             policy: MailCachePolicy {
                 account: "mail:anna@mailbox.org".into(),
                 mode,
+                since_date: None,
+                max_local_mb: None,
                 prefetch_attachments,
                 attachment_retention_days: days,
             },
@@ -5335,6 +5403,7 @@ pub(crate) mod tests {
             id: "mail:anna@mailbox.org".into(),
             sender_name: None,
             signature: signature.map(str::to_string),
+            signature_format: None,
             notify: Some(torro_mail::Notify::Off),
             services,
             folder_roles: None,
@@ -5368,13 +5437,13 @@ pub(crate) mod tests {
         .join(", ");
         let account: (&str, &dyn std::fmt::Display) = ("account", &"mail:anna@mailbox.org");
         assert_eq!(said, trf("Change the mail account {account}: {changes}", &[account, ("changes", &changes)]));
-        assert_eq!(mail_account_changes(None, None, false, None, None, None), tr("nothing"));
-        let plain = mail_account_changes(None, None, false, None, None, Some(torro_mail::MailFormat::Plain));
+        assert_eq!(mail_account_changes(None, None, None, false, None, None, None), tr("nothing"));
+        let plain = mail_account_changes(None, None, None, false, None, None, Some(torro_mail::MailFormat::Plain));
         assert_eq!(plain, tr("write plain text mail"), "issue #125: the writing format is named");
 
         // Each role with the path it gets, the path made harmless.
         let roles = BTreeMap::from([(Role::Sent, "INBOX.Sent \"x\"".to_string()), (Role::Drafts, "Drafts".into())]);
-        let said = mail_account_changes(None, None, false, None, Some(&roles), None);
+        let said = mail_account_changes(None, None, None, false, None, Some(&roles), None);
         let drafts = trf("{role} → \"{path}\"", &[("role", &tr("Drafts")), ("path", &"Drafts")]);
         let sent = trf("{role} → \"{path}\"", &[("role", &tr("Sent")), ("path", &"INBOX.Sent 'x'")]);
         assert_eq!(said, format!("{drafts}, {sent}"));
@@ -6202,7 +6271,11 @@ pub(crate) mod tests {
         let rule = SortRule {
             id: "r1".into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: "shop.example".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: "shop.example".into(),
+            }],
             exceptions: Vec::new(),
             enabled: true,
             created: Utc::now(),
@@ -6222,7 +6295,11 @@ pub(crate) mod tests {
         let update = Request::UpdateSortRule {
             id: "r1".into(),
             category: tax,
-            conditions: vec![SortCondition { field: SortField::Sender, value: "evil@example.org".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Sender,
+                value: "evil@example.org".into(),
+            }],
             exceptions: None,
             enabled: Some(true),
         };
@@ -6246,7 +6323,11 @@ pub(crate) mod tests {
         let off = Request::UpdateSortRule {
             id: "r1".into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: "shop.example".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: "shop.example".into(),
+            }],
             exceptions: None,
             enabled: Some(false),
         };

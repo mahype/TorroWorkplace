@@ -40,7 +40,9 @@ pub use account::{
     ACCOUNT_PREFIX, BackupPreferences, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify,
     Security, Services, account_id, is_account_id,
 };
-pub use category::{Category, CategoryDef, CategoryGroup, CategoryIcon, CategorySource, CustomCategory, MailCategory};
+pub use category::{
+    Category, CategoryDef, CategoryGroup, CategoryGroupDef, CategoryIcon, CategorySource, CustomCategory, MailCategory,
+};
 pub use filter::{FILTER_QUERY_MAX, FILTERS_MAX, FilterActions, FilterFile, MailFilter};
 pub use message::{
     AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailPile, Message,

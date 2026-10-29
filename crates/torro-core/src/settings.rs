@@ -138,6 +138,10 @@ pub struct Settings {
     /// the rest of the window. Read leniently, like [`Settings::mail_view`].
     #[serde(default, deserialize_with = "lenient")]
     pub mail_appearance: MailAppearance,
+    /// Account id used for a newly composed mail when no account was requested explicitly.
+    /// Replies keep the account of the message. A removed account is ignored by the composer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_sender: Option<String>,
     /// What a click on an attachment's name does and where "Save to Downloads" puts files (issue
     /// #290, [`MailAttachments`]). The save targets themselves are not here but in their own file
     /// (`mail.list_save_targets`), so `settings.update_settings` never writes them. Read leniently:
@@ -776,6 +780,7 @@ impl Default for Settings {
             components_off: BTreeSet::new(),
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
+            mail_sender: None,
             mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
             // Written by this version: nothing to take over from before the slots.
@@ -2699,6 +2704,7 @@ mod tests {
             components_off: BTreeSet::new(),
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
+            mail_sender: None,
             mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
             decide_mail_to_cloud: Some(false),
@@ -2972,6 +2978,7 @@ mod tests {
             components_off: BTreeSet::from([Component::Mail, Component::Assistant]),
             mail_view: MailFormat::Text,
             mail_appearance: MailAppearance::Dark,
+            mail_sender: Some("mail:anna@example.org".into()),
             mail_attachments: MailAttachments {
                 click: AttachmentClick::SaveAs,
                 downloads: Some("/Users/anna/Ablage".into()),

@@ -22,20 +22,20 @@
 //! resetting a category, leaving a page with changes – asks on the page first.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, space as blank, text_editor};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::widget::{column, container, responsive, row, space as blank, text_editor};
+use iced::{Alignment, Element, Fill, Length, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, space};
 use torro_gui::{layout, style, typo, widgets};
 use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_VALUE_MAX};
-use torro_inbox::{SortCondition, SortField, SortRule};
+use torro_inbox::{SortComparison, SortCondition, SortField, SortRule};
 use torro_ipc::inbox::CategoryInfo;
 use torro_ipc::{Request, SettingKey};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
 use torro_mail::{Category, CategoryGroup, CategoryIcon};
 
-use crate::parts::{chevron, choice, field, picker, pressable, row_frame, setting_row, switch};
+use crate::parts::{choice, field, picker, pressable, row_frame, setting_row, switch};
 use crate::{Action, Data};
 
 /// The id of the name field of a category's page: "Save" with a mistake in it goes there.
@@ -44,18 +44,39 @@ const NAME_FIELD: &str = "mail-category-name";
 /// The id of the first condition's field of a rule's page.
 const CONDITION_FIELD: &str = "mail-rule-condition";
 
+/// Enough room for a short description without making each category card tall.
+const INLINE_DESCRIPTION_HEIGHT: f32 = 100.0;
+
 /// What the editor keeps between two frames: the page that is open, and the question it asks.
 #[derive(Debug, Default)]
 pub struct State {
     form: Option<Form>,
     asking: Option<Ask>,
+    group_form: Option<GroupForm>,
+    descriptions: std::collections::BTreeMap<Category, text_editor::Content>,
+    saved_descriptions: std::collections::BTreeMap<Category, String>,
 }
 
 impl State {
     /// A page of the editor is open: the section shows it instead of its list.
     pub fn is_open(&self) -> bool {
-        self.form.is_some()
+        self.form.is_some() || self.group_form.is_some()
     }
+
+    pub fn is_rule_open(&self) -> bool {
+        matches!(self.form.as_ref(), Some(Form::Rule(_)))
+    }
+}
+
+#[derive(Debug)]
+struct GroupForm {
+    group: Option<CategoryGroup>,
+    name: String,
+    icon: CategoryIcon,
+    color: u8,
+    tried: bool,
+    sending: bool,
+    refused: Option<String>,
 }
 
 /// What the page asks before it does something that loses what was there.
@@ -97,8 +118,8 @@ struct CategoryForm {
 struct RuleForm {
     id: Option<String>,
     category: Option<Category>,
-    conditions: Vec<(SortField, String)>,
-    exceptions: Vec<(SortField, String)>,
+    conditions: Vec<SortCondition>,
+    exceptions: Vec<SortCondition>,
     enabled: bool,
     tried: bool,
 }
@@ -106,6 +127,16 @@ struct RuleForm {
 /// What the editor's rows and pages report.
 #[derive(Debug, Clone)]
 pub enum Message {
+    NewGroup,
+    EditGroup(CategoryGroup),
+    GroupName(String),
+    GroupIcon(CategoryIcon),
+    GroupColor(u8),
+    SaveGroup,
+    CancelGroup,
+    NewCategoryInGroup(CategoryGroup),
+    InlineDescription(Category, text_editor::Action),
+    SaveDescription(Category),
     /// "New category".
     NewCategory,
     /// A category's row: open its page.
@@ -138,6 +169,11 @@ pub enum Message {
         at: usize,
         field: SortField,
     },
+    Comparison {
+        exception: bool,
+        at: usize,
+        comparison: SortComparison,
+    },
     Value {
         exception: bool,
         at: usize,
@@ -167,7 +203,110 @@ pub enum Message {
 
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
     match message {
+        Message::NewGroup => {
+            state.form = None;
+            state.group_form = Some(GroupForm {
+                group: None,
+                name: String::new(),
+                icon: CategoryIcon::Tag,
+                color: 0,
+                tried: false,
+                sending: false,
+                refused: None,
+            });
+            Action::None
+        }
+        Message::EditGroup(group) => {
+            state.form = None;
+            state.group_form = data.category_groups.iter().find(|held| held.group == group).map(|held| GroupForm {
+                group: Some(group),
+                name: held.label.clone(),
+                icon: held.icon,
+                color: held.color,
+                tried: false,
+                sending: false,
+                refused: None,
+            });
+            Action::None
+        }
+        Message::GroupName(name) => {
+            if let Some(form) = &mut state.group_form {
+                form.name = name;
+                form.refused = None;
+            }
+            Action::None
+        }
+        Message::GroupIcon(icon) => {
+            if let Some(form) = &mut state.group_form {
+                form.icon = icon;
+                form.refused = None;
+            }
+            Action::None
+        }
+        Message::GroupColor(color) => {
+            if let Some(form) = &mut state.group_form {
+                form.color = color;
+                form.refused = None;
+            }
+            Action::None
+        }
+        Message::SaveGroup => {
+            let Some(form) = &mut state.group_form else { return Action::None };
+            if form.sending {
+                return Action::None;
+            }
+            form.tried = true;
+            let name = form.name.trim();
+            if name.is_empty()
+                || name.chars().count() > NAME_MAX
+                || name.chars().any(char::is_control)
+                || form.color >= 4
+            {
+                return Action::None;
+            }
+            let request = match form.group {
+                Some(group) => {
+                    Request::UpdateCategoryGroup { group, name: name.to_string(), icon: form.icon, color: form.color }
+                }
+                None => Request::CreateCategoryGroup { name: name.to_string(), icon: form.icon, color: form.color },
+            };
+            form.sending = true;
+            Action::send(request)
+        }
+        Message::CancelGroup => {
+            state.group_form = None;
+            Action::None
+        }
+        Message::NewCategoryInGroup(group) => {
+            let action = update(state, Message::NewCategory, data);
+            if let Some(Form::Category(form)) = &mut state.form {
+                form.group = group;
+            }
+            action
+        }
+        Message::InlineDescription(category, action) => {
+            if let Some(content) = state.descriptions.get_mut(&category) {
+                content.perform(action);
+            }
+            Action::None
+        }
+        Message::SaveDescription(category) => {
+            let Some(content) = state.descriptions.get(&category) else { return Action::None };
+            let description = content.text().trim().to_string();
+            if description.is_empty() || description.chars().count() > DESCRIPTION_MAX {
+                return Action::None;
+            }
+            Action::send(Request::UpdateCategory {
+                category,
+                group: None,
+                name: None,
+                description: Some(description),
+                model: None,
+                icon: None,
+            })
+        }
         Message::NewCategory => {
+            state.group_form = None;
             state.asking = None;
             state.form = Some(Form::Category(CategoryForm {
                 category: None,
@@ -183,6 +322,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::EditCategory(category) => {
+            state.group_form = None;
             if let Some(info) = data.categories.iter().find(|info| info.category == category) {
                 state.asking = None;
                 state.form = Some(Form::Category(CategoryForm::of(info)));
@@ -190,11 +330,20 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::NewRule => {
+            state.group_form = None;
+            if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
+                state.asking = Some(Ask::Discard);
+                return Action::None;
+            }
             state.asking = None;
             state.form = Some(Form::Rule(RuleForm {
                 id: None,
                 category: None,
-                conditions: vec![(SortField::Sender, String::new())],
+                conditions: vec![SortCondition {
+                    field: SortField::Sender,
+                    comparison: SortComparison::Is,
+                    value: String::new(),
+                }],
                 exceptions: Vec::new(),
                 enabled: true,
                 tried: false,
@@ -202,6 +351,15 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::EditRule(id) => {
+            if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
+                state.asking = Some(Ask::Discard);
+                return Action::None;
+            }
+            if matches!(state.form.as_ref(), Some(Form::Rule(form)) if form.id.as_deref() == Some(id.as_str())) {
+                state.form = None;
+                state.asking = None;
+                return Action::None;
+            }
             if let Some(rule) = data.sort_rules.iter().find(|rule| rule.id == id) {
                 state.asking = None;
                 state.form = Some(Form::Rule(RuleForm::of(rule)));
@@ -225,6 +383,9 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::send(Request::MoveSortRule { id, position: position as u32 })
         }
         Message::Back => {
+            if state.group_form.take().is_some() {
+                return Action::None;
+            }
             // A question open: Escape and "‹ Back" take it back first.
             if state.asking.take().is_some() {
                 return Action::None;
@@ -280,6 +441,35 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }
             action
         }
+    }
+}
+
+/// Refresh descriptions that were saved or have not been edited. A local unsaved change stays
+/// visible across unrelated reloads of the settings data.
+pub fn loaded(state: &mut State, data: &Data) {
+    state.descriptions.retain(|category, _| data.categories.iter().any(|held| held.category == *category));
+    state.saved_descriptions.retain(|category, _| data.categories.iter().any(|held| held.category == *category));
+    for info in &data.categories {
+        let previous = state.saved_descriptions.insert(info.category, info.description.clone());
+        let dirty = state
+            .descriptions
+            .get(&info.category)
+            .is_some_and(|content| previous.as_deref().is_some_and(|saved| content.text().trim() != saved.trim()));
+        if !dirty {
+            state.descriptions.insert(info.category, text_editor::Content::with_text(&info.description));
+        }
+    }
+}
+
+pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+    let Some(form) = state.group_form.as_mut().filter(|form| form.sending) else { return };
+    match answer {
+        Ok(torro_ipc::Response::CategoryGroup { .. }) => state.group_form = None,
+        Ok(torro_ipc::Response::Error { message, .. }) | Err(message) => {
+            form.sending = false;
+            form.refused = Some(message.clone());
+        }
+        _ => {}
     }
 }
 
@@ -346,18 +536,30 @@ fn rule_update<A>(form: &mut RuleForm, message: Message) -> (Action<A>, bool) {
         Message::RuleCategory(category) => form.category = Some(category),
         Message::Field { exception, at, field } => {
             if let Some(held) = form.list(exception).get_mut(at) {
-                held.0 = field;
+                held.field = field;
+                held.comparison = field.default_comparison();
+                if field == SortField::Attachment {
+                    held.value.clear();
+                }
+            }
+        }
+        Message::Comparison { exception, at, comparison } => {
+            if let Some(held) = form.list(exception).get_mut(at)
+                && held.field.allows(comparison)
+            {
+                held.comparison = comparison;
             }
         }
         Message::Value { exception, at, value } => {
             if let Some(held) = form.list(exception).get_mut(at) {
-                held.1 = value;
+                held.value = value;
             }
         }
         Message::Add { exception } => {
             let list = form.list(exception);
             if list.len() < SORT_CONDITIONS_MAX {
-                list.push((if exception { SortField::Subject } else { SortField::Sender }, String::new()));
+                let field = if exception { SortField::Subject } else { SortField::Sender };
+                list.push(SortCondition { field, comparison: field.default_comparison(), value: String::new() });
             }
         }
         Message::Drop { exception, at } => {
@@ -394,7 +596,9 @@ impl Form {
             Form::Rule(form) => match &form.id {
                 None => {
                     form.category.is_some()
-                        || form.conditions.iter().chain(&form.exceptions).any(|(_, value)| !value.trim().is_empty())
+                        || form.conditions.iter().chain(&form.exceptions).any(|condition| {
+                            !condition.value.trim().is_empty() || condition.field == SortField::Attachment
+                        })
                 }
                 Some(id) => {
                     data.sort_rules.iter().find(|rule| &rule.id == id).is_some_and(|stored| !form.same_as(stored))
@@ -474,7 +678,7 @@ impl CategoryForm {
             trf(
                 "{group} would have {n} categories for the AI; at most {most} fit.",
                 &[
-                    ("group", &torro_core::category::group_label(self.group)),
+                    ("group", &group_words(data, self.group)),
                     ("n", &self.for_model(data).to_string()),
                     ("most", &MODEL_PER_GROUP_MAX.to_string()),
                 ],
@@ -519,12 +723,11 @@ impl CategoryForm {
 
 impl RuleForm {
     fn of(rule: &SortRule) -> RuleForm {
-        let pairs = |list: &[SortCondition]| list.iter().map(|held| (held.field, held.value.clone())).collect();
         RuleForm {
             id: Some(rule.id.clone()),
             category: Some(rule.category),
-            conditions: pairs(&rule.conditions),
-            exceptions: pairs(&rule.exceptions),
+            conditions: rule.conditions.clone(),
+            exceptions: rule.exceptions.clone(),
             enabled: rule.enabled,
             tried: false,
         }
@@ -535,7 +738,7 @@ impl RuleForm {
         RuleForm { tried: false, ..self.clone() } == RuleForm::of(stored)
     }
 
-    fn list(&mut self, exception: bool) -> &mut Vec<(SortField, String)> {
+    fn list(&mut self, exception: bool) -> &mut Vec<SortCondition> {
         if exception { &mut self.exceptions } else { &mut self.conditions }
     }
 
@@ -546,7 +749,11 @@ impl RuleForm {
 
     /// What is wrong with the conditions, if anything.
     fn condition_mistake(&self) -> Option<String> {
-        if self.conditions.iter().all(|(_, value)| value.trim().is_empty()) {
+        if self
+            .conditions
+            .iter()
+            .all(|condition| condition.value.trim().is_empty() && condition.field != SortField::Attachment)
+        {
             return Some(tr("A sorting rule needs at least one condition.").to_string());
         }
         too_long(&self.conditions)
@@ -565,15 +772,21 @@ impl RuleForm {
     /// The request that saves the page; empty lines are left out.
     fn request(&self) -> Option<Request> {
         let category = self.category?;
-        let kept = |list: &[(SortField, String)]| {
+        let kept = |list: &[SortCondition]| {
             list.iter()
-                .filter(|(_, value)| !value.trim().is_empty())
-                .map(|(field, value)| SortCondition { field: *field, value: value.trim().to_string() })
+                .filter(|condition| condition.field == SortField::Attachment || !condition.value.trim().is_empty())
+                .map(|condition| SortCondition {
+                    field: condition.field,
+                    comparison: condition.comparison,
+                    value: condition.value.trim().to_string(),
+                })
                 .collect::<Vec<_>>()
         };
         let (conditions, exceptions) = (kept(&self.conditions), kept(&self.exceptions));
         Some(match &self.id {
-            None => Request::CreateSortRule { category, conditions, exceptions, position: None, enabled: self.enabled },
+            None => {
+                Request::CreateSortRule { category, conditions, exceptions, position: Some(0), enabled: self.enabled }
+            }
             Some(id) => Request::UpdateSortRule {
                 id: id.clone(),
                 category,
@@ -586,8 +799,15 @@ impl RuleForm {
 }
 
 /// A value of `list` longer than a condition may be, as the mistake to show.
-fn too_long(list: &[(SortField, String)]) -> Option<String> {
-    list.iter().any(|(_, value)| value.trim().chars().count() > SORT_VALUE_MAX).then(|| {
+fn too_long(list: &[SortCondition]) -> Option<String> {
+    if list.iter().any(|condition| {
+        condition.field == SortField::Size
+            && !condition.value.trim().is_empty()
+            && condition.value.trim().parse::<f64>().ok().is_none_or(|mb| !mb.is_finite() || mb < 0.0)
+    }) {
+        return Some(tr("Enter the message size in megabytes.").into());
+    }
+    list.iter().any(|condition| condition.value.trim().chars().count() > SORT_VALUE_MAX).then(|| {
         let most = SORT_VALUE_MAX.to_string();
         trf("A condition's value has at most {most} characters.", &[("most", &most)])
     })
@@ -655,78 +875,208 @@ fn question<'a>(asked: Ask) -> Element<'a, Message> {
     widgets::group(title, vec![setting_row(None, detail, None, buttons)], None)
 }
 
-/// "Sorting rules": the rules in their order, each opening its page; "New sorting rule" last.
-pub fn rules_group(data: &Data) -> Element<'_, Message> {
-    let mut rows: Vec<Element<'_, Message>> = data
-        .sort_rules
-        .iter()
-        .map(|rule| {
-            // What the rule files as first: that is what one looks for in the list.
-            let category = crate::category_name_in(&data.categories, rule.category);
-            let mut detail = conditions_line(&rule.conditions);
-            if !rule.exceptions.is_empty() {
-                detail = trf(
-                    "{conditions}, except {exceptions}",
-                    &[("conditions", &detail), ("exceptions", &conditions_line(&rule.exceptions))],
-                );
-            }
-            if !rule.enabled {
-                detail = trf("Off · {rule}", &[("rule", &detail)]);
-            }
-            let row = setting_row(None, category, Some(detail), chevron());
-            pressable(row, Some(Message::EditRule(rule.id.clone())))
-        })
-        .collect();
-    rows.push(add_row(tr("New sorting rule"), Message::NewRule));
+/// "Sorting rules": a button to add a rule, then the rules in their checking order.
+pub fn rules_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let add = widgets::text_button(None, tr("New sorting rule"), style::button::secondary, Some(Message::NewRule));
+    let mut rows: Vec<Element<'_, Message>> = vec![row_frame(add, false)];
+    if matches!(state.form.as_ref(), Some(Form::Rule(RuleForm { id: None, .. }))) {
+        rows.push(inline_rule(state, data));
+    }
+    for rule in &data.sort_rules {
+        // What the rule files as first: that is what one looks for in the list.
+        let category = crate::category_name_in(&data.categories, rule.category);
+        let mut detail = conditions_line(&rule.conditions);
+        if !rule.exceptions.is_empty() {
+            detail = trf(
+                "{conditions}, except {exceptions}",
+                &[("conditions", &detail), ("exceptions", &conditions_line(&rule.exceptions))],
+            );
+        }
+        if !rule.enabled {
+            detail = trf("Off · {rule}", &[("rule", &detail)]);
+        }
+        rows.push(setting_row(
+            None,
+            category,
+            Some(detail),
+            widgets::icon_button(Icon::SquarePen, tr("Edit rule"), Some(Message::EditRule(rule.id.clone()))),
+        ));
+        if matches!(&state.form, Some(Form::Rule(form)) if form.id.as_deref() == Some(rule.id.as_str())) {
+            rows.push(inline_rule(state, data));
+        }
+    }
     widgets::group(
-        tr("Sorting rules"),
+        tr("1. Rules"),
         rows,
-        Some(
-            tr("The first rule that fits files new mail, before the headers and the AI. What you filed by hand stays as it is.")
-                .to_string(),
-        ),
+        Some(tr("Rules are checked from top to bottom. The first match wins; only then does the model use category descriptions.").to_string()),
     )
 }
 
-/// "Categories": "New category" with what the list is for, then one group per group of
-/// categories, each row opening its page. A row says more only where a category is unusual: not
-/// for the AI, or hidden from the sidebar.
-pub fn categories_groups(data: &Data) -> Vec<Element<'_, Message>> {
-    let hidden = &data.settings.hidden_categories;
-    let mut groups = vec![widgets::group(
-        tr("Categories"),
-        vec![add_row(tr("New category"), Message::NewCategory)],
-        Some(
-            tr("Rename any category, move it to another group, or make your own. The description is what the AI reads.")
-                .to_string(),
-        ),
-    )];
-    for group in CategoryGroup::ALL {
-        let rows: Vec<Element<'_, Message>> = data
-            .categories
-            .iter()
-            .filter(|info| info.group == group)
-            .map(|info| {
-                let notes: Vec<&str> = [
-                    (!info.model).then(|| tr("Only by rules and by hand")),
-                    hidden.contains(&info.category).then(|| tr("Hidden from the sidebar")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                let detail = (!notes.is_empty()).then(|| notes.join(" · "));
-                let color_at = CategoryGroup::ALL.iter().position(|held| *held == group).unwrap_or(0);
-                let mark = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
-                    .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
-                let row = setting_row(Some(mark.into()), info.label.clone(), detail, chevron());
-                pressable(row, Some(Message::EditCategory(info.category)))
-            })
-            .collect();
-        if !rows.is_empty() {
-            groups.push(widgets::group(torro_core::category::group_label(group), rows, None));
+/// The editor remains directly under the rule that was clicked, inside the same list card.
+fn inline_rule<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let Some(Form::Rule(form)) = state.form.as_ref() else { return blank().into() };
+    let ready = match &form.id {
+        None => true,
+        Some(id) => data.sort_rules.iter().find(|rule| &rule.id == id).is_none_or(|stored| !form.same_as(stored)),
+    };
+    let actions = row![
+        save_button(ready, Message::SaveRule),
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Back)),
+    ]
+    .spacing(space::s());
+    let mut body = column![rule_page(form, data), actions].spacing(layout::section_gap());
+    if let Some(asked) = state.asking {
+        body = body.push(question(asked));
+    }
+    container(body).width(Fill).padding([space::m(), space::l()]).into()
+}
+
+/// Main categories stay open; each child shows its editable description and a clear edit button.
+pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a, Message>> {
+    let add = widgets::text_button(
+        Some(Icon::Plus),
+        tr("New main category"),
+        style::button::secondary,
+        Some(Message::NewGroup),
+    );
+    let mut groups = vec![widgets::group(tr("All categories"), vec![row_frame(add, false)], None)];
+    if matches!(state.group_form, Some(GroupForm { group: None, .. })) {
+        groups.push(group_editor(state));
+    }
+    let definitions = if data.category_groups.is_empty() {
+        torro_mail::CategoryGroupDef::defaults().iter().map(torro_ipc::inbox::CategoryGroupInfo::of).collect::<Vec<_>>()
+    } else {
+        data.category_groups.clone()
+    };
+    for main in definitions {
+        let group = main.group;
+        let color_at = usize::from(main.color.min(3));
+        let mark = torro_gui::icon::icon(category_icon(main.icon), torro_gui::icon::SIZE)
+            .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
+        let heading = row![
+            mark,
+            typo::text(typo::body(), main.label.clone()),
+            blank::horizontal(),
+            widgets::text_button(None, tr("Edit"), style::button::secondary, Some(Message::EditGroup(group))),
+            widgets::text_button(
+                Some(Icon::Plus),
+                tr("Subcategory"),
+                style::button::secondary,
+                Some(Message::NewCategoryInGroup(group))
+            ),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        let mut rows: Vec<Element<'a, Message>> = vec![row_frame(heading, false)];
+        if matches!(state.group_form, Some(GroupForm { group: Some(open), .. }) if open == group) {
+            rows.push(group_editor(state));
         }
+        let children: Vec<&CategoryInfo> = data.categories.iter().filter(|info| info.group == group).collect();
+        if !children.is_empty() {
+            rows.push(
+                responsive(move |room| {
+                    let columns = if room.width >= 640.0 { 2 } else { 1 };
+                    let mut grid = column![].spacing(space::s());
+                    for pair in children.chunks(columns) {
+                        let mut line = row![].spacing(space::s());
+                        for info in pair {
+                            line = line
+                                .push(container(subcategory_card(state, info, color_at)).width(Length::FillPortion(1)));
+                        }
+                        if columns == 2 && pair.len() == 1 {
+                            line = line.push(blank::horizontal().width(Length::FillPortion(1)));
+                        }
+                        grid = grid.push(line);
+                    }
+                    container(grid).width(Fill).padding([space::m(), space::l()]).into()
+                })
+                .into(),
+            );
+        }
+        groups.push(widgets::group(main.label, rows, None));
     }
     groups
+}
+
+fn subcategory_card<'a>(state: &'a State, info: &'a CategoryInfo, color_at: usize) -> Element<'a, Message> {
+    let category = info.category;
+    let icon = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
+        .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
+    let head = row![
+        icon,
+        typo::text(typo::body(), info.label.clone()),
+        blank::horizontal(),
+        widgets::icon_button(Icon::SquarePen, tr("Edit subcategory"), Some(Message::EditCategory(category))),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    let mut parts: Vec<Element<'a, Message>> =
+        vec![head.into(), typo::text(typo::meta(), tr("Description")).style(torro_gui::theme::text_2).into()];
+    if let Some(content) = state.descriptions.get(&category) {
+        parts.push(
+            text_editor(content)
+                .on_action(move |action| Message::InlineDescription(category, action))
+                .font(typo::body().font)
+                .size(typo::body().size)
+                .line_height(typo::body().line_height)
+                .padding(style::INPUT_PADDING)
+                .wrapping(Wrapping::WordOrGlyph)
+                .height(INLINE_DESCRIPTION_HEIGHT)
+                .style(style::text_editor)
+                .into(),
+        );
+        if content.text().trim() != info.description.trim() {
+            parts.push(widgets::text_button(
+                None,
+                tr("Save description"),
+                style::button::primary,
+                Some(Message::SaveDescription(category)),
+            ));
+        }
+    } else {
+        parts.push(typo::text(typo::body(), info.description.clone()).into());
+    }
+    widgets::card(parts, false, None)
+}
+
+fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
+    let Some(form) = &state.group_form else { return blank().into() };
+    let name = field(tr("Name"), &form.name).on_input(Message::GroupName).on_submit(Message::SaveGroup);
+    let colors = row![
+        choice(tr("Blue"), form.color == 0, Message::GroupColor(0)),
+        choice(tr("Purple"), form.color == 1, Message::GroupColor(1)),
+        choice(tr("Green"), form.color == 2, Message::GroupColor(2)),
+        choice(tr("Red"), form.color == 3, Message::GroupColor(3)),
+    ]
+    .spacing(space::s());
+    let mut body = column![
+        typo::text(typo::caption(), tr("Main category")),
+        name,
+        typo::text(typo::meta(), tr("Icon")),
+        icon_picker(form.icon, Message::GroupIcon, form.group.unwrap_or(CategoryGroup::Info)),
+        typo::text(typo::meta(), tr("Colour")),
+        colors,
+    ]
+    .spacing(space::s());
+    if form.tried && form.name.trim().is_empty() {
+        body = body.push(typo::text(typo::meta(), tr("Give the category a name.")));
+    }
+    if let Some(refused) = &form.refused {
+        body = body.push(typo::text(typo::meta(), refused.clone()));
+    }
+    body = body.push(
+        row![
+            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CancelGroup)),
+            widgets::text_button(
+                None,
+                if form.sending { tr("Saving…") } else { tr("Save") },
+                style::button::primary,
+                (!form.sending).then_some(Message::SaveGroup)
+            ),
+        ]
+        .spacing(space::s()),
+    );
+    container(body).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 /// The last row of a list: "+ New …".
@@ -736,19 +1086,21 @@ fn add_row<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
     pressable(setting_row(Some(plus.into()), label, None, blank()), Some(message))
 }
 
-/// The conditions of a rule in a line: "from billing@shop.example · “invoice” in the subject".
+/// The conditions of a rule in one compact line, including each comparison.
 fn conditions_line(conditions: &[SortCondition]) -> String {
-    conditions.iter().map(|held| condition_words(held.field, &held.value)).collect::<Vec<_>>().join(" · ")
-}
-
-/// One condition in words.
-fn condition_words(field: SortField, value: &str) -> String {
-    match field {
-        SortField::Sender => trf("from {sender}", &[("sender", &value)]),
-        SortField::Domain => trf("from anyone at {domain}", &[("domain", &value)]),
-        SortField::Subject => trf("“{text}” in the subject", &[("text", &value)]),
-        SortField::Text => trf("“{text}” in the text", &[("text", &value)]),
-    }
+    conditions
+        .iter()
+        .map(|held| {
+            let comparison =
+                if held.comparison == SortComparison::Auto { held.field.default_comparison() } else { held.comparison };
+            if held.field == SortField::Attachment {
+                format!("{} {}", FieldChoice(held.field), ComparisonChoice(comparison))
+            } else {
+                format!("{} {} {}", FieldChoice(held.field), ComparisonChoice(comparison), held.value)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// A group's note: the mistake in the colour of mistakes once "Save" was pressed, else `note`.
@@ -780,9 +1132,10 @@ fn checked_group<'a>(
 /// A category's page.
 fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
     let name = field(tr("Name"), &form.name).id(NAME_FIELD).on_input(Message::Name).on_submit(Message::SaveCategory);
-    let groups: Vec<Element<'a, Message>> = CategoryGroup::ALL
-        .into_iter()
-        .map(|group| choice(torro_core::category::group_label(group), form.group == group, Message::Group(group)))
+    let groups: Vec<Element<'a, Message>> = data
+        .category_groups
+        .iter()
+        .map(|held| choice(held.label.clone(), form.group == held.group, Message::Group(held.group)))
         .collect();
     let description = text_editor(&form.description)
         .on_action(Message::Description)
@@ -796,11 +1149,7 @@ fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Mess
         .style(style::text_editor);
     let counted = trf(
         "{group}: {n} of {most} categories for the AI",
-        &[
-            ("group", &torro_core::category::group_label(form.group)),
-            ("n", &form.for_model(data)),
-            ("most", &MODEL_PER_GROUP_MAX),
-        ],
+        &[("group", &group_words(data, form.group)), ("n", &form.for_model(data)), ("most", &MODEL_PER_GROUP_MAX)],
     );
     let model = setting_row(None, tr("Let the AI choose it"), Some(counted), switch(form.model, Message::Model));
     let built_in = form.built_in(data);
@@ -902,6 +1251,7 @@ impl std::fmt::Display for CategoryIconChoice {
             CategoryIcon::Trash2 => tr("Trash"),
             CategoryIcon::Eye => tr("View"),
             CategoryIcon::Ellipsis => tr("More"),
+            CategoryIcon::CircleDashed => tr("Dashed circle"),
             CategoryIcon::Tag => tr("Tag"),
         })
     }
@@ -909,21 +1259,30 @@ impl std::fmt::Display for CategoryIconChoice {
 
 fn icon_picker<'a>(
     selected: CategoryIcon,
-    on_pick: impl Fn(CategoryIcon) -> Message + 'a,
-    group: CategoryGroup,
+    on_pick: fn(CategoryIcon) -> Message,
+    _group: CategoryGroup,
 ) -> Element<'a, Message> {
-    let choices: Vec<_> = CategoryIcon::ALL.into_iter().map(CategoryIconChoice).collect();
-    let color_at = CategoryGroup::ALL.iter().position(|held| *held == group).unwrap_or(0);
-    let icon = torro_gui::icon::icon(category_icon(selected), torro_gui::icon::SIZE)
-        .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
-    let pick = iced::widget::pick_list(choices, Some(CategoryIconChoice(selected)), move |choice| on_pick(choice.0))
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu);
-    row![icon, pick].spacing(space::m()).align_y(Alignment::Center).into()
+    responsive(move |room| {
+        // A visible palette lets people recognise the symbol before choosing it. Keep each
+        // button's spoken name and tooltip; narrow windows simply use fewer columns.
+        let columns = ((room.width / 42.0).floor() as usize).clamp(3, 8);
+        let mut lines = column![].spacing(space::s());
+        for icons in CategoryIcon::ALL.chunks(columns) {
+            let mut line = row![].spacing(space::s());
+            for &icon in icons {
+                let name = CategoryIconChoice(icon).to_string();
+                let button = if icon == selected {
+                    widgets::compact_button(category_icon(icon), name, style::button::primary, Some(on_pick(icon)))
+                } else {
+                    widgets::boxed_button(category_icon(icon), name, Some(on_pick(icon)))
+                };
+                line = line.push(button);
+            }
+            lines = lines.push(line);
+        }
+        lines.into()
+    })
+    .into()
 }
 
 fn category_icon(icon: CategoryIcon) -> Icon {
@@ -952,6 +1311,7 @@ fn category_icon(icon: CategoryIcon) -> Icon {
         CategoryIcon::Trash2 => Icon::Trash2,
         CategoryIcon::Eye => Icon::Eye,
         CategoryIcon::Ellipsis => Icon::Ellipsis,
+        CategoryIcon::CircleDashed => Icon::CircleDashed,
         CategoryIcon::Tag => Icon::Tag,
     }
 }
@@ -970,14 +1330,20 @@ impl std::fmt::Display for CategoryChoice {
 
 /// The categories of the catalogue as choices, by group, "Group · Name".
 fn category_choices(data: &Data, leave_out: Option<Category>) -> Vec<CategoryChoice> {
-    CategoryGroup::ALL
-        .into_iter()
-        .flat_map(|group| data.categories.iter().filter(move |info| info.group == group))
+    data.categories
+        .iter()
         .filter(|info| Some(info.category) != leave_out)
         .map(|info| CategoryChoice {
             category: info.category, words: format!("{} · {}", info.group_label, info.label)
         })
         .collect()
+}
+
+fn group_words(data: &Data, group: CategoryGroup) -> String {
+    data.category_groups
+        .iter()
+        .find(|held| held.group == group)
+        .map_or_else(|| torro_core::category::group_label(group).to_string(), |held| held.label.clone())
 }
 
 /// A pick list of `choices` in the look of a row's choice ([`crate::parts::picker`]); while
@@ -1090,24 +1456,48 @@ fn rule_page<'a>(form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
 }
 
 /// One row per condition (or exception): what it looks at, the words, and ✕; "Add" last.
-fn condition_rows(list: &[(SortField, String)], exception: bool) -> Vec<Element<'_, Message>> {
+fn condition_rows(list: &[SortCondition], exception: bool) -> Vec<Element<'_, Message>> {
     let mut rows: Vec<Element<'_, Message>> = list
         .iter()
         .enumerate()
-        .map(|(at, (field_kind, value))| {
-            let kind = picker(FIELD_CHOICES, FieldChoice(*field_kind), move |choice: FieldChoice| Message::Field {
-                exception,
-                at,
-                field: choice.0,
-            });
-            let mut words = field(placeholder(*field_kind), value)
-                .on_input(move |value| Message::Value { exception, at, value })
-                .on_submit(Message::SaveRule);
-            if !exception && at == 0 {
-                words = words.id(CONDITION_FIELD);
-            }
-            let drop = widgets::icon_button(Icon::X, tr("Remove"), Some(Message::Drop { exception, at }));
-            row_frame(row![kind, words, drop].spacing(space::s()).align_y(Alignment::Center), false)
+        .map(|(at, condition)| {
+            responsive(move |room| {
+                let kind = picker(FIELD_CHOICES, FieldChoice(condition.field), move |choice: FieldChoice| {
+                    Message::Field { exception, at, field: choice.0 }
+                });
+                let comparison = if condition.comparison == SortComparison::Auto {
+                    condition.field.default_comparison()
+                } else {
+                    condition.comparison
+                };
+                let comparisons: Vec<ComparisonChoice> =
+                    COMPARISON_CHOICES.iter().copied().filter(|choice| condition.field.allows(choice.0)).collect();
+                let comparison = picker(comparisons, ComparisonChoice(comparison), move |choice: ComparisonChoice| {
+                    Message::Comparison { exception, at, comparison: choice.0 }
+                });
+                let drop = widgets::icon_button(Icon::X, tr("Remove"), Some(Message::Drop { exception, at }));
+                let value: Element<'_, Message> = if condition.field == SortField::Attachment {
+                    blank::horizontal().into()
+                } else {
+                    let mut words = field(placeholder(condition.field), &condition.value)
+                        .on_input(move |value| Message::Value { exception, at, value })
+                        .on_submit(Message::SaveRule);
+                    if !exception && at == 0 {
+                        words = words.id(CONDITION_FIELD);
+                    }
+                    words.into()
+                };
+                if room.width >= 700.0 {
+                    row_frame(row![kind, comparison, value, drop].spacing(space::s()).align_y(Alignment::Center), false)
+                } else {
+                    row_frame(
+                        column![row![kind, comparison].spacing(space::s()), row![value, drop].spacing(space::s())]
+                            .spacing(space::s()),
+                        false,
+                    )
+                }
+            })
+            .into()
         })
         .collect();
     if list.len() < SORT_CONDITIONS_MAX {
@@ -1122,7 +1512,13 @@ fn placeholder(field: SortField) -> &'static str {
     match field {
         SortField::Sender => "billing@shop.example",
         SortField::Domain => "shop.example",
+        SortField::ReplyTo | SortField::Recipient => "name@example.org",
         SortField::Subject | SortField::Text => tr("Words"),
+        SortField::Attachment => "",
+        SortField::AttachmentName => "invoice.pdf",
+        SortField::Size => tr("Megabytes"),
+        SortField::ListId => "news.example.org",
+        SortField::Account => "anna@example.org",
     }
 }
 
@@ -1130,20 +1526,68 @@ fn placeholder(field: SortField) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FieldChoice(SortField);
 
-const FIELD_CHOICES: [FieldChoice; 4] = [
+const FIELD_CHOICES: [FieldChoice; 11] = [
     FieldChoice(SortField::Sender),
     FieldChoice(SortField::Domain),
+    FieldChoice(SortField::ReplyTo),
+    FieldChoice(SortField::Recipient),
     FieldChoice(SortField::Subject),
     FieldChoice(SortField::Text),
+    FieldChoice(SortField::Attachment),
+    FieldChoice(SortField::AttachmentName),
+    FieldChoice(SortField::Size),
+    FieldChoice(SortField::ListId),
+    FieldChoice(SortField::Account),
 ];
 
 impl std::fmt::Display for FieldChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self.0 {
-            SortField::Sender => tr("Sender is"),
-            SortField::Domain => tr("Domain is"),
-            SortField::Subject => tr("Subject contains"),
-            SortField::Text => tr("Text contains"),
+            SortField::Sender => tr("Sender address"),
+            SortField::Domain => tr("Sender domain"),
+            SortField::ReplyTo => tr("Reply address"),
+            SortField::Recipient => tr("Recipient (To/Cc)"),
+            SortField::Subject => tr("Subject"),
+            SortField::Text => tr("Message text"),
+            SortField::Attachment => tr("Attachment"),
+            SortField::AttachmentName => tr("Attachment name or type"),
+            SortField::Size => tr("Message size"),
+            SortField::ListId => tr("Mailing list (List-ID)"),
+            SortField::Account => tr("Email account"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ComparisonChoice(SortComparison);
+
+const COMPARISON_CHOICES: [ComparisonChoice; 10] = [
+    ComparisonChoice(SortComparison::Is),
+    ComparisonChoice(SortComparison::IsNot),
+    ComparisonChoice(SortComparison::Contains),
+    ComparisonChoice(SortComparison::NotContains),
+    ComparisonChoice(SortComparison::StartsWith),
+    ComparisonChoice(SortComparison::EndsWith),
+    ComparisonChoice(SortComparison::Present),
+    ComparisonChoice(SortComparison::Absent),
+    ComparisonChoice(SortComparison::GreaterThan),
+    ComparisonChoice(SortComparison::LessThan),
+];
+
+impl std::fmt::Display for ComparisonChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            SortComparison::Auto => tr("matches"),
+            SortComparison::Is => tr("is"),
+            SortComparison::IsNot => tr("is not"),
+            SortComparison::Contains => tr("contains"),
+            SortComparison::NotContains => tr("does not contain"),
+            SortComparison::StartsWith => tr("starts with"),
+            SortComparison::EndsWith => tr("ends with"),
+            SortComparison::Present => tr("present"),
+            SortComparison::Absent => tr("not present"),
+            SortComparison::GreaterThan => tr("larger than"),
+            SortComparison::LessThan => tr("smaller than"),
         })
     }
 }
@@ -1181,7 +1625,11 @@ mod tests {
         SortRule {
             id: id.into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: domain.into() }],
+            conditions: vec![SortCondition {
+                comparison: SortComparison::Auto,
+                field: SortField::Domain,
+                value: domain.into(),
+            }],
             exceptions: Vec::new(),
             enabled: true,
             created: chrono::DateTime::from_timestamp(0, 0).expect("a time"),
@@ -1202,6 +1650,54 @@ mod tests {
 
     fn typed(text: &str) -> Message {
         Message::Description(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(text.into()))))
+    }
+
+    #[test]
+    fn main_category_can_be_created_and_used_by_a_child() {
+        let mut data = data();
+        data.category_groups =
+            torro_mail::CategoryGroupDef::defaults().iter().map(torro_ipc::inbox::CategoryGroupInfo::of).collect();
+        let mut state = State::default();
+        let _ = update::<()>(&mut state, Message::NewGroup, &data);
+        let _ = update::<()>(&mut state, Message::GroupName("Belege".into()), &data);
+        let _ = update::<()>(&mut state, Message::GroupIcon(CategoryIcon::Paperclip), &data);
+        let _ = update::<()>(&mut state, Message::GroupColor(2), &data);
+        let request = update::<()>(&mut state, Message::SaveGroup, &data);
+        assert_eq!(
+            request,
+            Action::send(Request::CreateCategoryGroup {
+                name: "Belege".into(),
+                icon: CategoryIcon::Paperclip,
+                color: 2,
+            })
+        );
+        assert!(state.group_form.as_ref().is_some_and(|form| form.sending));
+        let created = torro_ipc::inbox::CategoryGroupInfo {
+            group: CategoryGroup::Custom(5),
+            label: "Belege".into(),
+            icon: CategoryIcon::Paperclip,
+            color: 2,
+            built_in: false,
+        };
+        answered(&mut state, &Ok(torro_ipc::Response::CategoryGroup { group: created.clone() }));
+        assert!(state.group_form.is_none());
+        data.category_groups.push(created);
+        let _ = update::<()>(&mut state, Message::NewCategoryInGroup(CategoryGroup::Custom(5)), &data);
+        assert!(matches!(&state.form, Some(Form::Category(form)) if form.group == CategoryGroup::Custom(5)));
+    }
+
+    #[test]
+    fn a_subcategory_description_is_editable_in_its_open_card() {
+        let data = data();
+        let mut state = State::default();
+        loaded(&mut state, &data);
+        let _ = categories_groups(&state, &data);
+        let action = text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(" More.".into())));
+        let _ = update::<()>(&mut state, Message::InlineDescription(tax(), action), &data);
+        let sent = update::<()>(&mut state, Message::SaveDescription(tax()), &data);
+        assert!(
+            matches!(sent, Action::Send(requests) if matches!(requests.as_slice(), [Request::UpdateCategory { category, description: Some(_), .. }] if *category == tax()))
+        );
     }
 
     /// A new category is made with what was typed, and its page closes.
@@ -1379,15 +1875,54 @@ mod tests {
             requests,
             vec![Request::CreateSortRule {
                 category: Category::Booking,
-                conditions: vec![SortCondition { field: SortField::Domain, value: "rail.example".into() }],
-                exceptions: vec![SortCondition { field: SortField::Subject, value: "delay".into() }],
-                position: None,
+                conditions: vec![SortCondition {
+                    comparison: SortComparison::Is,
+                    field: SortField::Domain,
+                    value: "rail.example".into()
+                }],
+                exceptions: vec![SortCondition {
+                    comparison: SortComparison::Contains,
+                    field: SortField::Subject,
+                    value: "delay".into()
+                }],
+                position: Some(0),
                 enabled: true,
             }]
         );
         let mut state = State::default();
         let _ = update::<()>(&mut state, Message::NewRule, &data);
         assert!(matches!(update::<()>(&mut state, Message::SaveRule, &data), Action::Focus(CONDITION_FIELD)));
+    }
+
+    #[test]
+    fn the_eleven_mail_fields_offer_fitting_comparisons_and_attachment_needs_no_value() {
+        assert_eq!(FIELD_CHOICES.len(), 11);
+        assert!(SortField::Attachment.allows(SortComparison::Absent));
+        assert!(!SortField::Attachment.allows(SortComparison::Contains));
+        let (data, mut state) = (data(), State::default());
+        let requests = sent(
+            &mut state,
+            &data,
+            vec![
+                Message::NewRule,
+                Message::Field { exception: false, at: 0, field: SortField::Attachment },
+                Message::Comparison { exception: false, at: 0, comparison: SortComparison::Absent },
+                Message::RuleCategory(Category::Invoice),
+                Message::SaveRule,
+            ],
+        );
+        let [Request::CreateSortRule { conditions, .. }] = requests.as_slice() else { panic!("one sorting rule") };
+        assert_eq!(
+            conditions,
+            &[SortCondition { field: SortField::Attachment, comparison: SortComparison::Absent, value: String::new() }]
+        );
+        let _: Action<()> = update(&mut state, Message::NewRule, &data);
+        let _: Action<()> =
+            update(&mut state, Message::Field { exception: false, at: 0, field: SortField::Size }, &data);
+        let _: Action<()> =
+            update(&mut state, Message::Value { exception: false, at: 0, value: "a lot".into() }, &data);
+        let _: Action<()> = update(&mut state, Message::RuleCategory(Category::Invoice), &data);
+        assert!(sent(&mut state, &data, vec![Message::SaveRule]).is_empty());
     }
 
     /// A stored rule: "Move up"/"Move down" by one place, stopping at the ends; the switch on its
@@ -1430,8 +1965,8 @@ mod tests {
     #[test]
     fn the_pages_draw() {
         let (data, mut state) = (data(), State::default());
-        let _ = categories_groups(&data);
-        let _ = rules_group(&data);
+        let _ = categories_groups(&state, &data);
+        let _ = rules_group(&State::default(), &data);
         for open in [Message::NewCategory, Message::EditCategory(Category::Invoice), Message::EditCategory(tax())] {
             let _ = update::<()>(&mut state, open, &data);
             let _ = update::<()>(&mut state, Message::Remove, &data);

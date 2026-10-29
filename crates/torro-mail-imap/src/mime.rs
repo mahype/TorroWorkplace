@@ -186,6 +186,8 @@ pub struct Outgoing {
     /// The account's signature, put under the text after the separator `-- ` (RFC 3676); blank
     /// for none.
     pub signature: Option<String>,
+    /// `signature` uses the compose editor's safe formatting marks.
+    pub signature_format: bool,
     /// Set for a reply ([`ReadMessage::reply`] of the answered message).
     pub reply: Option<Reply>,
     pub attachments: Vec<OutgoingAttachment>,
@@ -378,10 +380,23 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
     }
     // Formatted mail: the signature into the HTML, and the plain text made from both, so the two
     // forms say the same.
-    let signed = outgoing.html.as_deref().map(|markup| html::sign(markup, outgoing.signature.as_deref()));
+    let signed = outgoing.html.as_deref().map(|markup| {
+        if outgoing.signature_format {
+            html::sign_formatted(markup, outgoing.signature.as_deref())
+        } else {
+            html::sign(markup, outgoing.signature.as_deref())
+        }
+    });
+    let plain_signature = outgoing.signature.as_deref().map(|signature| {
+        if outgoing.signature_format {
+            html::to_text(&torro_mail::markup::to_html(signature, None))
+        } else {
+            signature.to_string()
+        }
+    });
     let text = crlf(&match &signed {
         Some(signed) => html::to_text(signed),
-        None => with_signature(&outgoing.body, outgoing.signature.as_deref()),
+        None => with_signature(&outgoing.body, plain_signature.as_deref()),
     });
     // `mail-builder` makes up a random boundary; one from the Message-ID keeps the bytes the same
     // for the same draft. `=_` never occurs in quoted-printable or base64 text, so the boundary
@@ -1168,6 +1183,21 @@ mod tests {
         assert_eq!(clean("invoice\u{202E}fdp.exe\n"), "invoicefdp.exe");
     }
 
+    #[test]
+    fn formatted_signature_has_matching_safe_html_and_plain_text() {
+        let mut outgoing = answer(None);
+        outgoing.html = Some("<p>Hello</p>".into());
+        outgoing.signature = Some("**Anna**\n[Website](https://example.org)".into());
+        outgoing.signature_format = true;
+        let built = build(&outgoing).expect("built");
+        let read = super::read(&built.bytes).expect("read");
+        let html = read.html.expect("HTML copy");
+        assert!(html.contains("<strong>Anna</strong>"), "{html}");
+        assert!(html.contains("href=\"https://example.org\""), "{html}");
+        assert!(read.text.contains("Anna") && read.text.contains("Website"), "{}", read.text);
+        assert!(!read.text.contains("**Anna**"), "{}", read.text);
+    }
+
     fn answer(calendar: Option<CalendarPart>) -> Outgoing {
         Outgoing {
             from: MailAddress { name: Some("Anna".into()), address: "anna@example.org".into() },
@@ -1178,6 +1208,7 @@ mod tests {
             body: "Anna has accepted.".into(),
             html: None,
             signature: None,
+            signature_format: false,
             reply: None,
             attachments: vec![],
             calendar,

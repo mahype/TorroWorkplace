@@ -179,7 +179,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -579,6 +579,36 @@ DELETE FROM rules WHERE effect = 'muted' AND instr(source, 'mail:') = 1 AND (sen
 DELETE FROM muted_mail WHERE rule IS NOT NULL AND rule NOT IN (SELECT id FROM rules);
 UPDATE items SET hidden = NULL WHERE instr(source, 'mail:') = 1;
 DROP TABLE shown_mail;
+";
+
+/// From schema version 17 to 18 (issue #343, merged in #397): main categories are catalogue
+/// entries. The first five IDs keep the built-in groups ([`CategoryGroup::database_id`]); SQLite's
+/// sequence gives every later group an ID that is never reused.
+///
+/// Two files reach this step as version 17: one of [`SCHEMA_V17`], and one of the branch of #343,
+/// which used 17 for `category_groups` with four groups and never ran the clean-up of issue #339.
+/// So every statement holds for both: the table only if it is missing, the groups only where their
+/// ID is free, and the clean-up of [`SCHEMA_V17`] again – it finds nothing left in a file that ran
+/// it already.
+///
+/// [`CategoryGroup::database_id`]: torro_mail::CategoryGroup::database_id
+const SCHEMA_V18: &str = "
+CREATE TABLE IF NOT EXISTS category_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    icon TEXT NOT NULL,
+    color INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO category_groups (id, name, icon, color) VALUES
+    (1, NULL, 'user_check', 0),
+    (2, NULL, 'text_quote', 1),
+    (3, NULL, 'bell', 2),
+    (4, NULL, 'shield_alert', 3),
+    (5, NULL, 'circle_dashed', 4);
+DELETE FROM rules WHERE effect = 'muted' AND instr(source, 'mail:') = 1 AND (sender <> '' OR facet <> '');
+DELETE FROM muted_mail WHERE rule IS NOT NULL AND rule NOT IN (SELECT id FROM rules);
+UPDATE items SET hidden = NULL WHERE instr(source, 'mail:') = 1;
+DROP TABLE IF EXISTS shown_mail;
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -1457,6 +1487,29 @@ impl Inbox {
     /// of it, in the order the sidebar lists them. `Err` holds the message for the log.
     pub fn catalogue(&self) -> Result<Vec<torro_mail::CategoryDef>, String> {
         self.with(|db| catalogue::catalogue_in(db)).map_err(|failure| failure.to_string())
+    }
+
+    pub fn category_groups(&self) -> Result<Vec<torro_mail::CategoryGroupDef>, String> {
+        self.with(|db| catalogue::groups_in(db)).map_err(|failure| failure.to_string())
+    }
+
+    pub fn create_category_group(
+        &self,
+        name: &str,
+        icon: torro_mail::CategoryIcon,
+        color: u8,
+    ) -> Result<torro_mail::CategoryGroupDef, Response> {
+        self.with(|db| catalogue::create_group(db, name, icon, color)).map_err(Failure::response)
+    }
+
+    pub fn update_category_group(
+        &self,
+        group: torro_mail::CategoryGroup,
+        name: &str,
+        icon: torro_mail::CategoryIcon,
+        color: u8,
+    ) -> Result<torro_mail::CategoryGroupDef, Response> {
+        self.with(|db| catalogue::update_group(db, group, name, icon, color)).map_err(Failure::response)
     }
 
     /// What the sorting rules and the headers make of a mail of the inbox folder (task E15.4):
@@ -3946,6 +3999,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 17 {
         tx.execute_batch(SCHEMA_V17)?;
     }
+    if version < 18 {
+        tx.execute_batch(SCHEMA_V18)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -4452,6 +4508,9 @@ pub struct NewMail {
     /// takes it before the sorting rules and the headers ([`Inbox::file_mail`]). `None` for every
     /// mail no filter gave one.
     pub category: Option<MailCategory>,
+    /// Extra header and MIME facts for deterministic sorting. Unknown values cannot satisfy
+    /// negative comparisons.
+    pub sort_facts: rules::SortFacts,
 }
 
 /// The value of `mail_messages.github` for a mail about `issue` (task E5.6): `owner/repo#<n>` in
@@ -4636,7 +4695,14 @@ fn pile_of_column(pile: &str) -> Option<MailPile> {
 /// first sorting rule that holds (task E15.3; they hold for **every** mail account, like a hidden
 /// sender, task E3.11), else what the headers and the folder say ([`rules::mail_category`]).
 fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Result<Option<MailCategory>, Failure> {
-    let input = rules::SortInput { sender, subject: &mail.subject, text: &mail.snippet };
+    let input = rules::SortInput {
+        sender,
+        subject: &mail.subject,
+        text: &mail.snippet,
+        account: Some(&mail.account),
+        list_id: mail.list.as_deref(),
+        facts: Some(&mail.sort_facts),
+    };
     rule_category_in(db, &input, mail.invite, mail.auto_submitted.as_deref(), mail.junk)
 }
 
@@ -7203,6 +7269,7 @@ pub(crate) mod tests {
             auto_submitted: None,
             junk: false,
             category: None,
+            sort_facts: Default::default(),
         }
     }
 
@@ -7326,7 +7393,11 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let on = |field, value: &str| torro_inbox::SortCondition { field, value: value.into() };
+        let on = |field, value: &str| torro_inbox::SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let create = |category, value: &str, position| Request::CreateSortRule {
             category,
             conditions: vec![on(SortField::Domain, value)],
@@ -7420,7 +7491,11 @@ pub(crate) mod tests {
         let (kept, _) = kept.expect("kept");
         let editor = Request::CreateSortRule {
             category: Category::Promotion,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
             exceptions: Vec::new(),
             position: None,
             enabled: true,
@@ -7466,15 +7541,27 @@ pub(crate) mod tests {
         let off = Request::UpdateSortRule {
             id: editor_id.clone().expect("the editor's"),
             category: Category::Promotion,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
-            exceptions: Some(vec![SortCondition { field: SortField::Text, value: "invoice".into() }]),
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
+            exceptions: Some(vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Text,
+                value: "invoice".into(),
+            }]),
             enabled: Some(false),
         };
         assert!(matches!(inbox.handle(off, None, at(9, 4)), Response::SortRule { .. }));
         let renamed = Request::UpdateSortRule {
             id: editor_id.expect("the editor's"),
             category: Category::Newsletter,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
             exceptions: None,
             enabled: None,
         };
@@ -7505,7 +7592,11 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let on = |field, value: &str| torro_inbox::SortCondition { field, value: value.into() };
+        let on = |field, value: &str| torro_inbox::SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let rule = Request::CreateSortRule {
             category: Category::Booking,
             conditions: vec![on(SortField::Domain, "rail.example")],
@@ -7543,8 +7634,91 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn extended_sorting_rules_are_validated_and_file_new_mail() {
+        use torro_inbox::{SortComparison, SortCondition, SortField};
+        use torro_mail::{Category, MailCategory};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let condition = |field, comparison, value: &str| SortCondition { field, comparison, value: value.into() };
+        let create = |condition| Request::CreateSortRule {
+            category: Category::Invoice,
+            conditions: vec![condition],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert_eq!(
+            code(&inbox.handle(
+                create(condition(SortField::Attachment, SortComparison::Contains, "pdf")),
+                None,
+                at(8, 0)
+            )),
+            "error",
+        );
+        assert_eq!(
+            code(&inbox.handle(create(condition(SortField::Size, SortComparison::GreaterThan, "NaN")), None, at(8, 0))),
+            "error",
+        );
+        let accepted = create(condition(SortField::Attachment, SortComparison::Present, ""));
+        assert!(matches!(inbox.handle(accepted, None, at(8, 0)), Response::SortRule { .. }));
+        let mut incoming = mail("m:1", "t:1", "Your bill", "billing@shop.example", false, at(8, 1));
+        incoming.sort_facts.has_attachments = Some(true);
+        assert_eq!(inbox.mail_category_of(&incoming), Ok(Some(MailCategory::by_rule(Category::Invoice))));
+        incoming.sort_facts.has_attachments = None;
+        assert_eq!(inbox.mail_category_of(&incoming), Ok(None), "unknown is not a negative match");
+    }
+
     /// Task E15.2: what a category of the person's own may be called and how many a model may
     /// choose between in one group.
+    #[test]
+    fn main_categories_keep_their_ids_and_children_when_renamed() {
+        use torro_mail::{CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.category_groups().expect("defaults").len(), 4);
+        let main = inbox.create_category_group("Private Belege", CategoryIcon::Paperclip, 2).expect("main");
+        assert_eq!(main.group, CategoryGroup::Custom(5));
+        let child = inbox
+            .create_category(main.group, "Rechnungen", "Bills to pay.", true, CategoryIcon::Mail, at(8, 0))
+            .expect("child");
+        assert!(inbox.create_category_group("Private Belege", CategoryIcon::Tag, 0).is_err(), "duplicate name");
+        assert!(inbox.create_category_group("Archive", CategoryIcon::Tag, 4).is_err(), "invalid colour");
+        let changed =
+            inbox.update_category_group(main.group, "Dokumente", CategoryIcon::TextQuote, 1).expect("renamed");
+        assert_eq!((changed.group, changed.name.as_deref(), changed.color), (main.group, Some("Dokumente"), 1));
+        drop(inbox);
+
+        let reopened = inbox_in(dir.path());
+        assert!(reopened.category_groups().expect("groups").iter().any(|held| held == &changed));
+        let child_again = reopened
+            .catalogue()
+            .expect("catalogue")
+            .into_iter()
+            .find(|held| held.category == child.category)
+            .expect("child");
+        assert_eq!(child_again.group, main.group);
+    }
+
+    #[test]
+    fn version_16_catalogue_gains_editable_main_categories() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        inbox
+            .with(|db| {
+                db.execute_batch("DROP TABLE category_groups; PRAGMA user_version = 16")?;
+                Ok(())
+            })
+            .expect("old schema");
+        drop(inbox);
+        let reopened = inbox_in(dir.path());
+        let groups = reopened.category_groups().expect("migrated groups");
+        assert_eq!(groups, torro_mail::CategoryGroupDef::defaults());
+        assert_eq!(reopened.catalogue().expect("categories").len(), 23);
+    }
+
     #[test]
     fn a_new_category_keeps_to_its_limits() {
         use torro_mail::{Category, CategoryGroup, CategoryIcon};
@@ -7698,6 +7872,7 @@ pub(crate) mod tests {
             id: "r1".into(),
             category: club.category,
             conditions: vec![torro_inbox::SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
                 field: torro_inbox::SortField::Domain,
                 value: "club.example".into(),
             }],

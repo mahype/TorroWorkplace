@@ -484,6 +484,7 @@ pub(crate) async fn prepare(
         // program (issue #125).
         html: read.html_source.as_deref().map(html::sanitize).filter(|markup| !markup.trim().is_empty()),
         signature: settings.signature.clone(),
+        signature_format: settings.signature_format,
         reply,
         attachments,
         calendar: None,

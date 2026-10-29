@@ -109,6 +109,7 @@ pub fn primary(state: &State, data: &Data) -> (&'static str, bool) {
         }
         // A switch waits for the core, and "Continue" would give the assistant `web` by the core's list.
         Step::Web if super::web_waits(state, data) => (tr("Continue"), false),
+        Step::Ai if super::ai_models_wait(data) => (tr("Continue"), false),
         Step::Done => (tr("Finish"), true),
         _ => (tr("Continue"), true),
     }
@@ -557,6 +558,7 @@ fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             tr("AI"),
             tr("Local models first: they keep your data on this computer. Add cloud providers if you want more."),
         ),
+        mail_sorting_choice(state, data),
         widgets::group(
             tr("On this computer"),
             local,
@@ -584,6 +586,80 @@ fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         parts.push(choice);
     }
     page(parts)
+}
+
+fn mail_sorting_choice<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    if super::ai_models_wait(data) {
+        return widgets::group(
+            tr("Sort mail into categories"),
+            vec![setting_row(None, tr("Checking decision models…"), None, Space::new())],
+            None,
+        );
+    }
+    let options: Vec<MailModelChoice> = super::mail_deciders(data)
+        .into_iter()
+        .map(|(account, model)| {
+            let provider = data
+                .accounts
+                .iter()
+                .find(|known| known.id == *account)
+                .map_or(account.as_str(), |known| known.label.as_str());
+            MailModelChoice {
+                account: account.clone(),
+                model: model.id.clone(),
+                label: format!("{provider} · {}", model.name),
+            }
+        })
+        .collect();
+    if options.is_empty() {
+        return widgets::group(
+            tr("Sort mail into categories"),
+            vec![setting_row(None, tr("No suitable decision model connected"), None, Space::new())],
+            Some(tr("Connect a decision model here, or choose one later in Mail settings.").to_string()),
+        );
+    }
+    let stored = data.settings.ai_assignments.get(&torro_core::ai::AiFunction::InboxCategorize);
+    let enabled = state.sort_mail.unwrap_or_else(|| stored.is_none_or(|assignment| assignment.enabled));
+    let switch = toggler(enabled).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::SortMail);
+    let chosen = super::selected_mail_decider(state, data).and_then(|(account, model)| {
+        options.iter().find(|option| option.account == *account && option.model == model.id).cloned()
+    });
+    let pick = pick_list(options, chosen, |choice: MailModelChoice| Message::SortModel(choice.account, choice.model))
+        .placeholder(tr("Choose"))
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
+        .style(style::pick_list)
+        .menu_style(style::pick_list_menu);
+    widgets::group(
+        tr("Sort mail into categories"),
+        vec![
+            setting_row(
+                None,
+                tr("Use model sorting"),
+                Some(tr("Recommended; you can turn this off later.").to_string()),
+                switch,
+            ),
+            setting_row(None, tr("Decision model"), None, pick),
+        ],
+        Some(
+            tr("Rules are checked first; the model uses category descriptions only when no rule matches.").to_string(),
+        ),
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MailModelChoice {
+    account: String,
+    model: String,
+    label: String,
+}
+
+impl std::fmt::Display for MailModelChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
 }
 
 /// A server on this computer: looking, found with "Connect" (or "Connected"), or not running.

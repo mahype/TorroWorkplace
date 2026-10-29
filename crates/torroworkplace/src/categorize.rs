@@ -271,7 +271,13 @@ pub fn plan(catalogue: &[CategoryDef]) -> Plan {
     if offered.len() <= systemone::CHOICE_OPTIONS_MAX {
         return Plan::One(offered);
     }
-    let groups = CategoryGroup::ALL
+    let mut unique = Vec::new();
+    for offer in &offered {
+        if !unique.contains(&offer.group) {
+            unique.push(offer.group);
+        }
+    }
+    let groups = unique
         .into_iter()
         .map(|group| (group, offered.iter().filter(|offer| offer.group == group).cloned().collect::<Vec<_>>()))
         .filter(|(_, of_group)| !of_group.is_empty())
@@ -292,7 +298,15 @@ pub fn request(model: &str, content: &Content, offered: &[Offer]) -> DecisionReq
 pub fn group_request(model: &str, content: &Content, groups: &[(CategoryGroup, Vec<Offer>)]) -> DecisionRequest {
     let criteria = groups
         .iter()
-        .map(|(group, _)| (group.key().to_string(), category::group_description(*group).to_string()))
+        .map(|(group, offers)| {
+            let description = match group {
+                CategoryGroup::Custom(_) => {
+                    offers.iter().map(|offer| offer.name.as_str()).collect::<Vec<_>>().join(", ")
+                }
+                _ => category::group_description(*group).to_string(),
+            };
+            (group.key().to_string(), description)
+        })
         .collect();
     let mut questions = side_questions();
     questions.insert(

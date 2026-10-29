@@ -855,7 +855,7 @@ impl InboxClient {
     /// Category counts for one mail account, or all accounts when `account` is `None`.
     pub async fn list_categories_for(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
         match self.ask(Request::ListCategories { account }).await? {
-            Response::Categories { categories } => Ok(categories),
+            Response::Categories { categories, .. } => Ok(categories),
             other => Err(unexpected(other)),
         }
     }
@@ -2268,6 +2268,27 @@ mod tests {
 ///
 /// The words are the suite's own, so nothing here is foreign text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryGroupInfo {
+    pub group: CategoryGroup,
+    pub label: String,
+    pub icon: torro_mail::CategoryIcon,
+    pub color: u8,
+    pub built_in: bool,
+}
+
+impl CategoryGroupInfo {
+    pub fn of(def: &torro_mail::CategoryGroupDef) -> Self {
+        Self {
+            group: def.group,
+            label: def.name.as_deref().unwrap_or_else(|| torro_core::category::group_label(def.group)).to_string(),
+            icon: def.icon,
+            color: def.color,
+            built_in: !matches!(def.group, CategoryGroup::Custom(_)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CategoryInfo {
     /// The category on the wire: `invoice`, `service_notice`, `auto_reply` …
     pub category: Category,
@@ -2277,6 +2298,11 @@ pub struct CategoryInfo {
     pub label: String,
     /// What a person reads for its group.
     pub group_label: String,
+    /// The main category's chosen icon and theme colour.
+    #[serde(default)]
+    pub group_icon: torro_mail::CategoryIcon,
+    #[serde(default)]
+    pub group_color: u8,
     /// The category's monochrome icon; its colour comes from `group`.
     #[serde(default)]
     pub icon: torro_mail::CategoryIcon,
@@ -2311,11 +2337,30 @@ impl CategoryInfo {
     /// The entry of `def` with its counts: the words a person reads come from the catalogue
     /// (task E15.1) – the name they gave it, else the suite's word.
     pub fn of(def: &torro_mail::CategoryDef, unread: u32, messages: u32) -> CategoryInfo {
+        Self::of_with_group(def, unread, messages, None)
+    }
+
+    pub fn of_with_group(
+        def: &torro_mail::CategoryDef,
+        unread: u32,
+        messages: u32,
+        group: Option<&CategoryGroupInfo>,
+    ) -> CategoryInfo {
         CategoryInfo {
             category: def.category,
             group: def.group,
             label: torro_core::category::name_of(def),
-            group_label: torro_core::category::group_label(def.group).to_string(),
+            group_label: group
+                .map_or_else(|| torro_core::category::group_label(def.group).to_string(), |group| group.label.clone()),
+            group_icon: group.map_or(
+                torro_mail::CategoryGroupDef::built_in(def.group)
+                    .map_or(torro_mail::CategoryIcon::Tag, |group| group.icon),
+                |group| group.icon,
+            ),
+            group_color: group
+                .map_or(torro_mail::CategoryGroupDef::built_in(def.group).map_or(0, |group| group.color), |group| {
+                    group.color
+                }),
             icon: def.icon,
             unread,
             messages,

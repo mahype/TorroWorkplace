@@ -138,12 +138,20 @@ pub struct Page<'a, M> {
     /// The bar that saves a page that does not save itself (`torro_gui::widgets::save_bar`), only
     /// while something is changed; it floats over the bottom of the page.
     pub save_bar: Option<Element<'a, M>>,
+    /// Optional wider reading width for pages with several useful columns.
+    pub max_width: Option<f32>,
 }
 
 impl<'a, M> Page<'a, M> {
     /// The section's own page.
     pub fn new(body: impl Into<Element<'a, M>>) -> Self {
-        Page { body: body.into(), sub_page: None, actions: Vec::new(), save_bar: None }
+        Page { body: body.into(), sub_page: None, actions: Vec::new(), save_bar: None, max_width: None }
+    }
+
+    /// Give this page more room on a normal desktop; narrow windows still use their available width.
+    pub fn max_width(mut self, width: f32) -> Self {
+        self.max_width = Some(width);
+        self
     }
 
     /// A page below the section: `name` follows in the path, `back` leads up to the section.
@@ -415,20 +423,21 @@ impl Host {
         // The menu button registers where it is, the layer floats there: both in this one frame.
         let anchor = Anchor::new();
         let on_list = form == Form::Steps && self.list;
-        let Page { body, sub_page, actions, save_bar } = page;
+        let Page { body, sub_page, actions, save_bar, max_width } = page;
         // The object open below the section, as the list and the menu show it: its name and the
         // way back up.
         let child = sub_page.clone();
         let header = self.header(form, on_list, sub_page, actions, &anchor, wrap);
         let body = match (form, on_list) {
-            (Form::Steps, true) => self.page_area(class, self.list_rows(false, None, wrap), None),
-            (Form::Steps | Form::Menu, _) => self.page_area(class, body, save_bar),
+            (Form::Steps, true) => self.page_area(class, self.list_rows(false, None, wrap), None, None),
+            (Form::Steps | Form::Menu, _) => self.page_area(class, body, save_bar, max_width),
             (Form::List, _) => {
                 let list = container(self.list_rows(true, child.clone(), wrap))
                     .width(size::sidebar())
                     .height(Fill)
                     .padding(Padding::new(space::s()));
-                row![list, rule::vertical(LINE).style(style::rule), self.page_area(class, body, save_bar)].into()
+                row![list, rule::vertical(LINE).style(style::rule), self.page_area(class, body, save_bar, max_width)]
+                    .into()
             }
         };
         let overlay = (form == Form::Menu && self.menu).then(|| {
@@ -570,6 +579,7 @@ impl Host {
         class: SizeClass,
         body: Element<'a, M>,
         save_bar: Option<Element<'a, M>>,
+        max_width: Option<f32>,
     ) -> Element<'a, M> {
         if !self.loaded {
             return widgets::loading();
@@ -580,7 +590,7 @@ impl Host {
         if save_bar.is_some() {
             margin.bottom = widgets::floating_bar_clearance(1);
         }
-        let page = container(widgets::content(size::content_max(), page)).padding(margin);
+        let page = container(widgets::content(max_width.unwrap_or_else(size::content_max), page)).padding(margin);
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)

@@ -1238,9 +1238,15 @@ impl MailService {
             loop {
                 service.remove_unknown_stores(&dirs).await;
                 let mut retention = Vec::new();
+                let mut limited = Vec::new();
                 for (account, store) in service.stores(Reach::Suite).await {
                     if let Ok(policy) = store.run(|store| store.cache_policy()).await {
-                        retention.push((account, policy.attachment_retention_days));
+                        retention.push((account.clone(), policy.attachment_retention_days));
+                        if policy.mode == MailCacheMode::MaxSize
+                            && let Some(bytes) = policy.max_local_mb.and_then(|mb| mb.checked_mul(1024 * 1024))
+                        {
+                            limited.push((account, bytes, store));
+                        }
                     }
                 }
                 let purge = cache.clone();
@@ -1248,6 +1254,16 @@ impl MailService {
                     Ok(Ok(_)) => {}
                     Ok(Err(err)) => eprintln!("torroworkplace: cannot clean up mail attachments: {err}"),
                     Err(err) => eprintln!("torroworkplace: cannot clean up mail attachments: {err}"),
+                }
+                for (account, bytes, store) in limited {
+                    let trim = cache.clone();
+                    let result = tokio::task::spawn_blocking(move || trim.trim_account_to_bytes(&account, bytes)).await;
+                    if let Ok(Err(err)) = result {
+                        eprintln!("torroworkplace: cannot limit mail attachments: {err}");
+                    }
+                    if let Err(err) = store.run(|store| store.prune_bodies(Utc::now())).await {
+                        eprintln!("torroworkplace: cannot prune offline mail texts: {err}");
+                    }
                 }
                 tokio::time::sleep(PURGE_EVERY).await;
             }
@@ -1750,15 +1766,50 @@ impl MailService {
     }
 
     pub async fn set_cache_policy(&self, policy: MailCachePolicy) -> Result<MailCachePolicy, MailError> {
-        if policy.attachment_retention_days == 0 || policy.attachment_retention_days > 365 {
+        if policy.attachment_retention_days > 365 && policy.attachment_retention_days != u32::MAX {
             return Err(MailError::Store(MailStoreError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "attachment retention must be 1–365 days",
+                "attachment retention must be none, 1–365 days, or all",
+            ))));
+        }
+        let valid_selection = match policy.mode {
+            MailCacheMode::SinceDate => policy.since_date.as_deref().is_some_and(|date| {
+                chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    .is_ok_and(|parsed| parsed.format("%Y-%m-%d").to_string() == date)
+            }),
+            MailCacheMode::MaxSize => policy.max_local_mb.is_some_and(|mb| (1..=1_000_000).contains(&mb)),
+            _ => true,
+        };
+        if !valid_selection {
+            return Err(MailError::Store(MailStoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "offline policy needs a valid date or a size from 1 to 1000000 MiB",
             ))));
         }
         let store = self.store(&policy.account).await?;
+        let mut policy = policy;
+        policy.prefetch_attachments = false;
         let saved = policy.clone();
         store.run(move |store| store.set_cache_policy(&saved)).await?;
+        if let Some(dirs) = &self.dirs {
+            let limit = if policy.attachment_retention_days == 0 {
+                Some(0)
+            } else if policy.mode == MailCacheMode::MaxSize {
+                policy.max_local_mb.and_then(|mb| mb.checked_mul(1024 * 1024))
+            } else {
+                None
+            };
+            if let Some(limit) = limit {
+                let cache = AttachmentCache::new(dirs);
+                let account = policy.account.clone();
+                tokio::task::spawn_blocking(move || cache.trim_account_to_bytes(&account, limit))
+                    .await
+                    .map_err(|err| MailError::Store(MailStoreError::Io(io::Error::other(err))))??;
+            }
+        }
+        if policy.mode == MailCacheMode::MaxSize {
+            store.run(|store| store.prune_bodies(Utc::now())).await?;
+        }
         Ok(policy)
     }
 
@@ -1791,7 +1842,7 @@ impl MailService {
             return Ok(existing);
         }
         let policy = store.run(|store| store.cache_policy()).await?;
-        let estimate = store.run(move |store| store.cache_estimate(policy.mode)).await?;
+        let estimate = store.run(move |store| store.cache_estimate_for_policy(&policy)).await?;
         let total = match action {
             MailCacheAction::ApplyPolicy => estimate.bodies_to_fetch + estimate.bodies_to_remove,
             MailCacheAction::FetchMissingBodies => estimate.bodies_to_fetch,
@@ -1880,42 +1931,54 @@ impl MailService {
             let original = job.clone();
             let result: Result<bool, MailError> = match job.action {
                 MailCacheAction::ApplyPolicy => {
-                    let mode = match store.run(|store| store.cache_policy()).await {
-                        Ok(policy) => policy.mode,
+                    let policy = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy,
                         Err(err) => {
                             self.fail_cache_job(&store, original, job, err.into()).await;
                             return;
                         }
                     };
-                    match store.run(move |store| store.prune_bodies_for(mode, Utc::now(), 100)).await {
+                    match store.run(move |store| store.prune_bodies_for_policy(&policy, Utc::now(), 100)).await {
                         Ok(count) if count > 0 => {
                             job.processed += count as u64;
                             Ok(true)
                         }
-                        Ok(_) => match store.run(move |store| store.cached_body_missing(job.cursor, mode, 1)).await {
-                            Ok(rows) => match rows.into_iter().next() {
-                                Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
-                                    job.cursor = Some(cursor);
-                                    job.processed += 1;
-                                    true
-                                }),
-                                None => Ok(false),
-                            },
-                            Err(err) => Err(err.into()),
-                        },
+                        Ok(_) => {
+                            let policy = match store.run(|store| store.cache_policy()).await {
+                                Ok(policy) => policy,
+                                Err(err) => {
+                                    self.fail_cache_job(&store, original, job, err.into()).await;
+                                    return;
+                                }
+                            };
+                            match store
+                                .run(move |store| store.cached_body_missing_for_policy(job.cursor, &policy, 1))
+                                .await
+                            {
+                                Ok(rows) => match rows.into_iter().next() {
+                                    Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
+                                        job.cursor = Some(cursor);
+                                        job.processed += 1;
+                                        true
+                                    }),
+                                    None => Ok(false),
+                                },
+                                Err(err) => Err(err.into()),
+                            }
+                        }
                         Err(err) => Err(err.into()),
                     }
                 }
                 MailCacheAction::CleanCache => {
-                    let mode = match store.run(|store| store.cache_policy()).await {
-                        Ok(policy) => policy.mode,
+                    let policy = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy,
                         Err(err) => {
                             self.fail_cache_job(&store, original, job, err.into()).await;
                             return;
                         }
                     };
                     store
-                        .run(move |store| store.prune_bodies_for(mode, Utc::now(), 100))
+                        .run(move |store| store.prune_bodies_for_policy(&policy, Utc::now(), 100))
                         .await
                         .map(|count| {
                             job.processed += count as u64;
@@ -1930,14 +1993,14 @@ impl MailService {
                     })
                 }
                 MailCacheAction::FetchMissingBodies => {
-                    let mode = match store.run(|store| store.cache_policy()).await {
-                        Ok(policy) => policy.mode,
+                    let policy = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy,
                         Err(err) => {
                             self.fail_cache_job(&store, original, job, err.into()).await;
                             return;
                         }
                     };
-                    match store.run(move |store| store.cached_body_missing(job.cursor, mode, 1)).await {
+                    match store.run(move |store| store.cached_body_missing_for_policy(job.cursor, &policy, 1)).await {
                         Ok(rows) => match rows.into_iter().next() {
                             Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
                                 job.cursor = Some(cursor);
@@ -2263,7 +2326,8 @@ impl MailService {
     pub async fn sorting_facts(&self, account: &str, message: &str) -> Result<Option<SortingFacts>, MailError> {
         let store = self.mailbox_of(account).await?.store()?;
         let wanted = message.to_string();
-        let held = store.run(move |store| store.message(&wanted)).await?;
+        let (held, size_bytes) =
+            store.run(move |store| Ok((store.message(&wanted)?, store.message_size(&wanted)?))).await?;
         let Some(held) = held else { return Ok(None) };
         let Some(content) = self.content_for_category(account, message).await? else { return Ok(None) };
         Ok(Some(SortingFacts {
@@ -2272,6 +2336,26 @@ impl MailService {
             auto_submitted: held.traits.auto_submitted.clone(),
             category: held.summary.category,
             content,
+            sort_facts: torro_inbox::rules::SortFacts {
+                reply_to: held.reply_to.iter().map(|address| address.address.clone()).collect(),
+                recipients: held.summary.to.iter().chain(&held.cc).map(|address| address.address.clone()).collect(),
+                has_attachments: Some(held.summary.has_attachments),
+                attachment_names: if held.summary.has_attachments && held.attachments.is_empty() {
+                    None
+                } else {
+                    Some(
+                        held.attachments
+                            .iter()
+                            .filter(|part| !part.inline)
+                            .flat_map(|part| {
+                                part.filename.iter().cloned().chain(std::iter::once(part.content_type.clone()))
+                            })
+                            .collect(),
+                    )
+                },
+                size_bytes,
+                text_complete: held.text.is_some(),
+            },
         }))
     }
 
@@ -2505,6 +2589,7 @@ pub struct SortingFacts {
     pub category: Option<torro_mail::MailCategory>,
     /// What a model reads of it.
     pub content: crate::categorize::Content,
+    pub sort_facts: torro_inbox::rules::SortFacts,
 }
 
 #[cfg(test)]

@@ -57,9 +57,9 @@ als Beschreibung der MCP-Tools lesen.
 | [`tasks`](#tasks) | [`tasks.list_lists`](#taskslist_lists), [`tasks.list_todos`](#taskslist_todos), [`tasks.save_todo`](#taskssave_todo), [`tasks.delete_todo`](#tasksdelete_todo), [`tasks.move_todo`](#tasksmove_todo), [`tasks.create_todo_from_mail`](#taskscreate_todo_from_mail), [`tasks.create_list`](#taskscreate_list), [`tasks.add_link`](#tasksadd_link) |
 | [`contacts`](#contacts) | [`contacts.list_address_books`](#contactslist_address_books), [`contacts.list_contacts`](#contactslist_contacts), [`contacts.get_contact`](#contactsget_contact), [`contacts.get_photo`](#contactsget_photo), [`contacts.list_groups`](#contactslist_groups), [`contacts.upcoming_birthdays`](#contactsupcoming_birthdays), [`contacts.create_contact`](#contactscreate_contact), [`contacts.add_to_contact`](#contactsadd_to_contact), [`contacts.update_contact`](#contactsupdate_contact), [`contacts.set_favorite`](#contactsset_favorite), [`contacts.add_to_group`](#contactsadd_to_group), [`contacts.remove_from_group`](#contactsremove_from_group), [`contacts.mark_used`](#contactsmark_used), [`contacts.set_photo`](#contactsset_photo), [`contacts.move_contact`](#contactsmove_contact), [`contacts.delete_contact`](#contactsdelete_contact), [`contacts.resolve_conflict`](#contactsresolve_conflict) |
 | [`github`](#github) | [`tasks.create_filter_list`](#taskscreate_filter_list), [`tasks.update_filter_list`](#tasksupdate_filter_list), [`tasks.delete_filter_list`](#tasksdelete_filter_list), [`tasks.preview_filter`](#taskspreview_filter), [`tasks.list_github_repos`](#taskslist_github_repos), [`tasks.describe_github_repo`](#tasksdescribe_github_repo), [`tasks.unpin_issue`](#tasksunpin_issue) |
-| [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.preview_category_job`](#inboxpreview_category_job), [`inbox.start_category_job`](#inboxstart_category_job), [`inbox.get_category_job`](#inboxget_category_job), [`inbox.control_category_job`](#inboxcontrol_category_job), [`inbox.preview_clear_categories`](#inboxpreview_clear_categories), [`inbox.clear_categories`](#inboxclear_categories), [`inbox.control_clear_categories`](#inboxcontrol_clear_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.move_sort_rule`](#inboxmove_sort_rule), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.set_mail_pile`](#inboxset_mail_pile), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
+| [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.create_category_group`](#inboxcreate_category_group), [`inbox.update_category_group`](#inboxupdate_category_group), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.preview_category_job`](#inboxpreview_category_job), [`inbox.start_category_job`](#inboxstart_category_job), [`inbox.get_category_job`](#inboxget_category_job), [`inbox.control_category_job`](#inboxcontrol_category_job), [`inbox.preview_clear_categories`](#inboxpreview_clear_categories), [`inbox.clear_categories`](#inboxclear_categories), [`inbox.control_clear_categories`](#inboxcontrol_clear_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.move_sort_rule`](#inboxmove_sort_rule), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.set_mail_pile`](#inboxset_mail_pile), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
 | [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.account_stats`](#mailaccount_stats), [`mail.get_cache_policy`](#mailget_cache_policy), [`mail.preview_cache`](#mailpreview_cache), [`mail.set_cache_policy`](#mailset_cache_policy), [`mail.start_cache_job`](#mailstart_cache_job), [`mail.cache_job_status`](#mailcache_job_status), [`mail.control_cache_job`](#mailcontrol_cache_job), [`mail.backup_create`](#mailbackup_create), [`mail.backup_status`](#mailbackup_status), [`mail.backup_cancel`](#mailbackup_cancel), [`mail.backup_verify`](#mailbackup_verify), [`mail.restore_plan`](#mailrestore_plan), [`mail.restore_apply`](#mailrestore_apply), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.list_save_targets`](#maillist_save_targets), [`mail.create_save_target`](#mailcreate_save_target), [`mail.update_save_target`](#mailupdate_save_target), [`mail.remove_save_target`](#mailremove_save_target), [`mail.save_attachments`](#mailsave_attachments), [`mail.list_filters`](#maillist_filters), [`mail.create_filter`](#mailcreate_filter), [`mail.update_filter`](#mailupdate_filter), [`mail.remove_filter`](#mailremove_filter), [`mail.preview_filter`](#mailpreview_filter), [`mail.apply_filter`](#mailapply_filter), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation) |
-| [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.set_search_key`](#accountsset_search_key), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
+| [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.set_search_key`](#accountsset_search_key), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.reconfigure_mail`](#accountsreconfigure_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
 | [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.set_model_enabled`](#aiset_model_enabled), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment), [`ai.set_slot`](#aiset_slot), [`ai.recommend`](#airecommend), [`ai.pull_model`](#aipull_model), [`ai.list_pulls`](#ailist_pulls), [`ai.cancel_pull`](#aicancel_pull) |
 | [`assistant`](#assistant) | [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.get_cards`](#assistantget_cards), [`assistant.send_message`](#assistantsend_message), [`assistant.cancel`](#assistantcancel), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.confirm_bot`](#assistantconfirm_bot) |
 | [`bots`](#bots) | [`bots.list_bots`](#botslist_bots), [`bots.get_bot`](#botsget_bot), [`bots.save_bot`](#botssave_bot), [`bots.delete_bot`](#botsdelete_bot), [`bots.ask_bot`](#botsask_bot) |
@@ -1085,11 +1085,36 @@ Mutes an inbox source, so its new reports are dropped until it is unmuted, or un
 
 Zugriff `read` · MCP-Tool `inbox_list_categories`
 
-Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, `info`, `junk` for unwanted mail, `unsorted`), the words a person reads for both, its monochrome `icon` in the group's colour, how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam or sent by the person is counted nowhere. The counts cover only mail accounts this key may read (read access to mail and the account), so a key without them sees 0 everywhere, never a number about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is `not-found` when it is not there or out of reach. Each one also says what it means (`description`, what a decision model reads), whether a model may choose it (`model`) and whether the suite brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or the person's own, not foreign text. Use it to offer the categories and to build a sidebar; filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.
+Lists the catalogue of mail categories and the main categories, including empty ones. Each child has a stable group key (`waiting_for_me`, `paper_trail`, `info`, `junk` for unwanted mail, `unsorted` or `custom_group_<n>` for one the person made), the words a person reads for both, its monochrome `icon` in the group's colour, how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam or sent by the person is counted nowhere. The counts cover only mail accounts this key may read (read access to mail and the account), so a key without them sees 0 everywhere, never a number about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is `not-found` when it is not there or out of reach. Each one also says what it means (`description`, what a decision model reads), whether a model may choose it (`model`) and whether the suite brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or the person's own, not foreign text. Use it to offer the categories and to build a sidebar; filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | nein | Only count in this account: `mail:<address>`. Left out: every account in reach. |
+
+### `inbox.create_category_group`
+
+Zugriff `admin` · MCP-Tool `inbox_create_category_group`
+
+Creates a main mail category with a stable custom_group_<n> key, name, icon and theme colour. Its child categories can then be created or moved into it. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `color` | integer | ja |  |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | The monochrome icon shown for a mail category. Its colour comes from the category's group. These are stable catalogue values, separate from the GUI's SVG implementation, so category choices can travel over IPC and remain stored if the icon set is rearranged. |
+| `name` | string | ja |  |
+
+### `inbox.update_category_group`
+
+Zugriff `admin` · MCP-Tool `inbox_update_category_group`
+
+Changes the name, icon and theme colour of a main mail category without changing its stable key or the mail in its child categories. An empty name restores a built-in label. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `color` | integer | ja |  |
+| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | ja | A main mail category: a built-in key or `custom_group_<n>` for one created by the person. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | The monochrome icon shown for a mail category. Its colour comes from the category's group. These are stable catalogue values, separate from the GUI's SVG implementation, so category choices can travel over IPC and remain stored if the icon set is rearranged. |
+| `name` | string | ja |  |
 
 ### `inbox.set_item_category`
 
@@ -1221,13 +1246,13 @@ Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored acc
 
 Zugriff `admin` · MCP-Tool `inbox_create_category`
 
-Makes a mail category of the person's own in one of the five groups and returns it; its key is `custom_<n>` and never changes. `group` is `waiting_for_me`, `paper_trail`, `info`, `junk` (unwanted mail: spam, phishing) or `unsorted` (mail no other group fits). `icon` chooses a monochrome category icon; the group supplies its colour. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
+Makes a mail category of the person's own in an existing main category and returns it; its key is `custom_<n>` and never changes. `group` is `waiting_for_me`, `paper_trail`, `info`, `junk` (unwanted mail: spam, phishing), `unsorted` (mail no other group fits) or a `custom_group_<n>` the person made. `icon` chooses a monochrome category icon; the group supplies its colour. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `description` | string | ja | What it means, with examples and exceptions: what a decision model reads. |
-| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` | ja | The group it stands in. |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"tag"` | nein, Standard `"tag"` | The monochrome icon for the new category; its group supplies the colour. |
+| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | ja | The group it stands in. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | nein, Standard `"tag"` | The monochrome icon for the new category; its group supplies the colour. |
 | `model` | boolean | nein, Standard `false` | A decision model may choose it. |
 | `name` | string | ja | What it is called. |
 
@@ -1241,8 +1266,8 @@ Changes a mail category, one of the suite's or the person's own, and returns it:
 |---|---|---|---|
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | The category's key, as `inbox.list_categories` gives it. |
 | `description` | string | nein | What it means, as a model reads it; empty puts back the suite's description. Left out: as it is. |
-| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` | nein | The group to move it to. Left out: as it is. |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"tag"` | nein | Its monochrome icon; its group supplies the colour. Left out to keep it as it is. |
+| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | nein | The group to move it to. Left out: as it is. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | nein | Its monochrome icon; its group supplies the colour. Left out to keep it as it is. |
 | `model` | boolean | nein | A decision model may choose it. Left out: as it is. |
 | `name` | string | nein | Its new name; empty puts back the suite's word. Left out: as it is. |
 
@@ -1275,11 +1300,13 @@ Adds a sorting rule for mail at `position` (0 first; left out: last) and returns
 |---|---|---|---|
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as: a category of `inbox.list_categories`. |
 | `conditions` | array<object> | ja | All of them must hold; at least one, at most 10. |
-| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `conditions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `conditions[].value` | string | ja | What the field is compared with; one line. |
 | `enabled` | boolean | nein | Switched off, it holds for nothing. Left out: on. |
 | `exceptions` | array<object> | nein | None of them may hold; at most 10. |
-| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `exceptions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `exceptions[].value` | string | ja | What the field is compared with; one line. |
 | `position` | integer | nein | Where it stands, 0 first; left out: last. |
 
@@ -1293,11 +1320,13 @@ Changes a sorting rule and returns it: `category` and `conditions` always, `exce
 |---|---|---|---|
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as. |
 | `conditions` | array<object> | ja | All of them must hold; at least one. |
-| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `conditions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `conditions[].value` | string | ja | What the field is compared with; one line. |
 | `enabled` | boolean | nein | On or off. Left out: as it is. |
 | `exceptions` | array<object> | nein | None of them may hold; an empty list takes them all away. Left out: as they are. |
-| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `exceptions[].comparison` | `"auto"` \| `"is"` \| `"is_not"` \| `"contains"` \| `"not_contains"` \| `"starts_with"` \| `"ends_with"` \| `"present"` \| `"absent"` \| `"greater_than"` \| `"less_than"` | nein | How to compare the value. `auto` keeps the behaviour of rules saved before the editor offered comparison choices. |
+| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` \| `"reply_to"` \| `"recipient"` \| `"attachment"` \| `"attachment_name"` \| `"size"` \| `"list_id"` \| `"account"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `exceptions[].value` | string | ja | What the field is compared with; one line. |
 | `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
 
@@ -1410,7 +1439,7 @@ Lists the folders of the mail accounts this key may see, or of one `account` (`m
 
 Zugriff `read` · MCP-Tool `mail_account_stats`
 
-Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals; only `quota` and `server_bytes` below come from the server. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop. `quota` (used and limit bytes, and `checked`, when the sync asked) is `null` unless the server supports IMAP QUOTA and reports a STORAGE limit. Each folder's `server_bytes` is the sum of the sizes the server reported (`RFC822.SIZE`) for the messages stored locally, `null` until all of them have one (a message the server gives no size for counts as 0); after an interrupted sync it covers only the messages stored so far. Both are as of the last sync, not live values. `months` counts stored messages and offline texts per month by message date in UTC. `originals` and `original_bytes` count only kept originals of mail still on the server; the folder values need not add up to the account's, for example for a folder renamed since the last sync.
+Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals. `known_mail_bytes`, `offline_mail_bytes`, `planned_mail_bytes` and `indexed_offline_mail_bytes` all use the same server-reported RFC822.SIZE measure; all are null until every known message has a size. They are suitable for a relative mail inventory bar, not for measuring physical disk use. The separate `database_bytes` includes metadata and indexes. `quota` is a different server limit and must not be presented as the mail inventory. An interrupted sync covers only messages stored so far. `months` counts stored messages and offline texts per UTC month. `originals` and `original_bytes` count kept originals of mail still on the server.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1420,7 +1449,7 @@ Returns locally known message, read/unread, folder, body-cache and index counts,
 
 Zugriff `read` · MCP-Tool `mail_get_cache_policy`
 
-Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.
+Reads one account's offline mail and attachment policy. Search indexing and header synchronization remain active. `mode` is `all_offline`, `since_date` (requires ISO `since_date`), or `max_size` (requires `max_local_mb`, selecting newest messages by server-reported RFC822.SIZE); `headers_only` and `recent90_days` remain readable for older saved policies. Downloaded attachments can be kept for 0, 1–365 days, or all (`4294967295`).
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1430,26 +1459,28 @@ Reads one mail account's body and attachment cache strategy. Search indexing is 
 
 Zugriff `read` · MCP-Tool `mail_preview_cache`
 
-Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything. Returns the current body count, the bodies to fetch or remove and the estimated download and reclaim bytes. The average locally kept text size is used because IMAP sizes are not stored.
+Estimates how many message bodies a mode will fetch or remove without changing anything. The request accepts a mode, so date and size parameters come from the currently saved policy. Byte estimates use the average size of local reading texts and may differ from the download or the SQLite file's physical change.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | ja |  |
-| `mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
+| `mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` \| `"since_date"` \| `"max_size"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
 
 ### `mail.set_cache_policy`
 
 Zugriff `admin` · MCP-Tool `mail_set_cache_policy`
 
-Sets an account's offline body and attachment retention policy after a mail.preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.
+Sets one account's offline body and attachment retention policy. `since_date` must be YYYY-MM-DD and `max_local_mb` 1–1000000 when their modes are selected. A size cap selects newest messages by RFC822.SIZE; physical disk usage can differ because metadata, search indexes and attachment files are separate. The change persists per account; automatic sync uses it, and `mail.start_cache_job` with `apply_policy` applies it to already synchronized mail. Server mail, drafts and search text are not deleted.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `policy` | object | ja | Per-account local storage choice, persisted with the mail store. |
 | `policy.account` | string | ja |  |
 | `policy.attachment_retention_days` | integer | nein, Standard `1` | Attachment files are removed after this many days; 1 by default. |
-| `policy.mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
-| `policy.prefetch_attachments` | boolean | nein, Standard `false` | Fetch attachment parts in advance, separately from message texts. |
+| `policy.max_local_mb` | integer | nein, Standard `null` | Maximum mail content in MiB for `MaxSize`, with newest messages selected first. |
+| `policy.mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` \| `"since_date"` \| `"max_size"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
+| `policy.prefetch_attachments` | boolean | nein, Standard `false` | Legacy wire field. The service ignores it and always returns `false`: attachment files are fetched only when opened, then kept according to `attachment_retention_days`. |
+| `policy.since_date` | string | nein, Standard `null` | Inclusive ISO calendar date for `SinceDate`; all known headers remain available. |
 
 ### `mail.start_cache_job`
 
@@ -1953,6 +1984,27 @@ Signs in to a mail account (IMAP and SMTP, and on request the calendars and task
 | `tasks` | boolean | ja | Show the task lists of `caldav` in the suite; at an account that exists as `calendars`. |
 | `trusted_certificates` | array<string> | nein | Fingerprints of server certificates the person just trusted, as the answer `untrusted-certificate` named them (`sha256`): SHA-256 in capital hex digits joined by `:` (`AB:CD:…`; small letters and the 64 digits without `:` are taken too). The core adds one to the account's trusted certificates only when a server of the account showed it during this sign-in. Leave out when the person trusted nothing new. |
 
+### `accounts.reconfigure_mail`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Checks an existing mail account with edited IMAP and SMTP endpoints and login. An omitted password uses the existing keychain secret. With save false nothing is stored; with save true the values are stored after a successful sign-in. Only the app key may use it and the password is never returned.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja |  |
+| `imap` | object | ja | One server of a mail account: host, port and how the connection is secured. |
+| `imap.host` | string | ja | The host name, e.g. `imap.mailbox.org`. |
+| `imap.port` | integer | ja | The port, e.g. 993 for IMAP over TLS or 587 for SMTP with STARTTLS. |
+| `imap.security` | `"tls"` \| `"starttls"` | ja | `tls` or `starttls`. |
+| `login_name` | string | ja |  |
+| `password` | string, nur schreiben | nein |  |
+| `save` | boolean | ja |  |
+| `smtp` | object | ja | One server of a mail account: host, port and how the connection is secured. |
+| `smtp.host` | string | ja | The host name, e.g. `imap.mailbox.org`. |
+| `smtp.port` | integer | ja | The port, e.g. 993 for IMAP over TLS or 587 for SMTP with STARTTLS. |
+| `smtp.security` | `"tls"` \| `"starttls"` | ja | `tls` or `starttls`. |
+
 ### `accounts.update_mail_account`
 
 Zugriff `admin` · MCP-Tool `accounts_update_mail_account`
@@ -1971,6 +2023,7 @@ Changes the settings of a mail account (`mail:<address>` from list_accounts): se
 | `services.mail` | boolean | ja | Mail (IMAP and SMTP). |
 | `services.tasks` | boolean | ja | The task lists of the CalDAV address. |
 | `signature` | string | nein | The signature under new mail, replies and forwards; an empty text removes it. |
+| `signature_format` | boolean | nein | Whether `signature` uses the mail editor's formatting marks. Left out: unchanged. |
 
 ### `accounts.list_torromail_accounts`
 
@@ -2690,7 +2743,7 @@ Changes one suite-wide setting: `language` ("system", "english", "german"), `app
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `key` | `"language"` \| `"appearance"` \| `"start_at_login"` \| `"zoom"` \| `"night"` \| `"working_hours"` \| `"list_order"` \| `"quiet_when_busy"` \| `"contacts.show_hidden_books"` \| `"design"` \| `"font"` \| `"color_scheme"` \| `"assistant_retention"` \| `"voice_enabled"` \| `"wake_word"` \| `"microphone"` \| `"speak_answers"` \| `"stt_model"` \| `"voice"` \| `"assistant_default"` \| `"setup"` \| `"component"` \| `"mail_view"` \| `"mail_attachment_click"` \| `"mail_downloads_folder"` \| `"mail_appearance"` \| `"mail_to_cloud"` \| `"decide_mail_to_cloud"` \| `"reminders"` \| `"hidden_categories"` \| `"allow_api_keys"` \| `"allow_mcp"` \| `"tool_enabled"` \| `"pdf_folder"` \| `"allowed_folder"` \| `"pdf_template"` \| `"workspace_shortcuts"` \| `"maps"` \| `"search_provider"` \| `"searxng_address"` | ja | A setting [`Request::SetSetting`] can change, with the `value` it takes. |
+| `key` | `"language"` \| `"appearance"` \| `"start_at_login"` \| `"zoom"` \| `"night"` \| `"working_hours"` \| `"list_order"` \| `"quiet_when_busy"` \| `"contacts.show_hidden_books"` \| `"design"` \| `"font"` \| `"color_scheme"` \| `"assistant_retention"` \| `"voice_enabled"` \| `"wake_word"` \| `"microphone"` \| `"speak_answers"` \| `"stt_model"` \| `"voice"` \| `"assistant_default"` \| `"setup"` \| `"component"` \| `"mail_view"` \| `"mail_attachment_click"` \| `"mail_downloads_folder"` \| `"mail_appearance"` \| `"mail_sender"` \| `"mail_to_cloud"` \| `"decide_mail_to_cloud"` \| `"reminders"` \| `"hidden_categories"` \| `"allow_api_keys"` \| `"allow_mcp"` \| `"tool_enabled"` \| `"pdf_folder"` \| `"allowed_folder"` \| `"pdf_template"` \| `"workspace_shortcuts"` \| `"maps"` \| `"search_provider"` \| `"searxng_address"` | ja | A setting [`Request::SetSetting`] can change, with the `value` it takes. |
 | `value` | any | ja | The new value; its type depends on `key`. |
 
 ### `settings.set_collection_shown`
@@ -2775,6 +2828,7 @@ Replaces all suite-wide settings at once. Prefer set_setting and set_collection_
 | `settings.mailAttachments` | object | nein, Standard `{"click":"open"}` | What a click on an attachment's name does and where "Save to Downloads" puts files (issue #290, [`MailAttachments`]). The save targets themselves are not here but in their own file (`mail.list_save_targets`), so `settings.update_settings` never writes them. Read leniently: a value that does not read gives the defaults (open, the system's Downloads folder). |
 | `settings.mailAttachments.click` | `"open"` \| `"downloads"` \| `"save_as"` \| `"suggested"` \| object | nein, Standard `"open"` | What a click on an attachment's name does. |
 | `settings.mailAttachments.downloads` | string | nein | The folder "Save to Downloads" saves in, an absolute path; `None` for the system's Downloads folder. Only a person sets one (point 9 of "Was nie nach außen geht", like the PDF folder); anyone allowed to change settings may remove it. |
+| `settings.mailSender` | string | nein | Account id used for a newly composed mail when no account was requested explicitly. Replies keep the account of the message. A removed account is ignored by the composer. |
 | `settings.mailToCloud` | boolean | nein, Standard `false` | The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps mail with models on the person's own computers; `true` lets it go to models elsewhere (OpenRouter, a provider's server) as well. Only a person switches it on (`settings.set_setting mail_to_cloud`, app key only); any client allowed to change settings may switch it off. |
 | `settings.mailView` | `"html"` \| `"text"` | nein, Standard `"html"` | How a mail that has HTML first shows in the reader (task M9.5, decision 9 in `docs/mail.md`): formatted ([`MailFormat::Html`], the default) or as plain text. The reader can switch a mail it shows; this is where it starts. Read leniently: a value that does not read is the default. |
 | `settings.maps` | object | nein | The small map and the place search of the event editor (task TE.1, [`Maps`]): off until a person turns them on. Read leniently: a value that does not read gives the defaults (off). Left out of `settings.update_settings`, the stored ones stay. |

@@ -24,9 +24,8 @@ use std::borrow::Cow;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The five groups of [`Category`], in the order the sidebar lists them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+/// The five built-in main categories and any the person creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CategoryGroup {
     /// Something waits for the person: a question, an assignment, a sign-in code.
     WaitingForMe,
@@ -39,6 +38,8 @@ pub enum CategoryGroup {
     /// Mail no other group fits, or where it is unclear what it is: what the model was unsure
     /// about lands here, to be looked through on purpose.
     Unsorted,
+    /// A main category created by the person. The number is never reused.
+    Custom(u32),
 }
 
 /// The monochrome icon shown for a mail category. Its colour comes from the category's group.
@@ -72,13 +73,14 @@ pub enum CategoryIcon {
     Trash2,
     Eye,
     Ellipsis,
+    CircleDashed,
     #[default]
     Tag,
 }
 
 impl CategoryIcon {
     /// Every icon a category can use, in the order shown by the icon picker.
-    pub const ALL: [CategoryIcon; 25] = [
+    pub const ALL: [CategoryIcon; 26] = [
         Self::MessageCircle,
         Self::ListTodo,
         Self::CircleCheck,
@@ -103,6 +105,7 @@ impl CategoryIcon {
         Self::Trash2,
         Self::Eye,
         Self::Ellipsis,
+        Self::CircleDashed,
         Self::Tag,
     ];
 
@@ -133,6 +136,7 @@ impl CategoryIcon {
             Self::Trash2 => "trash2",
             Self::Eye => "eye",
             Self::Ellipsis => "ellipsis",
+            Self::CircleDashed => "circle_dashed",
             Self::Tag => "tag",
         }
     }
@@ -144,7 +148,7 @@ impl CategoryIcon {
 }
 
 impl CategoryGroup {
-    /// Every group, in the order of the catalogue.
+    /// The built-in groups, in the order of the catalogue. User groups follow them in the store.
     pub const ALL: [CategoryGroup; 5] = [
         CategoryGroup::WaitingForMe,
         CategoryGroup::PaperTrail,
@@ -154,26 +158,119 @@ impl CategoryGroup {
     ];
 
     /// How the group is written on the wire and in the API: `waiting_for_me`, `paper_trail`,
-    /// `info`, `junk`, `unsorted` (the serde name).
-    pub fn key(self) -> &'static str {
+    /// `info`, `junk`, `unsorted` (the serde name), `custom_group_<n>` for one the person created.
+    pub fn key(self) -> Cow<'static, str> {
         match self {
-            CategoryGroup::WaitingForMe => "waiting_for_me",
-            CategoryGroup::PaperTrail => "paper_trail",
-            CategoryGroup::Info => "info",
-            CategoryGroup::Junk => "junk",
-            CategoryGroup::Unsorted => "unsorted",
+            CategoryGroup::WaitingForMe => Cow::Borrowed("waiting_for_me"),
+            CategoryGroup::PaperTrail => Cow::Borrowed("paper_trail"),
+            CategoryGroup::Info => Cow::Borrowed("info"),
+            CategoryGroup::Junk => Cow::Borrowed("junk"),
+            CategoryGroup::Unsorted => Cow::Borrowed("unsorted"),
+            CategoryGroup::Custom(id) => Cow::Owned(format!("custom_group_{id}")),
         }
     }
 
     /// The group named by `key` ([`CategoryGroup::key`]); `None` for a word no group has.
     pub fn from_key(key: &str) -> Option<CategoryGroup> {
-        CategoryGroup::ALL.into_iter().find(|group| group.key() == key)
+        CategoryGroup::ALL.into_iter().find(|group| group.key() == key).or_else(|| {
+            key.strip_prefix("custom_group_").and_then(|number| {
+                let id = number.parse::<u32>().ok()?;
+                (id >= 6 && id.to_string() == number).then_some(CategoryGroup::Custom(id))
+            })
+        })
     }
 
     /// The categories the suite puts in this group by default, in the order of its catalogue.
     /// What a group holds now is the core's catalogue's word.
     pub fn default_categories(self) -> Vec<Category> {
         Category::BUILT_IN.into_iter().filter(|category| category.default_group() == Some(self)).collect()
+    }
+
+    /// The row number of a built-in main category. Custom rows start after these five.
+    pub fn database_id(self) -> u32 {
+        match self {
+            Self::WaitingForMe => 1,
+            Self::PaperTrail => 2,
+            Self::Info => 3,
+            Self::Junk => 4,
+            Self::Unsorted => 5,
+            Self::Custom(id) => id,
+        }
+    }
+
+    pub fn from_database_id(id: u32) -> Option<Self> {
+        match id {
+            1 => Some(Self::WaitingForMe),
+            2 => Some(Self::PaperTrail),
+            3 => Some(Self::Info),
+            4 => Some(Self::Junk),
+            5 => Some(Self::Unsorted),
+            6.. => Some(Self::Custom(id)),
+            _ => None,
+        }
+    }
+}
+
+/// One editable main category. `group` is stable when its name, icon or colour changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryGroupDef {
+    pub group: CategoryGroup,
+    /// `None` keeps the translated suite name of a built-in group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub icon: CategoryIcon,
+    /// Index into the five colours of the active design, so it follows theme changes.
+    pub color: u8,
+}
+
+impl CategoryGroupDef {
+    pub fn built_in(group: CategoryGroup) -> Option<Self> {
+        let (icon, color) = match group {
+            CategoryGroup::WaitingForMe => (CategoryIcon::UserCheck, 0),
+            CategoryGroup::PaperTrail => (CategoryIcon::TextQuote, 1),
+            CategoryGroup::Info => (CategoryIcon::Bell, 2),
+            CategoryGroup::Junk => (CategoryIcon::ShieldAlert, 3),
+            CategoryGroup::Unsorted => (CategoryIcon::CircleDashed, 4),
+            CategoryGroup::Custom(_) => return None,
+        };
+        Some(Self { group, name: None, icon, color })
+    }
+
+    pub fn defaults() -> Vec<Self> {
+        CategoryGroup::ALL.into_iter().filter_map(Self::built_in).collect()
+    }
+}
+
+impl Serialize for CategoryGroup {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for CategoryGroup {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        Self::from_key(&key).ok_or_else(|| serde::de::Error::custom("unknown category group"))
+    }
+}
+
+impl JsonSchema for CategoryGroup {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "CategoryGroup".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "A main mail category: a built-in key or `custom_group_<n>` for one created by the person.",
+            "anyOf": [
+                { "type": "string", "enum": ["waiting_for_me", "paper_trail", "info", "junk", "unsorted"] },
+                { "type": "string", "pattern": "^custom_group_([6-9]|[1-9][0-9]{1,9})$" }
+            ]
+        })
     }
 }
 
@@ -623,6 +720,30 @@ mod tests {
         for source in [CategorySource::Rule, CategorySource::Model, CategorySource::Person] {
             let json = serde_json::to_value(source).expect("json");
             assert!(json.is_string(), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn custom_main_category_ids_round_trip_without_aliasing_built_ins() {
+        for id in [6, 42, u32::MAX] {
+            let group = CategoryGroup::Custom(id);
+            let json = serde_json::to_value(group).expect("serialize main category");
+            assert_eq!(serde_json::from_value::<CategoryGroup>(json).expect("read main category"), group);
+            assert_eq!(CategoryGroup::from_database_id(id), Some(group));
+        }
+        for group in CategoryGroup::ALL {
+            assert_eq!(CategoryGroup::from_database_id(group.database_id()), Some(group), "{group:?}");
+        }
+        assert_eq!(CategoryGroup::from_database_id(5), Some(CategoryGroup::Unsorted));
+        for key in [
+            "custom_group_0",
+            "custom_group_1",
+            "custom_group_04",
+            "custom_group_5",
+            "custom_group_5x",
+            "custom_group_4294967296",
+        ] {
+            assert_eq!(CategoryGroup::from_key(key), None, "{key}");
         }
     }
 
