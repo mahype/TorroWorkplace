@@ -6679,6 +6679,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Look at most {n} days ahead.", "Höchstens {n} Tage vorausschauen."),
     ("Mark {name} as a favourite", "{name} als Favorit markieren"),
+    ("Move {name} from {from} to {to}", "{name} von {from} nach {to} verschieben"),
     ("Note {name} as used", "{name} als benutzt vermerken"),
     ("Nothing to change was sent.", "Es wurde nichts zum Ändern geschickt."),
     ("Take {name} off the favourites", "{name} aus den Favoriten nehmen"),
