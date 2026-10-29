@@ -63,24 +63,26 @@
 //! entry as opened for "Insights", once per entry and day ([`Inbox::mail_read`]). An agent reading
 //! mail is not the person opening it and counts nothing. No new request.
 
+use std::sync::{Arc, PoisonError};
+
 use chrono::{DateTime, Utc};
 use torro_core::i18n::tr;
 use torro_inbox::SourceRef;
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area};
-use torro_ipc::mail::{IncompleteReason, MailHighlight, MailSort, MailSource, PileFilter};
+use torro_ipc::mail::{IncompleteReason, MailAccountStats, MailHighlight, MailSort, MailSource, PileFilter};
 use torro_ipc::{Request, mail::limit_refusal};
 use torro_mail::{Invite, MailAddress, MailPile, Message, MessageSummary, Order};
 use torro_mail_imap::imap::Session;
 use torro_mail_imap::mime::{self, MimeError, ReadMessage};
 
-use super::MailStoreError;
 use super::fold::{self, Needle};
 use super::query::{self, Field, Query};
-use super::service::{MailError, MailService, SharedStore};
+use super::service::{KeptStats, MailError, MailService, SharedStore};
 #[cfg(doc)]
 use super::store::BODY_RETENTION_DAYS;
 use super::store::{Body, FolderRef, MessageRef, SearchQuery};
+use super::{AttachmentCache, MailStoreError};
 use crate::inbox::{Inbox, MailLater, MailPiles};
 use crate::pim::Reach;
 
@@ -186,25 +188,94 @@ async fn list_folders(mail: &MailService, reach: Reach<'_>, account: Option<&str
     Ok(Response::MailFolders { folders })
 }
 
+/// How old the kept statistics of an account may grow before `mail.account_stats` counts them
+/// anew in the background (issue #395).
+const STATS_FRESH: chrono::TimeDelta = chrono::TimeDelta::seconds(60);
+
+/// `mail.account_stats` (issue #395): every account from its kept statistics ([`KeptStats`]) as soon
+/// as there are any, with the moment they were counted (`as_of`); older than [`STATS_FRESH`], they
+/// are counted anew in the background for the next call. An account without any is counted now.
+/// How it syncs is always read fresh.
 async fn account_stats(mail: &MailService, reach: Reach<'_>, account: Option<&str>) -> Answer<Response> {
+    let kept = mail.kept_stats();
     let mut accounts = Vec::new();
+    // The kept statistics are read per account the reach left: a client learns nothing from them
+    // of an account it may not see.
     for (id, store) in scoped(mail, reach, account).await? {
-        let mut stats = store.run(|store| store.account_stats()).await.map_err(store_failed)?;
+        let now = Utc::now();
+        let held = {
+            let mut kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
+            kept.get_mut(&id).map(|(stats, at, counting)| {
+                let stale = now.signed_duration_since(*at) > STATS_FRESH && !*counting;
+                *counting |= stale;
+                (stats.clone(), *at, stale)
+            })
+        };
+        let (mut stats, at) = match held {
+            Some((stats, at, stale)) => {
+                if stale {
+                    recount(Arc::clone(&kept), id.clone(), store, mail.attachment_cache());
+                }
+                (stats, at)
+            }
+            None => {
+                // The store stays held until the count is kept: [`MailService::remove`] waits for
+                // it and takes the entry away afterwards, so an account removed meanwhile keeps
+                // nothing. One removed before the count was kept is not looked up any more.
+                let stats = count_stats(&id, store.clone(), mail.attachment_cache()).await?;
+                if mail.store(&id).await.is_ok() {
+                    kept.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone(), (stats.clone(), now, false));
+                }
+                drop(store);
+                (stats, now)
+            }
+        };
         let status = mail.account_sync_status(&id).await;
         stats.last_sync = status.0;
         stats.sync_problem = status.1;
-        if let Some(cache) = mail.attachment_cache() {
-            let account = id.clone();
-            let (count, bytes) = tokio::task::spawn_blocking(move || cache.account_usage(&account))
-                .await
-                .map_err(|_| no_attachment_folder())?
-                .map_err(store_failed)?;
-            stats.cached_attachments = count;
-            stats.attachment_cache_bytes = Some(bytes);
-        }
+        stats.as_of = Some(at);
         accounts.push(stats);
     }
     Ok(Response::MailAccountStats { accounts })
+}
+
+/// Counts the statistics of the account `id` over the store's reading connection
+/// ([`SharedStore::read`]), with what the attachment folder holds of it.
+async fn count_stats(id: &str, store: SharedStore, attachments: Option<AttachmentCache>) -> Answer<MailAccountStats> {
+    let mut stats = store.read(|store| store.account_stats()).await.map_err(store_failed)?;
+    if let Some(cache) = attachments {
+        let account = id.to_string();
+        let (count, bytes) = tokio::task::spawn_blocking(move || cache.account_usage(&account))
+            .await
+            .map_err(|_| no_attachment_folder())?
+            .map_err(store_failed)?;
+        stats.cached_attachments = count;
+        stats.attachment_cache_bytes = Some(bytes);
+    }
+    Ok(stats)
+}
+
+/// Counts the statistics of `id` anew in the background and keeps them, unless the account went
+/// meanwhile ([`MailService::remove`] drops its entry; the store is held until then). A failure
+/// drops the kept ones: the next call counts while the caller waits and so reports why, instead
+/// of old numbers without end. The log names the account only.
+fn recount(kept: KeptStats, id: String, store: SharedStore, attachments: Option<AttachmentCache>) {
+    tokio::spawn(async move {
+        let begun = Utc::now();
+        let counted = count_stats(&id, store.clone(), attachments).await;
+        let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = held.get_mut(&id) {
+            match counted {
+                Ok(stats) => *entry = (stats, begun, false),
+                Err(_) => {
+                    held.remove(&id);
+                    eprintln!("torroworkplace: the mail statistics of {id} could not be counted anew");
+                }
+            }
+        }
+        drop(held);
+        drop(store);
+    });
 }
 
 /// The stores of the accounts `reach` sees; only `account`'s when it is given (`not-found` when
@@ -1429,6 +1500,66 @@ pub(crate) mod tests {
         rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
         let reach = Reach::Client(&rights);
         assert_eq!(message(answer(&service, reach, get(&id, false)).await).summary.subject, "Report");
+    }
+
+    /// The statistics of the accounts an answer to `mail.account_stats` holds, by account.
+    fn stats_of(response: Response) -> Vec<MailAccountStats> {
+        let Response::MailAccountStats { accounts } = response else { panic!("statistics, got {response:?}") };
+        accounts
+    }
+
+    /// #395: `mail.account_stats` answers from the kept statistics with the moment they were
+    /// counted, counts anew in the background once they are older than a minute, and keeps every
+    /// account to the callers that may see it – also from the kept ones.
+    #[tokio::test]
+    async fn the_statistics_come_from_memory_and_stay_within_reach() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (anna, bernd) = (FakeImap::start(PASSWORD).await, FakeImap::start(PASSWORD).await);
+        anna.add("INBOX", &mail_with("First", 1, "One"), &[]);
+        bernd.add("INBOX", &mail_with("For Bernd", 1, "Two"), &[]);
+        let secrets = MemoryTokens::default();
+        let (first, second) =
+            (mail_account("anna@example.org", &anna.endpoint), mail_account("bernd@example.org", &bernd.endpoint));
+        store_accounts(dir.path(), &secrets, &[(&first, PASSWORD), (&second, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+        service.reload().await;
+        service.sync_all(Reach::Suite).await.expect("synced");
+        let all = Request::MailAccountStats { account: None };
+
+        let counted = stats_of(answer(&service, Reach::Suite, all.clone()).await);
+        assert_eq!(counted.len(), 2);
+        let mine = counted.iter().find(|stats| stats.account == ANNA).expect("Anna's").clone();
+        assert!(mine.as_of.is_some(), "the answer says when it was counted");
+
+        // New mail in the store: the next answer is the kept one, at once and with the same moment.
+        anna.add("INBOX", &mail_with("Second", 0, "Three"), &[]);
+        service.sync_all(Reach::Suite).await.expect("synced again");
+        let kept = stats_of(answer(&service, Reach::Suite, all.clone()).await);
+        let again = kept.iter().find(|stats| stats.account == ANNA).expect("Anna's");
+        assert_eq!((again.messages, again.as_of), (mine.messages, mine.as_of), "from memory");
+        assert!(again.last_sync.is_some(), "how it syncs is read fresh");
+
+        // Older than a minute: still answered from memory, counted anew behind it.
+        if let Some(entry) = service.kept_stats().lock().unwrap_or_else(PoisonError::into_inner).get_mut(ANNA) {
+            entry.1 -= chrono::TimeDelta::minutes(2);
+        }
+        let stale = stats_of(answer(&service, Reach::Suite, all.clone()).await);
+        assert_eq!(stale.iter().find(|stats| stats.account == ANNA).map(|stats| stats.messages), Some(mine.messages));
+        crate::mail::service::tests::eventually("the new count", || async {
+            let fresh = stats_of(answer(&service, Reach::Suite, all.clone()).await);
+            fresh.iter().any(|stats| stats.account == ANNA && stats.messages == mine.messages + 1)
+        })
+        .await;
+
+        // A client that may see Anna's account only gets Anna's, though Bernd's is kept too.
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
+        let reach = Reach::Client(&rights);
+        let seen: Vec<String> =
+            stats_of(answer(&service, reach, all).await).into_iter().map(|stats| stats.account).collect();
+        assert_eq!(seen, [ANNA]);
+        let theirs = Request::MailAccountStats { account: Some(second.id.clone()) };
+        assert_eq!(code(&answer(&service, reach, theirs).await), "not-found");
     }
 
     #[tokio::test]

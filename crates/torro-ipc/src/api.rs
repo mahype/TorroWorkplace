@@ -3172,7 +3172,8 @@ static GET_SETTINGS: Command = Command {
                   style of each calendar you see), whether keys of scripts and of MCP clients work at all \
                   (`allowApiKeys`, `allowMcp`), the model of each slot (`aiSlots`: `chat`, what new chats of \
                   the assistant start with, and `decide`, what sorts mail), whether mail may go to models \
-                  elsewhere for the chat (`mailToCloud`) and for sorting (`decideMailToCloud`), the \
+                  elsewhere for the chat (`mailToCloud`) and for sorting (`decideMailToCloud`), whether mail \
+                  from an address in the address books goes to Personal (`mailContactsPersonal`), the \
                   modifiers of the template keys (`workspaces`) and the \
                   assistant's own tools (`tools`: the ones switched on in \
                   `enabled`, the PDF folder and the templates `letter`, `report` and `note`) and the web search \
@@ -3224,7 +3225,10 @@ static SET_SETTING: Command = Command {
                   the colours of the mail's content) or `mail_to_cloud` (only false: keeps mail with models on the \
                   person's own computers again; letting mail go to cloud models is for a person, true is \
                   forbidden) or `decide_mail_to_cloud` (only false: the same for the mail the slot `decide` \
-                  sorts) or what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
+                  sorts) or `mail_contacts_personal` (true, the default, or false; while on, new mail from an \
+                  address in the address books goes to the group Personal, after mail filters, sorting rules, \
+                  newsletters, invitations and automatic replies, and a model only chooses within that group) or \
+                  what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
                   default, \"downloads\", \"save_as\", \"suggested\" or {\"target\": \"<id from \
                   mail_list_save_targets>\"}) or `mail_downloads_folder` (null to save attachments in the \
                   system's Downloads folder again; choosing a folder is for a person) or `allow_api_keys` / \
@@ -4142,7 +4146,7 @@ static ACCOUNT_STATS: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals; only `quota` and `server_bytes` below come from the server. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop. `quota` (used and limit bytes, and `checked`, when the sync asked) is `null` unless the server supports IMAP QUOTA and reports a STORAGE limit. Each folder's `server_bytes` is the sum of the sizes the server reported (`RFC822.SIZE`) for the messages stored locally, `null` until all of them have one (a message the server gives no size for counts as 0); after an interrupted sync it covers only the messages stored so far. Both are as of the last sync, not live values. `months` counts stored messages and offline texts per month by message date in UTC. `originals` and `original_bytes` count only kept originals of mail still on the server; the folder values need not add up to the account's, for example for a folder renamed since the last sync.",
+    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals; only `quota` and `server_bytes` below come from the server. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop. `quota` (used and limit bytes, and `checked`, when the sync asked) is `null` unless the server supports IMAP QUOTA and reports a STORAGE limit. Each folder's `server_bytes` is the sum of the sizes the server reported (`RFC822.SIZE`) for the messages stored locally, `null` until all of them have one (a message the server gives no size for counts as 0); after an interrupted sync it covers only the messages stored so far. Both are as of the last sync, not live values. `months` counts stored messages and offline texts per month by message date in UTC. `originals` and `original_bytes` count only kept originals of mail still on the server; the folder values need not add up to the account's, for example for a folder renamed since the last sync. `as_of` is when the counts (attachments included) were computed: the service answers from its last computation, which can be older than a minute; when it is, the counts are computed anew in the background for the next call. `last_sync` and `sync_problem` are always current.",
 };
 
 static GET_CACHE_POLICY: Command = Command {
@@ -7077,6 +7081,7 @@ mod tests {
                 "mail_appearance",
                 "mail_to_cloud",
                 "decide_mail_to_cloud",
+                "mail_contacts_personal",
                 "reminders",
                 "hidden_categories",
                 "allow_api_keys",

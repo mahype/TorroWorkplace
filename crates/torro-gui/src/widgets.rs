@@ -5190,6 +5190,18 @@ pub fn loading<'a, M: 'a>() -> Element<'a, M> {
     center(typo::text(typo::meta(), tr("Loading …")).style(theme::text_3)).into()
 }
 
+/// A quiet line for a part of a page whose data is still on its way (issue #394): the refresh
+/// icon and `label` ("Updating…") in `META`, `text_3`. It stands over what is already known or in
+/// place of what is not – the page around it is there and usable. Nothing turns: a still line is
+/// enough, and it does not pull the eye away from the rest.
+pub fn refresh_note<'a, M: 'a>(label: impl IntoFragment<'a>) -> Element<'a, M> {
+    let refresh = icon(Icon::RefreshCw, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
+    row![refresh, typo::text(typo::meta(), label).style(theme::text_3)]
+        .spacing(space::xs())
+        .align_y(Alignment::Center)
+        .into()
+}
+
 /// The error state: an alert icon, `what` happened (`BODY`, centred, says what to do) and a
 /// "Retry" button that sends `retry`.
 pub fn error_state<'a, M: Clone + 'a>(what: impl IntoFragment<'a>, retry: M) -> Element<'a, M> {
@@ -6755,6 +6767,7 @@ mod tests {
             group("General", vec![group_row("Start at login", Some("Recommended".into()), blank())], None),
             content(size::content_max(), blank()),
             loading(),
+            refresh_note("Updating…"),
             error_state("The server did not answer.", Msg::Go),
             empty_state("No tasks", "Add one with N."),
             status_dot(Status::Ok),

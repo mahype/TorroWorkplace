@@ -279,6 +279,14 @@ impl ContactsService {
         Some(known)
     }
 
+    /// Whether `address` is a mail address of a contact in a book that is not hidden
+    /// ([`Store::knows_address`], issue #390). Without a store, or when it fails, it is not: mail
+    /// is then sorted as without contacts; [`sync::with`] logs the error, never the address.
+    pub fn knows_address(&self, address: &str) -> bool {
+        let Some(store) = &self.store else { return false };
+        sync::with(store, |s| s.knows_address(address)).unwrap_or(false)
+    }
+
     /// Whether `account` has address books on this device.
     #[cfg(test)]
     pub fn has_books(&self, account: &str) -> bool {

@@ -59,7 +59,7 @@ pub mod rights;
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use torro_core::ai::AiModel;
 use torro_core::settings::Settings;
@@ -188,9 +188,59 @@ pub struct Data {
     pub mail_folders: Vec<torro_mail::Folder>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
+    /// The requests whose first answer is still on its way since the settings opened (issue
+    /// #394): the part of a page that shows their data says "Updating…" until then, over what the
+    /// window still knew from the last time ([`Memory`]) or in place of it. A request leaves the
+    /// list with its answer, a failed one too; a reload later does not put it back, so the note
+    /// does not blink with every tick.
+    pub updating: Vec<Request>,
 }
 
 impl Data {
+    /// Whether the first answer to `request` is still on its way ([`Data::updating`]); asked with
+    /// the very request the section's app names in its `wanted`.
+    pub fn updating(&self, request: &Request) -> bool {
+        self.updating.contains(request)
+    }
+
+    /// Puts the answer to `asked` where it belongs: [`Data::take`], but for the answers that only
+    /// the question tells apart (issue #394). The host fills the data it shows answer by answer,
+    /// not into an empty one per load, so what is merged there must be replaced here: the calendars
+    /// by `calendar.list_calendars`, the task lists by `tasks.list_lists`, and a cache job that is
+    /// no more by the `mail.cache_job_status` of its account. The models of an AI account that is
+    /// gone leave with the accounts, and those of the assistant's default with a new default.
+    pub fn put(&mut self, asked: &Request, response: Response) {
+        let default = assistant::models_request(self);
+        match (asked, response) {
+            (Request::CalendarCollections, Response::Collections { collections }) => {
+                self.calendars = collections.into_iter().filter(|collection| collection.kind.has_events()).collect();
+            }
+            (Request::TaskCollections, Response::Collections { collections }) => {
+                self.task_lists = collections.into_iter().filter(|collection| collection.kind.has_todos()).collect();
+            }
+            (Request::MailCacheJobStatus { account }, Response::MailCacheJob { job: None }) => {
+                self.mail_cache_jobs.retain(|held| held.account != *account);
+            }
+            (Request::Accounts, response) => {
+                self.take(response);
+                // An answer of a core before task E12.10 names no account; it stays.
+                let accounts = &self.accounts;
+                self.decider_models
+                    .retain(|(held, _)| held.is_empty() || accounts.iter().any(|account| account.id == *held));
+            }
+            (_, response) => self.take(response),
+        }
+        // Another default engine: the models of the old one are not its models, and the new
+        // one's are on their way – also when they were asked for once before (A, B, A again).
+        let models = assistant::models_request(self);
+        if models != default {
+            self.default_models.clear();
+            if let Some(request) = models.filter(|request| !self.updating.contains(request)) {
+                self.updating.push(request);
+            }
+        }
+    }
+
     /// Puts one answer where it belongs. An answer no section asked for is dropped: a section that
     /// wants it adds its field and its arm.
     pub fn take(&mut self, response: Response) {
@@ -303,6 +353,55 @@ impl Data {
     }
 }
 
+/// Whether `request` may come later than the page around it (issue #394): what the daemon
+/// computes over a whole mail store or asks an AI server for. The host shows a page once every
+/// other request of the first load is back; the part that shows one of these says "Updating…"
+/// until its answer comes ([`Data::updating`]).
+pub fn background(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::MailAccountStats { .. }
+            | Request::PreviewCategoryJob { .. }
+            | Request::PreviewClearCategories
+            | Request::GetMailCachePolicy { .. }
+            | Request::MailCacheJobStatus { .. }
+            | Request::AiModels { .. }
+    )
+}
+
+/// What an app's settings showed when they were closed, kept while the app runs (issue #394):
+/// the app holds one, hands a clone to every [`Host`] it opens ([`Host::with_memory`]), and the
+/// host starts from it instead of an empty page. Nothing of it is written to disk.
+#[derive(Debug, Clone, Default)]
+pub struct Memory(Arc<Mutex<Option<Kept>>>);
+
+/// What a [`Memory`] holds: the data, and the requests that were ever answered into it. A part
+/// whose request never answered holds nothing but its empty default, which must not stand as if
+/// it were known.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kept {
+    pub data: Data,
+    pub answered: Vec<Request>,
+}
+
+impl Memory {
+    /// What the last host left, if one did.
+    pub fn recall(&self) -> Option<Kept> {
+        self.held().clone()
+    }
+
+    /// Keeps `kept` for the next host, in place of what was kept before.
+    pub fn keep(&self, kept: Kept) {
+        *self.held() = Some(kept);
+    }
+
+    /// The kept data. A host that panicked while holding the lock leaves its data as it was;
+    /// it is still the best the window knows.
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Kept>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// What a person reads for `category` in the catalogue `categories` ([`Data::category_name`]).
 pub fn category_name_in(categories: &[torro_ipc::inbox::CategoryInfo], category: torro_mail::Category) -> String {
     categories
@@ -346,10 +445,18 @@ async fn round(backend: &Arc<dyn Backend>, requests: Vec<Request>, data: &mut Da
 /// Stops at the first request that fails and reports it, so a half-done change does not look
 /// finished; what the daemon already did stays done, and the next load shows it.
 pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, wanted: Vec<Request>) -> Result<Data, String> {
+    apply(Arc::clone(&backend), requests).await?;
+    Ok(load(backend, wanted).await)
+}
+
+/// Sends `requests` one after the other and loads nothing: what the host does with an
+/// [`Action::Send`] since issue #394, which then asks for its data answer by answer. Stops at the
+/// first request that fails, as [`send`] does.
+pub async fn apply(backend: Arc<dyn Backend>, requests: Vec<Request>) -> Result<(), String> {
     for request in requests {
         backend.call(request).await?;
     }
-    Ok(load(backend, wanted).await)
+    Ok(())
 }
 
 /// Sends one request and hands the answer back as it came: what the host does with an
@@ -537,6 +644,90 @@ mod tests {
         let names: Vec<&str> = data.save_targets.iter().map(|target| target.spec.name.as_str()).collect();
         assert_eq!(names, ["Invoices", "Contracts"]);
         assert!(!data.downloads.is_empty(), "the Downloads folder comes along");
+    }
+
+    /// #394: the host fills its data answer by answer, so the answers that `take` merges into an
+    /// empty load are replaced by `put`, which knows what was asked.
+    #[test]
+    fn put_replaces_what_a_load_would_merge() {
+        let collection = |id: &str, kind| torro_pim::Collection {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            color: None,
+            writable: true,
+            source: None,
+        };
+        let mut data = Data::default();
+        let both =
+            vec![collection("a", torro_pim::CollectionKind::Both), collection("b", torro_pim::CollectionKind::Both)];
+        data.put(&Request::CalendarCollections, Response::Collections { collections: both.clone() });
+        data.put(&Request::TaskCollections, Response::Collections { collections: both });
+        let only_a = vec![collection("a", torro_pim::CollectionKind::Both)];
+        data.put(&Request::CalendarCollections, Response::Collections { collections: only_a });
+        assert_eq!(data.calendars.len(), 1, "a calendar that is gone is gone");
+        assert_eq!(data.task_lists.len(), 2, "the lists answer for themselves");
+
+        let job = |account: &str| torro_ipc::mail::MailCacheJob {
+            id: format!("cache:{account}"),
+            account: account.into(),
+            action: torro_ipc::mail::MailCacheAction::FetchMissingBodies,
+            state: torro_ipc::mail::MailCacheJobState::Running,
+            total: 10,
+            processed: 1,
+            cursor: None,
+            estimated_bytes: 0,
+            error: None,
+        };
+        data.mail_cache_jobs = vec![job("work"), job("home")];
+        data.put(&Request::MailCacheJobStatus { account: "work".into() }, Response::MailCacheJob { job: None });
+        let left: Vec<&str> = data.mail_cache_jobs.iter().map(|job| job.account.as_str()).collect();
+        assert_eq!(left, ["home"], "the job that is no more leaves, the other account's stays");
+    }
+
+    /// #394: the models of an AI account that is gone leave with the accounts, and an answer
+    /// that names no account (a core before task E12.10) stays.
+    #[tokio::test]
+    async fn the_models_of_a_removed_account_leave() {
+        let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
+        let mut data = load(Arc::clone(&backend), vec![Request::Accounts]).await;
+        let model =
+            |id: &str| serde_json::from_value::<AiModel>(serde_json::json!({"id": id, "name": id})).expect("a model");
+        data.decider_models = vec![("ai:gone".into(), model("m1")), (String::new(), model("m2"))];
+        let Ok(answer) = backend.call(Request::Accounts).await else { panic!("the demo answers") };
+        data.put(&Request::Accounts, answer);
+        let left: Vec<&str> = data.decider_models.iter().map(|(account, _)| account.as_str()).collect();
+        assert_eq!(left, [""]);
+    }
+
+    /// #394: another default engine leaves no models of the old one, and its own say "Updating…"
+    /// until they come – also when they were asked for in this window before.
+    #[tokio::test]
+    async fn another_default_engine_waits_for_its_models() {
+        let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
+        let mut data = load(Arc::clone(&backend), vec![Request::Settings, Request::ListEngines]).await;
+        let first = assistant::models_request(&data).expect("the demo's default is an AI account");
+        assert!(!data.default_models.is_empty(), "its models came in the second round");
+        let mut engines = data.engines.clone();
+        let mut other = engines[0].clone();
+        other.id = "ai:other@localhost:1".into();
+        engines.push(other);
+        data.put(&Request::ListEngines, Response::Engines { engines });
+        let mut settings = data.settings.clone();
+        if let Some(chat) = settings.ai_slots.chat.as_mut() {
+            chat.engine = "ai:other@localhost:1".into();
+        }
+        data.put(&Request::Settings, Response::Settings { settings: settings.clone() });
+        assert!(data.default_models.is_empty(), "the old engine's models are not the new one's");
+        let second = assistant::models_request(&data).expect("the other AI account");
+        assert!(data.updating(&second));
+        data.updating.clear();
+        // And back: the first engine's models were asked for before, they are on their way again.
+        if let Some(chat) = settings.ai_slots.chat.as_mut() {
+            chat.engine = "ai:ollama@localhost:11434".into();
+        }
+        data.put(&Request::Settings, Response::Settings { settings });
+        assert!(data.updating(&first));
     }
 
     /// The app's part of an action can be wrapped, the rest stays as it is.

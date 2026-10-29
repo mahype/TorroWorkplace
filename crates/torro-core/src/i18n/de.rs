@@ -4431,6 +4431,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Settings › Categorization of the mail window (E12.10).
     ("Categorization", "Kategorisierung"),
     ("Sort mail into categories", "E-Mails in Kategorien einordnen"),
+    // Issue #390: mail from the address books is personal.
+    ("Mail from contacts is personal", "Mail von Kontakten ist persönlich"),
+    (
+        "Mail from an address in your address books goes to Personal. Newsletters, invitations and automatic \
+         replies are sorted as before.",
+        "Mail von einer Adresse aus deinen Adressbüchern landet unter Persönlich. Newsletter, Einladungen und \
+         automatische Antworten werden wie bisher eingeordnet.",
+    ),
     (
         "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved \
          or deleted, and you can change any category by hand.",
@@ -6527,6 +6535,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Numbers of this account", "Zahlen dieses Kontos"),
     ("Show account", "Konto zeigen"),
     ("Attachments on this device: {n} · {size}", "Anhänge auf diesem Gerät: {n} · {size}"),
+    ("As of {time}", "Stand {time}"),
     ("Awaiting", "Ausstehend"),
     ("Change", "Ändern"),
     ("Choose folders", "Ordner wählen"),

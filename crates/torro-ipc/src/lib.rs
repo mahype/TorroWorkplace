@@ -2588,7 +2588,9 @@ pub enum Request {
         account: Option<String>,
     },
     /// Locally known counts and dates for reachable mail accounts. The response does not claim
-    /// that every message on the server has been synchronized.
+    /// that every message on the server has been synchronized. The counts come from the service's
+    /// last computation (`MailAccountStats::as_of`, issue #395), which can be older than a minute;
+    /// then it is computed anew in the background for the next call.
     #[serde(rename = "mail.account_stats")]
     MailAccountStats {
         /// Only this account; omitted for every mail account in reach.
@@ -3835,6 +3837,10 @@ pub enum SettingKey {
     /// "Was nie nach außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights.
     /// Any client allowed to change settings may send `false`.
     DecideMailToCloud,
+    /// "Mail from contacts is personal" (issue #390): `true` (the default) or `false`. While on,
+    /// new mail from an address in the address books goes to the group Personal before any model;
+    /// mail filters, sorting rules, newsletters, invitations and automatic replies still come first.
+    MailContactsPersonal,
     /// How reminders of events come (task ER1.2), as one object; it changes only the fields it
     /// names, and in `calendars` only the calendars it names (`torro_core::settings::Reminders`);
     /// a calendar the client does not see is `not-found`: `{"enabled": true, "defaultLead": 1 (minutes

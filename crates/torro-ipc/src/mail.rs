@@ -488,6 +488,12 @@ pub struct MailAccountStats {
     /// Bytes of those originals.
     #[serde(default)]
     pub original_bytes: u64,
+    /// When the counts above – the attachments included – were computed (issue #395): the service
+    /// answers from the last computation, which can be older than a minute; then it computes anew
+    /// in the background for the next call. `last_sync` and `sync_problem` are always current.
+    /// `None` from a core before that issue.
+    #[serde(default)]
+    pub as_of: Option<DateTime<Utc>>,
 }
 
 /// How many message bodies an account keeps for offline reading. Search text is independent.
@@ -991,13 +997,14 @@ mod tests {
             months: vec![MailMonthCount { year: 2026, month: 10, messages: 2, cached_bodies: 1 }],
             originals: 1,
             original_bytes: 2048,
+            as_of: Some(checked),
         };
         let json = serde_json::to_value(&stats).expect("writes");
         assert_eq!(json["quota"]["limit_bytes"], 10_737_418_240_u64);
         assert_eq!(serde_json::from_value::<MailAccountStats>(json.clone()).expect("reads"), stats);
 
         let mut older = json;
-        for key in ["quota", "months", "originals", "original_bytes"] {
+        for key in ["quota", "months", "originals", "original_bytes", "as_of"] {
             older.as_object_mut().expect("an object").remove(key);
         }
         for key in ["server_bytes", "originals", "original_bytes"] {
@@ -1005,6 +1012,7 @@ mod tests {
         }
         let read = serde_json::from_value::<MailAccountStats>(older).expect("an older answer reads");
         assert_eq!((read.quota, read.months.len(), read.originals, read.original_bytes), (None, 0, 0, 0));
+        assert_eq!(read.as_of, None, "a core before #395 says nothing about when");
         let folder = &read.folders[0];
         assert_eq!((folder.server_bytes, folder.originals, folder.original_bytes), (None, 0, 0));
     }

@@ -567,6 +567,9 @@ pub struct App {
     pub(crate) notice: Option<Notice>,
     /// The settings in the content area, while they are open (task S.18).
     pub(crate) settings: Option<SettingsPane>,
+    /// What the settings showed when they last closed, for the next time they open (issue #394):
+    /// they are there at once with it and update in place.
+    settings_memory: torro_settings_ui::Memory,
     pub(crate) appearance: Appearance,
     pub(crate) system_mode: Mode,
     pub(crate) zoom: Zoom,
@@ -658,6 +661,7 @@ impl App {
             sidebar: SidebarMode::default(),
             notice: None,
             settings: None,
+            settings_memory: torro_settings_ui::Memory::default(),
             appearance: Appearance::System,
             system_mode: Mode::None,
             launch,
@@ -1806,7 +1810,14 @@ impl App {
     /// sections and its first load, which goes over [`Backend::settings`] and never over this
     /// window's own requests.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
-        let (mut host, load) = Host::new(self.backend.settings(), settings::SECTIONS.to_vec(), settings::wanted());
+        // Settings open already leave their state in the memory first, for the new host.
+        drop(self.settings.take());
+        let (mut host, load) = Host::with_memory(
+            self.backend.settings(),
+            settings::SECTIONS.to_vec(),
+            settings::wanted(),
+            self.settings_memory.clone(),
+        );
         if let Some(id) = section {
             host.open(id);
         }
