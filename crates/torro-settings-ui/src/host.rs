@@ -77,6 +77,12 @@ use crate::parts::notice;
 use crate::{Action, Backend, Data, Memory, background};
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The loads of every host of the process, counted together (issue #394): an answer of settings
+/// already closed that comes to the next host of the same window is older than any of that host's
+/// own loads and never mistaken for one of them.
+static GENERATIONS: AtomicU64 = AtomicU64::new(1);
 
 /// The one-pixel lines of the design.
 const LINE: f32 = 1.0;
@@ -288,8 +294,12 @@ pub struct Host {
     flight: Vec<(Request, u64)>,
     /// The load of the newest answer put in, per request: an older answer is dropped.
     applied: Vec<(Request, u64)>,
-    /// The first failure of the current load; it stands over the page with the load's last answer.
+    /// The first failure of the current load; it stands over the page once the load's every
+    /// request that is not in the background is back.
     problem: Option<String>,
+    /// Something real is known: the app's [`Memory`] had a state, or an answer came. Only then
+    /// does the host leave its data for the next one ([`Drop`]).
+    known: bool,
     /// The current load has been reported as [`Message::Loaded`] or [`Message::Sent`] already.
     announced: bool,
     /// A send went through and its load is not reported yet: `changed` as in [`Message::Sent`].
@@ -338,6 +348,7 @@ impl Host {
             flight: Vec::new(),
             applied: Vec::new(),
             problem: None,
+            known: loaded,
             announced: false,
             change: None,
             echoes: 0,
@@ -381,7 +392,7 @@ impl Host {
     /// retry. Every request goes on its own ([`Message::Part`]); one still on its way from an
     /// earlier load is not sent again but once its answer is in.
     pub fn reload(&mut self) -> Task<Message> {
-        self.generation += 1;
+        self.generation = GENERATIONS.fetch_add(1, Ordering::Relaxed);
         self.asked.clear();
         self.problem = None;
         self.announced = false;
@@ -443,7 +454,10 @@ impl Host {
         let newer = self.applied.iter().any(|(held, put)| *held == request && *put > generation);
         if !newer {
             match result {
-                Ok(response) => self.data.put(&request, response),
+                Ok(response) => {
+                    self.data.put(&request, response);
+                    self.known = true;
+                }
                 // A failure of an older load counts for nothing: the request is asked again.
                 Err(problem) if generation == self.generation => {
                     self.problem.get_or_insert(problem);
@@ -455,9 +469,11 @@ impl Host {
         }
         self.data.updating.retain(|held| *held != request);
         let tasks = self.pump();
-        // The load's last answer: its first failure stands over the page now, or none does.
-        if self.flight.is_empty() {
-            self.data.error = self.problem.take();
+        // Nothing but the background is out: the load's first failure stands over the page now, or
+        // none does. Not only once all is back: a slow AI server asked again on every tick would
+        // keep the page's error as it was for good.
+        if !self.flight.iter().any(|(held, _)| !background(held)) {
+            self.data.error = self.problem.clone();
         }
         tasks
     }
@@ -550,8 +566,9 @@ impl Host {
             Message::Answered(result) => Outcome::Answer(result),
             Message::Part { generation, request, result } => work(self.part(generation, *request, *result)),
             Message::Done { changed, result: Ok(()) } => {
-                // The change is stored: a new load, reported as the send once the page is fresh.
-                self.change = Some(changed);
+                // The change is stored: a new load, reported as the send once the page is fresh. A
+                // plain reload that comes back meanwhile does not hide a real change before it.
+                self.change = Some(self.change.unwrap_or(false) || changed);
                 Outcome::Work(self.reload())
             }
             // Through the app as before, so the sections that wait for the send hear how it ended.
@@ -761,11 +778,11 @@ impl Host {
 
 /// What the settings knew when they closed stays with the app for the next host (issue #394),
 /// without what was still on its way and without the failure of that moment. Settings closed
-/// before their page could stand leave the last state as it was: an empty one would show the next
-/// page at once with nothing on it.
+/// before their page could stand, or whose every request failed, leave the last state as it was:
+/// an empty one would show the next page at once with nothing on it.
 impl Drop for Host {
     fn drop(&mut self) {
-        if !self.loaded {
+        if !self.loaded || !self.known {
             return;
         }
         let mut data = std::mem::take(&mut self.data);
@@ -1119,17 +1136,16 @@ mod tests {
     async fn a_request_on_its_way_is_not_sent_again() {
         let backend: Arc<dyn Backend> = Arc::new(Demo::new());
         let (mut host, _) = Host::new(Arc::clone(&backend), sections(), vec![stats()]);
+        let first = host.generation;
         for _ in 0..3 {
             let _ = host.reload();
         }
-        assert_eq!(host.flight, vec![(stats(), 1)], "one on its way, from the first load");
+        assert_eq!(host.flight, vec![(stats(), first)], "one on its way, from the first load");
 
         answer_one(&mut host, &backend).await;
-        assert_eq!(host.flight.iter().filter(|(request, _)| *request == stats()).count(), 1);
-        assert!(
-            host.flight.iter().any(|(request, sent)| *request == stats() && *sent == 4),
-            "asked for the newest load"
-        );
+        let again: Vec<&(Request, u64)> = host.flight.iter().filter(|(request, _)| *request == stats()).collect();
+        assert_eq!(again, [&(stats(), host.generation)], "asked again, once, for the newest load");
+        assert!(host.generation > first);
         assert!(!host.data().updating(&stats()), "it answered once, so it no longer says \"Updating…\"");
     }
 
@@ -1146,6 +1162,35 @@ mod tests {
         let _: Outcome<()> = host.update(part(3, with_zoom(torro_core::settings::Zoom::MAX)));
         let _: Outcome<()> = host.update(part(2, with_zoom(torro_core::settings::Zoom::MIN)));
         assert_eq!(host.data().settings.zoom, torro_core::settings::Zoom::MAX, "the newer answer stays");
+    }
+
+    /// #394: the answer of settings already closed that reaches the next host of the window is
+    /// older than any load of it, so it never covers that host's own answers.
+    #[tokio::test]
+    async fn an_answer_of_closed_settings_is_older_than_the_new_ones() {
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut old, _) = Host::new(Arc::clone(&backend), sections(), vec![Request::Settings]);
+        for _ in 0..5 {
+            let _ = old.reload();
+        }
+        let (stale, generation) = old.flight.first().cloned().expect("on its way");
+        let (mut new, _) = Host::new(Arc::clone(&backend), sections(), vec![Request::Settings]);
+        assert!(new.generation > old.generation, "loads are counted across hosts");
+        let result = Box::new(backend.call(stale.clone()).await);
+        let _: Outcome<()> = new.update(Message::Part { generation, request: Box::new(stale), result });
+        assert_eq!(new.flight.len(), 1, "its own request is still on its way");
+        answer_all(&mut new, &backend).await;
+        assert!(new.applied.iter().all(|(_, put)| *put == new.generation), "its own answer is put in");
+    }
+
+    /// #394: a plain reload that comes back while a change is not reported yet does not turn the
+    /// change into a plain reload.
+    #[test]
+    fn a_plain_reload_does_not_hide_a_change() {
+        let (mut host, _) = Host::new(Arc::new(Demo::new()), sections(), vec![Request::Settings]);
+        let _: Outcome<()> = host.update(Message::Done { changed: true, result: Ok(()) });
+        let _: Outcome<()> = host.update(Message::Done { changed: false, result: Ok(()) });
+        assert_eq!(host.change, Some(true));
     }
 
     /// #394: a failure stands over the page with the load's last answer, not before – a load that

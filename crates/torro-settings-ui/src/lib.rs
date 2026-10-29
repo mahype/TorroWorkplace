@@ -207,8 +207,10 @@ impl Data {
     /// the question tells apart (issue #394). The host fills the data it shows answer by answer,
     /// not into an empty one per load, so what is merged there must be replaced here: the calendars
     /// by `calendar.list_calendars`, the task lists by `tasks.list_lists`, and a cache job that is
-    /// no more by the `mail.cache_job_status` of its account.
+    /// no more by the `mail.cache_job_status` of its account. The models of an AI account that is
+    /// gone leave with the accounts, and those of the assistant's default with a new default.
     pub fn put(&mut self, asked: &Request, response: Response) {
+        let default = assistant::models_request(self);
         match (asked, response) {
             (Request::CalendarCollections, Response::Collections { collections }) => {
                 self.calendars = collections.into_iter().filter(|collection| collection.kind.has_events()).collect();
@@ -219,7 +221,18 @@ impl Data {
             (Request::MailCacheJobStatus { account }, Response::MailCacheJob { job: None }) => {
                 self.mail_cache_jobs.retain(|held| held.account != *account);
             }
+            (Request::Accounts, response) => {
+                self.take(response);
+                // An answer of a core before task E12.10 names no account; it stays.
+                let accounts = &self.accounts;
+                self.decider_models
+                    .retain(|(held, _)| held.is_empty() || accounts.iter().any(|account| account.id == *held));
+            }
             (_, response) => self.take(response),
+        }
+        // Another default engine: the models of the old one are not its models.
+        if assistant::models_request(self) != default {
+            self.default_models.clear();
         }
     }
 
@@ -656,6 +669,21 @@ mod tests {
         data.put(&Request::MailCacheJobStatus { account: "work".into() }, Response::MailCacheJob { job: None });
         let left: Vec<&str> = data.mail_cache_jobs.iter().map(|job| job.account.as_str()).collect();
         assert_eq!(left, ["home"], "the job that is no more leaves, the other account's stays");
+    }
+
+    /// #394: the models of an AI account that is gone leave with the accounts, and an answer
+    /// that names no account (a core before task E12.10) stays.
+    #[tokio::test]
+    async fn the_models_of_a_removed_account_leave() {
+        let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
+        let mut data = load(Arc::clone(&backend), vec![Request::Accounts]).await;
+        let model =
+            |id: &str| serde_json::from_value::<AiModel>(serde_json::json!({"id": id, "name": id})).expect("a model");
+        data.decider_models = vec![("ai:gone".into(), model("m1")), (String::new(), model("m2"))];
+        let Ok(answer) = backend.call(Request::Accounts).await else { panic!("the demo answers") };
+        data.put(&Request::Accounts, answer);
+        let left: Vec<&str> = data.decider_models.iter().map(|(account, _)| account.as_str()).collect();
+        assert_eq!(left, [""]);
     }
 
     /// The app's part of an action can be wrapped, the rest stays as it is.
