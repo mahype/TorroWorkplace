@@ -7705,13 +7705,19 @@ pub(crate) mod tests {
         assert_eq!(child_again.group, main.group);
     }
 
+    /// Issue #343, [`SCHEMA_V18`]: a file of schema 16 gains the five built-in main categories.
     #[test]
     fn version_16_catalogue_gains_editable_main_categories() {
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
         inbox
             .with(|db| {
-                db.execute_batch("DROP TABLE category_groups; PRAGMA user_version = 16")?;
+                db.execute_batch(
+                    "DROP TABLE category_groups;
+                     CREATE TABLE shown_mail (account TEXT NOT NULL, message TEXT NOT NULL, at TEXT NOT NULL,
+                         PRIMARY KEY (account, message));
+                     PRAGMA user_version = 16",
+                )?;
                 Ok(())
             })
             .expect("old schema");
@@ -7719,7 +7725,64 @@ pub(crate) mod tests {
         let reopened = inbox_in(dir.path());
         let groups = reopened.category_groups().expect("migrated groups");
         assert_eq!(groups, torro_mail::CategoryGroupDef::defaults());
+        assert_eq!(groups.len(), 5);
         assert_eq!(reopened.catalogue().expect("categories").len(), 23);
+    }
+
+    /// Issue #397, [`SCHEMA_V18`]: a file of the branch of #343 reached version 17 with four main
+    /// categories, "Show again" and the rules that hid mail, and never ran [`SCHEMA_V17`]. Version
+    /// 18 gives it Unsorted as the fifth, does the clean-up of issue #339 after, and the next main
+    /// category the person makes is the sixth.
+    #[test]
+    fn a_file_of_the_branch_of_343_gains_unsorted_and_forgets_what_hid_mail() {
+        use torro_mail::{CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let news = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let hiding = Rule {
+            id: "a".into(),
+            source: SourceRef::mail("anna@example.org"),
+            sender: Some("news@shop.example".into()),
+            domain: None,
+            effect: RuleEffect::Muted,
+            created: at(7, 0),
+            facet: None,
+            until: None,
+        };
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DELETE FROM category_groups WHERE id = 5;
+                     UPDATE sqlite_sequence SET seq = 4 WHERE name = 'category_groups';
+                     CREATE TABLE shown_mail (account TEXT NOT NULL, message TEXT NOT NULL, at TEXT NOT NULL,
+                         PRIMARY KEY (account, message));
+                     PRAGMA user_version = 17;",
+                )?;
+                insert_rule(db, hiding)?;
+                db.execute("UPDATE items SET hidden = 'a' WHERE id = ?1", params![news])?;
+                Ok(())
+            })
+            .expect("the branch's schema 17");
+        drop(inbox);
+
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.category_groups().expect("groups"), torro_mail::CategoryGroupDef::defaults());
+        assert!(rules_of(&inbox).is_empty(), "the rule that hid mail went");
+        let main = inbox.create_category_group("Private Belege", CategoryIcon::Paperclip, 2).expect("main");
+        assert_eq!(main.group, CategoryGroup::Custom(6));
+        drop(inbox);
+
+        let db = Connection::open(file_in(dir.path())).expect("opens");
+        let hidden: Option<String> =
+            db.query_row("SELECT hidden FROM items WHERE id = ?1", params![news], |row| row.get(0)).expect("entry");
+        assert_eq!(hidden, None, "the mail entry carries no mark");
+        let shown: i64 = db
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'shown_mail'", [], |row| row.get(0))
+            .expect("counted");
+        assert_eq!(shown, 0, "no more Show again");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -9867,6 +9930,8 @@ pub(crate) mod tests {
         assert_eq!(shown, 0, "no more Show again");
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+        let groups = inbox_in(dir.path()).category_groups().expect("groups");
+        assert_eq!(groups, torro_mail::CategoryGroupDef::defaults(), "and the five main categories (#343)");
     }
 
     #[test]
