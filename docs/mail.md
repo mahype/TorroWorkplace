@@ -362,10 +362,10 @@ bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummsc
 
 - Auf **neue Mail im Posteingang**, solange Torro Workplace läuft. Bevor der Abgleich neue Mail im Notification Hub
   ablegt, laufen die eingeschalteten Filter des Kontos über sie, unabhängig von der Einstellung `notify` des Kontos.
-  Kam Mail, während Torro Workplace nicht lief, filtert sie der nächste Abgleich, der sie als neu meldet.
-- **Nicht** beim ersten Abgleich eines Ordners (auch nicht, wenn der Server ihn neu nummeriert hat) und nicht beim
-  Nachholen, wenn der Abgleich Wechsel verpasst hat
-  (`catch_up`): Diese Mail lag schon vorher da.
+  Gefiltert wird, was der Abgleich als neu meldet, auch Mail, die kam, während Torro Workplace nicht lief.
+- **Nicht** beim ersten Abgleich eines Ordners (auch nicht, wenn der Server ihn neu nummeriert hat) und nicht, wenn
+  der Dienst Verpasstes nur nachholt (`catch_up`, etwa wenn die Ablage im Hub den Meldungen des Abgleichs nicht
+  hinterherkam): Diese Mail legt er ab, filtert sie aber nicht. Sie erreicht ein Filter über **Anwenden**.
 - Mail, deren `Message-ID` das Konto schon in einem anderen Ordner hat, bleibt unberührt. Sie wurde in den
   Posteingang verschoben oder kopiert, nicht zugestellt, und ein Filter soll sie nicht gleich wieder hinausnehmen.
   Kopien im Archiv und in den gesendeten Mails zählen dabei nicht: Gmail legt jede neue Mail auch in „All Mail“ ab,
@@ -417,6 +417,10 @@ nicht nur das Löschen.
   (wie `mail.set_flags` und `mail.move_messages`), Löschen für den Papierkorb (wie `mail.delete_messages`, auch für
   einen Ordner mit der Rolle Papierkorb). Sonst ist Anlegen, Ändern und Anwenden `forbidden`, vor der Freigabe und
   noch einmal bei der Ausführung.
+- **Fehlende Kategorie oder fehlender Ordner:** Beim Ändern prüft der Dienst Kategorie und Ordner nur, wenn sie neu sind. Ein Filter,
+  dessen Kategorie der Mensch gelöscht hat oder dessen Ordner es auf dem Server nicht mehr gibt, lässt sich so weiter
+  ausschalten und ändern. Beim Eintreffen und Anwenden überspringt er die fehlende Kategorie; das Verschieben in den
+  fehlenden Ordner scheitert, kommt ins Protokoll und zählt beim Anwenden als `failed`.
 - Die Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos und dem Namen des Ordners aus dem Speicher
   des Dienstes, nie die Worte des Clients außer der neuen Suche: beim Ändern alt und neu, beim Anwenden „up to n“. Sie
   ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die er da fand: Hat ihn jemand
