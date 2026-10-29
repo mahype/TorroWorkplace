@@ -589,7 +589,9 @@ DROP TABLE shown_mail;
 /// which used 17 for `category_groups` with four groups and never ran the clean-up of issue #339.
 /// So every statement holds for both: the table only if it is missing, the groups only where their
 /// ID is free, and the clean-up of [`SCHEMA_V17`] again – it finds nothing left in a file that ran
-/// it already.
+/// it already. A main category the person made in the branch's file may hold ID 5, which is
+/// Unsorted's now – it has a name, the built-in Unsorted has none: it moves to the next free ID first, and so do its categories
+/// (`custom_group_5` in `category_edits` and `custom_categories`), so nothing of it is lost.
 ///
 /// [`CategoryGroup::database_id`]: torro_mail::CategoryGroup::database_id
 const SCHEMA_V18: &str = "
@@ -603,8 +605,15 @@ INSERT OR IGNORE INTO category_groups (id, name, icon, color) VALUES
     (1, NULL, 'user_check', 0),
     (2, NULL, 'text_quote', 1),
     (3, NULL, 'bell', 2),
-    (4, NULL, 'shield_alert', 3),
-    (5, NULL, 'circle_dashed', 4);
+    (4, NULL, 'shield_alert', 3);
+INSERT INTO category_groups (name, icon, color)
+    SELECT name, icon, color FROM category_groups WHERE id = 5 AND name IS NOT NULL;
+UPDATE category_edits SET grp = 'custom_group_' || (SELECT max(id) FROM category_groups)
+    WHERE grp = 'custom_group_5' AND EXISTS (SELECT 1 FROM category_groups WHERE id = 5 AND name IS NOT NULL);
+UPDATE custom_categories SET grp = 'custom_group_' || (SELECT max(id) FROM category_groups)
+    WHERE grp = 'custom_group_5' AND EXISTS (SELECT 1 FROM category_groups WHERE id = 5 AND name IS NOT NULL);
+DELETE FROM category_groups WHERE id = 5 AND name IS NOT NULL;
+INSERT OR IGNORE INTO category_groups (id, name, icon, color) VALUES (5, NULL, 'circle_dashed', 4);
 DELETE FROM rules WHERE effect = 'muted' AND instr(source, 'mail:') = 1 AND (sender <> '' OR facet <> '');
 DELETE FROM muted_mail WHERE rule IS NOT NULL AND rule NOT IN (SELECT id FROM rules);
 UPDATE items SET hidden = NULL WHERE instr(source, 'mail:') = 1;
@@ -7864,6 +7873,44 @@ pub(crate) mod tests {
         assert_eq!(shown, 0, "no more Show again");
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    /// Issue #397, [`SCHEMA_V18`]: a main category the person made in the branch's file holds ID 5,
+    /// which is Unsorted's now. It moves to the next ID with its name and its categories, and
+    /// Unsorted gets 5.
+    #[test]
+    fn a_main_category_of_the_branch_on_id_5_moves_aside_for_unsorted() {
+        use torro_mail::{CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let child = inbox
+            .create_category(CategoryGroup::Info, "Training", "Club training.", false, CategoryIcon::Tag, at(8, 0))
+            .expect("a category");
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DELETE FROM category_groups WHERE id = 5;
+                     UPDATE sqlite_sequence SET seq = 4 WHERE name = 'category_groups';
+                     INSERT INTO category_groups (id, name, icon, color) VALUES (5, 'Club', 'users', 2);
+                     UPDATE custom_categories SET grp = 'custom_group_5';
+                     PRAGMA user_version = 17;",
+                )?;
+                Ok(())
+            })
+            .expect("the branch's schema 17 with a main category of its own");
+        drop(inbox);
+
+        let inbox = inbox_in(dir.path());
+        let groups = inbox.category_groups().expect("groups");
+        let unsorted = groups.iter().find(|held| held.group == CategoryGroup::Unsorted).expect("Unsorted");
+        assert_eq!((unsorted.name.as_deref(), unsorted.icon), (None, CategoryIcon::CircleDashed));
+        let club = groups.iter().find(|held| held.group == CategoryGroup::Custom(6)).expect("the club, moved");
+        assert_eq!((club.name.as_deref(), club.icon, club.color), (Some("Club"), CategoryIcon::Users, 2));
+        let moved = inbox.catalogue().expect("catalogue").into_iter().find(|def| def.category == child.category);
+        assert_eq!(moved.map(|def| def.group), Some(CategoryGroup::Custom(6)), "its category went along");
+        let next = inbox.create_category_group("Family", CategoryIcon::User, 0).expect("a new one");
+        assert_eq!(next.group, CategoryGroup::Custom(7));
     }
 
     #[test]
