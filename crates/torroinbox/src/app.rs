@@ -4736,6 +4736,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 {
                     settings_mail::sent(state);
                     settings_mail::filters_sent(state, result);
+                    settings_mail::editor_sent(state, result);
                 }
                 let outcome = pane.host.update(message);
                 if let SettingsState::Mail(state) = &mut pane.sections {
@@ -7118,19 +7119,28 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Outcome::OpenUrl(url) => self.open_url(url),
             Outcome::Answer(answer) => {
+                // The mail settings ask one at a time (issue #397): the answer is the waiting
+                // section's, and the next ask goes out now.
+                let mut next = Task::none();
                 if let Some(pane) = self.settings.as_mut()
                     && let SettingsState::Mail(state) = &mut pane.sections
                 {
                     settings_mail::answered(state, &answer);
+                    if let Some(request) = settings_mail::next_ask(state) {
+                        let action = torro_settings_ui::Action::<settings_mail::AppAction>::Ask(request);
+                        if let Outcome::Work(task) = pane.host.act(action) {
+                            next = task.map(Message::SettingsHost);
+                        }
+                    }
                 }
                 // A saved mail connection (`accounts.reconfigure_mail`, asked so a certificate
                 // question comes back) changed the account: load as after a send, so the page
                 // compares with the new servers and the list shows them at once.
                 match (answer.as_ref(), self.settings.as_ref()) {
                     (Ok(torro_ipc::Response::MailConnected { .. }), Some(pane)) => {
-                        Task::batch([pane.host.reload().map(Message::SettingsHost), self.load()])
+                        Task::batch([next, pane.host.reload().map(Message::SettingsHost), self.load()])
                     }
-                    _ => Task::none(),
+                    _ => next,
                 }
             }
             Outcome::ControlCentre(section) => {

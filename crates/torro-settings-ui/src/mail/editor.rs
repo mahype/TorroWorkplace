@@ -461,15 +461,31 @@ pub fn loaded(state: &mut State, data: &Data) {
     }
 }
 
-pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+/// A send came back while a main category is being saved (issue #397). The form closes once the
+/// reloaded catalogue holds the main category as the form had it, so another section's send that
+/// returns first does not close it; a refusal shows in the form, which takes a second try. A send
+/// carries no name of its request, so a refusal of another section's send at the same moment would
+/// show there too.
+pub fn sent(state: &mut State, result: &Result<Data, String>) {
     let Some(form) = state.group_form.as_mut().filter(|form| form.sending) else { return };
-    match answer {
-        Ok(torro_ipc::Response::CategoryGroup { .. }) => state.group_form = None,
-        Ok(torro_ipc::Response::Error { message, .. }) | Err(message) => {
+    match result {
+        Ok(data) => {
+            let name = form.name.trim();
+            let saved = data.category_groups.iter().any(|held| {
+                let looks = held.icon == form.icon && held.color == form.color;
+                match form.group {
+                    Some(group) => held.group == group && looks && (name.is_empty() || held.label == name),
+                    None => !held.built_in && looks && held.label == name,
+                }
+            });
+            if saved {
+                state.group_form = None;
+            }
+        }
+        Err(message) => {
             form.sending = false;
             form.refused = Some(message.clone());
         }
-        _ => {}
     }
 }
 
@@ -1681,9 +1697,12 @@ mod tests {
             color: 2,
             built_in: false,
         };
-        answered(&mut state, &Ok(torro_ipc::Response::CategoryGroup { group: created.clone() }));
-        assert!(state.group_form.is_none());
+        // Another send came back first: the catalogue does not hold it yet, the form waits.
+        super::sent(&mut state, &Ok(data.clone()));
+        assert!(state.group_form.as_ref().is_some_and(|form| form.sending));
         data.category_groups.push(created);
+        super::sent(&mut state, &Ok(data.clone()));
+        assert!(state.group_form.is_none(), "saved: the catalogue holds it");
         let _ = update::<()>(&mut state, Message::NewCategoryInGroup(CategoryGroup::Custom(5)), &data);
         assert!(matches!(&state.form, Some(Form::Category(form)) if form.group == CategoryGroup::Custom(5)));
     }

@@ -120,6 +120,21 @@ pub struct State {
     pub attachments: attachments::State,
     /// Filters: the open filter's page and the question of "Apply" (issue #339).
     pub filters: filters::State,
+    /// The section whose ask is on its way (issue #397). An answer names no request, and a refusal
+    /// is a bare `error`, so one ask goes out at a time and its answer reaches only the section that
+    /// asked; the others wait in [`State::queued`] until it is back ([`next_ask`]).
+    asking: Option<Asker>,
+    queued: std::collections::VecDeque<(Asker, torro_ipc::Request)>,
+}
+
+/// A section that asks the core and takes the answer itself ([`Action::Ask`]). Backups are not
+/// among them: the window sends theirs on its own way, with the account ([`backup_answered`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asker {
+    Accounts,
+    Categorization,
+    Storage,
+    Filters,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -133,8 +148,55 @@ pub enum Message {
     Filters(filters::Message),
 }
 
-/// What a section's widget reported, and what the host is to do about it.
+/// What a section's widget reported, and what the host is to do about it. An ask while another one
+/// is on its way waits for it ([`State::asking`]).
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
+    let asker = match &message {
+        Message::Accounts(accounts::Message::Storage(_)) | Message::Storage(_) => Some(Asker::Storage),
+        Message::Accounts(_) => Some(Asker::Accounts),
+        Message::Categorization(_) => Some(Asker::Categorization),
+        Message::Filters(_) => Some(Asker::Filters),
+        Message::Reading(_) | Message::Attachments(_) => None,
+    };
+    let action = section_update(state, message, data);
+    match (action, asker) {
+        (Action::Ask(request), Some(asker)) if !is_backup_request(&request) => {
+            if state.asking.is_some() {
+                state.queued.push_back((asker, request));
+                return Action::None;
+            }
+            state.asking = Some(asker);
+            Action::Ask(request)
+        }
+        (action, _) => action,
+    }
+}
+
+/// The ask that waited for the one just answered ([`answered`]), now on its way; the window hands
+/// it to the host as [`Action::Ask`]. `None` while nothing waits.
+pub fn next_ask(state: &mut State) -> Option<torro_ipc::Request> {
+    if state.asking.is_some() {
+        return None;
+    }
+    let (asker, request) = state.queued.pop_front()?;
+    state.asking = Some(asker);
+    Some(request)
+}
+
+/// The requests of a backup, which the window sends itself and answers with their account.
+fn is_backup_request(request: &torro_ipc::Request) -> bool {
+    matches!(
+        request,
+        torro_ipc::Request::MailBackupCreate { .. }
+            | torro_ipc::Request::MailBackupStatus { .. }
+            | torro_ipc::Request::MailBackupCancel { .. }
+            | torro_ipc::Request::MailBackupVerify { .. }
+            | torro_ipc::Request::MailRestorePlan { .. }
+            | torro_ipc::Request::MailRestoreApply { .. }
+    )
+}
+
+fn section_update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
     match message {
         Message::Accounts(accounts::Message::Storage(message)) => {
             let Some(account) = accounts::current_account(&state.accounts) else { return Action::None };
@@ -243,13 +305,22 @@ pub fn filters_escape(state: &State) -> Option<Message> {
 /// The answer of a one-off request: a preview of the selected sorting scope, or a filter's preview
 /// or run (issue #339). A filter's answer goes to "Filters" only.
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
-    if filters::answered(&mut state.filters, answer) {
-        return;
+    // Only the section that asked: another one's refusal reads the same (issue #397).
+    match state.asking.take() {
+        Some(Asker::Accounts) => accounts::answered(&mut state.accounts, answer),
+        Some(Asker::Categorization) => categorization::answered(&mut state.categorization, answer),
+        Some(Asker::Storage) => storage::answered(&mut state.storage, answer),
+        Some(Asker::Filters) => {
+            filters::answered(&mut state.filters, answer);
+        }
+        None => {}
     }
-    accounts::answered(&mut state.accounts, answer);
-    categorization::answered(&mut state.categorization, answer);
-    storage::answered(&mut state.storage, answer);
-    editor::answered(&mut state.categorization.editor, answer);
+}
+
+/// A send of the host came back with `result` (the window calls it on every `Sent`): a main
+/// category of the category editor is saved, or the refusal shows in its form (issue #397).
+pub fn editor_sent(state: &mut State, result: &Result<Data, String>) {
+    editor::sent(&mut state.categorization.editor, result);
 }
 
 /// Backup answers carry their originating account, so another section's pending answer cannot
@@ -293,7 +364,10 @@ pub fn stage_backup(state: &mut State, account: &str, scene: BackupScene) {
 /// account's backup page and the requests on their way, whose answers still arrive. The other
 /// sections start afresh, so a preview that was on its way never stays "Calculating…".
 pub fn kept(state: State) -> State {
-    State { accounts: state.accounts, ..State::default() }
+    // An ask on its way is answered into the closed settings and lost: nothing waits for it.
+    let mut accounts = state.accounts;
+    accounts::forget_pending(&mut accounts);
+    State { accounts, ..State::default() }
 }
 
 /// One section's page with its messages wrapped in [`Message`].
@@ -896,14 +970,20 @@ pub mod accounts {
             .unwrap_or(&mail.address)
     }
 
-    pub(super) fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
-        // The answer of a save names its account: it is taken also when another section's answer
-        // (which carries no account) already ended the wait.
-        if state.pending_connection.is_none()
-            && let Ok(torro_ipc::Response::MailConnected { account, .. }) = answer
-        {
-            state.pending_connection = Some(account.id.clone());
+    /// The test or save of a connection whose answer will not come (the settings closed): its page
+    /// takes clicks again.
+    pub(super) fn forget_pending(state: &mut State) {
+        let Some(id) = state.pending_connection.take() else { return };
+        let draft = match state.draft.as_mut().filter(|draft| draft.account == id) {
+            Some(draft) => Some(draft),
+            None => state.drafts_others.get_mut(&id),
+        };
+        if let Some(draft) = draft {
+            draft.connection.pending = false;
         }
+    }
+
+    pub(super) fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
         let Some(id) = state.pending_connection.as_deref() else { return };
         match answer {
             Ok(torro_ipc::Response::MailConnectionChecked { id: answered }) if answered != id => return,
@@ -3027,6 +3107,25 @@ mod tests {
         let folder = std::env::temp_dir();
         let _: Action<AppAction> = update(&mut state, backup_chosen(BackupChooser::Folder, folder.clone()), &data);
         assert_eq!(accounts::backup_destination(&state.accounts), Some(folder.to_string_lossy().as_ref()));
+    }
+
+    /// Issue #397: one ask at a time. A second waits for the first, whose answer – a refusal reads
+    /// the same in every section – goes to the section that asked; then the second goes out.
+    #[test]
+    fn asks_go_out_one_at_a_time_and_their_answers_to_who_asked() {
+        let data = Data::default();
+        let mut state = State::default();
+        let period = |period| Message::Categorization(categorization::Message::Period(period));
+        let first = update(&mut state, period(categorization::Period::Days30), &data);
+        assert!(matches!(first, Action::Ask(torro_ipc::Request::PreviewCategoryJob { .. })), "{first:?}");
+        let second = update(&mut state, period(categorization::Period::Year), &data);
+        assert_eq!(second, Action::None, "waits for the first");
+        assert_eq!(next_ask(&mut state), None, "the first is still out");
+        answered(&mut state, &Err("offline".into()));
+        assert!(matches!(next_ask(&mut state), Some(torro_ipc::Request::PreviewCategoryJob { .. })));
+        assert_eq!(next_ask(&mut state), None, "one at a time");
+        answered(&mut state, &Err("offline".into()));
+        assert_eq!(next_ask(&mut state), None, "nothing waits");
     }
 
     /// The sections' ids and names, as the list and `--settings <section>` use them. "Keyboard
