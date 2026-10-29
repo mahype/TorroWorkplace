@@ -6641,6 +6641,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Numbers of this account", "Zahlen dieses Kontos"),
     ("Show account", "Konto zeigen"),
     ("Attachments on this device: {n} · {size}", "Anhänge auf diesem Gerät: {n} · {size}"),
+    ("As of {time}", "Stand {time}"),
     ("Awaiting", "Ausstehend"),
     ("Change", "Ändern"),
     ("Choose folders", "Ordner wählen"),

@@ -1202,6 +1202,13 @@ impl Ui {
             }
             Message::Switcher(switcher) => self.switcher(switcher),
             Message::Loaded(data) => {
+                // A reload that did not reach the core keeps what the pages show: the lists stay, and
+                // why it failed stands as a line over them (issue #396). Only a window that never
+                // reached it says so over the whole page ([`Ui::body`]).
+                if data.status.is_none() && data.error.is_some() && self.data.status.is_some() {
+                    self.data.error = data.error;
+                    return Task::none();
+                }
                 // `--setup-if-open` (an app's "Open Settings", task W.9): the setup, at the app's step,
                 // as long as it is not done; decided once, with the first settings that came.
                 let first = !self.loaded;
@@ -2886,6 +2893,32 @@ mod tests {
         let mut general = started(&["--demo", "--section", "general"]);
         let _ = general.update(Message::General(general::Message::RunSetup));
         assert!(general.setup.is_some());
+    }
+
+    /// Issue #396: a reload that does not reach the core keeps every list and shows why as a line;
+    /// only a window that never reached it says so over the whole page.
+    #[test]
+    fn a_failed_reload_keeps_the_lists() {
+        let mut ui = ui(Section::Accounts);
+        let mut data = launch::demo_data();
+        data.status = Some(Status {
+            version: String::new(),
+            backend: "hyprland".into(),
+            workspace: None,
+            templates: 0,
+            busy: false,
+            wm_version: None,
+            shortcuts: None,
+        });
+        let _ = ui.update(Message::Loaded(Box::new(data.clone())));
+        assert!(!ui.data.accounts.is_empty(), "the demo has accounts");
+        let failed = Data { error: Some("connection refused".into()), ..Data::default() };
+        let _ = ui.update(Message::Loaded(Box::new(failed)));
+        assert_eq!(ui.data.accounts, data.accounts, "the lists stay");
+        assert!(ui.data.status.is_some() && ui.data.error.as_deref() == Some("connection refused"));
+        let _ = ui.view();
+        let _ = ui.update(Message::Loaded(Box::new(data)));
+        assert!(ui.data.error.is_none(), "the next answer takes the line away");
     }
 
     #[test]

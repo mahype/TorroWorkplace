@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
 use torro_ipc::inbox::{CategoryJobPreview, CategoryJobScope};
 use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount, MailQuota};
@@ -543,6 +543,28 @@ impl MailStore {
         // Tighten the side files anyway, in case a looser version made them.
         store.restrict_files()?;
         Ok(store)
+    }
+
+    /// A second connection to the store of `account` at `path` that only reads (issue #395): the
+    /// statistics and the category previews read the whole store, and through it they neither wait
+    /// for the sync nor hold it up – WAL lets a reader see the last committed state while the
+    /// writer goes on. Never migrates and never creates anything: open it only after
+    /// [`MailStore::open`] made the file and its tables. `dirs` as the writer has them: the
+    /// statistics count the account's downloaded attachments there (issue #343).
+    pub fn open_reader(account: &str, path: &Path, dirs: &MailDirs) -> Result<MailStore, MailStoreError> {
+        let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(MailStore { account: account.to_string(), path: path.to_path_buf(), dirs: dirs.clone(), db })
+    }
+
+    /// The directories the store and the account's attachments lie in.
+    pub fn dirs(&self) -> &MailDirs {
+        &self.dirs
+    }
+
+    /// Where the store lies: what [`MailStore::open_reader`] opens a second time.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Deletes the store of `account`: its file and the `-wal`/`-shm` files. Close the store first
@@ -1135,6 +1157,8 @@ impl MailStore {
             originals,
             original_bytes,
             folders,
+            // The store does not keep the moment; the service names it with what it keeps.
+            as_of: None,
         })
     }
 

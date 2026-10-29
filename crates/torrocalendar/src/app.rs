@@ -568,6 +568,9 @@ pub struct App {
     working_hours: WorkingHours,
     /// The settings in the content area, while they are open (task S.19).
     settings: Option<SettingsPane>,
+    /// What the settings showed when they last closed, for the next time they open (issue #394):
+    /// they are there at once with it and update in place.
+    settings_memory: torro_settings_ui::Memory,
     /// The suite's maps settings for the editor (task TE.8); `None` until read. The demo has no core
     /// and shows maps on, with its own places and map ([`App::search_places`], [`App::editor_map`]).
     maps: Option<Maps>,
@@ -798,6 +801,7 @@ impl App {
             night_card: None,
             working_hours: WorkingHours::DEFAULT,
             settings: None,
+            settings_memory: torro_settings_ui::Memory::default(),
             maps: None,
         };
         if app.source.is_demo() {
@@ -1387,7 +1391,8 @@ impl App {
     fn surface(&self) -> Surface {
         let class = self.class();
         let connected = matches!(self.account, Some(AccountState::Connected { .. }));
-        let bare_glance = is_glance(class) && (self.error.is_some() || !self.loaded);
+        // After the first load the glance stands with an error too ([`App::glance`]).
+        let bare_glance = is_glance(class) && !self.loaded;
         if !connected || bare_glance { Surface::Window } else { Surface::of(class) }
     }
 
@@ -1412,14 +1417,16 @@ impl App {
         self.window(class)
     }
 
-    /// Mini or strip: the error and the loading state as in every layout, then the glance at
-    /// today and the days after it (`views::glance`).
+    /// Mini or strip: the error and the loading state of the first load as in every layout, then
+    /// the glance at today and the days after it (`views::glance`). A tile has no room for an
+    /// error line: after the first load the glance stays, and a larger window shows why (issue
+    /// #396).
     fn glance(&self, class: SizeClass) -> Element<'_, Message> {
-        if let Some(err) = &self.error {
-            return widgets::error_state(err.as_str(), Message::Retry);
-        }
         if !self.loaded {
-            return widgets::loading();
+            return match &self.error {
+                Some(err) => widgets::error_state(err.as_str(), Message::Retry),
+                None => widgets::loading(),
+            };
         }
         let (start, end) = self.load_range();
         let data = ViewData { items: self.items(), start, end, anchor: self.now.date(), now: self.now, selected: None };
@@ -1703,24 +1710,33 @@ impl App {
             .collect()
     }
 
-    /// The content under the header: the error with "Retry", the calm loading state before the
+    /// The content under the header: the error with "Retry" or the calm loading state before the
     /// first events arrive, then the current view; the timeline and the radar anchor their canvas
-    /// at `night` for the night's card.
+    /// at `night` for the night's card. An error after that – a reload, a save – stands as a line
+    /// over the view instead of replacing it (issue #396).
     fn body(&self, night: &Anchor) -> Element<'_, Message> {
-        if let Some(err) = &self.error {
-            return widgets::error_state(err.as_str(), Message::Retry);
-        }
         if !self.loaded {
-            return widgets::loading();
+            return match &self.error {
+                Some(err) => widgets::error_state(err.as_str(), Message::Retry),
+                None => widgets::loading(),
+            };
         }
-        self.current_view(night)
+        let view = self.current_view(night);
+        match &self.error {
+            Some(err) => {
+                let line = container(torro_settings_ui::parts::notice(err.clone()))
+                    .padding(iced::Padding::new(space::s()).left(space::l()));
+                column![line, view].into()
+            }
+            None => view,
+        }
     }
 
     /// The properties column of the wide layout: what is left of the day beside the day view
     /// (`views::week::day_props`), the radar's mini radars of the coming days beside the radar. The
     /// other views fill the width and have none.
     fn props(&self, class: SizeClass) -> Option<Element<'_, Message>> {
-        if !shell::has_props(class) || !self.loaded || self.error.is_some() {
+        if !shell::has_props(class) || !self.loaded {
             return None;
         }
         match self.shown() {
@@ -2097,7 +2113,14 @@ impl App {
     /// an unknown word leaves the first section open) – a fresh [`Host`] and its first load,
     /// which goes over [`App::settings_backend`] and never over this window's own requests.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
-        let (mut host, load) = Host::new(self.settings_backend(), SETTINGS_SECTIONS.to_vec(), settings_wanted());
+        // Settings open already leave their state in the memory first, for the new host.
+        drop(self.settings.take());
+        let (mut host, load) = Host::with_memory(
+            self.settings_backend(),
+            SETTINGS_SECTIONS.to_vec(),
+            settings_wanted(),
+            self.settings_memory.clone(),
+        );
         if let Some(id) = section {
             host.open(id);
         }
@@ -2617,6 +2640,25 @@ mod tests {
     const NARROW: Size = Size::new(420.0, 780.0);
     const WIDE: Size = Size::new(1440.0, 900.0);
     const MINI: Size = Size::new(240.0, 160.0);
+
+    /// Issue #396: a failure after the first load – a reload, a save – leaves the events where they
+    /// are and stands as a line over the view; the glance of a tile stays as well.
+    #[test]
+    fn an_error_after_the_first_load_keeps_the_view() {
+        let mut app = demo_app();
+        let _ = app.update(Message::AccountLoaded(Ok(one_account())));
+        let (collections, events, _) = torro_pim::demo::sample(app.now.date());
+        let _ = app.update(Message::Loaded(Ok((collections, events.clone()))));
+        let _ = app.update(Message::Loaded(Err("offline".into())));
+        assert!(app.loaded, "still loaded");
+        assert_eq!(app.events, events, "the events stay");
+        assert_eq!(app.error, Some(load_failed("offline")));
+        for size in [WIDE, NARROW, MINI] {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!(app.surface() == Surface::Window, is_glance(app.class()) && !app.loaded, "{size:?}");
+            let _ = app.view();
+        }
+    }
 
     #[test]
     fn narrow_shows_a_week_as_a_day_and_a_month_as_the_agenda_and_keeps_the_choice() {
