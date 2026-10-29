@@ -36,8 +36,14 @@ impl Default for ContactsClient {
     }
 }
 
+/// An answer of another kind than asked; named by its kind only, never with its contents (contacts
+/// end up in logs otherwise).
 fn unexpected(response: Response) -> ContactsError {
-    ContactsError::Other(format!("unexpected answer: {response:?}"))
+    let kind = serde_json::to_value(&response)
+        .ok()
+        .and_then(|value| value.get("result").and_then(|r| r.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    ContactsError::Other(format!("unexpected answer: {kind}"))
 }
 
 impl ContactsClient {

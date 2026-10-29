@@ -405,7 +405,7 @@ fn area_access(rights: &Rights, area: Area) -> String {
     let selection = match area {
         Area::Calendar => Some((&rights.calendars, "calendar", "calendars")),
         Area::Tasks => Some((&rights.task_lists, "task list", "task lists")),
-        Area::Contacts => Some((&rights.address_books, "address book", "address books")),
+        Area::Contacts => Some((&rights.address_books, "shown address book", "shown address books")),
         Area::Github => Some((&rights.github_repos, "repository", "repositories")),
         Area::Inbox => Some((&rights.inbox_sources, "source", "sources")),
         Area::Mail => Some((&rights.mail_accounts, "mail account", "mail accounts")),
@@ -418,6 +418,15 @@ fn area_access(rights: &Rights, area: Area) -> String {
             Selection::Only(ids) if ids.is_empty() => format!("no {many}"),
             Selection::Only(ids) if ids.len() == 1 => format!("1 {one}"),
             Selection::Only(ids) => format!("{} {many}", ids.len()),
+        });
+    }
+    // Hidden address books are named one by one besides the selection (issue #351).
+    if area == Area::Contacts && !rights.hidden_address_books.is_empty() {
+        let hidden = rights.hidden_address_books.len();
+        parts.push(if hidden == 1 {
+            "1 hidden address book".to_string()
+        } else {
+            format!("{hidden} hidden address books")
         });
     }
     let mut text = parts.join(", ");
