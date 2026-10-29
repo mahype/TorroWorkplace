@@ -1022,16 +1022,14 @@ fn content_type_of(path: &Path) -> &'static str {
 /// summary (`crate::approvals::MailFacts`): the account's address, how many messages, the
 /// subjects the store has (in the order of `ids`), the target folder's name, and for replacing a
 /// draft its subject as stored. Looked up by the ids the command runs with, never taken from the
-/// client's text; call it after the reach was checked. Also for `inbox.set_mail_shown` (task
-/// E18.2) and `inbox.set_mail_pile` (task E19.2), which name mail as `mail.set_flags` does. `None`
-/// for other requests.
+/// client's text; call it after the reach was checked. Also for `inbox.set_mail_pile` (task E19.2),
+/// which names mail as `mail.set_flags` does. `None` for other requests.
 pub(crate) async fn facts(mail: &MailService, request: &Request) -> Option<MailFacts> {
     match request {
-        // "Show again" (task E18.2) and the piles (task E19.2) name mail as `mail.set_flags` does.
-        Request::SetMailFlags { ids, .. }
-        | Request::DeleteMail { ids, .. }
-        | Request::SetMailShown { ids, .. }
-        | Request::SetMailPile { ids, .. } => Some(message_facts(mail, ids).await.0),
+        // The piles (task E19.2) name mail as `mail.set_flags` does.
+        Request::SetMailFlags { ids, .. } | Request::DeleteMail { ids, .. } | Request::SetMailPile { ids, .. } => {
+            Some(message_facts(mail, ids).await.0)
+        }
         Request::MoveMail { ids, to } => {
             let (mut facts, account) = message_facts(mail, ids).await;
             facts.folder = match (to, account) {

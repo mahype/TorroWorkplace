@@ -495,9 +495,6 @@ pub struct SearchQuery {
     /// Never these messages (`m:…`), for "Later" (task E9.1): left out before paging, so pages hold.
     /// Bound as one JSON list like `only`.
     pub except: Vec<String>,
-    /// Hidden mail of the inbox folder (task E18.1, `mail.search_messages` with `hidden`): `Some`
-    /// leaves it out or keeps only it ([`Hiding`]); `None` does not ask.
-    pub hidden: Option<Hiding>,
     /// Only mail of one of these categories (task E12.2); empty: every category, and mail without
     /// one. A typed set, not a word in [`Query`]: a group of the sidebar is up to seven
     /// categories, and this way the condition is exact and survives paging.
@@ -508,31 +505,6 @@ pub struct SearchQuery {
     /// their category, and neither belongs under "Invoices". Without an inbox folder nothing
     /// matches.
     pub in_inbox: bool,
-}
-
-/// Which mail of the account's inbox folder is hidden (task E18.1), as the inbox says it for
-/// `mail.search_messages` with `hidden` (`crate::inbox::MailHidden`); the store only applies it.
-///
-/// A message is hidden when it lies in the folder with the role inbox, is not among `never`, and
-/// its sender's address is among `senders`, its domain among `domains`, or its id among `ids`.
-/// Mail in any other folder is never hidden, so a message moved to the archive (it keeps its id)
-/// is found there. Without an inbox folder nothing is hidden. The id lists are bound as one JSON
-/// value each (`json_each`), so tens of thousands of ids go.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Hiding {
-    /// `true`: only the hidden mail; `false`: everything but it.
-    pub hidden: bool,
-    /// Hidden senders' addresses, trimmed and in small letters (`rules::sender_key`); compared with
-    /// the address of the message's `From:` the same way.
-    pub senders: Vec<String>,
-    /// Hidden domains, in small letters without a final dot (`rules::domain_of`): exactly what
-    /// follows the last `@` of the sender's address, so `shop.example` does not cover
-    /// `mail.shop.example`.
-    pub domains: Vec<String>,
-    /// Messages (`m:…`) hidden by their id, whoever sent them.
-    pub ids: Vec<String>,
-    /// Messages (`m:…`) never hidden, whatever the rest says: those of open or snoozed entries.
-    pub never: Vec<String>,
 }
 
 /// The store of one account. `Send`, not `Sync`: share it as `Arc<Mutex<MailStore>>` and call it
@@ -2129,11 +2101,6 @@ impl MailStore {
             conditions.push(format!("m.id NOT IN {IDS_OF_JSON}"));
             values.push(json_list(&query.except)?);
         }
-        if let Some(hiding) = &query.hidden {
-            let (held, more) = self.hidden_condition(hiding)?;
-            conditions.push(if hiding.hidden { held } else { format!("NOT {held}") });
-            values.extend(more);
-        }
         if !query.categories.is_empty() {
             conditions.push(format!("m.category IN ({})", vec!["?"; query.categories.len()].join(", ")));
             values.extend(query.categories.iter().map(|category| Value::Text(category.key().to_string())));
@@ -2149,43 +2116,6 @@ impl MailStore {
         }
         let filter = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
         Ok((filter, values))
-    }
-
-    /// The condition "this message is hidden" of `hiding` over `messages m` ([`Hiding`]), with its
-    /// values; never `NULL`, so `NOT` of it is the rest. `0` without an inbox folder or without
-    /// anything hidden.
-    fn hidden_condition(&self, hiding: &Hiding) -> Result<(String, Vec<Value>), MailStoreError> {
-        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(("0".into(), Vec::new())) };
-        let mut by: Vec<String> = Vec::new();
-        let mut values = vec![Value::Text(inbox.id)];
-        if !hiding.senders.is_empty() {
-            by.push(format!("coalesce(lower(trim(json_extract(m.from_json, '$.address'))) IN {IDS_OF_JSON}, 0)"));
-            values.push(json_list(&hiding.senders)?);
-        }
-        if !hiding.domains.is_empty() {
-            // What follows the last `@`: a domain holds no `@`, so `@<domain>` at the end is it.
-            by.push(
-                "EXISTS (SELECT 1 FROM json_each(?) d WHERE \
-                 substr(rtrim(lower(trim(json_extract(m.from_json, '$.address'))), '.'), -length(d.value) - 1) \
-                 = '@' || d.value)"
-                    .into(),
-            );
-            values.push(json_list(&hiding.domains)?);
-        }
-        if !hiding.ids.is_empty() {
-            by.push(format!("m.id IN {IDS_OF_JSON}"));
-            values.push(json_list(&hiding.ids)?);
-        }
-        if by.is_empty() {
-            return Ok(("0".into(), Vec::new()));
-        }
-        let mut held = format!("(m.folder_id = ? AND ({})", by.join(" OR "));
-        if !hiding.never.is_empty() {
-            held.push_str(&format!(" AND m.id NOT IN {IDS_OF_JSON}"));
-            values.push(json_list(&hiding.never)?);
-        }
-        held.push(')');
-        Ok((held, values))
     }
 
     /// All messages of a conversation (any folder), oldest first. The thread of a message is
@@ -3360,72 +3290,7 @@ mod tests {
         assert_eq!(store.count(&none).expect("count"), 0);
     }
 
-    /// Task E18.1: hidden mail of the inbox folder by sender, domain or id, never one of `never`
-    /// and never mail in another folder; left out or kept before paging, so pages and counts hold.
-    #[test]
-    fn hidden_mail_is_picked_in_the_inbox_folder_only() {
-        let (_tmp, _dirs, store) = open();
-        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
-        let archive = folder(&store, "Archive", Some(Role::Archive));
-        let from = |uid: u32, sender: &str| NewMessage {
-            from: Some(address(None, sender)),
-            ..message(uid, &format!("Message {uid}"))
-        };
-        let news = add(&store, &inbox, &from(1, " News@Shop.Example "));
-        add(&store, &inbox, &from(2, "deals@shop.example."));
-        add(&store, &inbox, &from(3, "info@mail.shop.example"));
-        let anna = add(&store, &inbox, &from(4, "anna@example.org"));
-        add(&store, &inbox, &from(5, "bob@example.org"));
-        let open_one = add(&store, &inbox, &from(6, "news@shop.example"));
-        add(&store, &archive, &from(7, "news@shop.example"));
-        let nobody = add(&store, &inbox, &NewMessage { from: None, ..message(8, "Message 8") });
-
-        let subjects = |query: &SearchQuery, limit, offset| -> Vec<String> {
-            store.search(query, limit, offset).expect("search").into_iter().map(|s| s.subject).collect()
-        };
-        let hiding = |hidden: bool| Hiding {
-            hidden,
-            senders: vec!["news@shop.example".into()],
-            domains: vec!["shop.example".into()],
-            ids: vec![anna.clone(), nobody.clone()],
-            never: vec![open_one.clone()],
-        };
-        let hidden = SearchQuery { hidden: Some(hiding(true)), ..SearchQuery::default() };
-        assert_eq!(subjects(&hidden, 10, 0), ["Message 8", "Message 4", "Message 2", "Message 1"]);
-        assert_eq!(store.count(&hidden).expect("count"), 4);
-        let shown = SearchQuery { hidden: Some(hiding(false)), ..SearchQuery::default() };
-        assert_eq!(subjects(&shown, 10, 0), ["Message 7", "Message 6", "Message 5", "Message 3"]);
-        assert_eq!(subjects(&shown, 2, 2), ["Message 5", "Message 3"], "paged after the filter");
-        assert_eq!(store.count(&shown).expect("count"), 4);
-        let in_archive = SearchQuery { folder: Some(archive.clone()), ..shown.clone() };
-        assert_eq!(subjects(&in_archive, 10, 0), ["Message 7"], "another folder hides nothing");
-
-        // Moved to the archive, it keeps its id and is hidden no more.
-        assert!(store.relocate_message(&news, &archive, 7, 70).expect("moved"));
-        assert!(!subjects(&hidden, 10, 0).contains(&"Message 1".to_string()));
-        assert_eq!(subjects(&in_archive, 10, 0), ["Message 7", "Message 1"]);
-
-        // Nothing named: nothing hidden.
-        let none = SearchQuery { hidden: Some(Hiding { hidden: true, ..Hiding::default() }), ..SearchQuery::default() };
-        assert!(subjects(&none, 10, 0).is_empty());
-        let all = SearchQuery { hidden: Some(Hiding::default()), ..SearchQuery::default() };
-        assert_eq!(store.count(&all).expect("count"), 8);
-    }
-
-    /// Task E18.1: without an inbox folder nothing is hidden.
-    #[test]
-    fn without_an_inbox_folder_nothing_is_hidden() {
-        let (_tmp, _dirs, store) = open();
-        let archive = folder(&store, "Archive", Some(Role::Archive));
-        let id = add(&store, &archive, &message(1, "Message 1"));
-        let hiding = |hidden| Hiding { hidden, ids: vec![id.clone()], ..Hiding::default() };
-        let hidden = SearchQuery { hidden: Some(hiding(true)), ..SearchQuery::default() };
-        assert_eq!(store.count(&hidden).expect("count"), 0);
-        let shown = SearchQuery { hidden: Some(hiding(false)), ..SearchQuery::default() };
-        assert_eq!(store.count(&shown).expect("count"), 1);
-    }
-
-    /// Task E18.1: 50 000 ids in `except`, `only` and the hidden ones go, as one value each.
+    /// Task E18.1: 50 000 ids in `except` and `only` go, as one value each.
     #[test]
     fn fifty_thousand_ids_go_in_one_search() {
         let (_tmp, _dirs, store) = open();
@@ -3440,11 +3305,10 @@ mod tests {
         let except = SearchQuery { except: many.clone(), ..SearchQuery::default() };
         assert_eq!(subjects(&except), ["Message 1"]);
         assert_eq!(store.count(&except).expect("count"), 1);
-        let only = SearchQuery { only: Some(many.clone()), ..SearchQuery::default() };
+        let only = SearchQuery { only: Some(many), ..SearchQuery::default() };
         assert_eq!(subjects(&only), ["Message 2"]);
-        let hiding = Hiding { hidden: false, ids: many.clone(), never: vec![kept], ..Hiding::default() };
-        let shown = SearchQuery { hidden: Some(hiding), ..SearchQuery::default() };
-        assert_eq!(subjects(&shown), ["Message 1"]);
+        let kept = SearchQuery { only: Some(vec![kept]), ..SearchQuery::default() };
+        assert_eq!(subjects(&kept), ["Message 1"]);
     }
 
     #[test]

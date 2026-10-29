@@ -962,10 +962,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Issues", "Issues"),
     ("Checks", "Prüfungen"),
     // Polish of notifications, hub, tasks and rules (E8.12)
-    ("Hide sender", "Absender ausblenden"),
-    ("Hide domain", "Domain ausblenden"),
-    ("Hide list", "Liste ausblenden"),
-    ("Hide newsletters", "Newsletter ausblenden"),
+    ("Sender to Info", "Absender nach Info"),
+    ("Domain to Info", "Domain nach Info"),
+    ("List to Info", "Liste nach Info"),
+    ("Newsletters to Info", "Newsletter nach Info"),
     ("Mute account", "Konto stummschalten"),
     ("Mute agent", "Agent stummschalten"),
     ("Mute project", "Projekt stummschalten"),
@@ -1487,8 +1487,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Bring {entry} back and follow up {when} unless someone replies",
         "{entry} zurückholen, Wiedervorlage {when}, falls niemand antwortet",
     ),
-    ("Show {messages} in the inbox again", "{messages} wieder im Eingang anzeigen"),
-    ("Hide {messages} from the inbox again", "{messages} wieder aus dem Eingang ausblenden"),
     ("Put {messages} on Reply later", "{messages} auf „Später beantworten“ legen"),
     ("Set {messages} aside", "{messages} beiseitelegen"),
     ("Take {messages} off their pile", "{messages} von ihrem Stapel nehmen"),
@@ -2984,18 +2982,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Hide from the inbox in steps (E3.10)
     ("Everything from {domain}", "Alles von {domain}"),
     ("Hide from Notification Hub", "In der Mitteilungszentrale ausblenden"),
-    (
-        "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
-        "Mails von allen unter {domain} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
-    ),
-    (
-        "Hide mail from {sender} in every mail account; the mail stays unread",
-        "Mails von {sender} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
-    ),
-    (
-        "Hide the sender of {entry} in the Notification Hub",
-        "Den Absender von {entry} in der Mitteilungszentrale ausblenden",
-    ),
     ("Mail from {sender} goes to “{lane}”", "Mails von {sender} landen in „{lane}“"),
     ("Move to junk", "In den Spam verschieben"),
     ("Moved to junk", "In den Spam verschoben"),
@@ -3013,10 +2999,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("All mail accounts", "Alle Mail-Konten"),
     ("Conversation hidden", "Unterhaltung ausgeblendet"),
     ("Couldn't undo the change.", "Die Änderung ließ sich nicht rückgängig machen."),
-    (
-        "Hide {entry} from the Notification Hub; the mail stays unread",
-        "{entry} in der Mitteilungszentrale ausblenden; die Mail bleibt ungelesen",
-    ),
     ("2 invoices could not be matched to a customer.", "2 Rechnungen ließen sich keinem Kunden zuordnen."),
     ("Invoice run needs a check", "Rechnungslauf muss geprüft werden"),
     // AI accounts (KI.1a)
@@ -4286,8 +4268,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("No rules", "Keine Regeln"),
     (
-        "A rule appears here when you mute something with the bell, move notices to a lane for good or hide a sender.",
-        "Eine Regel erscheint hier, wenn du etwas mit der Glocke stummschaltest, Hinweise dauerhaft einer Spur zuordnest oder einen Absender ausblendest.",
+        "A rule appears here when you mute something with the bell or move notices to a lane for good.",
+        "Eine Regel erscheint hier, wenn du etwas mit der Glocke stummschaltest oder Hinweise dauerhaft einer Spur zuordnest.",
     ),
     ("Reading", "Lesen"),
     (
@@ -4332,8 +4314,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // "category": several of these English words already mean something else in the suite
     // ("Task" the to-do, "Order" the sort order, "Event" the calendar event). The five groups
     // first, then the catalogue in its order. The category Spam stays "Spam" so it does not read
-    // like its group "Unerwünscht" (#338).
-    ("category|Waiting for me", "Wartet auf mich"),
+    // like its group "Unerwünscht" (#338). The group "Personal" shares its entry with the
+    // category of the same name below.
     ("category|Paper trail", "Belege"),
     ("category|Info", "Zur Info"),
     ("category|Unwanted", "Unerwünscht"),
@@ -5790,6 +5772,69 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "„{key}“ ist {value}; erlaubt sind 0 (aus) oder {min} bis {max}.",
     ),
     ("Widen the window to expand actions", "Fenster verbreitern, um die Aktionen auszuklappen"),
+    // Mail filters (issue #339): approvals and the core's answers.
+    ("Add the mail filter {filter}", "Den Mail-Filter {filter} hinzufügen"),
+    ("Apply an unknown mail filter", "Einen unbekannten Mail-Filter anwenden"),
+    (
+        "Apply the mail filter {filter} now to up to {n} mails in the inbox",
+        "Den Mail-Filter {filter} jetzt auf bis zu {n} Mails im Posteingang anwenden",
+    ),
+    ("Change an unknown mail filter to {new}", "Einen unbekannten Mail-Filter ändern in {new}"),
+    ("Change the mail filter {filter} to {new}", "Den Mail-Filter {filter} ändern in {new}"),
+    ("Remove an unknown mail filter", "Einen unbekannten Mail-Filter entfernen"),
+    ("Remove the mail filter {filter}", "Den Mail-Filter {filter} entfernen"),
+    ("every mail account", "allen Mail-Konten"),
+    ("file as {category}", "als {category} einordnen"),
+    ("mark as read", "als gelesen markieren"),
+    ("move to the archive", "ins Archiv verschieben"),
+    ("move to the trash", "in den Papierkorb verschieben"),
+    ("move to {folder}", "nach {folder} verschieben"),
+    ("{query} in {account}: {actions}", "{query} in {account}: {actions}"),
+    (
+        "A mail filter cannot move mail into the inbox.",
+        "Ein Mail-Filter kann keine Mails in den Posteingang verschieben.",
+    ),
+    (
+        "A mail filter cannot search the names of attachments; leave out filename:.",
+        "Ein Mail-Filter kann nicht in den Namen von Anhängen suchen; lass filename: weg.",
+    ),
+    (
+        "A mail filter for every account needs access to every mail account.",
+        "Ein Mail-Filter für alle Konten braucht Zugriff auf alle Mail-Konten.",
+    ),
+    (
+        "A mail filter looks at the inbox only; leave out in:.",
+        "Ein Mail-Filter sieht nur in den Posteingang; lass in: weg.",
+    ),
+    (
+        "A mail filter needs an action: move the mail, mark it as read or set a category.",
+        "Ein Mail-Filter braucht eine Aktion: die Mail verschieben, als gelesen markieren oder eine Kategorie setzen.",
+    ),
+    ("A mail filter needs a search.", "Ein Mail-Filter braucht eine Suche."),
+    (
+        "A mail filter that moves mail to a folder needs an account.",
+        "Ein Mail-Filter, der Mails in einen Ordner verschiebt, braucht ein Konto.",
+    ),
+    (
+        "A mail filter that moves mail or marks it as read needs write access to mail.",
+        "Ein Mail-Filter, der Mails verschiebt oder als gelesen markiert, braucht Schreibzugriff auf Mail.",
+    ),
+    (
+        "A mail filter that moves mail to the trash needs delete access to mail.",
+        "Ein Mail-Filter, der Mails in den Papierkorb verschiebt, braucht Löschzugriff auf Mail.",
+    ),
+    ("No such mail filter.", "Diesen Mail-Filter gibt es nicht."),
+    (
+        "Setting a category with a mail filter needs admin access to the Notification Hub.",
+        "Eine Kategorie mit einem Mail-Filter zu setzen braucht Admin-Zugriff auf die Mitteilungszentrale.",
+    ),
+    (
+        "The category of the mail filter is not in the catalogue.",
+        "Die Kategorie des Mail-Filters steht nicht im Katalog.",
+    ),
+    ("The mail filter's account has no such folder.", "Das Konto des Mail-Filters hat diesen Ordner nicht."),
+    ("The mail filters cannot be read or written.", "Die Mail-Filter können nicht gelesen oder geschrieben werden."),
+    ("There can be at most 200 mail filters.", "Es kann höchstens 200 Mail-Filter geben."),
     // Saving attachments (issue #290): approvals (M12.1, M12.3).
     ("Change an unknown save target", "Ein unbekanntes Ablageziel ändern"),
     ("Remove an unknown save target", "Ein unbekanntes Ablageziel entfernen"),
@@ -6470,14 +6515,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "No MCP servers yet. Each one you add in the control centre under MCP servers gets its own level here.",
         "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, bekommt hier eine eigene Stufe.",
     ),
-    // The mail window: Unfiltered (once All), Later, Hidden and Folders, "Show again" (E18.4, issue #301, #337)
-    ("Show again", "Wieder anzeigen"),
-    ("Back in Unfiltered.", "Wieder in „Ungefiltert“."),
-    ("Couldn't show the mail again.", "Die Mail konnte nicht wieder angezeigt werden."),
+    // The mail window: Unfiltered (once All), Later and Folders (E18.4, issue #301, #337, #339)
     ("No mail in your inboxes.", "Keine Mail in deinen Posteingängen."),
     ("New mail shows up here.", "Neue Mails erscheinen hier."),
-    ("No hidden mail.", "Keine ausgeblendeten Mails."),
-    ("Mail you hide from the inbox shows up here.", "Mails, die du aus dem Eingang ausblendest, erscheinen hier."),
     ("No archived mail.", "Keine archivierten Mails."),
     ("Mail you archive shows up here.", "Mails, die du archivierst, erscheinen hier."),
     // Mail settings: an account's detail page (DS.6, issue #314)
@@ -6729,4 +6769,68 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "„{field}“ hat schon einen Wert; contacts.update_contact ersetzt ihn.",
     ),
     ("“{field}” is not a date like 1990-04-15 or --04-15.", "„{field}“ ist kein Datum wie 1990-04-15 oder --04-15."),
+    // Mail filters in Settings › Filters and their ways in (issue #339).
+    ("Don’t move", "Nicht verschieben"),
+    ("Move", "Verschieben"),
+    ("Type what the filter looks for.", "Gib ein, wonach der Filter sucht."),
+    ("A filter’s search has at most {most} characters.", "Die Suche eines Filters hat höchstens {most} Zeichen."),
+    ("Choose at least one thing the filter does.", "Wähle mindestens eine Aktion für den Filter."),
+    (
+        "Choose an account to move mail into one of its folders.",
+        "Wähle ein Konto, um E-Mails in einen seiner Ordner zu verschieben.",
+    ),
+    ("Choose the folder the mail goes to.", "Wähle den Ordner, in den die E-Mails kommen."),
+    ("New filter", "Neuer Filter"),
+    ("Edit filter", "Filter bearbeiten"),
+    (
+        "Filters look at new mail in Inbox while Torro Workplace runs. Every filter that fits runs; for moving and the category the first one decides.",
+        "Filter sehen sich neue E-Mails im Posteingang an, solange Torro Workplace läuft. Jeder passende Filter läuft; beim Verschieben und bei der Kategorie entscheidet der erste.",
+    ),
+    ("Move to Trash", "In den Papierkorb verschieben"),
+    ("Move to {folder}", "Nach {folder} verschieben"),
+    ("Mark as read", "Als gelesen markieren"),
+    ("Unknown category", "Unbekannte Kategorie"),
+    ("Unknown folder", "Unbekannter Ordner"),
+    ("Apply to the 1 mail in Inbox?", "Auf die 1 E-Mail im Posteingang anwenden?"),
+    ("Apply to the {n} mails in Inbox?", "Auf die {n} E-Mails im Posteingang anwenden?"),
+    ("Apply", "Anwenden"),
+    (
+        "From now on the filter runs on new mail. Mail already in Inbox changes only if you apply it.",
+        "Ab jetzt läuft der Filter bei neuen E-Mails. E-Mails, die schon im Posteingang liegen, ändern sich nur, wenn du ihn anwendest.",
+    ),
+    ("Apply filter", "Filter anwenden"),
+    ("Applying the filter…", "Filter wird angewendet…"),
+    ("Applied to 1 mail.", "Auf 1 E-Mail angewendet."),
+    ("Applied to {n} mails.", "Auf {n} E-Mails angewendet."),
+    ("{n} could not be changed and stay as they were.", "{n} ließen sich nicht ändern und bleiben, wie sie waren."),
+    ("Apply to more", "Auf weitere anwenden"),
+    ("Delete this filter?", "Diesen Filter löschen?"),
+    (
+        "Mail it moved or filed stays where it is.",
+        "E-Mails, die er verschoben oder einsortiert hat, bleiben, wo sie sind.",
+    ),
+    ("Delete filter", "Filter löschen"),
+    (
+        "Written like a search: from:, to:, subject:, has:attachment … On new mail, plain words are looked for in the subject and the addresses.",
+        "Geschrieben wie eine Suche: from:, to:, subject:, has:attachment … Bei neuen E-Mails werden einfache Wörter im Betreff und in den Adressen gesucht.",
+    ),
+    ("In Inbox now", "Jetzt im Posteingang"),
+    ("Actions", "Aktionen"),
+    (
+        "When several filters find a mail, the first one that moves it or sets a category decides.",
+        "Finden mehrere Filter eine E-Mail, entscheidet der erste, der sie verschiebt oder eine Kategorie setzt.",
+    ),
+    ("Filter", "Filter"),
+    ("Filter is on", "Filter ist an"),
+    ("Delete this filter", "Diesen Filter löschen"),
+    ("Type a search to see what it finds.", "Gib eine Suche ein, um zu sehen, was sie findet."),
+    ("Counting…", "Wird gezählt…"),
+    ("Finds no mail in Inbox now.", "Findet gerade keine E-Mail im Posteingang."),
+    ("Finds 1 mail in Inbox now.", "Findet gerade 1 E-Mail im Posteingang."),
+    ("Finds {n} mails in Inbox now.", "Findet gerade {n} E-Mails im Posteingang."),
+    ("Choose an account first", "Wähle zuerst ein Konto"),
+    ("Choose a folder", "Ordner wählen"),
+    ("No category", "Keine Kategorie"),
+    ("Create filter…", "Filter erstellen…"),
+    ("Create filter from search…", "Filter aus der Suche erstellen…"),
 ];

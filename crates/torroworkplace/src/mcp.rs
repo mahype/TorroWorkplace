@@ -645,9 +645,8 @@ pub fn extension_annotations(access: Access) -> ToolAnnotations {
 ///   `mail.move_messages` (into the trash), `mail.save_draft` (replacing a draft) and
 ///   `mail.send_draft` (it removes the draft and cannot be taken back), `mail.respond_to_invitation`
 ///   (task E8.3b: the reply cannot be taken back, and a decline deletes the event made before), and
-///   `inbox.hide_sender`, whose scopes `sender` and `domain` keep a rule for every mail account
-///   and close entries in all of them (admin then, task E3.11), and `inbox.mute_item`, whose
-///   traits keep a rule for every source of the kind and close or move entries there (task E8.6a).
+///   `inbox.mute_item`, whose traits keep a rule for every source of the kind and close or move
+///   entries there (task E8.6a).
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`, `tools`: a PDF is made and kept here, issue #225; `extensions`:
@@ -670,7 +669,6 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
                 | "mail.save_draft"
                 | "mail.send_draft"
                 | "mail.respond_to_invitation"
-                | "inbox.hide_sender"
                 | "inbox.mute_item"
                 // Keeping both versions of a contact makes a second one; moving deletes it in its
                 // old address book (issue #351).
@@ -699,7 +697,8 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
 }
 
 /// Commands of server areas that stay on this computer: the core keeps reminders, snoozing and
-/// dismissing locally and never writes them to the calendar server (task ER1.2).
+/// dismissing locally and never writes them to the calendar server (task ER1.2), and the mail
+/// filters in its own file (issue #339; `mail.apply_filter` changes mail on the server).
 const STAYS_HERE: &[&str] = &[
     // Favourites and the contacts used last are kept on this device only (issue #351).
     "contacts.set_favorite",
@@ -709,6 +708,12 @@ const STAYS_HERE: &[&str] = &[
     "calendar.dismiss_reminder",
     "calendar.pause_reminders",
     "calendar.preview_reminder",
+    // Mail filters are kept by the core (issue #339); only running one changes mail on the server.
+    "mail.list_filters",
+    "mail.create_filter",
+    "mail.update_filter",
+    "mail.remove_filter",
+    "mail.preview_filter",
 ];
 
 /// The inbox commands that reach a server: a calendar server (a task or an event of an entry) or an
@@ -751,13 +756,8 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.snooze_item",
     "inbox.set_item_lane",
     "inbox.mute_source",
-    // Hiding the same sender or domain again answers the rule already there (task E3.10), a
-    // hidden conversation again closes nothing more.
-    "inbox.hide_sender",
     // Muting the same trait again answers the rule already there (task E8.6a).
     "inbox.mute_item",
-    // Showing the same mail again, or taking that back again, changes nothing more (task E18.2).
-    "inbox.set_mail_shown",
     // The same pile again keeps the mail where it is and since when (task E19.2).
     "inbox.set_mail_pile",
     "inbox.remove_rule",
@@ -769,6 +769,9 @@ const IDEMPOTENT: &[&str] = &[
     "ai.set_model_enabled",
     "mail.set_flags",
     "mail.move_messages",
+    // The same filter again, or one removed again, changes nothing more (issue #339).
+    "mail.update_filter",
+    "mail.remove_filter",
 ];
 
 /// Why a tool call did not become a request.
@@ -2229,12 +2232,12 @@ mod tests {
         // Task E9.1: "All" without what waits for later; a mail goes there by its id.
         let all = call("mail_search_messages", json!({"query": "in:inbox", "limit": 50, "snoozed": false}));
         assert!(matches!(all, Ok(Request::SearchMail { snoozed: Some(false), .. })), "{all:?}");
-        // Task E18.1: "All" without what the person hid, from the request's schema.
-        let shown = call("mail_search_messages", json!({"query": "in:inbox", "limit": 50, "hidden": false}));
-        assert!(matches!(shown, Ok(Request::SearchMail { hidden: Some(false), .. })), "{shown:?}");
-        // Task E18.2: "Show again" for one mail, onto its request.
-        let shown = call("inbox_set_mail_shown", json!({"ids": ["m:1"], "shown": true}));
-        assert_eq!(shown, Ok(Request::SetMailShown { ids: vec!["m:1".into()], shown: true }));
+        // Issue #339: hiding mail is gone – no field `hidden` in the search's schema, no tools.
+        let tool = tools().iter().find(|tool| tool.name == "mail_search_messages").expect("tool");
+        assert!(tool.input_schema.get("properties").and_then(|p| p.get("hidden")).is_none());
+        for gone in ["inbox_hide_sender", "inbox_set_mail_shown"] {
+            assert!(tools().iter().all(|tool| tool.name != gone), "{gone}");
+        }
         // Task E19.2: a pile by its word, off without one.
         let pile = call("inbox_set_mail_pile", json!({"ids": ["m:1"], "pile": "reply_later"}));
         let reply_later = Some(torro_mail::MailPile::ReplyLater);
@@ -3343,34 +3346,6 @@ mod tests {
         assert_eq!(request, Ok(Request::OpenItem { id: "i1".into() }));
         let refused = request_for("inbox_open_item", args(json!({"id": "i1", "url": "https://x.example"})), &Utc);
         assert!(matches!(refused, Err(ToolError::Input(_))), "{refused:?}");
-    }
-
-    /// Tasks E3.10, E3.11: one entry and the scope, nothing else; the description names the rights
-    /// of each scope.
-    #[test]
-    fn inbox_hide_sender_hides_by_the_entry_and_a_scope() {
-        let request = request_for("inbox_hide_sender", args(json!({"id": "i1", "scope": "domain"})), &Utc);
-        let domain = torro_inbox::item::HideScope::Domain;
-        assert_eq!(request, Ok(Request::HideSender { id: "i1".into(), scope: domain }));
-        let request = request_for("inbox_hide_sender", args(json!({"id": "i1", "scope": "conversation"})), &Utc);
-        let conversation = torro_inbox::item::HideScope::Conversation;
-        assert_eq!(request, Ok(Request::HideSender { id: "i1".into(), scope: conversation }));
-        for wrong in [
-            json!({"id": "i1"}),
-            json!({"id": "i1", "scope": "subdomain"}),
-            json!({"id": "i1", "scope": "sender", "sender": "news@shop.example"}),
-        ] {
-            let refused = request_for("inbox_hide_sender", args(wrong.clone()), &Utc);
-            assert!(matches!(refused, Err(ToolError::Input(_))), "{wrong}: {refused:?}");
-        }
-        let tool = tools().iter().find(|tool| tool.name == "inbox_hide_sender").expect("tool");
-        let hints = tool.annotations.clone().expect("hints");
-        assert_eq!((hints.destructive_hint, hints.idempotent_hint), (Some(true), Some(true)));
-        assert_eq!(hints.open_world_hint, Some(false));
-        let description = tool.description.as_deref().unwrap_or_default();
-        for words in ["write rights", "admin rights", "every mail account", "unread"] {
-            assert!(description.contains(words), "{words}: {description}");
-        }
     }
 
     /// Task E8.6a: one entry, the scope, the end and the effect; never a value to mute.

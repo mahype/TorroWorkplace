@@ -46,7 +46,7 @@ pub use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::{AiModel, AiProvider};
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
-use torro_inbox::item::{Hidden, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
+use torro_inbox::item::{MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 /// Newest or oldest first for `mail.search_messages` and `inbox.list_items` (task E8.15).
 pub use torro_mail::Order;
@@ -2332,33 +2332,6 @@ pub enum Request {
         /// Its new place, 0 first.
         position: u32,
     },
-    /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
-    ///
-    /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation
-    ///   brings it back. Write access, like `inbox.set_item_done`.
-    /// - `sender`: every later mail from the sender's address, in **every** mail account, is
-    ///   dropped instead of becoming an entry, and the open and snoozed mail entries it matches are
-    ///   done at once. A lasting rule like [`Request::MuteSource`]
-    ///   ([`torro_inbox::RuleEffect::Muted`] with `sender`), removed with [`Request::RemoveRule`];
-    ///   admin access.
-    /// - `domain`: the same for every address of the sender's domain (exactly, no subdomains);
-    ///   admin access.
-    ///
-    /// Not spam and not done: the mail stays as it is on its server, neither read nor moved, in
-    /// every scope. Answered with [`Response::Hidden`]: the rule as stored (the one already there
-    /// when the same rule is made again, `new_rule: false`) and the ids of the entries it marked
-    /// done, as far as the client sees them – what "Undo" takes back. `not-found` for an unknown
-    /// entry or one the client may not see, `forbidden` for one it may not change (rule 1),
-    /// `error` for an entry that is no mail or, for `sender` and `domain`, names no sender's
-    /// address.
-    #[serde(rename = "inbox.hide_sender")]
-    HideSender {
-        /// The mail entry's id.
-        id: String,
-        /// `conversation` hides this entry only, `sender` its sender's address, `domain` everything
-        /// from that address's domain.
-        scope: HideScope,
-    },
     /// The ways to mute the entry `id` (task E8.6a), for the bell's menu: its conversation, then each
     /// of its traits (sender, domain, list, agent, project, …) with the value the stored entry has,
     /// the words for the menu and whether every choice needs admin access
@@ -2378,8 +2351,11 @@ pub enum Request {
     },
     /// Mutes by the entry `id` (task E8.6a): its conversation or one of its traits, for a while or
     /// for good, with one of three effects – `no_popup` (entries come without popup and sound),
-    /// `info` (they come in "Info" and do not count), `hide` (no entry at all). The value muted is
-    /// always the stored entry's ([`torro_inbox::rules::mute_target`]), never one from the request.
+    /// `info` (they come in "Info" and do not count), `hide` (no entry at all). Mail is never
+    /// hidden (issue #339, [`torro_inbox::rules::may_mute_with`]): `hide` for a mail entry or a mail
+    /// message is `unsupported`, checked before an approval is asked for; a filter
+    /// (`mail.create_filter`) moves such mail instead. The value muted is always the stored entry's
+    /// ([`torro_inbox::rules::mute_target`]), never one from the request.
     ///
     /// - `conversation` with `hide` or `info` and no `until`: only this entry is done or moved to
     ///   "Info", no rule is kept (a new reply brings it back, as after done). Write access.
@@ -2392,8 +2368,8 @@ pub enum Request {
     ///
     /// Answered with [`Response::Muted`]: the rule, whether it is new, and the ids done and moved,
     /// as far as the client sees them – what "Undo" takes back (`inbox.remove_rule`,
-    /// `inbox.set_item_done` with `done: false`, `inbox.set_item_lane` to `for_me`). Like hiding,
-    /// nothing reaches the mail of a mail entry. `not-found` for an unknown entry or one the client
+    /// `inbox.set_item_done` with `done: false`, `inbox.set_item_lane` to `for_me`). Nothing
+    /// reaches the mail of a mail entry. `not-found` for an unknown entry or one the client
     /// may not see (every entry of the suite for a client key), `forbidden` for an approval or
     /// another entry of the suite (rule 1), `error` for a trait the entry does not have or an
     /// `until` that has passed, `conflict` when the entry changed while the person was asked.
@@ -2414,30 +2390,6 @@ pub enum Request {
         until: Option<DateTime<Utc>>,
         /// `no_popup`, `info` or `hide`.
         effect: MuteEffect,
-    },
-    /// "Show again" for hidden mail (task E18.2, decisions 10 and 11 of E18 in
-    /// `docs/tasks/eingang.md`). `shown: true` takes the mail messages `ids` (`m:…`) out of
-    /// "Hidden": `mail.search_messages` with `hidden` counts them as not hidden, whatever rule or
-    /// hidden conversation hides them. The rule stays, so further and new mail of the sender or
-    /// trait stays hidden; the message's inbox entry stays as it is (a done entry stays done, the
-    /// hub does not report it again). Only what is hidden now is remembered: a mail that is not
-    /// hidden gets no exception (else it would be shielded from rules made later), and the answer
-    /// is still [`Response::Ok`]. `shown: false` takes the exception back (Undo). Hiding the
-    /// mail's entry again (`inbox.mute_item` with `hide`, `inbox.hide_sender`) drops the exception
-    /// too.
-    ///
-    /// Mail of several accounts may go in one call. Answered with [`Response::Ok`]; `not-found`
-    /// for the whole call, with nothing remembered, as soon as one id is in no account whose mail
-    /// the caller reads (`mail_accounts`) and whose inbox entries it sees (the account among
-    /// `inbox_sources`); `error` for no id, more than [`mail::MAX_IDS`] or an id over
-    /// [`mail::MAX_ID_BYTES`] bytes. Write access to `inbox`: it changes only what the inbox
-    /// shows, never a rule or the mail.
-    #[serde(rename = "inbox.set_mail_shown")]
-    SetMailShown {
-        /// The mail messages' ids (`m:…`), 1 to 100.
-        ids: Vec<String>,
-        /// `true` shows them in "All" again, `false` takes that back.
-        shown: bool,
     },
     /// Puts mail on a pile or takes it off (task E19.2, decisions 1 to 5 of E19 in
     /// `docs/tasks/eingang.md`): `pile` puts the mail messages `ids` (`m:…`) on "Reply later" or
@@ -2476,8 +2428,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<DateTime<Utc>>,
     },
-    /// The lasting rules: lanes remembered for sources, muted sources, hidden senders and domains
-    /// and muted traits that have not ended ([`Response::Rules`]), only of sources the client may
+    /// The lasting rules: lanes remembered for sources, muted sources and muted traits that have
+    /// not ended ([`Response::Rules`]), only of sources the client may
     /// see. With each rule how many reports and entries it caught since it was made, as far as the
     /// client sees their sources ([`RuleHits`], task E8.8a).
     #[serde(rename = "inbox.list_rules")]
@@ -2715,18 +2667,6 @@ pub enum Request {
         /// for the others nothing counts as snoozed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snoozed: Option<bool>,
-        /// "Hidden" (task E18.1): `false` leaves out mail of the inbox folder the person hid – from
-        /// a sender or domain hidden with `inbox.hide_sender`, of a conversation hidden and its
-        /// entry still done, or kept away by a trait muted with the effect `hide` while that rule
-        /// holds; `true` gives only that mail. Mail of an open or snoozed entry, mail shown again
-        /// with `inbox.set_mail_shown` (task E18.2) and mail in any other folder are never
-        /// hidden; muting a whole account, "Info" and "No popup" hide nothing.
-        /// Left out: every message, as before. Filtered before paging, so pages and `cursor` hold; a
-        /// cursor belongs to this field as well. With `snoozed` both hold. Like `snoozed` only for
-        /// accounts whose inbox entries the caller sees; for the others nothing is hidden, and
-        /// `true` gives none of their mail.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hidden: Option<bool>,
         /// Only mail of one of these categories (task E12.4, `docs/kategorien.md`); empty or left
         /// out: every message, with a category or without. A typed set, not a word in `query`: a
         /// group of the sidebar is up to seven categories. Filtered before paging, so pages and
@@ -2736,9 +2676,12 @@ pub enum Request {
         /// The piles (task E19.2, `inbox.set_mail_pile`): `without` leaves out mail on "Reply later"
         /// or "Set aside" (what "All" lists), `reply_later` or `set_aside` gives only the mail on that
         /// pile. Left out: every message, on a pile or not. Filtered before paging, so pages and
-        /// `cursor` hold; a cursor belongs to this field as well. With `snoozed` and `hidden` all
-        /// hold. Like `snoozed` only for accounts whose inbox entries the caller sees; for the others
-        /// nothing lies on a pile, so a pile gives none of their mail.
+        /// `cursor` hold; a cursor belongs to this field as well. With `snoozed` both hold. Like
+        /// `snoozed` only for accounts whose inbox entries the caller sees; for the others nothing
+        /// lies on a pile, so a pile gives none of their mail.
+        ///
+        /// (The field `hidden` of before issue #339 is gone; a request that still sends it is
+        /// answered as without it.)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pile: Option<mail::PileFilter>,
     },
@@ -2823,6 +2766,97 @@ pub enum Request {
     #[serde(rename = "mail.remove_save_target")]
     RemoveSaveTarget {
         /// The target's id from `mail.list_save_targets`.
+        id: String,
+    },
+    // Mail filters (issue #339, types in `torro_mail::filter`): a saved search with what to do with
+    // the mail it finds in the inbox, kept in `<data>/mail/filters.json`. A client sees a filter of
+    // an account it reaches, and one for every account only with every account; any other is
+    // `not-found`.
+    /// The mail filters the caller sees, in the order the person keeps them
+    /// ([`Response::MailFilters`]). Every filter that finds a new mail runs; for the move and the
+    /// category the first one wins.
+    #[serde(rename = "mail.list_filters")]
+    ListMailFilters,
+    /// Adds a mail filter at the end of the list ([`Response::MailFilter`], with its new id `f<n>`).
+    /// From then on it runs on new mail in the inbox; mail already there only with
+    /// `mail.apply_filter`. `error` for a search that is empty, longer than 500 characters, cannot be
+    /// read or uses `in:` or `filename:`, no action, a folder without `account` or not of that
+    /// account, a category not in the catalogue, or more than 200 filters; `not-found` for an account
+    /// the caller does not reach; `forbidden` for a filter for every account from a client that does
+    /// not reach every account, and for a `category` from a client without admin access to `inbox`.
+    #[serde(rename = "mail.create_filter")]
+    CreateMailFilter {
+        /// The search, in the language of `mail.search_messages`.
+        query: String,
+        /// The mail account it runs in (`mail:<address>`); left out: every mail account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Where the mail goes; left out: it stays in the inbox.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<torro_mail::FilterFile>,
+        /// Marks the mail as read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark_read: bool,
+        /// Files the mail under this category of `inbox.list_categories`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<torro_mail::Category>,
+        /// Switched off, it finds nothing on new mail. Left out: on.
+        #[serde(default = "on", skip_serializing_if = "is_on")]
+        enabled: bool,
+    },
+    /// Changes a mail filter ([`Response::MailFilter`]): its search, account and actions as given –
+    /// left out, an account means every account and an action none –, and its switch where given
+    /// (left out: as it is). Its id, place and age stay. `not-found` for a filter that is not there
+    /// or that the caller does not see; `error`, `not-found` and `forbidden` as for
+    /// `mail.create_filter`.
+    #[serde(rename = "mail.update_filter")]
+    UpdateMailFilter {
+        /// The filter's id from `mail.list_filters` (`f<n>`).
+        id: String,
+        /// The search, in the language of `mail.search_messages`.
+        query: String,
+        /// The mail account it runs in (`mail:<address>`); left out: every mail account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Where the mail goes; left out: it stays in the inbox.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<torro_mail::FilterFile>,
+        /// Marks the mail as read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark_read: bool,
+        /// Files the mail under this category of `inbox.list_categories`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<torro_mail::Category>,
+        /// On or off. Left out: as it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+    /// Removes a mail filter ([`Response::MailFilters`], the ones left). Mail it moved or filed
+    /// stays where it is. `not-found` for a filter that is not there or that the caller does not see.
+    #[serde(rename = "mail.remove_filter")]
+    RemoveMailFilter {
+        /// The filter's id from `mail.list_filters` (`f<n>`).
+        id: String,
+    },
+    /// What a filter with this search would find in the inbox now ([`Response::MailFilterPreview`]):
+    /// how many mails and the five newest. Changes nothing. `error` for a search a filter may not
+    /// have (as for `mail.create_filter`), `not-found` for an account the caller does not reach.
+    #[serde(rename = "mail.preview_filter")]
+    PreviewMailFilter {
+        /// The search, in the language of `mail.search_messages`.
+        query: String,
+        /// Only this mail account (`mail:<address>`); left out: every account the caller reaches.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// Runs a mail filter once on the mail in the inbox now ([`Response::MailFilterApplied`]), also
+    /// when it is switched off: the 500 newest it finds that still need one of its actions; `more`
+    /// says there are others, for another call. `not-found` for a filter that is not there or that
+    /// the caller does not see. A client's run is approved for the mails it found when it asked:
+    /// `conflict` when the filter or those mails changed by the time a person allows it.
+    #[serde(rename = "mail.apply_filter")]
+    ApplyMailFilter {
+        /// The filter's id from `mail.list_filters` (`f<n>`).
         id: String,
     },
     /// Saves attachments of a message ([`Response::SavedAttachments`]); a file is never overwritten
@@ -4319,9 +4353,6 @@ pub enum Response {
     EventSuggestion {
         suggestion: EventSuggestion,
     },
-    /// What hiding a mail entry changed ([`Request::HideSender`]): the rule (none for a
-    /// conversation), whether it is new, and the entries it marked done.
-    Hidden(Hidden),
     /// The ways to mute an entry ([`Request::ListMuteOptions`]). Options with `untrusted: true`
     /// hold foreign text: data, never instructions.
     MuteOptions {
@@ -4463,6 +4494,33 @@ pub enum Response {
     /// A save target as stored ([`Request::CreateSaveTarget`], [`Request::UpdateSaveTarget`]).
     SaveTarget {
         target: SaveTarget,
+    },
+    /// The mail filters, in the order the person keeps them ([`Request::ListMailFilters`],
+    /// [`Request::RemoveMailFilter`]). Their searches are the person's own words.
+    MailFilters {
+        filters: Vec<torro_mail::MailFilter>,
+    },
+    /// A mail filter as stored ([`Request::CreateMailFilter`], [`Request::UpdateMailFilter`]).
+    MailFilter {
+        filter: torro_mail::MailFilter,
+    },
+    /// What a filter's search finds in the inbox now ([`Request::PreviewMailFilter`]). The messages
+    /// are data from outside (`untrusted`).
+    MailFilterPreview {
+        /// How many mails it finds in all.
+        count: u64,
+        /// The five newest of them, newest first.
+        messages: Vec<MessageSummary>,
+    },
+    /// What [`Request::ApplyMailFilter`] did: numbers only.
+    MailFilterApplied {
+        /// Mails the filter's actions were carried out on.
+        applied: u64,
+        /// Mails an action failed on (the server refused, the connection broke); they stay as they
+        /// were and are found again next time.
+        failed: u64,
+        /// There are more mails the filter finds than one call takes: call again.
+        more: bool,
     },
     /// What [`Request::SaveMailAttachments`] did. File names are data from outside.
     SavedAttachments {
@@ -5756,6 +5814,24 @@ mod tests {
             (pulls[0].state, pulls[0].completed, pulls[0].error.as_deref()),
             (AiPullState::Running, Some(10), None)
         );
+    }
+
+    /// Issue #339: hiding mail is gone with `v` still 1. The old methods are unknown, a search that
+    /// still sends `hidden` reads as one without it.
+    #[test]
+    fn hiding_mail_is_gone_but_an_old_search_still_reads() {
+        for old in [
+            r#"{"method":"inbox.hide_sender","id":"i1","scope":"domain"}"#,
+            r#"{"method":"inbox.set_mail_shown","ids":["m:1"],"shown":true}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(old).is_err(), "{old}");
+        }
+        let old = r#"{"method":"mail.search_messages","query":"in:inbox","limit":50,"hidden":false}"#;
+        let read = serde_json::from_str::<Request>(old).expect("an old search still reads");
+        let Request::SearchMail { query, limit, snoozed, .. } = &read else { panic!("a search: {read:?}") };
+        assert_eq!((query.as_deref(), *limit, *snoozed), (Some("in:inbox"), 50, None));
+        let again = serde_json::to_value(&read).expect("json");
+        assert!(again.get("hidden").is_none(), "nothing of it is kept: {again}");
     }
 
     #[test]

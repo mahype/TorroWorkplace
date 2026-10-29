@@ -180,6 +180,12 @@ pub struct Data {
     /// The folder "Save to Downloads" uses, an absolute path, as the same answer names it: the one a
     /// person chose, else the system's. Empty until that answer came.
     pub downloads: String,
+    /// The mail filters in the order the person keeps them (`mail.list_filters`, issue #339): the
+    /// mail window's section "Filters" lists and edits them.
+    pub mail_filters: Vec<torro_mail::MailFilter>,
+    /// The folders of every mail account in reach (`mail.list_folders`, issue #339): what a filter
+    /// can move mail into, and the names its list shows.
+    pub mail_folders: Vec<torro_mail::Folder>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
 }
@@ -251,6 +257,8 @@ impl Data {
                 self.rules = rules;
                 self.rule_hits = hits;
             }
+            Response::MailFilters { filters } => self.mail_filters = filters,
+            Response::MailFolders { folders } => self.mail_folders = folders,
             _ => {}
         }
     }

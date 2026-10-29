@@ -321,16 +321,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
         | Request::SetItemLane { id: entry, .. }
-        | Request::HideSender { id: entry, .. }
         // The entry only, never the trait muted or its value (task E8.6a).
         | Request::ListMuteOptions { id: entry }
         // The entry only, never the category it was filed under (task E12.4).
         | Request::SetItemCategory { id: entry, .. }
         | Request::ClassifyItem { id: entry }
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
-        // Mail shown again (task E18.2) or put on a pile (task E19.2) by its messages, hashed as in
-        // the mail commands.
-        Request::SetMailShown { ids, .. } | Request::SetMailPile { ids, .. } => {
+        // Mail put on a pile (task E19.2) by its messages, hashed as in the mail commands.
+        Request::SetMailPile { ids, .. } => {
             ids.iter().map(|message| format!("message:{}", hashed(message))).collect()
         }
         // Nothing of their own to name: a catalogue, a status, a background run.
@@ -463,6 +461,18 @@ pub fn ids(request: &Request) -> Vec<String> {
             [Some(format!("message:{}", hashed(message))), target].into_iter().flatten().collect()
         }
         Request::ListSaveTargets { id } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
+        // Mail filters (issue #339): a filter by the id the core made (`f<n>`, hex digits) and the
+        // account it names, never its search, folder or category – the person's words about their mail.
+        Request::ListMailFilters => Vec::new(),
+        Request::CreateMailFilter { account: named, .. } | Request::PreviewMailFilter { account: named, .. } => {
+            named.iter().map(|name| account(name)).collect()
+        }
+        Request::UpdateMailFilter { id: filter, account: named, .. } => {
+            std::iter::once(random("filter", filter)).chain(named.iter().map(|name| account(name))).collect()
+        }
+        Request::RemoveMailFilter { id: filter } | Request::ApplyMailFilter { id: filter } => {
+            vec![random("filter", filter)]
+        }
         // MCP servers (issue #302): a server by its id and a tool by its name when they have their
         // form, never the arguments, a command, an address or a secret.
         Request::ListExtensions | Request::ListCatalog | Request::ListExtensionTools => Vec::new(),
@@ -1099,6 +1109,41 @@ pub(crate) mod tests {
         }
     }
 
+    /// Issue #339: a mail filter by its id `f<n>` as it is and its account, never its search, folder
+    /// or category; an id of another form is hashed.
+    #[test]
+    fn mail_filters_log_their_id_and_account_only() {
+        let create = Request::CreateMailFilter {
+            query: "from:salary@boss.example".into(),
+            account: Some("mail:anna@mailbox.org".into()),
+            file: Some(torro_mail::FilterFile::Folder { id: "f:secret-folder".into() }),
+            mark_read: true,
+            category: Some(torro_mail::Category::Invoice),
+            enabled: true,
+        };
+        assert_eq!(super::ids(&create), ["account:mail:anna@mailbox.org"]);
+        let update = Request::UpdateMailFilter {
+            id: "f12".into(),
+            query: "from:salary@boss.example".into(),
+            account: None,
+            file: None,
+            mark_read: true,
+            category: None,
+            enabled: None,
+        };
+        assert_eq!(super::ids(&update), ["filter:f12"]);
+        let preview = Request::PreviewMailFilter { query: "salary".into(), account: None };
+        assert!(super::ids(&preview).is_empty());
+        assert!(super::ids(&Request::ListMailFilters).is_empty());
+        assert_eq!(super::ids(&Request::ApplyMailFilter { id: "f3".into() }), ["filter:f3"]);
+        let odd = Request::RemoveMailFilter { id: "salary filter".into() };
+        assert_eq!(super::ids(&odd), [format!("filter:hash:{}", hashed("salary filter"))]);
+        let all = [create, update, preview].iter().flat_map(super::ids).collect::<Vec<_>>().join(" ");
+        for secret in ["salary", "boss", "secret-folder", "invoice"] {
+            assert!(!all.contains(secret), "{secret} in {all}");
+        }
+    }
+
     /// Security rule 3 of task M2.1: the account as it is, messages and folders only hashed, never
     /// a search, a subject, a recipient, a file or a folder name.
     #[test]
@@ -1116,7 +1161,6 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -1145,12 +1189,10 @@ pub(crate) mod tests {
         let expected = [format!("folder:{}", hashed("f:9")), format!("message:{}", hashed("m:1"))];
         assert_eq!(moved[..2], expected, "{moved:?}");
         assert_eq!(moved.len(), 3);
-        // Task E18.2: "Show again" names its mail hashed, as the mail commands do.
-        let shown = super::ids(&Request::SetMailShown { ids: vec!["m:1".into(), "m:2".into()], shown: true });
-        assert_eq!(shown, [format!("message:{}", hashed("m:1")), format!("message:{}", hashed("m:2"))]);
-        // Task E19.2: the piles alike, never the pile's word.
-        let piled = super::ids(&Request::SetMailPile { ids: vec!["m:1".into()], pile: None, since: None });
-        assert_eq!(piled, [format!("message:{}", hashed("m:1"))]);
+        // Task E19.2: the piles name their mail hashed, as the mail commands do, never the pile's word.
+        let piled =
+            super::ids(&Request::SetMailPile { ids: vec!["m:1".into(), "m:2".into()], pile: None, since: None });
+        assert_eq!(piled, [format!("message:{}", hashed("m:1")), format!("message:{}", hashed("m:2"))]);
         let update = Request::UpdateMailAccount {
             format: None,
             id: "mail:anna@mailbox.org".into(),

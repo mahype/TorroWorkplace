@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use torro_core::i18n::tr;
 use torro_mail::Order;
 
-use crate::item::{
-    Hidden, HideScope, Item, Lane, MuteEffect, MuteOption, MuteScope, Muted, SourceInfo, SourceRef, State,
-};
+use crate::item::{Item, Lane, MuteEffect, MuteOption, MuteScope, Muted, SourceInfo, SourceRef, State};
 use crate::rules;
 
 /// What the app can do with the inbox. Every method is one `inbox.*` request; the core checks
@@ -59,7 +57,8 @@ pub trait InboxSource: Send + Sync {
     ///
     /// [`InboxError::NotFound`] for an unknown entry, [`InboxError::Forbidden`] for one the client
     /// may not change ([`rules::human_only`]), [`InboxError::Other`] for a trait the entry does not
-    /// have or an `until` that has passed.
+    /// have or an `until` that has passed, [`InboxError::Unsupported`] for `hide` on a mail entry or
+    /// message (issue #339: mail is never hidden, filters move it instead; [`rules::may_mute_with`]).
     fn mute_item(
         &self,
         id: String,
@@ -102,28 +101,8 @@ pub trait InboxSource: Send + Sync {
     /// there stay. A permanent rule, admin level.
     fn mute_source(&self, source: SourceRef, muted: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
 
-    /// Hides the mail entry `id` from the inbox (`inbox.hide_sender`, tasks E3.10 and E3.11), with
-    /// [`HideScope::Conversation`] only this conversation: the entry is done, no rule is kept, a
-    /// new reply brings it back. With [`HideScope::Sender`] every later mail from its sender's
-    /// address, with [`HideScope::Domain`] every later mail from that address's domain (exactly,
-    /// no subdomains), in **every** mail account: a lasting rule ([`crate::RuleEffect::Muted`] with
-    /// `sender` or `domain`, [`rules::reaches`]); making it again answers the rule already there.
-    /// The entry and every other open or snoozed mail entry the rule matches ([`rules::hides`])
-    /// are done at once.
-    ///
-    /// Hiding is no spam and no "done" of the mail: the mail stays as it is on its server – not
-    /// read, not moved –, whatever the scope. Returns what changed ([`Hidden`]), so the app can
-    /// take it back exactly: [`InboxSource::remove_rule`] for a new rule, then
-    /// [`InboxSource::set_item_done`] with `false` for each id in [`Hidden::done`].
-    ///
-    /// [`InboxError::NotFound`] for an unknown entry, [`InboxError::Forbidden`] for one the client
-    /// may not change ([`rules::human_only`]), [`InboxError::Other`] for an entry that cannot be
-    /// hidden that way ([`rules::may_hide`]: no mail, or no sender's address for a rule).
-    fn hide_sender(&self, id: String, scope: HideScope) -> impl Future<Output = Result<Hidden, InboxError>> + Send;
-
-    /// Removes the lasting rule `id` (`inbox.remove_rule`, task E3.11 for the app's "Undo" after
-    /// hiding a sender or domain): its source's reports, or the hidden sender's mail, come in again
-    /// from now on; entries already done stay done. Admin level. [`InboxError::NotFound`] for an
+    /// Removes the lasting rule `id` (`inbox.remove_rule`, also the app's "Undo" after muting): its
+    /// source's reports, or the muted trait's, come in again from now on; entries already done stay done. Admin level. [`InboxError::NotFound`] for an
     /// unknown rule (also one removed already).
     fn remove_rule(&self, id: String) -> impl Future<Output = Result<(), InboxError>> + Send;
 

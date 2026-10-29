@@ -9,6 +9,11 @@
 //!   `notify` decides what is filed at all (all, only "for me", nothing). A folder synced for the
 //!   first time, or anew after the server renumbered it, brings only the mail of the last
 //!   [`FIRST_SYNC_DAYS`] days, so connecting an account floods nothing.
+//! - **Mail filters** (issue #339, `Feed::filter`): before new mail of an inbox folder is filed,
+//!   and whatever `notify` says, the enabled filters of the account run on it
+//!   ([`super::filters::on_arrival`]): read, category, move. Mail they read or move gets no entry;
+//!   a category they set goes on the entry before the sorting rules ([`NewMail::category`]). Not
+//!   on a folder's first sync and not on a catch-up: that mail was there before.
 //! - **Read or moved elsewhere** ([`MailChange::flags`], [`MailChange::removed`]): an open entry of
 //!   which no message is still unread in the inbox folder is done by itself.
 //! - **Done in the inbox** ([`mark_read`]): after `inbox.set_item_done` or
@@ -526,8 +531,14 @@ impl Feed {
             self.note_replies(&store, &account, &new, now).await;
         }
         if role == Some(Role::Inbox) && !new.is_empty() {
+            // The filters first (issue #339), whatever `notify` says: mail they read or move gets no
+            // entry. A folder's first sync brings mail that was there before, which they leave.
+            let by_filter = match initial {
+                true => Vec::new(),
+                false => self.filter(&store, &account, &new).await,
+            };
             let since = initial.then(|| now - TimeDelta::days(FIRST_SYNC_DAYS));
-            self.file(&store, &account, folder, new, since, now).await;
+            self.file(&store, &account, folder, new, since, &by_filter, now).await;
         }
         if !removed.is_empty() {
             self.forget_gone(&store, &account, Some(&removed)).await;
@@ -754,7 +765,8 @@ impl Feed {
                 })
                 .await;
             match unread {
-                Ok(Some((folder, ids))) => self.file(&store, &account, folder, ids, Some(since), now).await,
+                // No filters here (issue #339): what a catch-up finds may have been there for days.
+                Ok(Some((folder, ids))) => self.file(&store, &account, folder, ids, Some(since), &[], now).await,
                 Ok(None) => {}
                 Err(err) => eprintln!("torroworkplace: inbox: cannot read the mail of {account}: {err}"),
             }
@@ -762,8 +774,26 @@ impl Feed {
         }
     }
 
+    /// Runs the mail filters of `account` on its new mail `new` of the inbox folder
+    /// ([`super::filters::on_arrival`], issue #339) and gives back the mails that got a filter's
+    /// category, with it. Without the catalogue of categories no category is set; reading and
+    /// moving still happen.
+    async fn filter(&self, store: &SharedStore, account: &str, new: &[String]) -> Vec<(String, MailCategory)> {
+        let categories: Vec<torro_mail::Category> = match self.inbox.catalogue() {
+            Ok(catalogue) => catalogue.into_iter().map(|def| def.category).collect(),
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the categories to filter mail of {account}: {err}");
+                Vec::new()
+            }
+        };
+        super::filters::on_arrival(&self.mail, store, account, new, &categories).await
+    }
+
     /// Files those of `ids` (messages of `folder`, the inbox folder of `account`) that are still
-    /// unread there and, with `since`, not older, as the account's `notify` allows.
+    /// unread there and, with `since`, not older, as the account's `notify` allows. `by_filter`
+    /// names the mails a filter gave a category ([`Feed::filter`]): their entries take it before
+    /// the sorting rules (issue #339, decision 4).
+    #[expect(clippy::too_many_arguments, reason = "the feed's state and one round of mail")]
     async fn file(
         &self,
         store: &SharedStore,
@@ -771,6 +801,7 @@ impl Feed {
         folder: String,
         ids: Vec<String>,
         since: Option<DateTime<Utc>>,
+        by_filter: &[(String, MailCategory)],
         now: DateTime<Utc>,
     ) {
         let notify = self.notify_of(account).await;
@@ -778,13 +809,17 @@ impl Feed {
             return;
         }
         let owner = account.to_string();
-        let mails = match store.run(move |store| unread_mail(store, &owner, &folder, &ids, since)).await {
+        let mut mails = match store.run(move |store| unread_mail(store, &owner, &folder, &ids, since)).await {
             Ok(mails) => mails,
             Err(err) => {
                 eprintln!("torroworkplace: inbox: cannot read the new mail of {account}: {err}");
                 return;
             }
         };
+        for mail in &mut mails {
+            mail.category =
+                by_filter.iter().find(|(message, _)| *message == mail.message).map(|(_, category)| *category);
+        }
         // Mail that already has a category is left as it is (task E12.6): this path runs again
         // after a gap in the change stream and on the way back from "Later", and sorting it
         // anew would write a rule's answer over what the person filed by hand. The backlog run
@@ -992,6 +1027,8 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
         invite: summary.invite.is_some(),
         auto_submitted: message.traits.auto_submitted.clone(),
         junk,
+        // A filter's category is put on by the feed, which ran the filters (issue #339).
+        category: None,
     })
 }
 
@@ -1343,7 +1380,6 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -1949,7 +1985,6 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         };
@@ -2140,5 +2175,316 @@ pub(crate) mod tests {
         mail.sync_all(Reach::Suite).await.expect("synced");
         feed.catch_up(Utc::now()).await;
         assert!(matches!(entries(&inbox)[0].state, State::Done { .. }), "read meanwhile");
+    }
+
+    // ----- mail filters on new mail (issue #339, step 3) -----
+
+    /// Anna's account on `server`, synced once while no feed listened, and a feed to hand it
+    /// changes by hand: every test decides itself which mail "arrived".
+    async fn quiet(dir: &Path, server: &FakeImap) -> (Arc<Inbox>, Arc<MailService>, Feed) {
+        let secrets = anna(dir, server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir));
+        let mail = Arc::new(service_in(dir, &secrets));
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let file = Some(accounts_file(dir));
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
+        (inbox, mail, feed)
+    }
+
+    /// A filter made as the person makes it: the search `query`, for `account` (`None`: every one),
+    /// doing what `set` says to a plain spec (on, no action yet).
+    fn make_filter(
+        inbox: &Inbox,
+        mail: &MailService,
+        query: &str,
+        account: Option<&str>,
+        set: impl FnOnce(&mut super::super::filters::FilterSpec),
+    ) -> torro_mail::MailFilter {
+        let mut spec = super::super::filters::FilterSpec {
+            query: query.into(),
+            account: account.map(str::to_string),
+            file: None,
+            mark_read: false,
+            category: None,
+            enabled: None,
+        };
+        set(&mut spec);
+        let catalogue: Vec<torro_mail::Category> =
+            inbox.catalogue().expect("the catalogue").into_iter().map(|def| def.category).collect();
+        mail.filters().create(spec, &catalogue, Utc::now()).expect("a filter")
+    }
+
+    /// Every mail of Anna's store by its subject.
+    async fn by_subject(mail: &MailService) -> BTreeMap<String, torro_mail::MessageSummary> {
+        let store = mail.store(ANNA).await.expect("the store");
+        let all = store.run(|store| store.search(&SearchQuery::default(), 100, 0)).await.expect("read");
+        all.into_iter().map(|message| (message.subject.clone(), message)).collect()
+    }
+
+    /// The change of the inbox folder that brings `messages` as new mail, after its first sync.
+    fn arrived(messages: &[&torro_mail::MessageSummary]) -> MailChange {
+        MailChange {
+            account: ANNA.into(),
+            folder: messages.first().map(|message| message.folder.clone()).unwrap_or_default(),
+            role: Some(Role::Inbox),
+            new: messages.iter().map(|message| message.id.clone()).collect(),
+            flags: Vec::new(),
+            removed: Vec::new(),
+            initial: false,
+        }
+    }
+
+    fn titles(inbox: &Inbox) -> Vec<String> {
+        let mut titles: Vec<String> = entries(inbox).into_iter().map(|item| item.title).collect();
+        titles.sort();
+        titles
+    }
+
+    fn from(name: &str, subject: &str) -> String {
+        letter(subject, &format!("{name} <{}@example.com>", name.to_lowercase()), 0, "", None)
+    }
+
+    /// A filter that marks as read: the mail is read on the server and in the store, and gets no
+    /// entry; mail no filter finds is filed as before.
+    #[tokio::test]
+    async fn a_filter_marks_new_mail_read_and_it_gets_no_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let news = server.add("INBOX", &from("News", "Weekly news"), &[]);
+        let offer = server.add("INBOX", &bernd("Offer", 0), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        make_filter(&inbox, &mail, "from:news@example.com", None, |spec| spec.mark_read = true);
+        let all = by_subject(&mail).await;
+
+        feed.take(arrived(&[&all["Weekly news"], &all["Offer"]]), Utc::now()).await;
+        assert_eq!(titles(&inbox), ["Offer"], "read by the filter: no entry");
+        assert!(server.flags("INBOX", news).contains(&"\\Seen".to_string()), "read on the server");
+        assert!(server.flags("INBOX", offer).is_empty(), "only what the filter finds");
+        assert!(by_subject(&mail).await["Weekly news"].flags.contains(&Flag::Seen), "and in the store");
+    }
+
+    /// A filter's category (decision 4): kept with the mail as a rule's, on the entry before the
+    /// sorting rules, which still sort the mail no filter finds.
+    #[tokio::test]
+    async fn a_filters_category_comes_before_the_sorting_rules() {
+        use torro_inbox::{SortCondition, SortField};
+        use torro_mail::Category;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &bernd("Bill", 0), &[]);
+        server.add("INBOX", &from("Carla", "Hello"), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let rule = Request::CreateSortRule {
+            category: Category::Newsletter,
+            conditions: vec![SortCondition { field: SortField::Domain, value: "example.com".into() }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert!(matches!(inbox.handle(rule, None, Utc::now()), Response::SortRule { .. }));
+        make_filter(&inbox, &mail, "from:bernd", None, |spec| spec.category = Some(Category::Invoice));
+        let all = by_subject(&mail).await;
+
+        feed.take(arrived(&[&all["Bill"], &all["Hello"]]), Utc::now()).await;
+        let items = entries(&inbox);
+        assert_eq!(entry(&items, "Bill").category, Some(MailCategory::by_rule(Category::Invoice)), "the filter's");
+        assert_eq!(entry(&items, "Hello").category, Some(MailCategory::by_rule(Category::Newsletter)), "the rule's");
+        let kept = by_subject(&mail).await;
+        assert_eq!(kept["Bill"].category, Some(MailCategory::by_rule(Category::Invoice)), "kept with the mail");
+        assert_eq!(kept["Bill"].folder, all["Bill"].folder, "a category alone moves nothing");
+        assert!(!kept["Bill"].flags.contains(&Flag::Seen));
+    }
+
+    /// The moves: to the archive, to a folder of the account, to the trash (a move, nothing is
+    /// deleted for good). Moved mail gets no entry.
+    #[tokio::test]
+    async fn a_filter_moves_new_mail_to_the_archive_a_folder_or_the_trash() {
+        use torro_mail::FilterFile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
+        server.add_folder("Shop", "\\HasNoChildren", 16);
+        for (name, subject) in [("Archie", "To archive"), ("Shop", "To the shop folder"), ("Spam", "To the trash")] {
+            server.add("INBOX", &from(name, subject), &[]);
+        }
+        server.add("INBOX", &bernd("Offer", 0), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let store = mail.store(ANNA).await.expect("the store");
+        let folders = store.run(|store| store.folders()).await.expect("folders");
+        let shop = folders.iter().find(|folder| folder.name == "Shop").expect("the shop folder").id.clone();
+        make_filter(&inbox, &mail, "from:archie", None, |spec| spec.file = Some(FilterFile::Archive));
+        make_filter(&inbox, &mail, "from:shop", Some(ANNA), |spec| spec.file = Some(FilterFile::Folder { id: shop }));
+        make_filter(&inbox, &mail, "from:spam", None, |spec| spec.file = Some(FilterFile::Trash));
+        let all = by_subject(&mail).await;
+        let new: Vec<&torro_mail::MessageSummary> = all.values().collect();
+
+        feed.take(arrived(&new), Utc::now()).await;
+        assert_eq!(titles(&inbox), ["Offer"], "moved mail gets no entry");
+        let lies_in = |folder: &str, subject: &str| {
+            server.messages(folder).iter().any(|(_, _, raw)| raw.contains(&format!("Subject: {subject}\r\n")))
+        };
+        assert!(lies_in("Archive", "To archive") && lies_in("Shop", "To the shop folder"));
+        assert!(lies_in("Trash", "To the trash"), "the trash, not deleted for good");
+        assert_eq!(server.messages("INBOX").len(), 1, "only the offer stays");
+        let kept = by_subject(&mail).await;
+        let role_of =
+            |subject: &str| folders.iter().find(|folder| folder.id == kept[subject].folder).and_then(|f| f.role);
+        assert_eq!(role_of("To archive"), Some(Role::Archive), "the store keeps the id where it went");
+        assert_eq!(role_of("To the trash"), Some(Role::Trash));
+    }
+
+    /// Only a category alone leaves an entry; with reading or a move there is none. Several filters
+    /// together follow their order (decision 3).
+    #[tokio::test]
+    async fn only_mail_a_filter_just_sorts_gets_an_entry() {
+        use torro_mail::{Category, FilterFile};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for (name, subject) in [("Sorted", "Sorted only"), ("Read", "Sorted and read"), ("Moved", "Sorted and moved")] {
+            server.add("INBOX", &from(name, subject), &[]);
+        }
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let invoice = |spec: &mut super::super::filters::FilterSpec| spec.category = Some(Category::Invoice);
+        make_filter(&inbox, &mail, "from:example.com", None, invoice);
+        make_filter(&inbox, &mail, "from:read", None, |spec| {
+            spec.mark_read = true;
+            spec.category = Some(Category::Newsletter);
+        });
+        make_filter(&inbox, &mail, "from:moved", None, |spec| spec.file = Some(FilterFile::Archive));
+        let all = by_subject(&mail).await;
+        let new: Vec<&torro_mail::MessageSummary> = all.values().collect();
+
+        feed.take(arrived(&new), Utc::now()).await;
+        assert_eq!(titles(&inbox), ["Sorted only"]);
+        let items = entries(&inbox);
+        assert_eq!(entry(&items, "Sorted only").category, Some(MailCategory::by_rule(Category::Invoice)));
+        let kept = by_subject(&mail).await;
+        let first = Some(MailCategory::by_rule(Category::Invoice));
+        assert_eq!(kept["Sorted and read"].category, first, "the first filter's category");
+        assert!(kept["Sorted and read"].flags.contains(&Flag::Seen));
+        assert_ne!(kept["Sorted and moved"].folder, all["Sorted and moved"].folder, "moved");
+    }
+
+    /// A filter of another account, or one switched off, does nothing.
+    #[tokio::test]
+    async fn filters_of_another_account_or_switched_off_do_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let uid = server.add("INBOX", &bernd("Offer", 0), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        make_filter(&inbox, &mail, "from:bernd", Some("mail:bernd@example.com"), |spec| spec.mark_read = true);
+        make_filter(&inbox, &mail, "from:bernd", None, |spec| {
+            spec.mark_read = true;
+            spec.enabled = Some(false);
+        });
+        let all = by_subject(&mail).await;
+
+        feed.take(arrived(&[&all["Offer"]]), Utc::now()).await;
+        assert_eq!(titles(&inbox), ["Offer"]);
+        assert!(server.flags("INBOX", uid).is_empty());
+    }
+
+    /// A folder's first sync and a catch-up bring mail that was there before: no filter runs on it.
+    /// New mail after the first sync is filtered by the running feed.
+    #[tokio::test]
+    async fn a_first_sync_and_a_catch_up_run_no_filters() {
+        use torro_mail::FilterFile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let there = server.add("INBOX", &bernd("Offer", 0), &[]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        let archive = |spec: &mut super::super::filters::FilterSpec| spec.file = Some(FilterFile::Archive);
+        make_filter(&inbox, &mail, "from:bernd", None, archive);
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None);
+        mail.reload().await;
+
+        eventually("the first sync filed", || async { entries(&inbox).len() == 1 }).await;
+        eventually("synced", || synced(&mail)).await;
+        assert!(server.messages("INBOX").iter().any(|(uid, _, _)| *uid == there), "the first sync moves nothing");
+
+        eventually("the inbox watched", || async { idling(&server) }).await;
+        server.add("INBOX", &bernd("Second offer", 0), &[]);
+        eventually("archived as it came", || async {
+            server.messages("Archive").iter().any(|(_, _, raw)| raw.contains("Subject: Second offer\r\n"))
+        })
+        .await;
+        assert_eq!(titles(&inbox), ["Offer"], "no entry for the archived mail");
+
+        // A catch-up files mail the feed missed, as it is.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let missed = server.add("INBOX", &bernd("Missed", 0), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let read = |spec: &mut super::super::filters::FilterSpec| spec.mark_read = true;
+        make_filter(&inbox, &mail, "from:bernd", None, read);
+        feed.catch_up(Utc::now()).await;
+        assert_eq!(titles(&inbox), ["Missed"]);
+        assert!(server.flags("INBOX", missed).is_empty(), "not read");
+    }
+
+    /// Mail whose `Message-ID` the account holds in another folder came back, it was not delivered:
+    /// no filter takes it out again. Copies in the archive (Gmail's "All Mail") and in sent mail
+    /// (mail to oneself, a mailing list) do not count: that mail was delivered and is filtered.
+    #[tokio::test]
+    async fn mail_the_account_holds_in_another_folder_is_not_filtered() {
+        for (other, filtered) in [("Archive", true), ("Sent", true), ("Junk", false), ("Projects", false)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let server = FakeImap::start(PASSWORD).await;
+            server.add_folder("Junk", "\\HasNoChildren \\Junk", 15);
+            server.add_folder("Projects", "\\HasNoChildren", 16);
+            server.add(other, &bernd("Offer", 0), &["\\Seen"]);
+            let back = server.add("INBOX", &bernd("Offer", 0), &[]);
+            let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+            make_filter(&inbox, &mail, "from:bernd", None, |spec| spec.mark_read = true);
+            let store = mail.store(ANNA).await.expect("the store");
+            let all = store.run(|store| store.search(&SearchQuery::default(), 10, 0)).await.expect("read");
+            let in_inbox = store.run(|store| store.folder_by_role(Role::Inbox)).await.expect("read").expect("an inbox");
+            let offer = all.iter().find(|message| message.folder == in_inbox.id).expect("the copy in the inbox");
+
+            feed.take(arrived(&[offer]), Utc::now()).await;
+            let read = server.flags("INBOX", back).iter().any(|flag| flag == "\\Seen");
+            assert_eq!(read, filtered, "a copy in {other}");
+            let expected: &[&str] = if filtered { &[] } else { &["Offer"] };
+            assert_eq!(titles(&inbox), expected, "a copy in {other}: filed as any mail unless read by the filter");
+        }
+    }
+
+    /// Decision 4: a category the person set stays – on the entry of the conversation, and with a
+    /// mail that has one; a category no longer in the catalogue is skipped.
+    #[tokio::test]
+    async fn a_category_set_by_hand_stays_before_a_filters() {
+        use torro_mail::Category;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &bernd("Offer", 1), &[]);
+        server.add("INBOX", &letter("Re Offer", "Bernd <bernd@example.com>", 0, "", Some("Offer@example.org")), &[]);
+        server.add("INBOX", &bernd("Plan", 0), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let all = by_subject(&mail).await;
+        // Filed before the filter was made, and sorted by hand.
+        feed.take(arrived(&[&all["Offer"]]), Utc::now()).await;
+        let id = entry(&entries(&inbox), "Offer").id.clone();
+        let by_hand = Request::SetItemCategory { id, category: Category::Newsletter, remember: false };
+        assert!(matches!(inbox.handle(by_hand, None, Utc::now()), Response::ItemCategory { .. }));
+        let store = mail.store(ANNA).await.expect("the store");
+        let plan = all["Plan"].id.clone();
+        let person = MailCategory::by_person(Category::Newsletter);
+        store.run(move |store| store.set_category(&plan, Some(person))).await.expect("kept");
+        make_filter(&inbox, &mail, "from:bernd", None, |spec| spec.category = Some(Category::Invoice));
+
+        feed.take(arrived(&[&all["Re Offer"], &all["Plan"]]), Utc::now()).await;
+        let items = entries(&inbox);
+        assert_eq!(entry(&items, "Re Offer").category, Some(person), "the entry keeps the person's");
+        let kept = by_subject(&mail).await;
+        assert_eq!(kept["Plan"].category, Some(person), "the mail keeps the person's");
+        assert_eq!(kept["Re Offer"].category, Some(MailCategory::by_rule(Category::Invoice)), "a new mail gets it");
+
+        let ids = vec![all["Offer"].id.clone()];
+        let none = super::super::filters::on_arrival(&mail, &store, ANNA, &ids, &[]).await;
+        assert!(none.is_empty(), "not in the catalogue: skipped");
+        assert_eq!(by_subject(&mail).await["Offer"].category, None, "nothing set");
     }
 }

@@ -13,7 +13,7 @@
 //!   A quarter has a column per week ([`buckets`]), so its columns stay readable.
 //! - **By hour of day** ([`hour_columns`]): the busy hours, all sources together.
 //! - **Where you could cut back** ([`cuts`]): the core's suggestions – much came in, little was
-//!   opened –, each with its ready suggestion as button ([`suggestion`], task E8.12: "Hide sender",
+//!   opened –, each with its ready suggestion as button ([`suggestion`], task E8.12: "Sender to Info",
 //!   "Mute app" …), which mutes it (`inbox.mute_item` with the suggestion's scope and effect, the
 //!   "For" of the window as in the bell's menu; the toast offers the undo). At most a reading width.
 //! - **Table view** ([`day_table`], [`hour_table`]): the same numbers as the charts, as tables, for
@@ -416,24 +416,24 @@ pub struct Cut {
     pub source: SourceRef,
     pub new: u32,
     pub opened: u32,
-    /// The ready suggestion ([`suggestion`]): "Hide sender", "Mute app" …
+    /// The ready suggestion ([`suggestion`]): "Sender to Info", "Mute app" …
     pub word: &'static str,
     pub mute: Message,
 }
 
 /// The ready suggestion of a row of "Where you could cut back" for muting with `scope` (task E8.12,
-/// finding 14; `docs/eingang.md`, "Insights": "Mute channel", "Hide sender"): what muting does and
+/// finding 14; `docs/eingang.md`, "Insights": "Mute channel", "Sender to Info"): what muting does and
 /// the word of the button that does it. The core suggests what to mute (`inbox.get_stats` names the
-/// trait and its scope); what fits it is the page's: mail that is seldom read leaves the inbox –
-/// its sender, domain, list, newsletters are hidden (the mail stays in its mailbox) –, everything
-/// else keeps coming without a popup ("Mute …"), so no report is lost.
+/// trait and its scope); what fits it is the page's: mail that is seldom read goes to "Info" – its
+/// sender, domain, list, newsletters; mail is never hidden (issue #339), a filter moves it instead –,
+/// everything else keeps coming without a popup ("Mute …"), so no report is lost.
 pub fn suggestion(scope: MuteScope) -> (MuteEffect, &'static str) {
     let MuteScope::Facet { key, .. } = scope else { return (MuteEffect::NoPopup, tr("Mute conversation")) };
     match key {
-        FacetKey::Sender => (MuteEffect::Hide, tr("Hide sender")),
-        FacetKey::Domain => (MuteEffect::Hide, tr("Hide domain")),
-        FacetKey::List => (MuteEffect::Hide, tr("Hide list")),
-        FacetKey::Bulk => (MuteEffect::Hide, tr("Hide newsletters")),
+        FacetKey::Sender => (MuteEffect::Info, tr("Sender to Info")),
+        FacetKey::Domain => (MuteEffect::Info, tr("Domain to Info")),
+        FacetKey::List => (MuteEffect::Info, tr("List to Info")),
+        FacetKey::Bulk => (MuteEffect::Info, tr("Newsletters to Info")),
         FacetKey::Account => (MuteEffect::NoPopup, tr("Mute account")),
         FacetKey::Agent => (MuteEffect::NoPopup, tr("Mute agent")),
         FacetKey::Project => (MuteEffect::NoPopup, tr("Mute project")),
@@ -714,7 +714,7 @@ fn cut_card<'a>(cut: Cut) -> Element<'a, Message> {
     container(line).padding([space::s(), 0.0]).into()
 }
 
-/// The button of a suggestion: the bell and its ready suggestion ("Hide sender", [`suggestion`]).
+/// The button of a suggestion: the bell and its ready suggestion ("Sender to Info", [`suggestion`]).
 fn mute_button<'a>(mute: Message, word: &'static str) -> Element<'a, Message> {
     widgets::text_button(Some(Icon::BellOff), word, style::button::secondary, Some(mute))
 }
@@ -1015,7 +1015,7 @@ mod tests {
         );
         // Task E8.12 (finding 14): each row its own ready suggestion, not the window's "Only Info".
         let words: Vec<&str> = cuts.iter().map(|cut| cut.word).collect();
-        assert_eq!(words, [tr("Hide list"), tr("Mute app"), tr("Mute these")]);
+        assert_eq!(words, [tr("List to Info"), tr("Mute app"), tr("Mute these")]);
         let effects: Vec<MuteEffect> = cuts
             .iter()
             .filter_map(|cut| match cut.mute {
@@ -1023,17 +1023,19 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(effects, [MuteEffect::Hide, MuteEffect::NoPopup, MuteEffect::NoPopup]);
+        assert_eq!(effects, [MuteEffect::Info, MuteEffect::NoPopup, MuteEffect::NoPopup]);
     }
 
-    /// Task E8.12 (finding 14): mail seldom read leaves the inbox, everything else only loses its
-    /// popups – the word says which.
+    /// Task E8.12 (finding 14): mail seldom read goes to Info (issue #339: never hidden), everything
+    /// else only loses its popups – the word says which.
     #[test]
     fn every_trait_has_its_ready_suggestion() {
         let facet = |key| MuteScope::Facet { key, nth: 0 };
-        assert_eq!(suggestion(facet(FacetKey::Sender)), (MuteEffect::Hide, tr("Hide sender")));
-        assert_eq!(suggestion(facet(FacetKey::Domain)), (MuteEffect::Hide, tr("Hide domain")));
-        assert_eq!(suggestion(facet(FacetKey::Bulk)), (MuteEffect::Hide, tr("Hide newsletters")));
+        // Issue #339: mail is never hidden; what is seldom read goes to "Info".
+        assert_eq!(suggestion(facet(FacetKey::Sender)), (MuteEffect::Info, tr("Sender to Info")));
+        assert_eq!(suggestion(facet(FacetKey::Domain)), (MuteEffect::Info, tr("Domain to Info")));
+        assert_eq!(suggestion(facet(FacetKey::List)), (MuteEffect::Info, tr("List to Info")));
+        assert_eq!(suggestion(facet(FacetKey::Bulk)), (MuteEffect::Info, tr("Newsletters to Info")));
         assert_eq!(suggestion(facet(FacetKey::Client)), (MuteEffect::NoPopup, tr("Mute app")));
         assert_eq!(suggestion(facet(FacetKey::Project)), (MuteEffect::NoPopup, tr("Mute project")));
         assert_eq!(suggestion(MuteScope::Conversation), (MuteEffect::NoPopup, tr("Mute conversation")));

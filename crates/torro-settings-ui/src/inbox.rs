@@ -566,9 +566,7 @@ pub mod rules {
         if data.rules.is_empty() {
             return widgets::empty_state(
                 tr("No rules"),
-                tr(
-                    "A rule appears here when you mute something with the bell, move notices to a lane for good or hide a sender.",
-                ),
+                tr("A rule appears here when you mute something with the bell or move notices to a lane for good."),
             );
         }
         let caught = |rule: &Rule| data.rule_hits.iter().find(|hit| hit.rule == rule.id);
@@ -604,15 +602,14 @@ pub mod rules {
         row_frame(row![lines.width(Fill), button].spacing(space::l()).align_y(Alignment::Center), true)
     }
 
-    /// The rules for the page: remembered lanes first, then muted sources, then hidden senders and
-    /// domains, then muted traits, each kind in the core's order (oldest first), so a new rule
-    /// always lands at the end of its kind.
+    /// The rules for the page: remembered lanes first, then muted sources, then muted traits, each
+    /// kind in the core's order (oldest first), so a new rule always lands at the end of its kind.
+    /// (Senders and domains hidden from mail are gone with issue #339.)
     fn ordered(rules: &[Rule]) -> Vec<&Rule> {
         let mut ordered: Vec<&Rule> = rules.iter().collect();
         ordered.sort_by_key(|rule| match rule.effect {
             _ if rule.facet.is_some() => 3,
             RuleEffect::Lane { .. } => 0,
-            RuleEffect::Muted if is_hidden(rule) => 2,
             RuleEffect::Muted => 1,
             // Only rules with a trait keep no popups; one without would be about its whole source.
             RuleEffect::NoPopup => 3,
@@ -620,11 +617,6 @@ pub mod rules {
             RuleEffect::Category { .. } => 4,
         });
         ordered
-    }
-
-    /// A rule that hides one sender or domain of a mail account (task E3.10), not a whole source.
-    fn is_hidden(rule: &Rule) -> bool {
-        rule.effect == RuleEffect::Muted && (rule.sender.is_some() || rule.domain.is_some())
     }
 
     /// What a rule is about – the title of its row: "Everything from Claude Code" for a whole
@@ -647,13 +639,12 @@ pub mod rules {
     }
 
     /// What a rule does, with its end: "Goes to “Info”" for a remembered lane, "Muted" for a whole
-    /// source, "Hidden" for a sender or domain, and for a trait "Hidden", "Only Info" or "No
-    /// popups", with "until tomorrow 09:00" while it ends.
+    /// source, and for a trait "Hidden" (never mail, issue #339), "Only Info" or "No popups", with
+    /// "until tomorrow 09:00" while it ends.
     fn effect_words(rule: &Rule, now: DateTime<Utc>, categories: &[CategoryInfo]) -> String {
         if rule.facet.is_none() {
             return match rule.effect {
                 RuleEffect::Lane { lane } => trf("Goes to “{lane}”", &[("lane", &lane_name(lane))]),
-                RuleEffect::Muted if is_hidden(rule) => tr("Hidden").to_owned(),
                 RuleEffect::Muted => tr("Muted").to_owned(),
                 // The core keeps no popups only with a trait; without one it would hold for the
                 // whole source.
@@ -749,8 +740,8 @@ pub mod rules {
         }
     }
 
-    /// Where a rule for less than a whole source holds: "All mail accounts" for a hidden or muted
-    /// sender, domain, list or newsletters (a trait holds for every source of its kind, task
+    /// Where a rule for less than a whole source holds: "All mail accounts" for a muted sender,
+    /// domain, list or newsletters (a trait holds for every source of its kind, task
     /// E8.6b), "All agents" for a muted project or kind of report, the account for a remembered
     /// lane; `None` for rules about a whole source or one conversation, whose title names it.
     fn place(rule: &Rule) -> Option<String> {
@@ -772,13 +763,7 @@ pub mod rules {
                 | FacetKey::Tag => None,
             };
         }
-        if is_hidden(rule) {
-            Some(tr("All mail accounts").to_owned())
-        } else if rule.sender.is_some() || rule.domain.is_some() {
-            Some(rule.source.label())
-        } else {
-            None
-        }
+        (rule.sender.is_some() || rule.domain.is_some()).then(|| rule.source.label())
     }
 
     #[cfg(test)]
@@ -797,11 +782,11 @@ pub mod rules {
             Rule { id: id.into(), source, sender: None, domain: None, effect, created, facet: None, until: None }
         }
 
-        fn hidden(id: &str, sender: Option<&str>, domain: Option<&str>) -> Rule {
+        /// A lane remembered for one sender of a mail account (task E4.1).
+        fn for_sender(id: &str, sender: &str) -> Rule {
             Rule {
-                sender: sender.map(String::from),
-                domain: domain.map(String::from),
-                ..rule(id, SourceRef::mail("anna@example.org"), RuleEffect::Muted)
+                sender: Some(sender.into()),
+                ..rule(id, SourceRef::mail("anna@example.org"), RuleEffect::Lane { lane: Lane::Info })
             }
         }
 
@@ -826,10 +811,10 @@ pub mod rules {
             let lane = rule("l", SourceRef::agent("claude-code"), RuleEffect::Lane { lane: Lane::Info });
             assert_eq!(subject(&lane), trf("Everything from {source}", &[("source", &"Claude Code")]));
             assert_eq!(effect_words(&lane, now(), &[]), trf("Goes to “{lane}”", &[("lane", &tr("Info"))]));
-            let sender = hidden("h", Some("news@shop.example"), None);
+            let sender = for_sender("s", "news@shop.example");
             assert_eq!(subject(&sender), trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
-            assert_eq!(effect_words(&sender, now(), &[]), tr("Hidden"));
-            assert_eq!(place(&sender).as_deref(), Some(tr("All mail accounts")));
+            assert_eq!(effect_words(&sender, now(), &[]), trf("Goes to “{lane}”", &[("lane", &tr("Info"))]));
+            assert_eq!(place(&sender), Some("anna@example.org".to_owned()), "the account it was made in");
             let muted = rule("m", SourceRef::script("backup"), RuleEffect::Muted);
             assert_eq!(effect_words(&muted, now(), &[]), tr("Muted"));
             assert_eq!(place(&muted), None, "the title names the source");
@@ -862,11 +847,11 @@ pub mod rules {
             assert_eq!(place(&project).as_deref(), Some(tr("All agents")));
             let rules = vec![
                 bulk,
+                rule("m", SourceRef::script("backup"), RuleEffect::Muted),
                 rule("l", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }),
-                hidden("h", None, Some("shop.example")),
             ];
             let ids: Vec<&str> = ordered(&rules).iter().map(|rule| rule.id.as_str()).collect();
-            assert_eq!(ids, ["l", "h", "b"], "lanes, hidden senders, traits last");
+            assert_eq!(ids, ["l", "m", "b"], "lanes, muted sources, traits last");
         }
 
         /// What a rule caught, since when, in the words of the kind of rule.
@@ -908,7 +893,7 @@ pub mod rules {
             let rules = vec![
                 rule("l", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }),
                 rule("m", SourceRef::script("a-script-with-a-rather-long-name-that-is-cut"), RuleEffect::Muted),
-                hidden("h", None, Some("shop.example")),
+                for_sender("s", "news@shop.example"),
             ];
             let full = Data {
                 rules: rules.clone(),

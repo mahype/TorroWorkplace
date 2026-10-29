@@ -606,7 +606,8 @@ pub const MAX_ID_BYTES: usize = 300;
 
 /// The `error` answer for a mail request that breaks a limit, before anything is looked at: `ids`
 /// empty or over [`MAX_IDS`], more than [`MAX_ATTACHMENTS`] `parts` to save, a search `limit` of 0
-/// or over [`MAX_LIMIT`], a `query` over [`MAX_QUERY_CHARS`] characters, a draft with more than
+/// or over [`MAX_LIMIT`], a `query` over [`MAX_QUERY_CHARS`] characters (a mail filter's over
+/// [`torro_mail::FILTER_QUERY_MAX`], issue #339), a draft with more than
 /// [`MAX_RECIPIENTS`] recipients, more than [`MAX_ATTACHMENTS`] attachments or a text over
 /// [`MAX_BODY_BYTES`], and any id, folder, cursor or attachment part over [`MAX_ID_BYTES`]. `None`
 /// for every request within them and for every other request. The core calls it before rights,
@@ -620,11 +621,10 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::MailBackupCreate { file_name: Some(file_name), .. } if !valid_backup_filename(file_name) => {
             refuse(tr("Backup file name must be a plain .zip name or absolute app path.").into())
         }
-        // "Show again" (task E18.2) and the piles (task E19.2) name mail as `mail.set_flags` does.
+        // The piles (task E19.2) name mail as `mail.set_flags` does.
         Request::SetMailFlags { ids, .. }
         | Request::MoveMail { ids, .. }
         | Request::DeleteMail { ids, .. }
-        | Request::SetMailShown { ids, .. }
         | Request::SetMailPile { ids, .. } => {
             if ids.is_empty() {
                 return refuse("name at least one message in ids".into());
@@ -642,6 +642,14 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
                 return refuse(format!("the query may hold at most {MAX_QUERY_CHARS} characters"));
             }
             None
+        }
+        // Mail filters (issue #339): a search as long as one of `mail.search_messages`.
+        Request::CreateMailFilter { query, .. }
+        | Request::UpdateMailFilter { query, .. }
+        | Request::PreviewMailFilter { query, .. }
+            if query.chars().count() > torro_mail::FILTER_QUERY_MAX =>
+        {
+            refuse(format!("the search of a filter may hold at most {} characters", torro_mail::FILTER_QUERY_MAX))
         }
         Request::SaveMailAttachments { parts, .. } if parts.len() > MAX_ATTACHMENTS => {
             refuse(format!("at most {MAX_ATTACHMENTS} attachments per call, or none for all"))
@@ -691,6 +699,12 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
             };
             parts.iter().map(String::as_str).chain(target).collect()
         }
+        // Mail filters (issue #339): their ids and the folder they move to.
+        Request::CreateMailFilter { file, .. } => filter_folder(file.as_ref()).into_iter().collect(),
+        Request::UpdateMailFilter { id, file, .. } => {
+            std::iter::once(id.as_str()).chain(filter_folder(file.as_ref())).collect()
+        }
+        Request::RemoveMailFilter { id } | Request::ApplyMailFilter { id } => vec![id],
         Request::MailBackupCreate { file_name, .. } => file_name.iter().map(String::as_str).collect(),
         Request::MailBackupStatus { job, .. } | Request::MailBackupCancel { job, .. } => vec![job],
         Request::MailBackupVerify { file, .. } | Request::MailRestorePlan { file, .. } => vec![file],
@@ -708,9 +722,18 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
     request.mail_account().into_iter().chain(request.message_ids()).chain(more)
 }
 
+/// The folder a filter moves its mail to, if it names one.
+fn filter_folder(file: Option<&torro_mail::FilterFile>) -> Option<&str> {
+    match file {
+        Some(torro_mail::FilterFile::Folder { id }) => Some(id.as_str()),
+        _ => None,
+    }
+}
+
 impl Request {
     /// The mail account a request names itself: `account` of `mail.list_folders`,
-    /// `mail.search_messages` and `mail.index_status`, the draft's `account` of `mail.save_draft`. `None` for every other
+    /// `mail.search_messages`, `mail.index_status` and the mail filters (`mail.create_filter`,
+    /// `mail.update_filter`, `mail.preview_filter`, issue #339), the draft's `account` of `mail.save_draft`. `None` for every other
     /// request, and when the field is left out (then the core takes every account the caller
     /// reaches). Messages and folders name their account only through the core's store
     /// ([`Request::message_ids`]).
@@ -719,7 +742,11 @@ impl Request {
             Request::MailFolders { account }
             | Request::MailAccountStats { account }
             | Request::SearchMail { account, .. }
-            | Request::MailIndexStatus { account } => account.as_deref(),
+            | Request::MailIndexStatus { account }
+            // A mail filter for one account (issue #339); without one it runs in every account.
+            | Request::CreateMailFilter { account, .. }
+            | Request::UpdateMailFilter { account, .. }
+            | Request::PreviewMailFilter { account, .. } => account.as_deref(),
             Request::GetMailCachePolicy { account }
             | Request::PreviewMailCache { account, .. }
             | Request::StartMailCacheJob { account, .. }
@@ -739,10 +766,8 @@ impl Request {
 
     /// Every message id a request names, in order: `id`/`ids` (also of `mail.list_save_targets` and
     /// `mail.save_attachments`), a draft's own id, the message it answers and the messages it
-    /// forwards parts of, the mail shown again (`inbox.set_mail_shown`, task E18.2) or put on a pile
-    /// (`inbox.set_mail_pile`, task E19.2). Empty for every
-    /// other request. If one of
-    /// them is in an account the caller does not reach, the whole call is `not-found` (checked
+    /// forwards parts of, the mail put on a pile (`inbox.set_mail_pile`, task E19.2). Empty for every
+    /// other request. If one of them is in an account the caller does not reach, the whole call is `not-found` (checked
     /// before anything is read).
     pub fn message_ids(&self) -> Vec<&str> {
         match self {
@@ -755,7 +780,6 @@ impl Request {
             Request::SetMailFlags { ids, .. }
             | Request::MoveMail { ids, .. }
             | Request::DeleteMail { ids, .. }
-            | Request::SetMailShown { ids, .. }
             | Request::SetMailPile { ids, .. } => ids.iter().map(String::as_str).collect(),
             Request::SaveDraft { draft } => {
                 let parts = draft.attachments.iter().filter_map(|attachment| match attachment {
@@ -789,7 +813,6 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
-            hidden: None,
             categories: Vec::new(),
             pile: None,
         }
@@ -884,6 +907,35 @@ mod tests {
         assert!(refused(&save(vec![long.clone()], SaveTo::Downloads)));
         assert!(refused(&save(Vec::new(), SaveTo::Target(long.clone()))));
         assert!(refused(&Request::RemoveSaveTarget { id: long }));
+    }
+
+    /// Issue #339: a mail filter names its account for the reach check, its search keeps the length
+    /// of a search, and its id and folder the length of an id.
+    #[test]
+    fn mail_filters_name_their_account_and_keep_the_limits() {
+        let create = |query: String, account: Option<&str>, folder: &str| Request::CreateMailFilter {
+            query,
+            account: account.map(str::to_string),
+            file: Some(torro_mail::FilterFile::Folder { id: folder.into() }),
+            mark_read: false,
+            category: None,
+            enabled: true,
+        };
+        let anna = Some("mail:anna@example.org");
+        assert_eq!(create("from:x".into(), anna, "f:1").mail_account(), anna);
+        assert_eq!(create("from:x".into(), None, "f:1").mail_account(), None);
+        let preview = Request::PreviewMailFilter { query: "from:x".into(), account: Some("mail:b@example.org".into()) };
+        assert_eq!(preview.mail_account(), Some("mail:b@example.org"));
+        assert!(Request::ApplyMailFilter { id: "f1".into() }.mail_account().is_none());
+
+        let longest = "x".repeat(torro_mail::FILTER_QUERY_MAX);
+        assert!(!refused(&create(longest.clone(), anna, "f:1")));
+        assert!(refused(&create(format!("{longest}y"), anna, "f:1")));
+        let long = "x".repeat(MAX_ID_BYTES + 1);
+        assert!(refused(&create("from:x".into(), anna, &long)));
+        assert!(refused(&Request::RemoveMailFilter { id: long.clone() }));
+        assert!(refused(&Request::ApplyMailFilter { id: long }));
+        assert!(!refused(&Request::ApplyMailFilter { id: "f12".into() }));
     }
 
     /// DS.1 (#314): an answer of a core from before (no quota, sizes, months or originals) reads
@@ -995,12 +1047,6 @@ mod tests {
         assert!(refused(&flags));
         let to = MoveTarget::Role(MoveRole::Archive);
         assert!(refused(&Request::MoveMail { ids: Vec::new(), to }));
-        // Task E18.2: "Show again" takes 1 to 100 ids, each within the length.
-        let shown = |ids| Request::SetMailShown { ids, shown: true };
-        assert!(refused(&shown(ids(0))) && refused(&shown(ids(MAX_IDS + 1))));
-        assert_eq!(limit_refusal(&shown(ids(MAX_IDS))), None);
-        assert!(refused(&shown(vec!["m:".to_string() + &"x".repeat(MAX_ID_BYTES)])));
-        assert_eq!(shown(ids(2)).message_ids(), ["m:0", "m:1"]);
         // Task E19.2: the piles alike, also without a pile (taking off).
         let pile = |ids| Request::SetMailPile { ids, pile: None, since: None };
         assert!(refused(&pile(ids(0))) && refused(&pile(ids(MAX_IDS + 1))));

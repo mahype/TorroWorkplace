@@ -294,6 +294,11 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Ablageziel ändern (#290) | Einstellungen › Mail › Attachments | `mail.update_save_target` · Admin; anderer Ordner nur mit dem App-Schlüssel | `mail_update_save_target` (Ordner wie gespeichert) |
 | Ablageziel entfernen (#290) | Einstellungen › Mail › Attachments | `mail.remove_save_target` · Admin | `mail_remove_save_target` |
 | Anhänge speichern (#290) | Dreieck-Menü, „Save all ▾“, Kontextmenü der Liste, Klick auf den Namen | `mail.save_attachments` · Write; `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_attachments` (nur Downloads oder ein Ziel) |
+| Filter auflisten (#339) | Einstellungen › Mail › Filters | `mail.list_filters` · Read | `mail_list_filters` |
+| Filter anlegen, ändern, ein- und ausschalten (#339) | Einstellungen › Mail › Filters; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
+| Filter entfernen (#339) | Einstellungen › Mail › Filters › „Delete filter“ | `mail.remove_filter` · Admin | `mail_remove_filter` |
+| Treffer eines Filters zeigen (#339) | Seite des Filters, „In Inbox now“ | `mail.preview_filter` · Read | `mail_preview_filter` |
+| Filter auf vorhandene Mail anwenden (#339) | nach dem Speichern „Apply to the {n} mails in Inbox?“ | `mail.apply_filter` · Admin | `mail_apply_filter` |
 | Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
@@ -330,6 +335,130 @@ Dateinamen) und Bedingungen, wann es vorgeschlagen wird (Kategorie, Dateityp, Ab
 - Agenten speichern nach der gewöhnlichen Schreibregel; die Freigabe nennt Betreff, Zahl der Dateien und Ziel aus dem
   Speicher des Dienstes und ist an die Mail gebunden.
 
+## Filter
+
+Issue #339. Ein **Filter** ist eine gespeicherte Suche mit einer Aktion, etwa „alles von news@shop.example
+archivieren“. Er ersetzt das frühere Ausblenden von Mail (Ansicht „Hidden“, „Hide“, „Show again“): Ausgeblendete Mail
+war weg, ohne dass man sah, wohin. Ein Filter legt sie sichtbar dorthin, wo man sie wiederfindet. Im Notification Hub
+bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummschalten-nach-merkmalen)).
+
+**Was ein Filter ist** (`torro_mail::MailFilter`):
+
+- **Bedingung:** eine Suche in der Sprache des Suchfelds (`from:`, `to:`, `subject:`, `has:attachment` …), nicht leer,
+  höchstens 500 Zeichen. Ohne `in:`, weil ein Filter nur den Posteingang ansieht, und ohne `filename:`, weil die
+  Namen der Anhänge beim Eintreffen nicht bekannt sind.
+- **Konto:** ein Mail-Konto oder alle („All accounts“, `account` fehlt).
+- **Aktionen**, mindestens eine: verschieben (`file`: Archiv, ein Ordner oder Papierkorb), als gelesen markieren
+  (`mark_read`), eine Kategorie des Katalogs setzen (`category`). Ein Ordner braucht ein Konto, muss diesem gehören
+  und darf nicht der Posteingang sein. Der Papierkorb ist ein Verschieben, das sich dort zurückholen lässt; endgültig
+  löscht ein Filter nie.
+- **Schalter:** Ein ausgeschalteter Filter behält seinen Platz und wirkt nicht auf neue Mail.
+- **Ablage:** nur im Dienst, in einer eigenen Datei `<data>/mail/filters.json` (0600, wie die Ablageziele), nicht in
+  `settings.json` und nicht als Sieve-Regel auf dem Server. Höchstens 200 Filter. Die Kennung hat die feste Form
+  `f<n>` und wird nie zweimal vergeben, damit ein alter Verweis nie einen anderen Filter trifft. Fehlt die Datei, gibt
+  es keine Filter; ist sie unlesbar, bleibt sie, wie sie ist, und der Dienst antwortet `error` ohne Pfad.
+
+**Wann ein Filter wirkt:**
+
+- Auf **neue Mail im Posteingang**, solange Torro Workplace läuft. Bevor der Abgleich neue Mail im Notification Hub
+  ablegt, laufen die eingeschalteten Filter des Kontos über sie, unabhängig von der Einstellung `notify` des Kontos.
+  Gefiltert wird, was der Abgleich als neu meldet, auch Mail, die kam, während Torro Workplace nicht lief.
+- **Nicht** beim ersten Abgleich eines Ordners (auch nicht, wenn der Server ihn neu nummeriert hat) und nicht, wenn
+  der Dienst Verpasstes nur nachholt (`catch_up`, etwa wenn die Ablage im Hub den Meldungen des Abgleichs nicht
+  hinterherkam): Diese Mail legt er ab, filtert sie aber nicht. Sie erreicht ein Filter über **Anwenden**.
+- Mail, deren `Message-ID` das Konto schon in einem anderen Ordner hat, bleibt unberührt. Sie wurde in den
+  Posteingang verschoben oder kopiert, nicht zugestellt, und ein Filter soll sie nicht gleich wieder hinausnehmen.
+  Kopien im Archiv und in den gesendeten Mails zählen dabei nicht: Gmail legt jede neue Mail auch in „All Mail“ ab,
+  das für Torro der Archiv-Ordner ist, und Mail an sich selbst oder an eine Mailingliste hat eine Kopie in Sent. Diese
+  Mail wurde trotzdem zugestellt und wird gefiltert. Nur eine Kopie in einem anderen Ordner (Spam, ein eigener Ordner)
+  hält den Filter ab. Die Kehrseite: Holt der Mensch Mail aus dem Archiv zurück in den Posteingang, kann ein Filter sie
+  erneut verschieben; dann hilft es, den Filter enger zu fassen oder auszuschalten.
+  Der Dienst sieht dafür nur seinen eigenen Speicher, nicht den Server: Verschiebt der Mensch die Mail in Torro
+  zurück, kennt er sie sicher. Verschiebt er sie in einem anderen Mail-Programm und gleicht der Dienst den
+  Quellordner vor dem Posteingang ab, ist die Kopie dort schon fort; dann gilt die Mail als zugestellt, und ein Filter
+  kann sie wieder hinausnehmen.
+- Beim Eintreffen kennt der Dienst Betreff und Adressen, meist aber noch nicht den Text. Einfache Wörter einer Suche
+  prüft ein Filter bei neuer Mail deshalb nur dort. Vorschau und Anwenden durchsuchen auch den Text und können mehr
+  treffen.
+- Vorhandene Mail erreicht ein Filter nur über **Anwenden**, nach einer Vorschau der Treffer.
+
+**Mehrere Filter** laufen in der Reihenfolge der Liste (ein neuer kommt ans Ende), und jeder passende wirkt. Als gelesen markiert, sobald einer es
+verlangt; beim Verschieben und bei der Kategorie entscheidet der erste Filter, der eines setzt
+(`FilterActions::of`). Ausgeführt wird in der Folge gelesen → Kategorie → Ordner.
+
+**Folgen im Notification Hub:** Mail, die ein Filter als gelesen markiert oder verschoben hat, wird kein Eintrag,
+denn der Abgleich legt nur ab, was noch ungelesen im Posteingang liegt. Setzt ein Filter nur eine Kategorie, kommt
+die Mail mit dieser Kategorie in den Hub, vor den Sortierregeln und ohne das Modell zu fragen; eine von Hand
+gesetzte Kategorie bleibt ([kategorien.md](kategorien.md#vorrang)). Eine Kategorie, die nicht mehr im Katalog steht,
+überspringt der Filter. Scheitert eine Aktion, schreibt der Dienst Konto und Fehlercode ins Protokoll, nie Suche oder
+Betreff. Die Mail bleibt dann in diesem Punkt, wie sie kam, und bekommt einen Eintrag, wenn sie noch ungelesen im
+Posteingang liegt.
+
+**Vorschau und Anwenden:**
+
+- `mail.preview_filter { query, account? }` zählt, was eine Suche jetzt im Posteingang findet (im Konto bzw. in allen
+  erreichbaren), und nennt die fünf neuesten Mails. Sie ändert nichts.
+- `mail.apply_filter { id }` wendet einen gespeicherten Filter einmal auf den Posteingang an, auch einen
+  ausgeschalteten. Je Aufruf nimmt er die 500 neuesten Treffer, die noch eine seiner Aktionen brauchen: ungelesene für
+  „gelesen“, Mail ohne diese Kategorie (und ohne eine von Hand gesetzte) für „Kategorie“, jede für das Verschieben.
+  Die Änderungen laufen in Stücken zu 100 über dieselben Wege wie `mail.set_flags`, `mail.move_messages` und
+  `mail.delete_messages` (nur in den Papierkorb). Antwort `applied`, `failed` und `more`: Mit `more` bleibt noch
+  etwas, ein weiterer Aufruf macht weiter. Setzt der Filter eine Kategorie, bekommt auch der Eintrag der Mail im
+  Notification Hub sie, wie bei den Kategorie-Läufen; ein erledigter Eintrag und eine dort von Hand gewählte
+  Kategorie bleiben.
+
+**Rechte und Freigaben:** `mail.list_filters` und `mail.preview_filter` sind Read, alles andere ist Admin. Ein Filter
+wirkt dauerhaft auf die Mail des Menschen, darum wartet bei Agenten jede Änderung und jedes Anwenden auf eine Freigabe,
+nicht nur das Löschen.
+
+- **Reichweite:** Ein Client sieht den Filter eines Kontos aus seinen `mail_accounts`, einen Filter für alle Konten nur
+  mit Zugriff auf alle Mail-Konten. Jeder andere Filter gilt für ihn als nicht vorhanden (`not-found`).
+- Einen Filter für alle Konten anlegen oder ändern ohne Zugriff auf alle Konten ist `forbidden`. Dasselbe gilt für
+  eine Kategorie ohne Admin im Bereich `inbox` (sie wirkt wie eine Sortierregel), auch beim Anwenden eines Filters mit
+  Kategorie. Der Dienst prüft das vor der Freigabe und noch einmal bei der Ausführung, ebenso Suche, Aktionen,
+  Ordner und Kategorie (`error`, dann gibt es nichts freizugeben).
+- **Rechte der Aktionen:** Admin auf `mail` allein reicht nicht. Weil der Dienst die Aktionen eines Filters selbst
+  ausführt, braucht ein Client dazu die Rechte, die sie einzeln bräuchten: Schreiben für „gelesen“, Archiv und Ordner
+  (wie `mail.set_flags` und `mail.move_messages`), Löschen für den Papierkorb (wie `mail.delete_messages`, auch für
+  einen Ordner mit der Rolle Papierkorb). Sonst ist Anlegen, Ändern und Anwenden `forbidden`, vor der Freigabe und
+  noch einmal bei der Ausführung.
+- **Fehlende Kategorie oder fehlender Ordner:** Beim Ändern prüft der Dienst Kategorie und Ordner nur, wenn sie neu sind. Ein Filter,
+  dessen Kategorie der Mensch gelöscht hat oder dessen Ordner es auf dem Server nicht mehr gibt, lässt sich so weiter
+  ausschalten und ändern. Beim Eintreffen und Anwenden überspringt er die fehlende Kategorie; das Verschieben in den
+  fehlenden Ordner scheitert, kommt ins Protokoll und zählt beim Anwenden als `failed`.
+- Die Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos und dem Namen des Ordners aus dem Speicher
+  des Dienstes, nie die Worte des Clients außer der neuen Suche: beim Ändern alt und neu, beim Anwenden „up to n“. Sie
+  ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die er da fand: Hat ihn jemand
+  inzwischen geändert oder findet er bis zur Zustimmung andere Mail (ein ausgeschalteter Filter findet neue Mail
+  weiter), endet sie mit `conflict` und ändert nichts.
+- Ins Protokoll kommen Kennung und Konto, nie die Suche, ein Ordner oder eine Kategorie.
+- Filter bleiben auf dem Rechner. Nur `mail.apply_filter` ändert Mail auf dem Server; die Tools der übrigen fünf
+  Befehle sind entsprechend gekennzeichnet.
+
+**Oberfläche:**
+
+- **Einstellungen des Mail-Fensters › Filters** (nach Categorization, `--settings filters`): die Filter in ihrer
+  Reihenfolge, je Zeile die Suche, darunter, was der Filter tut, mit Schalter; „New filter“ legt einen an.
+- **Seite eines Filters:** die Suche, das Konto („All accounts“), was der Filter jetzt findet („In Inbox now“), die
+  Aktionen „Move“ (Don’t move, Archive, Folder, Trash) mit dem Ordner des gewählten Kontos, „Mark as read“ und
+  „Category“, der Schalter „Filter is on“ und bei einem gespeicherten Filter „Delete filter“ mit Rückfrage. „Save“
+  steht in der Kopfleiste. Eine Kategorie, die es nicht mehr gibt, heißt „Unknown category“.
+- **Speichern** wartet auf den Dienst („Saving…“): Erst wenn er den Filter gespeichert hat, schließt die Seite.
+  Lehnt er ab, bleibt die Seite mit dem Eingegebenen offen, und die Meldung steht darüber.
+- **Anwenden:** Findet ein gerade gespeicherter Filter Mail im Posteingang, fragt die Liste danach „Apply to the {n}
+  mails in Inbox?“ mit „Not now“ und „Apply“; „Apply“ wendet den gespeicherten Filter an. Bleibt danach noch Mail
+  übrig, macht „Apply to more“ weiter.
+- **Schnell anlegen:** „Create filter…“ in der Gruppe More der Aktionsleiste einer Mail öffnet die Seite eines neuen
+  Filters mit `from:<Absender>`. „Create filter from search…“ im Filter-Menü des Suchfelds (nur mit Text im Feld)
+  macht die Suche zur Bedingung, mit dem Konto, wenn die Suche auf „This account“ steht, sonst für alle Konten.
+
+**Was mit dem Ausblenden wegfiel:** die Ansicht „Hidden“, „Hide“ und „Show again“ im Mail-Fenster, die Regeln, die
+Absender, Domains oder Merkmale von Mail ausblendeten, `inbox.hide_sender`, `inbox.set_mail_shown`, das Feld `hidden`
+von `mail.search_messages` und die Wirkung `hide` von `inbox.mute_item` für Mail ([api.md](api.md#versionen)). Beim
+Update entfernt die Migration auf Schema 17 von `inbox.sqlite` diese Regeln und ihre Markierungen. Früher
+ausgeblendete Mail steht wieder in den Listen (unter „Unfiltered“). Nichts wird automatisch zu einem Filter. Ein
+stummgeschaltetes Konto (`inbox.mute_source`), gemerkte Spuren und die Regeln anderer Quellen bleiben.
+
 ## Verhältnis zu TorroMail
 
 | Weg | Folge |
@@ -358,7 +487,7 @@ geändert oder gelöscht.
 | **M5 Mail-App** | Breit/Mittel/Schmal/Mini, Schreibfenster, `--account` | M3 |
 | **M6 Rechte von Agenten (API und MCP)** | A.6/A.7 mit Mail, TorroMail-Übernahme | M3, M4 |
 | **M7 Dienste derselben Domain** | CardDAV beim Mail-Konto finden, Einladungen beantworten (CalDAV ist mit M7a vorgezogen) | M2, M7a |
-| später | Sieve (Filter, Abwesenheit), Kontakte-App, OAuth Google/Microsoft (braucht registrierte Client-IDs, bei TorroMail auch noch offen), JMAP | |
+| später | Sieve (Filter auf dem Server, Abwesenheit; Filter im Dienst gibt es seit #339, siehe „Filter“), Kontakte-App, OAuth Google/Microsoft (braucht registrierte Client-IDs, bei TorroMail auch noch offen), JMAP | |
 
 Aus jedem Schritt werden Aufgaben in `docs/tasks/mail.md` (Präfix `M`), wenn das Konzept
 freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
