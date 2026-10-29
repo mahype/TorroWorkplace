@@ -1179,7 +1179,12 @@ fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
         }
         return Some(exception(engine, model, false));
     }
-    let (engine, model) = chosen?;
+    // What sorted before, switched on again, when the step does not offer that model (one elsewhere):
+    // the exception it is stored as, on once more – "on" is never lost either.
+    let Some((engine, model)) = chosen else {
+        let engine = held.engine.clone().filter(|_| !held.enabled && stored_mail_exception(data).is_some())?;
+        return Some(exception(engine, held.model.clone(), true));
+    };
     if held.enabled && held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.as_str())
     {
         return None;
@@ -1743,8 +1748,10 @@ mod tests {
     }
 
     /// The AI step recommends a local model for sorting mail and stores it as main's mail settings
-    /// do (issue #325, #397): the model chosen or recommended goes into the slot Sorting, an exception
-    /// stored is taken back with it, "off" is the exception switched off, nothing changed sends nothing.
+    /// do (issue #325, #397), one request each: the model chosen or recommended goes into the slot
+    /// Sorting, or into an exception stored, switched on; "off" is the exception switched off, also for
+    /// a model the step does not offer, and "on" switches such an exception on again; nothing changed
+    /// sends nothing.
     #[test]
     fn the_ai_step_recommends_a_local_decision_model_for_mail() {
         let local = "ai:ollama@localhost:11434".to_string();
@@ -1840,6 +1847,26 @@ mod tests {
         let sent = requests(update(&mut off, Message::Next, &elsewhere));
         assert!(
             matches!(&sent[..], [Request::SetAiAssignment { engine: Some(engine), enabled: false, .. }] if *engine == cloud),
+            "{sent:?}"
+        );
+
+        // An exception switched off with a model elsewhere, not offered here: "on" switches it on.
+        let mut cloud_off = data.clone();
+        cloud_off.settings.ai_assignments.insert(
+            AiFunction::InboxCategorize,
+            AiAssignment {
+                function: AiFunction::InboxCategorize,
+                engine: Some(cloud.clone()),
+                model: Some("cloud".into()),
+                effort: None,
+                enabled: false,
+            },
+        );
+        let mut on = state(Step::Ai);
+        update(&mut on, Message::SortMail(true), &cloud_off);
+        let sent = requests(update(&mut on, Message::Next, &cloud_off));
+        assert!(
+            matches!(&sent[..], [Request::SetAiAssignment { engine: Some(engine), enabled: true, .. }] if *engine == cloud),
             "{sent:?}"
         );
 
