@@ -582,10 +582,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         trusted_certificates: Vec<String>,
     },
-    /// Checks the IMAP and SMTP connection of an existing mail account with the entered values.
-    /// An omitted password uses the account's keychain secret. With `save: false` the connection
-    /// is only checked; `save: true` keeps the new endpoints, login and optional password after a
-    /// successful check. Only the app key may send this request. No password is returned.
+    /// Checks the IMAP and SMTP connection of an existing mail account with the entered values
+    /// (issue #343, the account's page: "Test credentials", "Save connection"). An omitted password
+    /// uses the account's keychain secret. With `save: false` the connection is only checked and
+    /// answered with [`Response::MailConnectionChecked`]; `save: true` keeps the new endpoints,
+    /// login and optional password after a successful check, as `accounts.connect_mail` does, and
+    /// answers as it does ([`Response::MailConnected`]). The sender name, calendars, tasks and
+    /// CalDAV address stay, and so do the trusted certificates while both servers stay the same.
+    /// Codes: `not-found` for an id that is no mail account; `error` for an empty login, a login
+    /// with `/`, a server without host or port, or no password entered or stored; `auth` and
+    /// [`Response::UntrustedCertificate`] as for `accounts.connect_mail`. Only the app key may send
+    /// this request – every client key gets `forbidden`, whatever its rights, because a password
+    /// goes in. No password is returned.
     #[serde(rename = "accounts.reconfigure_mail")]
     ReconfigureMail {
         id: String,
@@ -597,8 +605,8 @@ pub enum Request {
         save: bool,
     },
     /// Changes the settings of the mail account `id` (tasks M2.1, M2.7): only the fields given, the
-    /// others stay. Never servers or password: those change only with `accounts.connect_mail`, so
-    /// no agent can steer the password to another server. Answered with [`Response::Ok`];
+    /// others stay. Never servers or password: those change only with `accounts.connect_mail` and
+    /// `accounts.reconfigure_mail`, so no agent can steer the password to another server. Answered with [`Response::Ok`];
     /// `not-found` for an id that is no mail account; `error` for a sender name with a line break
     /// (or over 200 characters), a signature over 8 KiB, calendars or tasks for an account without
     /// a CalDAV address (connect it again with one) or a folder role the server did not leave
@@ -2149,12 +2157,20 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
     },
-    /// Creates a main mail category with a stable key (`custom_group_<n>`). The colour is one
-    /// of the four theme colours. Existing categories are not moved.
+    /// Creates a main mail category with a stable key (`custom_group_<n>`, from 6 on: 1–5 are the
+    /// built-in ones) and answers with it ([`Response::CategoryGroup`]). `name` is what it is
+    /// called (one line, at most 60 characters, no other main category's name), `icon` its
+    /// monochrome icon, `color` one of the five theme colours (0–4). Existing categories are not
+    /// moved. Codes: `error` for an empty, multi-line, taken or too long name, a colour above 4 or
+    /// more than 20 main categories. Needs the person's approval.
     #[serde(rename = "inbox.create_category_group")]
     CreateCategoryGroup { name: String, icon: torro_mail::CategoryIcon, color: u8 },
-    /// Renames or restyles a main category without changing its key or the mail beneath it.
-    /// An empty name restores a built-in name; custom groups require a name.
+    /// Renames or restyles the main category `group` – one of the five built-in ones or a
+    /// `custom_group_<n>` – without changing its key or the mail beneath it, and answers with it
+    /// ([`Response::CategoryGroup`]). `name`, `icon` and `color` (0–4) as for
+    /// [`Request::CreateCategoryGroup`]; an empty name restores a built-in name, a main category of
+    /// the person's own requires one. Codes: `not-found` for a main category that is not there;
+    /// `error` as for `inbox.create_category_group`. Needs the person's approval.
     #[serde(rename = "inbox.update_category_group")]
     UpdateCategoryGroup { group: torro_mail::CategoryGroup, name: String, icon: torro_mail::CategoryIcon, color: u8 },
     /// Files a mail under `category` by hand ([`Response::ItemCategory`], task E12.4): the
@@ -4307,7 +4323,9 @@ pub enum Response {
         #[serde(default)]
         groups: Vec<crate::inbox::CategoryGroupInfo>,
     },
-    /// The main category after it was created or edited.
+    /// The main category after it was created or edited ([`Request::CreateCategoryGroup`],
+    /// [`Request::UpdateCategoryGroup`]): its key, the words a person reads, icon, colour and
+    /// whether the suite brings it.
     CategoryGroup {
         group: crate::inbox::CategoryGroupInfo,
     },
@@ -4747,7 +4765,7 @@ pub enum Response {
     /// - `forbidden`: the client's rights do not cover the command (also `mail.send_draft` with
     ///   `outbound: never`), it is for the app key only (`clients` commands, `system.quit`,
     ///   `accounts.set_github_token`, `accounts.connect_caldav`, `accounts.connect_mail`,
-    ///   `accounts.connect_ai`, `approvals.decide_approval`), it needs a person's approval that the core could not
+    ///   `accounts.reconfigure_mail`, `accounts.connect_ai`, `approvals.decide_approval`), it needs a person's approval that the core could not
     ///   record (`approvals.json` cannot be written), or a security rule of the inbox or of mail
     ///   refuses it (a client changing an approval or an entry of the suite, or posting an
     ///   approval; a client attaching a file from outside the core's attachment folder), or the

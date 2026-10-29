@@ -3762,7 +3762,10 @@ static CREATE_CATEGORY_GROUP: Command = Command {
     area: Area::Inbox,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Creates a main mail category with a stable custom_group_<n> key, name, icon and theme colour. Its child categories can then be created or moved into it. Needs the person's approval.",
+    description: "Creates a main mail category with a stable `custom_group_<n>` key, a name, an icon and a theme \
+                  colour (`color` 0–4, one of the five colours of the active design) and returns it. Its child \
+                  categories can then be created or moved into it. `error` for an empty, multi-line, taken or too long \
+                  name, a colour above 4 or more than 20 main categories. Needs the person's approval.",
 };
 
 static UPDATE_CATEGORY_GROUP: Command = Command {
@@ -3770,7 +3773,11 @@ static UPDATE_CATEGORY_GROUP: Command = Command {
     area: Area::Inbox,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Changes the name, icon and theme colour of a main mail category without changing its stable key or the mail in its child categories. An empty name restores a built-in label. Needs the person's approval.",
+    description: "Changes the name, icon and theme colour (`color` 0–4) of a main mail category, one of the five \
+                  built-in ones (`waiting_for_me`, `paper_trail`, `info`, `junk`, `unsorted`) or a \
+                  `custom_group_<n>`, and returns it, without changing its stable key or the mail in its child \
+                  categories. An empty name restores a built-in label. `not-found` for a main category that is not \
+                  there; `error` as for create_category_group. Needs the person's approval.",
 };
 
 static SET_ITEM_CATEGORY: Command = Command {
