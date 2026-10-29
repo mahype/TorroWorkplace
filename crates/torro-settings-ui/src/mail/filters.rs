@@ -11,9 +11,11 @@
 //! `has:attachment` …) and the account it runs in ("All accounts"), what it finds in the inbox now
 //! (`mail.preview_filter`), the actions – "Move" (Don't move, Archive, Folder, Trash) with the
 //! folder of the chosen account, "Mark as read", "Category" –, the switch and, for a stored one,
-//! "Delete filter" after a question. "Save" stands in the header bar. Saved with mail in the inbox
-//! that it finds, the list asks "Apply to the {n} mails in Inbox?" and, on "Apply", runs it once
-//! (`mail.apply_filter`), again with "Apply to more" while the core says more are left.
+//! "Delete filter" after a question. "Save" stands in the header bar and waits for the core
+//! ([`sent`]): only once it stored the filter does the page close; a refusal leaves the page with
+//! what was typed. Saved with mail in the inbox that it finds, the list then asks "Apply to the {n}
+//! mails in Inbox?" and, on "Apply", runs the stored filter once (`mail.apply_filter`), again with
+//! "Apply to more" while the core says more are left.
 //!
 //! Everything is a request (`mail.list_filters`, `mail.create_filter`, `mail.update_filter`,
 //! `mail.remove_filter`, `mail.preview_filter`, `mail.apply_filter`); the page checks only what a
@@ -43,13 +45,22 @@ use crate::{Action, Data, Page};
 pub const QUERY_FIELD: &str = "mail-filter-query";
 
 /// What the section keeps between two frames: the page that is open, its question, what the open
-/// search finds, and the question or the result of "Apply" on the list.
+/// search finds, the save on its way, and the question or the result of "Apply" on the list.
 #[derive(Debug, Default)]
 pub struct State {
     form: Option<Form>,
     asking: Option<Ask>,
     preview: Preview,
+    saving: Option<Saving>,
     apply: Option<Apply>,
+}
+
+/// A save on its way to the core: the filter it stores, and how many mails its search found in the
+/// inbox when "Save" was pressed (`None`: none, or not known yet) – the question after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Saving {
+    target: Target,
+    count: Option<u64>,
 }
 
 impl State {
@@ -130,8 +141,8 @@ struct Preview {
 /// The question and the result of "Apply" on the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Apply {
-    /// A filter was saved that finds `count` mails in the inbox now: run it on them?
-    Ask { target: Target, count: u64 },
+    /// The filter `id` was stored and finds `count` mails in the inbox now: run it on them?
+    Ask { id: String, count: u64 },
     /// "Apply" was pressed; the answer is on its way.
     Running { id: String },
     /// What the run did; `more` offers another.
@@ -140,8 +151,8 @@ enum Apply {
     Failed(String),
 }
 
-/// The filter a question of [`Apply`] is about. A new filter has no id until the next load
-/// brings it: it is the one with that search and account that was not there before.
+/// The filter a save stores. A new filter has no id until the load after the save brings it: it is
+/// the one with that search and account that was not there before.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Target {
     Stored(String),
@@ -149,7 +160,7 @@ enum Target {
 }
 
 impl Target {
-    /// The id of the filter in `data`; `None` until it is loaded.
+    /// The id of the filter in `data`; `None` when it is not there.
     fn id(&self, data: &Data) -> Option<String> {
         match self {
             Target::Stored(id) => data.mail_filters.iter().any(|filter| &filter.id == id).then(|| id.clone()),
@@ -249,8 +260,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::Save => save(state, data),
         Message::Apply => {
             let id = match &state.apply {
-                Some(Apply::Ask { target, .. }) => target.id(data),
-                Some(Apply::Done { id, more: true, .. }) => Some(id.clone()),
+                Some(Apply::Ask { id, .. }) | Some(Apply::Done { id, more: true, .. }) => Some(id.clone()),
                 _ => None,
             };
             let Some(id) = id else { return Action::None };
@@ -341,9 +351,23 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) -> bool {
     }
 }
 
+/// The send of the host came back (`host::Message::Sent`, the window calls it before the host takes
+/// it): `result` is the data loaded after it, or why it failed. While a save of a filter is on its
+/// way, this is its answer: stored, the page closes and the list asks whether to apply the stored
+/// filter to what it found ([`Apply::Ask`]); refused, the page stays as it was typed – the host
+/// shows the core's message over it – and "Save" can be pressed again.
+pub fn sent(state: &mut State, result: &Result<Data, String>) {
+    let Some(saving) = state.saving.take() else { return };
+    let Ok(data) = result else { return };
+    state.form = None;
+    state.asking = None;
+    state.apply = saving.count.zip(saving.target.id(data)).map(|(count, id)| Apply::Ask { id, count });
+}
+
 /// Opens `form` as the page, without a question and without an answer of an earlier page.
 fn open(state: &mut State, form: Form) {
     state.asking = None;
+    state.saving = None;
     state.apply = None;
     state.preview.asked = None;
     state.preview.found = None;
@@ -364,9 +388,12 @@ fn ask_preview<A>(state: &mut State) -> Action<A> {
     Action::Ask(Request::PreviewMailFilter { query: query.to_string(), account: form.account.clone() })
 }
 
-/// "Save": the mistakes once pressed, else the request, and the question whether to apply the
-/// filter to what it finds now. The page closes; the list shows the stored filter.
+/// "Save": the mistakes once pressed, else the request. The page stays open until the core
+/// answered ([`sent`]); a second "Save" meanwhile sends nothing.
 fn save<A>(state: &mut State, data: &Data) -> Action<A> {
+    if state.saving.is_some() {
+        return Action::None;
+    }
     let hits = state.form.as_ref().map(|form| hits(&state.preview, form));
     let Some(form) = state.form.as_mut() else { return Action::None };
     form.tried = true;
@@ -393,8 +420,8 @@ fn save<A>(state: &mut State, data: &Data) -> Action<A> {
             known: data.mail_filters.iter().map(|filter| filter.id.clone()).collect(),
         },
     };
-    state.apply = count.map(|count| Apply::Ask { target, count });
-    state.form = None;
+    state.apply = None;
+    state.saving = Some(Saving { target, count });
     Action::send(request)
 }
 
@@ -573,7 +600,10 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         Some(id) => data.mail_filters.iter().find(|filter| &filter.id == id).is_none_or(|stored| !form.same_as(stored)),
     };
     let look: widgets::ButtonStyle = if ready { style::button::primary } else { style::button::secondary };
-    let save = widgets::text_button(None, tr("Save"), look, ready.then_some(Message::Save));
+    let save = match state.saving {
+        Some(_) => widgets::busy_button(tr("Saving…"), style::button::primary),
+        None => widgets::text_button(None, tr("Save"), look, ready.then_some(Message::Save)),
+    };
     let body = filter_page(form, &state.preview, data);
     // The question stands above the page, where it is seen.
     let body = match state.asking {
@@ -587,7 +617,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
 fn list<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let mut page = column![].spacing(layout::section_gap());
     if let Some(apply) = &state.apply {
-        page = page.push(apply_block(apply, data));
+        page = page.push(apply_block(apply));
     }
     let mut rows: Vec<Element<'a, Message>> = data
         .mail_filters
@@ -665,17 +695,16 @@ fn add_row<'a>() -> Element<'a, Message> {
 }
 
 /// The question after saving a filter that finds mail now, or what "Apply" did.
-fn apply_block<'a>(apply: &'a Apply, data: &'a Data) -> Element<'a, Message> {
+fn apply_block<'a>(apply: &'a Apply) -> Element<'a, Message> {
     match apply {
-        Apply::Ask { target, count } => {
+        Apply::Ask { count, .. } => {
             let title = match count {
                 1 => tr("Apply to the 1 mail in Inbox?").to_string(),
                 n => trf("Apply to the {n} mails in Inbox?", &[("n", n)]),
             };
             let actions = vec![
                 PageAction::new(tr("Not now"), Some(Message::Dismiss)).style(style::button::ghost),
-                // Until the next load brings the new filter, there is nothing to apply yet.
-                PageAction::new(tr("Apply"), target.id(data).map(|_| Message::Apply)),
+                PageAction::new(tr("Apply"), Some(Message::Apply)),
             ];
             widgets::question_card(
                 Icon::Filter,
@@ -1044,8 +1073,9 @@ mod tests {
         assert_eq!(action, Action::None);
     }
 
-    /// Saving a new filter sends what the page holds; with mail it finds now the list asks whether
-    /// to apply it, and "Apply" runs the filter the next load brought, again while more are left.
+    /// Saving a new filter sends what the page holds and waits for the core; once it is stored and
+    /// it finds mail now, the list asks whether to apply it, and "Apply" runs the filter the load
+    /// after the save brought, again while more are left.
     #[test]
     fn saving_a_new_filter_makes_it_and_offers_to_apply_it() {
         let (mut data, mut state) = (data(), State::default());
@@ -1071,11 +1101,13 @@ mod tests {
                 enabled: true,
             })
         );
-        assert!(!state.is_open(), "made once, so a second Save makes no twin");
-        assert!(matches!(state.apply, Some(Apply::Ask { count: 12, .. })));
-        // Before the load brings it there is nothing to apply.
-        assert_eq!(last(&mut state, &data, vec![Message::Apply]), Action::None);
+        assert!(state.is_open(), "open until the core answers");
+        assert_eq!(last(&mut state, &data, vec![Message::Save]), Action::None, "a second Save makes no twin");
+        assert!(state.apply.is_none());
         data.mail_filters.push(MailFilter { file: Some(FilterFile::Trash), ..filter("f7", "from:shop.example") });
+        sent(&mut state, &Ok(data.clone()));
+        assert!(!state.is_open());
+        assert_eq!(state.apply, Some(Apply::Ask { id: "f7".into(), count: 12 }));
         assert_eq!(
             last(&mut state, &data, vec![Message::Apply]),
             Action::Ask(Request::ApplyMailFilter { id: "f7".into() })
@@ -1103,7 +1135,39 @@ mod tests {
         );
         assert!(answered(&mut state, &found(0)));
         assert!(matches!(last(&mut state, &data, vec![Message::Save]), Action::Send(_)));
+        sent(&mut state, &Ok(data.clone()));
+        assert!(!state.is_open());
         assert!(state.apply.is_none());
+    }
+
+    /// "Save" waits for the core: refused, the page stays with what was typed and offers nothing to
+    /// apply – the stored filter is still the old one –, and it can be saved again; stored, the list
+    /// asks about the stored filter. A send that is not a save leaves the page alone.
+    #[test]
+    fn a_save_waits_for_the_core() {
+        let (data, mut state) = (data(), State::default());
+        let _ = last(&mut state, &data, vec![Message::Edit("f1".into()), Message::MarkRead(false)]);
+        assert!(answered(&mut state, &found(4)));
+        sent(&mut state, &Ok(data.clone()));
+        assert!(state.form.as_ref().is_some_and(|form| !form.mark_read), "no save on its way: nothing happens");
+
+        let save = last(&mut state, &data, vec![Message::Save]);
+        assert!(matches!(save, Action::Send(_)));
+        let _ = page(&state, &data);
+        sent(&mut state, &Err("The server refused.".into()));
+        let form = state.form.as_ref().expect("still open");
+        assert!(!form.mark_read && form.id.as_deref() == Some("f1"), "what was typed stays");
+        assert!(state.apply.is_none(), "the old filter is not offered to apply");
+        assert_eq!(last(&mut state, &data, vec![Message::Apply]), Action::None);
+
+        assert_eq!(last(&mut state, &data, vec![Message::Save]), save, "saved again");
+        sent(&mut state, &Ok(data.clone()));
+        assert!(!state.is_open());
+        assert_eq!(state.apply, Some(Apply::Ask { id: "f1".into(), count: 4 }));
+        assert_eq!(
+            last(&mut state, &data, vec![Message::Apply]),
+            Action::Ask(Request::ApplyMailFilter { id: "f1".into() })
+        );
     }
 
     /// Mistakes keep the filter from being sent: no search (the cursor goes there), nothing it does,
@@ -1226,7 +1290,7 @@ mod tests {
         let (data, mut state) = (data(), State::default());
         let _ = page(&state, &data);
         for apply in [
-            Apply::Ask { target: Target::Stored("f1".into()), count: 3 },
+            Apply::Ask { id: "f1".into(), count: 3 },
             Apply::Running { id: "f1".into() },
             Apply::Done { id: "f1".into(), applied: 3, failed: 1, more: true },
             Apply::Failed("No.".into()),

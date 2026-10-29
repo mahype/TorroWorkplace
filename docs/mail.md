@@ -434,8 +434,11 @@ nicht nur das Löschen.
   Aktionen „Move“ (Don’t move, Archive, Folder, Trash) mit dem Ordner des gewählten Kontos, „Mark as read“ und
   „Category“, der Schalter „Filter is on“ und bei einem gespeicherten Filter „Delete filter“ mit Rückfrage. „Save“
   steht in der Kopfleiste. Eine Kategorie, die es nicht mehr gibt, heißt „Unknown category“.
-- **Anwenden:** Findet ein gerade gespeicherter Filter Mail im Posteingang, fragt die Liste „Apply to the {n} mails in
-  Inbox?“ mit „Not now“ und „Apply“. Bleibt danach noch Mail übrig, macht „Apply to more“ weiter.
+- **Speichern** wartet auf den Dienst („Saving…“): Erst wenn er den Filter gespeichert hat, schließt die Seite.
+  Lehnt er ab, bleibt die Seite mit dem Eingegebenen offen, und die Meldung steht darüber.
+- **Anwenden:** Findet ein gerade gespeicherter Filter Mail im Posteingang, fragt die Liste danach „Apply to the {n}
+  mails in Inbox?“ mit „Not now“ und „Apply“; „Apply“ wendet den gespeicherten Filter an. Bleibt danach noch Mail
+  übrig, macht „Apply to more“ weiter.
 - **Schnell anlegen:** „Create filter…“ in der Gruppe More der Aktionsleiste einer Mail öffnet die Seite eines neuen
   Filters mit `from:<Absender>`. „Create filter from search…“ im Filter-Menü des Suchfelds (nur mit Text im Feld)
   macht die Suche zur Bedingung, mit dem Konto, wenn die Suche auf „This account“ steht, sonst für alle Konten.

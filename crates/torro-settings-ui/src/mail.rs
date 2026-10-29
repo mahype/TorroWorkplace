@@ -204,6 +204,13 @@ pub fn sent(state: &mut State) {
     accounts::sent(&mut state.accounts);
 }
 
+/// A send of the host came back with `result` – the data loaded after it, or why it failed –: a
+/// filter's page waiting for its save closes once the filter is stored, or stays with what was typed
+/// (issue #339, [`filters::sent`]). The window calls it on every `Sent`, before the host takes it.
+pub fn filters_sent(state: &mut State, result: &Result<Data, String>) {
+    filters::sent(&mut state.filters, result);
+}
+
 /// What Escape means while "Accounts" shows: close the "…" menu of an account's head (task DS.6).
 /// `None` without one, which lets the window close the settings.
 pub fn accounts_escape(state: &State) -> Option<Message> {

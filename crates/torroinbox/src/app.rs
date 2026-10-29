@@ -4724,10 +4724,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     answered_settings(&mut pane.sections);
                 }
                 // Only a send's answer ends a save; a load of the tick on its way is no answer to it.
-                if matches!(message, host::Message::Sent { .. })
+                if let host::Message::Sent { result, .. } = &message
                     && let SettingsState::Mail(state) = &mut pane.sections
                 {
                     settings_mail::sent(state);
+                    settings_mail::filters_sent(state, result);
                 }
                 let outcome = pane.host.update(message);
                 if loaded {
