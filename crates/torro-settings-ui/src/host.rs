@@ -45,6 +45,21 @@
 //!
 //! Escape: the app hands it to the open section first (a dialog or a page below it swallows it)
 //! and only then to the host, which closes the settings – like the control centre routes it.
+//!
+//! # Answer by answer (issue #394)
+//!
+//! The host sends every request of a load on its own ([`Message::Part`]) and puts each answer in
+//! as it comes, so one slow answer – the statistics over a mail store of gigabytes – holds up
+//! nothing but its own part of the page. The page is there once every request that is not
+//! [`crate::background`] is back, or at once when the app's [`Memory`] still knows the last
+//! state; until a request's first answer the part that shows it says "Updating…"
+//! ([`Data::updating`]). A request still on its way is not sent again by the next load, and every
+//! answer carries the load (its generation) it was asked for, so an older one never covers a
+//! newer one.
+//!
+//! The sections and apps that listen for a load or a send ([`Message::Loaded`],
+//! [`Message::Sent`]) still hear them: once a load's every request that is not in the background
+//! is back, the host hands one of them back through the app, with the data as it stands.
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, rule, scrollable, svg};
@@ -59,7 +74,7 @@ use torro_gui::{shell, style, typo};
 use torro_ipc::{Request, Response};
 
 use crate::parts::notice;
-use crate::{Action, Backend, Data};
+use crate::{Action, Backend, Data, Memory, background};
 
 use std::sync::Arc;
 
@@ -205,6 +220,12 @@ pub enum Message {
     Sent { changed: bool, result: Box<Result<Data, String>> },
     /// The answer to an [`Action::Ask`] came back; the host hands it on as [`Outcome::Answer`].
     Answered(Box<Result<Response, String>>),
+    /// The answer to one request of a load came back (issue #394): `generation` is the load it was
+    /// sent for, `request` what was asked.
+    Part { generation: u64, request: Box<Request>, result: Box<Result<Response, String>> },
+    /// The requests of an [`Action::Send`] went through or not (issue #394); the data is then asked
+    /// for anew, answer by answer. `changed` as in [`Message::Sent`].
+    Done { changed: bool, result: Result<(), String> },
 }
 
 /// What the host asks the app to do. `A` is the app's own part of an [`Action`].
@@ -251,10 +272,31 @@ pub struct Host {
     /// [`Form::Menu`]: the section menu in the header is open.
     menu: bool,
     data: Data,
-    /// The first load came back; until then the page shows the loading state.
+    /// The page can be shown: the app's [`Memory`] knew the last state, or every request of the
+    /// first load that is not in the background is back. Until then the page shows the loading
+    /// state.
     loaded: bool,
     /// Why the last change failed, over the page until the next one.
     notice: Option<String>,
+    /// Where the data goes when the settings close, for the next host of the same app.
+    memory: Memory,
+    /// The load the host asks for now; every reload and every change starts a new one.
+    generation: u64,
+    /// What the current load has sent already: a request is asked once per load.
+    asked: Vec<Request>,
+    /// What is on its way, each with the load it was sent for; never sent a second time meanwhile.
+    flight: Vec<(Request, u64)>,
+    /// The load of the newest answer put in, per request: an older answer is dropped.
+    applied: Vec<(Request, u64)>,
+    /// The first failure of the current load; it stands over the page with the load's last answer.
+    problem: Option<String>,
+    /// The current load has been reported as [`Message::Loaded`] or [`Message::Sent`] already.
+    announced: bool,
+    /// A send went through and its load is not reported yet: `changed` as in [`Message::Sent`].
+    change: Option<bool>,
+    /// How many [`Message::Loaded`] and [`Message::Sent`] the host handed back and has not seen
+    /// again: their data is a copy of its own, which may be older by now than what it holds.
+    echoes: usize,
 }
 
 impl Host {
@@ -264,7 +306,21 @@ impl Host {
     ///
     /// `sections` must not be empty; an app always has at least one section.
     pub fn new(backend: Arc<dyn Backend>, sections: Vec<Section>, wanted: Vec<Request>) -> (Host, Task<Message>) {
-        let host = Host {
+        Host::with_memory(backend, sections, wanted, Memory::default())
+    }
+
+    /// [`Host::new`], starting from what the app's `memory` kept of the last settings it showed
+    /// (issue #394): the page is there at once with that state and says "Updating…" until the
+    /// fresh answers are in. When the host goes, it leaves its data there for the next one.
+    pub fn with_memory(
+        backend: Arc<dyn Backend>,
+        sections: Vec<Section>,
+        wanted: Vec<Request>,
+        memory: Memory,
+    ) -> (Host, Task<Message>) {
+        let known = memory.recall();
+        let loaded = known.is_some();
+        let mut host = Host {
             backend,
             sections,
             wanted,
@@ -273,9 +329,18 @@ impl Host {
             // and `--settings <abschnitt>` opens its section with `open`.
             list: true,
             menu: false,
-            data: Data::default(),
-            loaded: false,
+            data: known.unwrap_or_default(),
+            loaded,
             notice: None,
+            memory,
+            generation: 0,
+            asked: Vec::new(),
+            flight: Vec::new(),
+            applied: Vec::new(),
+            problem: None,
+            announced: false,
+            change: None,
+            echoes: 0,
         };
         let load = host.reload();
         (host, load)
@@ -312,10 +377,89 @@ impl Host {
         self.loaded
     }
 
-    /// Loads the sections' data again: after a change the app made itself, or on a retry.
-    pub fn reload(&self) -> Task<Message> {
-        let (backend, wanted) = (Arc::clone(&self.backend), self.wanted.clone());
-        Task::perform(crate::load(backend, wanted), |data| Message::Loaded(Box::new(data)))
+    /// Loads the sections' data again: after a change the app made itself, on its tick, or on a
+    /// retry. Every request goes on its own ([`Message::Part`]); one still on its way from an
+    /// earlier load is not sent again but once its answer is in.
+    pub fn reload(&mut self) -> Task<Message> {
+        self.generation += 1;
+        self.asked.clear();
+        self.problem = None;
+        self.announced = false;
+        Task::batch(self.pump())
+    }
+
+    /// Sends what the current load still has to ask – the app's requests and those only the data
+    /// can name ([`Data::follow_up`]) – save what is on its way, and reports the load once nothing
+    /// but the background is missing.
+    fn pump(&mut self) -> Vec<Task<Message>> {
+        let mut wanted = self.wanted.clone();
+        for request in self.data.follow_up() {
+            if !wanted.contains(&request) {
+                wanted.push(request);
+            }
+        }
+        let generation = self.generation;
+        let mut tasks = Vec::new();
+        for request in wanted {
+            let on_its_way = self.flight.iter().any(|(held, _)| *held == request);
+            if self.asked.contains(&request) || on_its_way {
+                continue;
+            }
+            // Never answered since the settings opened: its part says "Updating…" until it is.
+            let answered = self.applied.iter().any(|(held, _)| *held == request);
+            if !answered && !self.data.updating(&request) {
+                self.data.updating.push(request.clone());
+            }
+            self.asked.push(request.clone());
+            self.flight.push((request.clone(), generation));
+            let backend = Arc::clone(&self.backend);
+            tasks.push(Task::perform(crate::ask(backend, request.clone()), move |result| Message::Part {
+                generation,
+                request: Box::new(request.clone()),
+                result: Box::new(result),
+            }));
+        }
+        let waiting = self.flight.iter().any(|(request, _)| !background(request));
+        if !self.announced && !waiting {
+            self.announced = true;
+            self.loaded = true;
+            self.echoes += 1;
+            let data = Box::new(self.data.clone());
+            let report = match self.change.take() {
+                Some(changed) => Message::Sent { changed, result: Box::new(Ok(*data)) },
+                None => Message::Loaded(data),
+            };
+            tasks.push(Task::done(report));
+        }
+        tasks
+    }
+
+    /// Puts in the answer to one request of the load `generation` ([`Message::Part`]) and sends
+    /// what it opens up.
+    fn part(&mut self, generation: u64, request: Request, result: Result<Response, String>) -> Vec<Task<Message>> {
+        if let Some(at) = self.flight.iter().position(|(held, sent)| *held == request && *sent == generation) {
+            self.flight.remove(at);
+        }
+        let newer = self.applied.iter().any(|(held, put)| *held == request && *put > generation);
+        if !newer {
+            match result {
+                Ok(response) => self.data.put(&request, response),
+                // A failure of an older load counts for nothing: the request is asked again.
+                Err(problem) if generation == self.generation => {
+                    self.problem.get_or_insert(problem);
+                }
+                Err(_) => {}
+            }
+            self.applied.retain(|(held, _)| *held != request);
+            self.applied.push((request.clone(), generation));
+        }
+        self.data.updating.retain(|held| *held != request);
+        let tasks = self.pump();
+        // The load's last answer: its first failure stands over the page now, or none does.
+        if self.flight.is_empty() {
+            self.data.error = self.problem.take();
+        }
+        tasks
     }
 
     /// Carries out what a section returned: [`Action::Send`] goes to the daemon and the data is
@@ -329,9 +473,8 @@ impl Host {
                 // No requests is a plain reload of the sections' data, not a change: the app's own
                 // data stays as it is ([`Message::Sent`]).
                 let changed = !requests.is_empty();
-                let (backend, wanted) = (Arc::clone(&self.backend), self.wanted.clone());
-                let send = crate::send(backend, requests, wanted);
-                Outcome::Work(Task::perform(send, move |result| Message::Sent { changed, result: Box::new(result) }))
+                let send = crate::apply(Arc::clone(&self.backend), requests);
+                Outcome::Work(Task::perform(send, move |result| Message::Done { changed, result }))
             }
             Action::Ask(request) => {
                 // One request, one answer, no reload: `send` is for what changes something.
@@ -378,7 +521,10 @@ impl Host {
                 None => Outcome::None,
             },
             Message::Loaded(data) => {
-                self.data = *data;
+                // The host's own report comes back with a copy of what it holds: nothing to put in.
+                if !self.echoed() {
+                    self.data = *data;
+                }
                 self.loaded = true;
                 Outcome::None
             }
@@ -386,7 +532,9 @@ impl Host {
                 self.loaded = true;
                 match *result {
                     Ok(data) => {
-                        self.data = data;
+                        if !self.echoed() {
+                            self.data = data;
+                        }
                         // The sections are fresh; the app's own data follows, but only after a
                         // real change ([`Outcome::Changed`], [`Message::Sent`]).
                         if changed { Outcome::Changed } else { Outcome::None }
@@ -400,7 +548,25 @@ impl Host {
             }
             // The answer belongs to the section that asked for it, failures included.
             Message::Answered(result) => Outcome::Answer(result),
+            Message::Part { generation, request, result } => work(self.part(generation, *request, *result)),
+            Message::Done { changed, result: Ok(()) } => {
+                // The change is stored: a new load, reported as the send once the page is fresh.
+                self.change = Some(changed);
+                Outcome::Work(self.reload())
+            }
+            // Through the app as before, so the sections that wait for the send hear how it ended.
+            Message::Done { changed, result: Err(problem) } => {
+                Outcome::Work(Task::done(Message::Sent { changed, result: Box::new(Err(problem)) }))
+            }
         }
+    }
+
+    /// Whether a [`Message::Loaded`] or [`Message::Sent`] that came in is one the host handed back
+    /// itself ([`Host::pump`]); then its data is a copy and may be older than the host's.
+    fn echoed(&mut self) -> bool {
+        let echo = self.echoes > 0;
+        self.echoes = self.echoes.saturating_sub(1);
+        echo
     }
 
     /// The settings in the window's frame: header bar, content area and the layer of an open menu.
@@ -593,6 +759,22 @@ impl Host {
     }
 }
 
+/// What the settings knew when they closed stays with the app for the next host (issue #394),
+/// without what was still on its way and without the failure of that moment.
+impl Drop for Host {
+    fn drop(&mut self) {
+        let mut data = std::mem::take(&mut self.data);
+        data.updating.clear();
+        data.error = None;
+        self.memory.keep(data);
+    }
+}
+
+/// The tasks of a load as the host's work, nothing when there are none.
+fn work<A>(tasks: Vec<Task<Message>>) -> Outcome<A> {
+    if tasks.is_empty() { Outcome::None } else { Outcome::Work(Task::batch(tasks)) }
+}
+
 /// A row of the section list ([`Host::section_rows`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SectionRow {
@@ -633,6 +815,7 @@ fn page_margin(class: SizeClass) -> Padding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Memory;
     use crate::demo::Demo;
 
     fn sections() -> Vec<Section> {
@@ -868,5 +1051,159 @@ mod tests {
     #[test]
     fn section_names_are_translated() {
         assert_eq!(sections()[1].name(), tr("Reminders"));
+    }
+
+    /// Answers the first request the host has on its way, as the task it built would.
+    async fn answer_one(host: &mut Host, backend: &Arc<dyn Backend>) -> Option<Request> {
+        let (request, generation) = host.flight.first().cloned()?;
+        let result = backend.call(request.clone()).await;
+        let _: Outcome<()> =
+            host.update(Message::Part { generation, request: Box::new(request.clone()), result: Box::new(result) });
+        Some(request)
+    }
+
+    /// Answers everything the host sends, follow-ups included, until nothing is on its way.
+    async fn answer_all(host: &mut Host, backend: &Arc<dyn Backend>) {
+        while answer_one(host, backend).await.is_some() {}
+    }
+
+    /// The statistics of all mail, slow on a large store.
+    fn stats() -> Request {
+        Request::MailAccountStats { account: None }
+    }
+
+    /// A way to the daemon that is not there: every request fails.
+    struct Down;
+
+    impl Backend for Down {
+        fn call(&self, _request: Request) -> crate::Answer {
+            Box::pin(async { Err("The service is not running.".to_string()) })
+        }
+    }
+
+    /// #394: the page is there once every request but the background is back; the statistics fill
+    /// their part later and say "Updating…" until then.
+    #[tokio::test]
+    async fn the_page_does_not_wait_for_the_background() {
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut host, _) = Host::new(Arc::clone(&backend), sections(), vec![stats(), Request::Settings]);
+        assert!(!host.loaded(), "nothing is known yet");
+        assert_eq!(host.data().updating, vec![stats(), Request::Settings], "everything is on its way");
+        assert_eq!(host.flight.len(), 2, "each request goes on its own");
+
+        // The settings answer first, the statistics are still out.
+        let at = host.flight.iter().position(|(request, _)| *request == Request::Settings).expect("sent");
+        host.flight.swap(0, at);
+        assert_eq!(answer_one(&mut host, &backend).await, Some(Request::Settings));
+        assert!(host.loaded(), "the page stands without the statistics");
+        assert!(host.data().updating(&stats()) && !host.data().updating(&Request::Settings));
+        assert!(host.data().mail_stats.is_empty());
+
+        answer_all(&mut host, &backend).await;
+        assert!(host.data().updating.is_empty(), "every first answer is in");
+        assert!(!host.data().mail_stats.is_empty(), "the statistics filled their part");
+        assert!(
+            host.applied.iter().any(|(request, _)| matches!(request, Request::GetMailCachePolicy { .. })),
+            "the follow-ups the statistics name were asked for as well"
+        );
+    }
+
+    /// #394: a reload on the tick does not send a request again whose answer is still out; it goes
+    /// once that answer is in, so the newer load gets an answer of its own.
+    #[tokio::test]
+    async fn a_request_on_its_way_is_not_sent_again() {
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut host, _) = Host::new(Arc::clone(&backend), sections(), vec![stats()]);
+        for _ in 0..3 {
+            let _ = host.reload();
+        }
+        assert_eq!(host.flight, vec![(stats(), 1)], "one on its way, from the first load");
+
+        answer_one(&mut host, &backend).await;
+        assert_eq!(host.flight.iter().filter(|(request, _)| *request == stats()).count(), 1);
+        assert!(
+            host.flight.iter().any(|(request, sent)| *request == stats() && *sent == 4),
+            "asked for the newest load"
+        );
+        assert!(!host.data().updating(&stats()), "it answered once, so it no longer says \"Updating…\"");
+    }
+
+    /// #394: every answer carries the load it was asked for; one of an older load never covers what
+    /// a newer one brought.
+    #[test]
+    fn an_older_answer_never_covers_a_newer_one() {
+        let (mut host, _) = Host::new(Arc::new(Demo::new()), sections(), vec![Request::Settings]);
+        let with_zoom = |zoom: torro_core::settings::Zoom| {
+            let settings = torro_core::settings::Settings { zoom, ..Default::default() };
+            Box::new(Ok(Response::Settings { settings }))
+        };
+        let part = |generation, result| Message::Part { generation, request: Box::new(Request::Settings), result };
+        let _: Outcome<()> = host.update(part(3, with_zoom(torro_core::settings::Zoom::MAX)));
+        let _: Outcome<()> = host.update(part(2, with_zoom(torro_core::settings::Zoom::MIN)));
+        assert_eq!(host.data().settings.zoom, torro_core::settings::Zoom::MAX, "the newer answer stays");
+    }
+
+    /// #394: a failure stands over the page with the load's last answer, not before – a load that
+    /// is half in does not blink an error that its next answer would take back.
+    #[tokio::test]
+    async fn a_failure_stands_with_the_last_answer() {
+        let backend: Arc<dyn Backend> = Arc::new(Down);
+        let (mut host, _) = Host::new(Arc::clone(&backend), sections(), vec![Request::Settings, Request::Accounts]);
+        answer_one(&mut host, &backend).await;
+        assert!(host.data().error.is_none(), "one answer is still out");
+        answer_one(&mut host, &backend).await;
+        assert_eq!(host.data().error.as_deref(), Some("The service is not running."));
+        assert!(host.loaded() && host.data().updating.is_empty(), "the page shows what failed");
+    }
+
+    /// #394: closed and opened again, the settings start from what they showed – at once, with
+    /// "Updating…" over it – and not from an empty page.
+    #[tokio::test]
+    async fn the_memory_shows_the_last_state_at_once() {
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let memory = Memory::default();
+        let wanted = vec![Request::Settings, stats()];
+        let (mut first, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory.clone());
+        answer_all(&mut first, &backend).await;
+        let shown = first.data().clone();
+        drop(first);
+
+        let (again, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory);
+        assert!(again.loaded(), "no loading state: the last state is there");
+        assert_eq!(again.data().mail_stats, shown.mail_stats);
+        assert_eq!(again.data().settings, shown.settings);
+        assert!(wanted.iter().all(|request| again.data().updating(request)), "and it says it is updating");
+        assert!(again.data().error.is_none());
+    }
+
+    /// #394: a change is sent on its own and the data then loaded answer by answer; once it is
+    /// fresh the host reports the send through the app as before, and its copy of the data does
+    /// not cover what came meanwhile.
+    #[tokio::test]
+    async fn a_change_reports_its_send_once_the_page_is_fresh() {
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut host, _) = Host::new(Arc::clone(&backend), sections(), vec![Request::Settings, stats()]);
+        answer_all(&mut host, &backend).await;
+        let zoom = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.1) };
+        assert!(matches!(host.act::<()>(Action::send(zoom.clone())), Outcome::Work(_)));
+        crate::apply(Arc::clone(&backend), vec![zoom]).await.expect("the demo answers");
+        let echoes = host.echoes;
+
+        let outcome: Outcome<()> = host.update(Message::Done { changed: true, result: Ok(()) });
+        assert!(matches!(outcome, Outcome::Work(_)), "the data is asked for anew");
+        assert_eq!(host.change, Some(true));
+        answer_all(&mut host, &backend).await;
+        assert_eq!((host.change, host.echoes), (None, echoes + 1), "the send is reported once");
+
+        let held = host.data().clone();
+        let outcome: Outcome<()> = host.update(Message::Sent { changed: true, result: Box::new(Ok(Data::default())) });
+        assert!(matches!(outcome, Outcome::Changed), "the app loads its own data now");
+        assert_eq!(*host.data(), held, "the report's copy is not put over the host's data");
+
+        // A send that failed reaches the app as before and stands over the page.
+        let failed: Outcome<()> = host.update(Message::Done { changed: true, result: Err("refused".to_string()) });
+        assert!(matches!(failed, Outcome::Work(_)));
+        let _: Outcome<()> = host.update(Message::Sent { changed: true, result: Box::new(Err("refused".to_string())) });
+        assert_eq!(host.notice.as_deref(), Some("refused"));
     }
 }
