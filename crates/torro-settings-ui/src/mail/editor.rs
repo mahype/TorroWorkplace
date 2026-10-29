@@ -260,7 +260,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             if name.is_empty()
                 || name.chars().count() > NAME_MAX
                 || name.chars().any(char::is_control)
-                || form.color >= 4
+                || form.color >= 5
             {
                 return Action::None;
             }
@@ -950,7 +950,7 @@ pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a
     };
     for main in definitions {
         let group = main.group;
-        let color_at = usize::from(main.color.min(3));
+        let color_at = usize::from(main.color.min(4));
         let mark = torro_gui::icon::icon(category_icon(main.icon), torro_gui::icon::SIZE)
             .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
         let heading = row![
@@ -1047,6 +1047,7 @@ fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
         choice(tr("Purple"), form.color == 1, Message::GroupColor(1)),
         choice(tr("Green"), form.color == 2, Message::GroupColor(2)),
         choice(tr("Red"), form.color == 3, Message::GroupColor(3)),
+        choice(tr("Pink"), form.color == 4, Message::GroupColor(4)),
     ]
     .spacing(space::s());
     let mut body = column![

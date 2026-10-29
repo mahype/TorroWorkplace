@@ -40,7 +40,7 @@ pub(super) fn groups_in(db: &Connection) -> Result<Vec<CategoryGroupDef>, Failur
     for row in rows {
         let (id, name, icon, color) = row?;
         let Some(group) = u32::try_from(id).ok().and_then(CategoryGroup::from_database_id) else { continue };
-        let color = u8::try_from(color).ok().filter(|color| *color < 4).unwrap_or(0);
+        let color = u8::try_from(color).ok().filter(|color| *color < 5).unwrap_or(0);
         groups.push(CategoryGroupDef { group, name, icon: CategoryIcon::from_key(&icon), color });
     }
     Ok(groups)
@@ -75,7 +75,7 @@ pub(super) fn create_group(
     icon: CategoryIcon,
     color: u8,
 ) -> Result<CategoryGroupDef, Failure> {
-    if color >= 4 {
+    if color >= 5 {
         return Err(Failure::Invalid(tr("Choose a category colour.").into()));
     }
     if groups_in(db)?.len() >= 20 {
@@ -100,7 +100,7 @@ pub(super) fn update_group(
     color: u8,
 ) -> Result<CategoryGroupDef, Failure> {
     find_group(db, group)?;
-    if color >= 4 {
+    if color >= 5 {
         return Err(Failure::Invalid(tr("Choose a category colour.").into()));
     }
     let name = if name.trim().is_empty() && !matches!(group, CategoryGroup::Custom(_)) {

@@ -7678,14 +7678,17 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        assert_eq!(inbox.category_groups().expect("defaults").len(), 4);
+        assert_eq!(inbox.category_groups().expect("defaults"), torro_mail::CategoryGroupDef::defaults());
+        assert_eq!(inbox.category_groups().expect("defaults").len(), 5, "Unsorted is the fifth");
         let main = inbox.create_category_group("Private Belege", CategoryIcon::Paperclip, 2).expect("main");
-        assert_eq!(main.group, CategoryGroup::Custom(5));
+        assert_eq!(main.group, CategoryGroup::Custom(6), "the first after the five built-in ones");
         let child = inbox
             .create_category(main.group, "Rechnungen", "Bills to pay.", true, CategoryIcon::Mail, at(8, 0))
             .expect("child");
         assert!(inbox.create_category_group("Private Belege", CategoryIcon::Tag, 0).is_err(), "duplicate name");
-        assert!(inbox.create_category_group("Archive", CategoryIcon::Tag, 4).is_err(), "invalid colour");
+        assert!(inbox.create_category_group("Archive", CategoryIcon::Tag, 5).is_err(), "invalid colour");
+        let fifth = inbox.create_category_group("Archive", CategoryIcon::Tag, 4).expect("the fifth colour");
+        assert_eq!((fifth.group, fifth.color), (CategoryGroup::Custom(7), 4));
         let changed =
             inbox.update_category_group(main.group, "Dokumente", CategoryIcon::TextQuote, 1).expect("renamed");
         assert_eq!((changed.group, changed.name.as_deref(), changed.color), (main.group, Some("Dokumente"), 1));
