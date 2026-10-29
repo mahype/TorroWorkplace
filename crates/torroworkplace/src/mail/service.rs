@@ -1130,6 +1130,9 @@ pub struct MailService {
     /// Where attachments are saved to (task M12.3, issue #290): `<data>/mail/save-targets.json`,
     /// beside the stores; none without a data directory.
     save_targets: super::save::SaveTargets,
+    /// The mail filters (issue #339): `<data>/mail/filters.json`, beside the stores; none without a
+    /// data directory.
+    filters: super::filters::MailFilters,
 }
 
 struct CacheWorkerGuard {
@@ -1166,6 +1169,8 @@ impl MailService {
     ) -> MailService {
         let save_targets =
             super::save::SaveTargets::at(dirs.as_ref().map(|dirs| dirs.data.join(super::save::FILE_NAME)));
+        let filters =
+            super::filters::MailFilters::at(dirs.as_ref().map(|dirs| dirs.data.join(super::filters::FILE_NAME)));
         MailService {
             accounts_file,
             secrets,
@@ -1182,6 +1187,7 @@ impl MailService {
             cache_workers: std::sync::Mutex::new(std::collections::HashSet::new()),
             cache_jobs_lock: Mutex::new(()),
             save_targets,
+            filters,
         }
     }
 
@@ -2345,6 +2351,12 @@ impl MailService {
     /// account.
     pub fn save_targets(&self) -> &super::save::SaveTargets {
         &self.save_targets
+    }
+
+    /// The mail filters (issue #339, [`super::filters::MailFilters`]), in the order the person keeps
+    /// them; each for one account or every one.
+    pub fn filters(&self) -> &super::filters::MailFilters {
+        &self.filters
     }
 
     /// What `{account}` of a save target's scheme names for `account` (task M12.3): the account's

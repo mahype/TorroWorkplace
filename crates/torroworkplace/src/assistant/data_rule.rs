@@ -133,8 +133,11 @@ impl Reader {
 }
 
 /// The answers of `mail.*` commands that hold no mail content: what the assistant wrote itself
-/// (a draft, that it was sent), the folders' names, `ok` and errors.
-const MAIL_ANSWERS_ALLOWED: &[&str] = &["ok", "mail-draft", "mail-sent", "mail-folders", "error"];
+/// (a draft, that it was sent), the folders' names, how many mails a filter changed (numbers only,
+/// issue #339), `ok` and errors. The filters themselves stay home: their searches name senders and
+/// subjects.
+const MAIL_ANSWERS_ALLOWED: &[&str] =
+    &["ok", "mail-draft", "mail-sent", "mail-folders", "mail-filter-applied", "error"];
 
 /// A tool's answer as a model may read it.
 #[derive(Debug, Clone, PartialEq)]
@@ -167,8 +170,7 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
         // one, with the line naming the mail in its description (task E8.5b); an AI's suggestion of a task or
         // event retells the entry (issue #120). They work on entries of
         // every source, Talk and Nextcloud too, so they stay home also with mail let out.
-        Request::HideSender { .. }
-        | Request::CreateTaskFromItem { .. }
+        Request::CreateTaskFromItem { .. }
         | Request::CreateEventFromItem { .. }
         | Request::SuggestTaskFromItem { .. }
         | Request::SuggestEventFromItem { .. }

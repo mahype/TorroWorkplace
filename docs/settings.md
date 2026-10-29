@@ -154,7 +154,7 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
-| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Keyboard shortcuts (E10.3) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
+| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Filters (Mail-Filter mit Editor, Vorschau der Treffer und „Apply“; #339, [mail.md](mail.md#filter)) · Keyboard shortcuts (E10.3) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
 
 Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). Die Fensterarten des Eingangs-Programms
 zeigen je ihre Abschnitte: Notification Hub und App Feed die des Eingangs, das Mail-Fenster die von Mail.
@@ -795,7 +795,7 @@ führt nur noch dorthin, wo es um Konten geht („Open Settings“ einer App ohn
 
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
-| Mute (Umfang, For, What happens), Hide from Notification Hub › Mute {source}, Move to {lane} › Always for {source}, Insights › Hide sender, Mute app | legt Regeln an bzw. schaltet Quellen stumm | Eingang (alle Fenster) | `<state>/inbox.sqlite` | `inbox.mute_item`, `inbox.mute_source`, `inbox.set_item_lane` | Eingang | bleibt im Eingang; Liste unter Notification Hub › Rules |
+| Mute (Umfang, For, What happens; „Hide“ nicht für Mail, #339), Hide from Notification Hub › Mute {source}, Move to {lane} › Always for {source}, Insights › Sender to Info, Mute app | legt Regeln an bzw. schaltet Quellen stumm | Eingang (alle Fenster) | `<state>/inbox.sqlite` | `inbox.mute_item`, `inbox.mute_source`, `inbox.set_item_lane` | Eingang | bleibt im Eingang; Liste unter Notification Hub › Rules |
 | All rules ↗ | öffnete die Seite Notification Hub der Steuerzentrale | Eingang › Mute-Menü | – | – | Eingang | geändert (S.20): Rules im selben Fenster; im Mail-Fenster, das keine Rules hat, holt es das Fenster des Notification Hub nach vorn (`apps.open_app`) |
 
 #### Mail-Fenster
@@ -811,6 +811,7 @@ Bestätigung gelten jeweils für dieses Konto. Das offene ZIP64-Format und die C
 | HTML/Text, Light/Dark am Leser | nur für die offene Mail | Mail-Fenster › Fuß des Lesers | nur im Speicher; Vorgabe `mailView`, `mailAppearance` | – (Vorgabe: `set_setting`) | Mail | bleibt; Vorgabe nach Mail |
 | From, Signatur beim Schreiben | Absender der neuen Mail | Mail › Schreiben | nicht gespeichert; Signatur aus dem Konto | – | Mail | bleibt |
 | Tastenkürzel | fest „Torro“ | Mail-Fenster (`torro_core::shortcuts`) | Code | – | Mail | geplant (E10.1b, E10.2, E10.3) |
+| Filters (Suche, Konto, Move, Mark as read, Category, Schalter) | was mit neuer Mail im Posteingang geschieht; vorhandene Mail nur über „Apply“ | Mail-Fenster › Settings › Filters; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `<data>/mail/filters.json` | `mail.list_filters`, `mail.create_filter`, `mail.update_filter`, `mail.remove_filter`, `mail.preview_filter`, `mail.apply_filter` | Mail | neu mit #339, ersetzt „Hidden“ ([mail.md](mail.md#filter)) |
 | Backup source, From date, Backup folder | Vorgabe für das nächste Backup dieses Kontos | Mail-Fenster › Settings › Accounts › Konto › Backup | im Mail-Konto: `MailSettings.backup` (`local`, `since`, `directory`), geschrieben, wenn ein Backup startet | `mail.backup_create` speichert die Wahl mit; kein eigenes `set` | Mail | bleibt; Archivname, Testlauf und Bestätigungen gelten nur im Speicher für dieses Konto (#267) |
 
 ### Geplant, nicht gebaut
@@ -872,7 +873,8 @@ gelesen oder geschrieben (Issue #226), bleibt aber in der Datei stehen. Ebenso n
    Notification Hub-Gruppe am Nextcloud-Konto; Status jedes Kontos.
 8. **API/MCP:** Jede Einstellung hat einen Request und, wo nicht bewusst nie (`api.md` Punkte 2, 3, 5, 6), ein
    MCP-Tool. Es fehlt kein Weg für eine gebaute Einstellung. Nur die Haken des Kalenders und der Fensterzustand
-   gehen bewusst durch keine API. `inbox.hide_sender` gibt es noch, aber keine Oberfläche ruft ihn mehr.
+   gehen bewusst durch keine API. `inbox.hide_sender` ist mit #339 entfallen; an seine Stelle treten die Mail-Filter
+   (Mail › Filters, `mail.*_filter`).
 9. **Abweichungen Konzept–Code:** S.15 („All rules“) ist gebaut, aber nicht abgehakt. Das Konzept nennt die Seite
    „Inbox“, die Oberfläche „Notification Hub“. Das Eingangs-Programm hat drei Fensterarten (Notification Hub, App
    Feed, Mail), das Konzept kennt Eingang und Mail. `ai-models.json` gibt es noch nicht (kommt mit S.24). Im

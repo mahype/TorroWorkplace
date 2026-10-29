@@ -3,13 +3,12 @@
 //! The app runs on the core's client (`torro_ipc::inbox::InboxClient`) or the demo source; the
 //! tests use this one to see the empty state and views that start without any data. Its mail side
 //! (`crate::mail::MailSource`) stands in `mail.rs`: no folders, no mail, "All" holds nothing and
-//! nothing unread, "Show again" has nothing to remember, the piles hold nothing and no mail can be
-//! put on one or answered.
+//! nothing unread, the piles hold nothing and no mail can be put on one or answered.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use torro_inbox::item::{HideScope, MuteEffect, MuteOption, MuteScope, Muted};
+use torro_inbox::item::{MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::source::TaskList;
-use torro_inbox::{Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
+use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 
 /// An inbox without entries and without sources. Listing gives nothing (no task lists either);
 /// changing or opening an entry, making a task of it or deciding an approval gives
@@ -68,10 +67,6 @@ impl InboxSource for EmptySource {
         Err(InboxError::Offline)
     }
 
-    async fn hide_sender(&self, _id: String, _scope: HideScope) -> Result<Hidden, InboxError> {
-        Err(InboxError::NotFound)
-    }
-
     async fn remove_rule(&self, _id: String) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
     }
@@ -105,10 +100,9 @@ mod tests {
 
     use super::*;
 
-    /// Task E18.3: no mail of any role, nothing unread in "All", "Show again" answers `Ok`; task
-    /// E19.3: no piles.
+    /// Task E18.3: no mail of any role, nothing unread in "All"; task E19.3: no piles.
     #[test]
-    fn has_no_mail_by_role_and_nothing_to_show_again() {
+    fn has_no_mail_by_role_and_no_piles() {
         use torro_ipc::inbox::{MailByRole, MailInPile};
         use torro_ipc::mail::PileFilter;
         use torro_mail::{MailPile, Order, Role};
@@ -120,7 +114,6 @@ mod tests {
             role: Role::Inbox,
             account: None,
             snoozed: Some(false),
-            hidden: Some(false),
             pile: Some(PileFilter::Without),
             order: Order::NewestFirst,
             limit: 50,
@@ -128,7 +121,6 @@ mod tests {
         };
         assert_eq!(block_on(source.mail_by_role(find)), Ok(MailPage::of(Vec::new(), None)));
         assert_eq!(block_on(source.unread_in_all(None)), Ok(0));
-        assert_eq!(block_on(source.set_mail_shown(vec!["m:1".into()], true)), Ok(()));
         // Task E19.3: no pile holds anything, and there is no mail to put on one or to answer.
         let pile = MailInPile {
             pile: MailPile::ReplyLater,
@@ -153,7 +145,6 @@ mod tests {
         assert_eq!(block_on(source.snooze_item("x".into(), None, false, false)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.set_item_lane("x".into(), Lane::Info, false)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.mute_source(SourceRef::suite(), true)), Err(InboxError::Offline));
-        assert_eq!(block_on(source.hide_sender("x".into(), HideScope::Sender)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.remove_rule("r".into())), Err(InboxError::NotFound));
         assert_eq!(block_on(source.open_item("x".into())), Err(InboxError::NotFound));
         assert_eq!(block_on(source.list_task_lists()), Ok(Vec::new()));

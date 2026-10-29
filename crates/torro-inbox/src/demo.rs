@@ -37,11 +37,8 @@
 //! model guessed. The app plans and answers saving from them without writing a file.
 //!
 //! The mail window's views of every account (task E18.3): [`DemoSource::by_role`] lists the mail of
-//! one folder role, leaving out or giving only what is snoozed (the mail of a snoozed entry) and
-//! what is hidden. One newsletter is hidden from the start ([`HIDDEN_MAIL`]), so "Hidden" is not
-//! empty in a screenshot; [`DemoSource::set_mail_shown`] ("Show again") keeps the exception in
-//! memory, as the core keeps it in `shown_mail`. The demo's hidden mail is a fixed fact: hiding a
-//! sender or a conversation in the demo closes entries but hides no further mail.
+//! one folder role, leaving out or giving only what is snoozed (the mail of a snoozed entry). Mail
+//! is never hidden (issue #339): muting a mail entry offers no popup and "Info" only.
 //!
 //! The piles and follow-ups of the mail window (task E19.3): two messages lie on "Reply later"
 //! ([`REPLY_LATER_MAIL`]) and one on "Set aside" ([`SET_ASIDE_MAIL`]) from the start, kept on their
@@ -65,15 +62,11 @@ use torro_mail::{
 };
 
 use crate::item::{
-    Action, AgentInfo, AgentKind, Facet, FacetKey, Hidden, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect,
-    MuteOption, MuteScope, Muted, Rule, RuleEffect, Sender, SourceInfo, SourceKind, SourceRef, State,
+    Action, AgentInfo, AgentKind, Facet, FacetKey, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption,
+    MuteScope, Muted, Rule, RuleEffect, Sender, SourceInfo, SourceKind, SourceRef, State,
 };
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
-
-/// The demo's mail hidden from the inbox (task E18.3): the work account's newsletter "Winter
-/// jackets are here", which stands in "Hidden" and not in "All" until it is shown again.
-pub const HIDDEN_MAIL: &str = "m:w14";
 
 /// The approval behind the sample approval entry; its actions name it.
 pub const APPROVAL_ID: &str = "demo-approval-1";
@@ -98,9 +91,8 @@ struct Data {
     /// The ids of the entries dismissed ("✕"), as the core keeps them beside the entry: an entry
     /// opened again or done for real leaves it (issue #117, [`ItemFilter::dismissed`]).
     dismissed: BTreeSet<String>,
-    /// The senders and domains hidden from the inbox (task E3.10) and the traits muted (task
-    /// E8.6a), in memory only.
-    hidden: Vec<Rule>,
+    /// The traits muted (task E8.6a), in memory only.
+    rules: Vec<Rule>,
     /// How many of these rules were made, for their ids: one removed leaves no gap to reuse.
     rules_made: usize,
     /// The tasks made from entries ("Make task", task E3.5), in memory only.
@@ -115,10 +107,6 @@ struct Data {
     sent: Vec<Draft>,
     /// How many drafts were given an id.
     draft_count: u32,
-    /// The mail hidden from the inbox while it lies in an inbox folder ([`HIDDEN_MAIL`]).
-    hidden_mail: BTreeSet<String>,
-    /// The hidden mail shown again (`inbox.set_mail_shown`, task E18.3): the exceptions.
-    shown_mail: BTreeSet<String>,
     /// The answers sent from the demo – account, conversation and when –, so putting mail back on
     /// "Reply later" with an older time takes it off again at once, as the core's
     /// `take_off_answered` does (third review of #315).
@@ -126,27 +114,6 @@ struct Data {
 }
 
 impl Data {
-    /// The rule hiding `sender` or `domain` in every mail account (task E3.11): the one already
-    /// kept for it in any account, else a new one about `source`; with whether it is new.
-    fn hiding_rule(
-        &mut self,
-        source: SourceRef,
-        sender: Option<String>,
-        domain: Option<String>,
-        now: DateTime<Utc>,
-    ) -> (Option<Rule>, bool) {
-        let known =
-            self.hidden.iter().find(|rule| rule.facet.is_none() && rule.sender == sender && rule.domain == domain);
-        if let Some(known) = known {
-            return (Some(known.clone()), false);
-        }
-        let id = self.next_rule_id();
-        let rule =
-            Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now, facet: None, until: None };
-        self.hidden.push(rule.clone());
-        (Some(rule), true)
-    }
-
     fn next_rule_id(&mut self) -> String {
         self.rules_made += 1;
         format!("demo-rule-{}", self.rules_made)
@@ -169,13 +136,13 @@ impl Data {
                 && rules::reaches(rule, &source)
                 && rules::is_active(rule, now)
         };
-        if let Some(known) = self.hidden.iter_mut().find(|rule| same(rule)) {
+        if let Some(known) = self.rules.iter_mut().find(|rule| same(rule)) {
             known.until = rules::later_end(known.until, until);
             return (known.clone(), false);
         }
         let id = self.next_rule_id();
         let rule = Rule { id, source, sender: None, domain: None, effect, created: now, facet: Some(facet), until };
-        self.hidden.push(rule.clone());
+        self.rules.push(rule.clone());
         (rule, true)
     }
 
@@ -281,7 +248,7 @@ impl DemoSource {
             items,
             muted: BTreeSet::new(),
             dismissed: BTreeSet::new(),
-            hidden: Vec::new(),
+            rules: Vec::new(),
             rules_made: 0,
             tasks: Vec::new(),
             folders: folder_sample(),
@@ -289,8 +256,6 @@ impl DemoSource {
             drafts: Vec::new(),
             sent: Vec::new(),
             draft_count: 0,
-            hidden_mail: BTreeSet::from([HIDDEN_MAIL.to_owned()]),
-            shown_mail: BTreeSet::new(),
             answers: Vec::new(),
         };
         DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
@@ -1204,14 +1169,6 @@ impl DemoSource {
         }
     }
 
-    /// `message` is hidden from the inbox now (task E18.3): one of the demo's hidden mail, in an
-    /// inbox folder, not shown again – as the core counts only mail of the inbox folder.
-    fn is_hidden(data: &Data, message: &MessageSummary) -> bool {
-        let in_inbox =
-            data.folders.iter().any(|folder| folder.id == message.folder && folder.role == Some(Role::Inbox));
-        in_inbox && data.hidden_mail.contains(&message.id) && !data.shown_mail.contains(&message.id)
-    }
-
     /// `message` belongs to an entry snoozed now ("Later").
     fn is_snoozed(data: &Data, message: &MessageSummary, now: DateTime<Utc>) -> bool {
         data.items.iter().any(|item| {
@@ -1222,15 +1179,13 @@ impl DemoSource {
 
     /// `mail.search_messages` with `in:<role>` (task E18.3): every message in a folder of `role`
     /// of both accounts (or of `account` only), in `order` by date, all of them – the window's
-    /// source pages them. `snoozed` and `hidden` as the request has them: `Some(false)` leaves out
-    /// the mail of a snoozed entry ([`DemoSource::is_snoozed`]) resp. the hidden mail
-    /// ([`HIDDEN_MAIL`], only in an inbox), `Some(true)` gives only that, `None` both.
+    /// source pages them. `snoozed` as the request has it: `Some(false)` leaves out the mail of a
+    /// snoozed entry ([`DemoSource::is_snoozed`]), `Some(true)` gives only that, `None` both.
     pub fn by_role(
         &self,
         role: Role,
         account: Option<&str>,
         snoozed: Option<bool>,
-        hidden: Option<bool>,
         order: Order,
     ) -> Vec<MessageSummary> {
         let now = self.now();
@@ -1243,32 +1198,11 @@ impl DemoSource {
             .map(|m| &m.summary)
             .filter(|m| of_role.contains(m.folder.as_str()) && account.is_none_or(|account| m.account == account))
             .filter(|m| snoozed.is_none_or(|wanted| Self::is_snoozed(&data, m, now) == wanted))
-            .filter(|m| hidden.is_none_or(|wanted| Self::is_hidden(&data, m) == wanted))
             .cloned()
             .collect();
         // Mail of the same minute by id, so oldest first is newest first turned round.
         found.sort_by(|a, b| order.apply(b.date.cmp(&a.date).then_with(|| b.id.cmp(&a.id))));
         found
-    }
-
-    /// `inbox.set_mail_shown` (task E18.3, "Show again"): `shown` takes the messages `ids` out of
-    /// "Hidden" – remembered only for mail hidden now, as the core does –, `!shown` takes that
-    /// back. [`InboxError::NotFound`] when one of them is unknown; nothing changes then.
-    pub fn set_mail_shown(&self, ids: &[String], shown: bool) -> Result<(), InboxError> {
-        let mut data = self.lock();
-        let mut known = Vec::new();
-        for id in ids {
-            let message = data.mail.iter().find(|m| m.summary.id == *id).ok_or(InboxError::NotFound)?;
-            known.push(message.summary.clone());
-        }
-        for message in known {
-            if !shown {
-                data.shown_mail.remove(&message.id);
-            } else if Self::is_hidden(&data, &message) {
-                data.shown_mail.insert(message.id);
-            }
-        }
-        Ok(())
     }
 
     /// `inbox.set_mail_pile` (task E19.3): puts the messages `ids` on `pile`, moving them from the
@@ -1737,7 +1671,8 @@ impl InboxSource for DemoSource {
     /// hidden or moved for good, then the entries it holds for changed at once. Demo mode gets no new
     /// reports, so the rule changes nothing later. [`InboxError::Forbidden`] for the person's own
     /// entries is the app key's: the demo is the person, so they are [`InboxError::Other`] here like
-    /// a trait the entry lacks.
+    /// a trait the entry lacks. Mail is never hidden (issue #339): `hide` for a mail entry or message is
+    /// [`InboxError::Unsupported`].
     async fn mute_item(
         &self,
         id: String,
@@ -1748,6 +1683,9 @@ impl InboxSource for DemoSource {
         let now = self.now();
         let mut data = self.lock();
         let (item, stand_in) = data.mute_subject(&id)?;
+        if !rules::may_mute_with(item.source.kind, effect) {
+            return Err(InboxError::Unsupported);
+        }
         if until.is_some_and(|until| until <= now) {
             return Err(InboxError::Other("the end of muting has passed".into()));
         }
@@ -1845,46 +1783,13 @@ impl InboxSource for DemoSource {
         Ok(())
     }
 
-    /// As the core does (tasks E3.10, E3.11): a conversation is done; a sender or domain gets its
-    /// rule once – for every mail account, the same rule made again from another account is the one
-    /// already there – and the open and snoozed entries it hides ([`rules::hides`]) are done. Unlike
-    /// "done", their mail stays as it is – not read, not moved. Demo mode gets no new mail, so the
-    /// rule drops nothing later. [`InboxError::NotFound`] for an unknown entry,
-    /// [`InboxError::Other`] for one that cannot be hidden that way ([`rules::may_hide`]).
-    async fn hide_sender(&self, id: String, scope: HideScope) -> Result<Hidden, InboxError> {
-        let now = self.now();
-        let mut data = self.lock();
-        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
-        if !rules::may_hide(item, scope) {
-            return Err(InboxError::Other("this entry names no mail sender to hide".into()));
-        }
-        let (source, target) = (item.source.clone(), rules::hide_target(item, scope));
-        let (rule, new_rule) = match (scope, target) {
-            (HideScope::Sender, Some(target)) => data.hiding_rule(source, Some(target), None, now),
-            (HideScope::Domain, Some(target)) => data.hiding_rule(source, None, Some(target), now),
-            _ => (None, false),
-        };
-        let mut done = Vec::new();
-        for entry in data.items.iter_mut().filter(|entry| !matches!(entry.state, State::Done { .. })) {
-            let hidden = match &rule {
-                Some(rule) => rules::hides(rule, entry),
-                None => entry.id == id,
-            };
-            if hidden {
-                rules::set_done(entry, true, now);
-                done.push(entry.id.clone());
-            }
-        }
-        Ok(Hidden { rule, new_rule, done })
-    }
-
-    /// Removes a hidden sender or domain or a muted trait (the only rules demo mode keeps); muted sources are taken
-    /// back with [`InboxSource::mute_source`]. [`InboxError::NotFound`] for an unknown rule.
+    /// Removes a muted trait (the only rules demo mode keeps); muted sources are taken back with
+    /// [`InboxSource::mute_source`]. [`InboxError::NotFound`] for an unknown rule.
     async fn remove_rule(&self, id: String) -> Result<(), InboxError> {
         let mut data = self.lock();
-        let before = data.hidden.len();
-        data.hidden.retain(|rule| rule.id != id);
-        if data.hidden.len() == before { Err(InboxError::NotFound) } else { Ok(()) }
+        let before = data.rules.len();
+        data.rules.retain(|rule| rule.id != id);
+        if data.rules.len() == before { Err(InboxError::NotFound) } else { Ok(()) }
     }
 
     /// Demo mode has no window manager and no browser behind it: nothing comes to the front (the
@@ -2215,53 +2120,23 @@ mod tests {
         assert!(demo.lock().tasks.is_empty());
     }
 
+    /// Issue #339: mail is never hidden – an entry's or a message's – while every other source may
+    /// still be; nothing changes when it is refused.
     #[tokio::test]
-    async fn hiding_a_sender_closes_its_entries_but_leaves_the_mail_unread() {
-        let demo = DemoSource::new(now());
-        let sale = demo.lock().items.iter().find(|item| item.title == "Autumn sale: 20% off").cloned().expect("sale");
-        let other = demo.lock().items.iter().find(|item| item.title == "Winter jackets are here").cloned();
-        let other = other.expect("mail from the same domain in the work account");
-        assert_ne!(other.source, sale.source, "two accounts");
-        let Some(Link::Mail { message }) = sale.link.clone() else { panic!("a mail entry links its mail") };
-        let hidden = demo.hide_sender(sale.id.clone(), HideScope::Domain).await.expect("hidden");
-        let rule = hidden.rule.clone().expect("a rule");
-        assert_eq!((rule.sender.as_deref(), rule.domain.as_deref()), (None, Some("shop.example")));
-        assert_eq!((rule.source.clone(), rule.effect, hidden.new_rule), (sale.source.clone(), RuleEffect::Muted, true));
-        assert_eq!(hidden.done, [sale.id.clone(), other.id.clone()], "in every mail account (task E3.11)");
-        assert!(matches!(entry_state(&demo, &other.id), State::Done { .. }));
-        let mail = demo.lock().mail.iter().find(|m| m.summary.id == message).cloned().expect("the mail");
-        assert!(!mail.summary.flags.contains(&Flag::Seen), "not read");
-        assert!(mail.summary.folder.ends_with("-inbox"), "not moved");
-        let again = demo.hide_sender(other.id.clone(), HideScope::Domain).await.expect("hidden again");
-        assert_eq!(again, Hidden { rule: Some(rule.clone()), new_rule: false, done: Vec::new() }, "the same rule");
-        let agent = demo.hide_sender("demo-1".into(), HideScope::Sender).await;
-        assert!(matches!(agent, Err(InboxError::Other(_))), "no mail: {agent:?}");
-        assert_eq!(demo.hide_sender("nope".into(), HideScope::Sender).await, Err(InboxError::NotFound));
-
-        // Undo, as the app does it: the rule goes, the entries open again.
-        demo.remove_rule(rule.id.clone()).await.expect("removed");
-        assert_eq!(demo.remove_rule(rule.id).await, Err(InboxError::NotFound), "once");
-        for id in hidden.done {
-            demo.set_item_done(id.clone(), false).await.expect("open again");
-            assert!(entry_state(&demo, &id).is_open(), "{id}");
-        }
-    }
-
-    #[tokio::test]
-    async fn hiding_a_conversation_leaves_its_mail_unread_and_keeps_no_rule() {
+    async fn mail_is_not_hidden_but_other_sources_are() {
         let demo = DemoSource::new(now());
         let plans = demo.lock().items.iter().find(|item| item.title == "Weekend plans").cloned().expect("mail");
-        let Some(Link::Mail { message }) = plans.link.clone() else { panic!("a mail entry links its mail") };
-        let hidden = demo.hide_sender(plans.id.clone(), HideScope::Conversation).await.expect("hidden");
-        assert_eq!(hidden, Hidden { rule: None, new_rule: false, done: vec![plans.id.clone()] });
-        assert!(matches!(entry_state(&demo, &plans.id), State::Done { .. }));
-        let mail = demo.lock().mail.iter().find(|m| m.summary.id == message).cloned().expect("the mail");
-        assert!(!mail.summary.flags.contains(&Flag::Seen), "not read, unlike done");
-        assert!(demo.lock().hidden.is_empty(), "no rule");
-        let twice = demo.hide_sender(plans.id.clone(), HideScope::Conversation).await.expect("hidden again");
-        assert!(twice.done.is_empty(), "nothing was open any more");
-        let notice = demo.hide_sender("demo-6".into(), HideScope::Conversation).await;
-        assert!(matches!(notice, Err(InboxError::Other(_))), "only mail: {notice:?}");
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        for scope in [MuteScope::Conversation, sender] {
+            let hidden = demo.mute_item(plans.id.clone(), scope, None, MuteEffect::Hide).await;
+            assert_eq!(hidden, Err(InboxError::Unsupported), "{scope:?}");
+        }
+        assert_eq!(demo.mute_item("m:w6".into(), sender, None, MuteEffect::Hide).await, Err(InboxError::Unsupported));
+        assert!(entry_state(&demo, &plans.id).is_open() && demo.lock().rules.is_empty(), "nothing changed");
+        let info = demo.mute_item(plans.id.clone(), MuteScope::Conversation, None, MuteEffect::Info).await;
+        assert!(info.is_ok(), "{info:?}");
+        let agent = demo.mute_item("demo-1".into(), MuteScope::Conversation, None, MuteEffect::Hide).await;
+        assert_eq!(agent.expect("an agent is hidden").done, ["demo-1"]);
     }
 
     /// Task E8.6a: the menu is built from the entry's traits, and the person's own entries have none.
@@ -2397,7 +2272,7 @@ mod tests {
         assert!(options.iter().all(|option| option.scope != MuteScope::Conversation), "{options:?}");
         let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
         assert!(options.iter().any(|option| option.scope == sender));
-        let conversation = demo.mute_item("m:w6".into(), MuteScope::Conversation, None, MuteEffect::Hide).await;
+        let conversation = demo.mute_item("m:w6".into(), MuteScope::Conversation, None, MuteEffect::Info).await;
         assert!(matches!(conversation, Err(InboxError::Other(_))), "no entry to close: {conversation:?}");
         let muted = demo.mute_item("m:w6".into(), sender, None, MuteEffect::Info).await.expect("muted");
         let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
@@ -2521,52 +2396,23 @@ mod tests {
         assert!(demo.get_mail("m:p1").expect("there").summary.flags.contains(&Flag::Seen), "done marks it read");
     }
 
-    fn role_ids(demo: &DemoSource, role: Role, snoozed: Option<bool>, hidden: Option<bool>) -> Vec<String> {
-        demo.by_role(role, None, snoozed, hidden, Order::NewestFirst).into_iter().map(|m| m.id).collect()
+    fn role_ids(demo: &DemoSource, role: Role, snoozed: Option<bool>) -> Vec<String> {
+        demo.by_role(role, None, snoozed, Order::NewestFirst).into_iter().map(|m| m.id).collect()
     }
 
-    /// Task E18.3: "Archive" lists the archived mail of both accounts, "All" leaves the hidden
-    /// newsletter out and "Hidden" gives only it; "Show again" turns that round and its undo back.
+    /// Task E18.3: "Archive" lists the archived mail of both accounts, "All" every mail of both
+    /// inboxes – nothing is hidden (issue #339), the newsletter of the work account too.
     #[test]
-    fn mail_is_listed_by_role_without_or_with_the_hidden_newsletter() {
+    fn mail_is_listed_by_role() {
         let demo = DemoSource::new(now());
-        assert_eq!(role_ids(&demo, Role::Archive, None, None), ["m:w9", "m:p6"], "both accounts, newest first");
-        assert_eq!(role_ids(&demo, Role::Archive, None, Some(true)), Vec::<String>::new(), "only inbox mail hides");
-        let all = role_ids(&demo, Role::Inbox, Some(false), Some(false));
-        assert!(!all.iter().any(|id| id == HIDDEN_MAIL), "the newsletter is hidden");
+        assert_eq!(role_ids(&demo, Role::Archive, None), ["m:w9", "m:p6"], "both accounts, newest first");
+        let all = role_ids(&demo, Role::Inbox, Some(false));
         assert!(all.iter().any(|id| id == "m:w1") && all.iter().any(|id| id == "m:p1"), "both inboxes");
-        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL]);
-        assert_eq!(role_ids(&demo, Role::Inbox, None, None).len(), all.len() + 1, "without the field: every one");
-        let hidden = demo.get_mail(HIDDEN_MAIL).expect("the newsletter");
-        assert!(hidden.traits.list_id.is_some(), "a newsletter: {}", hidden.summary.subject);
-        let private = demo.by_role(Role::Inbox, Some(MAIL_ACCOUNTS[1]), Some(false), Some(false), Order::NewestFirst);
+        assert!(all.iter().any(|id| id == "m:w14"), "the newsletter is in All");
+        let private = demo.by_role(Role::Inbox, Some(MAIL_ACCOUNTS[1]), Some(false), Order::NewestFirst);
         assert!(private.iter().all(|m| m.account == MAIL_ACCOUNTS[1]) && !private.is_empty(), "one account");
-        let oldest = demo.by_role(Role::Inbox, None, Some(false), Some(false), Order::OldestFirst);
+        let oldest = demo.by_role(Role::Inbox, None, Some(false), Order::OldestFirst);
         assert_eq!(oldest.into_iter().rev().map(|m| m.id).collect::<Vec<_>>(), all, "oldest first");
-
-        demo.set_mail_shown(&[HIDDEN_MAIL.into()], true).expect("shown again");
-        assert!(role_ids(&demo, Role::Inbox, Some(false), Some(false)).iter().any(|id| id == HIDDEN_MAIL));
-        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), Vec::<String>::new(), "nothing hidden");
-        demo.set_mail_shown(&[HIDDEN_MAIL.into()], false).expect("undone");
-        assert_eq!(role_ids(&demo, Role::Inbox, Some(false), Some(false)), all);
-        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL]);
-    }
-
-    /// As the core: showing mail that is not hidden remembers nothing, and an unknown id changes
-    /// nothing at all.
-    #[test]
-    fn only_hidden_mail_is_shown_again_and_unknown_mail_is_not_found() {
-        let demo = DemoSource::new(now());
-        demo.set_mail_shown(&["m:w1".into()], true).expect("nothing to remember");
-        assert!(demo.lock().shown_mail.is_empty());
-        let both = [HIDDEN_MAIL.to_owned(), "m:nope".to_owned()];
-        assert_eq!(demo.set_mail_shown(&both, true), Err(InboxError::NotFound));
-        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL], "still hidden");
-        // Moved out of the inbox, the newsletter is hidden no more; back in, it is again.
-        demo.move_mail_to(&[HIDDEN_MAIL.into()], Role::Archive).expect("archived");
-        assert!(role_ids(&demo, Role::Archive, None, Some(false)).iter().any(|id| id == HIDDEN_MAIL));
-        demo.move_mail_to(&[HIDDEN_MAIL.into()], Role::Inbox).expect("back");
-        assert_eq!(role_ids(&demo, Role::Inbox, None, Some(true)), [HIDDEN_MAIL]);
     }
 
     /// The mail of a snoozed entry is "Later", not "All".
@@ -2580,10 +2426,10 @@ mod tests {
             .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == "m:w1"))
             .map(|item| item.id.clone())
             .expect("the entry of m:w1");
-        assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), Vec::<String>::new(), "nothing snoozed");
+        assert_eq!(role_ids(&demo, Role::Inbox, Some(true)), Vec::<String>::new(), "nothing snoozed");
         demo.snooze_item(entry, Some(now() + TimeDelta::days(1)), false, false).await.expect("snoozed");
-        assert_eq!(role_ids(&demo, Role::Inbox, Some(true), None), ["m:w1"]);
-        assert!(!role_ids(&demo, Role::Inbox, Some(false), Some(false)).iter().any(|id| id == "m:w1"), "not in All");
+        assert_eq!(role_ids(&demo, Role::Inbox, Some(true)), ["m:w1"]);
+        assert!(!role_ids(&demo, Role::Inbox, Some(false)).iter().any(|id| id == "m:w1"), "not in All");
     }
 
     #[test]
@@ -2735,7 +2581,7 @@ mod tests {
         for id in REPLY_LATER_MAIL {
             assert_eq!(demo.get_mail(id).expect("the mail").summary.pile, Some(MailPile::ReplyLater), "{id}");
         }
-        let inbox = demo.by_role(Role::Inbox, None, None, None, Order::NewestFirst);
+        let inbox = demo.by_role(Role::Inbox, None, None, Order::NewestFirst);
         let set_aside = inbox.iter().find(|m| m.id == SET_ASIDE_MAIL).expect("still in its folder");
         assert_eq!(set_aside.pile, Some(MailPile::SetAside), "the summary names it");
         // In the trash a message is on no pile's list, out of it again it is.
