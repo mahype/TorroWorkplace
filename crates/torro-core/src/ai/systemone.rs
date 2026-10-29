@@ -17,7 +17,7 @@
 //! Reading an answer is deliberately strict: a reply that answers none of the questions is
 //! [`AiError::Format`], never a silent fallback. What a model says is data, never instructions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
@@ -157,6 +157,10 @@ pub struct DecisionReply {
     /// [`super::decide_chat`]), not from a decision model: they carry no confidence of their own
     /// (each counts as 1.0), so a caller keeps none for them. `false` for a decision model's reply.
     pub by_chat: bool,
+    /// The questions the model answered in a form this version cannot read, kept apart from those
+    /// it left out (issue #398): a caller may take a question left out as "none fits", but an
+    /// answer it could not read says nothing. Empty for a chat model's reply.
+    pub unreadable: BTreeSet<String>,
 }
 
 impl DecisionReply {
@@ -222,15 +226,21 @@ pub fn read_decision(body: &[u8]) -> Result<DecisionReply, AiError> {
     let value: Value = serde_json::from_slice(body).map_err(|_| unreadable())?;
     let answers = value.get("answers").and_then(Value::as_object).ok_or_else(unreadable)?;
     let mut read = BTreeMap::new();
+    let mut lost = BTreeSet::new();
     for (name, answer) in answers {
-        if let Some(answer) = answer_of(answer) {
-            read.insert(name.clone(), answer);
+        match answer_of(answer) {
+            Some(answer) => {
+                read.insert(name.clone(), answer);
+            }
+            None => {
+                lost.insert(name.clone());
+            }
         }
     }
     if read.is_empty() {
         return Err(unreadable());
     }
-    Ok(DecisionReply { answers: read, usage: usage_of(&value), by_chat: false })
+    Ok(DecisionReply { answers: read, usage: usage_of(&value), by_chat: false, unreadable: lost })
 }
 
 /// One answer, by what its `type` says; `None` for one this version cannot read, so a reply with
@@ -379,6 +389,18 @@ mod tests {
         let (choice, confidence) = reply.choice("c").expect("a choice");
         assert_eq!(choice, "a");
         assert!((confidence - 0.8).abs() < 0.001);
+    }
+
+    /// Issue #398: an answer this version cannot read is set apart from a question left out, so a
+    /// caller does not take it for "none fits"; the readable answers beside it stay.
+    #[test]
+    fn an_unreadable_answer_is_told_apart_from_one_left_out() {
+        let body = br#"{"answers": {"c": {"type": "choice", "choice": "a"}, "n": {"type": "noul", "noul": 0.9}}}"#;
+        let reply = read_decision(body).expect("a decision");
+        assert_eq!(reply.choice("c"), None);
+        assert!(reply.unreadable.contains("c"), "a choice without a confidence cannot be read");
+        assert!(!reply.unreadable.contains("left_out") && !reply.unreadable.contains("n"));
+        assert!((reply.noul("n").expect("a noul") - 0.9).abs() < 0.001);
     }
 
     #[test]

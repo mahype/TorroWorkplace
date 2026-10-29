@@ -354,11 +354,12 @@ fn side_questions() -> BTreeMap<String, Question> {
 }
 
 /// Asks the model what `content` is, as [`plan`] says for `catalogue` (task E15.4): one call, or
-/// the group and then the category. `ask` sends one call. `Ok(None)` only when there was nothing
-/// to choose between. A model that answered without naming a category or a group said none fits:
-/// that is `other` (issue #398). An answer that could not be read at all is an error
-/// ([`AiError::Format`]) – then nothing is kept and a later run tries again, so a model set up
-/// wrongly does not make every mail `other`.
+/// the group and then the category. `ask` sends one call. A model that answered without naming a
+/// category or a group said none fits: that is `other` (issue #398). An answer that could not be
+/// read says nothing, so a model set up wrongly does not make every mail `other`: one that answers
+/// nothing readable is an error ([`AiError::Format`]), and `Ok(None)` when its answer to the
+/// category or the group could not be read ([`DecisionReply::unreadable`]) – then nothing is kept
+/// and a later run tries again. `Ok(None)` also when there was nothing to choose between.
 pub async fn decide<F, Fut>(
     model: &str,
     content: &Content,
@@ -371,9 +372,15 @@ where
 {
     match plan(catalogue) {
         Plan::Nothing => Ok(None),
-        Plan::One(offered) => Ok(Some(read(&ask(request(model, content, &offered)).await?, &offered))),
+        Plan::One(offered) => {
+            let reply = ask(request(model, content, &offered)).await?;
+            Ok((!reply.unreadable.contains(CATEGORY)).then(|| read(&reply, &offered)))
+        }
         Plan::ByGroup(groups) => {
             let first = ask(group_request(model, content, &groups)).await?;
+            if first.unreadable.contains(GROUP) {
+                return Ok(None);
+            }
             let by_chat = first.by_chat;
             // A model that named no group it was offered is "other": a chat model (task MW.3) as
             // much as a decision model that left the question out (issue #398).
@@ -396,6 +403,9 @@ where
                 return Ok(decided(only.category));
             }
             let second = ask(narrow_request(model, content, offered)).await?;
+            if second.unreadable.contains(CATEGORY) {
+                return Ok(None);
+            }
             let narrowed = read(&second, offered);
             // As sure as the less sure of the two answers; a chat model's says nothing of it.
             let category = match narrowed.category.confidence {
@@ -455,7 +465,9 @@ fn state_of(content: &Content) -> String {
 
 /// What the model said, measured against [`CONFIDENCE_MIN`]. `offered` are the options it was
 /// given: a name it made up is no category. A decision model that answered no category at all
-/// said none fits: `other` with a confidence of 0, with the side answers it gave (issue #398).
+/// said none fits: `other` with a confidence of 0, with the side answers it gave (issue #398). An
+/// answer to the category that could not be read ([`DecisionReply::unreadable`]) is no such
+/// answer: [`decide`] keeps nothing for it and does not come here.
 ///
 /// A chat model's answer ([`DecisionReply::by_chat`], task MW.3) is not measured – it gives no
 /// confidence – and the category keeps none. Its reply was read before
@@ -1100,6 +1112,30 @@ mod tests {
         let decided = decide("nimble", &content(), &catalogue, |request| one.ask(request)).await.expect("asked");
         assert_eq!(decided.map(|decided| decided.category.category), Some(Category::Request));
         assert_eq!(one.asked.lock().expect("lock").len(), 1);
+    }
+
+    /// Issue #398: an answer to the category or the group that could not be read decides nothing,
+    /// in one call and in either of two – a later run asks again instead of keeping "other".
+    #[tokio::test]
+    async fn an_unreadable_category_or_group_decides_nothing() {
+        // A choice without a confidence or probabilities cannot be read.
+        let lost = r#"{"answers": {"category": {"type": "choice", "choice": "invoice"},
+            "needs_reply": {"type": "noul", "noul": 0.9}}}"#;
+        let one = Script::new(&[lost]);
+        let decided = decide("nimble", &content(), &CategoryDef::defaults(), |request| one.ask(request)).await;
+        assert_eq!(decided.expect("asked"), None);
+        let catalogue = with_own(5, false);
+        let group = Script::new(&[r#"{"answers": {"group": {"type": "choice", "choice": "paper_trail"},
+            "needs_reply": {"type": "noul", "noul": 0.9}}}"#]);
+        let decided = decide("nimble", &content(), &catalogue, |request| group.ask(request)).await.expect("asked");
+        assert_eq!(decided, None, "an unreadable group");
+        assert_eq!(group.asked.lock().expect("lock").len(), 1);
+        let narrowed = Script::new(&[
+            r#"{"answers": {"group": {"type": "choice", "choice": "paper_trail", "probabilities": {}, "confidence": 0.9}}}"#,
+            r#"{"answers": {"category": {"type": "choice", "choice": "receipt"}, "x": {"type": "noul", "noul": 0.1}}}"#,
+        ]);
+        let decided = decide("nimble", &content(), &catalogue, |request| narrowed.ask(request)).await.expect("asked");
+        assert_eq!(decided, None, "an unreadable category in the second call");
     }
 
     /// Issue #398: a decision model that names no group is "other", sure of nothing, without a
