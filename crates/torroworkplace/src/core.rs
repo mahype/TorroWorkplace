@@ -4547,6 +4547,10 @@ impl Core {
                 (!self.pim.sees_collection(reach, collection).await).then(|| collection.clone())
             }
             // Only shown task lists in the selection: hidden lists and calendars look unknown.
+            // The default sender only among the mail accounts it sees (#397).
+            (Reach::Client(rights), Request::SetSetting { key: SettingKey::MailSender, value }) => {
+                value.as_str().filter(|id| !rights.reaches_mail_account(id)).map(str::to_string)
+            }
             (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
                 let list = list_of(value)?;
                 (!self.pim.sees_task_list(reach, &list).await).then_some(list)
@@ -4974,6 +4978,11 @@ impl Core {
                     // it reaches `web` (PR #311 review). What it sends back keeps the stored address.
                     if !rights.reaches_tool(torro_core::settings::ToolId::Web) {
                         settings.web_search.searxng = None;
+                    }
+                    // Nor the default sender when it is a mail account outside its selection (#397):
+                    // that account looks unknown, as in `accounts.list_accounts`.
+                    if settings.mail_sender.as_deref().is_some_and(|id| !rights.reaches_mail_account(id)) {
+                        settings.mail_sender = None;
                     }
                 }
                 Response::Settings { settings }
@@ -15436,6 +15445,29 @@ mod tests {
         waits(ask(&core, Some(&key), manual("/tasks/work/")).await);
         let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
         assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
+    }
+
+    /// Issue #397: the default sender of new mail is a mail account; a client outside it neither
+    /// sees it, nor sets it, nor clears it by sending its settings back.
+    #[tokio::test]
+    async fn a_client_sees_and_sets_the_default_sender_only_among_its_mail_accounts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let sender = |id: &str| Request::SetSetting { key: SettingKey::MailSender, value: serde_json::json!(id) };
+        assert_eq!(core.handle(sender("mail:bob@example.org")).await, Response::Ok);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        rights.mail_accounts = Selection::Only(vec!["mail:anna@example.org".into()]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let Response::Settings { settings: seen } = ask(&core, Some(&key), Request::Settings).await else {
+            panic!("settings")
+        };
+        assert_eq!(seen.mail_sender, None, "bob's account looks unknown");
+        assert_eq!(code(&ask(&core, Some(&key), sender("mail:bob@example.org")).await), "not-found");
+        let answer = core.handle_within(Request::UpdateSettings { settings: seen }, Reach::Client(&rights)).await;
+        assert_eq!(answer, Response::Ok);
+        assert_eq!(settings(&core).await.mail_sender.as_deref(), Some("mail:bob@example.org"), "sent back, kept");
+        waits(ask(&core, Some(&key), sender("mail:anna@example.org")).await);
     }
 
     #[tokio::test]

@@ -199,6 +199,9 @@ impl SettingsStore {
             // Nor the reminder styles of calendars outside its selection (task ER1.2): it changes
             // them with `set_setting reminders`, which names each calendar.
             let calendars = std::mem::take(&mut settings.reminders.calendars);
+            // Nor the default sender (#397): it may name an account the client does not see, and it
+            // changes it with `set_setting mail_sender`, which checks the account.
+            let mail_sender = settings.mail_sender.take();
             let enabled = settings.voice.enabled && new.voice.enabled;
             let voice = Voice { enabled, ..new.voice.clone() };
             let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
@@ -223,6 +226,7 @@ impl SettingsStore {
                 allow_api_keys,
                 allow_mcp,
                 reminders,
+                mail_sender,
                 tools,
                 maps,
                 mail_attachments,
