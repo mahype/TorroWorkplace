@@ -2235,7 +2235,7 @@ struct SettingsPane {
 enum SettingsState {
     /// The Notification Hub and the App Feed: Notifications, Sources, Rules.
     Inbox(settings_inbox::State),
-    /// The mail window: Accounts, Reading, Categorization, Storage & index.
+    /// The mail window: Accounts, Reading & writing, Attachments, Categorization, Filters.
     Mail(Box<settings_mail::State>),
 }
 

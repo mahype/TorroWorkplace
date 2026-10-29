@@ -494,7 +494,7 @@ pub mod accounts {
         More,
         /// A click beside the open "…" menu, or Escape.
         CloseMore,
-        /// "Storage & index" from the "…" menu or a link of the overview.
+        /// "Storage & search" from the "…" menu or a link of the overview: the account's storage tab.
         OpenStorage,
         /// "Server settings": the account in the control centre, where servers and passwords are.
         ServerSettings,
@@ -883,7 +883,7 @@ pub mod accounts {
         }
     }
 
-    /// Opens `id`'s page at "Overview" ("Show account" in Storage & index, task DS.7); an account
+    /// Opens `id`'s page at "Overview" ("Show account" of the storage, task DS.7); an account
     /// that is open already keeps what is typed into it.
     pub(super) fn show(state: &mut State, id: &str, data: &Data) {
         if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
@@ -1231,7 +1231,7 @@ pub mod accounts {
     }
 
     /// The head: letter tile, address, "Name · IMAP host:port · SMTP host:port", how the last sync
-    /// went, "Sync now" and the "…" with Storage & index and the server settings.
+    /// went, "Sync now" and the "…" with Storage & search and the server settings.
     fn head<'a>(
         state: &'a State,
         mail: &'a MailView,
@@ -1264,7 +1264,7 @@ pub mod accounts {
             return None;
         }
         let items = vec![
-            MenuItem::new(Icon::Archive, tr("Storage & index"), Message::OpenStorage),
+            MenuItem::new(Icon::Archive, tr("Storage & search"), Message::OpenStorage),
             MenuItem::new(Icon::Settings, tr("Server settings"), Message::ServerSettings)
                 .trail(Trail::Icon(Icon::ArrowUpRight)),
         ];
@@ -2093,7 +2093,7 @@ pub mod accounts {
             assert!(matches!(requests[1], Request::StartMailCacheJob { .. }));
         }
 
-        /// DS.7: "Show account" in Storage & index opens the account at "Overview"; an account
+        /// DS.7: "Show account" of the storage opens the account at "Overview"; an account
         /// already open keeps what is typed and only goes back to "Overview".
         #[test]
         fn show_account_lands_on_the_accounts_overview() {

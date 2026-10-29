@@ -2633,7 +2633,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("{unread} unread of {total}", "{unread} ungelesen von {total}"),
     // Cache and index controls (M10.6/M10.7, issue #263)
-    ("Storage & index", "Speicher & Index"),
     ("Current strategy", "Aktuelle Strategie"),
     ("Headers only", "Nur Kopfzeilen"),
     ("Last 90 days", "Letzte 90 Tage"),
