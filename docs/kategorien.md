@@ -101,13 +101,16 @@ Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug
    Junk-Ordner des Servers. Herkunft `rule`.
 2. **Gemerkte Regeln** je Absender und Domain (`RuleEffect::Category`): lesbar über
    `inbox.list_rules`, löschbar über `inbox.remove_rule`. Herkunft `rule`.
-3. **Modell** für den Rest, gewählt über den Platz *Sortieren* ([ki.md](ki.md), Abschnitt „Plätze“) oder
+3. **Kontakte** (Issue #390): Steht die Absenderadresse in einem Adressbuch, wird die Mail
+   `personal` („Von Menschen“), Herkunft `rule`, auch ohne Modell. Ein Modell wählt danach nur noch in
+   der Gruppe von `personal` oder `phishing` (siehe [Vorrang](#vorrang)).
+4. **Modell** für den Rest, gewählt über den Platz *Sortieren* ([ki.md](ki.md), Abschnitt „Plätze“) oder
    eine Ausnahme je Funktion: **ein** Aufruf über die SystemOne-/Jev-Schnittstelle mit **einer**
    `choice`-Frage über die 20 Kategorien aus Schritt „Der Katalog“ und zwei Zusatzfragen. Ein
    **Entscheidermodell** antwortet direkt; unter der Konfidenzschwelle bleibt es `other`. Ist nur ein
    **Chat-Modell** da, antwortet es über den Ersatzweg (`docs/ki.md`, „Ersatzweg beim Sortieren“): streng
    gelesen, ohne Konfidenz, eine nicht angebotene Kategorie wird `other`. Herkunft `model`.
-4. **Von Hand** setzt der Mensch jede Kategorie über `inbox.set_item_category`, mit der Rückfrage
+5. **Von Hand** setzt der Mensch jede Kategorie über `inbox.set_item_category`, mit der Rückfrage
    „Always for this sender?“ wie beim Umsortieren der Spur. Herkunft `person`. Eine Kategorie
    `person` fassen das Einordnen beim Eintreffen und der Altbestand **nie** an; nur ein
    ausdrückliches `inbox.classify_item` überschreibt auch sie – wer den Knopf drückt, will genau
@@ -119,7 +122,7 @@ Vor Schritt 1 steht seit Issue #339 die Kategorie eines Mail-Filters (siehe [Vor
 nach, begrenzt auf 30 Tage oder 500 Nachrichten je Konto, im Hintergrund und gedrosselt, mit
 Fortschritt und Abbrechen auf der Einstellungsseite.
 
-**Ohne KI-Konto** fehlen genau die Kategorien aus Schritt 3; kein Hinweisbanner, kein „Upgrade“
+**Ohne KI-Konto** fehlen genau die Kategorien aus Schritt 4; kein Hinweisbanner, kein „Upgrade“
 ([ki.md](ki.md), Grundsatz 1).
 
 ## Das Protokoll: SystemOne/Jev
@@ -219,6 +222,7 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Plätze und Zuordnung lesen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.list_assignments` (Feld `slots`) · Read | `ai_list_assignments` |
 | Modell für *Sortieren* setzen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.set_slot` mit `slot: decide` · Admin; ein Modell anderswo nur Menschen | `ai_set_slot` (Freigabe) |
 | Ausnahme je Funktion setzen | Einstellungen › Categorization | `ai.set_assignment` · Admin | `ai_set_assignment` |
+| Mail von Kontakten als persönlich (Issue #390) | Einstellungen › Categorization › Contacts | `settings.set_setting` mit `mail_contacts_personal` · Admin, lesen über `settings.get_settings` (`mailContactsPersonal`) · Read | `settings_set_setting`, `settings_get_settings` |
 
 Kein Befehl braucht `Never`: Es sind keine Geheimnisse beteiligt, Schlüssel bleiben wie bisher im
 Dienst und werden nur über die Oberfläche eingetragen.
@@ -268,7 +272,17 @@ weiter erreichbar.
    auch nicht beim Anwenden auf vorhandene Mail (`mail.apply_filter`).
 3. **Sortierregeln** in ihrer Reihenfolge (`rule`).
 4. **Feste Merkmale**: Einladung, Abwesenheit, Junk-Ordner (`rule`).
-5. **Modell** (`model`), nur für Kategorien, die es wählen darf.
+5. **Kontakte** (Issue #390, Schalter „Mail from contacts is personal“ unter Einstellungen ›
+   Categorization, anfangs an): Mail, deren Absenderadresse ein Kontakt hat, wird `personal` (`rule`).
+   Es zählen alle Adressen eines Kontakts, Groß- und Kleinschreibung egal, keine Aliase, und nur
+   Adressbücher, die nicht ausgeblendet sind („Kürzlich kontaktiert“ zählt nicht). Mail an Listen oder
+   von Maschinen (`List-Id`, `Precedence`, `Auto-Submitted`) bleibt außen vor: Der Newsletter eines
+   Kontakts ist keine persönliche Mail. Die Stufe gilt für neue Mail und für „Sort again“ und
+   Sortieraufträge; Mail mit einer Kategorie ordnet sie nicht von selbst um.
+6. **Modell** (`model`), nur für Kategorien, die es wählen darf. Bei Mail eines Kontakts bietet der
+   Dienst nur die Kategorien der Gruppe von `personal` und `phishing` an, damit ein gefälschter
+   Absender erkennbar bleibt; ist sich das Modell unsicher oder nennt es etwas anderes, bleibt
+   `personal`.
 
 Ein Filter mit Kategorie wirkt wie eine Sortierregel: Ihn anzulegen, zu ändern oder anzuwenden braucht
 außer Admin im Bereich `mail` auch Admin im Bereich `inbox`.
