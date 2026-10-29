@@ -2146,7 +2146,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("keep no mail texts", "keine E-Mail-Texte behalten"),
     ("keep the mail texts of the last 90 days", "die E-Mail-Texte der letzten 90 Tage behalten"),
     ("keep all mail texts", "alle E-Mail-Texte behalten"),
-    ("download attachments in advance", "Anhänge im Voraus laden"),
     ("download attachments only when opened", "Anhänge nur beim Öffnen laden"),
     ("delete downloaded attachments after {days} days", "geladene Anhänge nach {days} Tagen löschen"),
     (

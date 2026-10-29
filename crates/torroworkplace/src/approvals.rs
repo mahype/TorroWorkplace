@@ -2950,8 +2950,11 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::UpdateCategoryGroup { group, name, icon, color } => {
             let held = facts.groups.iter().find(|def| def.group == *group);
             let mut changes: Vec<String> = Vec::new();
+            // An empty name puts back the suite's word of a built-in one only: the core refuses it
+            // for a main category of the person's own, so the summary promises nothing there.
+            let own = matches!(group, torro_mail::CategoryGroup::Custom(_));
             match name.trim() {
-                "" if held.is_none_or(|def| def.name.is_some()) => {
+                "" if !own && held.is_none_or(|def| def.name.is_some()) => {
                     changes.push(tr("put back the suite's name").to_string());
                 }
                 "" => {}
@@ -3475,10 +3478,9 @@ fn mail_cache_changes(policy: &torro_ipc::mail::MailCachePolicy) -> String {
             trf("keep the newest mail up to {mb} MiB", &[("mb", &policy.max_local_mb.unwrap_or(0))])
         }
     };
-    let attachments = match policy.prefetch_attachments {
-        true => tr("download attachments in advance"),
-        false => tr("download attachments only when opened"),
-    };
+    // Attachments are only ever downloaded when opened since #343: the core sets
+    // `prefetch_attachments` back to false, so the summary says what runs, not what was sent.
+    let attachments = tr("download attachments only when opened");
     let days = match policy.attachment_retention_days {
         0 => tr("keep no downloaded attachments").to_string(),
         u32::MAX => tr("keep all downloaded attachments").to_string(),
@@ -5097,7 +5099,8 @@ pub(crate) mod tests {
                     &format!(
                         "{}, {}, {}",
                         tr("keep no mail texts"),
-                        tr("download attachments in advance"),
+                        // Asked for in advance, but the core loads them only when opened (#397).
+                        tr("download attachments only when opened"),
                         trf("delete downloaded attachments after {days} days", &[("days", &7)])
                     ),
                 ),
@@ -6379,6 +6382,10 @@ pub(crate) mod tests {
             icon: None,
         };
         assert!(inbox_summary(&moved, &facts).contains("\"Private\""));
+        // An empty name is refused for a main category of the person's: nothing promised.
+        let blank =
+            Request::UpdateCategoryGroup { group: own, name: String::new(), icon: CategoryIcon::Paperclip, color: 4 };
+        assert!(!inbox_summary(&blank, &facts).contains(tr("put back the suite's name")));
         let generic = trf("Run {command}", &[("command", &"")]);
         for request in [create, rename, unsorted, into_own, moved] {
             let words = inbox_summary(&request, &facts);
