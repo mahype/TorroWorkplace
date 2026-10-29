@@ -220,7 +220,10 @@ async fn account_stats(mail: &MailService, reach: Reach<'_>, account: Option<&st
             }
             None => {
                 let stats = count_stats(&id, store, mail.attachment_cache()).await?;
-                kept.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone(), (stats.clone(), now, false));
+                // Removed while it was counted ([`MailService::remove`]): nothing is kept of it.
+                if mail.store(&id).await.is_ok() {
+                    kept.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone(), (stats.clone(), now, false));
+                }
                 (stats, now)
             }
         };

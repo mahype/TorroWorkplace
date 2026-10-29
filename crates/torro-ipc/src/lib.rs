@@ -2589,8 +2589,8 @@ pub enum Request {
     },
     /// Locally known counts and dates for reachable mail accounts. The response does not claim
     /// that every message on the server has been synchronized. The counts come from the service's
-    /// last computation (`MailAccountStats::as_of`, issue #395), at most about a minute old; an
-    /// older one is computed anew in the background for the next call.
+    /// last computation (`MailAccountStats::as_of`, issue #395), which can be older than a minute;
+    /// then it is computed anew in the background for the next call.
     #[serde(rename = "mail.account_stats")]
     MailAccountStats {
         /// Only this account; omitted for every mail account in reach.

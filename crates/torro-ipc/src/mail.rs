@@ -489,9 +489,9 @@ pub struct MailAccountStats {
     #[serde(default)]
     pub original_bytes: u64,
     /// When the counts above – the attachments included – were computed (issue #395): the service
-    /// answers from the last computation, at most about a minute old, and computes anew in the
-    /// background. `last_sync` and `sync_problem` are always current. `None` from a core before
-    /// that issue.
+    /// answers from the last computation, which can be older than a minute; then it computes anew
+    /// in the background for the next call. `last_sync` and `sync_problem` are always current.
+    /// `None` from a core before that issue.
     #[serde(default)]
     pub as_of: Option<DateTime<Utc>>,
 }
