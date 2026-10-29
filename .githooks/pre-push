@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
-# Complete local CI before every push: fmt, design check, clippy, tests (scripts/ci-local.sh).
+# Local CI before every push, scaled to what the push changes: fmt, design check and, depending on the
+# changed paths, clippy and tests of the affected crates or the full set (scripts/ci-local.sh --changed).
 # GitHub Actions no longer runs for pull requests, so this is the check before code reaches main.
-exec "$(git rev-parse --show-toplevel)/scripts/ci-local.sh"
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+zero="0000000000000000000000000000000000000000"
+ranges=()
+
+# git feeds one line per pushed ref: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _ local_sha _ remote_sha; do
+    [[ "$local_sha" == "$zero" ]] && continue # deleting a branch checks nothing
+    base="$remote_sha"
+    if [[ "$base" == "$zero" ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+        # New branch (or a remote commit we do not have): everything since it left main.
+        base="$(git merge-base origin/main "$local_sha" 2>/dev/null || true)"
+    fi
+    if [[ -z "$base" ]]; then
+        exec "$root/scripts/ci-local.sh" # no common ancestor to diff against: full set
+    fi
+    ranges+=("$base..$local_sha")
+done
+
+[[ ${#ranges[@]} -eq 0 ]] && exit 0
+exec "$root/scripts/ci-local.sh" --changed "${ranges[@]}"
