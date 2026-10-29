@@ -200,8 +200,8 @@ pub fn attachments_escape(state: &State) -> Option<Message> {
 
 /// A send of the host came back (the window calls it on every `Sent`, not on a load): what was
 /// being saved is saved or failed, so the save bar of an account's page takes clicks again.
-pub fn sent(state: &mut State, success: bool) {
-    accounts::sent(&mut state.accounts, success);
+pub fn sent(state: &mut State) {
+    accounts::sent(&mut state.accounts);
     reading::sent(&mut state.reading);
 }
 
@@ -358,8 +358,9 @@ pub mod accounts {
         /// says "Saving…" and takes no second click.
         saving: bool,
         /// One test or save of an account's server credentials, including when its page is closed.
+        /// Both are asked ([`Action::Ask`]): a server whose certificate is not trusted answers with
+        /// its fingerprint, which a plain send would lose.
         pending_connection: Option<String>,
-        save_connection: Option<String>,
     }
 
     /// The parts of an account's page (task DS.6), "Overview" first.
@@ -428,6 +429,8 @@ pub mod accounts {
         ServerSecurity(ServerKind, Security),
         TestConnection,
         SaveConnection,
+        /// "Trust certificate" for the one a server showed (issue #284): the last test or save again.
+        TrustCertificate,
         /// Typing in the signature.
         Signature(text_editor::Action),
         /// "Save" in the save bar: the sender name and the signature, as far as they differ from the
@@ -506,6 +509,13 @@ pub mod accounts {
         tried: bool,
         pending: bool,
         status: Option<String>,
+        /// The fingerprints trusted on this page (issue #284), sent with every test and save.
+        trusted: Vec<String>,
+        /// The certificate a server showed that this computer does not trust: (service, host,
+        /// SHA-256). "Trust certificate" sends the last test or save again with it.
+        untrusted: Option<(String, String, String)>,
+        /// Whether the last request was "Save connection", to repeat it after trusting.
+        saving: bool,
     }
 
     impl ConnectionDraft {
@@ -519,6 +529,9 @@ pub mod accounts {
                 tried: false,
                 pending: false,
                 status: None,
+                trusted: Vec::new(),
+                untrusted: None,
+                saving: false,
             }
         }
         fn server_mut(&mut self, kind: ServerKind) -> &mut ServerDraft {
@@ -541,6 +554,7 @@ pub mod accounts {
                 login_name: self.login_name.trim().to_string(),
                 password: (!self.password.is_blank()).then(|| self.password.clone()),
                 save,
+                trusted_certificates: self.trusted.clone(),
             })
         }
     }
@@ -716,10 +730,19 @@ pub mod accounts {
                 }
                 Action::None
             }
-            Message::TestConnection | Message::SaveConnection
-                if state.pending_connection.is_some() || state.save_connection.is_some() =>
+            Message::TestConnection | Message::SaveConnection | Message::TrustCertificate
+                if state.pending_connection.is_some() =>
             {
                 Action::None
+            }
+            Message::TrustCertificate => {
+                let Some(draft) = &mut state.draft else { return Action::None };
+                let Some((_, _, sha256)) = draft.connection.untrusted.take() else { return Action::None };
+                if !draft.connection.trusted.contains(&sha256) {
+                    draft.connection.trusted.push(sha256);
+                }
+                let again = if draft.connection.saving { Message::SaveConnection } else { Message::TestConnection };
+                update(state, again, data)
             }
             Message::TestConnection | Message::SaveConnection => {
                 let save = matches!(message, Message::SaveConnection);
@@ -735,14 +758,11 @@ pub mod accounts {
                     return Action::None;
                 };
                 draft.connection.status = None;
+                draft.connection.untrusted = None;
                 draft.connection.pending = true;
-                if save {
-                    state.save_connection = Some(draft.account.clone());
-                    Action::send(request)
-                } else {
-                    state.pending_connection = Some(draft.account.clone());
-                    Action::Ask(request)
-                }
+                draft.connection.saving = save;
+                state.pending_connection = Some(draft.account.clone());
+                Action::Ask(request)
             }
             Message::Signature(action) => {
                 if let Some(draft) = &mut state.draft {
@@ -794,25 +814,8 @@ pub mod accounts {
     }
 
     /// A send came back: "Save" is done, the save bar shows what is still different.
-    pub(super) fn sent(state: &mut State, success: bool) {
+    pub(super) fn sent(state: &mut State) {
         state.saving = false;
-        if let Some(id) = state.save_connection.take() {
-            let draft = if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
-                state.draft.as_mut()
-            } else {
-                state.drafts_others.get_mut(&id)
-            };
-            if let Some(draft) = draft {
-                draft.connection.pending = false;
-                if success {
-                    draft.connection.password = Secret::new("");
-                    draft.connection.status = Some(tr("Connection saved and tested.").into());
-                } else {
-                    draft.connection.status =
-                        Some(tr("The connection could not be saved. Check the account error above.").into());
-                }
-            }
-        }
     }
 
     /// The answer of a backup request for `account`, to its page whether it is open or not.
@@ -901,6 +904,7 @@ pub mod accounts {
             Ok(
                 torro_ipc::Response::MailConnectionChecked { .. }
                 | torro_ipc::Response::MailConnected { .. }
+                | torro_ipc::Response::UntrustedCertificate { .. }
                 | torro_ipc::Response::Error { .. },
             )
             | Err(_) => {}
@@ -919,6 +923,20 @@ pub mod accounts {
             Ok(torro_ipc::Response::MailConnected { .. }) => {
                 draft.connection.password = Secret::new("");
                 tr("Connection saved and tested.").into()
+            }
+            // As the add-account dialog asks (issue #284): nothing went to the server, nothing is
+            // stored; "Trust certificate" sends the same again with its fingerprint.
+            Ok(torro_ipc::Response::UntrustedCertificate { service, host, sha256, public }) => {
+                draft.connection.untrusted = Some((service.clone(), host.clone(), sha256.clone()));
+                let mut words = trf(
+                    "The certificate of {host} ({service}) is not trusted by this computer. Trust it only if this is your own server.",
+                    &[("host", host), ("service", service)],
+                );
+                if *public {
+                    words.push(' ');
+                    words.push_str(tr("This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider."));
+                }
+                words
             }
             Ok(torro_ipc::Response::Error { message, .. }) | Err(message) => message.clone(),
             _ => return,
@@ -1311,10 +1329,11 @@ pub mod accounts {
                         style::button::secondary,
                         (!draft.connection.pending).then_some(Message::TestConnection),
                     );
+                    // Secondary: the page's primary action is "Save" in the save bar.
                     let save = widgets::text_button(
                         None,
                         tr("Save connection"),
-                        style::button::primary,
+                        style::button::secondary,
                         (connection_changed && !draft.connection.pending).then_some(Message::SaveConnection),
                     );
                     if room.width < 440.0 {
@@ -1331,6 +1350,15 @@ pub mod accounts {
             );
             if let Some(status) = &draft.connection.status {
                 server_rows.push(row_frame(typo::text(typo::body(), status.clone()), false));
+            }
+            if let Some((_, _, sha256)) = &draft.connection.untrusted {
+                let trust = widgets::text_button(
+                    None,
+                    tr("Trust certificate"),
+                    style::button::secondary,
+                    (!draft.connection.pending).then_some(Message::TrustCertificate),
+                );
+                server_rows.push(setting_row(None, tr("Fingerprint (SHA-256)"), Some(sha256.clone()), trust));
             }
             let connection = widgets::group(tr("Connection"), server_rows, None);
             let folders = system_folders(mail, data.mail_stats.iter().find(|stats| stats.account == draft.account));
@@ -1595,13 +1623,34 @@ pub mod accounts {
                 update(&mut state, Message::ServerSecurity(ServerKind::Smtp, Security::StartTls), &data);
             let _: Action<()> = update(&mut state, Message::Password(Secret::new("new-secret")), &data);
             let save: Action<()> = update(&mut state, Message::SaveConnection, &data);
-            let Action::Send(mut requests) = save else { panic!("edited connection must be sent") };
-            let Request::ReconfigureMail { imap, smtp, password, save: true, .. } = requests.remove(0) else {
-                panic!("edited connection must be sent")
+            let Action::Ask(Request::ReconfigureMail { imap, smtp, password, save: true, .. }) = save else {
+                panic!("edited connection must be asked, so its answer comes back")
             };
             assert_eq!((imap.host.as_str(), imap.port), ("mail.example.org", 993));
             assert_eq!((smtp.port, smtp.security), (587, Security::StartTls));
             assert_eq!(password, Some(Secret::new("new-secret")));
+
+            // Issue #284 in the account's page: the server's certificate is not trusted. The page
+            // says so, waits no longer, and "Trust certificate" saves again with its fingerprint.
+            let sha256 = format!("AB{}", ":CD".repeat(31));
+            answered(
+                &mut state,
+                &Ok(torro_ipc::Response::UntrustedCertificate {
+                    service: "IMAP".into(),
+                    host: "mail.example.org".into(),
+                    sha256: sha256.clone(),
+                    public: false,
+                }),
+            );
+            assert!(state.pending_connection.is_none(), "no longer checking");
+            let draft = state.draft.as_ref().expect("the page");
+            assert!(!draft.connection.pending);
+            assert!(draft.connection.status.as_deref().is_some_and(|words| words.contains("mail.example.org")));
+            let trusted: Action<()> = update(&mut state, Message::TrustCertificate, &data);
+            let Action::Ask(Request::ReconfigureMail { save: true, trusted_certificates, .. }) = trusted else {
+                panic!("the save again, with the certificate")
+            };
+            assert_eq!(trusted_certificates, [sha256]);
         }
 
         #[test]
@@ -1801,7 +1850,7 @@ pub mod accounts {
             assert!(state.saving);
             let again: Action<()> = update(&mut state, Message::Save, &data);
             assert_eq!(again, Action::None, "one save at a time");
-            sent(&mut state, true);
+            sent(&mut state);
             assert!(!state.saving);
         }
 

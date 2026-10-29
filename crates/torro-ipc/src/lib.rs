@@ -588,7 +588,8 @@ pub enum Request {
     /// answered with [`Response::MailConnectionChecked`]; `save: true` keeps the new endpoints,
     /// login and optional password after a successful check, as `accounts.connect_mail` does, and
     /// answers as it does ([`Response::MailConnected`]). The sender name, calendars, tasks and
-    /// CalDAV address stay, and so do the trusted certificates while both servers stay the same.
+    /// CalDAV address stay. The servers trust the account's stored certificates and those of
+    /// `trusted_certificates`; storing keeps those a server showed, as `accounts.connect_mail` does.
     /// Codes: `not-found` for an id that is no mail account; `error` for an empty login, a login
     /// with `/`, a server without host or port, or no password entered or stored; `auth` and
     /// [`Response::UntrustedCertificate`] as for `accounts.connect_mail`. Only the app key may send
@@ -603,6 +604,11 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<Secret>,
         save: bool,
+        /// SHA-256 fingerprints (`AB:CD:…`) of server certificates the person just trusted, as
+        /// for `accounts.connect_mail` (issue #284): after [`Response::UntrustedCertificate`]
+        /// the same request comes again with the one shown. Leave out when nothing new is trusted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        trusted_certificates: Vec<String>,
     },
     /// Changes the settings of the mail account `id` (tasks M2.1, M2.7): only the fields given, the
     /// others stay. Never servers or password: those change only with `accounts.connect_mail` and

@@ -2004,6 +2004,7 @@ Checks an existing mail account with edited IMAP and SMTP endpoints and login. A
 | `smtp.host` | string | ja | The host name, e.g. `imap.mailbox.org`. |
 | `smtp.port` | integer | ja | The port, e.g. 993 for IMAP over TLS or 587 for SMTP with STARTTLS. |
 | `smtp.security` | `"tls"` \| `"starttls"` | ja | `tls` or `starttls`. |
+| `trusted_certificates` | array<string> | nein | SHA-256 fingerprints (`AB:CD:…`) of server certificates the person just trusted, as for `accounts.connect_mail` (issue #284): after [`Response::UntrustedCertificate`] the same request comes again with the one shown. Leave out when nothing new is trusted. |
 
 ### `accounts.update_mail_account`
 

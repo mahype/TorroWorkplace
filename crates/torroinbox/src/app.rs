@@ -4734,7 +4734,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let host::Message::Sent { result, .. } = &message
                     && let SettingsState::Mail(state) = &mut pane.sections
                 {
-                    settings_mail::sent(state, result.is_ok());
+                    settings_mail::sent(state);
                     settings_mail::filters_sent(state, result);
                 }
                 let outcome = pane.host.update(message);

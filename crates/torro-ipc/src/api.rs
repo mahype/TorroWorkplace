@@ -5538,6 +5538,7 @@ mod tests {
                 login_name: "anna@mailbox.org".into(),
                 password: None,
                 save: false,
+                trusted_certificates: Vec::new(),
             },
             Request::TorroMailAccounts,
             Request::ImportTorroMailAccount { id: "4c1d".into() },

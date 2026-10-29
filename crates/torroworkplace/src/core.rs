@@ -4598,12 +4598,13 @@ impl Core {
     /// [`Core::answer_within`], in a frame of their own.
     async fn answer_mail_account(&self, request: Request, reach: Reach<'_>) -> Response {
         match request {
-            Request::ReconfigureMail { id, imap, smtp, login_name, password, save } => {
+            Request::ReconfigureMail { id, imap, smtp, login_name, password, save, trusted_certificates } => {
                 if !matches!(reach, Reach::Suite) {
                     return Refused::Forbidden { command: "accounts.reconfigure_mail" }.response();
                 }
                 let _deciding = self.calendar_sign_ins.lock().await;
-                self.reconfigure_mail(&id, imap, smtp, &login_name, password, save).await
+                let change = Reconnection { imap, smtp, login_name, password, save, trusted_certificates };
+                self.reconfigure_mail(&id, change).await
             }
             Request::UpdateMailAccount {
                 id,
@@ -8479,18 +8480,16 @@ impl Core {
     /// of a stored mail account, and with `save` stores them through [`Core::connect_mail`]. An
     /// empty password field means the secret already in the system keychain; the reply never
     /// exposes it. Saving changes the connection only: the sender name, calendars, tasks and the
-    /// CalDAV address come from the stored account, and so do its trusted certificates while both
-    /// servers stay the same – a server in the local network keeps the certificate the person
-    /// confirmed (issue #284).
-    async fn reconfigure_mail(
-        &self,
-        id: &str,
-        imap: torro_mail::Endpoint,
-        smtp: torro_mail::Endpoint,
-        login_name: &str,
-        password: Option<torro_ipc::Secret>,
-        save: bool,
-    ) -> Response {
+    /// CalDAV address come from the stored account. The servers trust the account's certificates
+    /// and those the person just confirmed (`trusted_certificates`, issue #284), checked first; a
+    /// server with another one is answered with [`Response::UntrustedCertificate`], so a server in
+    /// the local network can be changed to as in the add-account dialog.
+    async fn reconfigure_mail(&self, id: &str, change: Reconnection) -> Response {
+        let Reconnection { imap, smtp, login_name, password, save, trusted_certificates } = change;
+        let Some(confirmed) = trusted_fingerprints(&trusted_certificates) else {
+            return refusal("error", tr("A trusted certificate is not a SHA-256 fingerprint.").into());
+        };
+        let login_name = login_name.as_str();
         let stored = match self.mail.stored_accounts().await {
             Ok(stored) => stored,
             Err(message) => return refusal("error", message),
@@ -8521,6 +8520,11 @@ impl Core {
         };
         config.imap = imap.clone();
         config.smtp = smtp.clone();
+        for pin in &confirmed {
+            if !config.trusted_certificates.contains(pin) {
+                config.trusted_certificates.push(pin.clone());
+            }
+        }
         if !save {
             let empty = std::collections::BTreeMap::new();
             let chosen = if account.mail.as_ref().is_some_and(|old| old.imap != imap) {
@@ -8533,8 +8537,9 @@ impl Core {
             }
             return Response::MailConnectionChecked { id: id.to_string() };
         }
+        // What `connect_mail` would keep anyway, named here so saving the connection never reads as
+        // clearing the account's own data; the stored certificates it offers itself.
         let old = account.mail.as_ref();
-        let same_servers = old.is_some_and(|old| old.imap.host == imap.host && old.smtp.host == smtp.host);
         let services = account.mail_settings.as_ref().map(|settings| settings.services).unwrap_or_default();
         self.connect_mail(MailSignIn {
             address: config.address,
@@ -8546,10 +8551,7 @@ impl Core {
             calendars: services.calendars,
             tasks: services.tasks,
             caldav: old.and_then(|old| old.caldav.clone()),
-            trusted_certificates: match same_servers {
-                true => old.map(|old| old.trusted_certificates.clone()).unwrap_or_default(),
-                false => Vec::new(),
-            },
+            trusted_certificates: confirmed,
         })
         .await
     }
@@ -10565,6 +10567,16 @@ fn refusal(code: &str, message: String) -> Response {
 fn has_mail_account(ours: &[torro_core::Account], address: &str) -> bool {
     torro_mail::account_id(address)
         .is_ok_and(|id| ours.iter().any(|account| account.kind == AccountKind::Mail && account.id == id))
+}
+
+/// What `accounts.reconfigure_mail` brings (issue #343), as [`Request::ReconfigureMail`] has it.
+struct Reconnection {
+    imap: torro_mail::Endpoint,
+    smtp: torro_mail::Endpoint,
+    login_name: String,
+    password: Option<torro_ipc::Secret>,
+    save: bool,
+    trusted_certificates: Vec<String>,
 }
 
 /// What `accounts.connect_mail` brings (task M2.7), as [`Request::ConnectMail`] has it.
@@ -19670,6 +19682,7 @@ mod tests {
             login_name: "anna@example.org".into(),
             password: Some(torro_ipc::Secret::new("test-secret")),
             save: false,
+            trusted_certificates: Vec::new(),
         };
         let refused = ask(&core, Some(&key), request.clone()).await;
         assert_eq!(code(&refused), "forbidden");
@@ -19846,17 +19859,12 @@ mod tests {
         torro_mail_imap::tls::Fingerprint::of(&std::fs::read(path).expect("test certificate")).to_string()
     }
 
-    /// Issue #284 (M11.3): a server with a certificate the system does not trust (the fake IMAP
-    /// server, for a core that trusts no certificate at all: as a self-signed one on a home server)
-    /// is answered with its fingerprint before the password goes to it, and nothing is stored.
-    /// Trusted, it connects, and the account keeps exactly that certificate, not one no server
-    /// showed. When the server shows another certificate later, the account has a problem a person
-    /// must look at, and the server never sees a login.
-    /// Issue #397: "Save connection" in the account's page changes the connection only – the sender
-    /// name and the certificate the person confirmed for a server in the local network stay, so the
-    /// next sign-in still trusts it.
+    /// Issue #397: "Test credentials" and "Save connection" in the account's page meet a server whose
+    /// certificate the system does not trust as the add-account dialog does: its fingerprint comes
+    /// back before the password went to it; trusted, the check passes and saving keeps the
+    /// certificate and the sender name.
     #[tokio::test]
-    async fn saving_a_connection_keeps_the_sender_name_and_the_trusted_certificate() {
+    async fn a_reconnection_asks_about_an_untrusted_certificate_and_keeps_what_is_trusted() {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(MAIL_PASSWORD).await;
         let secrets = MemoryTokens::default();
@@ -19871,24 +19879,46 @@ mod tests {
         let smtp = smtp.clone();
         let connected = ask(&core, Some(&app_key), first).await;
         assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+        // As if the account had been moved to this server: it trusts nothing yet.
+        let mut moved = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        if let Some(mail) = moved[0].mail.as_mut() {
+            mail.trusted_certificates.clear();
+        }
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), &moved).expect("written");
+        core.mail.reload().await;
+        let logins = server.logins();
 
-        let save = Request::ReconfigureMail {
+        let again = |save: bool, trusted: Vec<String>| Request::ReconfigureMail {
             id: ANNA_MAIL.into(),
             imap: server.endpoint.clone(),
-            smtp,
+            smtp: smtp.clone(),
             login_name: "anna".into(),
             password: None,
-            save: true,
+            save,
+            trusted_certificates: trusted,
         };
-        let saved = ask(&core, Some(&app_key), save).await;
+        let asked = ask(&core, Some(&app_key), again(false, Vec::new())).await;
+        assert!(matches!(&asked, Response::UntrustedCertificate { sha256, .. } if *sha256 == shown), "{asked:?}");
+        assert_eq!(server.logins(), logins, "the password did not go out");
+        let checked = ask(&core, Some(&app_key), again(false, vec![shown.clone()])).await;
+        assert_eq!(checked, Response::MailConnectionChecked { id: ANNA_MAIL.into() });
+        let saved = ask(&core, Some(&app_key), again(true, vec![shown.clone()])).await;
         assert!(matches!(saved, Response::MailConnected { .. }), "{saved:?}");
         let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
         let config = stored[0].mail.clone().expect("a mail account");
         assert_eq!(config.sender_name, "Anna", "the sender name stays");
         assert_eq!(config.trusted_certificates, std::slice::from_ref(&shown), "the confirmed certificate stays");
-        nowhere(dir.path(), MAIL_PASSWORD, &[&connected, &saved]);
+        let malformed = ask(&core, Some(&app_key), again(false, vec!["AB:CD".into()])).await;
+        assert_eq!(code(&malformed), "error");
+        nowhere(dir.path(), MAIL_PASSWORD, &[&connected, &asked, &checked, &saved]);
     }
 
+    /// Issue #284 (M11.3): a server with a certificate the system does not trust (the fake IMAP
+    /// server, for a core that trusts no certificate at all: as a self-signed one on a home server)
+    /// is answered with its fingerprint before the password goes to it, and nothing is stored.
+    /// Trusted, it connects, and the account keeps exactly that certificate, not one no server
+    /// showed. When the server shows another certificate later, the account has a problem a person
+    /// must look at, and the server never sees a login.
     #[tokio::test]
     async fn a_certificate_the_person_trusts_is_kept_and_another_one_stops_the_sync() {
         let dir = tempfile::tempdir().expect("temp dir");
