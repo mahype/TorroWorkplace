@@ -4590,6 +4590,42 @@ impl Core {
         response
     }
 
+    /// The changes of a mail account (`accounts.reconfigure_mail`, `accounts.update_mail_account`) of
+    /// [`Core::answer_within`], in a frame of their own.
+    async fn answer_mail_account(&self, request: Request, reach: Reach<'_>) -> Response {
+        match request {
+            Request::ReconfigureMail { id, imap, smtp, login_name, password, save } => {
+                if !matches!(reach, Reach::Suite) {
+                    return Refused::Forbidden { command: "accounts.reconfigure_mail" }.response();
+                }
+                let _deciding = self.calendar_sign_ins.lock().await;
+                self.reconfigure_mail(&id, imap, smtp, &login_name, password, save).await
+            }
+            Request::UpdateMailAccount {
+                id,
+                sender_name,
+                signature,
+                signature_format,
+                notify,
+                services,
+                folder_roles,
+                format,
+            } => {
+                let change = MailSettingsChange {
+                    sender_name,
+                    signature,
+                    signature_format,
+                    notify,
+                    services,
+                    folder_roles,
+                    format,
+                };
+                self.update_mail_account(&id, change).await
+            }
+            _ => Response::Error { code: "unsupported".into(), message: tr("This command is not supported.").into() },
+        }
+    }
+
     /// The mail backup and restore commands (#267) of [`Core::answer_within`], in a frame of their own.
     async fn answer_mail_backup(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
         match request {
@@ -5146,12 +5182,10 @@ impl Core {
                 let _deciding = self.calendar_sign_ins.lock().await;
                 self.connect_mail(sign_in).await
             }
-            Request::ReconfigureMail { id, imap, smtp, login_name, password, save } => {
-                if !matches!(reach, Reach::Suite) {
-                    return Refused::Forbidden { command: "accounts.reconfigure_mail" }.response();
-                }
-                let _deciding = self.calendar_sign_ins.lock().await;
-                self.reconfigure_mail(&id, imap, smtp, &login_name, password, save).await
+            request @ (Request::ReconfigureMail { .. } | Request::UpdateMailAccount { .. }) => {
+                // Boxed: the two changes of a mail account would grow this match's poll frame, which
+                // an approved request holds twice already (`run_approved`).
+                Box::pin(self.answer_mail_account(request, reach)).await
             }
             // A client never reaches `connect_ai` either (`Rights::allows`, rule 5): it hands in a key.
             // Under the lock the other sign-ins take, so two connections never write `accounts.json`
@@ -5204,10 +5238,6 @@ impl Core {
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
-            Request::UpdateMailAccount { id, sender_name, signature, signature_format, notify, services, folder_roles, format } => {
-                let change = MailSettingsChange { sender_name, signature, signature_format, notify, services, folder_roles, format };
-                self.update_mail_account(&id, change).await
-            }
             Request::GetMailCachePolicy { account } => match self.mail.cache_policy(&account).await {
                 Ok(policy) => Response::MailCachePolicy { policy },
                 Err(err) => err.response(),
