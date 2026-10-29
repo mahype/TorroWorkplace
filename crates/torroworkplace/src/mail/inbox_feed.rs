@@ -2426,24 +2426,30 @@ pub(crate) mod tests {
     }
 
     /// Mail whose `Message-ID` the account holds in another folder came back, it was not delivered:
-    /// no filter takes it out again.
+    /// no filter takes it out again. Copies in the archive (Gmail's "All Mail") and in sent mail
+    /// (mail to oneself, a mailing list) do not count: that mail was delivered and is filtered.
     #[tokio::test]
     async fn mail_the_account_holds_in_another_folder_is_not_filtered() {
-        use torro_mail::FilterFile;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let server = FakeImap::start(PASSWORD).await;
-        server.add("Archive", &bernd("Offer", 0), &["\\Seen"]);
-        let back = server.add("INBOX", &bernd("Offer", 0), &[]);
-        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
-        make_filter(&inbox, &mail, "from:bernd", None, |spec| spec.file = Some(FilterFile::Archive));
-        let store = mail.store(ANNA).await.expect("the store");
-        let all = store.run(|store| store.search(&SearchQuery::default(), 10, 0)).await.expect("read");
-        let in_inbox = store.run(|store| store.folder_by_role(Role::Inbox)).await.expect("read").expect("an inbox");
-        let offer = all.iter().find(|message| message.folder == in_inbox.id).expect("the copy in the inbox");
+        for (other, filtered) in [("Archive", true), ("Sent", true), ("Junk", false), ("Projects", false)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let server = FakeImap::start(PASSWORD).await;
+            server.add_folder("Junk", "\\HasNoChildren \\Junk", 15);
+            server.add_folder("Projects", "\\HasNoChildren", 16);
+            server.add(other, &bernd("Offer", 0), &["\\Seen"]);
+            let back = server.add("INBOX", &bernd("Offer", 0), &[]);
+            let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+            make_filter(&inbox, &mail, "from:bernd", None, |spec| spec.mark_read = true);
+            let store = mail.store(ANNA).await.expect("the store");
+            let all = store.run(|store| store.search(&SearchQuery::default(), 10, 0)).await.expect("read");
+            let in_inbox = store.run(|store| store.folder_by_role(Role::Inbox)).await.expect("read").expect("an inbox");
+            let offer = all.iter().find(|message| message.folder == in_inbox.id).expect("the copy in the inbox");
 
-        feed.take(arrived(&[offer]), Utc::now()).await;
-        assert_eq!(titles(&inbox), ["Offer"], "filed as any mail");
-        assert!(server.messages("INBOX").iter().any(|(uid, _, _)| *uid == back), "not moved");
+            feed.take(arrived(&[offer]), Utc::now()).await;
+            let read = server.flags("INBOX", back).iter().any(|flag| flag == "\\Seen");
+            assert_eq!(read, filtered, "a copy in {other}");
+            let expected: &[&str] = if filtered { &[] } else { &["Offer"] };
+            assert_eq!(titles(&inbox), expected, "a copy in {other}: filed as any mail unless read by the filter");
+        }
     }
 
     /// Decision 4: a category the person set stays – on the entry of the conversation, and with a

@@ -368,6 +368,10 @@ bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummsc
   (`catch_up`): Diese Mail lag schon vorher da.
 - Mail, deren `Message-ID` das Konto schon in einem anderen Ordner hat, bleibt unberührt. Sie wurde in den
   Posteingang verschoben oder kopiert, nicht zugestellt, und ein Filter soll sie nicht gleich wieder hinausnehmen.
+  Kopien im Archiv und in den gesendeten Mails zählen dabei nicht: Gmail legt jede neue Mail auch in „All Mail“ ab,
+  das für Torro der Archiv-Ordner ist, und Mail an sich selbst oder an eine Mailingliste hat eine Kopie in Sent. Diese
+  Mail wurde trotzdem zugestellt und wird gefiltert. Nur eine Kopie in einem anderen Ordner (Spam, ein eigener Ordner)
+  hält den Filter ab.
 - Beim Eintreffen kennt der Dienst Betreff und Adressen, meist aber noch nicht den Text. Einfache Wörter einer Suche
   prüft ein Filter bei neuer Mail deshalb nur dort. Vorschau und Anwenden durchsuchen auch den Text und können mehr
   treffen.

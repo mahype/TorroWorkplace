@@ -818,7 +818,7 @@ pub async fn matching(
 ///
 /// - Mail whose `Message-ID` the account holds in another folder already is left alone
 ///   ([`delivered`]): it was moved or copied into the inbox, not delivered, and a filter must not
-///   take it out again.
+///   take it out again. Copies in the archive (Gmail's "All Mail") and in sent mail do not count.
 /// - What several filters do together follows their order ([`matching`], [`FilterActions::of`],
 ///   decision 3); a category that is no longer in `categories` (the catalogue) is skipped.
 /// - Read, then the category, then the move ([`carry_out`]). Mail read or moved by a filter gets no
@@ -883,12 +883,27 @@ pub async fn on_arrival(
 
 /// Those of `ids` the store holds that were delivered rather than moved: no other folder of the
 /// account holds a mail with the same `Message-ID` (a mail without one counts as delivered).
+///
+/// Copies in the folders with the role archive or sent do not count: Gmail puts every new mail
+/// into "All Mail" too, which is the account's archive (`torro_mail_imap`'s folder roles), and mail
+/// to oneself or to a mailing list one writes to has its copy in sent mail – both were delivered
+/// all the same and must be filtered. A copy in any other folder (junk, a folder of the person's)
+/// means the mail was moved or copied back into the inbox.
 fn delivered(store: &super::store::MailStore, ids: &[String]) -> Result<Vec<MessageSummary>, super::MailStoreError> {
+    let copies_anyway: HashSet<String> = store
+        .folders()?
+        .into_iter()
+        .filter(|folder| matches!(folder.role, Some(Role::Archive | Role::Sent)))
+        .map(|folder| folder.id)
+        .collect();
     let mut arrived = Vec::new();
     for id in ids {
         let Some(summary) = store.summary(id)? else { continue };
         if let Some(rfc) = store.resolve_message(id)?.and_then(|found| found.rfc_message_id)
-            && store.messages_by_rfc_id(&rfc)?.iter().any(|copy| copy.folder != summary.folder)
+            && store
+                .messages_by_rfc_id(&rfc)?
+                .iter()
+                .any(|copy| copy.folder != summary.folder && !copies_anyway.contains(&copy.folder))
         {
             continue;
         }
