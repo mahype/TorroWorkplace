@@ -230,9 +230,14 @@ impl Data {
             }
             (_, response) => self.take(response),
         }
-        // Another default engine: the models of the old one are not its models.
-        if assistant::models_request(self) != default {
+        // Another default engine: the models of the old one are not its models, and the new
+        // one's are on their way – also when they were asked for once before (A, B, A again).
+        let models = assistant::models_request(self);
+        if models != default {
             self.default_models.clear();
+            if let Some(request) = models.filter(|request| !self.updating.contains(request)) {
+                self.updating.push(request);
+            }
         }
     }
 
@@ -368,22 +373,31 @@ pub fn background(request: &Request) -> bool {
 /// the app holds one, hands a clone to every [`Host`] it opens ([`Host::with_memory`]), and the
 /// host starts from it instead of an empty page. Nothing of it is written to disk.
 #[derive(Debug, Clone, Default)]
-pub struct Memory(Arc<Mutex<Option<Data>>>);
+pub struct Memory(Arc<Mutex<Option<Kept>>>);
+
+/// What a [`Memory`] holds: the data, and the requests that were ever answered into it. A part
+/// whose request never answered holds nothing but its empty default, which must not stand as if
+/// it were known.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kept {
+    pub data: Data,
+    pub answered: Vec<Request>,
+}
 
 impl Memory {
     /// What the last host left, if one did.
-    pub fn recall(&self) -> Option<Data> {
+    pub fn recall(&self) -> Option<Kept> {
         self.held().clone()
     }
 
-    /// Keeps `data` for the next host, in place of what was kept before.
-    pub fn keep(&self, data: Data) {
-        *self.held() = Some(data);
+    /// Keeps `kept` for the next host, in place of what was kept before.
+    pub fn keep(&self, kept: Kept) {
+        *self.held() = Some(kept);
     }
 
     /// The kept data. A host that panicked while holding the lock leaves its data as it was;
     /// it is still the best the window knows.
-    fn held(&self) -> std::sync::MutexGuard<'_, Option<Data>> {
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Kept>> {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
@@ -684,6 +698,36 @@ mod tests {
         data.put(&Request::Accounts, answer);
         let left: Vec<&str> = data.decider_models.iter().map(|(account, _)| account.as_str()).collect();
         assert_eq!(left, [""]);
+    }
+
+    /// #394: another default engine leaves no models of the old one, and its own say "Updating…"
+    /// until they come – also when they were asked for in this window before.
+    #[tokio::test]
+    async fn another_default_engine_waits_for_its_models() {
+        let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
+        let mut data = load(Arc::clone(&backend), vec![Request::Settings, Request::ListEngines]).await;
+        let first = assistant::models_request(&data).expect("the demo's default is an AI account");
+        assert!(!data.default_models.is_empty(), "its models came in the second round");
+        let mut engines = data.engines.clone();
+        let mut other = engines[0].clone();
+        other.id = "ai:other@localhost:1".into();
+        engines.push(other);
+        data.put(&Request::ListEngines, Response::Engines { engines });
+        let mut settings = data.settings.clone();
+        if let Some(chat) = settings.ai_slots.chat.as_mut() {
+            chat.engine = "ai:other@localhost:1".into();
+        }
+        data.put(&Request::Settings, Response::Settings { settings: settings.clone() });
+        assert!(data.default_models.is_empty(), "the old engine's models are not the new one's");
+        let second = assistant::models_request(&data).expect("the other AI account");
+        assert!(data.updating(&second));
+        data.updating.clear();
+        // And back: the first engine's models were asked for before, they are on their way again.
+        if let Some(chat) = settings.ai_slots.chat.as_mut() {
+            chat.engine = "ai:ollama@localhost:11434".into();
+        }
+        data.put(&Request::Settings, Response::Settings { settings });
+        assert!(data.updating(&first));
     }
 
     /// The app's part of an action can be wrapped, the rest stays as it is.

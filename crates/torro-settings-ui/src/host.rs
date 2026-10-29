@@ -297,9 +297,9 @@ pub struct Host {
     /// The first failure of the current load; it stands over the page once the load's every
     /// request that is not in the background is back.
     problem: Option<String>,
-    /// Something real is known: the app's [`Memory`] had a state, or an answer came. Only then
-    /// does the host leave its data for the next one ([`Drop`]).
-    known: bool,
+    /// The requests answered into `data` – in this host, or in the one the app's [`Memory`] kept
+    /// it from: what the next host may show at once ([`Drop`]).
+    answered: Vec<Request>,
     /// The current load has been reported as [`Message::Loaded`] or [`Message::Sent`] already.
     announced: bool,
     /// A send went through and its load is not reported yet: `changed` as in [`Message::Sent`].
@@ -329,8 +329,13 @@ impl Host {
         wanted: Vec<Request>,
         memory: Memory,
     ) -> (Host, Task<Message>) {
-        let known = memory.recall();
-        let loaded = known.is_some();
+        let kept = memory.recall();
+        // At once only when the last state holds every part the page waits for: a part whose
+        // request failed back then would stand with its empty default as if it were known.
+        let loaded = kept.as_ref().is_some_and(|kept| {
+            wanted.iter().filter(|request| !background(request)).all(|request| kept.answered.contains(request))
+        });
+        let (data, answered) = kept.map_or_else(Default::default, |kept| (kept.data, kept.answered));
         let mut host = Host {
             backend,
             sections,
@@ -340,7 +345,7 @@ impl Host {
             // and `--settings <abschnitt>` opens its section with `open`.
             list: true,
             menu: false,
-            data: known.unwrap_or_default(),
+            data,
             loaded,
             notice: None,
             memory,
@@ -349,7 +354,7 @@ impl Host {
             flight: Vec::new(),
             applied: Vec::new(),
             problem: None,
-            known: loaded,
+            answered,
             announced: false,
             change: None,
             echoes: 0,
@@ -457,7 +462,9 @@ impl Host {
             match result {
                 Ok(response) => {
                     self.data.put(&request, response);
-                    self.known = true;
+                    if !self.answered.contains(&request) {
+                        self.answered.push(request.clone());
+                    }
                 }
                 // A failure of an older load counts for nothing: the request is asked again.
                 Err(problem) if generation == self.generation => {
@@ -781,18 +788,18 @@ impl Host {
 }
 
 /// What the settings knew when they closed stays with the app for the next host (issue #394),
-/// without what was still on its way and without the failure of that moment. Settings closed
-/// before their page could stand, or whose every request failed, leave the last state as it was:
-/// an empty one would show the next page at once with nothing on it.
+/// without what was still on its way and without the failure of that moment, and with the
+/// requests that answered into it: the next host shows it at once only when those cover its page
+/// ([`Host::with_memory`]). Settings that never got an answer leave the last state as it was.
 impl Drop for Host {
     fn drop(&mut self) {
-        if !self.loaded || !self.known {
+        if self.answered.is_empty() {
             return;
         }
         let mut data = std::mem::take(&mut self.data);
         data.updating.clear();
         data.error = None;
-        self.memory.keep(data);
+        self.memory.keep(crate::Kept { data, answered: std::mem::take(&mut self.answered) });
     }
 }
 
@@ -1227,6 +1234,23 @@ mod tests {
         let untouched = Memory::default();
         drop(Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), untouched.clone()));
         assert!(untouched.recall().is_none());
+
+        // The settings failed back then: kept, but no page at once with its empty defaults – it
+        // waits for the settings, and the statistics that did answer stand meanwhile.
+        let partly = Memory::default();
+        let (mut failed, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), partly.clone());
+        while let Some((request, generation)) = failed.flight.first().cloned() {
+            let result = match request {
+                Request::Settings => Err("not running".to_string()),
+                _ => backend.call(request.clone()).await,
+            };
+            let _: Outcome<()> =
+                failed.update(Message::Part { generation, request: Box::new(request), result: Box::new(result) });
+        }
+        drop(failed);
+        let (waiting, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), partly);
+        assert!(!waiting.loaded(), "the settings never answered");
+        assert_eq!(waiting.data().mail_stats, shown.mail_stats);
 
         let (again, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory);
         assert!(again.loaded(), "no loading state: the last state is there");
