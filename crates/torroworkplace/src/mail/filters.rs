@@ -587,16 +587,49 @@ async fn answered(
             let (count, messages) = preview(mail, reach, &query, account.as_deref()).await?;
             Ok(Response::MailFilterPreview { count, messages })
         }
-        Request::ApplyMailFilter { id } => {
-            let filter = visible_filter(mail, reach, &id)?;
-            if filter.category.is_some() && !sets_category(reach) {
-                return Err(no_category());
-            }
-            let applied = apply(mail, reach, &filter, categories).await?;
-            Ok(Response::MailFilterApplied { applied: applied.applied, failed: applied.failed, more: applied.more })
-        }
+        Request::ApplyMailFilter { id } => Ok(run_apply(mail, reach, categories, &id).await?.response()),
         other => Err(FilterError::Invalid(format!("{} is not a command for mail filters", other.operation().name()))),
     }
+}
+
+/// `mail.apply_filter` as [`answer`] answers it, together with the mails that got the filter's
+/// category ([`Applied::categorised`], none for another request or a refusal): the core puts that
+/// category on their inbox entries too, as the category jobs do. Arriving mail needs none of this –
+/// its category goes on the new entry with the mail ([`on_arrival`]).
+pub async fn answer_apply(
+    mail: &MailService,
+    reach: Reach<'_>,
+    categories: &[Category],
+    request: Request,
+) -> (Response, Vec<(String, String, MailCategory)>) {
+    let Request::ApplyMailFilter { id } = &request else {
+        return (answer(mail, reach, categories, request).await, Vec::new());
+    };
+    if let Some(refused) = limit_refusal(&request) {
+        return (refused, Vec::new());
+    }
+    match run_apply(mail, reach, categories, id).await {
+        Ok(applied) => {
+            let response = applied.response();
+            (response, applied.categorised)
+        }
+        Err(err) => (err.response(), Vec::new()),
+    }
+}
+
+/// The stored filter `id` that `reach` sees, run once ([`apply`]); a category needs admin access to
+/// `inbox` ([`sets_category`]).
+async fn run_apply(
+    mail: &MailService,
+    reach: Reach<'_>,
+    categories: &[Category],
+    id: &str,
+) -> Result<Applied, FilterError> {
+    let filter = visible_filter(mail, reach, id)?;
+    if filter.category.is_some() && !sets_category(reach) {
+        return Err(no_category());
+    }
+    apply(mail, reach, &filter, categories).await
 }
 
 /// The filters of `all` that `reach` sees, in their order.
@@ -646,11 +679,20 @@ pub async fn preview(
 }
 
 /// What one run of `mail.apply_filter` did.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Applied {
     pub applied: u64,
     pub failed: u64,
     pub more: bool,
+    /// The mails that got the filter's category, as `(account, message id, category)`.
+    pub categorised: Vec<(String, String, MailCategory)>,
+}
+
+impl Applied {
+    /// The answer of `mail.apply_filter`.
+    pub fn response(&self) -> Response {
+        Response::MailFilterApplied { applied: self.applied, failed: self.failed, more: self.more }
+    }
 }
 
 /// Whether `filter` still has something to do with `message` (in the inbox): a move always; reading
@@ -738,7 +780,8 @@ pub async fn due(
 /// `mail.apply_filter`: carries out `filter`'s actions on the mails [`due`] finds for `reach`, account
 /// by account, in pieces of [`MAX_IDS`]: read, then the category, then the move (the trash as a move,
 /// never for good). The changes run as the suite's (they were approved); a piece that fails counts
-/// its mails as `failed` and the rest goes on.
+/// its mails as `failed` and the rest goes on. The mails that got the category come back with it
+/// ([`Applied::categorised`]), for their inbox entries.
 pub async fn apply(
     mail: &MailService,
     reach: Reach<'_>,
@@ -748,15 +791,21 @@ pub async fn apply(
     let (due, more) = due(mail, reach, filter, categories).await?;
     let actions = FilterActions::of([filter]);
     let mut failed: HashSet<String> = HashSet::new();
+    let mut categorised = Vec::new();
     let mut accounts: Vec<String> = due.iter().map(|message| message.account.clone()).collect();
     accounts.sort();
     accounts.dedup();
     for account in accounts {
         let mine: Vec<&MessageSummary> = due.iter().filter(|message| message.account == account).collect();
-        failed.extend(carry_out(mail, &account, &actions, &mine, categories).await.failed);
+        let done = carry_out(mail, &account, &actions, &mine, categories).await;
+        failed.extend(done.failed);
+        if let Some(category) = actions.category {
+            let set = MailCategory::by_rule(category);
+            categorised.extend(done.categorised.into_iter().map(|id| (account.clone(), id, set)));
+        }
     }
     let failed_count = failed.len() as u64;
-    Ok(Applied { applied: due.len() as u64 - failed_count, failed: failed_count, more })
+    Ok(Applied { applied: due.len() as u64 - failed_count, failed: failed_count, more, categorised })
 }
 
 /// What [`carry_out`] did: the mails an action failed on, and those that got the category.

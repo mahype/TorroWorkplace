@@ -398,7 +398,9 @@ Posteingang liegt.
   „gelesen“, Mail ohne diese Kategorie (und ohne eine von Hand gesetzte) für „Kategorie“, jede für das Verschieben.
   Die Änderungen laufen in Stücken zu 100 über dieselben Wege wie `mail.set_flags`, `mail.move_messages` und
   `mail.delete_messages` (nur in den Papierkorb). Antwort `applied`, `failed` und `more`: Mit `more` bleibt noch
-  etwas, ein weiterer Aufruf macht weiter.
+  etwas, ein weiterer Aufruf macht weiter. Setzt der Filter eine Kategorie, bekommt auch der Eintrag der Mail im
+  Notification Hub sie, wie bei den Kategorie-Läufen; ein erledigter Eintrag und eine dort von Hand gewählte
+  Kategorie bleiben.
 
 **Rechte und Freigaben:** `mail.list_filters` und `mail.preview_filter` sind Read, alles andere ist Admin. Ein Filter
 wirkt dauerhaft auf die Mail des Menschen, darum wartet bei Agenten jede Änderung und jedes Anwenden auf eine Freigabe,

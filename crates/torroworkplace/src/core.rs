@@ -5142,14 +5142,22 @@ impl Core {
             | Request::UpdateSaveTarget { .. }
             | Request::RemoveSaveTarget { .. }
             | Request::SaveMailAttachments { .. }) => Box::pin(self.save_request(request, reach)).await,
+            // Running a mail filter (issue #339) also puts the category it set on the inbox entries
+            // of those mails, as the category jobs do.
+            request @ Request::ApplyMailFilter { .. } => {
+                let categories = self.filter_categories();
+                let (response, categorised) =
+                    Box::pin(crate::mail::filters::answer_apply(&self.mail, reach, &categories, request)).await;
+                self.mirror_filter_categories(&categorised);
+                response
+            }
             // Mail filters (issue #339): rights, reach and what is nothing to approve were checked
             // before for a client; the handler checks the reach again. Boxed as reading mail is.
             request @ (Request::ListMailFilters
             | Request::CreateMailFilter { .. }
             | Request::UpdateMailFilter { .. }
             | Request::RemoveMailFilter { .. }
-            | Request::PreviewMailFilter { .. }
-            | Request::ApplyMailFilter { .. }) => {
+            | Request::PreviewMailFilter { .. }) => {
                 let categories = self.filter_categories();
                 Box::pin(crate::mail::filters::answer(&self.mail, reach, &categories, request)).await
             }
@@ -7264,6 +7272,27 @@ impl Core {
     /// The categories a mail filter may set (issue #339): those of [`Core::category_catalogue`].
     fn filter_categories(&self) -> Vec<torro_mail::Category> {
         self.category_catalogue().into_iter().map(|def| def.category).collect()
+    }
+
+    /// Puts the category a run of a mail filter set (`mail.apply_filter`, issue #339) on the inbox
+    /// entries of those mails – `categorised` as `(account, message id, category)` –, as the category
+    /// jobs do: the entry reads like its mail. An entry that is done stays as it is, and so does one
+    /// with a category the person chose (decision 4). A failure goes to the log.
+    fn mirror_filter_categories(&self, categorised: &[(String, String, torro_mail::MailCategory)]) {
+        for (account, message, category) in categorised {
+            let Some(entry) = self.inbox.entry_of_message(account, message) else { continue };
+            let Response::Item { item } = self.inbox.handle(Request::GetItem { id: entry.clone() }, None, Utc::now())
+            else {
+                continue;
+            };
+            let by_hand = item.category.is_some_and(|held| held.source == torro_mail::CategorySource::Person);
+            if by_hand || matches!(item.state, torro_inbox::State::Done { .. }) || item.category == Some(*category) {
+                continue;
+            }
+            if let Err(err) = self.inbox.set_category(&entry, Some(*category)) {
+                eprintln!("torroworkplace: inbox: cannot put a mail filter's category on an entry: {err}");
+            }
+        }
     }
 
     /// The requests of saving attachments for `reach` (issue #290, [`crate::mail::save::answer`]).
@@ -13579,6 +13608,74 @@ mod tests {
             refused.state
         );
         assert_eq!(server.messages("INBOX").len(), 3, "neither bill is moved");
+    }
+
+    /// Issue #339, review: applying a filter with a category puts it on the inbox entries of the mail
+    /// it changed, as the category jobs do; an entry with a category the person chose keeps it.
+    #[tokio::test]
+    async fn applying_a_filter_with_a_category_files_the_entries_alike() {
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+        use torro_mail::{Category, MailCategory};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for subject in ["Bill one", "Bill two"] {
+            server.add("INBOX", &crate::mail::save::tests::raw_on(Utc::now(), subject, &[]), &[]);
+        }
+        let secrets = crate::account::github::tests::MemoryTokens::default();
+        let anna = "mail:anna@example.org";
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+        service.reload().await;
+        service.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(service);
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let mut entries = Vec::new();
+        for (subject, thread) in [("Bill one", "t:1"), ("Bill two", "t:2")] {
+            let message = crate::mail::save::tests::message_id(&core.mail, subject).await;
+            let mail = crate::inbox::NewMail {
+                account: anna.into(),
+                message,
+                thread: thread.into(),
+                subject: subject.into(),
+                snippet: String::new(),
+                from: None,
+                bulk: None,
+                list: None,
+                github: None,
+                date: Utc::now(),
+                invite: false,
+                auto_submitted: None,
+                junk: false,
+                category: None,
+            };
+            entries
+                .push(core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry"));
+        }
+        let by_hand =
+            Request::SetItemCategory { id: entries[1].clone(), category: Category::Newsletter, remember: false };
+        assert!(matches!(core.inbox.handle(by_hand, None, Utc::now()), Response::ItemCategory { .. }));
+
+        let create = Request::CreateMailFilter {
+            query: "from:stadtwerke-bonn.de".into(),
+            account: Some(anna.into()),
+            file: None,
+            mark_read: false,
+            category: Some(Category::Invoice),
+            enabled: true,
+        };
+        let filter = mail_filter(ask(&core, Some(&app_key), create).await);
+        let applied = ask(&core, Some(&app_key), Request::ApplyMailFilter { id: filter.id }).await;
+        assert_eq!(applied, Response::MailFilterApplied { applied: 2, failed: 0, more: false });
+
+        let category = |id: &str| match core.inbox.handle(Request::GetItem { id: id.into() }, None, Utc::now()) {
+            Response::Item { item } => item.category,
+            other => panic!("an entry, not {other:?}"),
+        };
+        assert_eq!(category(&entries[0]), Some(MailCategory::by_rule(Category::Invoice)), "the entry reads alike");
+        assert_eq!(category(&entries[1]), Some(MailCategory::by_person(Category::Newsletter)), "the person's stays");
     }
 
     /// A core whose mail data (and so its save targets) live in `dir`, without mail accounts.
