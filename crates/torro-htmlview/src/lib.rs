@@ -4,9 +4,9 @@
 //! picture that Iced shows (way 2 of the trial M9.4, `docs/research.md` section 8). There is no JavaScript:
 //! Blitz has none. The HTML is expected to be cleaned by the core already (`mail.get_message` with
 //! `include_html`, M9.1/M9.5); this library adds a second line: it only ever hands pictures to Blitz. Blitz
-//! also asks for style sheets (`@import`), fonts (`@font-face`) and pictures in CSS `url()`, and its request
-//! does not say which kind it wants, so these go out like a picture's; their answer is refused unless it is a
-//! picture.
+//! also asks for fonts (`@font-face`) and pictures in CSS `url()`, and its request does not say which kind it
+//! wants, so these go out like a picture's; their answer is refused unless it is a picture. `@import` rules
+//! never reach Blitz: [`Content`] removes them before parsing, because Blitz panics on one it cannot resolve.
 //!
 //! Two pieces, like Iced's `text_editor`:
 //!

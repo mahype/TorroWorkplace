@@ -75,10 +75,23 @@ cargo test --workspace
 TORRO_LANG=de cargo test --workspace
 ```
 
-- Vor Push und PR läuft zusätzlich `scripts/ci-local.sh` (dieselben Schritte wie `ci.yml`). Beides muss grün sein;
-  schlägt etwas fehl, wird nicht gepusht.
-- Ausnahme Direkt-PR (`quick-fix`): Sind nur Doku, Skills oder Skripte geändert, reicht
-  `scripts/ci-local.sh --quick`; bei `de.rs` zusätzlich `TORRO_LANG=de cargo test -p torro-core`.
+- Vor dem PR läuft zusätzlich `scripts/ci-local.sh` ohne Argumente (dieselben Schritte wie `ci.yml`, das volle Set).
+  Beides muss grün sein; schlägt etwas fehl, wird nicht gepusht.
+- **Stufenmodell:** Der Hook `pre-push` ruft `scripts/ci-local.sh --changed <bereich>` mit dem Push-Bereich auf; das
+  Skript wählt nach den Pfaden von `git diff --name-only` die Stufe (fmt und Design-Check laufen immer):
+  1. *Schnell* – kein Rust-Code geändert (`docs/`, `scripts/`, `.claude/`, `.github/`, `*.md`): nur fmt und Design.
+  2. *i18n* – nur `crates/torro-core/src/i18n/**`: zusätzlich `cargo test -p torro-core --lib i18n`, auch mit
+     `TORRO_LANG=de`.
+  3. *Gezielt* – Rust-Code in einzelnen Crates: je Crate clippy und test, in beiden Sprachen, nur für die Ziele der
+     Pfade (`src/**` → `--lib` bzw. `--bins`, `tests/<name>.rs` → `--test <name>`, sonst das ganze Crate).
+  4. *Voll* – bei `Cargo.toml`, `Cargo.lock`, `rust-toolchain*`, `.cargo/config*`, nicht zuordenbaren Pfaden oder mehr
+     als 5 Crates (im Zweifel immer voll).
+
+  Stufe 3 prüft abhängige Crates nicht mit; sie brechen nur über Schnittstellen, die kleine Änderungen nicht anfassen
+  dürfen. Das Restrisiko fängt der nächste volle Lauf (PR, Release). Von Hand: `scripts/ci-local.sh --changed
+  origin/main...HEAD` für den Stand des Branches, `scripts/ci-local.sh --scope <bereich>` für die Crates eines Bereichs
+  (`core`, `mail`, `gui`, `calendar`, `tasks`, `inbox`, `caldav`, `contacts`, `wm`, `ai`); `git push --no-verify` bleibt
+  der Ausweg.
 - Tests brauchen keinen laufenden Hyprland, kein Netz und kein echtes Home-Verzeichnis (`CLAUDE.md`).
 - Bei Oberflächenänderungen gehört die Sichtprüfung dazu (Skill `torro-design`, Agent `torro-design-review`), bei
   Änderungen an Requests, Katalog oder MCP der Agent `torro-api-review`.
@@ -129,9 +142,9 @@ TORRO_LANG=de cargo test --workspace
 
 **`pullrequest`**
 
-- Vor dem Push `scripts/ci-local.sh` und `TORRO_LANG=de cargo test --workspace` (Abschnitt „Prüfen“); beide stehen
-  abgehakt im `## Test plan`. Im Direkt-Modus (`quick-fix`) gilt die Ausnahme aus „Prüfen“, und der `## Test plan`
-  nennt die Befehle, die tatsächlich gelaufen sind.
+- Vor dem PR `scripts/ci-local.sh` (volles Set) und `TORRO_LANG=de cargo test --workspace` (Abschnitt „Prüfen“); beide
+  stehen abgehakt im `## Test plan`. Der Push-Hook prüft danach nur noch nach Stufe (siehe „Prüfen“). Im Direkt-Modus
+  (`quick-fix`) gilt das Stufenmodell, und der `## Test plan` nennt die Befehle, die tatsächlich gelaufen sind.
 - Neue Nutzertexte ohne Eintrag in `de.rs` stehen im Body unter `## Übersetzungen` mit Vorschlag
   (`"Today" → "Heute"`).
 
@@ -173,8 +186,8 @@ Kriterium „Direkt-PR“ (alle Punkte): höchstens 2–3 Dateien und wenige Zei
 Übersetzungen in `crates/torro-core/src/i18n/de.rs` und kleine Korrekturen in `scripts/` und `.claude/skills/`;
 nicht erlaubt sind Programmlogik, Schnittstellen, Konfiguration, Abhängigkeiten und Änderungen an den Gates der
 Skill-Kette (`approved`, Merge-Regeln). Bei Zweifeln hält der Agent an und schlägt `/issue-small` vor. Den Worktree
-legt `/quick-fix` selbst an. Verifizieren mit `scripts/ci-local.sh --quick`, bei einer Übersetzung zusätzlich
-`TORRO_LANG=de cargo test -p torro-core`.
+legt `/quick-fix` selbst an. Verifizieren mit `scripts/ci-local.sh --changed origin/main...HEAD` (Stufe 1 oder 2 aus „Prüfen“: bei Doku, Skills
+und Skripten nur fmt und Design, bei einer Übersetzung zusätzlich die i18n-Tests in beiden Sprachen).
 
 ## Lokale Instanz
 
