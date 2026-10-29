@@ -1403,8 +1403,10 @@ pub enum Request {
     DeleteContact { id: String, etag: String },
     /// Settles a contact in `conflict` ([`Response::ContactsResolved`]): `mine` writes this
     /// device's version over the server's, `theirs` drops this device's changes, `both` keeps the
-    /// server's and this device's as a new contact. Codes: `not-found`, `conflict` (it changed again:
-    /// reload), `unsupported` (not in conflict, read-only book).
+    /// server's and this device's as a new contact. `etag` is the contact's as `get_contact` showed
+    /// it; in a conflict that is the version of the server's side shown beside it. Codes:
+    /// `not-found`, `conflict` (the server changed again: reload), `unsupported` (not in conflict,
+    /// read-only book).
     #[serde(rename = "contacts.resolve_conflict")]
     ResolveContactConflict { id: String, keep: torro_contacts::Keep, etag: String },
 

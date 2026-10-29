@@ -85,7 +85,7 @@ pub fn contact_of(s: &Store, card: &CardRow, book: &BookRow) -> Contact {
     contact.id = card.id.clone();
     contact.book = card.book.clone();
     contact.uid = card.uid.clone();
-    contact.etag = card.etag.clone();
+    contact.etag = shown_etag(card).map(str::to_string);
     contact.state = card.state;
     contact.readonly = !book.writable;
     contact.favorite = s.is_favorite(&card.id).unwrap_or(false);
@@ -104,10 +104,18 @@ pub fn contact_of(s: &Store, card: &CardRow, book: &BookRow) -> Contact {
     contact
 }
 
-/// Whether `sent` is the version of `card` the client showed; a contact not on the server yet has
-/// none, and the client sends it empty.
+/// The version a client is shown of `card` and sends back to change it. In a conflict that is the
+/// server's version it is shown beside: settling the conflict must fail when the server changed
+/// once more since, instead of writing over a version nobody saw (this device's own `etag` stays
+/// put during a conflict).
+fn shown_etag(card: &CardRow) -> Option<&str> {
+    if card.state == ContactState::Conflict { card.server_etag.as_deref() } else { card.etag.as_deref() }
+}
+
+/// Whether `sent` is the version of `card` the client showed ([`shown_etag`]); a contact not on the
+/// server (yet or any more) has none, and the client sends it empty.
 fn same_version(card: &CardRow, sent: &str) -> bool {
-    card.etag.as_deref().unwrap_or("") == sent
+    shown_etag(card).unwrap_or("") == sent
 }
 
 /// The vCard version most cards of `book` are written in; 3.0 when none (every server reads it).
@@ -459,7 +467,10 @@ impl ContactsService {
         if let Some(etag) = etag
             && !same_version(&found.card, etag)
         {
-            return Err(ContactsError::Conflict { server_vcard: None, etag: found.card.etag.clone() });
+            return Err(ContactsError::Conflict {
+                server_vcard: None,
+                etag: shown_etag(&found.card).map(str::to_string),
+            });
         }
         Self::writable(&found.book)?;
         if found.card.state == ContactState::Conflict {
@@ -605,7 +616,10 @@ impl ContactsService {
     async fn delete(&self, id: &str, etag: &str) -> Result<Response, ContactsError> {
         let found = self.find(id)?;
         if !same_version(&found.card, etag) {
-            return Err(ContactsError::Conflict { server_vcard: None, etag: found.card.etag.clone() });
+            return Err(ContactsError::Conflict {
+                server_vcard: None,
+                etag: shown_etag(&found.card).map(str::to_string),
+            });
         }
         Self::writable(&found.book)?;
         with(self.store()?, |s| {
@@ -617,7 +631,7 @@ impl ContactsService {
                     op: Op::Delete,
                     uid: found.card.uid.clone(),
                     href: Some(href.clone()),
-                    etag: found.card.etag.clone(),
+                    etag: shown_etag(&found.card).map(str::to_string),
                 })?;
             }
             Ok(())
@@ -641,7 +655,10 @@ impl ContactsService {
     async fn resolve(&self, id: &str, keep: Keep, etag: &str) -> Result<Response, ContactsError> {
         let found = self.find(id)?;
         if !same_version(&found.card, etag) {
-            return Err(ContactsError::Conflict { server_vcard: None, etag: found.card.etag.clone() });
+            return Err(ContactsError::Conflict {
+                server_vcard: None,
+                etag: shown_etag(&found.card).map(str::to_string),
+            });
         }
         Self::writable(&found.book)?;
         if found.card.state != ContactState::Conflict {
@@ -919,6 +936,39 @@ mod tests {
         let favorite = Request::SetContactFavorite { id: bob.clone(), favorite: true };
         assert_eq!(setup.service.handle(favorite, Reach::Suite).await, Response::Ok, "a favourite stays here");
         assert!(contact(setup.service.handle(Request::GetContact { id: bob }, Reach::Suite).await).favorite);
+    }
+
+    /// Review of #351: keeping this device's version fails when the server changed once more since
+    /// the conflict was shown, instead of writing over a version nobody saw.
+    #[tokio::test]
+    async fn settling_a_conflict_needs_the_server_version_shown() {
+        let setup = setup().await;
+        let anna = id("contacts", "anna");
+        let shown = contact(setup.service.handle(Request::GetContact { id: anna.clone() }, Reach::Suite).await);
+        setup.server.lock().offline = true;
+        let note = |text: &str| ContactFields { note: Some(text.into()), ..ContactFields::default() };
+        let update = Request::UpdateContact { id: anna.clone(), etag: shown.etag.expect("etag"), fields: note("mine") };
+        contact(setup.service.handle(update, Reach::Suite).await);
+        let theirs = |text: &str| {
+            card("anna", "Anna Berg", "anna@example.org").replace("END:VCARD", &format!("NOTE:{text}\r\nEND:VCARD"))
+        };
+        setup.server.put_card(&setup.work, "anna", &theirs("theirs"));
+        setup.server.lock().offline = false;
+        setup.service.sync_all().await;
+        let conflict = contact(setup.service.handle(Request::GetContact { id: anna.clone() }, Reach::Suite).await);
+        assert_eq!(conflict.state, ContactState::Conflict);
+        let seen = conflict.etag.clone().expect("etag");
+        assert_eq!(Some(&seen), conflict.server.as_ref().and_then(|s| s.etag.as_ref()), "the version shown beside");
+        setup.server.put_card(&setup.work, "anna", &theirs("theirs again"));
+        setup.service.sync_all().await;
+        let stale = Request::ResolveContactConflict { id: anna.clone(), keep: Keep::Mine, etag: seen };
+        assert_eq!(code(&setup.service.handle(stale, Reach::Suite).await), "conflict", "a version nobody saw");
+        let again = contact(setup.service.handle(Request::GetContact { id: anna.clone() }, Reach::Suite).await);
+        let mine =
+            Request::ResolveContactConflict { id: anna.clone(), keep: Keep::Mine, etag: again.etag.expect("etag") };
+        assert!(matches!(setup.service.handle(mine, Reach::Suite).await, Response::ContactsResolved { .. }));
+        let (_, written) = setup.server.card(&setup.work, &format!("{}anna.vcf", setup.work)).expect("card");
+        assert!(written.contains("NOTE:mine"), "{written}");
     }
 
     /// Review of #351: groups kept as group cards (iCloud) are not written as `CATEGORIES`, by no
