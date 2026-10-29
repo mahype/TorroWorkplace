@@ -397,6 +397,14 @@ fn labeled<T>(value: T, (kind, pref): (FieldKind, bool)) -> Labeled<T> {
     Labeled { value, kind, pref }
 }
 
+/// Whether `prop` (a `PHOTO`) holds the picture itself: a `data:` address or Base64.
+fn inline_photo(prop: &Prop) -> bool {
+    !prop.value.trim().is_empty()
+        && (prop.value.trim_start().starts_with("data:")
+            || prop.has_param_value("ENCODING", "b")
+            || prop.has_param_value("ENCODING", "BASE64"))
+}
+
 /// Where each value of a field we know sits, for [`patch`].
 #[derive(Default)]
 struct Index {
@@ -440,7 +448,8 @@ fn read_doc(doc: &Doc) -> (Contact, Index) {
                 }
             }
             "GEO" if contact.geo.is_none() => contact.geo = geo_of(prop),
-            "PHOTO" if contact.photo.is_none() && !prop.value.trim().is_empty() => {
+            // Only a picture inside the card: a link to elsewhere is never fetched, so it has none to show.
+            "PHOTO" if contact.photo.is_none() && inline_photo(prop) => {
                 contact.photo = Some(PhotoRef { version: fingerprint(&prop.value) })
             }
             "EMAIL" => {
@@ -541,6 +550,7 @@ fn fold(line: &str, eol: &str) -> String {
 }
 
 fn render_param_value(value: &str) -> String {
+    let value = value.replace('\r', "").replace('\n', "\\n");
     if value.contains([':', ';', ',', ' ', '"']) {
         format!("\"{}\"", value.replace('"', "'"))
     } else {
@@ -674,7 +684,9 @@ impl Edit {
     ) -> Vec<(String, Vec<String>)> {
         for (name, values) in params.iter_mut() {
             if name == "TYPE" {
-                values.retain(|v| !KIND_TOKENS.contains(&v.to_ascii_lowercase().as_str()));
+                // `TYPE="voice,cell"` (vCard 4) names two types in one quoted value.
+                *values = values.iter().flat_map(|v| v.split(',')).map(|v| v.trim().to_string()).collect();
+                values.retain(|v| !v.is_empty() && !KIND_TOKENS.contains(&v.to_ascii_lowercase().as_str()));
             }
         }
         params.retain(|(name, values)| !(name == "TYPE" && values.is_empty()) && name != "PREF");
@@ -715,13 +727,26 @@ impl Edit {
     }
 
     /// Writes a value of a field with several: replaces line `at`, or adds a new line.
-    fn write_labeled(&mut self, name: &str, at: Option<usize>, kind: &FieldKind, pref: bool, value: String) {
+    /// The value is written as text (a `VALUE=uri` of the old line goes, so `tel:` needs no prefix),
+    /// and an address's `LABEL` is the one of the new value, never the old line's.
+    fn write_labeled(
+        &mut self,
+        name: &str,
+        at: Option<usize>,
+        kind: &FieldKind,
+        pref: bool,
+        value: (String, Option<String>),
+    ) {
+        let (value, label) = value;
         let old_group = at.and_then(|i| self.prop(i).and_then(|p| p.group.clone()));
         let label_line = old_group.as_ref().and_then(|g| {
             self.doc.props().find(|(_, p)| p.name == "X-ABLABEL" && p.group.as_ref() == Some(g)).map(|(i, _)| i)
         });
-        let base = at.map(|i| self.kept_params(i, &[])).unwrap_or_default();
-        let params = self.type_params(kind, pref, base);
+        let base = at.map(|i| self.kept_params(i, &["VALUE", "LABEL"])).unwrap_or_default();
+        let mut params = self.type_params(kind, pref, base);
+        if let Some(label) = label {
+            params.push(("LABEL".into(), vec![label]));
+        }
         let mut group = old_group.clone();
         let mut new_label = None;
         if let Some(label) = label_line {
@@ -760,7 +785,7 @@ impl Edit {
         current: &[Labeled<T>],
         before: &[Labeled<T>],
         after: &[Labeled<T>],
-        encode: impl Fn(&T, Version) -> String,
+        encode: impl Fn(&T, Version) -> (String, Option<String>),
     ) {
         if before == after {
             return;
@@ -811,12 +836,13 @@ impl Edit {
 }
 
 #[allow(clippy::ptr_arg)] // `patch_labeled` hands every field's value by reference.
-fn encode_text(value: &String, _: Version) -> String {
-    escape(value)
+fn encode_text(value: &String, _: Version) -> (String, Option<String>) {
+    (escape(value), None)
 }
 
-fn encode_address(address: &PostalAddress, _: Version) -> String {
-    [
+/// The address's parts, and its `LABEL` (vCard 4 only; 3.0 keeps it in a line of its own).
+fn encode_address(address: &PostalAddress, version: Version) -> (String, Option<String>) {
+    let parts = [
         &address.po_box,
         &address.extended,
         &address.street,
@@ -828,7 +854,9 @@ fn encode_address(address: &PostalAddress, _: Version) -> String {
     .iter()
     .map(|p| escape(p))
     .collect::<Vec<_>>()
-    .join(";")
+    .join(";");
+    let label = address.label.clone().filter(|l| !l.trim().is_empty() && version == Version::V4);
+    (parts, label)
 }
 
 fn date_value(date: &PartialDate, version: Version) -> (String, Vec<(String, Vec<String>)>) {
@@ -889,8 +917,14 @@ pub fn patch(raw: &str, before: &Contact, after: &Contact) -> String {
         let note = after.note.as_deref().filter(|n| !n.trim().is_empty()).map(escape);
         edit.set_single("NOTE", note, &[]);
     }
+    // vCard 3.0 has no `ANNIVERSARY`; Apple and others write `X-ANNIVERSARY`. The line there is the
+    // one changed; a new one takes the name of the version.
+    let anniversary = match (edit.doc.first("ANNIVERSARY"), edit.doc.first("X-ANNIVERSARY"), version) {
+        (Some(_), _, _) | (None, None, Version::V4) => "ANNIVERSARY",
+        _ => "X-ANNIVERSARY",
+    };
     for (name, old, new) in
-        [("BDAY", before.birthday, after.birthday), ("ANNIVERSARY", before.anniversary, after.anniversary)]
+        [("BDAY", before.birthday, after.birthday), (anniversary, before.anniversary, after.anniversary)]
     {
         if old == new {
             continue;
@@ -1192,6 +1226,41 @@ mod tests {
             new_vcard(&uid, &ContactFields { birthday: Some("soon".into()), ..ContactFields::default() }, Version::V3),
             Err(FieldsError::BadDate("birthday"))
         );
+    }
+
+    /// Review of #351: the old line's parameters never contradict a value written anew.
+    #[test]
+    fn rewritten_values_take_no_stale_parameters() {
+        let raw = fixture("v4.vcf");
+        let before = read(&raw).expect("card");
+        let mut after = before.clone();
+        after.phones[0].kind = FieldKind::Work;
+        let patched = patch(&raw, &before, &after);
+        assert_eq!(read(&patched).expect("card").phones[0].kind, FieldKind::Work, "{patched}");
+        assert!(!patched.contains("VALUE=uri"), "a text value is no uri: {patched}");
+        let mut moved = before.clone();
+        moved.addresses[0].value.street = "Markt 1".into();
+        moved.addresses[0].value.label = Some("Markt 1\n04109 Leipzig".into());
+        let patched = patch(&raw, &before, &moved);
+        let back = read(&patched).expect("card");
+        assert_eq!(back.addresses[0].value.label.as_deref(), Some("Markt 1\n04109 Leipzig"), "{patched}");
+        assert!(!patched.contains("Ringstr"), "{patched}");
+        let linked = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:x\r\nFN:X\r\nPHOTO:https://example.org/x.jpg\r\nEND:VCARD\r\n";
+        assert_eq!(read(linked).expect("card").photo, None, "a picture elsewhere is no picture to show");
+    }
+
+    #[test]
+    fn an_apple_anniversary_is_changed_and_removed_where_it_stands() {
+        let raw = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:X\r\nX-ANNIVERSARY:2010-01-01\r\nEND:VCARD\r\n";
+        let before = read(raw).expect("card");
+        let mut after = before.clone();
+        after.anniversary = PartialDate::parse("2011-02-02");
+        let changed = patch(raw, &before, &after);
+        assert_eq!(read(&changed).expect("card").anniversary, PartialDate::parse("2011-02-02"), "{changed}");
+        assert_eq!(changed.matches("ANNIVERSARY").count(), 1, "{changed}");
+        after.anniversary = None;
+        let removed = patch(raw, &before, &after);
+        assert!(!removed.contains("ANNIVERSARY"), "{removed}");
     }
 
     #[test]

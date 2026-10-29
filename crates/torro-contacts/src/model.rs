@@ -360,7 +360,8 @@ pub struct Contact {
     /// A favourite of the person, kept on this device only.
     #[serde(default)]
     pub favorite: bool,
-    /// The version on the server, to send back with a change; `None` until the server has it.
+    /// The version on the server, to send back with a change; `None` until the server has it, and
+    /// a change then sends it empty (`""`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
     #[serde(default)]
