@@ -20316,6 +20316,93 @@ mod tests {
         assert!(!known("berg@friends.example"), "read afresh: switched off, nobody is a contact");
     }
 
+    /// Review of #403: a sorting job over every folder, without a model, files a contact's mail in
+    /// the inbox as Personal, but not the same contact's mail in the junk folder nor one's own sent
+    /// mail, although a card of one's own is in the address books.
+    #[tokio::test]
+    async fn a_sorting_job_files_a_contact_s_mail_but_not_junk_or_one_s_own() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_ipc::inbox::{CategoryJobScope, CategoryJobState};
+        use torro_mail::{Category, MailCategory};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add_folder("Junk", "\\HasNoChildren \\Junk", 15);
+        server.add_folder("Sent", "\\HasNoChildren \\Sent", 16);
+        let date = Utc::now().to_rfc2822();
+        for (n, folder, from, subject) in [
+            (1, "INBOX", "berg@friends.example", "Lunch"),
+            (2, "Junk", "berg@friends.example", "Cheap watches"),
+            (3, "Sent", "anna@example.org", "Re: Lunch"),
+        ] {
+            let raw = format!(
+                "From: <{from}>\r\nTo: someone@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
+                 Message-ID: <job{n}@example>\r\nContent-Type: text/plain\r\n\r\nText {n}\r\n"
+            );
+            server.add(folder, &raw, &[]);
+        }
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let books = Arc::new(crate::contacts::sync::fake::Server::default());
+        let book = books.add_book("contacts", true, false);
+        for (uid, address) in [("berg", "berg@friends.example"), ("me", "anna@example.org")] {
+            let card =
+                format!("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{uid}\r\nFN:{uid}\r\nEMAIL:{address}\r\nEND:VCARD\r\n");
+            books.put_card(&book, uid, &card);
+        }
+        let account = "nextcloud:anna@cloud.example.org";
+        let contacts =
+            crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(account.into(), books)]);
+        contacts.sync_all().await;
+        let core = core(dir.path()).with_mail(mail).with_contacts(contacts);
+
+        let start =
+            Request::StartCategoryJob { scope: CategoryJobScope { again: true, ..CategoryJobScope::default() } };
+        let answer = core.handle(start).await;
+        assert!(matches!(answer, Response::CategoryJob { job: Some(_) }), "{answer:?}");
+        let mut ended = None;
+        for _ in 0..200 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let Response::CategoryJob { job: Some(job) } = core.handle(Request::GetCategoryJob { id: None }).await
+            else {
+                panic!("the run")
+            };
+            if job.state != CategoryJobState::Running {
+                ended = Some(job);
+                break;
+            }
+        }
+        let job = ended.expect("the run ends");
+        assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!((progress.processed, progress.changed), (3, 1), "only the inbox's mail changed");
+
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        let category_of = |subject: &str| messages.iter().find(|m| m.subject == subject).and_then(|m| m.category);
+        assert_eq!(category_of("Lunch"), Some(MailCategory::by_rule(Category::Personal)));
+        assert_eq!(category_of("Cheap watches"), None, "the junk folder keeps the contacts out");
+        assert_eq!(category_of("Re: Lunch"), None, "one's own sent mail is no contact's");
+    }
+
     /// Issue #123: a folder's message without an entry is muted by its id – its traits only, from
     /// the mail store; a client needs the account, the admin switch and the person, who sees the
     /// sender as the store holds it.""
