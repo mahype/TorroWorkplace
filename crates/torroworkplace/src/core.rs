@@ -1225,15 +1225,26 @@ async fn ask_model(
     })
 }
 
-/// Whether the mail of `facts` comes from a contact (issue #390, `known` asks the address books and
-/// the setting): then it goes to Personal before any model. Mail sent automatically or to a list,
-/// and mail in the junk folder, keep what the headers and the folder make of it.
+/// Whether the mail of `facts` in `account` comes from a contact (issue #390, `known` asks the
+/// address books and the setting): then it goes to Personal before any model. Mail sent
+/// automatically or to a list, and mail in the junk folder, keep what the headers and the folder
+/// make of it. So does a category a rule set – a mail filter's among them, which only the arrival
+/// knows apart (review of #390) –, unless it is Personal already. Mail of the account itself (a sent
+/// folder in a sorting job) is no contact's, even with a card of one's own in the address books.
 fn from_contact(
     known: Option<&crate::mail::inbox_feed::KnownSender>,
+    account: &str,
     facts: &crate::mail::service::SortingFacts,
 ) -> bool {
     let Some(known) = known else { return false };
-    !facts.bulk && !facts.junk && facts.sender.as_deref().is_some_and(|sender| known(sender))
+    let own = account.strip_prefix("mail:").unwrap_or(account);
+    let ruled = facts.category.is_some_and(|held| {
+        held.source == torro_mail::CategorySource::Rule && held.category != torro_mail::Category::Personal
+    });
+    !facts.bulk
+        && !facts.junk
+        && !ruled
+        && facts.sender.as_deref().is_some_and(|sender| !sender.eq_ignore_ascii_case(own) && known(sender))
 }
 
 /// Personal, as the contacts give it (issue #390): set by a rule, not by a model.
@@ -1378,7 +1389,7 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
             // chooses within that group. Not while clearing all categories holds sorting back, as
             // the rules are held back then.
             let contact = ruled.is_none()
-                && from_contact(known.as_ref(), &facts)
+                && from_contact(known.as_ref(), &account, &facts)
                 && !inbox.category_clear_blocked().unwrap_or(true);
             let personal = contact.then(|| (by_contact(), None));
             let (decided, asked) = match (ruled, &decider) {
@@ -1520,7 +1531,7 @@ async fn category_job_run(
                 };
                 // Mail of a contact goes to Personal when no rule spoke (issue #390); a model only
                 // chooses within that group.
-                let contact = ruled.is_none() && from_contact(known.as_ref(), &facts);
+                let contact = ruled.is_none() && from_contact(known.as_ref(), &account.account, &facts);
                 let personal = contact.then(|| (by_contact(), None));
                 let decided = match (ruled, &decider) {
                     (Some(category), _) => Some((category, None)),
@@ -20216,11 +20227,28 @@ mod tests {
     }
 
     /// Issue #390: sorting again without a model files a contact's mail as Personal (a rule's), not
-    /// a contact's newsletter nor a stranger's; switched off, a contact is nobody.
+    /// a contact's newsletter, a stranger's, one a filter sorted or one's own; switched off, a
+    /// contact is nobody.
     #[tokio::test]
     async fn sorting_again_files_a_contact_s_mail_as_personal() {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
         use torro_mail::{Category, MailCategory};
+        let listing = || Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(MAIL_PASSWORD).await;
         let date = Utc::now().to_rfc2822();
@@ -20228,6 +20256,8 @@ mod tests {
             (1, "Berg@Friends.example", "Lunch", ""),
             (2, "berg@friends.example", "Club news", "List-Id: <club.friends.example>\r\n"),
             (3, "someone@else.example", "Hello", ""),
+            (4, "berg@friends.example", "Your invoice", ""),
+            (5, "anna@example.org", "Note to self", ""),
         ] {
             let raw = format!(
                 "From: <{from}>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
@@ -20246,6 +20276,8 @@ mod tests {
         let card =
             "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:berg\r\nFN:Jo Berg\r\nEMAIL:berg@friends.example\r\nEND:VCARD\r\n";
         books.put_card(&book, "berg", card);
+        let me = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:me\r\nFN:Anna\r\nEMAIL:anna@example.org\r\nEND:VCARD\r\n";
+        books.put_card(&book, "me", me);
         let account = "nextcloud:anna@cloud.example.org";
         let contacts =
             crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(account.into(), books)]);
@@ -20254,6 +20286,13 @@ mod tests {
         let app_key = crate::clients::tests::app_key(dir.path());
         let known = core.known_sender();
         assert!(core.settings.current().mail_contacts_personal, "on unless turned off");
+        // A mail filter gave the invoice its category when it arrived (review of #390).
+        let invoice = {
+            let Response::MailMessages { messages, .. } = core.handle(listing()).await else { panic!("a page") };
+            messages.into_iter().find(|m| m.subject == "Your invoice").map(|m| m.id).expect("the invoice")
+        };
+        let filtered = MailCategory::by_rule(Category::Invoice);
+        core.mail.set_category(&anna.id, std::slice::from_ref(&invoice), Some(filtered)).await.expect("kept");
         assert!(known("berg@friends.example") && !known("someone@else.example"));
 
         let again = Request::CatchUpCategories { cancel: false, again: true };
@@ -20264,31 +20303,13 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let Response::MailMessages { messages, .. } = core
-            .handle(Request::SearchMail {
-                account: None,
-                folder: None,
-                query: None,
-                unread: None,
-                flagged: None,
-                since: None,
-                before: None,
-                limit: 10,
-                cursor: None,
-                order: None,
-                sort: None,
-                snoozed: None,
-                categories: Vec::new(),
-                pile: None,
-            })
-            .await
-        else {
-            panic!("a page")
-        };
+        let Response::MailMessages { messages, .. } = core.handle(listing()).await else { panic!("a page") };
         let category_of = |subject: &str| messages.iter().find(|m| m.subject == subject).and_then(|m| m.category);
         assert_eq!(category_of("Lunch"), Some(MailCategory::by_rule(Category::Personal)), "whatever its case");
         assert_eq!(category_of("Club news"), None, "a contact's newsletter");
         assert_eq!(category_of("Hello"), None, "a stranger's");
+        assert_eq!(category_of("Your invoice"), Some(filtered), "a filter's category stays");
+        assert_eq!(category_of("Note to self"), None, "one's own address is no contact's");
 
         let off = Request::SetSetting { key: SettingKey::MailContactsPersonal, value: serde_json::json!(false) };
         assert_eq!(ask(&core, Some(&app_key), off).await, Response::Ok);
