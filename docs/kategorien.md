@@ -60,7 +60,7 @@ Englischer Schlüssel ist maßgeblich, die deutsche Beschriftung steht in
 
 | Schlüssel | Deutsch | Was es ist | Erkannt durch |
 |---|---|---|---|
-| `other` | Sonstiges | nicht einzuordnen, oder das Modell ist zu unsicher | Rückfall |
+| `other` | Sonstiges | nicht einzuordnen, das Modell ist zu unsicher oder nennt keine Kategorie (#398) | Rückfall |
 
 Bis #338 hieß die Gruppe `junk` „Technik und Müll“ und hielt auch Unzustellbar, Abwesenheit und
 Sonstiges. Unter der Schwelle 0,6 landet jede Mail in „Sonstiges“, auch eine echte persönliche

@@ -433,6 +433,22 @@ pub(crate) fn tooltip_right<'a, M: 'a>(
     tip(content, text, tooltip::Position::Right)
 }
 
+/// A [`tooltip_right`] with `detail` under the label in `typo::caption()` and `text_3`: the rail's
+/// tooltip of a row with a second line ([`sidebar_item_detail_in`]), which says what the row says.
+fn tooltip_right_detail<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    detail: String,
+    trail: Trail,
+) -> Element<'a, M> {
+    let first = row![typo::text(typo::caption(), label).style(theme::text_2).wrapping(Wrapping::None)]
+        .push(trail_view(trail))
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    let second = typo::text(typo::caption(), detail).style(theme::text_3).wrapping(Wrapping::None);
+    tip(content, column![first, second], tooltip::Position::Right)
+}
+
 /// The tooltip card (menu surface, after a short delay) with `text` at `position` of `content`.
 fn tip<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
@@ -1046,7 +1062,44 @@ pub fn sidebar_item_in<'a, M: Clone + 'a>(
     active: bool,
     on_press: M,
 ) -> Element<'a, M> {
-    sidebar_row(mode, SidebarRow { mark: mark.into(), scale: Scale::Row, fold: None }, label, trail, active, on_press)
+    sidebar_row(
+        mode,
+        SidebarRow { mark: mark.into(), scale: Scale::Row, fold: None, detail: None },
+        label,
+        trail,
+        active,
+        on_press,
+    )
+}
+
+/// A sidebar row ([`sidebar_item_in`]) with `detail` as a second, quieter line under the label (a
+/// pinned folder with its account's address, issue #398): `typo::meta()` in `text_3`, label and
+/// detail each cut with "…" to the width the row has, so a long address never widens the sidebar.
+/// The row is one line of `typo::meta()` higher than a [`sidebar_item_in`] (like a [`MenuItem`]
+/// with [`MenuItem::detail`]). In the rail exactly a [`sidebar_item_in`], with the detail under the
+/// label in the tooltip.
+///
+/// ```ignore
+/// widgets::sidebar_item_detail_in(mode, Icon::Folder, "Invoices", "anna@work.example", Trail::Count(3), shown, Message::ShowFolder(id))
+/// ```
+pub fn sidebar_item_detail_in<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    mark: impl Into<Mark>,
+    label: impl IntoFragment<'a>,
+    detail: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    on_press: M,
+) -> Element<'a, M> {
+    let detail = Some(detail.into_fragment().into_owned());
+    sidebar_row(
+        mode,
+        SidebarRow { mark: mark.into(), scale: Scale::Row, fold: None, detail },
+        label,
+        trail,
+        active,
+        on_press,
+    )
 }
 
 /// A group row that folds its children in and out (the category groups of the mail window, issue
@@ -1072,7 +1125,7 @@ pub fn sidebar_fold_in<'a, M: Clone + 'a>(
     open: bool,
     on_press: M,
 ) -> Element<'a, M> {
-    let row = SidebarRow { mark: mark.into(), scale: Scale::Row, fold: Some(open) };
+    let row = SidebarRow { mark: mark.into(), scale: Scale::Row, fold: Some(open), detail: None };
     sidebar_row(mode, row, label, trail, active, on_press)
 }
 
@@ -1126,7 +1179,7 @@ pub fn sidebar_child<'a, M: Clone + 'a>(
     active: bool,
     on_press: M,
 ) -> Element<'a, M> {
-    let row = SidebarRow { mark: mark.into(), scale: Scale::Small, fold: None };
+    let row = SidebarRow { mark: mark.into(), scale: Scale::Small, fold: None, detail: None };
     sidebar_row(SidebarMode::Expanded, row, label, trail, active, on_press)
 }
 
@@ -1142,12 +1195,20 @@ fn branch_line_x() -> f32 {
     style::ITEM_PADDING.left + icon::SIZE / 2.0
 }
 
-/// What sets the sidebar rows apart: the mark and its scale, and for a folding group whether it is
-/// open (`Some`, drawn with a chevron).
+/// What sets the sidebar rows apart: the mark and its scale, for a folding group whether it is
+/// open (`Some`, drawn with a chevron), and a second line under the label ([`sidebar_item_detail_in`]).
 struct SidebarRow {
     mark: Mark,
     scale: Scale,
     fold: Option<bool>,
+    detail: Option<String>,
+}
+
+/// How high an expanded sidebar row is: [`size::row_sidebar`], and with a second line that line's
+/// height of `typo::meta()` more – the same air above and below as a one-line row, as
+/// [`menu_entry_height`] gives a menu entry.
+fn sidebar_row_height(detail: bool) -> f32 {
+    if detail { size::row_sidebar() + typo::line_height(typo::meta()) } else { size::row_sidebar() }
 }
 
 fn sidebar_row<'a, M: Clone + 'a>(
@@ -1160,19 +1221,25 @@ fn sidebar_row<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let tone = if active { Tone::Text } else { Tone::Text2 };
     let mark = mark_view(parts.mark, parts.scale, tone);
-    let row_button = |content: Element<'a, M>, padding: Padding| {
+    let row_button = |content: Element<'a, M>, padding: Padding, height: f32| {
         button(content)
             .width(Fill)
-            .height(size::row_sidebar())
+            .height(height)
             .padding(padding)
             .style(style::button::sidebar_item(active))
             .on_press(on_press)
     };
     match mode {
         SidebarMode::Expanded => {
-            let name = match parts.fold {
-                None => line_label(typo::body(), label),
-                Some(open) => {
+            let height = sidebar_row_height(parts.detail.is_some());
+            let name = match (parts.fold, parts.detail) {
+                // Both lines cut with "…" to the row's width: the address under a pinned folder
+                // must not make the sidebar wider (issue #398).
+                (None, Some(detail)) => {
+                    column![menu_label(label.into_fragment()), detail_line(detail.into_fragment())].width(Fill).into()
+                }
+                (None, None) => line_label(typo::body(), label),
+                (Some(open), _) => {
                     // The chevron follows the name instead of the row's end, so the label takes
                     // only its own width. A name wider than the row pushes the chevron out of the
                     // clip (Iced 0.14 has no ellipsis); the group names it is made for are short.
@@ -1187,11 +1254,15 @@ fn sidebar_row<'a, M: Clone + 'a>(
                 }
             };
             let content = row![mark, name].push(trail_view(trail)).spacing(space::s()).align_y(Alignment::Center);
-            row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING).into()
+            row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING, height).into()
         }
         SidebarMode::Rail => {
             let content = container(mark).center_x(Fill).center_y(Fill).into();
-            tooltip_right(row_button(content, Padding::ZERO), label, trail)
+            let row = row_button(content, Padding::ZERO, size::row_sidebar());
+            match parts.detail {
+                Some(detail) => tooltip_right_detail(row, label, detail, trail),
+                None => tooltip_right(row, label, trail),
+            }
         }
     }
 }
@@ -6876,6 +6947,24 @@ mod tests {
         // Title and detail fit in it with air above and below.
         let lines = typo::line_height(typo::body()) + typo::line_height(typo::meta());
         assert!(menu_entry_height(true) > lines);
+    }
+
+    /// Issue #398: a sidebar row with a second line grows by one line of `meta`, like a menu entry
+    /// with a detail; one without keeps the sidebar's row height. It builds in both sidebar modes,
+    /// active or not, with a detail far wider than any sidebar.
+    #[test]
+    fn a_detail_adds_one_meta_line_to_a_sidebar_row() {
+        assert_eq!(sidebar_row_height(false), size::row_sidebar());
+        assert_eq!(sidebar_row_height(true), size::row_sidebar() + typo::line_height(typo::meta()));
+        let lines = typo::line_height(typo::body()) + typo::line_height(typo::meta());
+        assert!(sidebar_row_height(true) > lines, "both lines fit with air above and below");
+        let long = "a.very.long.address.that.no.sidebar.is.wide.enough.for@work.example.org";
+        for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+            for active in [false, true] {
+                let _ = sidebar_item_detail_in(mode, Icon::Folder, "Inbox", long, Trail::Count(5), active, Msg::Go);
+                let _ = sidebar_item_detail_in(mode, Icon::Folder, "Inbox", "", Trail::None, active, Msg::Go);
+            }
+        }
     }
 
     /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take

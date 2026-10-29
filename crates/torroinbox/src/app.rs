@@ -97,7 +97,7 @@
 //!
 //! The mail window starts on "Unfiltered" (task E18.4, [`View::All`]): the mail of every inbox, at
 //! the end of the categories, with the piles and "Follow up" under it and "Folders" (Archive,
-//! pinned folders, "Open folders") after them. The other windows start on the overview (task E3.9,
+//! pinned folders, "Pin folders") after them. The other windows start on the overview (task E3.9,
 //! [`View::Overview`]): the open entries in the column "Mail" and "Notifications". The app keeps
 //! which column has the
 //! cursor ([`App::column`]) and which "Info" is unfolded (in `ui.json`, task E3.11); the keys walk the
@@ -10320,6 +10320,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             active: view == self.view && !self.sorting && !self.is_insights(),
             view,
             target: Target::View,
+            detail: None,
         };
         // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
         let for_me = Some(self.for_me.len()).filter(|&n| n > 0);
@@ -10354,6 +10355,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     active: self.is_hub() && self.sorting,
                     view: View::Overview,
                     target: Target::ToSort,
+                    detail: None,
                 };
                 // What the inbox counted (task E8.8b), after the views of entries.
                 let insights = NavEntry {
@@ -10363,6 +10365,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     active: self.is_insights(),
                     view: View::Overview,
                     target: Target::Insights,
+                    detail: None,
                 };
                 vec![entry(View::Overview, for_me), sort, entry(View::Snoozed, None), entry(View::Done, None), insights]
             }
@@ -10386,6 +10389,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     active: view == self.view,
                     view,
                     target: Target::View,
+                    detail: None,
                 }
             })
             .collect();
@@ -10407,6 +10411,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             active: view == self.view && !self.sorting && !self.is_insights(),
             view,
             target: Target::View,
+            detail: None,
         })
     }
 
@@ -10435,7 +10440,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 continue;
             }
             let unread: u32 = of_group.iter().map(|held| held.unread).sum();
-            let open = self.open_groups.contains(&group);
+            // "Unsorted" holds only "Other" out of the box: unfolding it would show the same mail
+            // once more (issue #398). It is one row that shows the group, like "Unfiltered".
+            let folds = group != CategoryGroup::Unsorted;
+            let open = folds && self.open_groups.contains(&group);
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
             // four colours are learnt. The line of its branch takes it too (issue #300).
             let (mark, at) = mail::group_mark(group);
@@ -10444,9 +10452,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 mark: Mark::Tinted(mark, line),
                 label: torro_core::category::group_label(group).to_string(),
                 count: (unread > 0).then_some(unread as usize),
-                active: self.category_group_active(group),
+                active: if folds { self.category_group_active(group) } else { self.category_group_shown(group) },
                 view: self.category_group_view(group),
-                target: Target::Fold(group),
+                target: if folds { Target::Fold(group) } else { Target::Show(group) },
+                detail: None,
             };
             let categories = if open {
                 of_group
@@ -10462,6 +10471,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                             active: view == self.view,
                             view,
                             target: Target::View,
+                            detail: None,
                         }
                     })
                     .collect()
@@ -10623,6 +10633,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                             active: self.view.folder().is_some_and(|shown| shown.id == folder.id),
                             view: View::Folder(FolderView::of(folder)),
                             target: Target::View,
+                            detail: None,
                         }
                     })
                     .collect(),
@@ -10632,7 +10643,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The rows of "Folders" in the mail window (task E18.4), in this order: "Archive" – the mail of
     /// every archive folder ([`View::Archive`]) – while an account shown has a folder of the role
-    /// Archive, the pinned folders, and "Open folders" ([`Target::OpenFolders`], with its chevron)
+    /// Archive, the pinned folders, and "Pin folders" ([`Target::OpenFolders`], with its chevron)
     /// while there is a mail account. Empty in the other windows (but one of mail only).
     fn folder_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail && !self.mail_only {
@@ -10641,11 +10652,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // The browser of every account's folders opens beside the row: a menu, no view.
         let browse = (!self.folders.is_empty()).then(|| NavEntry {
             mark: Mark::Icon(Icon::Folder),
-            label: tr("Open folders").to_owned(),
+            label: tr("Pin folders").to_owned(),
             count: None,
             active: self.menu == Some(Menu::Folders),
             view: self.view.clone(),
             target: Target::OpenFolders,
+            detail: None,
         });
         let shown =
             |folder: &&Folder| self.mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&folder.account));
@@ -10658,15 +10670,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 active: self.view == view,
                 view,
                 target: Target::View,
+                detail: None,
             }
         });
         archive.into_iter().chain(self.pinned_entries()).chain(browse).collect()
     }
 
+    /// The pinned folders of "Folders" (task E18.4): the folder's name, and under it the address of
+    /// its account (issue #398) while the window has folders of more than one account – counted
+    /// over every account, the hidden too, so the second line does not come and go with them.
     fn pinned_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail && !self.mail_only {
             return Vec::new();
         }
+        let several = mail::by_account(&self.folders).len() > 1;
         self.pinned_folders
             .iter()
             .filter_map(|id| self.folders.iter().find(|folder| &folder.id == id))
@@ -10674,13 +10691,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let view = View::Folder(FolderView::of(folder));
                 NavEntry {
                     mark: Mark::Icon(mail::folder_icon(folder.role)),
-                    label: format!("{} · {}", mail::folder_name(folder), mail::address(&folder.account)),
+                    label: mail::folder_name(folder),
                     count: usize::try_from(folder.unread)
                         .ok()
                         .filter(|&unread| unread > 0 && mail::counts_unread(folder.role)),
                     active: self.view == view,
                     view,
                     target: Target::View,
+                    detail: several.then(|| mail::address(&folder.account).to_owned()),
                 }
             })
             .collect()
@@ -10806,13 +10824,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. Account folders
-    /// are available through "Open folders"; only chosen pins remain in this navigation.
+    /// are available through "Pin folders"; only chosen pins remain in this navigation.
     fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor, folders: &Anchor) -> Element<'a, Message> {
         let (views, sources) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
             let message = e.message();
-            widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, message)
+            match e.detail {
+                // A pinned folder with its account under the name (issue #398).
+                Some(detail) => {
+                    widgets::sidebar_item_detail_in(mode, e.mark, e.label, detail, trail, e.active, message)
+                }
+                None => widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, message),
+            }
         };
         // What the mail is (task E12.8), on top and without a title (issue #337): the five groups,
         // with the categories of an open one indented under it (issue #300), once at least one mail
@@ -10830,7 +10854,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             items.extend(views.into_iter().map(row));
         }
-        // "Folders" (task E18.4): Archive, the pinned folders and "Open folders", whose chevron
+        // "Folders" (task E18.4): Archive, the pinned folders and "Pin folders", whose chevron
         // says that it opens a menu beside it (decision 7 of E18); the rail names it in the tooltip
         // only. The folder browser hangs at that row.
         let filed = self.folder_entries();
@@ -10896,6 +10920,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             _ => (entry.active, entry.message()),
         };
         let trail = entry.trail();
+        // "Unsorted" shows its mail and never folds (issue #398): a plain row, without a chevron.
+        if let Target::Show(_) = entry.target {
+            return vec![widgets::sidebar_item_in(mode, entry.mark, entry.label, trail, active, message)];
+        }
         let mut rows = vec![widgets::sidebar_fold_in(mode, entry.mark, entry.label, trail, active, open, message)];
         if mode == SidebarMode::Expanded && !categories.is_empty() {
             let children = categories
@@ -10916,7 +10944,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let item = |e: NavEntry| {
             let trail = e.trail();
             let message = e.message();
-            MenuItem::new(e.mark, e.label, message).trail(trail).current(e.active)
+            let entry = MenuItem::new(e.mark, e.label, message).trail(trail).current(e.active);
+            // A pinned folder with its account as the second line (issue #398).
+            match e.detail {
+                Some(detail) => entry.detail(detail),
+                None => entry,
+            }
         };
         let mut sections = Vec::new();
         // As in the sidebar (issue #337): the groups, and the categories of an open one nested under
@@ -10925,7 +10958,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .category_entries()
             .into_iter()
             .flat_map(|branch| {
-                // Folding shows nothing in the menu: its group only shows and opens.
+                // Folding shows nothing in the menu: its group only shows and opens. "Unsorted"
+                // (`Target::Show`, issue #398) only shows already.
                 let target = branch.group.target;
                 let children = branch.categories.into_iter().map(|e| item(e).nested());
                 let mut group = item(branch.group);
@@ -10942,7 +10976,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !self.mail_only && !views.is_empty() {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
-        // "Folders" as in the sidebar (task E18.4): Archive, the pinned folders, "Open folders" ›.
+        // "Folders" as in the sidebar (task E18.4): Archive, the pinned folders, "Pin folders" ›.
         let filed = self.folder_entries();
         if !filed.is_empty() {
             sections.push(MenuSection::titled(tr("Folders"), filed.into_iter().map(item).collect()));
@@ -11568,6 +11602,8 @@ struct NavEntry {
     active: bool,
     /// What the row shows: its view, or a page of the hub on the overview's entries.
     target: Target,
+    /// A second, quieter line under the label: only a pinned folder's account (issue #398).
+    detail: Option<String>,
 }
 
 /// What a row of the sidebar shows.
@@ -11582,7 +11618,10 @@ enum Target {
     /// A group of mail categories that folds open and shut (task E12.8): a click opens and shows
     /// the group, or folds the group already shown (issue #300, [`App::toggle_category_group`]).
     Fold(CategoryGroup),
-    /// "Open folders" under "Folders" (task E18.4): the browser of every account's folders, a menu
+    /// A group of mail categories that shows its mail and never folds (issue #398): "Unsorted",
+    /// which holds only "Other" unless the person put a category of their own in it.
+    Show(CategoryGroup),
+    /// "Pin folders" under "Folders" (task E18.4): the browser of every account's folders, a menu
     /// beside the row; the row ends in a chevron ([`NavEntry::trail`]).
     OpenFolders,
 }
@@ -11595,6 +11634,7 @@ impl NavEntry {
             Target::ToSort => Message::ShowToSort,
             Target::Insights => Message::ShowInsights,
             Target::Fold(group) => Message::ToggleCategoryGroup(group),
+            Target::Show(group) => Message::ShowCategoryGroup(group),
             Target::OpenFolders => Message::OpenFolders,
         }
     }
@@ -11604,7 +11644,7 @@ impl NavEntry {
         self.view.folder().is_some_and(|folder| folder.role == Some(Role::Inbox))
     }
 
-    /// The count, or the chevron of "Open folders": it opens a menu beside it (decision 7 of E18).
+    /// The count, or the chevron of "Pin folders": it opens a menu beside it (decision 7 of E18).
     fn trail(&self) -> Trail {
         match self.target {
             Target::OpenFolders => Trail::Icon(Icon::ChevronRight),
@@ -15937,7 +15977,7 @@ mod tests {
     }
 
     /// Task E18.4: the views without a number but the piles, then "Folders" with Archive, the
-    /// pinned folders and "Open folders" with its chevron; no sources, no "For me", "Info" or "Done".
+    /// pinned folders and "Pin folders" with its chevron; no sources, no "For me", "Info" or "Done".
     /// The menu has the same. Task E19.4: Reply later · Set aside · Follow up – the piles
     /// with the mail they hold (`count_in_pile`), "Later" no more. Issue #337: "Unfiltered" (once
     /// "All") with the unread mail of every inbox at the end of the categories, the start view; no
@@ -15983,21 +16023,32 @@ mod tests {
                 .map(|entry| (entry.label.clone(), entry.target, entry.trail()))
                 .collect::<Vec<_>>()
         };
-        let browse = (tr("Open folders").to_owned(), Target::OpenFolders, Trail::Icon(Icon::ChevronRight));
+        let browse = (tr("Pin folders").to_owned(), Target::OpenFolders, Trail::Icon(Icon::ChevronRight));
         let archive = (tr("Archive").to_owned(), Target::View, Trail::None);
         assert_eq!(folders(&app), [archive.clone(), browse.clone()], "nothing pinned yet");
         assert_eq!(app.folder_entries()[0].view, View::Archive);
         let pin = app.folders.iter().find(|folder| folder.role == Some(Role::Sent)).expect("a sent folder").clone();
         let _ = app.update(Message::ToggleFolderPin(pin.id.clone()));
-        let pinned = format!("{} · {}", mail::folder_name(&pin), mail::address(&pin.account));
-        assert_eq!(folders(&app), [archive, (pinned, Target::View, Trail::None), browse.clone()]);
+        // Issue #398: the folder's name, and its account's address as the second line – the demo
+        // has two accounts.
+        let pinned = mail::folder_name(&pin);
+        assert_eq!(folders(&app), [archive, (pinned.clone(), Target::View, Trail::None), browse.clone()]);
+        assert_eq!(app.folder_entries()[1].detail.as_deref(), Some(mail::address(&pin.account)));
+        assert!(
+            app.folder_entries()
+                .iter()
+                .filter(|entry| entry.target != Target::View)
+                .all(|entry| entry.detail.is_none())
+        );
+        assert_eq!(app.folder_entries()[0].detail, None, "only a pinned folder has a second line");
         assert!(matches!(app.folder_entries()[2].message(), Message::OpenFolders), "the browser opens beside it");
         // No account with an archive folder: no Archive.
         app.folders.retain(|folder| folder.role != Some(Role::Archive));
-        assert_eq!(
-            folders(&app).first().map(|row| row.0.clone()),
-            Some(format!("{} · {}", mail::folder_name(&pin), mail::address(&pin.account)))
-        );
+        assert_eq!(folders(&app).first().map(|row| row.0.clone()), Some(pinned.clone()));
+        // Folders of one account only: the address says nothing, the row keeps one line.
+        app.folders.retain(|folder| folder.account == pin.account);
+        let first = app.folder_entries().into_iter().next().expect("the pinned folder");
+        assert_eq!((first.label, first.detail), (pinned, None));
         assert!(overview_at(&["--view", "hub"]).unfiltered_entry().is_none(), "Unfiltered is the mail window's");
         assert!(overview_at(&["--view", "hub"]).folder_entries().is_empty(), "folders are the mail window's");
         for open in ["menu", "drawer"] {
@@ -17500,7 +17551,7 @@ mod tests {
     /// The groups "Categories" lists in the demo's mail window, top to bottom.
     fn listed_groups(app: &App<DemoSource>) -> Vec<CategoryGroup> {
         let group = |branch: CategoryBranch| match branch.group.target {
-            Target::Fold(group) => Some(group),
+            Target::Fold(group) | Target::Show(group) => Some(group),
             _ => None,
         };
         app.category_entries().into_iter().filter_map(group).collect()
@@ -17514,18 +17565,20 @@ mod tests {
 
     /// The branch of `group` in "Categories".
     fn branch_of(app: &App<DemoSource>, group: CategoryGroup) -> CategoryBranch {
-        let branch = app.category_entries().into_iter().find(|branch| branch.group.target == Target::Fold(group));
+        let of = |target: Target| matches!(target, Target::Fold(of) | Target::Show(of) if of == group);
+        let branch = app.category_entries().into_iter().find(|branch| of(branch.group.target));
         branch.expect("the group is listed")
     }
 
     /// Issue #300 (task E17.2): a click on a folded group opens it and shows the mail of all its
     /// categories; a click on the open group shown folds it and keeps the list; from one of its
-    /// categories a click shows the group again and keeps it open. For each of the five groups.
+    /// categories a click shows the group again and keeps it open. For each group that folds –
+    /// all but "Unsorted" (issue #398).
     #[test]
     fn a_click_on_a_group_opens_and_shows_it_then_folds_it() {
         let app = mail_window(Density::Compact, &[]);
         assert_eq!(listed_groups(&app), CategoryGroup::ALL, "the demo has mail in all five groups");
-        for group in CategoryGroup::ALL {
+        for group in CategoryGroup::ALL.into_iter().filter(|group| *group != CategoryGroup::Unsorted) {
             let mut app = mail_window(Density::Compact, &[]);
             assert!(!app.open_groups.contains(&group));
             // (a) Folded: open it and show it.
@@ -17564,11 +17617,53 @@ mod tests {
         }
     }
 
+    /// Issue #398: "Unsorted" is one row without children that never folds – in the sidebar, the
+    /// rail and the menu; a click shows its mail, a second keeps it shown; its number is the unread
+    /// mail of "Other".
+    #[test]
+    fn unsorted_is_one_row_that_shows_its_mail() {
+        let group = CategoryGroup::Unsorted;
+        let mut app = mail_window(Density::Compact, &[]);
+        let branch = branch_of(&app, group);
+        assert_eq!(branch.group.target, Target::Show(group));
+        assert!(!branch.open && branch.categories.is_empty(), "no categories under it");
+        assert!(!branch.group.active);
+        let other =
+            app.categories.iter().find(|held| held.category == torro_mail::Category::Other).expect("Other").clone();
+        assert!(other.unread > 0, "the demo has unread mail in Other");
+        assert_eq!(branch.group.count, Some(other.unread as usize));
+        assert!(matches!(branch.group.message(), Message::ShowCategoryGroup(shown) if shown == group));
+        let task = app.update(branch.group.message());
+        assert!(task.units() > 0, "its mail is loaded");
+        assert_eq!(app.view, app.category_group_view(group));
+        load(&mut app);
+        assert!(!app.messages.is_empty(), "its mail is listed");
+        let View::Category(shown) = &app.view else { panic!("the group's view") };
+        let categories = shown.categories();
+        assert!(app.messages.iter().all(|m| m.category.is_some_and(|held| categories.contains(&held.category))));
+        let branch = branch_of(&app, group);
+        assert!(branch.group.active && !branch.open && branch.categories.is_empty(), "shown, still one row");
+        // A second click keeps it shown; nothing folds.
+        let _ = app.update(branch_of(&app, group).group.message());
+        assert_eq!(app.view, app.category_group_view(group));
+        assert!(branch_of(&app, group).categories.is_empty());
+        // It builds as a plain row in the sidebar, the rail (the sidebar folded) and the menu.
+        for open in ["menu", "drawer"] {
+            for size in SIZES {
+                let mut app = mail_window(Density::Compact, &["--open", open]);
+                let _ = app.update(Message::ToggleSidebar);
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
     /// Issue #300 (task E17.2, d): a click on a category shows only it; its group stays open, the
-    /// group row is no longer active, but the group counts as shown (the rail marks it).
+    /// group row is no longer active, but the group counts as shown (the rail marks it). For each
+    /// group that folds – "Unsorted" lists no categories (issue #398).
     #[test]
     fn a_click_on_a_category_shows_only_it_and_keeps_its_group_open() {
-        for group in CategoryGroup::ALL {
+        for group in CategoryGroup::ALL.into_iter().filter(|group| *group != CategoryGroup::Unsorted) {
             let mut app = mail_window(Density::Compact, &[]);
             let _ = app.update(Message::ToggleCategoryGroup(group));
             load(&mut app);
@@ -17838,7 +17933,10 @@ mod tests {
         let _ = app.update(Message::ToggleFolderPin(id.clone()));
         assert_eq!(app.pinned_folders.as_slice(), std::slice::from_ref(&id));
         assert_eq!(app.pinned_entries().len(), 1);
-        assert!(app.pinned_entries()[0].label.contains("work.example.org"));
+        // Issue #398: the address stands under the name, not in it.
+        let pinned = &app.pinned_entries()[0];
+        assert!(!pinned.label.contains("work.example.org"));
+        assert!(pinned.detail.as_deref().is_some_and(|detail| detail.contains("work.example.org")));
         let _ = app.update(Message::ToggleFolderPin(id));
         assert!(app.pinned_entries().is_empty());
     }

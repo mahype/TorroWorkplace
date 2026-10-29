@@ -1167,9 +1167,11 @@ async fn category_job_decider(
 /// (task E12.6): the category, and the two answers the same call brings along. The options are
 /// the person's catalogue (task E15.4), asked in one call or two ([`categorize::decide`]).
 ///
-/// `Ok(None)` when the model said nothing readable – then the mail keeps no category, so a later
-/// run can still catch it. The audit log already holds the request that started this, with the
-/// entry's id and nothing of its content (security rule 7); the call adds no line of its own.
+/// `Ok(None)` only when the mail's content is not at hand or clearing the categories is running –
+/// then the mail keeps no category, so a later run can still catch it. A model that names no
+/// category gives `other` (issue #398). The audit log already holds the request that started
+/// this, with the entry's id and nothing of its content (security rule 7); the call adds no line of
+/// its own.
 ///
 /// `contact`: the mail came from a contact and is in Personal already (issue #390); the model only
 /// chooses within that group ([`ask_model`]).
@@ -1402,6 +1404,16 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
                         }
                         // The model may choose nothing: the rules alone sort, as without a model.
                         Ok(Err(DecideError::NothingToChoose)) => (personal, false),
+                        // One mail the model gave no readable answer for (issue #398, as the sorting
+                        // job since the PR review of #325): it keeps no category, so a later run asks
+                        // again; the run goes on – one odd mail must not hold up all after it, and the
+                        // newest would stop every run at the same place.
+                        Ok(Err(DecideError::Ai(torro_core::ai::AiError::Format(_)))) => {
+                            eprintln!(
+                                "torroworkplace: inbox: the decision model gave a mail of {account} no readable answer"
+                            );
+                            (None, true)
+                        }
                         // The server is gone or busy: stop, rather than hammer it for 500 messages.
                         Ok(Err(err)) => {
                             eprintln!("torroworkplace: inbox: the decision model stopped answering: {}", err.to_line());
@@ -23851,6 +23863,128 @@ mod tests {
         let category_of = |subject: &str| {
             messages.iter().find(|message| message.subject == subject).and_then(|message| message.category)
         };
+        assert_eq!(category_of("Odd one"), None, "kept for a later run");
+        assert_eq!(category_of("Invoice 7").map(|held| held.category), Some(torro_mail::Category::Invoice));
+    }
+
+    /// Issue #398: the backlog run goes on past a mail the model gave no readable answer – the newest,
+    /// so before it would have stopped every run there –, leaves that mail without a category and
+    /// sorts the one after it.
+    #[tokio::test]
+    async fn the_backlog_run_goes_on_past_a_mail_without_a_readable_answer() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_core::ai::AiSlot;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        // Newest first: the odd mail is the newer one, so the run meets it first.
+        let older = Utc::now() - chrono::Duration::hours(1);
+        for (id, subject, text, date) in
+            [("m1", "Odd one", "Something odd.", Utc::now()), ("m2", "Invoice 7", "Please pay.", older)]
+        {
+            let raw = format!(
+                "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {}\r\n\
+                 Message-ID: <{id}@example.org>\r\nContent-Type: text/plain\r\n\r\n{text}\r\n",
+                date.to_rfc2822()
+            );
+            imap.add("INBOX", &raw, &[]);
+        }
+        let anna = mail_account("anna@example.org", &imap.endpoint);
+        store_accounts(dir.path(), &keys, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &keys);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"object": "list", "data": [
+                    {"id": "qwen3:8b", "object": "model", "owned_by": "local"},
+                ]}));
+            })
+            .await;
+        let call = |arguments: String| {
+            serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "answer", "arguments": arguments}}]
+            }}]})
+        };
+        let odd = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").body_includes("Odd one");
+                then.status(200).header("content-type", "application/json").json_body(call("{}".into()));
+            })
+            .await;
+        let invoice = serde_json::json!({"category": "invoice", "needs_reply": false, "urgency": 1}).to_string();
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").body_includes("Invoice 7");
+                then.status(200).header("content-type", "application/json").json_body(call(invoice));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(404);
+            })
+            .await;
+
+        let core = Core {
+            ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())),
+            ..audited(dir.path())
+        }
+        .with_mail(mail);
+        let connect = Request::ConnectAi {
+            provider: AiProvider::OpenAiCompatible,
+            server: Some(server.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let slot = Request::SetAiSlot {
+            slot: AiSlot::Decide,
+            engine: Some(account.id.clone()),
+            model: Some("qwen3:8b".into()),
+            effort: None,
+        };
+        assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
+
+        assert!(matches!(
+            core.handle(Request::CatchUpCategories { cancel: false, again: false }).await,
+            Response::Categorization { .. }
+        ));
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let mut messages = Vec::new();
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let Response::MailMessages { messages: page, .. } = core.handle(search.clone()).await else {
+                panic!("a page")
+            };
+            messages = page;
+            if messages.iter().any(|message| message.subject == "Invoice 7" && message.category.is_some()) {
+                break;
+            }
+        }
+        let category_of = |subject: &str| {
+            messages.iter().find(|message| message.subject == subject).and_then(|message| message.category)
+        };
+        assert!(odd.calls_async().await >= 1, "the odd mail was asked");
         assert_eq!(category_of("Odd one"), None, "kept for a later run");
         assert_eq!(category_of("Invoice 7").map(|held| held.category), Some(torro_mail::Category::Invoice));
     }
