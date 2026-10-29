@@ -405,6 +405,9 @@ fn inline_photo(prop: &Prop) -> bool {
             || prop.has_param_value("ENCODING", "BASE64"))
 }
 
+/// The fields a contact holds once; [`patch`] writes them with `set_single` into their first line.
+const SINGLE: [&str; 8] = ["UID", "FN", "N", "NICKNAME", "ORG", "TITLE", "NOTE", "BDAY"];
+
 /// Where each value of a field we know sits, for [`patch`].
 #[derive(Default)]
 struct Index {
@@ -418,7 +421,16 @@ struct Index {
 fn read_doc(doc: &Doc) -> (Contact, Index) {
     let mut contact = Contact { untrusted: true, ..Contact::default() };
     let mut index = Index::default();
+    let mut seen: Vec<&str> = Vec::new();
     for (i, prop) in doc.props() {
+        // A field that stands once counts by its first line, the one `patch` changes: vCard 4.0
+        // allows a second NOTE or TITLE, and reading the last would hide every change.
+        if SINGLE.contains(&prop.name.as_str()) {
+            if seen.contains(&prop.name.as_str()) {
+                continue;
+            }
+            seen.push(&prop.name);
+        }
         let kind = || kind_of(prop, doc.label_of(&prop.group));
         match prop.name.as_str() {
             "UID" => contact.uid = prop.text().trim().to_string(),
@@ -1275,6 +1287,18 @@ mod tests {
         after.anniversary = None;
         let removed = patch(raw, &before, &after);
         assert!(!removed.contains("ANNIVERSARY"), "{removed}");
+    }
+
+    #[test]
+    fn a_field_written_twice_reads_and_changes_its_first_line() {
+        let raw = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:x\r\nFN:X\r\nNOTE:first\r\nTITLE:Boss\r\nNOTE:second\r\nTITLE:Chief\r\nEND:VCARD\r\n";
+        let before = read(raw).expect("card");
+        assert_eq!((before.note.as_deref(), before.title.as_deref()), (Some("first"), Some("Boss")));
+        let mut after = before.clone();
+        after.note = Some("changed".into());
+        let changed = patch(raw, &before, &after);
+        assert_eq!(read(&changed).expect("card").note.as_deref(), Some("changed"), "{changed}");
+        assert!(changed.contains("NOTE:second"), "the second line stays as it was: {changed}");
     }
 
     #[test]
