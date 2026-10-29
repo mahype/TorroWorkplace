@@ -16,7 +16,8 @@ Adressen lassen sich auf einer **Karte** zeigen. Kacheln und Ortssuche kommen vo
 ohne Schlüssel, ohne Konto, ohne Gebühren, unter deren Nutzungsregeln.
 
 **Was „modern“ hier heißt:**
-- Suche über alles (Name, Firma, Mail, Telefon, Ort, Notiz) beim Tippen, aus dem lokalen Index.
+- Suche über alles (Name, Firma, Mail, Telefon, Ort, Notiz) beim Tippen, aus dem lokalen Index; Groß- und
+  Kleinschreibung und Akzente zählen nicht („MULLER“ findet „Müller“). Listen sortieren „König“ unter K wie „Koch“.
 - Schnellaktionen in jeder Zeile: Mail schreiben, anrufen (`tel:`), Adresse kopieren, auf der Karte zeigen.
 - Favoriten, zuletzt benutzte Kontakte, anstehende Geburtstage.
 - Gruppen, Fotos, mehrere Adressbücher und Konten in einer Liste.
