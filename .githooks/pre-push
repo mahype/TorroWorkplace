@@ -9,7 +9,10 @@ zero="0000000000000000000000000000000000000000"
 ranges=()
 
 # git feeds one line per pushed ref: <local ref> <local sha> <remote ref> <remote sha>
-while read -r _ local_sha _ remote_sha; do
+while read -r local_ref local_sha _ remote_sha; do
+    if [[ "$local_ref" == refs/tags/* && "$local_sha" != "$zero" ]]; then
+        exec "$root/scripts/ci-local.sh" # releases get the full set
+    fi
     [[ "$local_sha" == "$zero" ]] && continue # deleting a branch checks nothing
     base="$remote_sha"
     if [[ "$base" == "$zero" ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
