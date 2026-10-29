@@ -4312,8 +4312,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // "category": several of these English words already mean something else in the suite
     // ("Task" the to-do, "Order" the sort order, "Event" the calendar event). The five groups
     // first, then the catalogue in its order. The category Spam stays "Spam" so it does not read
-    // like its group "Unerwünscht" (#338). The group "Personal" shares its entry with the
-    // category of the same name below.
+    // like its group "Unerwünscht" (#338). The category Personal reads "From people" so it does
+    // not read like its group "Persönlich".
+    ("category|Personal", "Persönlich"),
     ("category|Paper trail", "Belege"),
     ("category|Info", "Zur Info"),
     ("category|Unwanted", "Unerwünscht"),
@@ -4322,7 +4323,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("category|Task", "Auftrag"),
     ("category|Approval", "Freigabe"),
     ("category|Security", "Sicherheit"),
-    ("category|Personal", "Persönlich"),
+    ("category|From people", "Von Menschen"),
     ("category|Invitation", "Einladung"),
     ("category|Invoice", "Rechnung"),
     ("category|Receipt", "Zahlungsbeleg"),

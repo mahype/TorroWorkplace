@@ -22,7 +22,7 @@ Englischer Schlüssel ist maßgeblich, die deutsche Beschriftung steht in
 | `task` | Auftrag | Auftrag oder Zusage mit Frist, die ich einhalten muss | Modell |
 | `approval` | Freigabe | Unterschrift, Bestätigung, Genehmigung verlangt | Modell |
 | `security` | Sicherheit | Anmeldecode, Zwei-Faktor, Passwort zurücksetzen | Modell |
-| `personal` | Persönlich | Nachricht eines Menschen, nichts zu tun | Modell |
+| `personal` | Von Menschen | Nachricht eines Menschen, nichts zu tun | Modell |
 | `invitation` | Einladung | Termineinladung | **Regel** (iMIP `text/calendar`) |
 | `bounce` | Unzustellbar | Zustellungsbenachrichtigung, Fehlbericht (DSN); meist ist eine Adresse zu korrigieren | **Regel**, kommt mit E9.3a |
 

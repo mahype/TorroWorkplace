@@ -36,7 +36,7 @@ pub(crate) fn english_label(category: Category) -> Option<&'static str> {
         Category::Task => "Task",
         Category::Approval => "Approval",
         Category::Security => "Security",
-        Category::Personal => "Personal",
+        Category::Personal => "From people",
         Category::Invitation => "Invitation",
         Category::Invoice => "Invoice",
         Category::Receipt => "Receipt",
