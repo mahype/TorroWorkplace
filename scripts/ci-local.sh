@@ -195,8 +195,8 @@ run_changed() {
                 if [[ $has_src -eq 1 && -f "crates/$crate/src/lib.rs" ]]; then
                     args+=(--lib)
                 fi
-                # A binary-only crate has no lib target, so its src changes mean the bins.
-                if [[ $has_bins -eq 1 || ($has_src -eq 1 && ! -f "crates/$crate/src/lib.rs") ]]; then
+                # A binary-only crate has no lib target, and a binary next to a lib may include modules of its own.
+                if [[ $has_bins -eq 1 || ($has_src -eq 1 && (! -f "crates/$crate/src/lib.rs" || -f "crates/$crate/src/main.rs")) ]]; then
                     args+=(--bins)
                 fi
                 check_crate "$crate" ${args[@]+"${args[@]}"}
