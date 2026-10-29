@@ -26,7 +26,7 @@ use iced::widget::{column, container, responsive, row, space as blank, text_edit
 use iced::{Alignment, Element, Fill, Length, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
-use torro_gui::theme::{palette, space};
+use torro_gui::theme::{palette, size, space};
 use torro_gui::{layout, style, typo, widgets};
 use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_VALUE_MAX};
 use torro_inbox::{SortComparison, SortCondition, SortField, SortRule};
@@ -893,8 +893,8 @@ fn question<'a>(asked: Ask) -> Element<'a, Message> {
 
 /// "Sorting rules": a button to add a rule, then the rules in their checking order.
 pub fn rules_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let add = widgets::text_button(None, tr("New sorting rule"), style::button::secondary, Some(Message::NewRule));
-    let mut rows: Vec<Element<'_, Message>> = vec![row_frame(add, false)];
+    // "+ New …" as a row, as in Filters and Attachments; first here, where a new rule appears.
+    let mut rows: Vec<Element<'_, Message>> = vec![add_row(tr("New sorting rule"), Message::NewRule)];
     if matches!(state.form.as_ref(), Some(Form::Rule(RuleForm { id: None, .. }))) {
         rows.push(inline_rule(state, data));
     }
@@ -949,13 +949,8 @@ fn inline_rule<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 /// Main categories stay open; each child shows its editable description and a clear edit button.
 pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a, Message>> {
-    let add = widgets::text_button(
-        Some(Icon::Plus),
-        tr("New main category"),
-        style::button::secondary,
-        Some(Message::NewGroup),
-    );
-    let mut groups = vec![widgets::group(tr("All categories"), vec![row_frame(add, false)], None)];
+    let add = add_row(tr("New main category"), Message::NewGroup);
+    let mut groups = vec![widgets::group(tr("All categories"), vec![add], None)];
     if matches!(state.group_form, Some(GroupForm { group: None, .. })) {
         groups.push(group_editor(state));
     }
@@ -991,7 +986,8 @@ pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a
         if !children.is_empty() {
             rows.push(
                 responsive(move |room| {
-                    let columns = if room.width >= 640.0 { 2 } else { 1 };
+                    // Two cards a line where two fit at a form's width each.
+                    let columns = if room.width >= size::form_max() { 2 } else { 1 };
                     let mut grid = column![].spacing(space::s());
                     for pair in children.chunks(columns) {
                         let mut line = row![].spacing(space::s());
@@ -1064,7 +1060,9 @@ fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
         [tr("Blue"), tr("Amber"), tr("Teal"), tr("Violet"), tr("Rose")]
             .into_iter()
             .zip(0u8..)
-            .map(|(name, at)| widgets::choice_chip(name, None, form.color == at, Some(Message::GroupColor(at))))
+            .map(|(name, at)| {
+                widgets::category_choice_chip(name, usize::from(at), form.color == at, Some(Message::GroupColor(at)))
+            })
             .collect(),
     );
     let mut body = column![
@@ -1283,7 +1281,7 @@ fn icon_picker<'a>(
     responsive(move |room| {
         // A visible palette lets people recognise the symbol before choosing it. Keep each
         // button's spoken name and tooltip; narrow windows simply use fewer columns.
-        let columns = ((room.width / 42.0).floor() as usize).clamp(3, 8);
+        let columns = ((room.width / (size::control_sm() + space::s())).floor() as usize).clamp(3, 8);
         let mut lines = column![].spacing(space::s());
         for icons in CategoryIcon::ALL.chunks(columns) {
             let mut line = row![].spacing(space::s());

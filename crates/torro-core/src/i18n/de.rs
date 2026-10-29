@@ -2413,6 +2413,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Edit servers manually", "Server manuell bearbeiten"),
     ("Hide manual server fields", "Manuelle Serverfelder ausblenden"),
     ("Leave empty to keep the saved password", "Leer lassen, um das gespeicherte Passwort zu behalten"),
+    ("Saved password", "Gespeichertes Passwort"),
     ("Test credentials", "Zugangsdaten testen"),
     ("Save connection", "Verbindung speichern"),
     ("Connection successful.", "Verbindung erfolgreich geprüft."),

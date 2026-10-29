@@ -1374,9 +1374,11 @@ pub mod accounts {
                     row_frame(
                         column![
                             typo::text(typo::meta(), tr("Password")).style(theme::text_2),
-                            field(tr("Leave empty to keep the saved password"), draft.connection.password.expose())
+                            // A short placeholder, the rule as a line below: the long one was cut off.
+                            field(tr("Saved password"), draft.connection.password.expose())
                                 .secure(true)
                                 .on_input(|typed| Message::Password(Secret::new(typed))),
+                            typo::text(typo::meta(), tr("Leave empty to keep the saved password")).style(theme::text_2),
                         ]
                         .spacing(space::xs()),
                         false,
@@ -1492,11 +1494,14 @@ pub mod accounts {
                 if pending {
                     setting_row(None, tr(label), Some(detail.to_string()), control)
                 } else {
+                    // The folder in a column of its own, right-aligned: every value starts at the
+                    // same place, and each has the room the label leaves.
                     row_frame(
                         row![
-                            typo::text(typo::body(), tr(label)),
-                            blank::horizontal(),
-                            widgets::ellipsized(typo::body(), detail.to_string(), theme::text_2),
+                            container(typo::text(typo::body(), tr(label))).width(Length::FillPortion(2)),
+                            container(widgets::ellipsized(typo::body(), detail.to_string(), theme::text_2))
+                                .width(Length::FillPortion(3))
+                                .align_x(iced::alignment::Horizontal::Right),
                         ]
                         .spacing(space::s())
                         .align_y(Alignment::Center),

@@ -3615,6 +3615,29 @@ pub fn label_choice<'a, M: Clone + 'a>(
     choice_chip_with(Some(label_dot(hex, Scale::Row.dot())), name, on, on_press)
 }
 
+/// A [`choice_chip`] with a dot in the group colour `at` of the active design
+/// (`Palette::category`), for the colour of a main category (issue #343): the dot is drawn with the
+/// theme of the moment, so it follows a change of design; the name carries the meaning.
+pub fn category_choice_chip<'a, M: Clone + 'a>(
+    label: impl IntoFragment<'a>,
+    at: usize,
+    on: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let size = Scale::Row.dot();
+    let dot = container(blank().width(size).height(size))
+        .style(move |t: &Theme| {
+            let colours = &palette(t).category;
+            container::Style {
+                background: Some(Background::Color(colours[at.min(colours.len() - 1)])),
+                border: border::rounded(size / 2.0),
+                ..Default::default()
+            }
+        })
+        .into();
+    choice_chip_with(Some(dot), label, on, on_press)
+}
+
 /// The chip of [`choice_chip`] with `lead` (already drawn) after the check mark of a chosen chip.
 fn choice_chip_with<'a, M: Clone + 'a>(
     lead: Option<Element<'a, M>>,
