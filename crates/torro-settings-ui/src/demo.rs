@@ -480,6 +480,8 @@ impl Demo {
             months,
             originals: 3_200,
             original_bytes: 410_000_000,
+            // Counted with the last sync, as the service would have them by now.
+            as_of: newest,
         }]
     }
 

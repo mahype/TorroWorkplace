@@ -719,6 +719,9 @@ pub struct App {
     drag: Option<Drag>,
     /// The settings in the content area, while they are open (task S.19).
     settings: Option<SettingsPane>,
+    /// What the settings showed when they last closed, for the next time they open (issue #394):
+    /// they are there at once with it and update in place.
+    settings_memory: torro_settings_ui::Memory,
 }
 
 // A message may carry a whole task; two kinds do (`Saved`, `IssueChanged`), so Clippy no longer
@@ -987,6 +990,7 @@ impl App {
             moving: None,
             drag: None,
             settings: None,
+            settings_memory: torro_settings_ui::Memory::default(),
         };
         // The size, and the traffic lights onto the title band's line (U.11).
         let size = Task::batch([
@@ -2406,7 +2410,14 @@ impl App {
     /// an unknown word leaves the first – only – section open) – a fresh [`Host`] and its first
     /// load, which goes over [`App::settings_backend`] and never over this window's own requests.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
-        let (mut host, load) = Host::new(self.settings_backend(), SETTINGS_SECTIONS.to_vec(), collections::wanted());
+        // Settings open already leave their state in the memory first, for the new host.
+        drop(self.settings.take());
+        let (mut host, load) = Host::with_memory(
+            self.settings_backend(),
+            SETTINGS_SECTIONS.to_vec(),
+            collections::wanted(),
+            self.settings_memory.clone(),
+        );
         if let Some(id) = section {
             host.open(id);
         }

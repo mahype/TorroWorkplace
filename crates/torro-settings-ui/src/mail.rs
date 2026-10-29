@@ -676,7 +676,8 @@ pub mod accounts {
             Some((draft, mail)) => {
                 let label = account_label(data, &draft.account);
                 let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
-                let page = Page::new(account_page(state, draft, mail, stats)).sub_page(label, Message::Back);
+                let updating = data.updating(&Request::MailAccountStats { account: None });
+                let page = Page::new(account_page(state, draft, mail, stats, updating)).sub_page(label, Message::Back);
                 // A page that does not save itself: the bar stands while the name or the signature
                 // differs from what is stored, on every tab.
                 match draft.summary(mail) {
@@ -727,12 +728,14 @@ pub mod accounts {
     }
 
     /// One account's page (task DS.6): the head with the address, how it syncs and "Sync now", the
-    /// tabs, and the tab that is open.
+    /// tabs, and the tab that is open. `updating` while the statistics have not answered since the
+    /// settings opened (issue #394).
     fn account_page<'a>(
         state: &'a State,
         draft: &'a Draft,
         mail: &'a MailView,
         stats: Option<&'a MailAccountStats>,
+        updating: bool,
     ) -> Element<'a, Message> {
         let now = Utc::now();
         let labels = Tab::ALL
@@ -743,7 +746,7 @@ pub mod accounts {
             })
             .collect();
         let body = match state.tab {
-            Tab::Overview => overview(mail, stats, now),
+            Tab::Overview => overview(mail, stats, updating, now),
             Tab::Writing => writing(draft, mail),
             Tab::Folders => folders(mail, stats),
             Tab::Backup => backup::view(&state.backup, &draft.account).map(Message::Backup),
@@ -806,10 +809,12 @@ pub mod accounts {
     }
 
     /// The tab "Overview": the open questions, the figures, storage, mail over time, the search
-    /// index and the largest folders.
+    /// index and the largest folders. While the statistics are `updating` (issue #394), "Updating…"
+    /// stands over the figures the window still knew, or in place of them.
     fn overview<'a>(
         mail: &'a MailView,
         stats: Option<&'a MailAccountStats>,
+        updating: bool,
         now: DateTime<Utc>,
     ) -> Element<'a, Message> {
         let mut page = column![].spacing(layout::section_gap());
@@ -833,12 +838,26 @@ pub mod accounts {
         if !questions.is_empty() {
             page = page.push(column(questions).spacing(size::card_gap()));
         }
-        let Some(stats) = stats else { return page.push(no_statistics()).into() };
+        if updating {
+            page = page.push(widgets::refresh_note(tr("Updating…")));
+        }
+        let Some(stats) = stats else {
+            return if updating { page.into() } else { page.push(no_statistics()).into() };
+        };
         page.push(widgets::stat_grid(figures(stats)))
+            .extend(as_of(stats, now))
             .push(storage_card(stats))
             .push(time_card(stats, now))
             .push(index_card(stats, now))
             .into()
+    }
+
+    /// "As of Today 10:32" under the figures (issue #395): when the service counted them, the exact
+    /// moment as the tooltip. Nothing from a core that does not say.
+    pub(super) fn as_of<'a, M: 'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Option<Element<'a, M>> {
+        let at = stats.as_of?;
+        let words = trf("As of {time}", &[("time", &format_moment(at, now))]);
+        Some(widgets::with_tooltip(typo::text(typo::meta(), words).style(theme::text_3), format_exact(at)))
     }
 
     /// What stands where the numbers would before the mail service has them.
@@ -1460,7 +1479,12 @@ pub mod accounts {
         fn a_tab_sends_nothing_and_every_tab_builds() {
             let mut with = data();
             with.mail_stats = vec![stats(&[("INBOX", 30, 8, Some(4096)), ("Sent", 10, 2, None)], None)];
-            for data in [data(), with] {
+            // #394: and while the statistics are on their way, with what was known and without.
+            let mut updating = [data(), with.clone()];
+            for data in &mut updating {
+                data.updating = vec![Request::MailAccountStats { account: None }];
+            }
+            for data in [data(), with].into_iter().chain(updating) {
                 let mut state = opened(&data);
                 for tab in Tab::ALL {
                     let action: Action<()> = update(&mut state, Message::Tab(tab.index()), &data);
@@ -1469,6 +1493,15 @@ pub mod accounts {
                     let _ = page(&state, &data).body;
                 }
             }
+        }
+
+        /// #395: "As of …" stands under the figures only when the core says when it counted them.
+        #[test]
+        fn the_moment_of_the_figures_shows_when_known() {
+            let mut counted = stats(&[("INBOX", 30, 8, None)], None);
+            assert!(as_of::<Message>(&counted, Utc::now()).is_none(), "a core before #395 says nothing");
+            counted.as_of = Some(Utc::now());
+            assert!(as_of::<Message>(&counted, Utc::now()).is_some());
         }
 
         /// What is typed stays when the page is left: "Back" and another account keep it, and the
@@ -2007,7 +2040,13 @@ pub mod storage {
     }
 
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
+        // The accounts come with the statistics: until their first answer (issue #394) the page
+        // says so instead of claiming there is no account.
+        let updating = data.updating(&Request::MailAccountStats { account: None });
         let Some(account) = selected(state, data) else {
+            if updating {
+                return Page::new(widgets::refresh_note(tr("Updating…")));
+            }
             return Page::new(widgets::empty_state(
                 tr("No mail account"),
                 tr("Add a mail account in Torro Workplace, under Accounts."),
@@ -2043,7 +2082,13 @@ pub mod storage {
             .align_y(iced::Alignment::Center),
             false,
         ));
-        let mut page = column![widgets::group(tr("Mail account"), account_rows, None)].spacing(layout::section_gap());
+        let mut page = column![].spacing(layout::section_gap());
+        if updating {
+            page = page.push(widgets::refresh_note(tr("Updating…")));
+        }
+        page = page.push(widgets::group(tr("Mail account"), account_rows, None));
+        let stats = data.mail_stats.iter().find(|stats| stats.account == account);
+        page = page.extend(stats.and_then(|stats| super::accounts::as_of(stats, chrono::Utc::now())));
         let mut policy_rows = vec![
             line(
                 "Current strategy",
@@ -3035,6 +3080,11 @@ pub mod categorization {
         } else {
             state.preview.as_ref().or(data.category_job_preview.as_ref())
         };
+        // The preview of all mail the load asked for (issue #394), while its first answer is out;
+        // a preview of a chosen selection is the page's own and says "Calculating selection…".
+        let updating = state.preview.is_none()
+            && state.pending_scope.is_none()
+            && data.updating(&Request::PreviewCategoryJob { scope: CategoryJobScope::default() });
         let preview_words = match (preview, state.preview_error.as_ref()) {
             (_, Some(problem)) => problem.clone(),
             (Some(preview), _) => trf(
@@ -3064,10 +3114,21 @@ pub mod categorization {
             tr("Preview"),
             vec![
                 row_frame(
-                    column![
-                        typo::text(typo::body_strong(), tr("Selected mail")),
-                        typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
-                    ]
+                    match (updating, preview) {
+                        (true, None) => column![
+                            typo::text(typo::body_strong(), tr("Selected mail")),
+                            widgets::refresh_note(tr("Updating…")),
+                        ],
+                        (true, Some(_)) => column![
+                            typo::text(typo::body_strong(), tr("Selected mail")),
+                            widgets::refresh_note(tr("Updating…")),
+                            typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
+                        ],
+                        (false, _) => column![
+                            typo::text(typo::body_strong(), tr("Selected mail")),
+                            typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
+                        ],
+                    }
                     .spacing(theme::space::xs()),
                     false,
                 ),
@@ -3143,6 +3204,12 @@ pub mod categorization {
     fn clear_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let mut rows: Vec<Element<'a, Message>> = Vec::new();
         let count = data.category_clear_preview.as_ref().map(|preview| preview.total).unwrap_or(0);
+        // Until the count's first answer (issue #394) it is not "0 assignments" but on its way.
+        let updating = data.updating(&Request::PreviewClearCategories);
+        if updating {
+            rows.push(row_frame(widgets::refresh_note(tr("Updating…")), false));
+        }
+        let known = data.category_clear_preview.is_some() || !updating;
         let incomplete = data.categorization.clear_job.as_ref().is_some_and(|job| {
             matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
         });
@@ -3155,7 +3222,7 @@ pub mod categorization {
         rows.push(setting_row(
             None,
             tr("Categories on mail"),
-            Some(trf("{count} assignments across all accounts and folders", &[("count", &count)])),
+            known.then(|| trf("{count} assignments across all accounts and folders", &[("count", &count)])),
             ask,
         ));
         if state.asking_clear {
@@ -3281,9 +3348,14 @@ pub mod categorization {
                 held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
             })
             .map(|(engine, model)| stays_here(engine, model));
+        // The models are asked for after the assignments (issue #394): until then the note does
+        // not ask for a choice that may well be made.
+        let asking = data.decider_models.is_empty()
+            && data.updating.iter().any(|request| matches!(request, Request::AiModels { .. }));
         match here {
             Some(false) => tr("Cloud model: mail content leaves this computer.").to_string(),
             Some(true) => tr("Local model: mail content stays on this computer.").to_string(),
+            None if asking => tr("Updating…").to_string(),
             None => tr("Choose a model above.").to_string(),
         }
     }
