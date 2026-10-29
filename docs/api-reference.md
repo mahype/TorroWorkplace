@@ -1099,9 +1099,9 @@ Creates a main mail category with a stable `custom_group_<n>` key, a name, an ic
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `color` | integer | ja |  |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | The monochrome icon shown for a mail category. Its colour comes from the category's group. These are stable catalogue values, separate from the GUI's SVG implementation, so category choices can travel over IPC and remain stored if the icon set is rearranged. |
-| `name` | string | ja |  |
+| `color` | integer | ja | One of the five colours of the group palette of the active design, 0–4. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | Its monochrome icon. |
+| `name` | string | ja | What it is called: one line, at most 60 characters, no other main category's name. |
 
 ### `inbox.update_category_group`
 
@@ -1111,10 +1111,10 @@ Changes the name, icon and theme colour (`color` 0–4) of a main mail category,
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `color` | integer | ja |  |
-| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | ja | A main mail category: a built-in key or `custom_group_<n>` for one created by the person. |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | The monochrome icon shown for a mail category. Its colour comes from the category's group. These are stable catalogue values, separate from the GUI's SVG implementation, so category choices can travel over IPC and remain stored if the icon set is rearranged. |
-| `name` | string | ja |  |
+| `color` | integer | ja | One of the five colours of the group palette of the active design, 0–4. |
+| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | ja | Which main category: a built-in key (`waiting_for_me` … `unsorted`) or `custom_group_<n>`. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | Its monochrome icon. |
+| `name` | string | ja | What it is called from now on; empty puts back the suite's name of a built-in one. |
 
 ### `inbox.set_item_category`
 
@@ -1294,7 +1294,7 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `inbox_create_sort_rule`
 
-Adds a sorting rule for mail at `position` (0 first; left out: last) and returns it. From then on new mail that meets every condition and no exception is filed as `category`; mail already filed changes only with inbox_catch_up_categories and `again`. `error` for no condition, more than 10 conditions or 10 exceptions, an empty, multi-line or over-long value (200 characters), a category not in the catalogue, or more than 500 rules. Needs the person's approval.
+Adds a sorting rule for mail at `position` (0 first; left out: last) and returns it. From then on new mail that meets every condition and no exception is filed as `category`; mail already filed changes only with inbox_catch_up_categories and `again`. A condition names a `field` (sender, domain, reply_to, recipient, subject, text, attachment, attachment_name, size, list_id, account), a `comparison` the field allows (left out: the field's usual one) and a `value`; `attachment` with `present` or `absent` takes none, `size` counts in megabytes (10^6 bytes) with `greater_than` or `less_than`, `account` is the address. `error` for no condition, more than 10 conditions or 10 exceptions, an empty, multi-line or over-long value (200 characters), a category not in the catalogue, or more than 500 rules. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

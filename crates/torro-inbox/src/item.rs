@@ -973,17 +973,29 @@ impl SortField {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SortComparison {
+    /// The field's former comparison ([`SortField::default_comparison`]): what rules from before
+    /// the comparisons mean.
     #[default]
     Auto,
+    /// The value exactly, ignoring case.
     Is,
+    /// Anything but the value.
     IsNot,
+    /// The value somewhere in the field.
     Contains,
+    /// The value nowhere in the field.
     NotContains,
+    /// The field starts with the value.
     StartsWith,
+    /// The field ends with the value.
     EndsWith,
+    /// The mail has the thing (an attachment); no value.
     Present,
+    /// The mail does not have it; no value.
     Absent,
+    /// Larger than the value (the size, in megabytes of 10^6 bytes).
     GreaterThan,
+    /// Smaller than the value.
     LessThan,
 }
 

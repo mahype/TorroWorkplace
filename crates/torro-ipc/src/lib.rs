@@ -2170,7 +2170,15 @@ pub enum Request {
     /// moved. Codes: `error` for an empty, multi-line, taken or too long name, a colour above 4 or
     /// more than 20 main categories. Needs the person's approval.
     #[serde(rename = "inbox.create_category_group")]
-    CreateCategoryGroup { name: String, icon: torro_mail::CategoryIcon, color: u8 },
+    CreateCategoryGroup {
+        /// What it is called: one line, at most 60 characters, no other main category's name.
+        name: String,
+        /// Its monochrome icon.
+        icon: torro_mail::CategoryIcon,
+        /// One of the five colours of the group palette of the active design, 0–4.
+        #[schemars(range(max = 4))]
+        color: u8,
+    },
     /// Renames or restyles the main category `group` – one of the five built-in ones or a
     /// `custom_group_<n>` – without changing its key or the mail beneath it, and answers with it
     /// ([`Response::CategoryGroup`]). `name`, `icon` and `color` (0–4) as for
@@ -2178,7 +2186,17 @@ pub enum Request {
     /// the person's own requires one. Codes: `not-found` for a main category that is not there;
     /// `error` as for `inbox.create_category_group`. Needs the person's approval.
     #[serde(rename = "inbox.update_category_group")]
-    UpdateCategoryGroup { group: torro_mail::CategoryGroup, name: String, icon: torro_mail::CategoryIcon, color: u8 },
+    UpdateCategoryGroup {
+        /// Which main category: a built-in key (`waiting_for_me` … `unsorted`) or `custom_group_<n>`.
+        group: torro_mail::CategoryGroup,
+        /// What it is called from now on; empty puts back the suite's name of a built-in one.
+        name: String,
+        /// Its monochrome icon.
+        icon: torro_mail::CategoryIcon,
+        /// One of the five colours of the group palette of the active design, 0–4.
+        #[schemars(range(max = 4))]
+        color: u8,
+    },
     /// Files a mail under `category` by hand ([`Response::ItemCategory`], task E12.4): the
     /// category of the mail and of its entry becomes `person`, which no automatic run overwrites.
     /// With `remember: true` later mail of the same sender is filed there too – a lasting rule

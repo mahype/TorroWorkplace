@@ -3954,7 +3954,11 @@ static CREATE_SORT_RULE: Command = Command {
     mcp: Mcp::Tool,
     description: "Adds a sorting rule for mail at `position` (0 first; left out: last) and returns it. From then on \
                   new mail that meets every condition and no exception is filed as `category`; mail already \
-                  filed changes only with inbox_catch_up_categories and `again`. `error` for no condition, more \
+                  filed changes only with inbox_catch_up_categories and `again`. A condition names a `field` \
+                  (sender, domain, reply_to, recipient, subject, text, attachment, attachment_name, size, \
+                  list_id, account), a `comparison` the field allows (left out: the field's usual one) and a \
+                  `value`; `attachment` with `present` or `absent` takes none, `size` counts in megabytes \
+                  (10^6 bytes) with `greater_than` or `less_than`, `account` is the address. `error` for no condition, more \
                   than 10 conditions or 10 exceptions, an empty, multi-line or over-long value (200 characters), a \
                   category not in the catalogue, or more than 500 rules. Needs the person's approval.",
 };

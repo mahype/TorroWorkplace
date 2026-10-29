@@ -146,7 +146,8 @@ Was wir aus TorroMail außerdem **nicht** übernehmen: Regeln je Ordner für Age
 `per_folder`, Lesestufen „nur Kopfzeilen / ganze Nachricht / mit Anhängen“ für Agenten
 (für sie reicht Lesen ja/nein je Konto), Dock- und Menüleisten-Schalter. Seit #263
 ist die Cache-Strategie je Konto wählbar, seit #343 im Konto unter Mail-Einstellungen › Accounts › Storage & search:
-nur Kopfzeilen, Mailtexte der letzten 90 Tage oder alle Mailtexte offline. Der Suchindex bleibt
+nur Kopfzeilen, Mailtexte der letzten 90 Tage oder alle Mailtexte offline, seit #343 auch die Mailtexte ab einem
+Datum (`since_date`) oder die neuesten bis zu einer Größe (`max_size`, Anhänge zählen mit). Der Suchindex bleibt
 unabhängig vom Lesecache; Anhänge haben eigene Vorladeoption und Aufbewahrung.
 Im Modus „alle Mailtexte offline“ hält der Dienst seit #267 zusätzlich die vollständigen
 RFC-822-Originalbytes mit Prüfsumme in einer unabhängigen SQLite-Tabelle je Konto. Der
@@ -281,6 +282,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Mail-Konto einrichten | Steuerzentrale › Accounts › Add | `accounts.connect_mail` · Admin | `accounts_connect_mail`: nimmt nur die Adresse, öffnet die Einrichtung in der Steuerzentrale; das Passwort tippt der Mensch dort (wie bei `connect_nextcloud`, Geheimnisse nie über den Agenten) |
+| Standard-Absender neuer Mails (#343) | Mail-Einstellungen › Reading & writing | `settings.set_setting` mit `mail_sender` · Admin; ein Client sieht und setzt nur Konten seiner Auswahl | `settings_set_setting` |
 | Zugangsdaten prüfen und speichern (#343) | Mail-Einstellungen › Accounts, im Konto › Settings: „Test credentials“, „Save connection“ | `accounts.reconfigure_mail` · Admin, nur App-Schlüssel | **Never** (Liste Punkt 5: ein Passwort geht hinein) |
 | Ordner auflisten | Mail-Seitenleiste | `mail.list_folders` · Read | `mail_list_folders` |
 | Suchen / Liste | Mail-Liste, Suche, Filter-Icon im Suchfeld (#336) | `mail.search_messages` · Read | `mail_search_messages` |

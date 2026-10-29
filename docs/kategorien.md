@@ -237,8 +237,8 @@ Die Darstellung mit Gruppenfarben und individuellen Kategorie-Icons gehört zu
 - Bearbeitbar sind bei **jeder** Kategorie Name, Gruppe, Beschreibung und „das Modell darf sie
   wählen“. Umbenennen ändert die Kennung nicht, Mail und Regeln bleiben gültig. Eine mitgelieferte
   Kategorie lässt sich auf die Worte der Suite zurücksetzen, aber nicht entfernen.
-- Die **fünf Gruppen** bleiben fest und erhalten je eine Farbe aus der Gruppenpalette des aktiven
-  Designs. Seit #343 heißen sie in den Mail-Einstellungen **Hauptkategorien**, und der Mensch legt
+- Die **fünf mitgelieferten Gruppen** bleiben als Kennungen fest und erhalten je eine Farbe aus der
+  Gruppenpalette des aktiven Designs. Seit #343 heißen sie in den Mail-Einstellungen **Hauptkategorien**, und der Mensch legt
   eigene dazu an (`custom_group_<n>`, `<n>` ab 6, nie neu vergeben): mit Name, Icon und einer der
   fünf Farben (0–4). Name, Icon und Farbe lassen sich bei jeder Hauptkategorie ändern, die
   Kennung bleibt; eine mitgelieferte bekommt mit leerem Namen die Worte der Suite zurück. Eigene

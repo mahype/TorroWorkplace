@@ -265,10 +265,10 @@ impl JsonSchema for CategoryGroup {
 
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "A main mail category: a built-in key or `custom_group_<n>` for one created by the person.",
+            "description": "A main mail category: a built-in key or `custom_group_<n>` (from 6) for one created by the person.",
             "anyOf": [
                 { "type": "string", "enum": ["waiting_for_me", "paper_trail", "info", "junk", "unsorted"] },
-                { "type": "string", "pattern": "^custom_group_([6-9]|[1-9][0-9]{1,9})$" }
+                { "type": "string", "pattern": "^custom_group_([6-9]|[1-9][0-9]{1,8})$" }
             ]
         })
     }

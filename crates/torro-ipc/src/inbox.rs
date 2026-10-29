@@ -2262,17 +2262,21 @@ mod tests {
     }
 }
 
-/// One category of mail as `inbox.list_categories` lists it (task E12.4, `docs/kategorien.md`):
-/// the catalogue the sidebar and the "Category" menu are built from, with how much unread mail
-/// each one holds.
-///
-/// The words are the suite's own, so nothing here is foreign text.
+/// One main category as `inbox.list_categories` lists it under `groups`, and as
+/// `inbox.create_category_group` and `inbox.update_category_group` answer (issue #343), also one
+/// with no category in it yet. The words are the suite's or the person's own, never foreign text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CategoryGroupInfo {
+    /// Its stable key: `waiting_for_me`, `paper_trail`, `info`, `junk`, `unsorted` or
+    /// `custom_group_<n>`.
     pub group: CategoryGroup,
+    /// What a person reads for it: the person's name, else the suite's word.
     pub label: String,
+    /// Its monochrome icon.
     pub icon: torro_mail::CategoryIcon,
+    /// Its colour in the group palette of the active design, 0–4.
     pub color: u8,
+    /// One of the five the suite brings (`false` for one the person made).
     pub built_in: bool,
 }
 
@@ -2288,6 +2292,11 @@ impl CategoryGroupInfo {
     }
 }
 
+/// One category of mail as `inbox.list_categories` lists it (task E12.4, `docs/kategorien.md`):
+/// the catalogue the sidebar and the "Category" menu are built from, with how much unread mail
+/// each one holds.
+///
+/// The words are the suite's own, so nothing here is foreign text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CategoryInfo {
     /// The category on the wire: `invoice`, `service_notice`, `auto_reply` …
