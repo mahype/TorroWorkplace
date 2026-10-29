@@ -760,9 +760,14 @@ impl Host {
 }
 
 /// What the settings knew when they closed stays with the app for the next host (issue #394),
-/// without what was still on its way and without the failure of that moment.
+/// without what was still on its way and without the failure of that moment. Settings closed
+/// before their page could stand leave the last state as it was: an empty one would show the next
+/// page at once with nothing on it.
 impl Drop for Host {
     fn drop(&mut self) {
+        if !self.loaded {
+            return;
+        }
         let mut data = std::mem::take(&mut self.data);
         data.updating.clear();
         data.error = None;
@@ -1167,6 +1172,11 @@ mod tests {
         answer_all(&mut first, &backend).await;
         let shown = first.data().clone();
         drop(first);
+
+        // Closed before anything came: nothing is kept, so the next one does not stand empty.
+        let untouched = Memory::default();
+        drop(Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), untouched.clone()));
+        assert!(untouched.recall().is_none());
 
         let (again, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory);
         assert!(again.loaded(), "no loading state: the last state is there");
