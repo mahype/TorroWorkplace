@@ -4865,8 +4865,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     self.selected_mail.clear();
                     self.mail_anchor = None;
                 } else if self.mail_overview_closes() {
-                    // The overview's panel (medium) or page (narrow) goes back to the list (issue #409).
-                    self.mail_overview.open = false;
+                    // The overview's panel (medium) or page (narrow) goes back to the list, in narrow
+                    // to where the list stood, as "‹ {view}" does (issue #409).
+                    return self.update(Message::CloseMailOverview);
                 } else if self.panel_open() || self.view.search().is_none() {
                     self.close_panel();
                 } else {
