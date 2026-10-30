@@ -51,6 +51,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, responsive, row, rule, scrollable};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
+use torro_core::AppId;
 use torro_core::design::Density;
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
@@ -1478,6 +1479,12 @@ fn side_row<'a>(mark: Icon, title: &str, meta: &str, chosen: bool, on_press: Mes
         .into()
 }
 
+/// What a click on a handed-off task does: open it in the tasks app while that is `installed` (issue
+/// #408); `None` without it, and the row is no button.
+fn handed_open(task: &ItemTask, installed: impl Fn(AppId) -> bool) -> Option<Message> {
+    installed(AppId::TASKS).then(|| Message::OpenTask(task.uid.clone()))
+}
+
 /// The line between the blocks of the column at the right.
 fn side_rule<'a>() -> Element<'a, Message> {
     container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::m(), 0.0]).into()
@@ -1531,9 +1538,12 @@ pub fn side<'a>(
         content = content.push(side_hint(tr("Tasks you make of entries show up here until they are done.")));
     }
     for task in handed {
-        let open = Message::OpenTask(task.uid.clone());
-        content =
-            content.push(side_row(Icon::ListTodo, &list::one_line(&task.title), &handed_meta(task, now), false, open));
+        let (title, meta) = (list::one_line(&task.title), handed_meta(task, now));
+        content = content.push(match handed_open(task, torro_gui::installed::is_installed) {
+            Some(open) => side_row(Icon::ListTodo, &title, &meta, false, open),
+            // Without the tasks app the row only says what was handed off (issue #408).
+            None => side_line(Icon::ListTodo, &title, &meta),
+        });
     }
     let back = coming_back(snoozed);
     content = content.push(side_rule());
@@ -1563,6 +1573,24 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Local.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time").to_utc()
+    }
+
+    /// Issue #408: a handed-off task opens in the tasks app only while it is installed; without it
+    /// the row only says what was handed off.
+    #[test]
+    fn a_handed_off_task_opens_only_with_the_tasks_app() {
+        let task = ItemTask {
+            uid: "budget@demo".into(),
+            collection: "demo/work".into(),
+            list: "Work".into(),
+            title: "Check the travel budget".into(),
+            due: None,
+            completed: false,
+            link: String::new(),
+            mail_entry: None,
+        };
+        assert!(matches!(handed_open(&task, |_| true), Some(Message::OpenTask(ref uid)) if uid == "budget@demo"));
+        assert!(handed_open(&task, |app| app != AppId::TASKS).is_none());
     }
 
     /// The entries of the demo in `state`, waiting first – what the app holds.

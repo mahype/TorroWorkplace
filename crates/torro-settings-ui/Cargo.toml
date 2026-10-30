@@ -29,3 +29,5 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+# Draws a design pack's `preview.png` through the SVG renderer in a test of the suite's Appearance.
+resvg.workspace = true

@@ -30,7 +30,9 @@ Die Dichte des Eingangs gehört seit Issue #226 nicht mehr dazu: Sie ist ein Wer
 `[list] style`).
 
 Die Apps haben keine eigenen Kontoeinstellungen. Fehlt ihnen ein Konto, zeigen sie einen Hinweis mit dem
-Knopf „Open Settings“, der die Steuerzentrale an der richtigen Stelle öffnet.
+Knopf „Open Settings“, der die Steuerzentrale an der richtigen Stelle öffnet. **Abgelöst mit #410:** Konten
+ziehen in die jeweilige App, damit sie ohne Hauptanwendung läuft ([einzelne-apps.md](einzelne-apps.md)); bis
+dahin gilt die Regel weiter.
 
 Vorbild sind die Einstellungen von **TorroWhisper** (Aufbau, Seiten, Speichern) und
 **TorroMail** (Konten, Anbieter-Katalog, Einrichtungsassistent, Zugriff für KI-Clients). Beide
@@ -135,7 +137,9 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
   in der Kopfleiste („Reminders ▾“), Schmal als Liste, aus der ein Abschnitt als eigene Seite mit
   „‹ Back“ aufgeht.
 - **Direkt öffnen**: `--settings <abschnitt>` in jeder App (auch mit `--demo`, für die
-  Sichtprüfung). Die Steuerzentrale öffnet eine App mit `apps.open_app` (holt ein laufendes Fenster nach vorn);
+  Sichtprüfung), seit #408 auch `appearance` und `general` (im Assistenten `suite-general`), die eine App
+  ohne Hauptanwendung zeigt ([einzelne-apps.md](einzelne-apps.md)); mit Hauptanwendung bleibt das Wort ohne
+  Wirkung. Die Steuerzentrale öffnet eine App mit `apps.open_app` (holt ein laufendes Fenster nach vorn);
   dort die Einstellungen gleich aufzuschlagen bräuchte einen neuen Weg vom Kern zur App und ist nicht geplant. Hinweise in der App, die
   bisher die Steuerzentrale öffneten, öffnen den passenden Abschnitt im selben Fenster („All rules“ →
   Rules); das Mail-Fenster hat keine Rules, dort holt „All rules“ das Fenster des Notification Hub nach
@@ -156,7 +160,11 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
 | **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Filters (Mail-Filter mit Editor, Vorschau der Treffer und „Apply“; #339, [mail.md](mail.md#filter)) · Keyboard shortcuts (E10.3) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
 
-Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). Die Fensterarten des Eingangs-Programms
+Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). **Ausnahme seit #408:** Fehlt die
+Hauptanwendung, zeigt jede App statt der beiden Verweise die Abschnitte Appearance und General (Language,
+Start at login, Background service mit „Quit…“; im Assistenten heißt General dort „All apps“), dieselben
+Seiten wie die Steuerzentrale
+([einzelne-apps.md](einzelne-apps.md), Entscheidung 2). Die Fensterarten des Eingangs-Programms
 zeigen je ihre Abschnitte: Notification Hub und App Feed die des Eingangs, das Mail-Fenster die von Mail.
 
 In der Steuerzentrale bleiben: Konten (Status, Verbindung, welche Dienste ein Konto liefert,
@@ -179,7 +187,13 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
 - Die Seiten der Apps ziehen in eine neue Bibliothek `crates/torro-settings-ui`: die Zeilen-Bausteine
   (`setting_row`, `pressable`, `chevron`, `dialog`, `confirm`, die auch die Steuerzentrale nutzt) und ein
   **Host** für den Inhaltsbereich (Abschnittsliste, Kopfleiste mit Pfad, Seite, Laden und Senden). Die
-  Steuerzentrale zeigt die Seiten der Apps **nicht**; sie nutzt aus der Bibliothek nur die Bausteine.
+  Steuerzentrale zeigt die Seiten der Apps **nicht**; sie nutzt aus der Bibliothek nur die Bausteine und die
+  Seiten der Suite (nächster Punkt).
+- **Seiten der Suite (`suite.rs`, #408):** Appearance und General (Language, Start at login, Background service)
+  stehen einmal in `torro-settings-ui`. Die Steuerzentrale zeigt daraus Appearance, Language und Start at login
+  (Background service nicht, dort beendet Tray › Quit); eine App ohne Hauptanwendung zeigt beide Seiten als
+  eigene Abschnitte, mit Hauptanwendung die Verweise „Appearance ↗“ und „All settings ↗“
+  ([einzelne-apps.md](einzelne-apps.md)).
 - Seiten bleiben wie heute: Sie geben eine `Action` zurück, der Host schickt den Request und lädt
   neu. Jede App lädt beim Öffnen der Einstellungen nur, was ihre Abschnitte brauchen.
   Den Weg zum Dienst gibt die App dem Host; mit `--demo` antwortet er im Speicher und ändert nichts

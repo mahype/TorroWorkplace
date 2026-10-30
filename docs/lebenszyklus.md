@@ -49,7 +49,9 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
    weiter `torroinbox` als Programm.
 3. **Der Dienst bleibt.** Er startet beim Anmelden, wenn „Start at login“ an ist, sonst mit der ersten
    App. Schließt die letzte App, läuft er im Tray weiter: Erinnerungen, Benachrichtigungen, Sync und MCP
-   brauchen keine offene App. Er endet nur über Tray › Quit bzw. `ctl quit`.
+   brauchen keine offene App. Er endet nur über Tray › Quit bzw. `ctl quit`. Seit #408: Ohne
+   Hauptanwendung läuft er still, ohne Tray-Icon und ohne Einrichtung; beendet wird er dann in jeder App
+   unter Zahnrad › General › Background service › „Quit“ ([einzelne-apps.md](einzelne-apps.md)).
 4. **Quit gilt.** Nach Tray › Quit startet kein MCP-Server den Dienst von selbst neu; erst ein Mensch,
    der eine App öffnet, oder die nächste Anmeldung. Verworfen: Neustart durch Agenten wie bisher. So
    hätte Quit keine Wirkung, solange eine Agenten-Sitzung läuft. Das gilt nur für ein Beenden durch
@@ -87,7 +89,11 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
 | jede App, Steuerzentrale, Vorlagen-Dialog (die erste, die ein Mensch öffnet) | den Dienst | beim eigenen Start, wenn er nicht antwortet |
 | MCP-Server (`torroworkplace mcp`) | den Dienst | wenn er nicht antwortet, nicht nach Quit durch einen Menschen |
 | der Dienst | Apps | Tray, `apps.open_app`, Vorlagen, Erinnerungsfenster |
-| der Dienst | Einrichtung | erster Start ohne Konto, erst wenn sein Socket antwortet |
+| der Dienst | Einrichtung | erster Start ohne Konto, erst wenn sein Socket antwortet; nur mit Hauptanwendung |
+
+Ein Tray-Icon und die Einrichtung zeigt der Dienst nur, wenn die Hauptanwendung installiert ist, egal wer
+ihn startet. Ohne sie läuft er still wie mit `--headless` (#408, [einzelne-apps.md](einzelne-apps.md),
+Entscheidung 1).
 
 Kein Programm der Suite startet den Dienst, wenn das in den letzten 10 Sekunden schon jemand versucht
 hat (Marke `core-start`). So kann keine Startschleife entstehen.
@@ -110,8 +116,8 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
   Antwortet der Socket, löscht der Dienst die Marke: Wer ihn kurz nach dem Start über Tray › Quit beendet und
   gleich darauf eine App öffnet, startet ihn wieder. Ein Dienst, der nie antwortet, lässt die Marke stehen.
 - **Marke `quit`.** Beendet ein Mensch den Dienst, schreibt der Dienst die Marke `quit` (0600, nur der
-  Zeitpunkt). Das geschieht an einer Stelle für beide Wege, Tray › Quit und `system.quit` (`ctl quit`, nur mit
-  dem App-Schlüssel). Beim nächsten Start löscht er sie. Solange sie steht, startet der MCP-Server nichts und
+  Zeitpunkt). Das geschieht an einer Stelle für beide Wege, Tray › Quit und `system.quit` (`ctl quit` oder
+  „Quit“ unter General › Background service einer App ohne Hauptanwendung, #408; nur mit dem App-Schlüssel). Beim nächsten Start löscht er sie. Solange sie steht, startet der MCP-Server nichts und
   antwortet mit dem Code `offline` und einer eigenen Meldung. Apps und Steuerzentrale achten nicht auf die
   Marke: Wer eine App öffnet, will den Dienst. Endet der Dienst anders, entsteht keine Marke.
 - **Instanz-Kanal** (`torro_gui::instance`). Je Fensterklasse ein eigener Kanal: unter Unix ein Socket

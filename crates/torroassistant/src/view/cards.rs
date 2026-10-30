@@ -96,17 +96,21 @@ fn file_card(file: &FileInfo) -> Element<'_, Message> {
 
 /// The buttons of a file card, each a person's click: "Open" (`tools.open_file`), "Save as…" (the
 /// system's save dialog with the file's name, then `tools.save_file_as`) and "Send by mail" (a new
-/// mail with the file attached). With their words where they fit the card, else icons with the word
+/// mail with the file attached, only while the Notification Hub is installed: issue #408,
+/// [`chat::can_mail_files`]). With their words where they fit the card, else icons with the word
 /// as tooltip; "Open", the lead, keeps its word first.
 fn file_buttons(file: &FileInfo) -> Element<'_, Message> {
     let (id, name) = (file.id.clone(), file.name.clone());
+    let mail = chat::can_mail_files(torro_gui::installed::is_installed);
     let line = responsive(move |bounds| {
-        let buttons = [
+        let mut buttons = vec![
             (Icon::ArrowUpRight, tr("Open"), Message::OpenFile(id.clone())),
             (Icon::Folder, tr("Save as…"), Message::SaveFileAs { id: id.clone(), name: name.clone() }),
-            (Icon::Send, tr("Send by mail"), Message::MailFile(id.clone())),
         ];
-        let labels = buttons.each_ref().map(|(_, label, _)| *label);
+        if mail {
+            buttons.push((Icon::Send, tr("Send by mail"), Message::MailFile(id.clone())));
+        }
+        let labels: Vec<&str> = buttons.iter().map(|(_, label, _)| *label).collect();
         let words = widgets::bar_words(&labels, true, 0, bounds.width);
         let buttons = buttons.into_iter().enumerate().map(|(i, (mark, label, message))| match words.worded(i) {
             true => widgets::text_button(Some(mark), label, style::button::secondary, Some(message)),

@@ -958,7 +958,9 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide_approval`): nur mit dem App-Schlüssel, also nur
    durch einen Menschen in der Oberfläche oder per Benachrichtigung.
-4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
+4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`, ohne
+   Hauptanwendung „Quit“ unter General › Background service jeder App, [einzelne-apps.md](einzelne-apps.md)).
+   Das Tray-Icon verschwindet dabei nur, wenn es eins gibt.
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
    Nach einem Quit startet kein MCP-Server den Dienst neu, siehe [lebenszyklus.md](lebenszyklus.md).
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,

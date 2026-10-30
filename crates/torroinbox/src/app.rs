@@ -2044,11 +2044,14 @@ impl Launch {
             return Err(LaunchError::Conflict("--open account…", "a --view other than mail"));
         }
         // The sections are the window kind's (task S.20), so this comes after `--view`.
+        // The suite's sections too, which the window shows without the main application (issue #408).
+        let own = kind.settings_sections();
+        let sections = [&own[..], &torro_settings_ui::suite_sections(&own)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
-            Some(word) if kind.settings_sections().iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
             Some(word) => {
-                let valid = kind.settings_sections().iter().map(|section| section.id).collect();
+                let valid = sections.iter().map(|section| section.id).collect();
                 return Err(unknown("--settings", word, valid));
             }
         };
@@ -7479,6 +7482,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             kind.settings_sections(),
             kind.settings_wanted(),
             self.settings_memory.clone(),
+            // Without the main application the suite\'s pages are this app\'s too (issue #408).
+            !torro_gui::installed::main_app(),
         );
         if let Some(id) = section {
             host.open(id);
@@ -11563,15 +11568,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let segment = |control: Element<'a, Message>| {
             container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
         };
-        let rules = rules_entry(leaves);
         list = list
             .push(menu_line())
             .push(menu_caption(tr("For")))
             .push(segment(spans))
             .push(menu_caption(tr("What happens")))
-            .push(segment(effects))
-            .push(menu_line())
-            .push(widgets::menu_item(rules));
+            .push(segment(effects));
+        // Without the Notification Hub the mail window has nowhere to show the rules (issue #408).
+        if rules_shown(self.launch.kind, torro_gui::installed::is_installed) {
+            list = list.push(menu_line()).push(widgets::menu_item(rules_entry(leaves)));
+        }
         container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
@@ -12181,6 +12187,13 @@ fn segmented_width(labels: &[&str]) -> f32 {
 fn rules_entry<'a>(leaves: bool) -> MenuItem<'a, Message> {
     let entry = MenuItem::new(Icon::Settings, rules_word(leaves), Message::OpenRules);
     if leaves { entry.trail(Trail::Icon(Icon::ArrowUpRight)) } else { entry }
+}
+
+/// Whether the bell's menu of a window of `kind` has "All rules": always where the rules are this
+/// window's own section, in the mail window only while the Notification Hub is `installed` (issue
+/// #408), since it leads there.
+fn rules_shown(kind: Kind, installed: impl Fn(AppId) -> bool) -> bool {
+    kind != Kind::Mail || installed(AppId::INBOX)
 }
 
 /// The word of that entry: short where the rules open in this very window, and where they do not,
@@ -19745,7 +19758,11 @@ mod tests {
     fn all_rules_opens_the_rules_or_the_notification_hub() {
         for kind in [Kind::Hub, Kind::Notifications] {
             assert!(rules_message(kind).is_none(), "{kind:?} has the section itself");
+            assert!(rules_shown(kind, |_| false), "{kind:?} needs no other app for it");
         }
+        // Issue #408: the mail window offers it only while the Notification Hub is installed.
+        assert!(rules_shown(Kind::Mail, |_| true));
+        assert!(!rules_shown(Kind::Mail, |app| app != AppId::INBOX));
         let mut hub = overview_at(&[]);
         let _ = hub.update(Message::OpenRules);
         assert_eq!(hub.settings.as_ref().map(|pane| pane.host.current().id), Some(RULES_SECTION));

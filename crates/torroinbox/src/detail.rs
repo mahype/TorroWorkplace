@@ -374,11 +374,17 @@ pub fn is_approval(item: &Item) -> bool {
 /// The link the panel offers to open, as [`rules::may_open`] allows: `http`/`https` pages, apps of
 /// the suite, and the window of the agent behind a hook's entry (task E2.4). The core links that
 /// window only when it can be looked for (Linux, not inside tmux), so elsewhere there is none to
-/// offer. The core checks again when it opens ([`Message::OpenItem`]).
+/// offer. The core checks again when it opens ([`Message::OpenItem`]). An app that is not installed
+/// is no way to offer (issue #408).
 pub fn openable(item: &Item) -> Option<Link> {
+    openable_with(item, torro_gui::installed::is_installed)
+}
+
+/// [`openable`] with what is `installed`.
+fn openable_with(item: &Item, installed: impl Fn(AppId) -> bool) -> Option<Link> {
     let link = item.link.clone()?;
     // A binary or a window class (task E8.1b), as the core reads it; anything else is no app.
-    let known_app = |app: &str| AppId::find(app).is_some();
+    let known_app = |app: &str| AppId::find(app).is_some_and(&installed);
     rules::may_open(item, known_app).then_some(link)
 }
 
@@ -672,6 +678,8 @@ mod tests {
         let deploy = sample("demo-6");
         assert!(matches!(openable(&deploy), Some(Link::Url { .. })), "https pages open");
         assert_eq!(openable(&sample("demo-5")), Some(Link::App { app: "torroworkplace".into() }));
+        // Issue #408: no way into an app that is not installed, here the main application.
+        assert_eq!(openable_with(&sample("demo-5"), |app| app != AppId::WORKPLACE), None);
         assert_eq!(openable(&sample("demo-1")), Some(Link::Window), "a hook's agent: its window");
         let notice_with_window = Item { link: Some(Link::Window), ..deploy.clone() };
         assert_eq!(openable(&notice_with_window), None, "a window only on entries of hooks");

@@ -418,11 +418,14 @@ impl Launch {
         let design = part("--design", design::Part::Design)?;
         let font = part("--font", design::Part::Font)?;
         let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
+        // The app's own sections, and the suite's, which it shows without the main application
+        // (issue #408).
+        let sections = [&SETTINGS_SECTIONS[..], &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
-            Some(word) if SETTINGS_SECTIONS.iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
             Some(word) => {
-                return Err(unknown("--settings", word, SETTINGS_SECTIONS.iter().map(|section| section.id).collect()));
+                return Err(unknown("--settings", word, sections.iter().map(|section| section.id).collect()));
             }
         };
         Ok(Launch { open, appearance, now, design, font, color_scheme, task: None, settings })
@@ -2211,14 +2214,17 @@ impl App {
             false,
             Message::OpenNewList,
         ));
-        let mut footer = vec![widgets::sidebar_item_in(
-            mode,
-            Icon::Calendar,
-            tr("Open Calendar"),
-            Trail::Icon(Icon::ArrowUpRight),
-            false,
-            Message::OpenApp(AppId::CALENDAR.binary),
-        )];
+        let mut footer = Vec::new();
+        if let Some(open) = calendar_jump(torro_gui::installed::is_installed) {
+            footer.push(widgets::sidebar_item_in(
+                mode,
+                Icon::Calendar,
+                tr("Open Calendar"),
+                Trail::Icon(Icon::ArrowUpRight),
+                false,
+                open,
+            ));
+        }
         // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
         if !shell::has_band() {
             footer.push(widgets::sidebar_item_in(
@@ -2257,11 +2263,12 @@ impl App {
             })),
         }
         sections.push(MenuSection::new(vec![MenuItem::new(Icon::Plus, tr("New list…"), Message::OpenNewList)]));
-        sections.push(MenuSection::new(vec![
-            MenuItem::new(Icon::Calendar, tr("Open Calendar"), Message::OpenApp(AppId::CALENDAR.binary))
-                .trail(Trail::Icon(Icon::ArrowUpRight)),
-            MenuItem::new(Icon::Settings, tr("Settings"), Message::ToggleSettings).current(self.settings.is_some()),
-        ]));
+        let calendar = calendar_jump(torro_gui::installed::is_installed).map(|open| {
+            MenuItem::new(Icon::Calendar, tr("Open Calendar"), open).trail(Trail::Icon(Icon::ArrowUpRight))
+        });
+        let settings = MenuItem::new(Icon::Settings, tr("Settings"), Message::ToggleSettings);
+        sections
+            .push(MenuSection::new(calendar.into_iter().chain([settings.current(self.settings.is_some())]).collect()));
         widgets::menu(sections)
     }
 
@@ -2417,6 +2424,8 @@ impl App {
             SETTINGS_SECTIONS.to_vec(),
             collections::wanted(),
             self.settings_memory.clone(),
+            // Without the main application the suite\'s pages are this app\'s too (issue #408).
+            !torro_gui::installed::main_app(),
         );
         if let Some(id) = section {
             host.open(id);
@@ -3389,6 +3398,12 @@ fn quick_add_style(t: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
+/// "Open Calendar" in the sidebar and the navigation menu, while the calendar is `installed` (issue
+/// #408); `None` without it, and the entry is left out.
+fn calendar_jump(installed: impl Fn(AppId) -> bool) -> Option<Message> {
+    installed(AppId::CALENDAR).then_some(Message::OpenApp(AppId::CALENDAR.binary))
+}
+
 /// Asks the core to start or raise `app`. Demo data has no core, so there it does nothing.
 async fn open_app(source: Source, app: &'static str) -> Result<(), String> {
     let Source::Core(client) = source else {
@@ -3455,6 +3470,13 @@ mod tests {
 
     fn demo_app() -> App {
         App::new(Source::from_args(["--demo".to_string()]), Launch::default()).0
+    }
+
+    /// Issue #408: "Open Calendar" is there only while the calendar is installed.
+    #[test]
+    fn open_calendar_needs_the_calendar() {
+        assert!(matches!(calendar_jump(|_| true), Some(Message::OpenApp(app)) if app == AppId::CALENDAR.binary));
+        assert!(calendar_jump(|app| app != AppId::CALENDAR).is_none());
     }
 
     #[test]

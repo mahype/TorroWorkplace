@@ -1534,8 +1534,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
     },
-    /// The suite's apps, the core itself excepted, and whether each is installed
-    /// ([`Response::Apps`]).
+    /// The suite's apps, the core itself excepted, and whether each is installed, plus whether the
+    /// main application is ([`Response::Apps`]).
     #[serde(rename = "apps.list_apps")]
     ListApps,
 
@@ -4193,6 +4193,11 @@ pub enum Response {
     },
     Apps {
         apps: Vec<AppInfo>,
+        /// Whether the main application (the control centre with its tray icon) is installed (issue
+        /// #408): without it the apps show the suite's settings themselves and the service runs without
+        /// a tray icon. A core from before this field reads as installed, so nothing switches over.
+        #[serde(default = "on")]
+        main_app: bool,
     },
     /// The design packs ([`Request::ListDesigns`]), the standard first.
     Designs {
@@ -6106,6 +6111,20 @@ mod tests {
         assert!(listed.get("smtp").is_none() && listed.get("unsupported").is_none(), "{listed}");
         assert!(listed.get("password").is_none());
         assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), answer);
+    }
+
+    #[test]
+    fn the_apps_answer_says_whether_the_main_app_is_installed() {
+        let answer = Response::Apps { apps: Vec::new(), main_app: false };
+        let json = serde_json::to_value(&answer).expect("json");
+        assert_eq!((json["result"].as_str(), json["main_app"].as_bool()), (Some("apps"), Some(false)));
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), answer);
+        // An older core does not say: the main application counts as installed, so nothing switches over.
+        let older = serde_json::json!({"result": "apps", "apps": []});
+        let Response::Apps { main_app, .. } = serde_json::from_value::<Response>(older).expect("parses") else {
+            panic!("apps")
+        };
+        assert!(main_app);
     }
 
     #[test]

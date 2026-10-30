@@ -40,6 +40,7 @@ pub mod design;
 pub mod dialog;
 pub mod font;
 pub mod icon;
+pub mod installed;
 pub mod instance;
 pub mod layout;
 pub mod links;

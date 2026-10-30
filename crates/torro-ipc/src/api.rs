@@ -2156,8 +2156,8 @@ static QUIT: Command = Command {
     area: Area::System,
     access: Access::Admin,
     mcp: Mcp::Never,
-    description: "Stops the Torro Workplace core, as the tray's Quit does; the socket closes and the tray icon \
-                  disappears. Only the app key may use it.",
+    description: "Stops the Torro Workplace core, as the tray's Quit does; the socket closes and the tray icon, if \
+                  there is one, disappears. Only the app key may use it.",
 };
 
 static LIST_TEMPLATES: Command = Command {
@@ -3376,6 +3376,7 @@ static LIST_APPS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the apps of the suite with binary name, product name, window class and whether they are \
+                  installed; `main_app` says whether the main application (control centre and tray icon) is \
                   installed.",
 };
 

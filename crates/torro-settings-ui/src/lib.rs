@@ -13,6 +13,8 @@
 //!   tasks S.17 to S.20), each written in the shape below.
 //! * [`host`] – the [`Host`], which shows an app's sections in its content area: the section list,
 //!   the header bar with the path, the page, and the sending and loading around it.
+//! * [`suite`] – the pages of the whole suite, Appearance and General (issue #408): the control
+//!   centre shows them, and so does an app while the main application is not installed.
 //! * [`rights`] – the rights editor (task S.33): what a client may do, area by area and command by
 //!   command. The control centre shows it for keys and MCP clients, the assistant window for the
 //!   assistant and its bots (task S.34).
@@ -56,6 +58,7 @@ pub mod inbox;
 pub mod mail;
 pub mod parts;
 pub mod rights;
+pub mod suite;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -70,7 +73,7 @@ use torro_ipc::tools::ToolInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 use torro_pim::Collection;
 
-pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
+pub use host::{Form, Frame, Host, Outcome, Page, Section, form, suite_sections};
 
 /// The answer of a [`Backend`], boxed so a `dyn Backend` can be handed around.
 pub type Answer = Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>;
@@ -86,6 +89,12 @@ pub type Answer = Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>
 pub trait Backend: Send + Sync + 'static {
     /// Sends `request` and waits for the answer.
     fn call(&self, request: Request) -> Answer;
+
+    /// Whether this is the demo, which answers from memory: then the host also does nothing local,
+    /// opens no folder and reads no designs from disk ([`suite::list`]).
+    fn demo(&self) -> bool {
+        false
+    }
 }
 
 /// Everything the sections of one app show, as far as it was loaded.

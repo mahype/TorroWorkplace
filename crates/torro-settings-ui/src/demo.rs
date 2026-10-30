@@ -1237,6 +1237,10 @@ impl Backend for Demo {
         };
         Box::pin(async move { Ok(answer) })
     }
+
+    fn demo(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -226,6 +226,12 @@ impl SettingsBackend for CoreSettings {
     }
 }
 
+/// "Open Tasks" at the foot of the sidebar, while the tasks app is `installed` (issue #408); `None`
+/// without it, and the entry is left out.
+fn tasks_jump(installed: impl Fn(AppId) -> bool) -> Option<Message> {
+    installed(AppId::TASKS).then_some(Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)))
+}
+
 /// What a section of the settings returned, as the host hands it to the app.
 fn settings_update(message: SettingsMessage, data: &torro_settings_ui::Data) -> torro_settings_ui::Action<()> {
     match message {
@@ -452,11 +458,14 @@ impl Launch {
         let design = part("--design", design::Part::Design)?;
         let font = part("--font", design::Part::Font)?;
         let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
+        // The app's own sections, and the suite's, which it shows without the main application
+        // (issue #408).
+        let sections = [&SETTINGS_SECTIONS[..], &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
-            Some(word) if SETTINGS_SECTIONS.iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
             Some(word) => {
-                return Err(unknown("--settings", word, SETTINGS_SECTIONS.iter().map(|section| section.id).collect()));
+                return Err(unknown("--settings", word, sections.iter().map(|section| section.id).collect()));
             }
         };
         Ok(Launch { open, appearance, now, design, font, color_scheme, settings })
@@ -1634,14 +1643,17 @@ impl App {
                 }
             }
         }
-        let mut footer = vec![widgets::sidebar_item_in(
-            mode,
-            Icon::SquareCheck,
-            tr("Open Tasks"),
-            Trail::Icon(Icon::ArrowUpRight),
-            false,
-            Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)),
-        )];
+        let mut footer = Vec::new();
+        if let Some(open) = tasks_jump(torro_gui::installed::is_installed) {
+            footer.push(widgets::sidebar_item_in(
+                mode,
+                Icon::SquareCheck,
+                tr("Open Tasks"),
+                Trail::Icon(Icon::ArrowUpRight),
+                false,
+                open,
+            ));
+        }
         // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
         if !shell::has_band() {
             footer.push(widgets::sidebar_item_in(
@@ -2120,6 +2132,8 @@ impl App {
             SETTINGS_SECTIONS.to_vec(),
             settings_wanted(),
             self.settings_memory.clone(),
+            // Without the main application the suite\'s pages are this app\'s too (issue #408).
+            !torro_gui::installed::main_app(),
         );
         if let Some(id) = section {
             host.open(id);
@@ -3382,6 +3396,25 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--settings"])), Err(LaunchError::MissingValue("--settings")));
         // Unlike `--open`, `--settings` needs no `--demo`.
         assert!(Launch::parse(&args(&["--settings", "night"])).is_ok());
+    }
+
+    /// Issue #408: "Open Tasks" is there only while the tasks app is installed.
+    #[test]
+    fn open_tasks_needs_the_tasks_app() {
+        assert!(
+            matches!(tasks_jump(|_| true), Some(Message::Switcher(Switcher::OpenApp(app))) if app == AppId::TASKS.binary)
+        );
+        assert!(tasks_jump(|app| app != AppId::TASKS).is_none());
+    }
+
+    /// Issue #408: `--settings` takes the suite's pages too, which the calendar shows without the
+    /// main application.
+    #[test]
+    fn the_settings_open_at_the_suite_pages() {
+        for word in ["appearance", "general"] {
+            let launch = Launch::parse(&args(&["--demo", "--settings", word])).expect("valid");
+            assert_eq!(launch.settings.as_deref(), Some(word));
+        }
     }
 
     /// A click in the sidebar that shows the calendar again (a view, a calendar, "Open Tasks")
