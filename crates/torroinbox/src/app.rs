@@ -4715,8 +4715,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Decide { approval, allow } => return self.decide(approval, allow),
             Message::Decided(result, allow) => return self.decided(result, allow),
             Message::Refresh | Message::CoreReady => {
-                // The overview counts anew too, however fresh its numbers are (issue #409).
-                self.mail_overview.stale = true;
+                // The overview counts anew too, however fresh its numbers are (issue #409) – unless its
+                // count is on its way already.
+                if self.mail_overview.asked.is_none() {
+                    self.mail_overview.stale = true;
+                }
                 return self.load();
             }
             Message::Tick => {
@@ -5436,7 +5439,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::StatsTable(table) => self.insights.table = table,
             Message::ShowMailOverview => return self.show_mail_overview(),
-            Message::CloseMailOverview => self.mail_overview.open = false,
+            Message::CloseMailOverview => {
+                self.mail_overview.open = false;
+                // In the narrow window the overview stood in place of the list: back where it was.
+                if let Some((offset, _)) = self.scroll.filter(|_| self.class() == SizeClass::Narrow) {
+                    return operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(offset) });
+                }
+            }
             Message::MailOverviewRange(range) => self.mail_overview.range = range,
             Message::MailOverviewAccount(choice) => self.mail_overview.account = choice.account,
             Message::MailOverviewTable(table) => self.mail_overview.table = table,
@@ -5828,6 +5837,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.end_focus();
         self.close_panel();
         self.mail_overview.open = true;
+        // A mail of a person still waiting for its view stays closed: the overview was asked for.
+        self.open_after_load = None;
+        // A click shows it anew: numbers older than a minute are asked again, as when it comes into view.
+        self.mail_overview.showing = false;
         Task::none()
     }
 
@@ -5895,7 +5908,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             self.select_mail(id);
             return Task::none();
         }
-        let load = self.show_view(self.personal_view());
+        let personal = self.personal_view();
+        if personal == self.view {
+            // "Personal" shows already and does not hold it on this page: pinned in the reader now.
+            self.open_after_load = Some(id);
+            self.mail_overview.open = false;
+            self.open_pinned_person();
+            return Task::none();
+        }
+        let load = self.show_view(personal);
         self.open_after_load = Some(id);
         // What the view listed when it was last open may hold it already.
         self.open_waiting_mail();
@@ -18691,6 +18712,10 @@ mod tests {
             (app.cursor.as_deref(), app.reading, app.pinned_mail.as_deref()),
             (Some("m:far"), true, Some("m:far"))
         );
+        assert!(app.open_after_load.is_none());
+        // "Personal" shown already: a mail beyond its page opens at once, nothing waits for a load.
+        let _ = app.update(Message::MailOverviewPerson("m:further".into()));
+        assert_eq!((app.cursor.as_deref(), app.pinned_mail.as_deref()), (Some("m:further"), Some("m:further")));
         assert!(app.open_after_load.is_none());
     }
 
