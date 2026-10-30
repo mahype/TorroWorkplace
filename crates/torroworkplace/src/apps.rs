@@ -62,6 +62,99 @@ fn list_in(dirs: &[PathBuf], bundled: impl Fn(AppId) -> bool) -> Vec<AppInfo> {
         .collect()
 }
 
+/// The variable that overrides [`main_app_installed`] (issue #408): `1` installed, `0` not; any other
+/// value is ignored. For development builds, where no main application is installed, and for tests.
+pub const MAIN_APP_VAR: &str = "TORRO_MAIN_APP";
+
+/// The systems [`main_app_found`] knows how to look on; a value, so every rule is tested everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum System {
+    /// The bundle `Torro Workplace.app`.
+    MacOs,
+    /// The launcher entry `applications/torro-workplace.desktop` of the XDG data folders.
+    Unix,
+    /// No install to look for yet (Windows until #411): always installed, as before.
+    Other,
+}
+
+impl System {
+    #[cfg(target_os = "macos")]
+    const CURRENT: System = System::MacOs;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const CURRENT: System = System::Unix;
+    #[cfg(not(unix))]
+    const CURRENT: System = System::Other;
+}
+
+/// What [`main_app_found`] reads from the process: the override, the executable and the folders.
+#[derive(Debug, Default, Clone, Copy)]
+struct MainAppProbe<'a> {
+    /// [`MAIN_APP_VAR`].
+    setting: Option<&'a str>,
+    exe: Option<&'a Path>,
+    home: Option<&'a Path>,
+    /// `XDG_DATA_HOME`.
+    data_home: Option<&'a std::ffi::OsStr>,
+    /// `XDG_DATA_DIRS`.
+    data_dirs: Option<&'a std::ffi::OsStr>,
+}
+
+/// Whether the main application (the control centre with its tray icon, "Torro Workplace") is installed
+/// on this system (issue #408, decision 1 in `docs/einzelne-apps.md`). Without it the service runs
+/// silently, with no tray icon and no setup, and the apps show the suite's settings themselves.
+pub fn main_app_installed() -> bool {
+    let setting = std::env::var(MAIN_APP_VAR).ok();
+    let exe = std::env::current_exe().ok();
+    let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
+    let data_home = std::env::var_os("XDG_DATA_HOME");
+    let data_dirs = std::env::var_os("XDG_DATA_DIRS");
+    let probe = MainAppProbe {
+        setting: setting.as_deref(),
+        exe: exe.as_deref(),
+        home: home.as_deref(),
+        data_home: data_home.as_deref(),
+        data_dirs: data_dirs.as_deref(),
+    };
+    main_app_found(System::CURRENT, &probe, Path::is_file)
+}
+
+/// [`main_app_installed`] for `system`, with what the process gave and `exists` in place of the file
+/// system. The rules in order: [`MAIN_APP_VAR`] `1` or `0` decides; macOS: the bundle of
+/// [`AppId::WORKPLACE`] ([`torro_gui::source::bundle_program`]: beside the running bundle, in
+/// `/Applications`, in `~/Applications`); other Unix: `applications/torro-workplace.desktop` in
+/// `$XDG_DATA_HOME` (empty or unset: `$HOME/.local/share`) or in one of `$XDG_DATA_DIRS` (empty or
+/// unset: `/usr/local/share:/usr/share`), where packages and manual installs put it; elsewhere installed.
+fn main_app_found(system: System, probe: &MainAppProbe, exists: impl Fn(&Path) -> bool) -> bool {
+    match probe.setting.map(str::trim) {
+        Some("1") => return true,
+        Some("0") => return false,
+        _ => {}
+    }
+    match system {
+        System::MacOs => torro_gui::source::bundle_program(AppId::WORKPLACE, probe.exe, probe.home, exists).is_some(),
+        System::Unix => {
+            let entry = Path::new("applications").join(format!("{}.desktop", AppId::WORKPLACE.window_class));
+            let data_home =
+                given(probe.data_home).map(PathBuf::from).or_else(|| probe.home.map(|home| home.join(".local/share")));
+            // The XDG list is separated by `:` (not the system's separator), so the rule reads the
+            // same in a test on Windows.
+            let data_dirs: Vec<PathBuf> = match given(probe.data_dirs) {
+                Some(dirs) => {
+                    dirs.to_string_lossy().split(':').filter(|dir| !dir.is_empty()).map(PathBuf::from).collect()
+                }
+                None => vec![PathBuf::from("/usr/local/share"), PathBuf::from("/usr/share")],
+            };
+            data_home.into_iter().chain(data_dirs).any(|dir| exists(&dir.join(&entry)))
+        }
+        System::Other => true,
+    }
+}
+
+/// An XDG variable as given: `None` when unset or empty, which the specification treats alike.
+fn given(value: Option<&std::ffi::OsStr>) -> Option<&std::ffi::OsStr> {
+    value.filter(|value| !value.is_empty())
+}
+
 /// The program that asks macOS to start a bundle (issue #279), by its absolute path, so no `open`
 /// earlier on `PATH` stands in for it.
 pub const OPEN: &str = "/usr/bin/open";
@@ -1149,5 +1242,86 @@ pub mod tests {
                 ("torro-inbox-notifications", AppId::INBOX_NOTIFICATIONS.display_name, true),
             ]
         );
+    }
+
+    /// Whether `path` is one of `files`: the file system of the main application's tests.
+    fn among<'a>(files: &'a [&'a str]) -> impl Fn(&Path) -> bool + 'a {
+        move |path| files.iter().any(|file| Path::new(file) == path)
+    }
+
+    #[test]
+    fn the_variable_decides_whether_the_main_app_is_installed() {
+        let everything = |_: &Path| true;
+        let nothing = |_: &Path| false;
+        for system in [System::MacOs, System::Unix, System::Other] {
+            let on = MainAppProbe { setting: Some("1"), ..MainAppProbe::default() };
+            let off = MainAppProbe { setting: Some("0"), ..MainAppProbe::default() };
+            assert!(main_app_found(system, &on, nothing), "{system:?}");
+            assert!(!main_app_found(system, &off, everything), "{system:?}");
+            // Any other value is ignored: the system decides.
+            let other = MainAppProbe { setting: Some("yes"), ..MainAppProbe::default() };
+            assert_eq!(main_app_found(system, &other, nothing), system == System::Other, "{system:?}");
+        }
+    }
+
+    #[test]
+    fn on_macos_the_main_app_is_its_bundle() {
+        let home = Path::new("/Users/sam");
+        let probe = MainAppProbe { home: Some(home), ..MainAppProbe::default() };
+        let system = among(&["/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace"]);
+        assert!(main_app_found(System::MacOs, &probe, system));
+        let user = among(&["/Users/sam/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace"]);
+        assert!(main_app_found(System::MacOs, &probe, user));
+        // Only an app's bundle is no main application.
+        let calendar = among(&["/Applications/Torro Calendar.app/Contents/MacOS/torrocalendar"]);
+        assert!(!main_app_found(System::MacOs, &probe, calendar));
+        // A launcher entry counts only on Linux.
+        let entry = among(&["/usr/share/applications/torro-workplace.desktop"]);
+        assert!(!main_app_found(System::MacOs, &probe, entry));
+    }
+
+    #[test]
+    fn on_linux_the_main_app_is_its_launcher_entry() {
+        let home = Path::new("/home/sam");
+        let probe = MainAppProbe { home: Some(home), ..MainAppProbe::default() };
+        // Unset folders: `~/.local/share`, `/usr/local/share`, `/usr/share`.
+        for file in [
+            "/home/sam/.local/share/applications/torro-workplace.desktop",
+            "/usr/local/share/applications/torro-workplace.desktop",
+            "/usr/share/applications/torro-workplace.desktop",
+        ] {
+            assert!(main_app_found(System::Unix, &probe, among(&[file])), "{file}");
+        }
+        assert!(!main_app_found(System::Unix, &probe, among(&["/usr/share/applications/torro-calendar.desktop"])));
+        // Given folders replace the defaults; empty ones count as unset.
+        let given = MainAppProbe {
+            home: Some(home),
+            data_home: Some(std::ffi::OsStr::new("/data")),
+            data_dirs: Some(std::ffi::OsStr::new("/opt/a::/opt/b")),
+            ..MainAppProbe::default()
+        };
+        for file in ["/data/applications/torro-workplace.desktop", "/opt/b/applications/torro-workplace.desktop"] {
+            assert!(main_app_found(System::Unix, &given, among(&[file])), "{file}");
+        }
+        for file in [
+            "/home/sam/.local/share/applications/torro-workplace.desktop",
+            "/usr/share/applications/torro-workplace.desktop",
+        ] {
+            assert!(!main_app_found(System::Unix, &given, among(&[file])), "{file}");
+        }
+        let empty = MainAppProbe {
+            home: Some(home),
+            data_home: Some(std::ffi::OsStr::new("")),
+            data_dirs: Some(std::ffi::OsStr::new("")),
+            ..MainAppProbe::default()
+        };
+        let file = "/home/sam/.local/share/applications/torro-workplace.desktop";
+        assert!(main_app_found(System::Unix, &empty, among(&[file])));
+        assert!(main_app_found(System::Unix, &empty, among(&["/usr/share/applications/torro-workplace.desktop"])));
+    }
+
+    #[test]
+    fn elsewhere_the_main_app_counts_as_installed() {
+        assert!(main_app_found(System::Other, &MainAppProbe::default(), |_| false));
     }
 }

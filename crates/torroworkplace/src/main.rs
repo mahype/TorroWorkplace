@@ -2,7 +2,8 @@
 //!
 //! - `daemon`: the background service with the tray icon. Owns the window manager
 //!   connection and the workspace templates, and the socket clients talk to; later also
-//!   accounts, sync and the app registry. `--headless` runs it without a tray icon.
+//!   accounts, sync and the app registry. `--headless` runs it without a tray icon, and so does a
+//!   system without the main application (issue #408, [`daemon_headless`]).
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts; `notify`: a notice to the inbox.
 //! - `hook claude-code|codex|gemini`: run by the hooks of coding agents; reports waiting and
 //!   finished sessions to the inbox, silently and always with exit code 0 (see `hook`).
@@ -74,7 +75,10 @@ fn main() -> ExitCode {
         attach_console();
     }
     match command.as_deref() {
-        Some("daemon") => daemon::run(std::env::args().any(|arg| arg == "--headless")),
+        Some("daemon") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            daemon::run(daemon_headless(&args, apps::main_app_installed))
+        }
         None | Some("ui") => {
             // Refuse bad parameters before anything starts (the core, a window).
             let launch = match ui::Launch::parse(&std::env::args().skip(2).collect::<Vec<_>>()) {
@@ -115,6 +119,13 @@ fn main() -> ExitCode {
 /// `status`, `ctl`, `mcp`, `--version` and unknown commands (for their error message).
 fn needs_console(command: Option<&str>) -> bool {
     !matches!(command, None | Some("ui"))
+}
+
+/// Whether `daemon` runs without a tray icon and setup: with `--headless`, or when the main application
+/// is not installed (issue #408, decision 1 in `docs/einzelne-apps.md`), whoever started the service: an
+/// app, an MCP server, the login or a terminal. `main_app` is asked only without `--headless`.
+fn daemon_headless(args: &[String], main_app: impl FnOnce() -> bool) -> bool {
+    args.iter().any(|arg| arg == "--headless") || !main_app()
 }
 
 /// Windows: makes `println!`/`eprintln!` reach the console of the shell that started us.
@@ -169,5 +180,14 @@ mod tests {
         }
         assert!(!needs_console(None));
         assert!(!needs_console(Some("ui")));
+    }
+
+    #[test]
+    fn the_service_is_silent_without_the_main_app() {
+        let headless = ["--headless".to_string()];
+        assert!(!daemon_headless(&[], || true), "with the main app as before");
+        assert!(daemon_headless(&[], || false), "without it no tray, no setup");
+        assert!(daemon_headless(&headless, || true));
+        assert!(daemon_headless(&headless, || panic!("not asked with --headless")));
     }
 }
