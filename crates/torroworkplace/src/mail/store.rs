@@ -1669,13 +1669,17 @@ impl MailStore {
     }
 
     /// What came in from `since` on for `mail.overview` (issue #409), newest first: every folder
-    /// but Sent and Drafts, so archived mail counts as well and one's own does not. A sender or
+    /// but Sent and Drafts, so archived mail counts as well and one's own does not – nor a copy of
+    /// it elsewhere with the same Message-ID (Gmail's "All Mail" holds what one sent). A sender or
     /// category this version cannot read counts as none: the overview must not fail on one message.
     pub fn overview_rows(&self, since: DateTime<Utc>) -> Result<Vec<CameIn>, MailStoreError> {
         let sql = "SELECT m.id, m.date, m.from_json, m.flags, m.category, m.rfc_message_id,
                 coalesce(f.role = 'trash', 0)
             FROM messages m JOIN folders f ON f.id = m.folder_id
             WHERE m.date >= ?1 AND coalesce(f.role, '') NOT IN ('sent', 'drafts')
+                AND (m.rfc_message_id IS NULL OR m.rfc_message_id NOT IN (
+                    SELECT o.rfc_message_id FROM messages o JOIN folders g ON g.id = o.folder_id
+                    WHERE g.role IN ('sent', 'drafts') AND o.rfc_message_id IS NOT NULL))
             ORDER BY m.date DESC, m.seq DESC";
         let mut statement = self.db.prepare(sql)?;
         let rows = statement.query_map([since.timestamp()], |row| {
@@ -3342,8 +3346,8 @@ mod tests {
         assert_eq!(store.summary(&bill).expect("summary").expect("there").category, None, "said anew after the move");
     }
 
-    /// Issue #409: the overview reads every folder but Sent and Drafts from `since` on, says what
-    /// lies in the trash, and reads a category it does not know as none; the inbox rows are the
+    /// Issue #409: the overview reads every folder but Sent and Drafts – nor copies of their mail
+    /// elsewhere – from `since` on, says what lies in the trash, and reads a category it does not know as none; the inbox rows are the
     /// inbox folder's alone, and none without one.
     #[test]
     fn the_overview_reads_every_folder_but_sent_and_drafts() {
@@ -3364,6 +3368,8 @@ mod tests {
         let thrown = add(&store, &trash, &message(6, "Thrown away"));
         add(&store, &sent, &message(7, "My answer"));
         add(&store, &drafts, &message(8, "Not yet sent"));
+        // Gmail's "All Mail" (role archive) holds a copy of what one sent: it is not mail that came in.
+        add(&store, &archive, &message(7, "My answer"));
         store.set_category(&read, Some(MailCategory::by_rule(Category::Newsletter))).expect("kept");
         store.db.execute("UPDATE messages SET category = 'from_the_future' WHERE id = ?1", [&filed]).expect("unknown");
 
