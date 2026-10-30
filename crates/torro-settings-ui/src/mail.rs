@@ -4541,7 +4541,12 @@ pub mod categorization {
                 let none = iced::widget::row![lines.width(iced::Fill), arrow()]
                     .spacing(torro_gui::theme::space::l())
                     .align_y(iced::Alignment::Center);
-                let none = iced::widget::container(none).width(iced::Fill).padding(torro_gui::theme::space::l());
+                // As high as a row with a detail line while the hint fits on one line, taller when it wraps.
+                let tall = torro_gui::theme::size::header() + torro_gui::theme::space::m();
+                let air = (tall - typo::line_height(typo::body()) - typo::line_height(typo::meta())) / 2.0;
+                let none = iced::widget::container(none)
+                    .width(iced::Fill)
+                    .padding([air.max(0.0), torro_gui::theme::space::l()]);
                 rows.push(pressable(none.into(), Some(Message::ManageModels)));
             } else {
                 rows.push(heading(tr("Decision models (fast)")));
