@@ -1454,7 +1454,7 @@ pub mod accounts {
             page = page.push(now_block(status, run, now));
         }
         if let Some(last) = &status.last_run {
-            page = page.push(last_run_block(status, last, now));
+            page = page.push(last_run_block(last, now));
         }
         if !status.folders.is_empty() {
             // Narrower than a form the five columns would run into each other: then only the
@@ -1570,8 +1570,8 @@ pub mod accounts {
 
     /// The block "Last run": how it ended, when and how long it took, and a pill that says whether
     /// it succeeded.
-    fn last_run_block<'a>(status: &MailSyncStatus, last: &MailSyncLastRun, now: DateTime<Utc>) -> Element<'a, Message> {
-        let lines = last_run_lines(status, last, now);
+    fn last_run_block<'a>(last: &MailSyncLastRun, now: DateTime<Utc>) -> Element<'a, Message> {
+        let lines = last_run_lines(last, now);
         let pill = if lines.ok {
             widgets::status_pill(Status::Ok, tr("Complete").to_string())
         } else {
@@ -1590,12 +1590,11 @@ pub mod accounts {
         ok: bool,
     }
 
-    fn last_run_lines(status: &MailSyncStatus, last: &MailSyncLastRun, now: DateTime<Utc>) -> LastRunLines {
+    fn last_run_lines(last: &MailSyncLastRun, now: DateTime<Utc>) -> LastRunLines {
         let took = (last.finished - last.started).num_milliseconds().max(0) as u64;
         let total = last.folder_count.to_string();
-        // The folder it stopped at is the one in the state "Failed": counting the synced ones would
-        // be off by every folder that was interrupted on the way.
-        let failed_at = status.folders.iter().position(|folder| folder.state == MailFolderSyncState::Failed);
+        // Where it stopped, as the core noted it at the run's end: the folders' states may belong to
+        // a newer run or an inbox sync by now.
         let problem = last.problem.as_deref();
         let result = if last.ok {
             trf("Complete, {n} of {total} folders", &[("n", &last.folders_done.to_string()), ("total", &total)])
@@ -1604,8 +1603,8 @@ pub mod accounts {
                 Some(problem) => trf("Failed while listing folders: {problem}", &[("problem", &problem)]),
                 None => tr("Failed while listing folders").to_string(),
             }
-        } else if let Some(index) = failed_at {
-            let n = (index + 1).to_string();
+        } else if let Some(n) = last.failed_at {
+            let n = n.to_string();
             match problem {
                 Some(problem) => trf(
                     "Failed at folder {n} of {total}: {problem}",
@@ -2615,6 +2614,7 @@ pub mod accounts {
                     problem: (!ok).then(|| "Connection lost".to_string()),
                     folders_done: if ok { 4 } else { 2 },
                     folder_count: 4,
+                    failed_at: (!ok).then_some(3),
                     listing_ms: 300,
                     finishing_ms: 0,
                 }),
@@ -2785,13 +2785,13 @@ pub mod accounts {
         fn the_last_run_says_how_it_ended() {
             let now = Utc::now();
             let complete = sync_status(false, true);
-            let lines = last_run_lines(&complete, complete.last_run.as_ref().expect("a last run"), now);
+            let lines = last_run_lines(complete.last_run.as_ref().expect("a last run"), now);
             let started = now - chrono::Duration::seconds(134);
             assert_eq!(lines.when, format!("{} · {}", format_moment(started, now), format_duration(134_000)));
             assert_eq!(lines.result, trf("Complete, {n} of {total} folders", &[("n", &"4"), ("total", &"4")]));
             assert!(lines.ok);
             let failed = sync_status(false, false);
-            let lines = last_run_lines(&failed, failed.last_run.as_ref().expect("a last run"), now);
+            let lines = last_run_lines(failed.last_run.as_ref().expect("a last run"), now);
             let why = trf(
                 "Failed at folder {n} of {total}: {problem}",
                 &[("n", &"3"), ("total", &"4"), ("problem", &"Connection lost")],
@@ -2800,32 +2800,27 @@ pub mod accounts {
             assert!(!lines.ok);
         }
 
-        /// Issue #422: the folder a run failed at is the one in the state "Failed", not the one after
-        /// the synced ones (an interrupted folder on the way does not count as synced); without a
-        /// failed folder the run failed at its end.
+        /// Issue #422: the folder a run failed at is the one the core noted at the run's end, also
+        /// while a newer run has set every folder waiting; without one the run failed at its end.
         #[test]
         fn a_failed_run_names_the_folder_that_failed() {
             let now = Utc::now();
-            let mut status = sync_status(false, false);
-            status.folders[1].state = MailFolderSyncState::Interrupted;
-            if let Some(last) = status.last_run.as_mut() {
-                last.folders_done = 1;
-            }
+            let status = sync_status(true, false);
             let last = status.last_run.clone().expect("a last run");
             let at = trf(
                 "Failed at folder {n} of {total}: {problem}",
                 &[("n", &"3"), ("total", &"4"), ("problem", &"Connection lost")],
             );
-            assert_eq!(last_run_lines(&status, &last, now).result, at, "not folder 2");
+            assert_eq!(last_run_lines(&last, now).result, at, "not from the folders of the run under way");
 
-            status.folders[2].state = MailFolderSyncState::Synced;
+            let mut end = last.clone();
+            end.failed_at = None;
             let finishing = trf("Failed while finishing: {problem}", &[("problem", &"Connection lost")]);
-            assert_eq!(last_run_lines(&status, &last, now).result, finishing);
-            let mut quiet = last.clone();
-            quiet.problem = None;
-            assert_eq!(last_run_lines(&status, &quiet, now).result, tr("Failed while finishing"));
-            quiet.folder_count = 0;
-            assert_eq!(last_run_lines(&status, &quiet, now).result, tr("Failed while listing folders"));
+            assert_eq!(last_run_lines(&end, now).result, finishing);
+            end.problem = None;
+            assert_eq!(last_run_lines(&end, now).result, tr("Failed while finishing"));
+            end.folder_count = 0;
+            assert_eq!(last_run_lines(&end, now).result, tr("Failed while listing folders"));
         }
 
         /// Issue #422: the table has a row per folder and a total; a count the server has not told

@@ -2597,6 +2597,7 @@ mod tests {
         let last = status.last_run.clone().expect("a last run");
         assert!(!last.ok && last.problem.is_some(), "{last:?}");
         assert_eq!(last.folders_done, u32::try_from(at).expect("few folders"), "the folders before it");
+        assert_eq!(last.failed_at, u32::try_from(at + 1).ok(), "the refused folder, counted from 1");
         assert_eq!(record(&status, "INBOX").state, MailFolderSyncState::UpToDate);
         assert_eq!(record(&status, &refused).state, MailFolderSyncState::Failed);
         for name in &order[at + 1..] {

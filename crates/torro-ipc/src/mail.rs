@@ -596,6 +596,11 @@ pub struct MailSyncLastRun {
     pub folders_done: u32,
     /// How many folders the run listed; 0 when it ended before.
     pub folder_count: u32,
+    /// The folder (counted from 1, of `folder_count`) the run was at when it ended without being
+    /// ok: the one that failed, or the one it was stopped in. `None` when it ended ok, while
+    /// listing the folders or while finishing.
+    #[serde(default)]
+    pub failed_at: Option<u32>,
     /// How long listing the folders took.
     pub listing_ms: u64,
     /// How long the clean-up and the quota at the end took.

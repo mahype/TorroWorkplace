@@ -302,6 +302,7 @@ impl SyncProgress {
             state.folders.retain(|record| record.folder != current.folder);
             if let Some(run) = state.run.as_mut() {
                 run.shown.folder_count = run.shown.folder_count.saturating_sub(1);
+                run.shown.folder_index = run.shown.folder_index.min(run.shown.folder_count);
                 run.gone += 1;
             }
         });
@@ -312,6 +313,8 @@ impl SyncProgress {
         self.change(|state| {
             if let Some(run) = state.run.as_mut() {
                 run.finishing = Some(Instant::now());
+                // Past the last folder, also when the last one vanished: never "3 of 2".
+                run.shown.folder_index = run.shown.folder_count;
                 run.shown.phase = MailSyncPhase::Finishing;
                 run.shown.folder = None;
                 run.shown.done = 0;
@@ -335,6 +338,7 @@ impl SyncProgress {
     fn end(&self, problem: Option<String>) {
         self.change(|state| {
             let Some(run) = state.run.take() else { return };
+            let failed_at = failed_at(&run, problem.is_some());
             // A folder still running was cut off; those the run did not reach wait for the next.
             if state.current.take().is_some() {
                 for record in &mut state.folders {
@@ -356,6 +360,7 @@ impl SyncProgress {
                 problem,
                 folders_done: run.folders_done,
                 folder_count: run.shown.folder_count,
+                failed_at,
                 listing_ms: run.listing_ms.unwrap_or_else(|| millis(run.began)),
                 finishing_ms: run.finishing.map_or(0, millis),
             });
@@ -448,6 +453,12 @@ impl Drop for RunGuard<'_> {
     }
 }
 
+/// The folder a run ending with `problem` was at: none while it listed or finished.
+fn failed_at(run: &Run, problem: bool) -> Option<u32> {
+    let at = run.shown.folder_index;
+    (problem && run.finishing.is_none() && at > 0).then_some(at)
+}
+
 fn millis(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -507,6 +518,7 @@ mod tests {
         let last = status.last_run.expect("last run");
         assert!(!last.ok);
         assert_eq!(last.problem.as_deref(), Some(tr("The sync was stopped before it ended.")));
+        assert_eq!(last.failed_at, Some(1), "stopped in the first folder");
         assert_eq!(status.folders[0].state, MailFolderSyncState::Interrupted);
         assert_eq!(status.folders[1].state, MailFolderSyncState::NotReached);
     }
@@ -553,6 +565,9 @@ mod tests {
         let shown = progress.status("mail:a").running.expect("running");
         assert_eq!((shown.folder_index, shown.folder_count), (2, 2));
         last.end(MailFolderSyncState::Synced);
+        progress.finishing();
+        let shown = progress.status("mail:a").running.expect("running");
+        assert_eq!((shown.folder_index, shown.folder_count), (2, 2));
         run.end(Ok(()));
         let status = progress.status("mail:a");
         assert_eq!(status.folders.len(), 2, "the vanished folder has no record");
@@ -594,5 +609,21 @@ mod tests {
         drop(old_run);
         assert!(after.status("mail:a").running.is_some(), "the old mailbox's run ends only its own");
         new_run.end(Ok(()));
+    }
+
+    /// The last folder vanishing never shows "3 of 2", and a run failing at its end names no folder.
+    #[test]
+    fn a_vanished_last_folder_and_a_failed_end_keep_the_count_right() {
+        let progress = progress();
+        let run = progress.begin(MailSyncTrigger::Manual);
+        listed(&progress);
+        progress.folder_begins(Some(0), "f:1").end(MailFolderSyncState::Synced);
+        progress.folder_begins(Some(1), "f:2").gone();
+        let shown = progress.status("mail:a").running.expect("running");
+        assert!(shown.folder_index <= shown.folder_count, "{shown:?}");
+        progress.finishing();
+        run.end(Err(&MailError::NotFound));
+        let last = progress.status("mail:a").last_run.expect("a last run");
+        assert_eq!((last.ok, last.failed_at, last.folder_count), (false, None, 1));
     }
 }

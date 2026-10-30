@@ -530,6 +530,7 @@ impl Demo {
                 problem: Some(tr("Connection lost").into()),
                 folders_done: 2,
                 folder_count: 4,
+                failed_at: Some(3),
                 listing_ms: 900,
                 finishing_ms: 0,
             }),
