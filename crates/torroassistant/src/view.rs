@@ -790,7 +790,8 @@ impl App {
                 row![typo::text(typo::meta(), summary).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
                     .spacing(space::s())
                     .align_y(Alignment::Center);
-            if let Some(app) = area.and_then(chat::app_of).filter(|_| error.is_none()) {
+            let open_in = |area| chat::open_in(area, torro_gui::installed::is_installed);
+            if let Some(app) = area.and_then(open_in).filter(|_| error.is_none()) {
                 let label = trf("Open {app}", &[("app", &app_short_name(app))]);
                 let open_app = Message::OpenApp(app.binary.to_owned());
                 result = result.push(widgets::text_button(

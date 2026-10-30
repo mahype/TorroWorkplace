@@ -158,6 +158,9 @@ pub struct Detail {
     hide_done: bool,
     /// The sections of the main column that are folded away.
     folded: HashSet<Section>,
+    /// The inbox's mail window is installed, so "Open mail" has somewhere to go (issue #408); without
+    /// it "From" shows the mail and no button.
+    pub mail_app: bool,
 }
 
 /// The property editors and the menu that open as a floating layer.
@@ -424,6 +427,7 @@ impl Detail {
             new_subtask: String::new(),
             hide_done: false,
             folded: HashSet::new(),
+            mail_app: torro_gui::installed::is_installed(torro_core::AppId::INBOX_MAIL),
         }
     }
 
@@ -520,7 +524,8 @@ impl Detail {
             }
             Message::OpenMail => {
                 self.close_editor();
-                let Some(link) = self.mail_link() else { return Action::None };
+                // A jump into a mail window that is not installed is no way at all (issue #408).
+                let Some(link) = self.mail_link().filter(|_| self.mail_app) else { return Action::None };
                 let message = link.mail.as_ref().map(|mail| mail.message.clone());
                 return Action::OpenMail { target: link.id.clone(), message };
             }
@@ -1106,7 +1111,10 @@ impl Detail {
         let address = account.strip_prefix(torro_pim::model::MAIL_PREFIX).unwrap_or(account).to_string();
         // Task E8.12: "Open mail" gives up its word before it pushes the subject away, and the meta
         // line leaves out the account, then the sender, before it is cut ([`ORIGIN_DROP`]).
-        let open = || widgets::RowAction::new(Icon::ArrowUpRight, tr("Open mail"), "", Message::OpenMail);
+        let mail_app = self.mail_app;
+        let open = move || {
+            mail_app.then(|| widgets::RowAction::new(Icon::ArrowUpRight, tr("Open mail"), "", Message::OpenMail))
+        };
         let card: Element<'_, Message> = match link.mail.as_deref() {
             Some(mail) => {
                 let sender = mail.sender.as_deref().map(one_line).unwrap_or_else(|| tr("Unknown sender").to_string());
@@ -2891,6 +2899,11 @@ mod tests {
         let mut bare = detail_of(&from_mail(false));
         assert!(bare.origin_section().is_some());
         assert!(matches!(bare.update(Message::OpenMail), Action::OpenMail { message: None, .. }));
+        // Issue #408: without the mail window the card stays and "Open mail" goes.
+        let mut alone = detail_of(&from_mail(true));
+        alone.mail_app = false;
+        assert!(alone.origin_section().is_some());
+        assert_eq!(alone.update(Message::OpenMail), Action::None);
         // A plain task has neither.
         let mut plain = detail_of(&todo("t2", "b"));
         assert!(plain.origin_section().is_none() && plain.activity_section().is_none());

@@ -1642,8 +1642,9 @@ fn card_line_words_min() -> f32 {
 
 /// The one line of a small card that points somewhere else (task E8.12, findings 1–3: "From" in a
 /// task, the task in a mail): `lead` (an avatar or a mark, `lead_width` wide), the `title` in
-/// `BODY_STRONG` over the `meta` line in `META`/`text_3`, and the `action` at the right. Laid out
-/// at the width it gets:
+/// `BODY_STRONG` over the `meta` line in `META`/`text_3`, and the `action` at the right – none when
+/// it would lead into an app that is not installed (issue #408): then the words take the room. Laid
+/// out at the width it gets:
 ///
 /// - the action keeps its word ([`text_button`], `secondary`) while the words keep at least half
 ///   the properties column, else it is its icon with the word as tooltip – it never pushes the
@@ -1659,17 +1660,23 @@ pub fn card_line<'a, M: Clone + 'a>(
     title: String,
     meta: Vec<String>,
     drop: Vec<usize>,
-    action: RowAction<'a, M>,
+    action: Option<RowAction<'a, M>>,
 ) -> Element<'a, M> {
     responsive(move |room| {
         let gap = space::m();
-        let (spoken, words_room) = card_line_split(room.width, lead_width, action.label.as_ref());
-        let button = if spoken {
-            let button = text_button(Some(action.icon), action.label.clone(), style::button::secondary, action.press());
-            if action.blocked.is_some() { with_tooltip(button, action.tip()) } else { button }
-        } else {
-            icon_button(action.icon, action.tip(), action.press())
+        let (spoken, words_room) = match &action {
+            Some(action) => card_line_split(room.width, lead_width, action.label.as_ref()),
+            None => (false, (room.width - lead_width - gap).max(0.0)),
         };
+        let button = action.as_ref().map(|action| {
+            if spoken {
+                let button =
+                    text_button(Some(action.icon), action.label.clone(), style::button::secondary, action.press());
+                if action.blocked.is_some() { with_tooltip(button, action.tip()) } else { button }
+            } else {
+                icon_button(action.icon, action.tip(), action.press())
+            }
+        });
         let whole = meta.iter().filter(|part| !part.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
         let fitted = meta_fit(&meta, &drop, typo::meta(), words_room);
         let words = column![
@@ -1677,7 +1684,7 @@ pub fn card_line<'a, M: Clone + 'a>(
             cut_line(typo::meta(), &fitted, whole, theme::text_3, words_room),
         ]
         .width(Fill);
-        row![lead(), words, button].spacing(gap).align_y(Alignment::Center).into()
+        row![lead(), words].push(button).spacing(gap).align_y(Alignment::Center).into()
     })
     .height(Length::Shrink)
     .into()
@@ -6802,7 +6809,9 @@ mod tests {
             let bar = vec![off.clone(), RowAction::new(Icon::Clock, "Later", "S", Msg::Go)];
             let _: Element<'_, Msg> = row_actions(blank(), bar, true, words);
         }
-        let _: Element<'_, Msg> = card_line(|| blank().into(), 28.0, "Title".into(), vec![], vec![], off);
+        let _: Element<'_, Msg> = card_line(|| blank().into(), 28.0, "Title".into(), vec![], vec![], Some(off));
+        // Issue #408: without the action (its app is not installed) the line is the words alone.
+        let _: Element<'_, Msg> = card_line(|| blank().into(), 28.0, "Title".into(), vec![], vec![], None);
     }
 
     /// Issue #168: a button that is off fades its icon with its word and frame. The icon's tint

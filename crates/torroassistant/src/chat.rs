@@ -383,6 +383,18 @@ pub fn area_name(area: Area) -> &'static str {
     }
 }
 
+/// The app "Open …" under an unfolded tool line of `area` leads to ([`app_of`]), while it is
+/// `installed` (issue #408); `None` without it, and the button is left out.
+pub fn open_in(area: Area, installed: impl Fn(AppId) -> bool) -> Option<AppId> {
+    app_of(area).filter(|app| installed(*app))
+}
+
+/// Whether a file card offers "Send by mail" ([`mail_file_request`]): the new mail opens in the
+/// Notification Hub's compose window, so only while it is `installed` (issue #408).
+pub fn can_mail_files(installed: impl Fn(AppId) -> bool) -> bool {
+    installed(AppId::INBOX)
+}
+
 /// The app that shows what a tool of `area` looked at or changed, for "Open …" under an unfolded
 /// tool line: the calendar, the tasks app (GitHub filter lists are task lists there), the inbox
 /// (mail too). `None` for the other areas.
@@ -961,6 +973,12 @@ mod tests {
         assert_eq!(area_of("mail.search_messages"), Some(Area::Mail));
         assert_eq!(area_of("find_tools"), None);
         assert_eq!(app_of(Area::Mail), Some(AppId::INBOX));
+        // Issue #408: no "Open …" into an app that is not installed, and no "Send by mail" without
+        // the Notification Hub.
+        assert_eq!(open_in(Area::Mail, |_| true), Some(AppId::INBOX));
+        assert_eq!(open_in(Area::Mail, |app| app != AppId::INBOX), None);
+        assert_eq!(open_in(Area::Calendar, |app| app == AppId::CALENDAR), Some(AppId::CALENDAR));
+        assert!(can_mail_files(|_| true) && !can_mail_files(|app| app != AppId::INBOX));
     }
 
     /// Issue #133: a refused tool says why; "Change access" only where the rights lift it.

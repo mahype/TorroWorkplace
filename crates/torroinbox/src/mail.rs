@@ -76,6 +76,7 @@ use iced::keyboard;
 use iced::widget::text::Wrapping;
 use iced::widget::{center, column, container, mouse_area, responsive, row, rule, scrollable, svg, text_editor};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
+use torro_core::AppId;
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{AttachmentClick, MailAppearance, MailFormat};
 use torro_core::shortcuts::System;
@@ -3630,9 +3631,16 @@ pub fn task_card<'a>(task: &ItemTask, now: DateTime<Utc>) -> Element<'a, Message
     };
     let meta = task_meta_parts(task, now);
     let drop = task_meta_drop(meta.len());
-    let open = widgets::RowAction::new(Icon::ArrowUpRight, tr("Open task"), "", Message::OpenTask(task.uid.clone()));
+    let open = open_task(task, torro_gui::installed::is_installed);
     let line = widgets::card_line(mark, icon::SIZE, list::one_line(&task.title), meta, drop, open);
     widgets::card(vec![line], false, None)
+}
+
+/// "Open task" on a task's card, while the tasks app is `installed` (issue #408): without it the card
+/// shows the task and leads nowhere.
+fn open_task<'a>(task: &ItemTask, installed: impl Fn(AppId) -> bool) -> Option<widgets::RowAction<'a, Message>> {
+    installed(AppId::TASKS)
+        .then(|| widgets::RowAction::new(Icon::ArrowUpRight, tr("Open task"), "", Message::OpenTask(task.uid.clone())))
 }
 
 /// The open task's ring: the tasks app's check before it is ticked, as large as an icon.
@@ -5878,6 +5886,9 @@ mod tests {
             format!("{} · {} · {}", tr("Task"), trf("due {day}", &[("day", &day)]), tr("done"))
         );
         let _ = task_card(&task(false), now());
+        // Issue #408: "Open task" only while the tasks app is installed.
+        assert!(open_task(&task(false), |_| true).is_some());
+        assert!(open_task(&task(false), |app| app != AppId::TASKS).is_none());
     }
 
     /// Task E8.12 (finding 2): a narrow task card leaves out "Task", then the state, before it cuts
