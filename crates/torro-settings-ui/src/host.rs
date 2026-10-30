@@ -43,6 +43,15 @@
 //! shell::shell(class, sidebar, frame.header, frame.body, None).overlay(frame.overlay).into()
 //! ```
 //!
+//! # The suite's pages (issue #408)
+//!
+//! While the main application is not installed the app says so when it makes the host
+//! ([`Host::with_memory`]): the host then adds the sections Appearance and General after the app's
+//! own ([`SUITE_SECTIONS`]), in place of the two links into the control centre, and shows and runs
+//! them itself ([`crate::suite`]) – the app's page for them is not drawn. What they change goes
+//! through the app's [`Backend`] like everything else; the zoom, a design, a font or a colour scheme
+//! is one `settings.set_setting`, which the app's windows follow as they follow the control centre.
+//!
 //! Escape: the app hands it to the open section first (a dialog or a page below it swallows it)
 //! and only then to the host, which closes the settings – like the control centre routes it.
 //!
@@ -74,7 +83,7 @@ use torro_gui::{shell, style, typo};
 use torro_ipc::{Request, Response};
 
 use crate::parts::notice;
-use crate::{Action, Backend, Data, Memory, background};
+use crate::{Action, Backend, Data, Memory, background, suite};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,10 +98,18 @@ const LINE: f32 = 1.0;
 
 /// The two links at the foot of the section list, as the control centre has them: its own section
 /// word (`--section`), its icon there and its name, so the same thing looks the same in both
-/// windows. Appearance (colour, design pack, zoom) and General are the whole suite's, so no app
-/// has a page of its own for them.
+/// windows. Appearance (colour, design pack, zoom) and General are the whole suite's, so an app
+/// has a page of its own for them only while the main application is not installed
+/// ([`SUITE_SECTIONS`]).
 const LINKS: [(&str, Icon, &str); 2] =
     [("appearance", Icon::Sun, "Appearance"), ("general", Icon::Settings, "All settings")];
+
+/// The suite's pages as sections of an app without the main application (issue #408), after its own:
+/// the same words, icons and names as the two [`LINKS`] they stand in for.
+pub const SUITE_SECTIONS: [Section; 2] = [
+    Section { id: suite::APPEARANCE, icon: Icon::Sun, label: "Appearance" },
+    Section { id: suite::GENERAL, icon: Icon::Settings, label: "General" },
+];
 
 /// One section of an app's settings: what the list, the menu and the path show, and the word
 /// `--settings` takes.
@@ -224,6 +241,10 @@ pub enum Message {
     Link(usize),
     /// A load came back.
     Loaded(Box<Data>),
+    /// What a widget of the suite's pages reported ([`SUITE_SECTIONS`]).
+    Suite(suite::Message),
+    /// The designs, fonts and colour schemes for the suite's page Appearance came back.
+    Looks(Box<suite::Lists>),
     /// A send came back: the fresh data, or what went wrong.
     ///
     /// `changed` says whether it really carried a change. An [`Action::Send`] with no requests is
@@ -315,6 +336,9 @@ pub struct Host {
     /// How many [`Message::Loaded`] and [`Message::Sent`] the host handed back and has not seen
     /// again: their data is a copy of its own, which may be older by now than what it holds.
     echoes: usize,
+    /// The state of the suite's pages while the host shows them ([`SUITE_SECTIONS`]); `None` with the
+    /// main application, where the two links lead to it instead.
+    suite: Option<suite::State>,
 }
 
 impl Host {
@@ -324,7 +348,7 @@ impl Host {
     ///
     /// `sections` must not be empty; an app always has at least one section.
     pub fn new(backend: Arc<dyn Backend>, sections: Vec<Section>, wanted: Vec<Request>) -> (Host, Task<Message>) {
-        Host::with_memory(backend, sections, wanted, Memory::default())
+        Host::with_memory(backend, sections, wanted, Memory::default(), false)
     }
 
     /// [`Host::new`], starting from what the app's `memory` kept of the last settings it showed
@@ -332,12 +356,23 @@ impl Host {
     /// fresh answers are in – when that state holds every part the page waits for, else the page
     /// waits for those. When the host goes, it leaves its data there for the next one, with the
     /// requests that answered into it, once at least one did ([`Drop`]).
+    ///
+    /// `suite`: the suite's pages are the app's too, because the main application is not installed
+    /// (issue #408): the host adds [`SUITE_SECTIONS`] and the settings they show to `sections` and
+    /// `wanted`, and lists the designs for Appearance.
     pub fn with_memory(
         backend: Arc<dyn Backend>,
-        sections: Vec<Section>,
-        wanted: Vec<Request>,
+        mut sections: Vec<Section>,
+        mut wanted: Vec<Request>,
         memory: Memory,
+        suite: bool,
     ) -> (Host, Task<Message>) {
+        if suite {
+            sections.extend(SUITE_SECTIONS);
+            if !wanted.contains(&Request::Settings) {
+                wanted.push(Request::Settings);
+            }
+        }
         let kept = memory.recall();
         // At once only when the last state holds every part the page waits for: a part whose
         // request failed back then would stand with its empty default as if it were known.
@@ -367,15 +402,76 @@ impl Host {
             announced: false,
             change: None,
             echoes: 0,
+            suite: suite.then(suite::State::default),
         };
         let load = host.reload();
+        let load = match suite {
+            true => Task::batch([load, host.list_looks()]),
+            false => load,
+        };
         (host, load)
+    }
+
+    /// Lists the designs, fonts and colour schemes for the suite's page Appearance ([`suite::list`]).
+    fn list_looks(&self) -> Task<Message> {
+        Task::perform(suite::list(Arc::clone(&self.backend)), |lists| Message::Looks(Box::new(lists)))
+    }
+
+    /// Whether the section on screen is one of the suite's pages the host shows itself.
+    fn on_suite_page(&self) -> bool {
+        self.suite.is_some() && SUITE_SECTIONS.iter().any(|section| section.id == self.current().id)
+    }
+
+    /// The one request a suite page's `action` sends, if it sends one: a setting or `system.quit`
+    /// as given, the zoom as the setting one step on, a design, font or colour scheme as
+    /// [`suite::choose_request`]. Never anything else, and never a client's key or rights.
+    fn suite_request(&self, action: &suite::Action) -> Option<Request> {
+        match action {
+            suite::Action::Send(request) => Some(request.clone()),
+            suite::Action::Zoom(step) => {
+                let value = serde_json::to_value(step.apply(self.data.settings.zoom)).unwrap_or_default();
+                Some(Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value })
+            }
+            suite::Action::Choose(part, id) => Some(suite::choose_request(*part, id)),
+            suite::Action::None | suite::Action::Focus(_) | suite::Action::ListLooks | suite::Action::OpenFolder(_) => {
+                None
+            }
+        }
+    }
+
+    /// Carries out what a suite page returned: each change is one request through the backend
+    /// ([`Host::suite_request`]); a folder opens here, never in the demo.
+    fn suite_act<A>(&mut self, action: suite::Action) -> Outcome<A> {
+        if let Some(request) = self.suite_request(&action) {
+            return self.act(Action::send(request));
+        }
+        match action {
+            suite::Action::Focus(field) => self.act(Action::Focus(field)),
+            suite::Action::ListLooks => Outcome::Work(self.list_looks()),
+            suite::Action::OpenFolder(part) => {
+                if !self.backend.demo()
+                    && let Err(problem) = suite::reveal_folder(part)
+                {
+                    self.notice = Some(problem);
+                }
+                Outcome::None
+            }
+            suite::Action::None | suite::Action::Send(_) | suite::Action::Zoom(_) | suite::Action::Choose(..) => {
+                Outcome::None
+            }
+        }
     }
 
     /// Shows the section with this id, as `--settings <abschnitt>` asks for it; `false` and
     /// nothing changed when no section has that id (the app then reports the ids it knows).
     pub fn open(&mut self, id: &str) -> bool {
         let Some(at) = self.sections.iter().position(|section| section.id == id) else { return false };
+        // Leaving the suite's page closes its dropdowns and its question.
+        if at != self.current
+            && let Some(state) = self.suite.as_mut()
+        {
+            suite::leave(state);
+        }
         self.current = at;
         self.list = false;
         self.menu = false;
@@ -551,7 +647,22 @@ impl Host {
                 self.menu = false;
                 Outcome::None
             }
-            Message::Back => Outcome::Close,
+            // Escape on a suite page closes its question or dropdown first.
+            Message::Back => match self.suite.as_ref().filter(|_| self.on_suite_page()).and_then(suite::escape) {
+                Some(close) => self.update(Message::Suite(close)),
+                None => Outcome::Close,
+            },
+            Message::Suite(message) => {
+                let Some(state) = self.suite.as_mut() else { return Outcome::None };
+                let action = suite::update(state, message, &self.data.settings);
+                self.suite_act(action)
+            }
+            Message::Looks(lists) => {
+                if let Some(state) = self.suite.as_mut() {
+                    suite::listed(state, *lists);
+                }
+                Outcome::None
+            }
             Message::Link(at) => match LINKS.get(at) {
                 Some((section, ..)) => Outcome::ControlCentre((*section).to_string()),
                 None => Outcome::None,
@@ -562,6 +673,7 @@ impl Host {
                     self.data = *data;
                 }
                 self.loaded = true;
+                self.suite_loaded();
                 Outcome::None
             }
             Message::Sent { changed, result } => {
@@ -571,6 +683,7 @@ impl Host {
                         if !self.echoed() {
                             self.data = data;
                         }
+                        self.suite_loaded();
                         // The sections are fresh; the app's own data follows, but only after a
                         // real change ([`Outcome::Changed`], [`Message::Sent`]).
                         if changed { Outcome::Changed } else { Outcome::None }
@@ -598,6 +711,14 @@ impl Host {
         }
     }
 
+    /// A load is in: the suite's page Appearance names what the core switched with a design chosen
+    /// there ([`suite::loaded`]).
+    fn suite_loaded(&mut self) {
+        if let Some(state) = self.suite.as_mut() {
+            suite::loaded(state, &self.data.settings, false);
+        }
+    }
+
     /// Whether a [`Message::Loaded`] or [`Message::Sent`] that came in is one the host handed back
     /// itself ([`Host::pump`]); then its data is a copy and may be older than the host's.
     fn echoed(&mut self) -> bool {
@@ -618,6 +739,18 @@ impl Host {
         // The menu button registers where it is, the layer floats there: both in this one frame.
         let anchor = Anchor::new();
         let on_list = form == Form::Steps && self.list;
+        // The suite's pages are the host's own: the app's page for them is not drawn.
+        let page = match self.suite.as_ref().filter(|_| self.on_suite_page()) {
+            Some(state) => {
+                let settings = &self.data.settings;
+                let body = match self.current().id {
+                    suite::APPEARANCE => suite::appearance(state, settings),
+                    _ => suite::general(settings),
+                };
+                Page::new(body.map(move |message| wrap(Message::Suite(message))))
+            }
+            None => page,
+        };
         let Page { body, sub_page, actions, save_bar, max_width } = page;
         // The object open below the section, as the list and the menu show it: its name and the
         // way back up.
@@ -642,6 +775,12 @@ impl Host {
                 self.menu_card(child, wrap),
                 wrap(Message::Close),
             )
+        });
+        // A suite page's dropdown or question, when the section menu is not open over it.
+        let overlay = overlay.or_else(|| {
+            let state = self.suite.as_ref().filter(|_| self.on_suite_page() && !on_list)?;
+            let layer = suite::overlay(state, &self.data.settings)?;
+            Some(layer.map(move |message| wrap(Message::Suite(message))))
         });
         Frame { header, body, overlay }
     }
@@ -715,6 +854,10 @@ impl Host {
             widgets::sidebar_item(*icon, tr(label), Trail::Icon(Icon::ArrowUpRight), false, wrap(Message::Link(at)))
         };
         let sections = column(rows).spacing(space::xs());
+        // The suite's pages stand among the sections then: no links into the control centre.
+        if self.suite.is_some() {
+            return sections.width(Fill).into();
+        }
         let links = column(LINKS.iter().enumerate().map(link)).spacing(space::xs());
         column![
             sections,
@@ -763,6 +906,9 @@ impl Host {
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
             MenuItem::new(*icon, tr(label), wrap(Message::Link(at))).trail(Trail::Icon(Icon::ArrowUpRight))
         };
+        if self.suite.is_some() {
+            return widgets::menu(vec![MenuSection::new(entries)]);
+        }
         widgets::menu(vec![MenuSection::new(entries), MenuSection::new(LINKS.iter().enumerate().map(link).collect())])
     }
 
@@ -993,6 +1139,77 @@ mod tests {
         let all: Outcome<()> = host.update(Message::Link(1));
         assert!(matches!(all, Outcome::ControlCentre(ref section) if section == "general"));
         assert_eq!(LINKS.len(), 2, "no app has an Appearance page of its own, only these two links");
+    }
+
+    /// Issue #408: without the main application the suite's pages stand among the app's sections in
+    /// place of the two links, `--settings appearance|general` opens them, and the settings they show
+    /// are loaded; with it nothing changes.
+    #[test]
+    fn the_suite_pages_stand_in_for_the_links_without_the_main_app() {
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut alone, _) = Host::with_memory(Arc::clone(&backend), sections(), Vec::new(), Memory::default(), true);
+        let ids: Vec<&str> = alone.sections().iter().map(|section| section.id).collect();
+        assert_eq!(ids, ["calendars", "reminders", "appearance", "general"]);
+        assert!(alone.wanted.contains(&Request::Settings), "the pages show the settings");
+        assert!(alone.open("appearance") && alone.on_suite_page());
+        assert!(alone.open("general") && alone.on_suite_page());
+        assert!(alone.open("reminders") && !alone.on_suite_page());
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            for id in ["appearance", "general"] {
+                alone.open(id);
+                let _ = alone.view(class, page(), |message| message);
+            }
+        }
+
+        let (mut with_main, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), false);
+        assert_eq!(with_main.sections().len(), 2, "the app's own sections only");
+        assert!(!with_main.open("appearance") && !with_main.open("general"));
+        let link: Outcome<()> = with_main.update(Message::Link(0));
+        assert!(matches!(link, Outcome::ControlCentre(ref section) if section == "appearance"));
+    }
+
+    /// Issue #408: every action of the suite's pages sends exactly its own request through the
+    /// backend – a setting with its key, or `system.quit` after the question – and never one of
+    /// `clients.*`; the rest (focus, lists, folders) sends nothing.
+    #[test]
+    fn every_suite_action_sends_only_its_own_request() {
+        use torro_core::design::Part;
+        use torro_core::settings::Language;
+        use torro_core::theme::Appearance;
+        use torro_gui::zoom::Step;
+        use torro_ipc::SettingKey;
+
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (host, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), true);
+        let mut state = suite::State::default();
+        let settings = host.data.settings.clone();
+        let key = |request: &Request| match request {
+            Request::SetSetting { key, .. } => Some(*key),
+            _ => None,
+        };
+        let cases = [
+            (suite::Message::Language(Language::German), Some(SettingKey::Language)),
+            (suite::Message::Appearance(Appearance::Dark), Some(SettingKey::Appearance)),
+            (suite::Message::StartAtLogin(true), Some(SettingKey::StartAtLogin)),
+            (suite::Message::Zoom(Step::In), Some(SettingKey::Zoom)),
+            (suite::Message::Choose(Part::Design, "compact".into()), Some(SettingKey::Design)),
+            (suite::Message::Choose(Part::Font, "torro".into()), Some(SettingKey::Font)),
+            (suite::Message::Choose(Part::ColorScheme, "torro".into()), Some(SettingKey::ColorScheme)),
+        ];
+        for (message, expected) in cases {
+            let action = suite::update(&mut state, message.clone(), &settings);
+            let request = host.suite_request(&action).expect("a change sends a request");
+            assert_eq!(key(&request), expected, "{message:?}");
+            assert!(!request.operation().name().starts_with("clients."), "{message:?}");
+        }
+        // "Quit" asks first and sends nothing; only "Quit service" sends `system.quit`.
+        assert_eq!(host.suite_request(&suite::update(&mut state, suite::Message::Quit, &settings)), None);
+        let quit = suite::update(&mut state, suite::Message::QuitConfirmed, &settings);
+        assert_eq!(host.suite_request(&quit), Some(Request::Quit));
+        for message in [suite::Message::ToggleFonts, suite::Message::Reload, suite::Message::OpenFolder(Part::Font)] {
+            let action = suite::update(&mut state, message.clone(), &settings);
+            assert_eq!(host.suite_request(&action), None, "{message:?}");
+        }
     }
 
     /// Every size class gets its own form (design skill, section 6).
@@ -1236,20 +1453,21 @@ mod tests {
         let backend: Arc<dyn Backend> = Arc::new(Demo::new());
         let memory = Memory::default();
         let wanted = vec![Request::Settings, stats()];
-        let (mut first, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory.clone());
+        let (mut first, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory.clone(), false);
         answer_all(&mut first, &backend).await;
         let shown = first.data().clone();
         drop(first);
 
         // Closed before anything came: nothing is kept, so the next one does not stand empty.
         let untouched = Memory::default();
-        drop(Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), untouched.clone()));
+        drop(Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), untouched.clone(), false));
         assert!(untouched.recall().is_none());
 
         // The settings failed back then: kept, but no page at once with its empty defaults – it
         // waits for the settings, and the statistics that did answer stand meanwhile.
         let partly = Memory::default();
-        let (mut failed, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), partly.clone());
+        let (mut failed, _) =
+            Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), partly.clone(), false);
         while let Some((request, generation)) = failed.flight.first().cloned() {
             let result = match request {
                 Request::Settings => Err("not running".to_string()),
@@ -1259,11 +1477,11 @@ mod tests {
                 failed.update(Message::Part { generation, request: Box::new(request), result: Box::new(result) });
         }
         drop(failed);
-        let (waiting, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), partly);
+        let (waiting, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), partly, false);
         assert!(!waiting.loaded(), "the settings never answered");
         assert_eq!(waiting.data().mail_stats, shown.mail_stats);
 
-        let (again, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory);
+        let (again, _) = Host::with_memory(Arc::clone(&backend), sections(), wanted.clone(), memory, false);
         assert!(again.loaded(), "no loading state: the last state is there");
         assert_eq!(again.data().mail_stats, shown.mail_stats);
         assert_eq!(again.data().settings, shown.settings);

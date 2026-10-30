@@ -4260,6 +4260,24 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{title} · in {n} min", "{title} · in {n} Min."),
     ("{title} · now", "{title} · jetzt"),
     ("{title} · started {n} min ago", "{title} · hat vor {n} Min. begonnen"),
+    // The suite's pages in an app without the main application (#408)
+    ("Background service", "Hintergrunddienst"),
+    ("Quit service", "Dienst beenden"),
+    ("Quit the background service?", "Hintergrunddienst beenden?"),
+    (
+        "Quitting stops reminders, sync and notifications until a Torro app starts it again.",
+        "Beenden stoppt Erinnerungen, Synchronisierung und Benachrichtigungen, bis eine Torro-App ihn wieder startet.",
+    ),
+    (
+        "Reminders, sync and notifications stop until a Torro app starts it again.",
+        "Erinnerungen, Synchronisierung und Benachrichtigungen stoppen, bis eine Torro-App ihn wieder startet.",
+    ),
+    ("Runs reminders and sync.", "Hält Erinnerungen und Synchronisierung am Laufen."),
+    (
+        "Starts the background service when you log in, so reminders and sync run before you open an app.",
+        "Startet den Hintergrunddienst, wenn du dich anmeldest, damit Erinnerungen und Synchronisierung laufen, bevor du eine App öffnest.",
+    ),
+    ("The list could not be read.", "Die Liste konnte nicht gelesen werden."),
     // Settings in the windows of the apps, slim control centre (S.16-S.21, #210)
     // The second link at the foot of every section list ("Appearance ↗" is translated above).
     ("All settings", "Alle Einstellungen"),

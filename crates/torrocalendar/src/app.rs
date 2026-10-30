@@ -2120,6 +2120,8 @@ impl App {
             SETTINGS_SECTIONS.to_vec(),
             settings_wanted(),
             self.settings_memory.clone(),
+            // Without the main application the suite\'s pages are this app\'s too (issue #408).
+            !torro_gui::installed::main_app(),
         );
         if let Some(id) = section {
             host.open(id);
