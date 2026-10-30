@@ -38,7 +38,10 @@ und der Dienst hängen aber noch an der Hauptanwendung; dieses Dokument hält fe
    Der Start beim Anmelden brächte sonst doch ein Tray-Icon.
 2. **Suiteweite Einstellungen in der App nur ohne Hauptanwendung.** Fehlt sie, zeigt jede App hinter dem Zahnrad
    die Abschnitte **Appearance** (Hell/dunkel, Design, Schrift, Farbschema, Zoom) und **General** (Language,
-   Start at login, Background service mit „Quit“). Ist sie da, bleiben die Verweise „Appearance ↗“ und
+   Start at login, Background service mit „Quit background service“ und dem Knopf „Quit…“, der erst
+   nachfragt), hinter einer Linie nach den eigenen Abschnitten. Hat eine App schon einen Abschnitt „General“
+   (der Assistent), heißt der der Suite dort „All apps“ (`--settings suite-general`). `--settings appearance`
+   bzw. `general` öffnet sie direkt. Ist die Hauptanwendung da, bleiben die Verweise „Appearance ↗“ und
    „All settings ↗“ wie heute. Verworfen: die Abschnitte immer in jeder App zeigen. Eine Einstellung stünde
    sonst an zwei Orten.
 3. **Fehlt eine Partner-App, verschwinden nur Sprünge in sie.** Der App-Umschalter und jedes „Open in …“, das
@@ -83,7 +86,7 @@ Hyprland-Konfiguration. Wer so arbeitet, setzt `TORRO_MAIN_APP=1` dort, wo der D
 | Konten | Steuerzentrale › Accounts; mit #410 in der jeweiligen App | in der jeweiligen App (#410) |
 | Was nur eine App betrifft (Kalender, Listen, Erinnerungen, Quellen …) | hinter dem Zahnrad der App ([settings.md](settings.md)) | ebenso |
 | Aussehen, Sprache, Start beim Anmelden | Steuerzentrale › Appearance bzw. General | in jeder App, Zahnrad › Appearance bzw. General |
-| Hintergrunddienst beenden | Tray › Quit | in jeder App, Zahnrad › General › Background service › „Quit“ |
+| Hintergrunddienst beenden | Tray › Quit | in jeder App, Zahnrad › General › Background service › „Quit…“ |
 | API, MCP, Freigaben, Workspaces | nur Steuerzentrale | gibt es nicht ohne Hauptanwendung |
 
 Die Seiten Appearance und General stehen einmal in `torro-settings-ui` (`suite.rs`); Steuerzentrale und Apps
@@ -95,4 +98,4 @@ nutzen dieselben Seiten.
 |---|---|---|---|
 | Ist die Hauptanwendung installiert? | Apps entscheiden danach, was sie zeigen | `apps.list_apps`, Feld `main_app` | `apps_list_apps` |
 | Aussehen, Sprache, Start beim Anmelden | Steuerzentrale bzw. App | `settings.set_setting`, Listen der Designs, Schriften, Farbschemata | `settings_*` (vorhanden) |
-| Dienst beenden | Tray › Quit bzw. App › General › Background service | `system.quit` (nur App-Schlüssel) | keins, siehe „Was nie nach außen geht“ in [api.md](api.md) |
+| Dienst beenden | Tray › Quit bzw. App › General › Background service › „Quit…“ | `system.quit` (nur App-Schlüssel) | keins, siehe „Was nie nach außen geht“ in [api.md](api.md) |

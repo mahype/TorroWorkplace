@@ -4261,6 +4261,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{title} · now", "{title} · jetzt"),
     ("{title} · started {n} min ago", "{title} · hat vor {n} Min. begonnen"),
     // The suite's pages in an app without the main application (#408)
+    ("All apps", "Alle Apps"),
     ("Background service", "Hintergrunddienst"),
     ("Quit service", "Dienst beenden"),
     ("Quit background service", "Hintergrunddienst beenden"),
