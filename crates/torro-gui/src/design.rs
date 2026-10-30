@@ -390,6 +390,9 @@ fn stored_now(socket: &Path) -> Option<Chosen> {
         let Ok(runtime) = iced::executor::Default::new() else { return };
         let response = runtime.block_on(torro_ipc::client::call(&socket, &Request::Settings));
         let _ = answer.send(response);
+        // Then the installed apps (issue #408), so settings opened at start (`--settings`) already
+        // know whether the main application is there; the window does not wait for it.
+        runtime.block_on(crate::installed::fetch(&socket));
     });
     match answered.recv_timeout(START_WAIT) {
         Ok(Ok(Response::Settings { settings })) => {
@@ -706,7 +709,9 @@ fn watch((socket, chosen): &(PathBuf, Chosen)) -> impl Stream<Item = Message> + 
             loop {
                 tokio::time::sleep(POLL).await;
                 polls += 1;
-                if polls % INSTALLED_EVERY == 0 {
+                // Every poll until the core first answered (a core this app has just started), then
+                // once a minute.
+                if !crate::installed::answered() || polls % INSTALLED_EVERY == 0 {
                     crate::installed::fetch(&socket).await;
                 }
                 if let Ok(chosen) = stored(&socket).await

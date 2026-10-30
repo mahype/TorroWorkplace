@@ -985,9 +985,6 @@ pub fn app_mark<'a, M: 'a>(app: AppId) -> Element<'a, M> {
         .into()
 }
 
-/// What a click on `app` in the menu of a window of `current` sends: [`Switcher::Toggle`] (closes)
-/// for the window's own entry, else [`Switcher::OpenApp`] with its [`AppId::open_name`]. Entries
-/// are told apart by window class, so the inbox's mail window can open its hub and the other way.
 /// The apps [`switcher_menu`] lists for a window of `current`: the apps of components turned off (task
 /// W.2) and apps not installed (issue #408) are left out; the window's own app stays.
 fn switcher_apps(current: AppId) -> Vec<AppId> {
@@ -998,6 +995,9 @@ fn switcher_apps(current: AppId) -> Vec<AppId> {
         .collect()
 }
 
+/// What a click on `app` in the menu of a window of `current` sends: [`Switcher::Toggle`] (closes)
+/// for the window's own entry, else [`Switcher::OpenApp`] with its [`AppId::open_name`]. Entries
+/// are told apart by window class, so the inbox's mail window can open its hub and the other way.
 fn switcher_message(app: AppId, current: AppId) -> Switcher {
     if app.window_class == current.window_class { Switcher::Toggle } else { Switcher::OpenApp(app.open_name()) }
 }

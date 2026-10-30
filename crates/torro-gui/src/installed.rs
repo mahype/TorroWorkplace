@@ -4,7 +4,7 @@
 //! settings itself.
 //!
 //! The windows ask the core for the settings anyway (`design::Follow`); it also asks `apps.list_apps`
-//! at the first fetch and then every minute, and the answer is kept here process-wide, like the
+//! at start, then with every poll until the core first answered and from then on every minute, and the answer is kept here process-wide, like the
 //! components that are off (`crate::components`). Before the first answer, and with `--demo`, every
 //! app and the main application count as installed, so nothing disappears while the core is starting.
 //! The main application is read only from the core's answer: an app the core starts through its bundle
@@ -70,6 +70,11 @@ pub fn main_app() -> bool {
     KNOWN.read().unwrap_or_else(PoisonError::into_inner).as_ref().is_none_or(|known| known.main_app)
 }
 
+/// Whether the core has answered once (or the demo set what is installed).
+pub fn answered() -> bool {
+    KNOWN.read().unwrap_or_else(PoisonError::into_inner).is_some()
+}
+
 /// Asks the core on `socket` for the installed apps and notes the answer; an error keeps what was
 /// known.
 pub async fn fetch(socket: &std::path::Path) {
@@ -109,8 +114,10 @@ mod tests {
         let _lock = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         reset();
         // Before the first answer everything is there.
+        assert!(!answered());
         assert!(AppId::ALL.iter().all(|app| is_installed(*app)) && main_app());
         set(&[info(AppId::CALENDAR, true), info(AppId::TASKS, false)], false);
+        assert!(answered());
         assert!(is_installed(AppId::CALENDAR));
         assert!(!is_installed(AppId::TASKS), "listed, but not installed");
         assert!(!is_installed(AppId::INBOX_MAIL), "not listed");
