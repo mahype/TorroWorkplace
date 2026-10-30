@@ -988,6 +988,16 @@ pub fn app_mark<'a, M: 'a>(app: AppId) -> Element<'a, M> {
 /// What a click on `app` in the menu of a window of `current` sends: [`Switcher::Toggle`] (closes)
 /// for the window's own entry, else [`Switcher::OpenApp`] with its [`AppId::open_name`]. Entries
 /// are told apart by window class, so the inbox's mail window can open its hub and the other way.
+/// The apps [`switcher_menu`] lists for a window of `current`: the apps of components turned off (task
+/// W.2) and apps not installed (issue #408) are left out; the window's own app stays.
+fn switcher_apps(current: AppId) -> Vec<AppId> {
+    AppId::ALL
+        .iter()
+        .copied()
+        .filter(|&app| (crate::components::app_on(app) && crate::installed::is_installed(app)) || app == current)
+        .collect()
+}
+
 fn switcher_message(app: AppId, current: AppId) -> Switcher {
     if app.window_class == current.window_class { Switcher::Toggle } else { Switcher::OpenApp(app.open_name()) }
 }
@@ -1143,15 +1153,14 @@ fn switcher_row<'a, M: Clone + 'a>(
 }
 
 /// The menu of the app switcher: every app of the suite ([`AppId::ALL`]) whose component is on
-/// ([`crate::components`], task W.2), `current` marked and always there. A click
+/// ([`crate::components`], task W.2) and that is installed ([`crate::installed`], issue #408), `current`
+/// marked and always there. A click
 /// on another app sends [`Switcher::OpenApp`], on the current one [`Switcher::Toggle`] (closes).
 /// Show it with `widgets::floating(&anchor, Placement::Below(Align::Start), switcher_menu(..), close)`.
 pub fn switcher_menu<'a, M: Clone + 'a>(current: AppId, on: fn(Switcher) -> M) -> Element<'a, M> {
-    // The apps of components turned off are left out (task W.2); the window's own app stays.
-    let items = AppId::ALL
-        .iter()
-        .filter(|&&app| crate::components::app_on(app) || app == current)
-        .map(|&app| {
+    let items = switcher_apps(current)
+        .into_iter()
+        .map(|app| {
             let message = switcher_message(app, current);
             let is_current = message == Switcher::Toggle;
             let trail = if is_current { Trail::None } else { Trail::Icon(Icon::ArrowUpRight) };
@@ -1618,6 +1627,23 @@ mod tests {
         assert_eq!(wrap(Switcher::OpenApp(AppId::CALENDAR.binary)), Msg::Switcher(Switcher::OpenApp("torrocalendar")));
         assert_eq!(switcher_message(AppId::CALENDAR, AppId::TASKS), Switcher::OpenApp("torrocalendar"));
         assert_eq!(switcher_message(AppId::TASKS, AppId::TASKS), Switcher::Toggle);
+    }
+
+    #[test]
+    fn the_switcher_lists_only_installed_apps() {
+        let _lock = crate::installed::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::installed::reset();
+        assert_eq!(switcher_apps(AppId::TASKS), AppId::ALL, "before the core answers, all");
+        let calendar = torro_ipc::AppInfo {
+            binary: AppId::CALENDAR.binary.into(),
+            name: AppId::CALENDAR.display_name.into(),
+            window_class: AppId::CALENDAR.window_class.into(),
+            installed: true,
+        };
+        crate::installed::set(&[calendar], false);
+        // Neither the main application nor the other apps are there; the own app stays.
+        assert_eq!(switcher_apps(AppId::TASKS), [AppId::TASKS, AppId::CALENDAR]);
+        crate::installed::reset();
     }
 
     /// The inbox's three windows share a binary (task E8.1): each is an entry of its own, only the

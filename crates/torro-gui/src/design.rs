@@ -352,7 +352,11 @@ impl Forced {
 pub fn start_for(source: &Source, forced: &Forced) {
     let socket = match source {
         Source::Core(client) => Some(client.socket.as_path()),
-        Source::Demo(_) => None,
+        Source::Demo(_) => {
+            // No core answers in the demo: what is installed comes from here (issue #408).
+            crate::installed::start_demo();
+            None
+        }
     };
     start(socket, forced);
 }
@@ -580,7 +584,15 @@ impl Follow {
     /// it does nothing.
     pub fn fetch(&self) -> Task<Message> {
         let Some(socket) = self.socket.clone() else { return Task::none() };
-        Task::perform(async move { stored(&socket).await }, Message::Stored)
+        Task::perform(
+            async move {
+                // The installed apps come with the first fetch (issue #408), then every
+                // `INSTALLED_EVERY` polls (`watch`).
+                crate::installed::fetch(&socket).await;
+                stored(&socket).await
+            },
+            Message::Stored,
+        )
     }
 
     /// Asks the core every [`POLL`] for the ids the settings name and reports them as
@@ -667,6 +679,10 @@ impl Follow {
 /// centre reaches every open window within this time.
 pub const POLL: Duration = Duration::from_secs(2);
 
+/// Every how many [`POLL`]s [`watch`] also asks which apps are installed (`crate::installed`, issue
+/// #408): once a minute, since an install or removal is rare and the answer looks at files.
+const INSTALLED_EVERY: u32 = 30;
+
 /// The ids the settings name, asked from the core on `socket`.
 async fn stored(socket: &Path) -> Result<Chosen, String> {
     match torro_ipc::client::call(socket, &Request::Settings).await {
@@ -686,8 +702,13 @@ fn watch((socket, chosen): &(PathBuf, Chosen)) -> impl Stream<Item = Message> + 
     iced::futures::stream::unfold(chosen.clone(), move |last| {
         let socket = socket.clone();
         async move {
+            let mut polls = 0;
             loop {
                 tokio::time::sleep(POLL).await;
+                polls += 1;
+                if polls % INSTALLED_EVERY == 0 {
+                    crate::installed::fetch(&socket).await;
+                }
                 if let Ok(chosen) = stored(&socket).await
                     && chosen != last
                 {

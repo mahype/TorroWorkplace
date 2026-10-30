@@ -60,6 +60,8 @@ mod tests {
 
     #[test]
     fn the_settings_decide_which_apps_are_on() {
+        // The app switcher's test reads the same state.
+        let _lock = crate::installed::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         set_off(&BTreeSet::from([Component::Calendar]));
         assert!(!app_on(AppId::CALENDAR) && app_on(AppId::TASKS) && app_on(AppId::WORKPLACE));
         set_off(&BTreeSet::new());
