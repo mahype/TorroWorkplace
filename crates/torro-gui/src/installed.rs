@@ -40,14 +40,15 @@ pub fn set(apps: &[AppInfo], main_app: bool) {
 /// With `--demo`: every app is installed, and the main application too unless `TORRO_MAIN_APP` is `0`.
 /// The windows ask no core then, so this stays.
 pub fn start_demo() {
-    let main_app = demo_main_app(std::env::var("TORRO_MAIN_APP").ok().as_deref());
-    let classes = AppId::ALL.iter().map(|app| app.window_class.to_string()).collect();
-    *KNOWN.write().unwrap_or_else(PoisonError::into_inner) = Some(Known { classes, main_app });
+    let known = demo(std::env::var("TORRO_MAIN_APP").ok().as_deref());
+    *KNOWN.write().unwrap_or_else(PoisonError::into_inner) = Some(known);
 }
 
-/// Whether the main application counts as installed with `--demo` and `TORRO_MAIN_APP` set to `value`.
-fn demo_main_app(value: Option<&str>) -> bool {
-    value.is_none_or(|value| value.trim() != "0")
+/// What `--demo` knows with `TORRO_MAIN_APP` set to `value`: every app, and the main application
+/// unless `value` is `0`.
+fn demo(value: Option<&str>) -> Known {
+    let classes = AppId::ALL.iter().map(|app| app.window_class.to_string()).collect();
+    Known { classes, main_app: value.is_none_or(|value| value.trim() != "0") }
 }
 
 /// Whether `app` is installed, as the core said last. The main application ([`AppId::WORKPLACE`],
@@ -120,8 +121,11 @@ mod tests {
     }
 
     #[test]
-    fn only_zero_takes_the_main_app_away_in_the_demo() {
-        assert!(demo_main_app(None) && demo_main_app(Some("1")) && demo_main_app(Some("")));
-        assert!(!demo_main_app(Some("0")));
+    fn the_demo_has_every_app_and_only_zero_takes_the_main_app_away() {
+        for value in [None, Some("1"), Some(""), Some("0")] {
+            let known = demo(value);
+            assert!(AppId::ALL.iter().all(|app| known.classes.contains(app.window_class)), "{value:?}");
+            assert_eq!(known.main_app, value != Some("0"), "{value:?}");
+        }
     }
 }
