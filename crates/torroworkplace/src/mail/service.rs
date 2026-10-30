@@ -48,7 +48,7 @@
 //! not checked here: the core checks a client's reach (`Rights::reaches_mail_account`) before it asks
 //! this service.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::fmt;
 use std::io;
@@ -67,7 +67,7 @@ use torro_core::account::{self, AccountKind, Secret};
 use torro_core::i18n::{tr, trf};
 use torro_ipc::mail::{
     IndexState, MailCacheAction, MailCacheEstimate, MailCacheJob, MailCacheJobState, MailCacheMode, MailCachePolicy,
-    MailIndexProgress,
+    MailIndexProgress, MailSyncStatus, MailSyncTrigger,
 };
 use torro_ipc::{AccountInfo, FolderChoice, MailView, OpenRoleView, Response, ServiceState};
 use torro_mail::{Endpoint, MailAccountConfig, MailSettings, Role};
@@ -78,6 +78,7 @@ use torro_mail_imap::tls::Fingerprint;
 use torro_pim::{AccountState, ProviderError};
 use torro_pim_caldav::discover::is_public;
 
+use super::progress::SyncProgress;
 use super::send::Outbox;
 use super::store::MailStore;
 use super::{AttachmentCache, MailDirs, MailStoreError, send, sync};
@@ -105,6 +106,11 @@ struct Timing {
     /// Run the indexer task, which fetches older texts into the search index (issue #136). Tests
     /// run it by hand ([`MailService::backfill_now`]), so it never fetches behind their backs.
     index: bool,
+    /// The longest a `mail.sync_status` with `after` waits for a change (issue #422).
+    sync_wait: Duration,
+    /// A waiting `mail.sync_status` answers no sooner than this after it came in, so a client asking
+    /// again at once never gets more than two answers a second.
+    sync_pace: Duration,
 }
 
 /// The core's timing (task M2.6): all folders every 5 minutes, back off up to 15 minutes.
@@ -114,6 +120,8 @@ const SYSTEM_TIMING: Timing = Timing {
     retry_first: Duration::from_secs(60),
     retry_max: Duration::from_secs(15 * 60),
     index: true,
+    sync_wait: Duration::from_secs(25),
+    sync_pace: Duration::from_millis(500),
 };
 
 /// Why a mail account could not be synced or a command could not run. The texts for people
@@ -844,6 +852,9 @@ pub(crate) struct Mailbox {
     /// The last step of the indexer reached the server and found texts to fetch (issue #136):
     /// `indexing` in `mail.index_status`; `waiting` while it is not.
     indexing: AtomicBool,
+    /// Where its sync stands (`mail.sync_status`, issue #422); the service keeps it by id, so it
+    /// outlives this mailbox when the account is opened anew.
+    progress: Arc<SyncProgress>,
     events: broadcast::Sender<MailChange>,
     connector: Connector,
     timing: Timing,
@@ -936,6 +947,11 @@ impl Mailbox {
         Ok(Some(MailIndexProgress { account: self.id().to_string(), messages, indexed, text_unavailable, state }))
     }
 
+    /// Where its sync stands ([`SyncProgress`]).
+    pub(crate) fn progress(&self) -> &SyncProgress {
+        &self.progress
+    }
+
     /// One folder sync at a time ([`Mailbox::sync_lock`]).
     pub(crate) async fn one_sync(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.sync_lock.lock().await
@@ -1017,9 +1033,10 @@ impl Mailbox {
         Ok(Command { slot, session, store })
     }
 
-    /// Syncs every folder now ([`sync::sync_account`]) and notes the outcome at the account.
-    async fn sync_now(&self) -> Result<(), MailError> {
-        let result = sync::sync_account(self).await;
+    /// Syncs every folder now ([`sync::sync_account`]), started by `trigger`, and notes the outcome
+    /// at the account.
+    async fn sync_now(&self, trigger: MailSyncTrigger) -> Result<(), MailError> {
+        let result = sync::sync_account(self, trigger).await;
         match &result {
             Ok(()) => self.note_synced(),
             Err(err) => self.note_failure(err),
@@ -1083,8 +1100,10 @@ impl Mailbox {
 /// replaced ([`MailService::reload`]).
 async fn run(mailbox: Arc<Mailbox>) {
     let mut wait = mailbox.timing.retry_first;
+    // The worker's first run is the start's; every later one, also after a failure, the schedule's.
+    let mut trigger = MailSyncTrigger::Start;
     loop {
-        let err = match watch(&mailbox, &mut wait).await {
+        let err = match watch(&mailbox, &mut wait, &mut trigger).await {
             Ok(never) => match never {},
             Err(err) => err,
         };
@@ -1130,10 +1149,12 @@ async fn index(mailbox: Arc<Mailbox>) {
 }
 
 /// Connects, syncs everything once, then waits in `IDLE` on the inbox until the connection fails.
-async fn watch(mailbox: &Mailbox, wait: &mut Duration) -> Result<Infallible, MailError> {
+/// The first sync of all folders is started by `trigger`, every one after it by the schedule.
+async fn watch(mailbox: &Mailbox, wait: &mut Duration, trigger: &mut MailSyncTrigger) -> Result<Infallible, MailError> {
     // The first sync of a large mailbox takes a while; the IDLE connection is made afterwards, so
     // it never sits silent long enough for the server to drop it.
-    mailbox.sync_now().await?;
+    let first = std::mem::replace(trigger, MailSyncTrigger::Scheduled);
+    mailbox.sync_now(first).await?;
     let mut idle = mailbox.connect().await?;
     *wait = mailbox.timing.retry_first;
     let mut next_poll = Instant::now() + mailbox.timing.poll;
@@ -1143,7 +1164,7 @@ async fn watch(mailbox: &Mailbox, wait: &mut Duration) -> Result<Infallible, Mai
     loop {
         let until_poll = next_poll.saturating_duration_since(Instant::now());
         if until_poll.is_zero() {
-            mailbox.sync_now().await?;
+            mailbox.sync_now(MailSyncTrigger::Scheduled).await?;
             next_poll = Instant::now() + mailbox.timing.poll;
             continue;
         }
@@ -1213,6 +1234,11 @@ pub struct MailService {
     filters: super::filters::MailFilters,
     /// The last statistics of each account (issue #395, `mail.account_stats`).
     stats: KeptStats,
+    /// Where the sync of each account stands, by its id (issue #422, `mail.sync_status`): kept here
+    /// rather than at the mailbox alone, so opening an account anew keeps what its runs did.
+    progress: StdMutex<HashMap<String, Arc<SyncProgress>>>,
+    /// Woken by every change of any account's [`SyncProgress`].
+    progress_wake: Arc<Notify>,
 }
 
 /// The last statistics of each mail account by its id (issue #395): what was counted, when the
@@ -1275,6 +1301,8 @@ impl MailService {
             save_targets,
             filters,
             stats: Arc::default(),
+            progress: StdMutex::default(),
+            progress_wake: Arc::new(Notify::new()),
         }
     }
 
@@ -1397,8 +1425,16 @@ impl MailService {
         }
         // What is left was removed or changed; dropping stops its worker.
         *entries = kept;
+        // Where the sync of an account no longer listed stood goes with it: added again, it starts
+        // afresh.
+        self.progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|id, _| entries.iter().any(|entry| entry.mailbox.id() == id));
         drop(entries);
         self.loaded.store(true, Ordering::Release);
+        // An account that came or went changes what a waiting `mail.sync_status` sees.
+        self.progress_wake.notify_waiters();
     }
 
     /// The mail accounts of `accounts.json` and their passwords, read on the keychain's thread.
@@ -1434,6 +1470,7 @@ impl MailService {
     }
 
     async fn mailbox(&self, account: Account, config: MailAccountConfig, password: Option<Secret>) -> Mailbox {
+        let progress = self.progress_of(&account.id);
         let settings = account.mail_settings.clone().unwrap_or_default();
         let mut status = Status::default();
         let store = match (&self.dirs, settings.services.mail) {
@@ -1478,6 +1515,7 @@ impl MailService {
             inbox: StdMutex::new("INBOX".to_string()),
             open_roles: StdMutex::new(Vec::new()),
             indexing: AtomicBool::new(false),
+            progress,
             events: self.events.clone(),
             connector: self.connector.clone(),
             timing: self.timing,
@@ -1738,6 +1776,9 @@ impl MailService {
         }
         // Its statistics go before its store: a count still running then keeps nothing.
         self.stats.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
+        // And where its sync stood: a `mail.sync_status` waiting for it answers now, without it.
+        self.progress.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
+        self.progress_wake.notify_waiters();
         // Others may still hold it for a moment (the inbox feed, a running command).
         if let Some(store) = store {
             store.closed(Duration::from_secs(5)).await;
@@ -1802,8 +1843,10 @@ impl MailService {
             .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
             .map(|entry| Arc::clone(&entry.mailbox))
             .collect();
-        let runs: Vec<JoinHandle<Result<(), MailError>>> =
-            mailboxes.into_iter().map(|mailbox| tokio::spawn(async move { mailbox.sync_now().await })).collect();
+        let runs: Vec<JoinHandle<Result<(), MailError>>> = mailboxes
+            .into_iter()
+            .map(|mailbox| tokio::spawn(async move { mailbox.sync_now(MailSyncTrigger::Manual).await }))
+            .collect();
         let mut first = None;
         for run in runs {
             let result =
@@ -2157,6 +2200,85 @@ impl MailService {
                 (status.last_sync, status.problem)
             }
             Err(_) => (None, None),
+        }
+    }
+
+    /// Where the sync of the account `id` stands, kept across openings of the account.
+    fn progress_of(&self, id: &str) -> Arc<SyncProgress> {
+        let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
+        let wake = &self.progress_wake;
+        Arc::clone(progress.entry(id.to_string()).or_insert_with(|| Arc::new(SyncProgress::new(Arc::clone(wake)))))
+    }
+
+    /// The mail accounts whose mail is on and that `reach` sees, or `account` alone of them, in the
+    /// order of `accounts.json` (`mail.sync_status`, issue #422). [`MailError::NotFound`] for an
+    /// `account` that is not among them.
+    pub async fn sync_accounts(&self, reach: Reach<'_>, account: Option<&str>) -> Result<Vec<String>, MailError> {
+        let ids: Vec<String> = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
+            .map(|entry| entry.mailbox.id().to_string())
+            .filter(|id| account.is_none_or(|account| account == id))
+            .collect();
+        match (account, ids.is_empty()) {
+            (Some(_), true) => Err(MailError::NotFound),
+            _ => Ok(ids),
+        }
+    }
+
+    /// The sum of the sync versions of the accounts [`MailService::sync_accounts`] names, and
+    /// their sync states in the same order (`stored` still 0). The sum is read before the states,
+    /// so a change in between makes the next waiting call answer at once rather than miss it.
+    pub async fn sync_states(&self, reach: Reach<'_>, account: Option<&str>) -> (u64, Vec<MailSyncStatus>) {
+        let entries = self.entries.read().await;
+        let mailboxes: Vec<&Mailbox> = entries
+            .iter()
+            .map(|entry| &*entry.mailbox)
+            .filter(|mailbox| mailbox.settings.services.mail && mailbox.within(reach))
+            .filter(|mailbox| account.is_none_or(|account| account == mailbox.id()))
+            .collect();
+        let version = mailboxes.iter().map(|mailbox| mailbox.progress.version()).fold(0, u64::wrapping_add);
+        let states = mailboxes.iter().map(|mailbox| mailbox.progress.status(mailbox.id())).collect();
+        (version, states)
+    }
+
+    /// The sum of [`MailService::sync_states`] alone.
+    async fn sync_version(&self, reach: Reach<'_>, account: Option<&str>) -> u64 {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
+            .filter(|entry| account.is_none_or(|account| account == entry.mailbox.id()))
+            .map(|entry| entry.mailbox.progress.version())
+            .fold(0, u64::wrapping_add)
+    }
+
+    /// Waits until the sync version of what `reach` sees (or of `account`) is no longer `after`:
+    /// at once when it is not, else for the next change, at most [`Timing::sync_wait`] after
+    /// `arrived`, and then no sooner than [`Timing::sync_pace`] after it. Changes of accounts out of
+    /// reach wake it, but it goes on waiting: they never change the sum it watches.
+    pub async fn wait_for_sync(&self, reach: Reach<'_>, account: Option<&str>, after: u64, arrived: Instant) {
+        let deadline = arrived + self.timing.sync_wait;
+        let mut waited = false;
+        loop {
+            // Registered before the version is read, so a change in between still wakes it.
+            let notified = self.progress_wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.sync_version(reach, account).await != after {
+                break;
+            }
+            waited = true;
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return;
+            }
+        }
+        if waited {
+            tokio::time::sleep_until((arrived + self.timing.sync_pace).min(deadline)).await;
         }
     }
 
@@ -2722,6 +2844,8 @@ pub(crate) mod tests {
         retry_first: Duration::from_millis(50),
         retry_max: Duration::from_millis(200),
         index: false,
+        sync_wait: Duration::from_millis(600),
+        sync_pace: Duration::from_millis(100),
     };
 
     /// The fake server's connections: its test CA, every address allowed as in the core. SMTP
@@ -3316,7 +3440,7 @@ pub(crate) mod tests {
         );
 
         // The fake gives every role a folder of its own: after a folder sync nothing is open.
-        sync::sync_account(&mailbox).await.expect("synced");
+        sync::sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         assert!(mailbox.info().mail.expect("a mail view").open_roles.is_empty());
         assert!(!format!("{:?}", mailbox.info()).contains(PASSWORD));
     }

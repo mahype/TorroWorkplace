@@ -1,6 +1,7 @@
 //! Reading mail (task M3.1): the handlers of `mail.list_folders`, `mail.search_messages`,
 //! `mail.index_status` (issue #136), `mail.get_message`, `mail.get_thread`,
-//! `mail.get_attachment`, `mail.account_stats` (issue #395) and `mail.overview` (issue #409). The core sends these requests here ([`answer`]) from
+//! `mail.get_attachment`, `mail.account_stats` (issue #395), `mail.overview` (issue #409) and `mail.sync_status`
+//! (issue #422). The core sends these requests here ([`answer`]) from
 //! `Core::handle_within`, with the caller's reach.
 //!
 //! **Reach.** A client sees only the accounts its rights name (`Rights::reaches_mail_account`).
@@ -125,7 +126,7 @@ pub async fn answer_counting(mail: &MailService, inbox: &Inbox, reach: Reach<'_>
     response
 }
 
-/// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.account_stats`,
+/// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.account_stats`, `mail.sync_status`,
 /// `mail.overview`, `mail.search_messages`, `mail.index_status`, `mail.get_message`,
 /// `mail.get_thread`, `mail.get_attachment`). The limits are checked first
 /// ([`limit_refusal`]), also for the app key. Any other request is `unsupported`. `inbox` says
@@ -137,6 +138,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
     let answered = match request {
         Request::MailFolders { account } => list_folders(mail, reach, account.as_deref()).await,
         Request::MailAccountStats { account } => account_stats(mail, reach, account.as_deref()).await,
+        Request::MailSyncStatus { account, after } => sync_status(mail, reach, account.as_deref(), after).await,
         Request::MailOverview { account, range } => mail_overview(mail, inbox, reach, account.as_deref(), range).await,
         Request::SearchMail {
             account,
@@ -248,6 +250,38 @@ async fn account_stats(mail: &MailService, reach: Reach<'_>, account: Option<&st
         accounts.push(stats);
     }
     Ok(Response::MailAccountStats { accounts })
+}
+
+// ----- mail.sync_status -----
+
+/// `mail.sync_status` (issue #422): where the syncs of the accounts `reach` sees stand, or of
+/// `account` alone. The reach is checked first (`not-found` for an account out of it or without
+/// mail), then it waits as `after` asks ([`MailService::wait_for_sync`]) without holding a store, and
+/// only then are the stores looked up for how many messages each folder keeps: an account removed
+/// meanwhile is left out (or, asked for alone, `not-found`).
+async fn sync_status(
+    mail: &MailService,
+    reach: Reach<'_>,
+    account: Option<&str>,
+    after: Option<u64>,
+) -> Answer<Response> {
+    let arrived = tokio::time::Instant::now();
+    mail.sync_accounts(reach, account).await.map_err(|err| Box::new(err.response()))?;
+    if let Some(after) = after {
+        mail.wait_for_sync(reach, account, after, arrived).await;
+    }
+    let stores = scoped(mail, reach, account).await?;
+    let (version, states) = mail.sync_states(reach, account).await;
+    let mut accounts = Vec::with_capacity(states.len());
+    for mut state in states {
+        let Some((_, store)) = stores.iter().find(|(id, _)| *id == state.account) else { continue };
+        let kept = store.read(|store| store.folders()).await.map_err(store_failed)?;
+        for folder in &mut state.folders {
+            folder.stored = kept.iter().find(|kept| kept.id == folder.folder).map_or(0, |kept| u64::from(kept.total));
+        }
+        accounts.push(state);
+    }
+    Ok(Response::MailSyncStatus { version, accounts })
 }
 
 // ----- mail.overview -----
@@ -1620,6 +1654,109 @@ pub(crate) mod tests {
         assert_eq!(seen, [ANNA]);
         let theirs = Request::MailAccountStats { account: Some(second.id.clone()) };
         assert_eq!(code(&answer(&service, reach, theirs).await), "not-found");
+    }
+
+    /// The version and the states of an answer to `mail.sync_status`.
+    fn sync_of(response: Response) -> (u64, Vec<torro_ipc::mail::MailSyncStatus>) {
+        let Response::MailSyncStatus { version, accounts } = response else { panic!("sync states, got {response:?}") };
+        (version, accounts)
+    }
+
+    fn sync_status(account: Option<&str>, after: Option<u64>) -> Request {
+        Request::MailSyncStatus { account: account.map(str::to_string), after }
+    }
+
+    /// Anna's and Bernd's accounts, each on a server of its own, with their workers' first runs
+    /// over (the workers then wait in IDLE: a new mail in an inbox is a change).
+    async fn two_synced_accounts(dir: &Path) -> (MailService, FakeImap, FakeImap, String) {
+        let (anna, bernd) = (FakeImap::start(PASSWORD).await, FakeImap::start(PASSWORD).await);
+        anna.add("INBOX", &mail_with("First", 1, "One"), &[]);
+        bernd.add("INBOX", &mail_with("For Bernd", 1, "Two"), &[]);
+        let secrets = MemoryTokens::default();
+        let (first, second) =
+            (mail_account("anna@example.org", &anna.endpoint), mail_account("bernd@example.org", &bernd.endpoint));
+        store_accounts(dir, &secrets, &[(&first, PASSWORD), (&second, PASSWORD)]);
+        let service = service_in(dir, &secrets);
+        service.reload().await;
+        crate::mail::service::tests::eventually("both first runs", || async {
+            let (_, states) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
+            states.len() == 2 && states.iter().all(|state| state.last_run.is_some() && state.running.is_none())
+        })
+        .await;
+        // The IDLE connections are up once the inbox was synced on them as well.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        (service, anna, bernd, second.id)
+    }
+
+    /// #422: `mail.sync_status` answers at once without `after` and with an old version; with the
+    /// current one it waits for a change (answering no sooner than the pace) or until the wait is
+    /// over, unchanged. The states hold every folder with how many messages this device keeps.
+    #[tokio::test]
+    async fn the_sync_status_waits_for_a_change_or_until_the_wait_is_over() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (service, anna, _bernd, _) = two_synced_accounts(dir.path()).await;
+        let (version, states) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
+        let inbox = states[0].folders.iter().find(|folder| folder.name == "INBOX").expect("Anna's inbox");
+        assert_eq!((inbox.stored, inbox.on_server), (1, Some(1)));
+
+        let begun = std::time::Instant::now();
+        let (old, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, Some(version.wrapping_sub(1)))).await);
+        assert_eq!(old, version);
+        assert!(begun.elapsed() < std::time::Duration::from_millis(100), "an old version answers at once");
+
+        let begun = std::time::Instant::now();
+        let (same, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, Some(version))).await);
+        assert_eq!(same, version, "nothing changed");
+        assert!(begun.elapsed() >= std::time::Duration::from_millis(550), "it waited: {:?}", begun.elapsed());
+
+        let begun = std::time::Instant::now();
+        let waiting = answer(&service, Reach::Suite, sync_status(None, Some(version)));
+        let arriving = async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            anna.add("INBOX", &mail_with("Second", 0, "Three"), &[]);
+        };
+        let (changed, ()) = tokio::join!(waiting, arriving);
+        let (newer, _) = sync_of(changed);
+        assert_ne!(newer, version, "the inbox sync of the IDLE connection is a change");
+        assert!(begun.elapsed() >= std::time::Duration::from_millis(100), "not before the pace");
+    }
+
+    /// #422: a client that sees only Anna's account gets `not-found` for Bernd's and goes on waiting
+    /// when only Bernd's sync changes; an account removed while a call waits ends the wait at once.
+    #[tokio::test]
+    async fn the_sync_status_stays_within_reach_and_ends_when_an_account_goes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (service, _anna, bernd, bernds) = two_synced_accounts(dir.path()).await;
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
+        let reach = Reach::Client(&rights);
+        assert_eq!(code(&answer(&service, reach, sync_status(Some(&bernds), None)).await), "not-found");
+        let (mine, states) = sync_of(answer(&service, reach, sync_status(None, None)).await);
+        assert_eq!(states.iter().map(|state| state.account.as_str()).collect::<Vec<_>>(), [ANNA]);
+        let (all, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
+
+        let begun = std::time::Instant::now();
+        let waiting = answer(&service, reach, sync_status(None, Some(mine)));
+        let arriving = async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            bernd.add("INBOX", &mail_with("Bernd's second", 0, "Four"), &[]);
+        };
+        let (answered, ()) = tokio::join!(waiting, arriving);
+        assert_eq!(sync_of(answered).0, mine, "Bernd's change is none of the client's");
+        assert!(begun.elapsed() >= std::time::Duration::from_millis(550), "it went on waiting");
+        let (now, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
+        assert_ne!(now, all, "Bernd's sync did change meanwhile");
+
+        let begun = std::time::Instant::now();
+        let waiting = answer(&service, Reach::Suite, sync_status(None, Some(now)));
+        let removing = async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            service.remove(ANNA).await.expect("removed");
+        };
+        let (answered, ()) = tokio::join!(waiting, removing);
+        let (_, states) = sync_of(answered);
+        assert_eq!(states.iter().map(|state| state.account.clone()).collect::<Vec<_>>(), [bernds]);
+        assert!(begun.elapsed() < std::time::Duration::from_millis(550), "the removal ended the wait");
     }
 
     /// The overview of an answer to `mail.overview`.

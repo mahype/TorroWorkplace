@@ -507,6 +507,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::SetSearchKey { provider, .. } => vec![id("provider", provider.name())],
         mail @ (Request::MailFolders { .. }
         | Request::MailAccountStats { .. }
+        | Request::MailSyncStatus { .. }
         | Request::MailOverview { .. }
         | Request::GetMailCachePolicy { .. }
         | Request::SetMailCachePolicy { .. }

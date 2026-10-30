@@ -46,13 +46,14 @@ use std::sync::{Mutex as StdMutex, PoisonError};
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use torro_ipc::mail::{MailCacheMode, MailQuota};
+use torro_ipc::mail::{MailCacheMode, MailFolderSyncState, MailQuota, MailSyncPhase, MailSyncTrigger};
 use torro_mail::{Flag, Role};
 use torro_mail_imap::folders;
 use torro_mail_imap::imap::{BackupMessage, BodyChunks, FetchedHeader, ImapError, Search, Session};
 use torro_mail_imap::mime::{self, ReadMessage};
 
 use super::MailStoreError;
+use super::progress::SyncProgress;
 use super::service::{Command, FlagsUnderway, MailChange, MailError, Mailbox, SharedStore};
 use super::store::{Body, MailStore, NewMessage, ORIGINAL_MAX_BYTES, UidValidity};
 
@@ -79,11 +80,12 @@ pub const SIZE_FILL_MAX: u32 = 2000;
 /// How many sizes one `UID FETCH` of [`fill_sizes`] asks for.
 pub const SIZE_FILL_BATCH: usize = 500;
 
-/// A folder to sync: its id in the store, its path on the server and its role.
+/// A folder to sync: its id in the store, its path on the server, its name for people and its role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Target {
     id: String,
     path: String,
+    name: String,
     role: Option<Role>,
 }
 
@@ -134,8 +136,21 @@ impl Lease<'_> {
 /// gone from the server for [`GONE_ORIGINAL_RETENTION_DAYS`](super::store::GONE_ORIGINAL_RETENTION_DAYS)
 /// are deleted. A folder that vanished on the server meanwhile is skipped; any other failure ends
 /// the sync with that error.
-pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
+pub(crate) async fn sync_account(mailbox: &Mailbox, trigger: MailSyncTrigger) -> Result<(), MailError> {
+    let progress = mailbox.progress();
+    let queued = progress.queue();
     let _one = mailbox.one_sync().await;
+    drop(queued);
+    let run = progress.begin(trigger);
+    let result = sync_all_folders(mailbox).await;
+    run.end(result.as_ref().map(|_| ()));
+    result
+}
+
+/// The run of [`sync_account`], reporting each step to the account's
+/// [`SyncProgress`](super::progress::SyncProgress) (issue #422).
+async fn sync_all_folders(mailbox: &Mailbox) -> Result<(), MailError> {
+    let progress = mailbox.progress();
     let store = mailbox.store()?;
     let mut command = mailbox.command().await?;
     let list = folders::discover(command.session(), mailbox.folder_roles()).await?;
@@ -151,7 +166,7 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
                 let id = store.upsert_folder(&folder.path, &folder.name, folder.role)?;
                 // For a local backup's folder table (MB.4), as the server lists it.
                 store.set_folder_delimiter(&folder.path, folder.delimiter)?;
-                targets.push(Target { id, path: folder.path, role: folder.role });
+                targets.push(Target { id, path: folder.path, name: folder.name, role: folder.role });
             }
             // An empty list would drop every folder; a server always has an inbox.
             if !targets.is_empty() {
@@ -165,13 +180,21 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
     if let Some(inbox) = targets.iter().find(|target| target.role == Some(Role::Inbox)) {
         mailbox.set_inbox_path(&inbox.path);
     }
+    let names: Vec<(String, String)> = targets.iter().map(|target| (target.id.clone(), target.name.clone())).collect();
+    progress.listed(&names);
     let mut conn = Conn::Commands(mailbox);
-    for target in &targets {
+    for (index, target) in targets.iter().enumerate() {
+        progress.folder_begins(Some(index), &target.id);
         match sync_folder(&mut conn, mailbox, &store, target, Utc::now()).await {
-            Ok(()) | Err(MailError::Server(ImapError::NotFound(_))) => {}
-            Err(err) => return Err(err),
+            Ok(outcome) => progress.folder_ends(outcome),
+            Err(MailError::Server(ImapError::NotFound(_))) => progress.folder_gone(),
+            Err(err) => {
+                progress.folder_ends(MailFolderSyncState::Failed);
+                return Err(err);
+            }
         }
     }
+    progress.finishing();
     store
         .run(|store| {
             store.prune_bodies(Utc::now())?;
@@ -221,8 +244,21 @@ pub(crate) async fn sync_inbox(session: &mut Session, mailbox: &Mailbox) -> Resu
     let Some(folder) = store.run(move |store| store.folder_by_path(&lookup)).await? else {
         return Ok(());
     };
-    let target = Target { id: folder.id, path, role: Some(Role::Inbox) };
-    sync_folder(&mut Conn::Own(session), mailbox, &store, &target, Utc::now()).await
+    // The name is the listing's, which `sync_account` reports; here none is needed.
+    let target = Target { id: folder.id, path, name: String::new(), role: Some(Role::Inbox) };
+    // Only the inbox's record: this is no run of all folders (issue #422).
+    let progress = mailbox.progress();
+    progress.folder_begins(None, &target.id);
+    match sync_folder(&mut Conn::Own(session), mailbox, &store, &target, Utc::now()).await {
+        Ok(outcome) => {
+            progress.folder_ends(outcome);
+            Ok(())
+        }
+        Err(err) => {
+            progress.folder_ends(MailFolderSyncState::Failed);
+            Err(err)
+        }
+    }
 }
 
 /// Puts the texts of up to `limit` messages that are not in the search index yet into it (issue
@@ -492,16 +528,20 @@ struct Known {
     dropped: Vec<String>,
 }
 
-/// Brings one folder of the store in line with the server; see the module documentation.
+/// Brings one folder of the store in line with the server; see the module documentation. Answers how
+/// it ended: up to date, synced, or interrupted because the server renumbered it meanwhile; each step
+/// is reported to the account's progress (issue #422).
 async fn sync_folder(
     conn: &mut Conn<'_>,
     mailbox: &Mailbox,
     store: &SharedStore,
     target: &Target,
     now: DateTime<Utc>,
-) -> Result<(), MailError> {
+) -> Result<MailFolderSyncState, MailError> {
+    let progress = mailbox.progress();
     let mut lease = conn.lease().await?;
     let selected = lease.session().select(&target.path).await?;
+    progress.selected(selected.exists);
     let condstore = lease.session().capabilities().has("CONDSTORE");
     let uidvalidity = selected.uid_validity;
     // Before the flags are asked for: a flag change that ends from now on is held below.
@@ -514,7 +554,10 @@ async fn sync_folder(
         && selected.exists as usize == known.messages.len();
     if unchanged {
         lease.done();
-        return fill_sizes(conn, store, target, uidvalidity).await;
+        return Ok(match fill_sizes(conn, progress, store, target, uidvalidity).await? {
+            true => MailFolderSyncState::UpToDate,
+            false => MailFolderSyncState::Interrupted,
+        });
     }
     let on_server: BTreeSet<u32> = lease.session().uid_search(&Search::All).await?.into_iter().collect();
     let states = match known.messages.is_empty() {
@@ -584,12 +627,13 @@ async fn sync_folder(
     let policy = store.run(|store| store.cache_policy()).await?;
     let mode = policy.mode;
     let mut ahead: Vec<(String, FetchedHeader)> = Vec::new();
+    progress.phase(MailSyncPhase::Headers, new.len());
     for batch in new.chunks(HEADER_BATCH) {
         let mut lease = conn.lease().await?;
         if !reselect(lease.session(), &target.path, uidvalidity).await? {
             // Renumbered meanwhile: the next sync starts the folder over.
             lease.done();
-            return Ok(());
+            return Ok(MailFolderSyncState::Interrupted);
         }
         let mut headers = lease.session().fetch_headers(batch).await?;
         lease.done();
@@ -633,14 +677,16 @@ async fn sync_folder(
             }
         }
         mailbox.announce(change(ids, Vec::new(), Vec::new()));
+        progress.advance(batch.len());
     }
 
     // Texts of the recent ones, newest first.
+    progress.phase(MailSyncPhase::Texts, ahead.len());
     for (id, header) in ahead {
         let mut lease = conn.lease().await?;
         if !reselect(lease.session(), &target.path, uidvalidity).await? {
             lease.done();
-            return Ok(());
+            return Ok(MailFolderSyncState::Interrupted);
         }
         let place = super::store::MessageRef {
             id: id.clone(),
@@ -654,6 +700,7 @@ async fn sync_folder(
         // In `AllOffline` the original is kept as well; failing to keep it never ends the sync.
         let fetched = fetch_for_reading(lease.session(), store, &place, mode == MailCacheMode::AllOffline).await?;
         lease.done();
+        progress.advance(1);
         let Fetched::Whole(raw) = fetched else { continue };
         if policy.prefetch_attachments {
             let _ = prefetch_attachments(mailbox, &id, &raw).await;
@@ -680,7 +727,10 @@ async fn sync_folder(
         let (folder, modseq) = (target.id.clone(), selected.highest_modseq);
         store.run(move |store| store.set_highest_modseq(&folder, modseq)).await?;
     }
-    fill_sizes(conn, store, target, uidvalidity).await
+    Ok(match fill_sizes(conn, progress, store, target, uidvalidity).await? {
+        true => MailFolderSyncState::Synced,
+        false => MailFolderSyncState::Interrupted,
+    })
 }
 
 /// The flags the store has for `uid` of `folder` while a change of them is on its way to the server
@@ -704,25 +754,28 @@ fn flags_on_their_way(
 /// extra: a server that answers unexpectedly leaves them missing for the next sync and ends
 /// nothing; only a lost connection or account is an error.
 /// A message the answer names no size for, with or without a `FETCH` of its own, is kept with 0.
+/// `false` when the server renumbered the folder meanwhile.
 async fn fill_sizes(
     conn: &mut Conn<'_>,
+    progress: &SyncProgress,
     store: &SharedStore,
     target: &Target,
     uidvalidity: u32,
-) -> Result<(), MailError> {
+) -> Result<bool, MailError> {
     let folder = target.id.clone();
     let missing = store.run(move |store| store.uids_without_size(&folder, SIZE_FILL_MAX)).await?;
+    progress.phase(MailSyncPhase::Sizes, missing.len());
     for batch in missing.chunks(SIZE_FILL_BATCH) {
         let mut lease = conn.lease().await?;
         if !reselect(lease.session(), &target.path, uidvalidity).await? {
             lease.done();
-            return Ok(());
+            return Ok(false);
         }
         let sizes = match lease.session().fetch_sizes(batch).await.map_err(MailError::from) {
             Ok(sizes) => sizes,
             Err(err) if connection_lost(&err) => return Err(err),
             // Dropping the lease closes a connection that answered something unexpected.
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(true),
         };
         lease.done();
         // A message the answer names no size for (answered without one, or not at all) would never
@@ -741,8 +794,9 @@ async fn fill_sizes(
                 Ok(())
             })
             .await?;
+        progress.advance(batch.len());
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Reads what the store knows of `folder` and tells it the UIDVALIDITY the server reports. After
@@ -1155,6 +1209,11 @@ pub(crate) mod fake {
         /// answered.
         pub(crate) fn on_examine(&self, folder: &str, nth: usize, change: Change) {
             self.world().on_examine.push((folder.into(), nth, change));
+        }
+
+        /// From now on `folder` cannot be opened (`NO`), while `LIST` still shows it selectable.
+        pub(crate) fn refuse(&self, folder: &str) {
+            self.world().folder(folder).refused = true;
         }
 
         /// While `held`, every partial body fetch waits; `false` lets them go on.
@@ -2022,7 +2081,7 @@ mod tests {
         let mailbox = mailbox(dir.path(), &server).await;
         let mut changes = mailbox_events(&mailbox);
 
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
 
         let headers = fetches(&server, "BODY.PEEK[HEADER]");
         assert!(headers[0].contains(" 31:130 "), "the newest hundred first: {headers:?}");
@@ -2060,14 +2119,14 @@ mod tests {
             .await
             .expect("all offline");
 
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         let originals = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
         assert_eq!(originals.len(), 1);
         assert_eq!(originals[0].flags, vec!["$Work", "\\Seen"]);
         let seq = originals[0].seq;
         assert_eq!(store.run(move |db| db.original_bytes(seq)).await.expect("read"), Some(raw.into_bytes()));
         server.set_flags("INBOX", 1, &["\\Answered", "$Updated"]);
-        sync_account(&mailbox).await.expect("flags synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("flags synced");
         let updated = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed again");
         assert_eq!(updated[0].flags, vec!["$Updated", "\\Answered"]);
     }
@@ -2088,7 +2147,7 @@ mod tests {
             })
             .await
             .expect("all offline");
-        sync_account(&mailbox).await.expect("headers synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("headers synced");
         backfill(&mailbox, 1, Utc::now()).await.expect("chunked original capture");
         let originals = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
         assert_eq!(originals.len(), 1);
@@ -2128,13 +2187,13 @@ mod tests {
             })
             .await
             .expect("all offline");
-        sync_account(&mailbox).await.expect("headers synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("headers synced");
         // Its body vanishes while it is taken: the original cannot be kept.
         server.withhold_text("INBOX", uid);
         // Not fetched ahead either (above `BODY_PREFETCH_MAX`): the backfill comes to it after the gap.
         let next = format!("{}{}\r\n", fake::mail("After it", 400, None), "z".repeat(6 << 20));
         server.add("INBOX", &next, &[]);
-        sync_account(&mailbox).await.expect("the next one synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("the next one synced");
 
         assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("not stopped by the gap"), 2);
         let originals = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
@@ -2158,7 +2217,7 @@ mod tests {
             })
             .await
             .expect("all offline");
-        sync_account(&mailbox).await.expect("synced with its original");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced with its original");
         let metadata = || fetches(&server, "(UID FLAGS INTERNALDATE RFC822.SIZE)").len();
         assert_eq!(metadata(), 1);
         let id = all(&mailbox).await[0].id.clone();
@@ -2183,7 +2242,7 @@ mod tests {
             })
             .await
             .expect("all offline");
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         let places = || async {
             let listed = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
             listed.into_iter().map(|original| (original.uid_validity, original.uid, original.gone)).collect::<Vec<_>>()
@@ -2191,10 +2250,10 @@ mod tests {
         assert_eq!(places().await, vec![(11, 1, false)]);
 
         server.renumber("INBOX");
-        sync_account(&mailbox).await.expect("synced after renumbering");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced after renumbering");
         assert_eq!(places().await, vec![(11, 1, true), (111, 1001, false)], "the mail is kept once, anew");
         server.expunge("INBOX", 1001);
-        sync_account(&mailbox).await.expect("synced after the expunge");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced after the expunge");
         assert_eq!(places().await, vec![(11, 1, true), (111, 1001, true)]);
 
         // What a local backup names the folder by, as the server lists it.
@@ -2209,7 +2268,7 @@ mod tests {
         let server = FakeImap::start(PASSWORD).await;
         server.add("INBOX", &fake::mail("Previously cached", 0, None), &[]);
         let mailbox = mailbox(dir.path(), &server).await;
-        sync_account(&mailbox).await.expect("recent text synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("recent text synced");
         let store = mailbox.store().expect("store");
         assert!(store.run(|db| db.local_originals_page(0, 10)).await.expect("listed").is_empty());
         store
@@ -2236,19 +2295,19 @@ mod tests {
         let first = server.add("INBOX", &fake::mail("First", 2, None), &[]);
         let second = server.add("INBOX", &fake::mail("Second", 1, Some("First@example.org")), &[]);
         let mailbox = mailbox(dir.path(), &server).await;
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         let before = all(&mailbox).await;
         assert_eq!(before[0].thread_id, before[1].thread_id, "a reply is in the thread of what it answers");
         let lines = server.lines().len();
 
-        sync_account(&mailbox).await.expect("synced again");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced again");
         let again: Vec<String> = server.lines()[lines..].to_vec();
         assert!(!again.iter().any(|line| line.contains("UID ")), "nothing changed, nothing fetched: {again:?}");
 
         let mut changes = mailbox_events(&mailbox);
         server.expunge("INBOX", first);
         server.set_flags("INBOX", second, &["\\Flagged"]);
-        sync_account(&mailbox).await.expect("synced after the changes");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced after the changes");
         let change = changes.try_recv().expect("announced");
         let first_id = before.iter().find(|m| m.subject == "First").map(|m| m.id.clone());
         let second_id = before.iter().find(|m| m.subject == "Second").map(|m| m.id.clone());
@@ -2270,7 +2329,7 @@ mod tests {
         let server = FakeImap::start(PASSWORD).await;
         let uid = server.add("INBOX", &fake::mail("Read me", 1, None), &[]);
         let mailbox = mailbox(dir.path(), &server).await;
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         let store = mailbox.store().expect("store");
         let inbox = store.run(|db| db.folder_by_path("INBOX")).await.expect("read").expect("the inbox");
         let modseq = |store: SharedStore, folder: String| async move {
@@ -2287,7 +2346,7 @@ mod tests {
         store.run(move |db| db.set_flags(&read, &[Flag::Seen])).await.expect("marked read");
         server.set_flags("INBOX", uid, &[]);
         let mut changes = mailbox_events(&mailbox);
-        sync_account(&mailbox).await.expect("synced while the change is on its way");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced while the change is on its way");
         assert_eq!(all(&mailbox).await[0].flags, [Flag::Seen], "the change stays");
         assert_eq!(modseq(store.clone(), inbox.id.clone()).await, synced, "the folder is compared again next time");
         while let Ok(change) = changes.try_recv() {
@@ -2297,7 +2356,7 @@ mod tests {
         // The server has it now, the change is done: the next sync takes the server's flags over.
         server.set_flags("INBOX", uid, &["\\Seen"]);
         drop(held);
-        sync_account(&mailbox).await.expect("synced after the change");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced after the change");
         assert_eq!(all(&mailbox).await[0].flags, [Flag::Seen]);
         let kept = modseq(store.clone(), inbox.id.clone()).await;
         assert!(kept > synced, "kept again: {kept:?} after {synced:?}");
@@ -2313,7 +2372,7 @@ mod tests {
         let server = FakeImap::start(PASSWORD).await;
         let uid = server.add("INBOX", &fake::mail("Moved here", 1, None), &[]);
         let mailbox = mailbox(dir.path(), &server).await;
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         let store = mailbox.store().expect("store");
         let inbox = store.run(|db| db.folder_by_path("INBOX")).await.expect("read").expect("the inbox").id;
         let id = all(&mailbox).await[0].id.clone();
@@ -2356,27 +2415,27 @@ mod tests {
             }
         };
 
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         assert_eq!(inbox_bytes(&store).await, Some(bytes), "from the headers' RFC822.SIZE");
         assert!(fetches(&server, "RFC822.SIZE)").is_empty(), "nothing to fill in");
 
         store.run(|store| store.forget_sizes()).await.expect("a store of before");
         assert_eq!(inbox_bytes(&store).await, None);
-        sync_account(&mailbox).await.expect("synced again");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced again");
         assert_eq!(fetches(&server, "(UID RFC822.SIZE)").len(), 1, "one batch for the inbox");
         assert_eq!(inbox_bytes(&store).await, Some(bytes), "filled in without a change in the folder");
 
         let lines = server.lines().len();
-        sync_account(&mailbox).await.expect("synced a third time");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced a third time");
         assert!(!server.lines()[lines..].iter().any(|line| line.contains("UID ")), "nothing asked again");
 
         // A server that names no size for a message: it counts as 0 and is not asked for again.
         server.withhold_size("INBOX", last.0);
         store.run(|store| store.forget_sizes()).await.expect("a store of before");
-        sync_account(&mailbox).await.expect("synced without one size");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced without one size");
         assert_eq!(inbox_bytes(&store).await, Some(bytes - last.1), "the sizeless message counts as 0");
         let lines = server.lines().len();
-        sync_account(&mailbox).await.expect("synced once more");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced once more");
         assert!(
             !server.lines()[lines..].iter().any(|line| line.contains("UID ")),
             "the sizeless one is not asked again"
@@ -2395,7 +2454,7 @@ mod tests {
             async move { store.run(|store| store.account_stats()).await.expect("stats").quota }
         };
         let first = mailbox(dir.path(), &server).await;
-        sync_account(&first).await.expect("synced");
+        sync_account(&first, MailSyncTrigger::Manual).await.expect("synced");
         let quota = quota_of(&first).await.expect("kept");
         assert_eq!((quota.used_bytes, quota.limit_bytes), (2475 * 1024, 10_737_418_240));
         assert_eq!(server.lines().iter().filter(|line| line.contains("GETQUOTAROOT \"INBOX\"")).count(), 1);
@@ -2405,7 +2464,7 @@ mod tests {
         server.set_quota(None);
         let second = mailbox(dir.path(), &server).await;
         let lines = server.lines().len();
-        sync_account(&second).await.expect("synced without QUOTA");
+        sync_account(&second, MailSyncTrigger::Manual).await.expect("synced without QUOTA");
         assert!(!server.lines()[lines..].iter().any(|line| line.contains("GETQUOTAROOT")), "not asked");
         assert_eq!(quota_of(&second).await, None, "the old quota is gone");
     }
@@ -2416,12 +2475,12 @@ mod tests {
         let server = FakeImap::start(PASSWORD).await;
         server.add("INBOX", &fake::mail("Only", 1, None), &[]);
         let mailbox = mailbox(dir.path(), &server).await;
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         let before = all(&mailbox).await;
 
         let mut changes = mailbox_events(&mailbox);
         server.renumber("INBOX");
-        sync_account(&mailbox).await.expect("synced after renumbering");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced after renumbering");
         let removed = changes.try_recv().expect("the old ids are gone");
         assert_eq!((removed.removed, removed.initial), (vec![before[0].id.clone()], true));
         let added = changes.try_recv().expect("and come back under new ones");
@@ -2440,7 +2499,7 @@ mod tests {
         let mut session = mailbox.connect().await.expect("connected");
         sync_inbox(&mut session, &mailbox).await.expect("nothing to do yet");
         assert!(all(&mailbox).await.is_empty());
-        sync_account(&mailbox).await.expect("synced");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
         server.add("INBOX", &fake::mail("Next", 0, None), &[]);
         sync_inbox(&mut session, &mailbox).await.expect("the inbox synced");
         assert_eq!(all(&mailbox).await.len(), 2);
@@ -2466,5 +2525,96 @@ mod tests {
 
     fn mailbox_events(mailbox: &Mailbox) -> tokio::sync::broadcast::Receiver<MailChange> {
         mailbox.subscribe()
+    }
+
+    /// The record of the folder named `name` in the account's sync state (issue #422).
+    fn record<'a>(status: &'a torro_ipc::mail::MailSyncStatus, name: &str) -> &'a torro_ipc::mail::MailFolderSync {
+        status.folders.iter().find(|folder| folder.name == name).expect("a record of the folder")
+    }
+
+    /// Issue #422: a run reports its folders in the order it syncs them, the inbox first, with the
+    /// messages on the server, how it ended and how long it took; a second run without changes
+    /// finds the folders up to date.
+    #[tokio::test]
+    async fn a_run_reports_every_folder_and_then_finds_them_up_to_date() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        for n in 1..=3 {
+            server.add("INBOX", &fake::mail(&format!("Mail {n}"), 0, None), &[]);
+        }
+        server.add("Archive", &fake::mail("Kept", 3, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
+        let status = mailbox.progress().status(mailbox.id());
+        assert_eq!(status.running, None);
+        assert!(!status.queued);
+        let last = status.last_run.clone().expect("a last run");
+        assert!(last.ok && last.problem.is_none(), "{last:?}");
+        assert_eq!(last.trigger, MailSyncTrigger::Manual);
+        assert_eq!(last.folders_done, last.folder_count);
+        assert_eq!(status.folders[0].name, "INBOX", "the inbox first");
+        let inbox = record(&status, "INBOX");
+        assert_eq!((inbox.on_server, inbox.state), (Some(3), MailFolderSyncState::Synced));
+        assert!(inbox.last_synced.is_some() && inbox.duration_ms.is_some());
+        assert_eq!(record(&status, "Archive").on_server, Some(1));
+
+        sync_account(&mailbox, MailSyncTrigger::Scheduled).await.expect("synced again");
+        let status = mailbox.progress().status(mailbox.id());
+        assert_eq!(record(&status, "INBOX").state, MailFolderSyncState::UpToDate, "nothing changed");
+        assert_eq!(status.last_run.expect("a last run").trigger, MailSyncTrigger::Scheduled);
+    }
+
+    /// Issue #422: a folder that fails ends the run there; the folders after it are not reached and
+    /// the run keeps why it ended.
+    #[tokio::test]
+    async fn a_failed_folder_ends_the_run_and_leaves_the_rest_not_reached() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fake::mail("First", 0, None), &[]);
+        server.add("Archive", &fake::mail("Kept", 3, None), &[]);
+        server.add_folder("Zarchive", "\\HasNoChildren", 77);
+        server.add("Zarchive", &fake::mail("Later", 3, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
+        let order: Vec<String> =
+            mailbox.progress().status(mailbox.id()).folders.iter().map(|folder| folder.name.clone()).collect();
+
+        // A folder within the run is refused: every folder after it waits for the next run.
+        let refused = "Archive".to_string();
+        let at = order.iter().position(|name| *name == refused).expect("the archive is listed");
+        assert!(at > 0 && at + 1 < order.len(), "folders before and after it: {order:?}");
+        server.refuse(&refused);
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect_err("a refused folder ends the run");
+        let status = mailbox.progress().status(mailbox.id());
+        let last = status.last_run.clone().expect("a last run");
+        assert!(!last.ok && last.problem.is_some(), "{last:?}");
+        assert_eq!(last.folders_done, u32::try_from(at).expect("few folders"), "the folders before it");
+        assert_eq!(record(&status, "INBOX").state, MailFolderSyncState::UpToDate);
+        assert_eq!(record(&status, &refused).state, MailFolderSyncState::Failed);
+        for name in &order[at + 1..] {
+            assert_eq!(record(&status, name).state, MailFolderSyncState::NotReached, "{name}");
+            assert!(record(&status, name).last_synced.is_some(), "{name} keeps when the run before synced it");
+        }
+    }
+
+    /// Issue #422: the inbox sync of the IDLE connection is no run: it only updates the inbox's
+    /// record.
+    #[tokio::test]
+    async fn the_inbox_sync_of_the_idle_connection_updates_only_the_inbox_record() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fake::mail("Waiting", 0, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        sync_account(&mailbox, MailSyncTrigger::Start).await.expect("synced");
+        let before = mailbox.progress().status(mailbox.id());
+        server.add("INBOX", &fake::mail("Next", 0, None), &[]);
+        let mut session = mailbox.connect().await.expect("connected");
+        sync_inbox(&mut session, &mailbox).await.expect("the inbox synced");
+        let after = mailbox.progress().status(mailbox.id());
+        assert_eq!(after.running, None, "no run");
+        assert_eq!(after.last_run, before.last_run, "the last run stays");
+        let inbox = record(&after, "INBOX");
+        assert_eq!((inbox.on_server, inbox.state), (Some(2), MailFolderSyncState::Synced));
     }
 }
