@@ -7197,6 +7197,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
+ "resvg",
  "serde_json",
  "tokio",
  "torro-core",
@@ -7341,7 +7342,6 @@ dependencies = [
  "process-wrap",
  "pulldown-cmark",
  "reqwest",
- "resvg",
  "rfd",
  "rmcp",
  "rusqlite",

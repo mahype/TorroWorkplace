@@ -21,9 +21,9 @@ use torro_ipc::api::{
     Selection,
 };
 use torro_ipc::{
-    AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, ColorSchemeInfo,
-    DesignInfo, FolderChoice, FontInfo, IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request,
-    Response, ScreenInfo, ServerService, ServiceState, Status, TorroMailAccount,
+    AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, FolderChoice, IssuedKey,
+    Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, ScreenInfo, ServerService, ServiceState,
+    Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -31,7 +31,6 @@ use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
 
-use super::general::{DesignEntry, Entry, FontEntry, Lists, SchemeEntry};
 use super::wizard;
 use super::{Appearance, Data, Section};
 use crate::account::ntfy::NtfyAccountError;
@@ -185,7 +184,7 @@ pub enum Open {
     CustomServerPaste,
     /// The choice among the two servers of that block, after "Fill in".
     CustomServerChoose,
-    /// Appearance with the demo's designs, fonts and colour schemes ([`demo_looks`]), one of each
+    /// Appearance with the demo's designs, fonts and colour schemes ([`torro_settings_ui::suite::demo_looks`]), one of each
     /// broken; the design `--design` names is drawn, else the standard.
     Design,
     /// Appearance with the colour scheme's dropdown open (task L.37).
@@ -565,242 +564,6 @@ impl ClientTarget {
 /// letters and digits (the core makes 8 hex digits), so a mistyped command opens nothing odd.
 fn is_bot_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= torro_ipc::assistant::MAX_ID_BYTES && id.chars().all(|c| c.is_ascii_alphanumeric())
-}
-
-/// What the demo's samples say about themselves: name, version, author "Torro samples" and a
-/// description.
-fn sample_about(name: &str, version: &str, description: &str) -> torro_core::design::About {
-    torro_core::design::About {
-        name: name.into(),
-        version: version.into(),
-        author: Some("Torro samples".into()),
-        description: Some(description.into()),
-        ..torro_core::design::About::default()
-    }
-}
-
-/// The designs, fonts and colour schemes of `--demo` (Appearance, tasks L.4, L.23 and L.37), in memory
-/// like all its data, each list with the standard first, samples that can be chosen and are drawn
-/// at once, and one that breaks rules and says so:
-///
-/// - designs: the three built-in ones, Standard, Compact and Console (Console suggests JetBrains
-///   Mono, which the demo does not have, and plain-text mail), and "Neon" (broken);
-/// - fonts: "Tabular" (Inter's tabular cut as text font: the only other family the demo has without
-///   a folder), "Brush" (broken);
-/// - colour schemes: "Harbor" (teal accent, cool surfaces), "Paper" (warm light surfaces, blue
-///   accent), "Midnight" (dark only), "Neon" (broken).
-///
-/// A part `--design`, `--font` or `--color-scheme` names (read from its folder at start, so it is the
-/// active one) joins its list after the samples, so it carries the check mark.
-pub fn demo_looks() -> Lists {
-    Lists { designs: Ok(demo_designs()), fonts: Ok(demo_fonts()), schemes: Ok(demo_schemes()) }
-}
-
-/// The designs of [`demo_looks`].
-fn demo_designs() -> Vec<DesignEntry> {
-    use torro_core::design::{BUILT_IN_IDS, Design, DesignError};
-    let info = |design: &Design| DesignInfo {
-        id: design.id.clone(),
-        name: design.about.name.clone(),
-        version: design.about.version.clone(),
-        author: design.about.author.clone(),
-        description: design.about.description.clone(),
-        standard: design.is_standard(),
-        valid: true,
-        problems: Vec::new(),
-        active: false,
-        font: design.about.font.clone(),
-        mail_view: design.about.mail_view,
-        density: design.density_level(),
-    };
-    let neon = DesignInfo {
-        id: "neon".into(),
-        name: "Neon".into(),
-        version: "0.3.0".into(),
-        author: Some("Torro samples".into()),
-        description: None,
-        standard: false,
-        valid: false,
-        problems: [
-            DesignError::OutOfRange { key: "type.body.size".into(), value: 9.0, min: 11.0, max: 20.0 },
-            DesignError::LineHeight { key: "type.caption".into(), line: 12.0, size: 14.0 },
-            DesignError::UnknownKey { key: "space.xxxl".into() },
-        ]
-        .iter()
-        .map(ToString::to_string)
-        .collect(),
-        active: false,
-        font: None,
-        mail_view: None,
-        density: Default::default(),
-    };
-    // The built-in designs need no folder: `load` answers them from the embedded files.
-    let mut designs: Vec<Design> =
-        BUILT_IN_IDS.iter().filter_map(|id| torro_core::design::load(std::path::Path::new(""), id).ok()).collect();
-    let forced = torro_gui::design::active();
-    if !designs.iter().any(|design| design.id == forced.id) {
-        designs.push((*forced).clone());
-    }
-    let mut entries: Vec<DesignEntry> =
-        designs.into_iter().map(|design| Entry::design(info(&design), Some(design))).collect();
-    entries.push(Entry::design(neon, None));
-    entries
-}
-
-/// The fonts of [`demo_looks`]: the standard (bundled, Sans), Tabular from a folder without a kind
-/// ("Other"), Brush broken, and three fonts of the computer (issue #299) – "System", Avenir Next and
-/// Monaco – listed without a font to draw with, so their samples are the standard's and the pictures
-/// look alike on every computer.
-fn demo_fonts() -> Vec<FontEntry> {
-    use torro_core::design::{DesignError, FontSet};
-    let info = |font: &FontSet| FontInfo {
-        id: font.id.clone(),
-        family: Some(font.fonts.text.family.clone()),
-        name: font.about.name.clone(),
-        version: font.about.version.clone(),
-        author: font.about.author.clone(),
-        description: font.about.description.clone(),
-        license: Some(font.license.clone()),
-        origin: torro_ipc::FontOrigin::Bundled,
-        kind: font.kind,
-        standard: font.is_standard(),
-        valid: true,
-        problems: Vec::new(),
-        active: false,
-    };
-    let standard = FontSet::standard();
-    let figures = standard.fonts.numbers.clone();
-    let mut tabular = FontSet {
-        id: "tabular".into(),
-        about: sample_about("Tabular", "1.0.0", "Inter with tabular figures"),
-        ..FontSet::standard()
-    };
-    (tabular.fonts.text, tabular.fonts.heading) = (figures.clone(), figures);
-    tabular.kind = None;
-    let installed = |id: &str, family: &str, name: &str| FontInfo {
-        id: id.into(),
-        family: Some(family.into()),
-        name: name.into(),
-        version: String::new(),
-        author: None,
-        description: None,
-        license: None,
-        origin: torro_ipc::FontOrigin::System,
-        kind: None,
-        standard: false,
-        valid: true,
-        problems: Vec::new(),
-        active: false,
-    };
-    let system = [
-        installed("system", "Helvetica Neue", "System"),
-        installed("system:Avenir Next", "Avenir Next", "Avenir Next"),
-        installed("system:Monaco", "Monaco", "Monaco"),
-    ];
-    let brush = FontInfo {
-        id: "brush".into(),
-        family: None,
-        name: "Brush".into(),
-        version: "0.2.0".into(),
-        author: Some("Torro samples".into()),
-        description: None,
-        license: None,
-        origin: torro_ipc::FontOrigin::Folder,
-        kind: None,
-        standard: false,
-        valid: false,
-        problems: [
-            DesignError::MissingFile { key: "fonts.text.regular".into(), path: "Brush-Regular.ttf".into() },
-            DesignError::FontLicense,
-        ]
-        .iter()
-        .map(ToString::to_string)
-        .collect(),
-        active: false,
-    };
-    let mut fonts = vec![standard, tabular];
-    let forced = torro_gui::font::active();
-    if !fonts.iter().any(|font| font.id == forced.id) {
-        fonts.push((*forced).clone());
-    }
-    let folder = |mut info: FontInfo| {
-        if !info.standard && info.id == "tabular" {
-            info.origin = torro_ipc::FontOrigin::Folder;
-        }
-        info
-    };
-    let mut entries: Vec<FontEntry> =
-        fonts.into_iter().map(|font| Entry::new(folder(info(&font)), Some(font))).collect();
-    entries.push(Entry::new(brush, None));
-    entries.extend(system.into_iter().map(|info| Entry::new(info, None)));
-    entries
-}
-
-/// The colour schemes of [`demo_looks`].
-fn demo_schemes() -> Vec<SchemeEntry> {
-    use torro_core::design::{ColorScheme, DesignError, Mode, Rgba};
-    let info = |scheme: &ColorScheme| ColorSchemeInfo {
-        id: scheme.id.clone(),
-        name: scheme.about.name.clone(),
-        version: scheme.about.version.clone(),
-        author: scheme.about.author.clone(),
-        description: scheme.about.description.clone(),
-        standard: scheme.is_standard(),
-        valid: true,
-        problems: Vec::new(),
-        active: false,
-        dark_only: scheme.dark_only,
-    };
-    let sample = |id: &str, about| ColorScheme { id: id.into(), about, ..ColorScheme::standard() };
-    let mut harbor = sample("harbor", sample_about("Harbor", "1.2.0", "Teal accent, cool surfaces"));
-    let dark = &mut harbor.colors.dark;
-    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x0A0E10), Rgba::hex(0x101518), Rgba::hex(0x151B1F));
-    (dark.accent, dark.on_accent) = (Rgba::hex(0x14B8A6), Rgba::hex(0x042F2C));
-    let light = &mut harbor.colors.light;
-    (light.bg, light.panel) = (Rgba::hex(0xEEF3F4), Rgba::hex(0xFFFFFF));
-    (light.accent, light.on_accent) = (Rgba::hex(0x0B7A72), Rgba::hex(0xFFFFFF));
-    let mut paper = sample("paper", sample_about("Paper", "0.9.1", "Warm paper, ink blue"));
-    let dark = &mut paper.colors.dark;
-    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x12100D), Rgba::hex(0x1A1714), Rgba::hex(0x201C18));
-    (dark.accent, dark.on_accent) = (Rgba::hex(0x7C9CF5), Rgba::hex(0x0B1530));
-    let light = &mut paper.colors.light;
-    (light.bg, light.panel, light.raised) = (Rgba::hex(0xF3EEE4), Rgba::hex(0xFFFCF6), Rgba::hex(0xF8F4EC));
-    (light.accent, light.on_accent) = (Rgba::hex(0x2A4FC4), Rgba::hex(0xFFFFFF));
-    let neon = ColorSchemeInfo {
-        id: "neon".into(),
-        name: "Neon".into(),
-        version: "0.3.0".into(),
-        author: Some("Torro samples".into()),
-        description: None,
-        standard: false,
-        valid: false,
-        problems: [
-            DesignError::TextContrast { fg: "colors.dark.text_3".into(), on: "panel".into(), ratio: 3.12 },
-            DesignError::UnknownKey { key: "colors.dark.acent".into() },
-            DesignError::AccentContrast { mode: Mode::Light, ratio: 2.4 },
-        ]
-        .iter()
-        .map(ToString::to_string)
-        .collect(),
-        active: false,
-        dark_only: false,
-    };
-    // Dark only: the light mode is a copy of the dark one, as the core reads such a scheme.
-    let mut midnight = sample("midnight", sample_about("Midnight", "1.0.0", "Deep blue, dark only"));
-    let dark = &mut midnight.colors.dark;
-    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x070B14), Rgba::hex(0x0C1220), Rgba::hex(0x111A2C));
-    (dark.accent, dark.on_accent) = (Rgba::hex(0x6E8BFF), Rgba::hex(0x0A1030));
-    midnight.colors.light = midnight.colors.dark;
-    midnight.dark_only = true;
-    let mut schemes = vec![ColorScheme::standard(), harbor, paper, midnight];
-    let forced = torro_gui::scheme::active();
-    if !schemes.iter().any(|scheme| scheme.id == forced.id) {
-        schemes.push((*forced).clone());
-    }
-    let mut entries: Vec<SchemeEntry> =
-        schemes.into_iter().map(|scheme| Entry::new(info(&scheme), Some(scheme))).collect();
-    entries.push(Entry::new(neon, None));
-    entries
 }
 
 /// The entry the core lists while a Nextcloud sign-in runs (empty id, the login link), for the

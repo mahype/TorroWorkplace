@@ -91,9 +91,7 @@ use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, 
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_inbox::SourceInfo;
-use torro_ipc::{
-    AccountInfo, AppInfo, ApprovalInfo, ClientInfo, FontInfo, FontOrigin, Request, Response, Status, client,
-};
+use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, Status, client};
 use torro_pim::Collection;
 use torro_setups::TemplateSummary;
 
@@ -304,7 +302,7 @@ pub enum Action {
     Setup(crate::client_setup::Job),
     /// List the designs, fonts and colour schemes (`settings.list_designs`, `list_fonts`,
     /// `list_color_schemes`) for Appearance, each part read from its folder for its sample
-    /// ([`general::Entry`]). The demo lists its samples ([`launch::demo_looks`]).
+    /// ([`suite::Entry`]). The demo lists its samples ([`suite::demo_looks`]).
     ListLooks,
     /// Draw with the design, font or colour scheme of this id (Appearance, task L.23): this window
     /// at once, then saved (`settings.set_setting design | font | color_scheme`), which the other
@@ -312,7 +310,7 @@ pub enum Action {
     /// sample.
     Choose(Part, String),
     /// Open the folder of a part in the system's file manager, created first with its examples if it
-    /// is missing ([`general::folder`]). A local action without a request (`docs/api.md`, footnote
+    /// is missing ([`suite::folder`]). A local action without a request (`docs/api.md`, footnote
     /// 9). The demo opens nothing.
     OpenFolder(Part),
     /// Open the first-run setup at its first step (task W.9): "Continue setup" on the overview,
@@ -484,7 +482,7 @@ pub enum Message {
     /// The fonts of a new font are loaded.
     Design(design::Message),
     /// The designs, fonts and colour schemes for Appearance ([`Action::ListLooks`]).
-    Looks(Box<general::Lists>),
+    Looks(Box<suite::Lists>),
     /// Escape: close the open menu, or else whatever dialog the current page has open.
     Escape,
     /// Enter outside a text field: the setup's primary button.
@@ -627,7 +625,7 @@ impl Ui {
         // once the core answers (task S.35); the demo starts nothing.
         ui.target = ui.launch.client.clone().filter(|_| !demo);
         // A start on the Appearance page lists the parts, as opening it does.
-        let designs = match ui.section == Section::Appearance && general::unlisted(&ui.general) {
+        let designs = match ui.section == Section::Appearance && suite::unlisted(&ui.general.suite) {
             true => ui.perform(Action::ListLooks),
             false => Task::none(),
         };
@@ -1056,14 +1054,22 @@ impl Ui {
                     self.launch.design.clone().unwrap_or_else(|| torro_core::design::STANDARD_ID.into());
                 let mut messages = vec![Message::Select(Section::Appearance)];
                 match open {
-                    Open::DesignSchemes => messages.push(Message::General(general::Message::ToggleSchemes)),
-                    Open::DesignFonts => messages.push(Message::General(general::Message::ToggleFonts)),
+                    Open::DesignSchemes => {
+                        messages.push(Message::General(general::Message::Suite(suite::Message::ToggleSchemes)))
+                    }
+                    Open::DesignFonts => {
+                        messages.push(Message::General(general::Message::Suite(suite::Message::ToggleFonts)))
+                    }
                     Open::DesignFontsSearch => {
-                        messages.push(Message::General(general::Message::ToggleFonts));
-                        messages.push(Message::General(general::Message::FontQuery("mo".into())));
+                        messages.push(Message::General(general::Message::Suite(suite::Message::ToggleFonts)));
+                        messages
+                            .push(Message::General(general::Message::Suite(suite::Message::FontQuery("mo".into()))));
                     }
                     Open::DesignSwitched => {
-                        messages.push(Message::General(general::Message::Choose(Part::Design, "console".into())));
+                        messages.push(Message::General(general::Message::Suite(suite::Message::Choose(
+                            Part::Design,
+                            "console".into(),
+                        ))));
                     }
                     _ => {}
                 }
@@ -1234,7 +1240,7 @@ impl Ui {
                 settle(&mut self.pending_look, &mut self.data.settings, self.data.error.is_none());
                 // What the core switched with a design chosen here, once a reload carries it (task L.37).
                 if self.data.error.is_none() {
-                    general::loaded(&mut self.general, &self.data.settings, self.pending_look.design.is_some());
+                    suite::loaded(&mut self.general.suite, &self.data.settings, self.pending_look.design.is_some());
                 }
                 // `--design`, `--font` and `--color-scheme` of the demo win over the stored ones, like
                 // `--appearance`; each part is read only when its id changed (task L.23).
@@ -1365,7 +1371,7 @@ impl Ui {
                     .filter_map(|entry| entry.part.as_deref())
                     .map(|font| design::load_fonts(font).map(Message::Design))
                     .collect::<Vec<_>>();
-                general::listed(&mut self.general, *lists);
+                suite::listed(&mut self.general.suite, *lists);
                 return Task::batch(fonts);
             }
             Message::Escape => {
@@ -1385,7 +1391,9 @@ impl Ui {
                     Section::Api => api::escape(&self.api).map(Message::Api),
                     Section::Mcp => mcp::escape(&self.mcp).map(Message::Mcp),
                     Section::Connections => connections::escape(&self.connections).map(Message::Connections),
-                    Section::Appearance => general::escape(&self.general).map(Message::General),
+                    Section::Appearance => {
+                        suite::escape(&self.general.suite).map(|close| Message::General(general::Message::Suite(close)))
+                    }
                     _ => None,
                 };
                 return match page {
@@ -1441,7 +1449,7 @@ impl Ui {
         if matches!(self.section, Section::Accounts | Section::Ai) {
             accounts::leave(&mut self.accounts);
         }
-        general::leave(&mut self.general);
+        suite::leave(&mut self.general.suite);
         self.section = section;
         self.close_menus();
     }
@@ -1589,7 +1597,7 @@ impl Ui {
                 }
                 Task::none()
             }
-            Action::ListLooks if self.launch.demo => self.update(Message::Looks(Box::new(launch::demo_looks()))),
+            Action::ListLooks if self.launch.demo => self.update(Message::Looks(Box::new(suite::demo_looks()))),
             Action::ListLooks => Task::perform(list_looks(), |lists| Message::Looks(Box::new(lists))),
             Action::Choose(part, id) => self.choose(part, id),
             Action::OpenFolder(_) if self.launch.demo => Task::none(),
@@ -1647,7 +1655,7 @@ impl Ui {
     /// font the design `id` suggests, when the demo lists it as usable, and its mail view; then the
     /// page compares, as after a reload (task L.37).
     fn demo_suggestions(&mut self, id: &str) -> Task<Message> {
-        let (font, mail_view) = general::suggestions_of(&self.general, id);
+        let (font, mail_view) = suite::suggestions_of(&self.general.suite, id);
         if let Some(view) = mail_view {
             self.data.settings.mail_view = view;
         }
@@ -1656,7 +1664,7 @@ impl Ui {
             self.data.settings.font = font;
             task
         });
-        general::loaded(&mut self.general, &self.data.settings, false);
+        suite::loaded(&mut self.general.suite, &self.data.settings, false);
         task.map_or_else(Task::none, |task| task.map(Message::Design))
     }
 
@@ -1669,9 +1677,9 @@ impl Ui {
             scheme: (*torro_gui::scheme::active()).clone(),
         };
         match part {
-            Part::Design => look.design = (*general::design_of(&self.general, id)?).clone(),
-            Part::Font => look.font = (*general::font_of(&self.general, id)?).clone(),
-            Part::ColorScheme => look.scheme = (*general::scheme_of(&self.general, id)?).clone(),
+            Part::Design => look.design = (*suite::design_of(&self.general.suite, id)?).clone(),
+            Part::Font => look.font = (*suite::font_of(&self.general.suite, id)?).clone(),
+            Part::ColorScheme => look.scheme = (*suite::scheme_of(&self.general.suite, id)?).clone(),
         }
         design::show(look)
     }
@@ -2018,6 +2026,7 @@ fn crumb<'a>(section: Section, name: String) -> Element<'a, Message> {
 pub(crate) use torro_settings_ui::parts::{
     chevron, confirm, dialog, field, notice, one_line, picker, pressable, row_frame, setting_row, switch,
 };
+use torro_settings_ui::suite;
 
 /// Escape, wherever the focus is (a text input keeps it to itself otherwise), and `[` for the
 /// sidebar when no text field took it.
@@ -2165,9 +2174,9 @@ fn load_catalog() -> Task<Message> {
 /// `list_color_schemes`, each on its own: one that fails leaves the others) and reads each entry the
 /// core listed as usable from its folder for its sample, the way the windows read the part they
 /// draw with (task L.23: each part apart, no longer the three of one id together).
-async fn list_looks() -> general::Lists {
+async fn list_looks() -> suite::Lists {
     let Some(socket) = torro_ipc::socket_path() else {
-        return general::Lists::failed(tr("No home directory").to_string());
+        return suite::Lists::failed(tr("No home directory").to_string());
     };
     let designs = listing(&socket, Request::ListDesigns, |answer| match answer {
         Response::Designs { designs } => Ok(designs),
@@ -2183,47 +2192,8 @@ async fn list_looks() -> general::Lists {
     });
     let (designs, fonts, schemes) = tokio::join!(designs, fonts, schemes);
     // Fonts are opened to check them: off the window's thread.
-    let read = move || {
-        let (dirs, fonts_dir, schemes_dir) =
-            (general::folder(Part::Design), general::folder(Part::Font), general::folder(Part::ColorScheme));
-        general::Lists {
-            designs: designs.map(|list| {
-                list.into_iter()
-                    .map(|info| {
-                        let design = read_part(dirs.as_deref(), &info.id, info.valid, torro_core::design::load);
-                        general::Entry::design(info, design)
-                    })
-                    .collect()
-            }),
-            fonts: fonts.map(|list| {
-                // The computer's fonts from one scan, not one per entry (issue #299), and only to draw
-                // their samples: which there are and whether they can be used is the core's to say. A
-                // family this window can't find draws its sample in the standard.
-                let usable = |info: &FontInfo| info.origin == FontOrigin::System && info.valid;
-                let system = list.iter().any(usable).then(torro_core::design::SystemFonts::scan);
-                list.into_iter()
-                    .map(|info| {
-                        let font = match (&system, info.origin) {
-                            (Some(scan), FontOrigin::System) if info.valid => scan.load(&info.id).ok(),
-                            (_, FontOrigin::System) => None,
-                            _ => read_part(fonts_dir.as_deref(), &info.id, info.valid, torro_core::design::load_font),
-                        };
-                        general::Entry::new(info, font)
-                    })
-                    .collect()
-            }),
-            schemes: schemes.map(|list| {
-                list.into_iter()
-                    .map(|info| {
-                        let load = torro_core::design::load_color_scheme;
-                        let scheme = read_part(schemes_dir.as_deref(), &info.id, info.valid, load);
-                        general::Entry::new(info, scheme)
-                    })
-                    .collect()
-            }),
-        }
-    };
-    tokio::task::spawn_blocking(read).await.unwrap_or_else(|err| general::Lists::failed(err.to_string()))
+    let read = move || suite::Lists::read(designs, fonts, schemes);
+    tokio::task::spawn_blocking(read).await.unwrap_or_else(|err| suite::Lists::failed(err.to_string()))
 }
 
 /// Asks the core `request` and takes the list out of its answer with `pick`, which hands back any
@@ -2238,18 +2208,6 @@ async fn listing<T>(
         Ok(answer) => pick(answer).map_err(|other| format!("unexpected answer: {other:?}")),
         Err(err) => Err(err.to_string()),
     }
-}
-
-/// The part `id` read from `dir` with `load`, only when the core listed it as `valid`: a part that
-/// can't be read any more (its folder changed since the listing) has no sample either. The standard
-/// needs no folder; `load` answers it without touching the disk.
-fn read_part<T>(
-    dir: Option<&std::path::Path>,
-    id: &str,
-    valid: bool,
-    load: fn(&std::path::Path, &str) -> Result<T, Vec<torro_core::design::DesignError>>,
-) -> Option<T> {
-    valid.then(|| load(dir.unwrap_or(std::path::Path::new("")), id).ok()).flatten()
 }
 
 /// The id `settings` name for `part`.
@@ -2300,24 +2258,13 @@ fn settle(pending: &mut Forced, settings: &mut Settings, fresh: bool) {
     }
 }
 
-/// Creates the folder of `part` if it is missing – with the examples of all three folders, as the
-/// core's first start does (`designs::install_examples`) – and opens it with the system's file
-/// manager: `open` on macOS, the Explorer on Windows, `xdg-open` elsewhere (as the inbox opens a
-/// mail's folder). Returns what went wrong, for the notice above the page.
+/// Puts the examples of all three folders in place, as the core's first start does
+/// (`designs::install_examples`), then creates the folder of `part` if it is missing and opens it with
+/// the system's file manager ([`suite::reveal_folder`]). Returns what went wrong, for the notice above
+/// the page.
 fn open_folder(part: Part) -> Result<(), String> {
-    let dir = general::folder(part).ok_or_else(|| tr("No home directory").to_string())?;
     crate::designs::install_examples();
-    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    #[cfg(target_os = "macos")]
-    let program = "open";
-    #[cfg(target_os = "windows")]
-    let program = "explorer";
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let program = "xdg-open";
-    let mut child = std::process::Command::new(program).arg(&dir).spawn().map_err(|err| err.to_string())?;
-    // Waited for on a thread of its own, so it leaves no zombie behind.
-    std::thread::spawn(move || child.wait());
-    Ok(())
+    suite::reveal_folder(part)
 }
 
 /// Sends one request and reports the answer; errors come back as text.
@@ -2574,17 +2521,18 @@ mod tests {
         let usable =
             |ids: [&'static str; 5], of: &dyn Fn(&str) -> bool| ids.into_iter().filter(|id| of(id)).collect::<Vec<_>>();
         let designs = usable(["torro", "compact", "console", "neon", "harbor"], &|id| {
-            general::design_of(&demo.general, id).is_some()
+            suite::design_of(&demo.general.suite, id).is_some()
         });
         assert_eq!(designs, ["torro", "compact", "console"], "the broken one has nothing to draw with");
-        let fonts =
-            usable(["torro", "tabular", "brush", "gone", "plex"], &|id| general::font_of(&demo.general, id).is_some());
+        let fonts = usable(["torro", "tabular", "brush", "gone", "plex"], &|id| {
+            suite::font_of(&demo.general.suite, id).is_some()
+        });
         assert_eq!(fonts, ["torro", "tabular"]);
         let schemes = usable(["torro", "harbor", "paper", "midnight", "neon"], &|id| {
-            general::scheme_of(&demo.general, id).is_some()
+            suite::scheme_of(&demo.general.suite, id).is_some()
         });
         assert_eq!(schemes, ["torro", "harbor", "paper", "midnight"]);
-        assert!(general::scheme_of(&demo.general, "midnight").is_some_and(|scheme| scheme.dark_only));
+        assert!(suite::scheme_of(&demo.general.suite, "midnight").is_some_and(|scheme| scheme.dark_only));
         assert_eq!(demo.data.settings.design, "torro", "the standard is drawn");
         assert!(demo.page_overlay().is_none(), "the dropdown is closed");
         let _ = demo.view();
@@ -2603,7 +2551,7 @@ mod tests {
         assert_eq!((parts.data.settings.design.as_str(), parts.data.settings.font.as_str()), ("torro", "torro"));
 
         let mut real = ui(Section::Overview);
-        assert!(general::unlisted(&real.general));
+        assert!(suite::unlisted(&real.general.suite));
         assert!(real.update(Message::Select(Section::Appearance)).units() > 0, "opening the page asks the core");
         assert!(real.update(Message::Select(Section::General)).units() == 0, "General no longer shows them");
         assert!(real.update(Message::Select(Section::Workspaces)).units() == 0, "other pages do not");
@@ -2671,7 +2619,8 @@ mod tests {
         let mut ui = ui(Section::General);
         ui.design = Follow::new(None).in_dir(dir.path().to_path_buf());
 
-        let task = ui.update(Message::General(general::Message::Choose(Part::Design, "chosen".into())));
+        let task =
+            ui.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "chosen".into()))));
         assert_eq!(design::active().id, "chosen", "drawn at once, before the core answers");
         assert!(task.units() >= 1, "the request that saves it; its font is the standard's, nothing to load");
         assert_eq!(ui.data.settings.design, "chosen", "the check mark moves at once");
@@ -2682,7 +2631,8 @@ mod tests {
         let _ = ui.update(with_design("chosen"));
         assert_eq!(ui.pending_look, Forced::default(), "saved");
 
-        let _ = ui.update(Message::General(general::Message::Choose(Part::Design, "torro".into())));
+        let _ =
+            ui.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "torro".into()))));
         assert!(design::active().is_standard());
         let _ = ui.update(Message::Sent(Err("the core refused it".into())));
         let _ = ui.update(with_design("chosen"));
@@ -2720,13 +2670,17 @@ mod tests {
         let mut ui = ui(Section::Appearance);
         ui.design = Follow::new(None).in_folders(folders);
 
-        let task = ui.update(Message::General(general::Message::Choose(Part::ColorScheme, "calm".into())));
+        let task = ui.update(Message::General(general::Message::Suite(suite::Message::Choose(
+            Part::ColorScheme,
+            "calm".into(),
+        ))));
         assert_eq!(torro_gui::scheme::active().id, "calm", "drawn at once");
         assert!(design::active().is_standard() && torro_gui::font::active().is_standard(), "the others stay");
         assert_eq!(task.units(), 1, "only the request that saves it: a colour scheme loads nothing");
         assert_eq!(ui.data.settings.color_scheme, "calm");
 
-        let task = ui.update(Message::General(general::Message::Choose(Part::Font, font.clone())));
+        let task =
+            ui.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Font, font.clone()))));
         assert_eq!(torro_gui::font::active().id, font);
         assert!(task.units() > 1, "the save and the font's files");
         assert_eq!(torro_gui::scheme::active().id, "calm", "the colour scheme stays");
@@ -2775,19 +2729,23 @@ mod tests {
         let _switching = switching();
         let mut demo = started(&["--demo", "--open", "design"]);
         demo.data.settings.design = "compact".into();
-        let _ = demo.update(Message::General(general::Message::Choose(Part::Design, "torro".into())));
+        let _ = demo
+            .update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "torro".into()))));
         assert_eq!(demo.data.settings.design, "torro");
         assert!(design::active().is_standard());
         // A font, not a colour scheme: the tests beside compare themes, which a font leaves alone.
-        let _ = demo.update(Message::General(general::Message::Choose(Part::Font, "tabular".into())));
+        let _ = demo
+            .update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Font, "tabular".into()))));
         assert_eq!(torro_gui::font::active().id, "tabular", "drawn from memory");
         assert!(demo.pending_look.is_empty(), "nothing is saved, so nothing waits");
-        let _ = demo.update(Message::General(general::Message::Choose(Part::Font, "brush".into())));
+        let _ =
+            demo.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Font, "brush".into()))));
         assert_eq!(torro_gui::font::active().id, "tabular", "a broken sample has nothing to draw with");
         assert_eq!(demo.data.settings.font, "brush", "the check mark falls back to the standard (drawn)");
-        let _ = demo.update(Message::General(general::Message::Choose(Part::Font, "torro".into())));
+        let _ =
+            demo.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Font, "torro".into()))));
         assert!(torro_gui::font::active().is_standard());
-        let _ = demo.update(Message::General(general::Message::OpenFolder(Part::Font)));
+        let _ = demo.update(Message::General(general::Message::Suite(suite::Message::OpenFolder(Part::Font))));
         assert_eq!(demo.notice, None, "the demo opens nothing");
     }
 
@@ -2810,7 +2768,7 @@ mod tests {
         }
 
         let mut ui = ui(Section::Appearance);
-        let _ = ui.update(Message::Looks(Box::new(launch::demo_looks())));
+        let _ = ui.update(Message::Looks(Box::new(suite::demo_looks())));
         let reloaded = |design: &str, view: torro_core::settings::MailFormat| {
             let settings = Settings { design: design.into(), mail_view: view, ..Settings::default() };
             Message::Loaded(Box::new(Data { settings, ..Data::default() }))
@@ -2818,13 +2776,14 @@ mod tests {
         let html = torro_core::settings::MailFormat::Html;
         let text = torro_core::settings::MailFormat::Text;
         let _ = ui.update(reloaded("torro", html));
-        let task = ui.update(Message::General(general::Message::Choose(Part::Design, "console".into())));
+        let task = ui
+            .update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "console".into()))));
         assert!(task.units() >= 1, "the request that saves it");
         let _ = ui.update(reloaded("torro", html));
         assert_eq!(ui.pending_look.design.as_deref(), Some("console"), "a reload from before the save");
         let _ = ui.update(reloaded("console", text));
         assert!(ui.pending_look.is_empty(), "saved");
-        assert!(general::switched(&ui.general).is_some(), "the mail view switched with the design");
+        assert!(suite::switched(&ui.general.suite).is_some(), "the mail view switched with the design");
 
         design::show(torro_core::design::Selection::standard());
     }
@@ -2838,7 +2797,7 @@ mod tests {
         assert_eq!(demo.data.settings.design, "console");
         assert_eq!(demo.data.settings.mail_view, torro_core::settings::MailFormat::Text);
         assert_eq!(demo.data.settings.font, Settings::default().font, "JetBrains Mono is missing in the demo");
-        assert!(general::switched(&demo.general).is_some());
+        assert!(suite::switched(&demo.general.suite).is_some());
         assert_eq!(design::active().id, "console", "drawn at once");
         let _ = demo.view();
         design::show(torro_core::design::Selection::standard());
@@ -3502,7 +3461,7 @@ mod tests {
         let mut demo = started(&["--demo", "--section", "general"]);
         let _ = demo.update(Message::Resized(Size::new(1440.0, 900.0)));
         for _ in 0..3 {
-            let _ = demo.update(Message::General(general::Message::Zoom(Step::In)));
+            let _ = demo.update(Message::General(general::Message::Suite(suite::Message::Zoom(Step::In))));
         }
         assert_eq!(demo.zoom.factor(), 1.5);
         assert_eq!(demo.data.settings.zoom.percent(), 150, "the page shows the level");
