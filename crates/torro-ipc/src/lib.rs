@@ -67,8 +67,8 @@ use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry
 use crate::bots::{Bot, BotSummary, Skill};
 use crate::mail::{
     BackupJob, BackupScope, BackupVerification, Delivery, IncompleteReason, MailAccountStats, MailCacheEstimate,
-    MailCacheJob, MailCachePolicy, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget, RestorePlan,
-    RestoreResult,
+    MailCacheJob, MailCachePolicy, MailHighlight, MailIndexProgress, MailSort, MailSource, MailSyncStatus, MoveTarget,
+    RestorePlan, RestoreResult,
 };
 use crate::tools::{FileInfo, FolderEntry, PdfTemplateId, ToolInfo};
 use crate::web::{SearchProviderId, SearchProviderInfo, SearchResults, WebPage};
@@ -2644,6 +2644,22 @@ pub enum Request {
         #[serde(default)]
         retry_unconfirmed: bool,
     },
+    /// Where the sync of the mail accounts the caller reaches stands, or of `account` alone (issue
+    /// #422): the run under way with its phase and progress, the last run and every folder with
+    /// what the last run did ([`Response::MailSyncStatus`]). Kept in memory only: empty after the
+    /// core started until the first run begins. Without `after` it answers at once; with the
+    /// `version` of an earlier answer it waits until the state changes, at most 25 seconds, and
+    /// then answers, changed or not (never more often than twice a second). Errors: `not-found`
+    /// for an `account` out of reach or without mail.
+    #[serde(rename = "mail.sync_status")]
+    MailSyncStatus {
+        /// Only this account: `mail:<address>`; omitted for every mail account in reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// The `version` of the last answer: wait for a change after it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<u64>,
+    },
     /// The folders of the accounts the caller reaches, or of `account` alone, with their role and
     /// numbers of unread and all messages ([`Response::MailFolders`]).
     #[serde(rename = "mail.list_folders")]
@@ -4510,6 +4526,13 @@ pub enum Response {
     /// Local inventory for accounts in reach ([`Request::MailAccountStats`]).
     MailAccountStats {
         accounts: Vec<MailAccountStats>,
+    },
+    /// Where the syncs stand ([`Request::MailSyncStatus`]). `version` changes with every change of
+    /// these accounts (it can also go down, when an account goes): compare it for equality only, and
+    /// pass it as `after` to wait for the next one.
+    MailSyncStatus {
+        version: u64,
+        accounts: Vec<MailSyncStatus>,
     },
     /// What came in and what lies in the inbox ([`Request::MailOverview`]).
     MailOverview {

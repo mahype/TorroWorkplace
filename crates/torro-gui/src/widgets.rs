@@ -4346,12 +4346,31 @@ pub struct PageAction<M> {
     tip: Option<String>,
     style: ButtonStyle,
     on_press: Option<M>,
+    /// The turn of the [`Icon::RefreshCw`] arrows while what the button started runs
+    /// ([`PageAction::spinning`]).
+    spin: Option<iced::Radians>,
 }
 
 impl<M: Clone> PageAction<M> {
     /// A `secondary` button with `label`; `None` for `on_press` shows it off.
     pub fn new(label: impl Into<String>, on_press: Option<M>) -> Self {
-        Self { icon: None, label: label.into(), tip: None, style: style::button::secondary, on_press }
+        Self { icon: None, label: label.into(), tip: None, style: style::button::secondary, on_press, spin: None }
+    }
+
+    /// The button while what it started really runs (issue #422, "Syncing…" in the head of a mail
+    /// account): the [`Icon::RefreshCw`] arrows turned by `angle` ([`spin_angle`]), the full look of
+    /// its style (`style::button::busy`) and no message, so a second click does nothing. The caller
+    /// redraws it while the work runs and shows the normal button again when it ended; the design
+    /// skill allows this one movement only while something really runs.
+    ///
+    /// ```ignore
+    /// PageAction::new(tr("Syncing…"), None).spinning(widgets::spin_angle(since, Instant::now()))
+    /// ```
+    pub fn spinning(mut self, angle: iced::Radians) -> Self {
+        self.icon = Some(Icon::RefreshCw);
+        self.on_press = None;
+        self.spin = Some(angle);
+        self
     }
 
     /// An icon (14) in front of the label.
@@ -4388,6 +4407,14 @@ impl<M: Clone> PageAction<M> {
             Some(tip) => format!("{} · {tip}", self.label),
             None => self.label.clone(),
         };
+        if let Some(angle) = self.spin {
+            let turning = button(center(spin_icon(angle, icon::SIZE, style::button::boxed)))
+                .width(size::control_sm())
+                .height(size::control_sm())
+                .padding(0)
+                .style(style::button::busy(style::button::boxed));
+            return with_tooltip(turning, tip);
+        }
         icon_only(which, tip, style::button::boxed, self.on_press)
     }
 
@@ -4395,12 +4422,50 @@ impl<M: Clone> PageAction<M> {
     where
         M: 'a,
     {
-        let button = text_button(self.icon, self.label, self.style, self.on_press);
+        let button = match self.spin {
+            Some(angle) => spinning_button(angle, self.label, self.style),
+            None => text_button(self.icon, self.label, self.style, self.on_press),
+        };
         match self.tip {
             Some(tip) => with_tooltip(button, tip),
             None => button,
         }
     }
+}
+
+/// How long one turn of the arrows of a [`PageAction::spinning`] takes: calm enough to read as
+/// "working", fast enough not to look stuck.
+const SPIN_TURN: Duration = Duration::from_millis(1200);
+
+/// The turn of spinning arrows `now`, after they started turning at `since`: one whole turn per
+/// 1.2 s, from 0 up to (not including) a full turn. A `now` before `since` is the start.
+pub fn spin_angle(since: std::time::Instant, now: std::time::Instant) -> iced::Radians {
+    let turn = SPIN_TURN.as_secs_f32();
+    let into = now.saturating_duration_since(since).as_secs_f32() % turn;
+    iced::Radians(std::f32::consts::TAU * into / turn)
+}
+
+/// The [`Icon::RefreshCw`] arrows `edge` large, turned by `angle` around their centre (the layout
+/// stays as it is), in the text colour of `style` at rest.
+fn spin_icon<'a, M: 'a>(angle: iced::Radians, edge: f32, style: ButtonStyle) -> Element<'a, M> {
+    icon(Icon::RefreshCw, edge)
+        .rotation(angle)
+        .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+        .into()
+}
+
+/// A [`text_button`] whose arrows turn by `angle`, in the full look of `style` and without a
+/// message ([`PageAction::spinning`]).
+fn spinning_button<'a, M: Clone + 'a>(angle: iced::Radians, label: String, style: ButtonStyle) -> Element<'a, M> {
+    let content =
+        row![spin_icon(angle, icon::SIZE_SM, style), typo::text(typo::caption(), label).wrapping(Wrapping::None)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
+    button(container(content).center_y(Fill))
+        .height(size::control_sm())
+        .padding(style::button_padding())
+        .style(style::button::busy(style))
+        .into()
 }
 
 /// What the head of a detail page offers at its right: at most one visible action and the "…"
@@ -4496,8 +4561,10 @@ fn head_is_wide(width: f32) -> bool {
 }
 
 /// A state in words with its dot in the colour of `status` (the pill of [`detail_head`]): as
-/// [`state_pill`], the colour only in the dot.
-fn status_pill<'a, M: 'a>(status: Status, label: String) -> Element<'a, M> {
+/// [`state_pill`], the colour only in the dot. Unlike a [`Mark`] it takes the colour from the theme
+/// when it draws, so a page that does not see the theme can show success or failure with it ("Last
+/// run" of a mail account's sync, issue #422).
+pub fn status_pill<'a, M: 'a>(status: Status, label: String) -> Element<'a, M> {
     let content = row![status_dot(status), typo::text(typo::caption(), label).wrapping(Wrapping::None)]
         .spacing(ICON_GAP)
         .align_y(Alignment::Center);
@@ -6111,6 +6178,33 @@ mod badge {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #422: the arrows turn once per 1.2 s and start over; a clock before the start is the
+    /// start.
+    #[test]
+    fn spinning_arrows_turn_once_per_turn_time() {
+        use std::f32::consts::TAU;
+        use std::time::{Duration, Instant};
+        let since = Instant::now();
+        let at = |ms: u64| super::spin_angle(since, since + Duration::from_millis(ms)).0;
+        assert!(at(0).abs() < 1e-4);
+        assert!((at(300) - TAU / 4.0).abs() < 1e-3, "a quarter after 0.3 s");
+        assert!((at(600) - TAU / 2.0).abs() < 1e-3, "half after 0.6 s");
+        assert!(at(1200).abs() < 1e-3, "a whole turn is the start again");
+        assert!((at(1500) - at(300)).abs() < 1e-3);
+        assert!((0.0..TAU).contains(&at(1199)));
+        assert!(super::spin_angle(since + Duration::from_secs(1), since).0.abs() < 1e-4);
+    }
+
+    /// Issue #422: a spinning action has the arrows and no message, so it takes no second click.
+    #[test]
+    fn a_spinning_action_takes_no_click() {
+        let action = super::PageAction::new("Syncing…", Some(1)).spinning(iced::Radians(1.0));
+        assert_eq!(action.icon, Some(super::Icon::RefreshCw));
+        assert!(action.on_press.is_none());
+        let _: iced::Element<'_, i32> = action.clone().view();
+        let _: iced::Element<'_, i32> = action.view_compact();
+    }
+
     /// DS.4: the segments and their gaps fill the strip exactly, the rest comes last, a small part
     /// stays visible.
     #[test]

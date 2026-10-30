@@ -949,6 +949,7 @@ fn describe(request: &Request) -> String {
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
         Request::MailAccountStats { .. } => "mail account statistics".into(),
+        Request::MailSyncStatus { .. } => "mail sync status".into(),
         Request::MailOverview { .. } => "mail overview".into(),
         // Never a selected archive path, job id or target account address (#267).
         Request::MailBackupCreate { .. } => "create mail backup".into(),

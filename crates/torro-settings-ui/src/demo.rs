@@ -12,7 +12,7 @@
 
 use std::sync::Mutex;
 
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
 use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Settings, ToolId, Tools};
@@ -29,7 +29,8 @@ use torro_ipc::inbox::{
 };
 use torro_ipc::mail::{
     MailAccountStats, MailCacheAction, MailCacheEstimate, MailCacheJob, MailCacheJobState, MailCacheMode,
-    MailCachePolicy, MailFolderStats, MailMonthCount, MailQuota,
+    MailCachePolicy, MailFolderStats, MailFolderSteps, MailFolderSync, MailFolderSyncState, MailMonthCount, MailQuota,
+    MailSyncLastRun, MailSyncPhase, MailSyncRun, MailSyncStatus, MailSyncTrigger,
 };
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{
@@ -487,6 +488,59 @@ impl Demo {
             // Counted with the last sync, as the service would have them by now.
             as_of: newest,
         }]
+    }
+
+    /// A sync of the sample mail account under way (`mail.sync_status`, issue #422), started by "Sync
+    /// now" three minutes ago: the third of four folders (the Archive of [`Demo::mail_stats`]) is
+    /// loading headers, and the run before it stopped at the same folder with a lost connection.
+    fn mail_sync(&self) -> MailSyncStatus {
+        let now = Utc::now();
+        let ago = |seconds: i64| now - Duration::seconds(seconds);
+        let folder = |id: &str, name: &str, on_server, stored, synced: Option<(i64, u64)>, state| MailFolderSync {
+            folder: id.into(),
+            name: name.into(),
+            on_server: Some(on_server),
+            stored,
+            last_synced: synced.map(|(seconds, _)| ago(seconds)),
+            duration_ms: synced.map(|(_, ms)| ms),
+            steps: synced.map_or_else(MailFolderSteps::default, |(_, ms)| MailFolderSteps {
+                checking_ms: ms,
+                ..MailFolderSteps::default()
+            }),
+            state,
+        };
+        MailSyncStatus {
+            account: format!("mail:{MAIL_ADDRESS}"),
+            running: Some(MailSyncRun {
+                trigger: MailSyncTrigger::Manual,
+                started: ago(180),
+                phase: MailSyncPhase::Headers,
+                folder_index: 3,
+                folder_count: 4,
+                folder: Some("f:demo-archive".into()),
+                done: 400,
+                of: 1_240,
+            }),
+            queued: false,
+            last_run: Some(MailSyncLastRun {
+                trigger: MailSyncTrigger::Scheduled,
+                started: ago(720),
+                finished: ago(720 - 134),
+                ok: false,
+                problem: Some(tr("Connection lost").into()),
+                folders_done: 2,
+                folder_count: 4,
+                failed_at: Some(3),
+                listing_ms: 900,
+                finishing_ms: 0,
+            }),
+            folders: vec![
+                folder("f:demo-inbox", "Inbox", 12_000, 12_000, Some((170, 800)), MailFolderSyncState::UpToDate),
+                folder("f:demo-sent", "Sent", 2_100, 2_100, Some((165, 400)), MailFolderSyncState::Synced),
+                folder("f:demo-archive", "Archive", 10_513, 9_273, None, MailFolderSyncState::Running),
+                folder("f:demo-junk", "Junk", 200, 200, Some((600, 62_000)), MailFolderSyncState::Waiting),
+            ],
+        }
     }
 
     /// Deliberately separate all-mail counts from the old 153-message catch-up sample.
@@ -1093,6 +1147,17 @@ impl Backend for Demo {
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::MailAccountStats { .. } => Response::MailAccountStats { accounts: self.mail_stats() },
+            // Always the same run: the demo never moves on, so it answers at once even with `after`
+            // (the mail window asks it only without, so nothing loops).
+            Request::MailSyncStatus { account, .. } => {
+                let status = self.mail_sync();
+                let accounts = if account.as_ref().is_none_or(|account| *account == status.account) {
+                    vec![status]
+                } else {
+                    vec![]
+                };
+                Response::MailSyncStatus { version: 1, accounts }
+            }
             Request::GetMailCachePolicy { account } => Response::MailCachePolicy {
                 policy: self.cache_policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(
                     MailCachePolicy {

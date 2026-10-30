@@ -560,6 +560,10 @@ Regeln:
   in Schmal wird nur die *dargestellte* Ansicht angepasst).
 - **Dauerbetrieb:** nichts blinkt oder bewegt sich ohne Anlass; neu zeichnen nur bei Änderung bzw.
   im Minutentakt; keine Spinner im Ruhezustand; geringe CPU- und GPU-Last.
+  **Ausnahme** (#422): Läuft ein Sync wirklich (oder wartet sein Lauf), drehen sich die Pfeile von
+  „Syncing…“ (`PageAction::spinning`, `widgets::spin_angle`, ein Umlauf je 1,2 s); der Knopf nimmt dann keinen
+  Klick. Nur dafür und nur solange: Der Takt zum Neuzeichnen (50 ms) läuft allein in dieser Zeit, danach steht
+  alles still. `busy_button` bleibt ruhig.
 - **HiDPI:** alle Maße logisch; Icons als Vektor; Linien 1 logischer Pixel.
 - Mindestgröße der Fenster 200×120 (`torro_gui::window`), damit Mini und Leiste möglich sind.
 - Fenstertitel und Inhalt ohne Doppelungen; keine Fake-Titelleiste.

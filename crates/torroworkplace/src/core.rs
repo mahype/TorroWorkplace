@@ -5374,6 +5374,7 @@ impl Core {
             // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }
             | Request::MailAccountStats { .. }
+            | Request::MailSyncStatus { .. }
             | Request::MailOverview { .. }
             | Request::SearchMail { .. }
             | Request::MailIndexStatus { .. }
@@ -19802,6 +19803,12 @@ mod tests {
         // A granted account passes to the handler, which knows no such account in this core.
         let unknown = crate::mail::service::MailError::NotFound.response();
         assert_eq!(ask(&core, Some(&key), folders("mail:anna@mailbox.org")).await, unknown);
+        // The sync's state (issue #422) the same way, also when it would wait for a change.
+        let sync = |account: &str| Request::MailSyncStatus { account: Some(account.into()), after: Some(1) };
+        assert_eq!(code(&ask(&core, Some(&key), sync("mail:bob@mailbox.org")).await), "not-found");
+        assert_eq!(ask(&core, Some(&key), sync("mail:anna@mailbox.org")).await, unknown);
+        let none = ask(&core, Some(&key), Request::MailSyncStatus { account: None, after: None }).await;
+        assert_eq!(none, Response::MailSyncStatus { version: 0, accounts: Vec::new() }, "no account in this core");
 
         // Over the limit is `error`; a message no reachable store knows is `not-found` before
         // anyone is asked (task M3.2; waiting for a person: `changing_mail_waits_…`).
