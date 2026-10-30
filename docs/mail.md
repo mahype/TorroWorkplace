@@ -103,9 +103,9 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
 
 | Größe | Aufbau |
 |---|---|
-| **Breit** (≥ 1024) | Seitenleiste (oben „Inbox“ für alle Konten, „Flagged“, „Drafts“, darunter je Konto die Ordner) · Nachrichtenliste · Lesebereich. Drei Spalten wie Mailbird, nur ohne Kontenleiste |
-| **Mittel** | Seitenleiste eingeklappt (52 px) · Liste · Nachricht im Paneel über der Liste (Muster U.3/U.5) |
-| **Schmal** | Liste; Nachricht öffnet sich darüber mit Zurück |
+| **Breit** (≥ 1024) | Seitenleiste (oben „Inbox“ für alle Konten, „Flagged“, „Drafts“, darunter je Konto die Ordner) · Nachrichtenliste · Lesebereich. Drei Spalten wie Mailbird, nur ohne Kontenleiste. Ist keine Mail offen, steht im Lesebereich die **Übersicht** (#409): Kennzahlen, neueste Mails von Menschen, was hereinkommt, wer am meisten schickt und wie viel davon man öffnet, was im Posteingang liegt. Über der Liste steht der Pfad `[Overview] › Ansicht`; „Overview“ (auch oben in der Seitenleiste) und `Esc` schließen die Mail, Ansicht und Scrollstand bleiben |
+| **Mittel** | Seitenleiste eingeklappt (52 px) · Liste · Nachricht im Paneel über der Liste (Muster U.3/U.5); „Overview“ öffnet die Übersicht ebenso als Paneel |
+| **Schmal** | Liste; Nachricht öffnet sich darüber mit Zurück; die Übersicht ersetzt die Liste, „‹ Ansicht“ führt zurück |
 | **Mini / Leiste** | Anzeige, keine Mini-App: ungelesen je Konto, die drei neuesten Absender. Frage: „Wer wartet auf mich?“ |
 
 - **Schreiben in einem eigenen Fenster.** Im Tiling kachelt es sich neben die Liste, man kann
@@ -289,6 +289,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Stand des Suchindex (#136) | Suchfeld: Hinweis „12 400 von 18 000 indiziert“ (Schritt 5 von #136) | `mail.index_status` · Read | `mail_index_status` |
 | Bestand und lokaler Cache (#263) | Mail-Einstellungen › Accounts, im Konto › Storage & search (#343) | `mail.account_stats`, `mail.get_cache_policy`, `mail.preview_cache` · Read; `mail.set_cache_policy` · Admin | entsprechende `mail_*`-Tools |
 | Cache und Index warten (#263) | Mail-Einstellungen › Accounts, im Konto › Storage & search (#343) | `mail.start_cache_job`, `mail.control_cache_job` · Write; `mail.cache_job_status` · Read | entsprechende `mail_*`-Tools |
+| Übersicht (#409) | Mail-Fenster: Lesebereich ohne offene Mail, „Overview“ im Pfad und in der Seitenleiste | `mail.overview` · Read (je Tag und Hauptkategorie, Kategorien mit Geöffnet, häufigste Absender, Posteingang nach Alter; nur erreichbare Konten); die neuesten Mails von Menschen über `mail.search_messages` | `mail_overview` |
 | Nachricht lesen | Lesebereich | `mail.get_message` · Read | `mail_get_message` |
 | Unterhaltung | Lesebereich | `mail.get_thread` · Read | `mail_get_thread` |
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |
