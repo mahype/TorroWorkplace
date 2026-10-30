@@ -983,8 +983,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No popups until {when}", "Keine Popups bis {when}"),
     ("Sent {n} since {day}", "{n} verschoben seit {day}"),
     // Mail window polish (E8.11)
-    ("Select a mail to read it", "Wähle eine Mail, um sie zu lesen"),
-    ("Its text and attachments show up here.", "Ihr Text und ihre Anhänge erscheinen hier."),
     // Invitations in the inbox, overlaps (E8.3c)
     ("No conflicts", "Keine Überschneidungen"),
     ("Overlaps with {title} at {time}", "Überschneidet sich mit {title} um {time}"),
