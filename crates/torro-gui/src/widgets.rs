@@ -4561,8 +4561,10 @@ fn head_is_wide(width: f32) -> bool {
 }
 
 /// A state in words with its dot in the colour of `status` (the pill of [`detail_head`]): as
-/// [`state_pill`], the colour only in the dot.
-fn status_pill<'a, M: 'a>(status: Status, label: String) -> Element<'a, M> {
+/// [`state_pill`], the colour only in the dot. Unlike a [`Mark`] it takes the colour from the theme
+/// when it draws, so a page that does not see the theme can show success or failure with it ("Last
+/// run" of a mail account's sync, issue #422).
+pub fn status_pill<'a, M: 'a>(status: Status, label: String) -> Element<'a, M> {
     let content = row![status_dot(status), typo::text(typo::caption(), label).wrapping(Wrapping::None)]
         .spacing(ICON_GAP)
         .align_y(Alignment::Center);
