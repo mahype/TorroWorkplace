@@ -2838,17 +2838,34 @@ pub fn sorting_sections(state: &State, data: &Data) -> SortingSections {
 
 /// The menu of *Sorting* under its button (issue #421): "None" and a chosen model the lists do not
 /// hold without a title, then "Decision models (fast)" and "Other models"; a section without models is
-/// left out. The slot's model carries the dot of the current choice. Higher than a panel, it scrolls.
+/// left out. With several AI accounts the account stands as a word after a model's name. The slot's
+/// model carries the dot of the current choice. Higher than a panel, it scrolls.
 fn sorting_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let SortingSections { first, fast, other, chosen } = sorting_sections(state, data);
+    let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
+    let several = accounts.len() > 1;
     let items = |choices: Vec<SlotChoice>| -> Vec<MenuItem<'a, Message>> {
         choices
             .into_iter()
             .map(|choice| {
                 let current = choice == chosen;
-                let label = choice.label.clone();
-                let mut item = MenuItem::new(Icon::Check, label, Message::PickSlot(AiSlot::Decide, choice));
+                // The account as a quiet word after the name ("Qwen3 235B A22B  OpenRouter"): the menu is
+                // narrower than the list was, and a name with a word behind it is cut with "…".
+                let account = choice
+                    .engine
+                    .as_deref()
+                    .filter(|_| several)
+                    .and_then(|engine| accounts.iter().find(|account| account.id == engine))
+                    .map(|account| account.label.clone());
+                let suffix = account.as_ref().map(|account| format!(" · {account}"));
+                let name = suffix
+                    .and_then(|suffix| choice.label.strip_suffix(suffix.as_str()).map(str::to_string))
+                    .unwrap_or_else(|| choice.label.clone());
+                let mut item = MenuItem::new(Icon::Check, name, Message::PickSlot(AiSlot::Decide, choice));
                 item.mark = None;
+                if let Some(account) = account {
+                    item = item.tag(account, false);
+                }
                 item.current(current)
             })
             .collect()
