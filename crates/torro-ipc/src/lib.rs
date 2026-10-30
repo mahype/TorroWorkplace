@@ -2662,6 +2662,19 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
     },
+    /// What came in over the last `range` days up to today (local days), of which kind, from whom
+    /// and how much of it was opened, and what lies in the inbox by age (issue #409,
+    /// [`Response::MailOverview`]). Counted from the core's store, so it works offline; reads and
+    /// changes nothing on the server. Errors: `not-found` for an `account` out of reach, the
+    /// store's error of a reachable account whose store is not open, otherwise `error`.
+    #[serde(rename = "mail.overview")]
+    MailOverview {
+        /// Only this account: `mail:<address>`; omitted for every mail account in reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// `week` (7 days), `month` (30) or `quarter` (90).
+        range: StatsRange,
+    },
     #[serde(rename = "mail.get_cache_policy")]
     GetMailCachePolicy { account: String },
     #[serde(rename = "mail.set_cache_policy")]
@@ -4492,6 +4505,10 @@ pub enum Response {
     /// Local inventory for accounts in reach ([`Request::MailAccountStats`]).
     MailAccountStats {
         accounts: Vec<MailAccountStats>,
+    },
+    /// What came in and what lies in the inbox ([`Request::MailOverview`]).
+    MailOverview {
+        overview: mail::MailOverview,
     },
     MailCachePolicy {
         policy: MailCachePolicy,

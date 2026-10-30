@@ -2268,8 +2268,14 @@ mod tests {
         assert_eq!(call("mail_get_thread", json!({"id": "m:1"})), Ok(Request::GetMailThread { id: "m:1".into() }));
         let attachment = call("mail_get_attachment", json!({"id": "m:1", "attachment": "2"}));
         assert_eq!(attachment, Ok(Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() }));
-        let reading =
-            ["mail_list_folders", "mail_search_messages", "mail_get_message", "mail_get_thread", "mail_get_attachment"];
+        let reading = [
+            "mail_list_folders",
+            "mail_search_messages",
+            "mail_get_message",
+            "mail_get_thread",
+            "mail_get_attachment",
+            "mail_overview",
+        ];
         let status = tools().iter().find(|tool| tool.name == "mail_index_status").cloned().expect("a tool");
         assert_eq!(status.annotations.and_then(|hints| hints.read_only_hint), Some(true));
         for name in reading {
@@ -3396,6 +3402,19 @@ mod tests {
         assert!(tool.description.as_deref().is_some_and(|text| text.contains("untrusted")));
         let hints = tool.annotations.clone().expect("hints");
         assert_eq!(hints.read_only_hint, Some(true));
+    }
+
+    /// Issue #409: the overview takes a span and, without an account, counts every one in reach.
+    #[test]
+    fn mail_overview_takes_a_span() {
+        let month = request_for("mail_overview", args(json!({"range": "month"})), &Utc);
+        assert_eq!(month, Ok(Request::MailOverview { account: None, range: torro_ipc::StatsRange::Month }));
+        let one =
+            request_for("mail_overview", args(json!({"range": "week", "account": "mail:anna@example.org"})), &Utc);
+        let account = Some("mail:anna@example.org".to_string());
+        assert_eq!(one, Ok(Request::MailOverview { account, range: torro_ipc::StatsRange::Week }));
+        let year = request_for("mail_overview", args(json!({"range": "year"})), &Utc);
+        assert!(matches!(year, Err(ToolError::Input(_))), "{year:?}");
     }
 
     #[test]

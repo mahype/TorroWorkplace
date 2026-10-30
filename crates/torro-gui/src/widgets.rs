@@ -488,6 +488,59 @@ pub fn icon_button<'a, M: Clone + 'a>(
     icon_only(which, tooltip, style::button::icon, on_press)
 }
 
+/// The first step of a path over a list that leads back somewhere (issue #409, "Overview" over the
+/// mail list): a small framed button ([`style::button::crumb`]) as high as an icon button, icon 14
+/// and `label` in `CAPTION`, [`space::s()`] at the sides; without `label` it is square with the icon
+/// at 16. `here` marks that what it leads to is shown. `tip` names the action, `key` is the key that
+/// does the same (shown as a [`kbd`] in the tooltip). `None` for `on_press` disables it.
+///
+/// ```ignore
+/// widgets::crumb_button(Icon::ChartColumn, Some(tr("Overview")), tr("Show overview"), Some("Esc"), false, Some(m))
+/// ```
+pub fn crumb_button<'a, M: Clone + 'a>(
+    which: Icon,
+    label: Option<&'a str>,
+    tip_label: &'a str,
+    key: Option<&'static str>,
+    here: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let style = style::button::crumb(here);
+    let on = on_press.is_some();
+    // The icon takes the button's text colour at rest, as `button_icon` does for the plain styles.
+    let mark = move |edge: f32| -> Element<'a, M> {
+        icon(which, edge)
+            .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+            .opacity(icon_opacity(on))
+            .into()
+    };
+    let b = match label {
+        Some(label) => {
+            let content = row![mark(icon::SIZE_SM), typo::text(typo::caption(), label).wrapping(Wrapping::None)]
+                .spacing(ICON_GAP)
+                .align_y(Alignment::Center);
+            button(container(content).center_y(Fill))
+                .height(size::control_sm())
+                .padding([0.0, space::s()])
+                .style(style)
+                .on_press_maybe(on_press)
+        }
+        None => button(center(mark(icon::SIZE)))
+            .width(size::control_sm())
+            .height(size::control_sm())
+            .padding(0)
+            .style(style)
+            .on_press_maybe(on_press),
+    };
+    let mut hint = row![typo::text(typo::caption(), tip_label).style(theme::text_2)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    if let Some(key) = key {
+        hint = hint.push(kbd(key));
+    }
+    tip(b, hint, tooltip::Position::Bottom)
+}
+
 /// An icon button that can be switched on, 28 × 28: ghost while `on` is false, the surface of a
 /// choice (`style::button::icon_chosen`) while it is true – the filter icon on the mail search field
 /// shows an active quick filter this way. Like [`icon_button`] it needs a tooltip; `None` disables it.

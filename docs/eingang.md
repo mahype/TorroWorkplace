@@ -22,7 +22,9 @@ Der Vorschlag: **Die Suite bekommt drei Säulen.**
 
 Alles, was von außen kommt, landet zuerst im Eingang, egal ob Mail, Chat-Nachricht,
 Benachrichtigung oder Agent. Von dort wird es **erledigt, vertagt, beantwortet oder zu einer Aufgabe
-bzw. einem Termin**. Der Eingang ist kein Archiv und kein Dashboard, er soll leer werden können.
+bzw. einem Termin**. Der Eingang ist kein Archiv und kein Dashboard, er soll leer werden können. Die Übersicht des
+Mail-Fensters (#409, [mail.md](mail.md)) zeigt Zahlen nur, damit man sieht, wo Aufräumen lohnt; sie ist
+kein Dashboard zum Verweilen.
 
 ```
  Mail ─┐                                   ┌─ erledigt

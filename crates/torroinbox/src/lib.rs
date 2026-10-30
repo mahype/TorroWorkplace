@@ -70,6 +70,7 @@ mod insights;
 mod keys;
 mod list;
 mod mail;
+mod mail_overview;
 mod notifications;
 mod overview;
 mod search;

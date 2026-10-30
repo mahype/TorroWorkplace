@@ -1,6 +1,6 @@
 //! Reading mail (task M3.1): the handlers of `mail.list_folders`, `mail.search_messages`,
-//! `mail.index_status` (issue #136), `mail.get_message`, `mail.get_thread` and
-//! `mail.get_attachment`. The core sends these requests here ([`answer`]) from
+//! `mail.index_status` (issue #136), `mail.get_message`, `mail.get_thread`,
+//! `mail.get_attachment`, `mail.account_stats` (issue #395) and `mail.overview` (issue #409). The core sends these requests here ([`answer`]) from
 //! `Core::handle_within`, with the caller's reach.
 //!
 //! **Reach.** A client sees only the accounts its rights name (`Rights::reaches_mail_account`).
@@ -55,6 +55,12 @@
 //! organizer and attendees ([`Invitation`]); `torro_pim_caldav::parse_events` reads the event, a
 //! small reader here the rest.
 //!
+//! **Overview** ([`mail_overview`], issue #409): `mail.overview` reads the rows of every store in
+//! reach – or of the one account asked for – over the stores' reading connections and counts them
+//! in [`super::overview`]; the newest mail of each sender is read from its own account's store, so
+//! a client never sees a row or a summary of an account out of its reach, not even when the same
+//! `Message-ID` lies in both. The answer is counted anew for every call and kept nowhere.
+//!
 //! **Log.** Nothing here writes a search term, folder name, file name or text anywhere; the
 //! core's audit log names accounts and hashed ids only (`audit::ids`).
 //!
@@ -65,7 +71,7 @@
 
 use std::sync::{Arc, PoisonError};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use torro_core::i18n::tr;
 use torro_inbox::SourceRef;
 use torro_ipc::Response;
@@ -73,12 +79,13 @@ use torro_ipc::api::{Access, Area};
 use torro_ipc::mail::{
     IncompleteReason, MailAccountStats, MailCacheMode, MailHighlight, MailSort, MailSource, PileFilter,
 };
-use torro_ipc::{Request, mail::limit_refusal};
+use torro_ipc::{Request, StatsRange, mail::limit_refusal};
 use torro_mail::{Invite, MailAddress, MailPile, Message, MessageSummary, Order};
 use torro_mail_imap::imap::Session;
 use torro_mail_imap::mime::{self, MimeError, ReadMessage};
 
 use super::fold::{self, Needle};
+use super::overview::{self, AccountRows};
 use super::query::{self, Field, Query};
 use super::service::{KeptStats, MailError, MailService, SharedStore};
 #[cfg(doc)]
@@ -118,8 +125,9 @@ pub async fn answer_counting(mail: &MailService, inbox: &Inbox, reach: Reach<'_>
     response
 }
 
-/// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.search_messages`,
-/// `mail.index_status`, `mail.get_message`, `mail.get_thread`, `mail.get_attachment`). The limits are checked first
+/// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.account_stats`,
+/// `mail.overview`, `mail.search_messages`, `mail.index_status`, `mail.get_message`,
+/// `mail.get_thread`, `mail.get_attachment`). The limits are checked first
 /// ([`limit_refusal`]), also for the app key. Any other request is `unsupported`. `inbox` says
 /// which mail waits in "Later" for a search (task E9.1); nothing here changes it.
 pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request: Request) -> Response {
@@ -129,6 +137,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
     let answered = match request {
         Request::MailFolders { account } => list_folders(mail, reach, account.as_deref()).await,
         Request::MailAccountStats { account } => account_stats(mail, reach, account.as_deref()).await,
+        Request::MailOverview { account, range } => mail_overview(mail, inbox, reach, account.as_deref(), range).await,
         Request::SearchMail {
             account,
             folder,
@@ -239,6 +248,46 @@ async fn account_stats(mail: &MailService, reach: Reach<'_>, account: Option<&st
         accounts.push(stats);
     }
     Ok(Response::MailAccountStats { accounts })
+}
+
+// ----- mail.overview -----
+
+/// `mail.overview` (issue #409): what came in over `range` up to today (local days) and what lies in
+/// the inbox, counted from the stores `reach` sees ([`scoped`]: `not-found` for an account out of
+/// reach). The newest mail of each sender comes from its own account's store; a sender whose mail
+/// went in between is left out. An unreadable catalogue of categories is `error`.
+async fn mail_overview(
+    mail: &MailService,
+    inbox: &Inbox,
+    reach: Reach<'_>,
+    account: Option<&str>,
+    range: StatsRange,
+) -> Answer<Response> {
+    let stores = scoped(mail, reach, account).await?;
+    let catalogue = inbox.catalogue().map_err(|message| Box::new(Response::Error { code: "error".into(), message }))?;
+    let today = Local::now().date_naive();
+    let since = overview::since(range, today);
+    let mut accounts = Vec::with_capacity(stores.len());
+    for (id, store) in &stores {
+        let (came_in, in_inbox) = store
+            .read(move |store| Ok((store.overview_rows(since)?, store.inbox_rows()?)))
+            .await
+            .map_err(store_failed)?;
+        accounts.push(AccountRows { account: id.clone(), came_in, inbox: in_inbox });
+    }
+    let counted =
+        overview::count(&accounts, &catalogue, range, today, Utc::now(), |at| at.with_timezone(&Local).date_naive());
+    let mut overview = counted.overview;
+    for sender in counted.senders {
+        let Some((_, store)) = stores.iter().find(|(id, _)| *id == sender.latest.account) else { continue };
+        let id = sender.latest.id.clone();
+        // A sender whose newest mail went meanwhile, or cannot be read, is left out: the rest of the
+        // overview stands without it.
+        if let Ok(Some(latest)) = store.read(move |store| store.summary(&id)).await {
+            overview.senders.push(sender.with(latest));
+        }
+    }
+    Ok(Response::MailOverview { overview })
 }
 
 /// Counts the statistics of the account `id` over the store's reading connection
@@ -1570,6 +1619,74 @@ pub(crate) mod tests {
             stats_of(answer(&service, reach, all).await).into_iter().map(|stats| stats.account).collect();
         assert_eq!(seen, [ANNA]);
         let theirs = Request::MailAccountStats { account: Some(second.id.clone()) };
+        assert_eq!(code(&answer(&service, reach, theirs).await), "not-found");
+    }
+
+    /// The overview of an answer to `mail.overview`.
+    fn overview_of(response: Response) -> torro_ipc::mail::MailOverview {
+        let Response::MailOverview { overview } = response else { panic!("an overview, got {response:?}") };
+        overview
+    }
+
+    /// #409: `mail.overview` counts the same mail in two accounts once, and keeps a client to the
+    /// accounts it may see: no row and no newest mail of another account, not even through a
+    /// `Message-ID` both accounts hold, and an account out of reach is `not-found`.
+    #[tokio::test]
+    async fn the_overview_counts_each_mail_once_and_stays_within_reach() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (anna, bernd) = (FakeImap::start(PASSWORD).await, FakeImap::start(PASSWORD).await);
+        // The same mail in both accounts, read only in Bernd's.
+        anna.add("INBOX", &mail_with("Shared", 1, "One"), &[]);
+        bernd.add("INBOX", &mail_with("Shared", 1, "One"), &["\\Seen"]);
+        let carla = mail_with("For Bernd only", 0, "Two")
+            .replace("From: Bernd <bernd@example.com>", "From: Carla <carla@example.net>");
+        bernd.add("INBOX", &carla, &[]);
+        let secrets = MemoryTokens::default();
+        let (first, second) =
+            (mail_account("anna@example.org", &anna.endpoint), mail_account("bernd@example.org", &bernd.endpoint));
+        store_accounts(dir.path(), &secrets, &[(&first, PASSWORD), (&second, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+        service.reload().await;
+        service.sync_all(Reach::Suite).await.expect("synced");
+        let all = Request::MailOverview { account: None, range: StatsRange::Week };
+        let came_in = |overview: &torro_ipc::mail::MailOverview| -> u32 {
+            overview.days.iter().flat_map(|day| &day.groups).map(|group| group.count).sum()
+        };
+        let senders = |overview: &torro_ipc::mail::MailOverview| -> Vec<(String, u32, u32, String)> {
+            overview
+                .senders
+                .iter()
+                .map(|sender| (sender.address.clone(), sender.count, sender.opened, sender.latest.account.clone()))
+                .collect()
+        };
+
+        let everything = overview_of(answer(&service, Reach::Suite, all.clone()).await);
+        assert_eq!(everything.days.len(), 7);
+        assert_eq!(came_in(&everything), 2, "the shared mail once");
+        assert_eq!(
+            senders(&everything),
+            [("bernd@example.com".into(), 1, 1, ANNA.into()), ("carla@example.net".into(), 1, 0, second.id.clone())],
+            "opened, as Bernd's copy is"
+        );
+        let in_inbox: u32 = everything.inbox.iter().map(|entry| entry.today + entry.week + entry.older).sum();
+        assert_eq!(in_inbox, 2);
+
+        // A client that may see Anna's account only counts her store alone.
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
+        let reach = Reach::Client(&rights);
+        let hers = overview_of(answer(&service, reach, all).await);
+        assert_eq!(came_in(&hers), 1);
+        assert_eq!(
+            senders(&hers),
+            [("bernd@example.com".into(), 1, 0, ANNA.into())],
+            "not opened: Bernd's copy is not hers"
+        );
+        assert!(hers.senders.iter().all(|sender| sender.latest.account == ANNA));
+        let only_hers = Request::MailOverview { account: Some(ANNA.into()), range: StatsRange::Week };
+        let asked = overview_of(answer(&service, reach, only_hers).await);
+        assert_eq!((came_in(&asked), senders(&asked)), (came_in(&hers), senders(&hers)));
+        let theirs = Request::MailOverview { account: Some(second.id.clone()), range: StatsRange::Week };
         assert_eq!(code(&answer(&service, reach, theirs).await), "not-found");
     }
 

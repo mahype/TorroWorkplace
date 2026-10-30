@@ -7,6 +7,8 @@
 //! - [`read`]: the reading commands (`mail.list_folders`, `mail.search_messages`,
 //!   `mail.index_status`, `mail.get_message`, `mail.get_thread`, `mail.get_attachment`, task M3.1,
 //!   issue #136).
+//! - [`overview`]: the numbers of `mail.overview` – what came in, from whom, how much was opened,
+//!   and what lies in the inbox (issue #409).
 //! - [`query`], [`fold`]: the query language of the search, and text as the search compares it
 //!   (folding, highlights; issue #136).
 //! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
@@ -48,6 +50,7 @@ pub mod backup;
 pub mod filters;
 pub mod fold;
 pub mod inbox_feed;
+pub mod overview;
 pub mod query;
 pub mod read;
 pub mod save;

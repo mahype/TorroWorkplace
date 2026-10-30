@@ -232,6 +232,24 @@ pub mod button {
         secondary(theme, status)
     }
 
+    /// The first step of a path over a list that leads somewhere ("Overview" over the mail list,
+    /// issue #409): it reads as a small button – no surface, a `line_strong` edge and `text_2`; on
+    /// hover `hover` with a `line_selected` edge and `text`. `here` (what it leads to is shown) is
+    /// `selected` with `line_selected` and `text` in every state, like the active [`segment`].
+    /// Radius [`radius::xs()`].
+    pub fn crumb(here: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
+        move |theme, status| {
+            let p = palette(theme);
+            if here {
+                let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::xs() };
+                return chosen(status, rest);
+            }
+            let rest =
+                Rest { background: Color::TRANSPARENT, text: p.text_2, border: p.line_strong, radius: radius::xs() };
+            framed(&p, status, rest, p.text)
+        }
+    }
+
     /// A destructive action ("Delete event"): a [`ghost`] button with the text in
     /// [`Palette::error_text`] (≥ 4.5:1 on every surface, both modes), in every state.
     pub fn danger(theme: &Theme, status: Status) -> Style {
@@ -1062,11 +1080,12 @@ mod tests {
     #[test]
     fn a_choice_reads_as_chosen_in_every_state() {
         for (mode, theme, p) in modes() {
-            let chosen: [(&str, ButtonStyle); 4] = [
+            let chosen: [(&str, ButtonStyle); 5] = [
                 ("choice_chip(on)", Box::new(button::choice_chip(true))),
                 ("segment(active)", Box::new(button::segment(true))),
                 ("icon_chosen", Box::new(button::icon_chosen)),
                 ("preview_tile(on)", Box::new(button::preview_tile(true, true))),
+                ("crumb(here)", Box::new(button::crumb(true))),
             ];
             for (name, style) in chosen {
                 for status in [Status::Active, Status::Hovered, Status::Pressed] {
@@ -1076,6 +1095,14 @@ mod tests {
                     assert_eq!(s.text_color, p.text, "{mode}: {name} {status:?} text");
                 }
             }
+            // Issue #409: the crumb that leads back reads as a button – a frame at rest, the edge of a
+            // choice and full text under the pointer.
+            let crumb = button::crumb(false);
+            assert_eq!(crumb(&theme, Status::Active).border.color, p.line_strong, "{mode}: crumb at rest");
+            assert_eq!(crumb(&theme, Status::Active).text_color, p.text_2, "{mode}: crumb at rest");
+            assert_eq!(crumb(&theme, Status::Hovered).border.color, p.line_selected, "{mode}: crumb hovered");
+            assert!(same(bg(&crumb(&theme, Status::Hovered)), p.hover), "{mode}: crumb hovered");
+            assert_eq!(crumb(&theme, Status::Hovered).text_color, p.text, "{mode}: crumb hovered");
             // Not chosen: quieter text at rest, full text under the pointer.
             let off = button::choice_chip(false);
             assert_eq!(off(&theme, Status::Active).text_color, p.text_2, "{mode}");

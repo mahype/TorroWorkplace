@@ -64,6 +64,7 @@ use torro_mail::{
 use torro_mail_imap::mime::ReadMessage;
 
 use super::fold::{Needle, fold, head};
+use super::overview::{CameIn, InInbox};
 use super::query::{Field, Query, Test};
 use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 
@@ -1665,6 +1666,58 @@ impl MailStore {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })?;
         Ok((counted.0.max(0) as u64, counted.1.max(0) as u64))
+    }
+
+    /// What came in from `since` on for `mail.overview` (issue #409), newest first: every folder
+    /// but Sent and Drafts, so archived mail counts as well and one's own does not – nor a copy of
+    /// it elsewhere with the same Message-ID (Gmail's "All Mail" holds what one sent). A sender or
+    /// category this version cannot read counts as none: the overview must not fail on one message.
+    pub fn overview_rows(&self, since: DateTime<Utc>) -> Result<Vec<CameIn>, MailStoreError> {
+        let sql = "SELECT m.id, m.date, m.from_json, m.flags, m.category, m.rfc_message_id,
+                coalesce(f.role = 'trash', 0)
+            FROM messages m JOIN folders f ON f.id = m.folder_id
+            WHERE m.date >= ?1 AND coalesce(f.role, '') NOT IN ('sent', 'drafts')
+                AND (m.rfc_message_id IS NULL OR m.rfc_message_id NOT IN (
+                    SELECT o.rfc_message_id FROM messages o JOIN folders g ON g.id = o.folder_id
+                    WHERE g.role IN ('sent', 'drafts') AND o.rfc_message_id IS NOT NULL))
+            ORDER BY m.date DESC, m.seq DESC";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map([since.timestamp()], |row| {
+            let seconds: i64 = row.get(1)?;
+            let from: Option<String> = row.get(2)?;
+            let flags: i64 = row.get(3)?;
+            let category: Option<String> = row.get(4)?;
+            Ok(CameIn {
+                id: row.get(0)?,
+                date: DateTime::from_timestamp(seconds, 0).ok_or_else(|| conversion_failure(1, "date out of range"))?,
+                from: from.and_then(|json| serde_json::from_str(&json).ok()),
+                seen: flags & FLAG_SEEN != 0,
+                category: category.as_deref().and_then(Category::from_key),
+                message_id: row.get(5)?,
+                trash: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The mail of the inbox folder now for `mail.overview` (issue #409), newest first; none
+    /// without an inbox folder. A category this version cannot read counts as none, as in
+    /// [`MailStore::unread_by_category`].
+    pub fn inbox_rows(&self) -> Result<Vec<InInbox>, MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+        let sql = "SELECT date, category, rfc_message_id FROM messages WHERE folder_id = ?1
+            ORDER BY date DESC, seq DESC";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map([&inbox.id], |row| {
+            let seconds: i64 = row.get(0)?;
+            let category: Option<String> = row.get(1)?;
+            Ok(InInbox {
+                date: DateTime::from_timestamp(seconds, 0).ok_or_else(|| conversion_failure(0, "date out of range"))?,
+                category: category.as_deref().and_then(Category::from_key),
+                message_id: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Keeps `answer` as the answer given to the invitation of the message `id`
@@ -3291,6 +3344,52 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(store.summary(&parcel).expect("summary").expect("there").subject, "Your parcel is on its way");
         assert_eq!(store.summary(&bill).expect("summary").expect("there").category, None, "said anew after the move");
+    }
+
+    /// Issue #409: the overview reads every folder but Sent and Drafts – nor copies of their mail
+    /// elsewhere – from `since` on, says what lies in the trash, and reads a category it does not know as none; the inbox rows are the
+    /// inbox folder's alone, and none without one.
+    #[test]
+    fn the_overview_reads_every_folder_but_sent_and_drafts() {
+        let (_tmp, _dirs, store) = open();
+        assert_eq!(store.inbox_rows().expect("read"), Vec::new(), "no inbox folder, no rows");
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let archive = folder(&store, "Archive", Some(Role::Archive));
+        let own = folder(&store, "Club", None);
+        let trash = folder(&store, "Trash", Some(Role::Trash));
+        let sent = folder(&store, "Sent", Some(Role::Sent));
+        let drafts = folder(&store, "Drafts", Some(Role::Drafts));
+        let mut read = message(3, "Read");
+        read.flags = vec![Flag::Seen, Flag::Flagged];
+        let read = add(&store, &inbox, &read);
+        let old = add(&store, &inbox, &message(1, "Too old"));
+        let filed = add(&store, &archive, &message(4, "Filed"));
+        let club = add(&store, &own, &message(5, "Club news"));
+        let thrown = add(&store, &trash, &message(6, "Thrown away"));
+        add(&store, &sent, &message(7, "My answer"));
+        add(&store, &drafts, &message(8, "Not yet sent"));
+        // Gmail's "All Mail" (role archive) holds a copy of what one sent: it is not mail that came in.
+        add(&store, &archive, &message(7, "My answer"));
+        store.set_category(&read, Some(MailCategory::by_rule(Category::Newsletter))).expect("kept");
+        store.db.execute("UPDATE messages SET category = 'from_the_future' WHERE id = ?1", [&filed]).expect("unknown");
+
+        let rows = store.overview_rows(day(2)).expect("read");
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, [thrown.as_str(), club.as_str(), filed.as_str(), read.as_str()], "newest first");
+        let of = |id: &str| rows.iter().find(|row| row.id == id).expect("there");
+        let first = of(&read);
+        assert_eq!((first.seen, first.category, first.trash), (true, Some(Category::Newsletter), false));
+        assert_eq!(first.date, day(3));
+        assert_eq!(first.from.as_ref().map(|from| from.address.as_str()), Some("bernd@example.com"));
+        assert_eq!(first.message_id.as_deref(), Some("<3@example.org>"));
+        assert_eq!(of(&filed).category, None, "a key this version does not know");
+        assert!(of(&thrown).trash && !of(&club).trash && !of(&club).seen);
+
+        let inbox_rows = store.inbox_rows().expect("read");
+        let dates: Vec<DateTime<Utc>> = inbox_rows.iter().map(|row| row.date).collect();
+        assert_eq!(dates, [day(3), day(1)], "the inbox folder now, whatever its age");
+        assert_eq!(inbox_rows[0].category, Some(Category::Newsletter));
+        assert!(store.summary(&old).expect("summary").is_some());
     }
 
     #[test]
