@@ -25,8 +25,8 @@
 //!   [`MailList::bare`]) – and the views of every account's mail ("Unfiltered", a category, a
 //!   search). [`body`] is the whole mail for the
 //!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3), the text in
-//!   the reading level (`typo::read()`); [`empty_reader`] keeps its column while no mail is open
-//!   (task E8.11). The panel of the hub and the App Feed splits the buttons (task E9.4): the mail
+//!   the reading level (`typo::read()`); while no mail is open the overview keeps its column (issue
+//!   #409, `mail_overview.rs`). The panel of the hub and the App Feed splits the buttons (task E9.4): the mail
 //!   standards at the top – Reply · Reply all · Forward | Archive · Delete, Flag, read –, what Torro
 //!   adds in its fixed footer. The mail window has none of them (task E14.3): every action on the
 //!   mail stands in its action rail at the right edge ([`action_groups`]: Reply · File · Torro ·
@@ -100,10 +100,10 @@ use torro_ipc::inbox::{
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
-    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget, PileFilter, PlannedPlace, SaveTo,
-    SavedFile,
+    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MailOverview, MoveRole, MoveTarget, PileFilter,
+    PlannedPlace, SaveTo, SavedFile,
 };
-use torro_ipc::{Request, Response};
+use torro_ipc::{Request, Response, StatsRange};
 use torro_mail::{
     AttachmentInfo, CategoryGroup, Draft, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, MailPile,
     Message as Mail, MessageSummary, Order, Role,
@@ -114,6 +114,7 @@ use crate::compose::{self, ComposeError, ComposeSource};
 use crate::detail;
 use crate::keys::Command as Key;
 use crate::list::{self, Look};
+use crate::mail_overview;
 
 /// How many messages one page of a folder holds.
 pub const PAGE: u32 = 50;
@@ -158,6 +159,23 @@ pub trait MailSource: Send + Sync {
         cursor: Option<String>,
         order: Order,
     ) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
+
+    /// `mail.overview` (issue #409, the overview of the mail window): what came in over `range` up to
+    /// today, by category and sender, and what lies in the inbox, for `account` (`mail:<address>`) or
+    /// every account the window reaches.
+    fn mail_overview(
+        &self,
+        account: Option<String>,
+        range: StatsRange,
+    ) -> impl Future<Output = Result<MailOverview, InboxError>> + Send;
+
+    /// "Latest from people" of the overview (issue #409): the newest [`mail_overview::PEOPLE`] mails of
+    /// the category "Personal", of `account` or every account, without the mail on a pile – as the
+    /// category lists them (`mail.search_messages` with `categories`).
+    fn latest_from_people(
+        &self,
+        account: Option<String>,
+    ) -> impl Future<Output = Result<Vec<MessageSummary>, InboxError>> + Send;
 
     /// `inbox.set_item_category`: files the mail `id` under `category` by hand; with `remember`
     /// later mail of its sender too (task E12.8). Returns the entry as it stands now.
@@ -451,6 +469,15 @@ impl MailSource for InboxClient {
         Ok(MailPage::of(messages, next))
     }
 
+    async fn mail_overview(&self, account: Option<String>, range: StatsRange) -> Result<MailOverview, InboxError> {
+        InboxClient::mail_overview(self, account, range).await
+    }
+
+    async fn latest_from_people(&self, account: Option<String>) -> Result<Vec<MessageSummary>, InboxError> {
+        let people = vec![torro_mail::Category::Personal];
+        InboxClient::latest_in_categories(self, account, people, mail_overview::PEOPLE).await
+    }
+
     async fn set_mail_category(
         &self,
         id: String,
@@ -614,6 +641,23 @@ impl MailSource for DemoSource {
         order: Order,
     ) -> Result<MailPage, InboxError> {
         Ok(MailPage::of(DemoSource::by_category(self, &categories, limit, order), None))
+    }
+
+    /// The demo counts nothing: its overview is made up around its inbox ([`mail_overview::demo`]),
+    /// whose mail – and senders – are its own.
+    async fn mail_overview(&self, account: Option<String>, range: StatsRange) -> Result<MailOverview, InboxError> {
+        let inbox = DemoSource::by_role(self, Role::Inbox, account.as_deref(), None, Order::NewestFirst);
+        // The demo's "now" is its newest mail's day; `--now` moves both.
+        let today =
+            inbox.first().map_or_else(|| Local::now().date_naive(), |m| m.date.with_timezone(&Local).date_naive());
+        Ok(mail_overview::demo(today, range, account.is_some(), &inbox))
+    }
+
+    async fn latest_from_people(&self, account: Option<String>) -> Result<Vec<MessageSummary>, InboxError> {
+        let mut people = DemoSource::by_category(self, &[torro_mail::Category::Personal], u32::MAX, Order::NewestFirst);
+        people.retain(|message| account.as_ref().is_none_or(|account| message.account == *account));
+        people.truncate(mail_overview::PEOPLE as usize);
+        Ok(people)
     }
 
     async fn set_mail_category(
@@ -842,6 +886,14 @@ impl MailSource for crate::empty::EmptySource {
         _order: Order,
     ) -> Result<MailPage, InboxError> {
         Ok(MailPage::of(Vec::new(), None))
+    }
+
+    async fn mail_overview(&self, _account: Option<String>, range: StatsRange) -> Result<MailOverview, InboxError> {
+        Ok(mail_overview::nothing(NaiveDate::default(), range))
+    }
+
+    async fn latest_from_people(&self, _account: Option<String>) -> Result<Vec<MessageSummary>, InboxError> {
+        Ok(Vec::new())
     }
 
     async fn set_mail_category(
@@ -1882,12 +1934,6 @@ pub fn message_card_height(message: &MessageSummary, width: f32) -> f32 {
     let chips = message.has_attachments || message.flags.contains(&Flag::Flagged) || message.invite.is_some();
     let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
     list::mail_card_height(list::preview_lines(snippet.as_deref(), width), chips)
-}
-
-/// The reader of the wide mail window while no mail is open (task E8.11): the column beside the
-/// list says what shows up there, so the list keeps its width and its edge.
-pub fn empty_reader<'a>() -> Element<'a, Message> {
-    list::empty_state(Icon::Mail, tr("Select a mail to read it"), tr("Its text and attachments show up here."))
 }
 
 /// The name of the account `mail:<address>` on a card: the domain of its address, as a row names
@@ -5656,7 +5702,6 @@ mod tests {
                 }
             }
         }
-        let _ = empty_reader();
         let entry = all.iter().find(|item| item.source.kind == SourceKind::Mail).cloned().expect("mail");
         let open = task(false);
         let done = ItemTask { due: Some(TaskDue::Date(now().date_naive())), ..task(true) };

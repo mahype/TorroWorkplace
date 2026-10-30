@@ -246,6 +246,7 @@ use crate::list::Look;
 use crate::mail::{
     self, Compose, FocusReply, FolderView, MailAction, MailEdit, MailLook, MailPage, MailSource, Opened, Reading,
 };
+use crate::mail_overview;
 use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
 use crate::search::{self, Found, QuickFilter, Scope, ScopeChoice, SearchView, Sort, Suggestion};
@@ -1124,6 +1125,9 @@ pub enum Sent {
     FolderDialog,
     /// "Show in folder": this folder in the file manager.
     ShowFolder(std::path::PathBuf),
+    /// `mail.overview` and the latest mail of people (issue #409): the account (or every one) and
+    /// the span.
+    MailOverview(Option<String>, torro_ipc::StatsRange),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -1379,6 +1383,8 @@ enum MenuAt {
     Row,
     /// Opened by a button of the panel or the reader (the `Ask…` messages): at that button.
     Panel,
+    /// Opened by "Mute" of a sender in the mail window's overview (issue #409): at that button.
+    Overview,
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -1543,10 +1549,21 @@ pub enum Open {
     /// A search of all mail for "budget" with the attachments filter set and the menu of quick
     /// filters open (issue #336), from the first account's inbox.
     SearchFilters,
+    /// The mail window's overview (issue #409): in the reader's column (wide), as a panel (medium)
+    /// or in place of the list (narrow).
+    MailOverview,
+    /// The overview with the day chart as a table.
+    MailOverviewTable,
+    /// The overview loading, kept for good.
+    MailOverviewLoading,
+    /// The overview's error with "Retry", kept for good.
+    MailOverviewError,
+    /// The overview of a span without mail and an empty inbox, kept for good.
+    MailOverviewEmpty,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 66] = [
+    const ALL: [(&'static str, Open); 71] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1613,6 +1630,11 @@ impl Open {
         ("set-aside", Open::SetAside),
         ("focus", Open::Focus),
         ("search-filters", Open::SearchFilters),
+        ("mail-overview", Open::MailOverview),
+        ("mail-overview-table", Open::MailOverviewTable),
+        ("mail-overview-loading", Open::MailOverviewLoading),
+        ("mail-overview-error", Open::MailOverviewError),
+        ("mail-overview-empty", Open::MailOverviewEmpty),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2382,6 +2404,35 @@ fn today() -> chrono::NaiveDate {
     chrono::Local::now().date_naive()
 }
 
+/// The overview of the mail window as the demo state `open` starts it (issue #409): open for every
+/// overview state, with the table, or with numbers that never come (loading), an error or nothing
+/// counted up to `today`.
+fn staged_overview(open: Option<Open>, today: chrono::NaiveDate) -> mail_overview::State {
+    let data = |result| {
+        let key = mail_overview::Key { account: None, range: torro_ipc::StatsRange::Month };
+        Some(mail_overview::Loaded { key, at: Instant::now(), result })
+    };
+    mail_overview::State {
+        open: matches!(
+            open,
+            Some(
+                Open::MailOverview
+                    | Open::MailOverviewTable
+                    | Open::MailOverviewLoading
+                    | Open::MailOverviewError
+                    | Open::MailOverviewEmpty
+            )
+        ),
+        table: open == Some(Open::MailOverviewTable),
+        data: match open {
+            Some(Open::MailOverviewError) => data(Err(DEMO_ERROR.to_owned())),
+            Some(Open::MailOverviewEmpty) => data(Ok(mail_overview::nothing(today, torro_ipc::StatsRange::Month))),
+            _ => None,
+        },
+        ..mail_overview::State::default()
+    }
+}
+
 /// The section of the settings that lists the rules: where "All rules" in the bell's menu leads in
 /// the windows that have it ([`Message::OpenRules`]). A test keeps it among the inbox's sections.
 const RULES_SECTION: &str = "rules";
@@ -2706,6 +2757,12 @@ pub struct App<S> {
     /// `insights.shown`, on the overview's entries (they keep the sidebar's numbers); its span,
     /// table switch and numbers stay while the window runs.
     insights: Insights,
+    /// The mail window's overview (issue #409, `mail_overview.rs`): whether it is open in the medium
+    /// and narrow window, its span, account and numbers.
+    mail_overview: mail_overview::State,
+    /// A mail of the overview's "Latest from people" that the list did not hold: it opens once the
+    /// view "Personal" is loaded.
+    open_after_load: Option<String>,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -3234,6 +3291,36 @@ pub enum Message {
     StatsTable(bool),
     /// The answer to `inbox.get_stats` for this span; dropped when another span is chosen by then.
     Stats(torro_ipc::StatsRange, Result<torro_ipc::InboxStats, String>),
+    /// "Overview" in the path over the list or in the sidebar of the mail window (issue #409): closes
+    /// the mail and shows the overview – in the reader's column (wide), as a panel (medium) or in
+    /// place of the list (narrow). The view and the list's place stay.
+    ShowMailOverview,
+    /// The ✕ of the overview's panel (medium) or "‹ {view}" over it (narrow): back to the list.
+    CloseMailOverview,
+    /// "7 days | 30 days | 90 days" of the overview.
+    MailOverviewRange(torro_ipc::StatsRange),
+    /// The account menu of the overview: one account, or every one.
+    MailOverviewAccount(mail_overview::AccountChoice),
+    /// "Table" of the overview: the day chart's numbers as a table (`true`) or as columns.
+    MailOverviewTable(bool),
+    /// "Retry" after the overview could not load.
+    MailOverviewRetry,
+    /// The answer to `mail.overview` for what was asked; dropped when something else is chosen by then.
+    MailOverviewLoaded(mail_overview::Key, Result<torro_ipc::mail::MailOverview, String>),
+    /// The latest mail of people for this account (or every one).
+    MailOverviewPeople(Option<String>, Result<Vec<MessageSummary>, String>),
+    /// A mail of "Latest from people" clicked: it opens, in the list when it lists it, else in
+    /// "Personal" once that is loaded.
+    MailOverviewPerson(String),
+    /// "Show all" of "Latest from people": the category "Personal".
+    MailOverviewAllPeople,
+    /// "Show them" of the suggestion to tidy up: the newsletters and ads, oldest first. Nothing is
+    /// archived.
+    MailOverviewTidy,
+    /// "Show mails" of a sender (its address): the search `from:<address>`.
+    MailOverviewSender(String),
+    /// "Mute" of a sender (its address): the bell's menu for its newest mail.
+    MailOverviewMute(String),
 }
 
 /// Asks `inbox` for the entries of `view`, the counts for "For me" and "Info" and the sources.
@@ -3932,6 +4019,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 table: open == Some(Open::InsightsTable),
                 ..Insights::default()
             },
+            mail_overview: staged_overview(open, (Utc::now() + offset).with_timezone(&chrono::Local).date_naive()),
+            open_after_load: None,
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -4063,6 +4152,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 || self.view.search().is_some()
                 || !self.selected_mail.is_empty()
                 || self.focus_reply.is_some()
+                || self.mail_overview_closes()
             {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
@@ -4130,7 +4220,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let letter = self.follow_letter();
         self.follow_text();
         self.follow_html();
-        Task::batch([task, more, letter])
+        // The overview of the mail window asks for its numbers once it shows (issue #409).
+        let overview = self.follow_mail_overview();
+        Task::batch([task, more, letter, overview])
     }
 
     /// The parsed HTML of the mail held (task M9.7, [`App::html`]): made when a mail with HTML is
@@ -4235,6 +4327,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.reading = false;
         self.cursor = None;
         self.pinned_mail = None;
+        // Another view shows the list: the overview's panel or page closes (issue #409).
+        self.mail_overview.open = false;
+        self.open_after_load = None;
         // Another view, or the pile again from the sidebar, ends "Focus & reply" (task E19.5), with
         // the undo of what was typed.
         self.end_focus();
@@ -4346,7 +4441,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return Task::none();
                 }
                 match result {
-                    Ok(loaded) => return self.take(loaded),
+                    Ok(loaded) => {
+                        let task = self.take(loaded);
+                        self.open_waiting_mail();
+                        return task;
+                    }
                     Err(err) => self.error = Some(load_failed(&err)),
                 }
             }
@@ -4607,7 +4706,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::Decide { approval, allow } => return self.decide(approval, allow),
             Message::Decided(result, allow) => return self.decided(result, allow),
-            Message::Refresh | Message::CoreReady => return self.load(),
+            Message::Refresh | Message::CoreReady => {
+                // The overview counts anew too, however fresh its numbers are (issue #409).
+                self.mail_overview.stale = true;
+                return self.load();
+            }
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
                 // The demo has no backup jobs to ask about: a staged one stays as it is shown.
@@ -4750,6 +4853,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 } else if !self.selected_mail.is_empty() {
                     self.selected_mail.clear();
                     self.mail_anchor = None;
+                } else if self.mail_overview_closes() {
+                    // The overview's panel (medium) or page (narrow) goes back to the list (issue #409).
+                    self.mail_overview.open = false;
                 } else if self.panel_open() || self.view.search().is_none() {
                     self.close_panel();
                 } else {
@@ -5321,6 +5427,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
             }
             Message::StatsTable(table) => self.insights.table = table,
+            Message::ShowMailOverview => return self.show_mail_overview(),
+            Message::CloseMailOverview => self.mail_overview.open = false,
+            Message::MailOverviewRange(range) => self.mail_overview.range = range,
+            Message::MailOverviewAccount(choice) => self.mail_overview.account = choice.account,
+            Message::MailOverviewTable(table) => self.mail_overview.table = table,
+            Message::MailOverviewRetry => {
+                self.mail_overview.data = None;
+                self.mail_overview.asked = None;
+            }
+            Message::MailOverviewLoaded(key, result) => {
+                self.mail_overview.answered(key, result, Instant::now());
+            }
+            Message::MailOverviewPeople(account, people) => {
+                if account == self.mail_overview.account {
+                    self.mail_overview.people = Some((account, people));
+                }
+            }
+            Message::MailOverviewPerson(id) => return self.open_person(id),
+            Message::MailOverviewAllPeople => return self.show_view(self.personal_view()),
+            Message::MailOverviewTidy => return self.show_old_newsletters(),
+            Message::MailOverviewSender(address) => {
+                self.mail_overview.open = false;
+                return self.update(Message::Suggest(mail_overview::from_query(&address)));
+            }
+            Message::MailOverviewMute(address) => return self.mute_sender(&address),
             Message::Stats(range, stats) => {
                 if range == self.insights.range {
                     self.insights.stats = Some(stats);
@@ -5640,7 +5771,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// open – the row may lie under it.
     fn menu_from_panel(&self) -> bool {
         match self.menu_at {
-            MenuAt::Row => false,
+            MenuAt::Row | MenuAt::Overview => false,
             MenuAt::Panel => true,
             MenuAt::Keys => self.panel_open(),
         }
@@ -5650,6 +5781,155 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn close_panel(&mut self) {
         self.detail = None;
         self.reading = false;
+    }
+
+    /// Whether the mail window shows its overview (issue #409): wide whenever no mail is open (in the
+    /// reader's column, where an empty reader stood before), medium and narrow while it is open and
+    /// no mail is. Never before the first load, over the settings, in "Focus & reply", in mini or in
+    /// the strip.
+    fn mail_overview_shown(&self) -> bool {
+        if self.launch.kind != Kind::Mail || !self.loaded || self.settings.is_some() || self.focus_reply.is_some() {
+            return false;
+        }
+        match self.class() {
+            SizeClass::Wide => !self.panel_open(),
+            SizeClass::Medium | SizeClass::Narrow => self.mail_overview.open && !self.panel_open(),
+            SizeClass::Mini | SizeClass::Strip => false,
+        }
+    }
+
+    /// Whether Escape closes the overview: its panel (medium) or page (narrow) shows. In the wide
+    /// window it is what stays when Escape closed the mail.
+    fn mail_overview_closes(&self) -> bool {
+        self.mail_overview_shown() && self.class() != SizeClass::Wide
+    }
+
+    /// "Overview" in the path or the sidebar (issue #409): closes the mail and shows the overview.
+    /// The view, the cursor and the list's place stay; the numbers are asked for once it shows
+    /// ([`App::follow_mail_overview`]).
+    fn show_mail_overview(&mut self) -> Task<Message> {
+        if self.launch.kind != Kind::Mail || self.holds_round() {
+            return Task::none();
+        }
+        self.close_menus();
+        self.end_focus();
+        self.close_panel();
+        self.mail_overview.open = true;
+        Task::none()
+    }
+
+    /// Keeps the overview in step after every message (issue #409): an open mail closes its panel or
+    /// page, a closed "Mute" menu lets go of its sender, and while it shows it asks for numbers that
+    /// are missing, for another span or account, or older than a minute. The forced demo states ask
+    /// nothing.
+    fn follow_mail_overview(&mut self) -> Task<Message> {
+        if self.panel_open() {
+            self.mail_overview.open = false;
+        }
+        if self.menu != Some(Menu::Mute) {
+            self.mail_overview.muting = None;
+        }
+        let forced = matches!(
+            self.launch.open,
+            Some(Open::MailOverviewLoading | Open::MailOverviewError | Open::MailOverviewEmpty)
+        );
+        if forced || !self.mail_overview_shown() || !self.mail_overview.due(Instant::now()) {
+            return Task::none();
+        }
+        let key = self.mail_overview.ask();
+        #[cfg(test)]
+        self.sent.push(Sent::MailOverview(key.account.clone(), key.range));
+        let (inbox, asked) = (self.inbox.clone(), key.clone());
+        let numbers = Task::perform(
+            async move { inbox.mail_overview(asked.account, asked.range).await.map_err(|err| err.to_string()) },
+            move |result| Message::MailOverviewLoaded(key, result),
+        );
+        let (inbox, account) = (self.inbox.clone(), self.mail_overview.account.clone());
+        let people = Task::perform(
+            async move {
+                let people = inbox.latest_from_people(account.clone()).await.map_err(|err| err.to_string());
+                (account, people)
+            },
+            |(account, people)| Message::MailOverviewPeople(account, people),
+        );
+        Task::batch([numbers, people])
+    }
+
+    /// The view of the category "Personal", which "Latest from people" lists from.
+    fn personal_view(&self) -> View {
+        let personal = torro_mail::Category::Personal;
+        View::Category(match self.categories.iter().find(|held| held.category == personal) {
+            Some(held) => mail::CategoryView::of_category(held),
+            None => mail::CategoryView {
+                group: CategoryGroup::WaitingForMe,
+                only: Some(personal),
+                categories: vec![personal],
+                label: torro_core::category::fallback_name(personal),
+            },
+        })
+    }
+
+    /// A mail of "Latest from people" clicked (issue #409): it opens in the list that holds it, else
+    /// "Personal" shows and it opens there once loaded ([`App::open_waiting_mail`]).
+    fn open_person(&mut self, id: String) -> Task<Message> {
+        if self.messages.iter().any(|message| message.id == id) {
+            self.mail_overview.open = false;
+            self.select_mail(id);
+            return Task::none();
+        }
+        let load = self.show_view(self.personal_view());
+        self.open_after_load = Some(id);
+        // What the view listed when it was last open may hold it already.
+        self.open_waiting_mail();
+        load
+    }
+
+    /// Opens the mail of "Latest from people" that waited for its view, once the list holds it.
+    fn open_waiting_mail(&mut self) {
+        let Some(id) = self.open_after_load.clone() else { return };
+        if self.messages.iter().any(|message| message.id == id) {
+            self.open_after_load = None;
+            self.select_mail(id);
+        }
+    }
+
+    /// "Show them" of the overview's suggestion (issue #409): the newsletters and ads, oldest first,
+    /// to look through. Nothing is archived; the order is not remembered for the window.
+    fn show_old_newsletters(&mut self) -> Task<Message> {
+        let view = View::Category(mail::CategoryView {
+            group: CategoryGroup::Info,
+            only: None,
+            categories: mail_overview::NEWSLETTERS_AND_ADS.to_vec(),
+            label: tr("Newsletters and ads").to_owned(),
+        });
+        let again = view == self.view && self.order != Order::OldestFirst;
+        self.order = Order::OldestFirst;
+        let show = self.show_view(view);
+        if again { self.load() } else { show }
+    }
+
+    /// "Mute" of a sender in the overview (issue #409): the bell's menu for its newest mail, at its
+    /// button.
+    fn mute_sender(&mut self, address: &str) -> Task<Message> {
+        let Some(sender) = self.mail_overview.sender(address) else { return Task::none() };
+        let Some(item) = rules::message_stand_in(&sender.latest, None, false) else { return Task::none() };
+        self.mail_overview.muting = Some(address.to_owned());
+        let task = self.open_mute_menu(item);
+        self.menu_at = MenuAt::Overview;
+        task
+    }
+
+    /// The overview as it stands at `place` (issue #409), its "Mute" menu hanging at `mute_at`.
+    fn mail_overview_page(&self, place: mail_overview::Place, mute_at: &Anchor) -> Element<'_, Message> {
+        let accounts = self.mail_groups().into_iter().map(|group| (group.account, group.title)).collect();
+        mail_overview::view(mail_overview::OverviewData {
+            state: &self.mail_overview,
+            catalogue: &self.categories,
+            accounts,
+            now: self.now,
+            place,
+            mute_at: mute_at.clone(),
+        })
     }
 
     /// The message whose whole mail the panel wants: in a folder the one under the cursor while
@@ -9396,15 +9676,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
-    /// The reader's column of the wide mail window while no mail is open (task E8.11,
-    /// `mail::empty_reader`): the list keeps the width it has beside a mail (its divider's, issue #130) and
-    /// its scrollbar stands at its edge, instead of a wide empty space beside it. `None` elsewhere,
-    /// while a panel is open, and before the first load (the loading or error state fills the window).
-    fn empty_reader<'a>(&self, class: SizeClass) -> Option<Element<'a, Message>> {
-        let shown = self.launch.kind == Kind::Mail && class == SizeClass::Wide && self.loaded;
-        (shown && !self.panel_open()).then(mail::empty_reader)
-    }
-
     /// The layout class of the window.
     fn class(&self) -> SizeClass {
         layout::of(self.size)
@@ -9460,7 +9731,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         // A dialog of the settings (the save target's editor) covers the band like the window's own.
         let question = self.menu == Some(Menu::DeleteForGood) || self.settings_dialog(class).is_some();
-        Cover::dialog(question).or(Cover::panel(class, self.panel_open())).or(Cover::drawer(class, self.drawer))
+        // The overview's panel covers the band like a mail's (issue #409).
+        let panel = self.panel_open() || (class == SizeClass::Medium && self.mail_overview_shown());
+        Cover::dialog(question).or(Cover::panel(class, panel)).or(Cover::drawer(class, self.drawer))
     }
 
     /// The question "Delete permanently?" (task E10.1) as a dialog over the window – dimmed, "Cancel"
@@ -9589,6 +9862,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav, accounts, folders) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
         let filters = Anchor::new();
+        // Where the overview's "Mute" menu hangs (issue #409).
+        let overview_at = Anchor::new();
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher, &folders);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
@@ -9711,7 +9986,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.choice_menu(tr("Hide from Notification Hub")),
                 Message::CloseMenu,
             )),
-            Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
+            Some(Menu::Mute) => {
+                // From a sender of the overview at its "Mute" (issue #409), else at the bell.
+                let at = if self.menu_at == MenuAt::Overview { &overview_at } else { &hide_at };
+                Some(widgets::floating(at, below, self.mute_menu(), Message::CloseMenu))
+            }
             // At the bell (the rail's "Mute…", task E14.3), else at the cursor's row. In the hub's
             // panel it opens to the right of the bell, like "Make task": aligned at its end the menu
             // ran out of the panel over the list.
@@ -9753,8 +10032,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .into();
         }
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
-        // open the reader's column says what shows up there (task E8.11).
-        if let Some(reader) = self.wide_reader(class, &anchors).or_else(|| self.empty_reader(class)) {
+        // open the reader's column holds the overview (issue #409).
+        let overview = (class == SizeClass::Wide && self.mail_overview_shown())
+            .then(|| self.mail_overview_page(mail_overview::Place::Page, &overview_at));
+        if let Some(reader) = self.wide_reader(class, &anchors).or(overview) {
             // The divider between them drags (issue #130).
             let width = self.split.width(self.split_limits());
             let body =
@@ -9799,7 +10080,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
-        let placed = panel::place(class, self.body(class, &rows, &filters), detail, layer);
+        // The overview as a panel over the list in the medium window, in place of the list in the
+        // narrow one (issue #409).
+        let overview_shown = self.mail_overview_shown();
+        let detail = detail.or_else(|| {
+            (class == SizeClass::Medium && overview_shown).then(|| {
+                let path = panel::path(Some(Mark::Icon(self.launch.kind.view_icon(&self.view))), [self.view_label()]);
+                let page = self.mail_overview_page(mail_overview::Place::Panel, &overview_at);
+                panel::panel(path, panel::title(tr("Overview")), page, Message::CloseMailOverview)
+            })
+        });
+        let content = if class == SizeClass::Narrow && overview_shown {
+            self.mail_overview_page(mail_overview::Place::Narrow, &overview_at)
+        } else {
+            self.body(class, &rows, &filters)
+        };
+        let placed = panel::place(class, content, detail, layer);
         // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
         // column at the right.
         let side = self.hub_side().then(|| {
@@ -9950,7 +10246,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // as in the medium layout, and every view stays one click away.
         let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
         match class {
-            SizeClass::Wide if !rail => shell::header_bar([], shell::header_title(Some(icon), name, note), trailing),
+            SizeClass::Wide if !rail => {
+                shell::header_bar([], self.mail_path(class, shell::header_title(Some(icon), name, note)), trailing)
+            }
             SizeClass::Wide | SizeClass::Medium => {
                 // The count right at the button, as at the title in the wide header: the button's
                 // own padding is the gap.
@@ -9960,7 +10258,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
                 // The rail at the left has the panel button and the window's mark (issue #127).
-                shell::header_bar([], title, trailing)
+                shell::header_bar([], self.mail_path(class, title.into()), trailing)
+            }
+            // The overview in place of the list (issue #409): "‹ {view} › Overview", the way back.
+            SizeClass::Narrow if self.mail_overview_shown() => {
+                let back = widgets::text_button(
+                    Some(Icon::ChevronLeft),
+                    name,
+                    style::button::ghost,
+                    Some(Message::CloseMailOverview),
+                );
+                let title = row![back, path_chevron(), typo::text(typo::body_strong(), tr("Overview"))]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+                let refresh = widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh));
+                shell::header_bar(self.narrow_leading(), title, [refresh])
             }
             // Where the band has the panel button (macOS), the header leaves it out.
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
@@ -9971,9 +10283,29 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(note) = note.filter(|_| narrow_count(self.launch.kind)) {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                shell::header_bar(self.narrow_leading(), title, trailing)
+                shell::header_bar(self.narrow_leading(), self.mail_path(class, title.into()), trailing)
             }
         }
+    }
+
+    /// The path over the mail window's list (issue #409): "Overview" as a small framed button – chosen
+    /// while the overview shows, its icon alone where it is narrow –, a chevron, then `title`. Every
+    /// other window keeps `title` alone.
+    fn mail_path<'a>(&self, class: SizeClass, title: Element<'a, Message>) -> Element<'a, Message> {
+        if self.launch.kind != Kind::Mail || self.mail_only {
+            return title;
+        }
+        let label = matches!(class, SizeClass::Wide | SizeClass::Medium).then(|| tr("Overview"));
+        let here = self.mail_overview_shown();
+        let crumb = widgets::crumb_button(
+            Icon::ChartColumn,
+            label,
+            tr("Show overview"),
+            Some("Esc"),
+            here,
+            Some(Message::ShowMailOverview),
+        );
+        row![crumb, path_chevron(), title].spacing(space::s()).align_y(Alignment::Center).into()
     }
 
     /// The header of Insights (task E8.8b): its title with the span counted ("7 Oct – 13 Oct"), then
@@ -10877,6 +11209,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // with the categories of an open one indented under it (issue #300), once at least one mail
         // has a category; then "Unfiltered", which the mail window always has.
         let mut items: Vec<Element<'a, Message>> = Vec::new();
+        // "Overview" of the mail window on top (issue #409), chosen while it shows.
+        if self.launch.kind == Kind::Mail && !self.mail_only {
+            items.push(widgets::sidebar_item_in(
+                mode,
+                Mark::Icon(Icon::ChartColumn),
+                tr("Overview"),
+                Trail::None,
+                self.mail_overview_shown(),
+                Message::ShowMailOverview,
+            ));
+            items.push(widgets::sidebar_gap_in(mode));
+        }
         for branch in self.category_entries() {
             items.extend(self.category_rows(mode, branch));
         }
@@ -11814,6 +12158,13 @@ fn order_words(class: SizeClass, choose_column: bool, arrange: bool) -> bool {
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
 /// now ("Newest first", "Oldest first"), the word beside the icon with `words`, else as tooltip; a
 /// click turns it.
+/// The chevron between the steps of a path, quiet.
+fn path_chevron<'a>() -> Element<'a, Message> {
+    icon::icon(Icon::ChevronRight, icon::SIZE_SM)
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) })
+        .into()
+}
+
 fn order_button<'a>(order: Order, words: bool) -> Element<'a, Message> {
     let (icon, word) = match order {
         Order::NewestFirst => (Icon::ArrowDownWideNarrow, tr("Newest first")),
@@ -18158,23 +18509,154 @@ mod tests {
         }
     }
 
-    /// Task E8.11 (finding 4): the wide mail window keeps the reader's column while nothing is open,
-    /// with the empty state, so the list keeps its width; the panel and the other layouts have none.
+    /// Issue #409 (before: the empty reader of task E8.11): the wide mail window keeps the reader's
+    /// column while nothing is open and shows the overview there, so the list keeps its width; a mail
+    /// open, the hub and the medium window without "Overview" show none.
     #[test]
-    fn the_wide_mail_window_keeps_an_empty_reader() {
+    fn the_wide_mail_window_shows_the_overview_while_no_mail_is_open() {
         for density in [Density::Comfortable, Density::Compact] {
             let mut app = mail_window(density, &[]);
             let _ = app.update(Message::Resized(WIDE));
             assert!(!app.panel_open());
-            assert!(app.empty_reader(SizeClass::Wide).is_some(), "{density:?}: the empty reader");
-            assert!(app.empty_reader(SizeClass::Medium).is_none(), "{density:?}: medium has no reader");
+            assert!(app.mail_overview_shown(), "{density:?}: the overview");
+            assert!(app.sent.iter().any(|sent| matches!(sent, Sent::MailOverview(None, torro_ipc::StatsRange::Month))));
             let _ = app.view();
         }
         let mut open = mail_window(Density::Comfortable, &["--open", "mail-entry"]);
         let _ = open.update(Message::Resized(WIDE));
-        assert!(open.empty_reader(SizeClass::Wide).is_none(), "a mail is open");
+        assert!(!open.mail_overview_shown(), "a mail is open");
+        let mut medium = mail_window(Density::Comfortable, &[]);
+        let _ = medium.update(Message::Resized(MEDIUM));
+        assert!(!medium.mail_overview_shown(), "medium shows it only when asked");
         let hub = overview_at(&["--view", "hub"]);
-        assert!(hub.empty_reader(SizeClass::Wide).is_none(), "the hub has no reader");
+        assert!(!hub.mail_overview_shown(), "the hub has no overview");
+    }
+
+    /// Delivers the overview's numbers and people as the demo counts them (issue #409).
+    fn deliver_overview(app: &mut App<DemoSource>) {
+        let Some(key) = app.mail_overview.asked.clone() else { return };
+        let numbers = block_on(app.inbox.mail_overview(key.account.clone(), key.range)).map_err(|err| err.to_string());
+        let people = block_on(app.inbox.latest_from_people(key.account.clone())).map_err(|err| err.to_string());
+        let _ = app.update(Message::MailOverviewLoaded(key.clone(), numbers));
+        let _ = app.update(Message::MailOverviewPeople(key.account, people));
+    }
+
+    /// Issue #409: "Overview" in the path and Escape close the mail and show the overview; the view
+    /// and the list's place stay.
+    #[test]
+    fn escape_and_the_path_show_the_overview_and_keep_the_list() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        deliver_overview(&mut app);
+        let first = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(first.clone()));
+        assert!(app.panel_open() && !app.mail_overview_shown(), "a mail is open");
+        app.scroll = Some((120.0, 600.0));
+        let view = app.view.clone();
+        let _ = app.update(Message::Escape);
+        assert!(app.mail_overview_shown(), "Escape shows the overview");
+        assert_eq!((app.view.clone(), app.scroll), (view.clone(), Some((120.0, 600.0))));
+        let _ = app.update(Message::SelectMail(first));
+        let _ = app.update(Message::ShowMailOverview);
+        assert!(app.mail_overview_shown(), "the path shows the overview");
+        assert_eq!((app.view.clone(), app.scroll), (view, Some((120.0, 600.0))));
+        let _ = app.view();
+    }
+
+    /// Issue #409: medium shows the overview as a panel, narrow in place of the list with the way
+    /// back; Escape, the way back and an opened mail close it.
+    #[test]
+    fn medium_and_narrow_open_the_overview_on_demand() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(MEDIUM));
+        assert!(!app.mail_overview_shown());
+        let _ = app.update(Message::ShowMailOverview);
+        assert!(app.mail_overview_shown(), "the panel");
+        deliver_overview(&mut app);
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(!app.mail_overview_shown(), "Escape closes the panel");
+        let _ = app.update(Message::Resized(NARROW));
+        let _ = app.update(Message::ShowMailOverview);
+        assert!(app.mail_overview_shown(), "in place of the list");
+        let _ = app.view();
+        let _ = app.update(Message::CloseMailOverview);
+        assert!(!app.mail_overview_shown(), "the way back");
+        let _ = app.update(Message::ShowMailOverview);
+        let first = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(first));
+        assert!(!app.mail_overview.open, "an opened mail closes it");
+    }
+
+    /// Issue #409: the span and the account ask for the numbers anew; the old ones stay meanwhile and
+    /// a late answer for another span is dropped.
+    #[test]
+    fn the_span_and_the_account_ask_for_the_overview() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!(app.sent.last(), Some(&Sent::MailOverview(None, torro_ipc::StatsRange::Month)));
+        let month = app.mail_overview.asked.clone().expect("asked");
+        deliver_overview(&mut app);
+        assert!(app.mail_overview.overview().is_some());
+        let _ = app.update(Message::MailOverviewRange(torro_ipc::StatsRange::Week));
+        assert_eq!(app.sent.last(), Some(&Sent::MailOverview(None, torro_ipc::StatsRange::Week)));
+        assert!(app.mail_overview.updating(), "the month stays until the week comes");
+        let _ = app.view();
+        let late = block_on(app.inbox.mail_overview(None, torro_ipc::StatsRange::Month)).map_err(|e| e.to_string());
+        let _ = app.update(Message::MailOverviewLoaded(month, late));
+        assert!(app.mail_overview.updating(), "a late month is dropped");
+        let account = app.mail_groups().first().expect("an account").account.clone();
+        let choice = mail_overview::AccountChoice { account: Some(account.clone()), label: account.clone() };
+        let _ = app.update(Message::MailOverviewAccount(choice));
+        assert_eq!(app.sent.last(), Some(&Sent::MailOverview(Some(account), torro_ipc::StatsRange::Week)));
+        deliver_overview(&mut app);
+        assert!(!app.mail_overview.updating());
+        let _ = app.update(Message::MailOverviewTable(true));
+        let _ = app.view();
+    }
+
+    /// Issue #409: a mail of "Latest from people" that the list does not hold opens in "Personal"
+    /// once it is loaded; "Show them" lists the newsletters and ads oldest first.
+    #[test]
+    fn a_person_outside_the_list_opens_in_personal() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::Show(View::Archive));
+        load(&mut app);
+        let people = block_on(app.inbox.latest_from_people(None)).expect("people");
+        let outside = people
+            .iter()
+            .find(|mail| !app.messages.iter().any(|listed| listed.id == mail.id))
+            .expect("a mail of a person outside the archive")
+            .id
+            .clone();
+        let _ = app.update(Message::MailOverviewPerson(outside.clone()));
+        assert_eq!(app.view, app.personal_view());
+        load(&mut app);
+        assert_eq!((app.cursor.as_deref(), app.reading), (Some(outside.as_str()), true));
+        let _ = app.update(Message::MailOverviewTidy);
+        assert_eq!(app.order, Order::OldestFirst);
+        assert!(matches!(&app.view, View::Category(view) if view.categories == mail_overview::NEWSLETTERS_AND_ADS));
+    }
+
+    /// Issue #409: every demo state of the overview draws in every size.
+    #[test]
+    fn the_overview_states_draw_in_every_size() {
+        for state in [
+            "mail-overview",
+            "mail-overview-table",
+            "mail-overview-loading",
+            "mail-overview-error",
+            "mail-overview-empty",
+        ] {
+            let mut app = mail_window(Density::Compact, &["--open", state]);
+            for size in [WIDE, MEDIUM, NARROW] {
+                let _ = app.update(Message::Resized(size));
+                deliver_overview(&mut app);
+                assert!(app.mail_overview_shown(), "{state} {size:?}");
+                let _ = app.view();
+            }
+        }
     }
 
     /// Issue #122: a menu hangs at the button clicked – the row's, also while the reader shows the
@@ -18941,7 +19423,9 @@ mod tests {
         let mut mail = mail_window(Density::Comfortable, &[]);
         let _ = press(&mut mail, Key::Down);
         let _ = press(&mut mail, Key::X);
-        assert!(mail.sent.is_empty(), "the mail window dismisses nothing");
+        // The overview beside the list asks for its numbers (issue #409); nothing else goes out.
+        let dismissed = mail.sent.iter().filter(|sent| !matches!(sent, Sent::MailOverview(..))).count();
+        assert_eq!(dismissed, 0, "the mail window dismisses nothing");
     }
 
     /// Task E8.4: "Dismiss all" dismisses what "New" shows, but approvals and the suite's entries,
@@ -19919,7 +20403,9 @@ mod tests {
         assert!(app.detail.is_none());
         // A mail without one: loaded, then its folder with the mail in the reader.
         let mut app = mail_window_on("m:w9");
-        assert_eq!(app.sent.last(), Some(&Sent::Letter("m:w9".into())));
+        // The overview of the wide window asks for its numbers too (issue #409).
+        let last = app.sent.iter().rev().find(|sent| !matches!(sent, Sent::MailOverview(..)));
+        assert_eq!(last, Some(&Sent::Letter("m:w9".into())));
         let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:w9".into())).map(Box::new);
         let _ = app.update(Message::StartMail("m:w9".into(), mail.map_err(|err| err.to_string())));
         load(&mut app);
