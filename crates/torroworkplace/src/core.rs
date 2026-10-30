@@ -5372,6 +5372,7 @@ impl Core {
             // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }
             | Request::MailAccountStats { .. }
+            | Request::MailOverview { .. }
             | Request::SearchMail { .. }
             | Request::MailIndexStatus { .. }
             | Request::GetMail { .. }

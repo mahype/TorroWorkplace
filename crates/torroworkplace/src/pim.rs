@@ -1298,6 +1298,7 @@ impl PimService {
             | Request::ImportTorroMailAccount { .. }
             | Request::MailFolders { .. }
             | Request::MailAccountStats { .. }
+            | Request::MailOverview { .. }
             | Request::SearchMail { .. }
             | Request::MailIndexStatus { .. }
             | Request::GetMail { .. }

@@ -3398,6 +3398,19 @@ mod tests {
         assert_eq!(hints.read_only_hint, Some(true));
     }
 
+    /// Issue #409: the overview takes a span and, without an account, counts every one in reach.
+    #[test]
+    fn mail_overview_takes_a_span() {
+        let month = request_for("mail_overview", args(json!({"range": "month"})), &Utc);
+        assert_eq!(month, Ok(Request::MailOverview { account: None, range: torro_ipc::StatsRange::Month }));
+        let one =
+            request_for("mail_overview", args(json!({"range": "week", "account": "mail:anna@example.org"})), &Utc);
+        let account = Some("mail:anna@example.org".to_string());
+        assert_eq!(one, Ok(Request::MailOverview { account, range: torro_ipc::StatsRange::Week }));
+        let year = request_for("mail_overview", args(json!({"range": "year"})), &Utc);
+        assert!(matches!(year, Err(ToolError::Input(_))), "{year:?}");
+    }
+
     #[test]
     fn inbox_answers_carry_untrusted_per_entry() {
         let at = utc("2026-10-12T08:00:00Z");
