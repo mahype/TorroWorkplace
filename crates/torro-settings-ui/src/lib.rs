@@ -73,7 +73,7 @@ use torro_ipc::tools::ToolInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 use torro_pim::Collection;
 
-pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
+pub use host::{Form, Frame, Host, Outcome, Page, Section, form, suite_sections};
 
 /// The answer of a [`Backend`], boxed so a `dyn Backend` can be handed around.
 pub type Answer = Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>;

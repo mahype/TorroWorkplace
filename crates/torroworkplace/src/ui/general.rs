@@ -265,7 +265,7 @@ fn leave_address(state: &mut State, maps: &Maps, which: Address) -> Option<Reque
 /// The page General: language, apps, maps, startup, setup.
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings;
-    let language = suite::language(settings).map(Message::Suite);
+    let language = suite::language(settings, Place::ControlCentre).map(Message::Suite);
     let startup = suite::startup(settings, Place::ControlCentre).map(Message::Suite);
 
     let run = widgets::text_button(None, tr("Run setup again"), style::button::secondary, Some(Message::RunSetup));

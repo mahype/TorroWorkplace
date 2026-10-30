@@ -184,7 +184,8 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
 - Die Seiten der Apps ziehen in eine neue Bibliothek `crates/torro-settings-ui`: die Zeilen-Bausteine
   (`setting_row`, `pressable`, `chevron`, `dialog`, `confirm`, die auch die Steuerzentrale nutzt) und ein
   **Host** für den Inhaltsbereich (Abschnittsliste, Kopfleiste mit Pfad, Seite, Laden und Senden). Die
-  Steuerzentrale zeigt die Seiten der Apps **nicht**; sie nutzt aus der Bibliothek nur die Bausteine.
+  Steuerzentrale zeigt die Seiten der Apps **nicht**; sie nutzt aus der Bibliothek nur die Bausteine und die
+  Seiten der Suite (nächster Punkt).
 - **Seiten der Suite (`suite.rs`, #408):** Appearance und General (Language, Start at login, Background service)
   stehen einmal in `torro-settings-ui`. Die Steuerzentrale zeigt daraus Appearance, Language und Start at login
   (Background service nicht, dort beendet Tray › Quit); eine App ohne Hauptanwendung zeigt beide Seiten als

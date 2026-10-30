@@ -418,11 +418,14 @@ impl Launch {
         let design = part("--design", design::Part::Design)?;
         let font = part("--font", design::Part::Font)?;
         let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
+        // The app's own sections, and the suite's, which it shows without the main application
+        // (issue #408).
+        let sections = [&SETTINGS_SECTIONS[..], &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
-            Some(word) if SETTINGS_SECTIONS.iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
             Some(word) => {
-                return Err(unknown("--settings", word, SETTINGS_SECTIONS.iter().map(|section| section.id).collect()));
+                return Err(unknown("--settings", word, sections.iter().map(|section| section.id).collect()));
             }
         };
         Ok(Launch { open, appearance, now, design, font, color_scheme, task: None, settings })

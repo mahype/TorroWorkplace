@@ -2022,11 +2022,14 @@ impl Launch {
             return Err(LaunchError::Conflict("--open account…", "a --view other than mail"));
         }
         // The sections are the window kind's (task S.20), so this comes after `--view`.
+        // The suite's sections too, which the window shows without the main application (issue #408).
+        let own = kind.settings_sections();
+        let sections = [&own[..], &torro_settings_ui::suite_sections(&own)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
-            Some(word) if kind.settings_sections().iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
             Some(word) => {
-                let valid = kind.settings_sections().iter().map(|section| section.id).collect();
+                let valid = sections.iter().map(|section| section.id).collect();
                 return Err(unknown("--settings", word, valid));
             }
         };

@@ -111,6 +111,23 @@ pub const SUITE_SECTIONS: [Section; 2] = [
     Section { id: suite::GENERAL, icon: Icon::Settings, label: "General" },
 ];
 
+/// The suite's General where the app has a section "general" of its own (the assistant): its own
+/// word, and a name that tells the two apart.
+const SUITE_GENERAL_BESIDE: Section = Section { id: "suite-general", icon: Icon::Settings, label: "All apps" };
+
+/// The suite's sections after the app's `own` ones ([`SUITE_SECTIONS`]): what [`Host::with_memory`]
+/// adds without the main application, and what `--settings` takes besides the app's own words. A
+/// word the app already uses is never taken twice.
+pub fn suite_sections(own: &[Section]) -> Vec<Section> {
+    SUITE_SECTIONS
+        .iter()
+        .map(|section| match own.iter().any(|mine| mine.id == section.id) {
+            true if section.id == suite::GENERAL => SUITE_GENERAL_BESIDE,
+            _ => *section,
+        })
+        .collect()
+}
+
 /// One section of an app's settings: what the list, the menu and the path show, and the word
 /// `--settings` takes.
 ///
@@ -245,6 +262,9 @@ pub enum Message {
     Suite(suite::Message),
     /// The designs, fonts and colour schemes for the suite's page Appearance came back.
     Looks(Box<suite::Lists>),
+    /// A file of a listed font is loaded, so its entry in the font dropdown is written in it; the
+    /// message alone makes the window lay the text out again.
+    FontLoaded,
     /// A send came back: the fresh data, or what went wrong.
     ///
     /// `changed` says whether it really carried a change. An [`Action::Send`] with no requests is
@@ -339,6 +359,10 @@ pub struct Host {
     /// The state of the suite's pages while the host shows them ([`SUITE_SECTIONS`]); `None` with the
     /// main application, where the two links lead to it instead.
     suite: Option<suite::State>,
+    /// How many of `sections` are the app's own; the suite's follow them.
+    own: usize,
+    /// The listing for Appearance was asked for ([`Host::looks_due`]); "Reload" asks again.
+    looks_asked: bool,
 }
 
 impl Host {
@@ -367,8 +391,10 @@ impl Host {
         memory: Memory,
         suite: bool,
     ) -> (Host, Task<Message>) {
+        let own = sections.len();
         if suite {
-            sections.extend(SUITE_SECTIONS);
+            let added = suite_sections(&sections);
+            sections.extend(added);
             if !wanted.contains(&Request::Settings) {
                 wanted.push(Request::Settings);
             }
@@ -403,23 +429,37 @@ impl Host {
             change: None,
             echoes: 0,
             suite: suite.then(suite::State::default),
+            own,
+            looks_asked: false,
         };
         let load = host.reload();
-        let load = match suite {
-            true => Task::batch([load, host.list_looks()]),
-            false => load,
-        };
         (host, load)
     }
 
     /// Lists the designs, fonts and colour schemes for the suite's page Appearance ([`suite::list`]).
-    fn list_looks(&self) -> Task<Message> {
+    fn list_looks(&mut self) -> Task<Message> {
+        self.looks_asked = true;
         Task::perform(suite::list(Arc::clone(&self.backend)), |lists| Message::Looks(Box::new(lists)))
+    }
+
+    /// The listing Appearance waits for, once, when it is on screen and nothing is listed yet: only
+    /// then, as in the control centre, since it reads every listed part and may scan the computer's
+    /// fonts. Asked on choosing the section, and with the next answer after `--settings appearance`.
+    fn looks_due(&mut self) -> Option<Task<Message>> {
+        let state = self.suite.as_ref()?;
+        let on_appearance = self.on_suite_page() && self.current == self.own;
+        (on_appearance && suite::unlisted(state) && !self.looks_asked).then(|| self.list_looks())
+    }
+
+    /// How many rows of the list or the menu are the app's own: its sections, and the page open below
+    /// one of them (`child`), which follows it.
+    fn own_rows(&self, child: bool) -> usize {
+        self.own + usize::from(child && self.current < self.own)
     }
 
     /// Whether the section on screen is one of the suite's pages the host shows itself.
     fn on_suite_page(&self) -> bool {
-        self.suite.is_some() && SUITE_SECTIONS.iter().any(|section| section.id == self.current().id)
+        self.suite.is_some() && self.current >= self.own
     }
 
     /// The one request a suite page's `action` sends, if it sends one: a setting or `system.quit`
@@ -584,7 +624,8 @@ impl Host {
         if !self.flight.iter().any(|(held, _)| *held == request) {
             self.data.updating.retain(|held| *held != request);
         }
-        let tasks = self.pump();
+        let mut tasks = self.pump();
+        tasks.extend(self.looks_due());
         // Nothing but the background is out: the load's first failure stands over the page now, or
         // none does. Not only once all is back: a slow AI server asked again on every tick would
         // keep the page's error as it was for good.
@@ -632,7 +673,7 @@ impl Host {
         match message {
             Message::Select(id) => {
                 self.open(id);
-                Outcome::None
+                self.looks_due().map_or(Outcome::None, Outcome::Work)
             }
             Message::Menu => {
                 self.menu = !self.menu;
@@ -658,11 +699,21 @@ impl Host {
                 self.suite_act(action)
             }
             Message::Looks(lists) => {
+                // The fonts' entries write their names in their font, as in the control centre:
+                // those fonts are loaded once.
+                let fonts: Vec<Task<Message>> = lists
+                    .fonts
+                    .iter()
+                    .flatten()
+                    .filter_map(|entry| entry.part.as_deref())
+                    .map(|font| torro_gui::design::load_fonts(font).map(|_| Message::FontLoaded))
+                    .collect();
                 if let Some(state) = self.suite.as_mut() {
                     suite::listed(state, *lists);
                 }
-                Outcome::None
+                work(fonts)
             }
+            Message::FontLoaded => Outcome::None,
             Message::Link(at) => match LINKS.get(at) {
                 Some((section, ..)) => Outcome::ControlCentre((*section).to_string()),
                 None => Outcome::None,
@@ -743,8 +794,8 @@ impl Host {
         let page = match self.suite.as_ref().filter(|_| self.on_suite_page()) {
             Some(state) => {
                 let settings = &self.data.settings;
-                let body = match self.current().id {
-                    suite::APPEARANCE => suite::appearance(state, settings),
+                let body = match self.current - self.own {
+                    0 => suite::appearance(state, settings),
                     _ => suite::general(settings),
                 };
                 Page::new(body.map(move |message| wrap(Message::Suite(message))))
@@ -853,10 +904,20 @@ impl Host {
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
             widgets::sidebar_item(*icon, tr(label), Trail::Icon(Icon::ArrowUpRight), false, wrap(Message::Link(at)))
         };
+        // The suite's pages follow the app's own behind the line the links stand behind otherwise:
+        // they hold for every app (issue #408).
+        let mut rows: Vec<Element<'a, M>> = rows.collect();
+        let suite_rows = rows.split_off(self.own_rows(child.is_some()).min(rows.len()));
         let sections = column(rows).spacing(space::xs());
-        // The suite's pages stand among the sections then: no links into the control centre.
         if self.suite.is_some() {
-            return sections.width(Fill).into();
+            return column![
+                sections,
+                container(rule::horizontal(LINE).style(style::rule)).padding(Padding::new(space::s()).horizontal(0.0)),
+                column(suite_rows).spacing(space::xs()),
+            ]
+            .spacing(space::xs())
+            .width(Fill)
+            .into();
         }
         let links = column(LINKS.iter().enumerate().map(link)).spacing(space::xs());
         column![
@@ -907,7 +968,9 @@ impl Host {
             MenuItem::new(*icon, tr(label), wrap(Message::Link(at))).trail(Trail::Icon(Icon::ArrowUpRight))
         };
         if self.suite.is_some() {
-            return widgets::menu(vec![MenuSection::new(entries)]);
+            // The suite's pages in a part of their own, as the links otherwise.
+            let suite = entries.split_off(self.own_rows(child.is_some()).min(entries.len()));
+            return widgets::menu(vec![MenuSection::new(entries), MenuSection::new(suite)]);
         }
         widgets::menu(vec![MenuSection::new(entries), MenuSection::new(LINKS.iter().enumerate().map(link).collect())])
     }
@@ -1166,6 +1229,37 @@ mod tests {
         assert!(!with_main.open("appearance") && !with_main.open("general"));
         let link: Outcome<()> = with_main.update(Message::Link(0));
         assert!(matches!(link, Outcome::ControlCentre(ref section) if section == "appearance"));
+    }
+
+    /// Review of #408: the designs are listed only once Appearance is on screen, and once.
+    #[test]
+    fn appearance_lists_the_designs_when_it_is_shown() {
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut host, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), true);
+        assert!(host.looks_due().is_none(), "the app's own first section lists nothing");
+        host.open("general");
+        assert!(host.looks_due().is_none());
+        host.open("appearance");
+        assert!(host.looks_due().is_some());
+        assert!(host.looks_due().is_none(), "asked once");
+    }
+
+    /// Review of #408: an app with a section "general" of its own (the assistant) keeps it; the
+    /// suite's General takes another word, and each opens its own page.
+    #[test]
+    fn the_suite_general_never_takes_the_word_of_an_app_section() {
+        let own = vec![
+            Section { id: "general", icon: Icon::Settings, label: "General" },
+            Section { id: "voice", icon: Icon::Bell, label: "Voice" },
+        ];
+        let ids: Vec<&str> = suite_sections(&own).iter().map(|section| section.id).collect();
+        assert_eq!(ids, ["appearance", "suite-general"]);
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut host, _) = Host::with_memory(backend, own, Vec::new(), Memory::default(), true);
+        assert!(host.open("general") && !host.on_suite_page(), "the app's own General");
+        assert!(host.open("suite-general") && host.on_suite_page());
+        let ids: Vec<&str> = suite_sections(&sections()).iter().map(|section| section.id).collect();
+        assert_eq!(ids, ["appearance", "general"], "no clash, the words of the control centre");
     }
 
     /// Issue #408: every action of the suite's pages sends exactly its own request through the

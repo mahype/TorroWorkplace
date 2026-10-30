@@ -119,7 +119,7 @@ pub struct State {
     /// What the core switched with the design chosen here last, named under the group "Design";
     /// `None` when nothing was switched (or nothing chosen yet).
     switched: Option<Switched>,
-    /// The question "Quit the background service?" is open ([`overlay`]).
+    /// The question "Quit background service?" is open ([`overlay`]).
     quitting: bool,
 }
 
@@ -517,7 +517,7 @@ pub enum Place {
 
 /// The group "Language", a list of choices – one row each, the whole row is the button, a check mark
 /// at the chosen one (Deutsch is shown in its own name, like the language picker of any app).
-pub fn language<'a>(settings: &Settings) -> Element<'a, Message> {
+pub fn language<'a>(settings: &Settings, place: Place) -> Element<'a, Message> {
     let chosen = settings.language;
     let language =
         |label: &'static str, language: Language| choice(label, chosen == language, Message::Language(language));
@@ -530,7 +530,17 @@ pub fn language<'a>(settings: &Settings) -> Element<'a, Message> {
             // must still find their way back.
             language("Deutsch", Language::German),
         ],
-        Some(tr("Applies to apps you open afterwards. “System” follows your system language.").to_string()),
+        Some(
+            match place {
+                Place::ControlCentre => {
+                    tr("Applies to apps you open afterwards. “System” follows your system language.")
+                }
+                Place::App => {
+                    tr("Applies when you open an app again, this one included. “System” follows your system language.")
+                }
+            }
+            .to_string(),
+        ),
     )
 }
 
@@ -554,10 +564,10 @@ pub fn startup<'a>(settings: &Settings, place: Place) -> Element<'a, Message> {
 /// The group "Background service": what it does, and "Quit", which asks first ([`overlay`]). Only in
 /// an app without the main application; the control centre quits it from the tray.
 pub fn service<'a>() -> Element<'a, Message> {
-    let quit = widgets::text_button(None, tr("Quit"), style::button::secondary, Some(Message::Quit));
+    let quit = widgets::text_button(None, tr("Quit…"), style::button::secondary, Some(Message::Quit));
     widgets::group(
         tr("Background service"),
-        vec![setting_row(None, tr("Runs reminders and sync."), None, quit)],
+        vec![setting_row(None, tr("Quit background service"), None, quit)],
         Some(tr("Quitting stops reminders, sync and notifications until a Torro app starts it again.").to_string()),
     )
 }
@@ -565,7 +575,9 @@ pub fn service<'a>() -> Element<'a, Message> {
 /// The page General of an app without the main application: Language, Startup and Background
 /// service.
 pub fn general<'a>(settings: &Settings) -> Element<'a, Message> {
-    column![language(settings), startup(settings, Place::App), service()].spacing(layout::section_gap()).into()
+    column![language(settings, Place::App), startup(settings, Place::App), service()]
+        .spacing(layout::section_gap())
+        .into()
 }
 
 /// The three lists of the core with the parts read for their samples ([`Lists::read`]), or the
@@ -1351,13 +1363,13 @@ fn scheme_button<'a>(anchor: &Anchor, current: Option<&'a SchemeEntry>) -> Eleme
     widgets::anchored(anchor, open)
 }
 
-/// The pages' layer over the window: the question "Quit the background service?", or the dropdown
+/// The pages' layer over the window: the question "Quit background service?", or the dropdown
 /// that is open, under its button, its right edge on the button's – the colour scheme's
 /// ([`scheme_menu`]) or the font's ([`font_menu`]). A click next to it closes it.
 pub fn overlay<'a>(state: &'a State, settings: &'a Settings) -> Option<Element<'a, Message>> {
     if state.quitting {
         return Some(confirm(
-            tr("Quit the background service?"),
+            tr("Quit background service?"),
             tr("Reminders, sync and notifications stop until a Torro app starts it again.").to_string(),
             tr("Quit service"),
             Message::QuitConfirmed,

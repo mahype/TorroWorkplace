@@ -4263,7 +4263,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The suite's pages in an app without the main application (#408)
     ("Background service", "Hintergrunddienst"),
     ("Quit service", "Dienst beenden"),
-    ("Quit the background service?", "Hintergrunddienst beenden?"),
+    ("Quit background service", "Hintergrunddienst beenden"),
+    ("Quit background service?", "Hintergrunddienst beenden?"),
+    ("Quit…", "Beenden…"),
     (
         "Quitting stops reminders, sync and notifications until a Torro app starts it again.",
         "Beenden stoppt Erinnerungen, Synchronisierung und Benachrichtigungen, bis eine Torro-App ihn wieder startet.",
@@ -4272,7 +4274,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Reminders, sync and notifications stop until a Torro app starts it again.",
         "Erinnerungen, Synchronisierung und Benachrichtigungen stoppen, bis eine Torro-App ihn wieder startet.",
     ),
-    ("Runs reminders and sync.", "Hält Erinnerungen und Synchronisierung am Laufen."),
+    (
+        "Applies when you open an app again, this one included. “System” follows your system language.",
+        "Gilt, wenn du eine App wieder öffnest, auch diese. „System“ folgt der Systemsprache.",
+    ),
     (
         "Starts the background service when you log in, so reminders and sync run before you open an app.",
         "Startet den Hintergrunddienst, wenn du dich anmeldest, damit Erinnerungen und Synchronisierung laufen, bevor du eine App öffnest.",

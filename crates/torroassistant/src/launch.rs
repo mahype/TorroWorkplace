@@ -227,11 +227,13 @@ impl Launch {
             Some("system") => Some(Appearance::System),
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
+        // The suite's sections too, which the window shows without the main application (issue #408).
+        let sections = [&SECTIONS[..], &torro_settings_ui::suite_sections(&SECTIONS)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
-            Some(word) if SECTIONS.iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
             Some(word) => {
-                return Err(unknown("--settings", word, SECTIONS.iter().map(|section| section.id).collect()));
+                return Err(unknown("--settings", word, sections.iter().map(|section| section.id).collect()));
             }
         };
         // `--design`, `--font` and `--color-scheme` each take the valid ids of their own folder (task L.22).
@@ -357,7 +359,12 @@ mod tests {
         assert_eq!((bot.settings.as_deref(), bot.window), (Some("access"), Window::Bot("b0000001".into())));
         assert_eq!(Launch::parse(&args(&[])).expect("valid").settings, None);
         assert_eq!(Launch::parse(&args(&["--settings"])), Err(LaunchError::MissingValue("--settings")));
-        for bad in ["appearance", "rights", "", "Voice"] {
+        // Issue #408: the suite's pages, its General beside the assistant's own.
+        for suite in ["appearance", "suite-general"] {
+            let parsed = Launch::parse(&args(&["--demo", "--settings", suite])).expect("valid");
+            assert_eq!(parsed.settings.as_deref(), Some(suite));
+        }
+        for bad in ["rights", "", "Voice"] {
             let refused = Launch::parse(&args(&["--settings", bad]));
             assert!(matches!(refused, Err(LaunchError::UnknownValue { flag: "--settings", .. })), "{bad:?}");
         }
