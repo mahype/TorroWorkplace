@@ -604,12 +604,13 @@ mit der Karte „Night“); Aufgaben: `detail pr more menu display drawer
 switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail wizard-mail-certificate
-wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai menu drawer switcher remove delete-template rename-template design
+wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai sorting-menu menu drawer switcher remove delete-template rename-template design
 design-schemes design-switched design-fonts design-fonts-search api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
 connect-client-rights connect-client-done connect-client-other connections connections-empty search-providers catalog-install
 catalog-install-tools extension-detail extension-review extension-crashed extension-folder extension-unbounded
-extension-unusable custom-server custom-server-paste custom-server-choose setup-documents` (`connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302),
+extension-unusable custom-server custom-server-paste custom-server-choose setup-documents` (`sorting-menu`: Settings › AI mit offenem Menü von „Sorting“, „Decision models (fast)“ vor „Other models“ (#421),
+`connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302),
 `search-providers`: die Anbieter der Websuche unter dem Werkzeug „Web“ (#305),
 `catalog-install`/`catalog-install-tools`: Installieren aus dem Katalog vor und nach dem Lesen der Werkzeuge,
 `extension-review`: Seite eines Servers mit Werkzeugen, die auf „Allow tools“ warten, `extension-crashed`: dieselbe

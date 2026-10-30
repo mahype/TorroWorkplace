@@ -748,6 +748,19 @@ impl Ui {
                     Message::Accounts(accounts::Message::UseSuggestion(torro_core::ai::AiSlot::Chat)),
                 ]
             }
+            // nimble is off in the demo: switched on at Ollama's page, as a person would, so the menu has a
+            // decision model to put first.
+            Open::SortingMenu => {
+                launch::demo_ollama(&mut self.data);
+                let ollama = launch::DEMO_OLLAMA.to_string();
+                vec![
+                    Message::Select(Section::Ai),
+                    Message::Accounts(accounts::Message::Open(ollama)),
+                    Message::Accounts(accounts::Message::SetModel("nimble:latest".into(), true)),
+                    Message::Accounts(accounts::Message::Back),
+                    Message::Accounts(accounts::Message::ToggleSortingMenu),
+                ]
+            }
             Open::GithubDetail => {
                 let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
                 let mut messages = vec![Message::Select(Section::Accounts)];
@@ -3341,6 +3354,14 @@ mod tests {
         assert!(
             models.accounts.slots.recommendation.is_some() && models.accounts.models.contains_key(launch::DEMO_OLLAMA)
         );
+        // Issue #421: the menu of Sorting open, with nimble switched on at Ollama as a decision model.
+        let sorting = started(&["--demo", "--open", "sorting-menu"]);
+        assert_eq!(sorting.section, Section::Ai);
+        assert!(sorting.accounts.sorting_menu && sorting.accounts.selected.is_none());
+        assert!(sorting.page_overlay().is_some());
+        let sections = accounts::sorting_sections(&sorting.accounts, &sorting.data);
+        assert!(sections.fast.iter().any(|choice| choice.model.as_deref() == Some("nimble:latest")), "{sections:?}");
+        assert!(sections.other.iter().any(|choice| choice.model.as_deref() == Some("qwen3:8b")), "{sections:?}");
         let section = started(&["--demo", "--section", "ai"]);
         assert!(section.accounts.slots.recommendation.is_some(), "a start on AI asks as choosing it does");
         let github = started(&["--demo", "--open", "scopes-detail"]);
