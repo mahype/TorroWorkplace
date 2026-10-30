@@ -545,9 +545,10 @@ pub fn is_empty(overview: &MailOverview) -> bool {
 pub enum Place {
     /// The reader's column of the wide window: its own title, the page inset.
     Page,
-    /// The panel of the medium window: the panel's head and title stand over it.
+    /// The panel of the medium window: the panel's head and title stand over it; lined up with the
+    /// title.
     Panel,
-    /// In place of the list in the narrow window: the header says "Overview".
+    /// In place of the list in the narrow window: the header says "Overview", the page inset.
     Narrow,
 }
 
@@ -598,8 +599,8 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     }
     let content = column(blocks).spacing(layout::section_gap()).width(Fill).max_width(size::content_max());
     match data.place {
-        // The panel scrolls and insets its body itself.
-        Place::Panel => content.into(),
+        // The panel scrolls its body itself; inset, the blocks line up with its title.
+        Place::Panel => torro_gui::panel::inset(content),
         Place::Page | Place::Narrow => {
             let page = container(content).width(Fill).center_x(Fill).padding(layout::page_padding());
             scrollable(page)
@@ -612,9 +613,9 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     }
 }
 
-/// The head: "Overview" (not in the panel, whose title says it), the line of account, span and "As
-/// of", and the switches – beside the title where there is room, under the line in the panel and
-/// the narrow window.
+/// The head: "Overview" (not in the panel or the narrow window, whose title and header say it), the
+/// line of account, span and "As of", and the switches – beside the title in the wide window, under
+/// the line elsewhere.
 fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
     let state = data.state;
     let choices = account_choices(&data.accounts);
@@ -644,11 +645,8 @@ fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
             let words = column![typo::text(typo::title(), tr("Overview")), meta].spacing(space::xs());
             row![container(words).width(Fill), controls].spacing(space::m()).align_y(Alignment::Center).into()
         }
-        Place::Panel => column![meta, controls.wrap()].spacing(space::s()).into(),
-        Place::Narrow => {
-            let words = column![typo::text(typo::title(), tr("Overview")), meta].spacing(space::xs());
-            column![words, controls.wrap()].spacing(space::m()).into()
-        }
+        // The panel's title and the narrow header say "Overview" already.
+        Place::Panel | Place::Narrow => column![meta, controls.wrap()].spacing(space::s()).into(),
     }
 }
 
