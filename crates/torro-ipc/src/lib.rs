@@ -4527,8 +4527,9 @@ pub enum Response {
     MailAccountStats {
         accounts: Vec<MailAccountStats>,
     },
-    /// Where the syncs stand ([`Request::MailSyncStatus`]). `version` grows with every change of
-    /// these accounts; pass it as `after` to wait for the next one.
+    /// Where the syncs stand ([`Request::MailSyncStatus`]). `version` changes with every change of
+    /// these accounts (it can also go down, when an account goes): compare it for equality only, and
+    /// pass it as `after` to wait for the next one.
     MailSyncStatus {
         version: u64,
         accounts: Vec<MailSyncStatus>,

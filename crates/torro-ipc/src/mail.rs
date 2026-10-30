@@ -586,7 +586,8 @@ pub struct MailSyncLastRun {
     pub trigger: MailSyncTrigger,
     pub started: DateTime<Utc>,
     pub finished: DateTime<Utc>,
-    /// Every folder was synced and the run ended without an error.
+    /// The run ended without an error (a folder renumbered meanwhile counts as no error: the next
+    /// run starts it over).
     pub ok: bool,
     /// Why it did not, for people (localized).
     #[serde(default)]
