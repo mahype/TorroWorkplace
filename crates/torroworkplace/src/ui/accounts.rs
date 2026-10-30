@@ -2857,10 +2857,16 @@ fn sorting_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
                     .filter(|_| several)
                     .and_then(|engine| accounts.iter().find(|account| account.id == engine))
                     .map(|account| account.label.clone());
-                let suffix = account.as_ref().map(|account| format!(" · {account}"));
-                let name = suffix
-                    .and_then(|suffix| choice.label.strip_suffix(suffix.as_str()).map(str::to_string))
-                    .unwrap_or_else(|| choice.label.clone());
+                // Only where the label names it after the model: an account that picks its model itself is
+                // named by the account alone.
+                let split = account.and_then(|account| {
+                    let name = choice.label.strip_suffix(format!(" · {account}").as_str())?.to_string();
+                    Some((name, account))
+                });
+                let (name, account) = match split {
+                    Some((name, account)) => (name, Some(account)),
+                    None => (choice.label.clone(), None),
+                };
                 let mut item = MenuItem::new(Icon::Check, name, Message::PickSlot(AiSlot::Decide, choice));
                 item.mark = None;
                 if let Some(account) = account {
