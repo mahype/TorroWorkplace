@@ -4531,10 +4531,18 @@ pub mod categorization {
             };
             if fast.is_empty() {
                 // In place of the group: loading one lives in Settings › AI with its progress, where "Use
-                // suggestion" offers one (and turns on one already loaded).
+                // suggestion" offers one (and turns on one already loaded). The detail wraps instead of being
+                // cut: it says where to get one and must be read whole.
                 let detail = tr("Sorting runs slower with a chat model. Settings › AI suggests one to download.");
-                let none = setting_row(None, tr("No decision model"), Some(detail.to_owned()), arrow());
-                rows.push(pressable(none, Some(Message::ManageModels)));
+                let lines = column![
+                    typo::text(typo::body(), tr("No decision model")).style(theme::text),
+                    typo::text(typo::meta(), detail).style(theme::text_2).width(iced::Fill),
+                ];
+                let none = iced::widget::row![lines.width(iced::Fill), arrow()]
+                    .spacing(torro_gui::theme::space::l())
+                    .align_y(iced::Alignment::Center);
+                let none = iced::widget::container(none).width(iced::Fill).padding(torro_gui::theme::space::l());
+                rows.push(pressable(none.into(), Some(Message::ManageModels)));
             } else {
                 rows.push(heading(tr("Decision models (fast)")));
                 rows.extend(fast.into_iter().map(choice));
