@@ -389,10 +389,14 @@ fn stored_now(socket: &Path) -> Option<Chosen> {
     std::thread::spawn(move || {
         let Ok(runtime) = iced::executor::Default::new() else { return };
         let response = runtime.block_on(torro_ipc::client::call(&socket, &Request::Settings));
+        // The installed apps too (issue #408), within the same wait: settings opened at start
+        // (`--settings`) then know whether the main application is there, as long as the core
+        // answers. A core that is only just starting does not; the window asks again with every
+        // poll until it does ([`watch`]).
+        if response.is_ok() {
+            runtime.block_on(crate::installed::fetch(&socket));
+        }
         let _ = answer.send(response);
-        // Then the installed apps (issue #408), so settings opened at start (`--settings`) already
-        // know whether the main application is there; the window does not wait for it.
-        runtime.block_on(crate::installed::fetch(&socket));
     });
     match answered.recv_timeout(START_WAIT) {
         Ok(Ok(Response::Settings { settings })) => {
