@@ -36,6 +36,7 @@ fn outgoing() -> Outgoing {
             .into(),
         html: None,
         signature: Some("Jürgen\nKöln".into()),
+        signature_format: false,
         reply: Some(Reply {
             in_reply_to: "docs-2@example.de".into(),
             references: vec!["docs-1@example.org".into(), "docs-2@example.de".into()],

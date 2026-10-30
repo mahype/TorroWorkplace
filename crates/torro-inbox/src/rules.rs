@@ -22,7 +22,7 @@ use torro_mail::{Category, CategorySource, MailCategory, Order};
 
 use crate::item::{
     AgentKind, Facet, FacetKey, FollowUp, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
-    RuleEffect, Sender, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
+    RuleEffect, Sender, SortComparison, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
 };
 
 /// Days a done entry is kept before [`expired`] says it goes.
@@ -107,6 +107,25 @@ pub struct SortInput<'a> {
     pub sender: Option<&'a str>,
     pub subject: &'a str,
     pub text: &'a str,
+    /// The account id and List-ID are available from the headers at arrival.
+    pub account: Option<&'a str>,
+    pub list_id: Option<&'a str>,
+    /// Other header and MIME facts. `None` is unknown, never a negative match.
+    pub facts: Option<&'a SortFacts>,
+}
+
+/// Facts for the extended sorting fields. Attachment names and message size may be unknown
+/// until MIME structure and RFC822.SIZE have been fetched; a missing fact never satisfies a
+/// negative comparison.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SortFacts {
+    pub reply_to: Vec<String>,
+    pub recipients: Vec<String>,
+    pub has_attachments: Option<bool>,
+    pub attachment_names: Option<Vec<String>>,
+    pub size_bytes: Option<u64>,
+    /// A snippet may support a positive text match; only a complete body supports "contains not".
+    pub text_complete: bool,
 }
 
 /// What the first of `rules` that holds for `mail` files it as (task E15.3, `docs/kategorien.md`,
@@ -130,16 +149,84 @@ pub fn sort_holds(rule: &SortRule, mail: &SortInput<'_>) -> bool {
 /// address, its domain or one below it, and words in the subject or the text.
 pub fn condition_holds(condition: &SortCondition, mail: &SortInput<'_>) -> bool {
     let wanted = sort_value(condition.field, &condition.value);
-    if wanted.is_empty() {
+    let comparison = match condition.comparison {
+        SortComparison::Auto => condition.field.default_comparison(),
+        chosen => chosen,
+    };
+    if !condition.field.allows(comparison)
+        || (wanted.is_empty() && !matches!(comparison, SortComparison::Present | SortComparison::Absent))
+    {
         return false;
     }
     match condition.field {
-        SortField::Sender => mail.sender.is_some_and(|sender| sender.trim().to_lowercase() == wanted),
+        SortField::Sender => {
+            mail.sender.is_some_and(|sender| compare_text(&sender.trim().to_lowercase(), &wanted, comparison))
+        }
         SortField::Domain => mail.sender.and_then(domain_of).is_some_and(|domain| {
-            domain == wanted || domain.strip_suffix(&wanted).is_some_and(|below| below.ends_with('.'))
+            let fits = domain == wanted || domain.strip_suffix(&wanted).is_some_and(|below| below.ends_with('.'));
+            if comparison == SortComparison::IsNot { !fits } else { fits }
         }),
-        SortField::Subject => mail.subject.to_lowercase().contains(&wanted),
-        SortField::Text => mail.text.to_lowercase().contains(&wanted),
+        SortField::Subject => compare_text(&mail.subject.to_lowercase(), &wanted, comparison),
+        SortField::Text => {
+            if comparison == SortComparison::NotContains && !mail.facts.is_some_and(|facts| facts.text_complete) {
+                return false;
+            }
+            compare_text(&mail.text.to_lowercase(), &wanted, comparison)
+        }
+        SortField::ReplyTo => mail.facts.is_some_and(|facts| compare_addresses(&facts.reply_to, &wanted, comparison)),
+        SortField::Recipient => {
+            mail.facts.is_some_and(|facts| compare_addresses(&facts.recipients, &wanted, comparison))
+        }
+        SortField::Attachment => mail
+            .facts
+            .and_then(|facts| facts.has_attachments)
+            .is_some_and(|has| if comparison == SortComparison::Present { has } else { !has }),
+        SortField::AttachmentName => mail
+            .facts
+            .and_then(|facts| facts.attachment_names.as_ref())
+            .is_some_and(|names| names.iter().any(|name| compare_text(&name.to_lowercase(), &wanted, comparison))),
+        SortField::Size => mail.facts.and_then(|facts| facts.size_bytes).is_some_and(|bytes| {
+            wanted.parse::<f64>().ok().is_some_and(|mb| {
+                mb.is_finite() && mb >= 0.0 && {
+                    let bound = mb * 1_000_000.0;
+                    if !bound.is_finite() || bound > u64::MAX as f64 {
+                        return false;
+                    }
+                    if comparison == SortComparison::GreaterThan {
+                        bytes as f64 > bound
+                    } else {
+                        (bytes as f64) < bound
+                    }
+                }
+            })
+        }),
+        SortField::ListId => mail.list_id.is_some_and(|list| compare_text(&list.to_lowercase(), &wanted, comparison)),
+        SortField::Account => mail.account.is_some_and(|account| {
+            compare_text(&account.strip_prefix("mail:").unwrap_or(account).trim().to_lowercase(), &wanted, comparison)
+        }),
+    }
+}
+
+fn compare_text(actual: &str, wanted: &str, comparison: SortComparison) -> bool {
+    match comparison {
+        SortComparison::Is => actual == wanted,
+        SortComparison::IsNot => actual != wanted,
+        SortComparison::Contains => actual.contains(wanted),
+        SortComparison::NotContains => !actual.contains(wanted),
+        SortComparison::StartsWith => actual.starts_with(wanted),
+        SortComparison::EndsWith => actual.ends_with(wanted),
+        _ => false,
+    }
+}
+
+fn compare_addresses(addresses: &[String], wanted: &str, comparison: SortComparison) -> bool {
+    if addresses.is_empty() {
+        return false;
+    }
+    if matches!(comparison, SortComparison::IsNot | SortComparison::NotContains) {
+        addresses.iter().all(|address| compare_text(&address.to_lowercase(), wanted, comparison))
+    } else {
+        addresses.iter().any(|address| compare_text(&address.to_lowercase(), wanted, comparison))
     }
 }
 
@@ -149,7 +236,7 @@ pub fn sort_value(field: SortField, value: &str) -> String {
     let value = value.trim().to_lowercase();
     match field {
         SortField::Domain => value.trim_start_matches('@').trim_end_matches('.').to_string(),
-        SortField::Sender | SortField::Subject | SortField::Text => value,
+        _ => value,
     }
 }
 
@@ -2028,7 +2115,8 @@ mod tests {
     fn the_first_sorting_rule_that_holds_decides() {
         use crate::item::{SortCondition, SortField, SortRule};
 
-        let condition = |field, value: &str| SortCondition { field, value: value.into() };
+        let condition =
+            |field, value: &str| SortCondition { comparison: SortComparison::Auto, field, value: value.into() };
         let rule = |category, conditions: Vec<SortCondition>, exceptions: Vec<SortCondition>| SortRule {
             id: "r".into(),
             category,
@@ -2041,6 +2129,9 @@ mod tests {
             sender: Some("billing@mail.shop.example"),
             subject: "Your INVOICE 2026-114",
             text: "Please pay by Friday. Order 77.",
+            account: Some("mail:anna@example.org"),
+            list_id: None,
+            facts: None,
         };
         // Domain: the domain itself or one below it, never a mere ending.
         assert!(condition_holds(&condition(SortField::Domain, "shop.example"), &mail));
@@ -2083,5 +2174,67 @@ mod tests {
             mail_category(kept, true, Some("auto-replied"), true),
             Some(MailCategory::by_rule(Category::Invoice))
         );
+    }
+
+    #[test]
+    fn extended_mail_fields_match_only_when_their_facts_are_available() {
+        let facts = SortFacts {
+            reply_to: vec!["accounts@shop.example".into()],
+            recipients: vec!["anna@example.org".into(), "team@example.org".into()],
+            has_attachments: Some(true),
+            attachment_names: Some(vec!["Invoice.pdf".into(), "application/pdf".into()]),
+            size_bytes: Some(2_500_000),
+            text_complete: false,
+        };
+        let mail = SortInput {
+            sender: Some("billing@shop.example"),
+            subject: "Monthly invoice",
+            text: "Your invoice is attached",
+            account: Some("mail:anna@example.org"),
+            list_id: Some("news.shop.example"),
+            facts: Some(&facts),
+        };
+        let holds = |field, comparison, value: &str| {
+            condition_holds(&SortCondition { field, comparison, value: value.into() }, &mail)
+        };
+        assert!(holds(SortField::ReplyTo, SortComparison::Is, "accounts@shop.example"));
+        assert!(holds(SortField::Recipient, SortComparison::Contains, "team@"));
+        assert!(holds(SortField::Attachment, SortComparison::Present, ""));
+        assert!(holds(SortField::AttachmentName, SortComparison::EndsWith, ".pdf"));
+        assert!(holds(SortField::AttachmentName, SortComparison::Is, "application/pdf"));
+        assert!(holds(SortField::Size, SortComparison::GreaterThan, "2"));
+        assert!(holds(SortField::Size, SortComparison::LessThan, "3"));
+        assert!(holds(SortField::ListId, SortComparison::Contains, "shop"));
+        assert!(holds(SortField::Account, SortComparison::Is, "anna@example.org"));
+        assert!(holds(SortField::Sender, SortComparison::NotContains, "newsletter"));
+        assert!(!holds(SortField::Text, SortComparison::NotContains, "secret"), "a snippet is not the whole body");
+        let unknown = SortInput { facts: None, ..mail };
+        assert!(!condition_holds(
+            &SortCondition { field: SortField::Attachment, comparison: SortComparison::Absent, value: String::new() },
+            &unknown
+        ));
+        assert!(!condition_holds(
+            &SortCondition { field: SortField::Size, comparison: SortComparison::LessThan, value: "10".into() },
+            &unknown
+        ));
+        let complete = SortFacts { text_complete: true, ..facts.clone() };
+        let full = SortInput { facts: Some(&complete), ..mail };
+        assert!(condition_holds(
+            &SortCondition { field: SortField::Text, comparison: SortComparison::NotContains, value: "secret".into() },
+            &full
+        ));
+    }
+
+    #[test]
+    fn rules_saved_before_comparisons_keep_their_old_meaning() {
+        let old = serde_json::json!({"field": "subject", "value": "invoice"});
+        let condition: SortCondition = serde_json::from_value(old).expect("old condition");
+        assert_eq!(condition.comparison, SortComparison::Auto);
+        assert_eq!(
+            serde_json::to_value(&condition).expect("write"),
+            serde_json::json!({"field":"subject","value":"invoice"})
+        );
+        let input = SortInput { subject: "Your invoice", ..SortInput::default() };
+        assert!(condition_holds(&condition, &input));
     }
 }

@@ -243,6 +243,10 @@ pub struct Data {
     /// chat starts with in the first-run setup (issue #131). What a new chat starts with outside
     /// the setup is set in the assistant's own window (task S.17).
     pub engines: Vec<torro_ipc::assistant::Engine>,
+    /// Decision models available during the first-run AI step, paired with their AI account.
+    pub ai_deciders: Vec<(String, torro_core::ai::AiModel)>,
+    /// AI accounts whose models were checked, including accounts with no suitable model.
+    pub ai_deciders_from: Vec<String>,
     /// The screens the window manager has (`workspaces.list_screens`, task WS.6), for Workspaces and
     /// where a template loads at login; empty without a window manager.
     pub screens: Vec<torro_ipc::ScreenInfo>,
@@ -1075,12 +1079,17 @@ impl Ui {
     /// MCP servers only while their section or the setup's step Documents (issue #303) is open: the core
     /// looks for programs on disk for it.
     fn reload(&self) -> Task<Message> {
+        let ai_cache = self
+            .setup
+            .as_ref()
+            .filter(|setup| setup.step() == setup::Step::Ai)
+            .map(|_| (self.data.ai_deciders_from.clone(), self.data.ai_deciders.clone()));
         match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
-            (false, _) if self.on_documents() => Task::batch([load(true), load_catalog()]),
+            (false, _) if self.on_documents() => Task::batch([load(true, None), load_catalog()]),
             // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
-            (false, Section::Connections) => Task::batch([load(true), load_catalog()]),
-            (false, _) => load(self.setup.is_some()),
+            (false, Section::Connections) => Task::batch([load(true, ai_cache), load_catalog()]),
+            (false, _) => load(self.setup.is_some(), ai_cache),
         }
     }
 
@@ -2026,8 +2035,11 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
     }
 }
 
+/// The account ids behind a cached list of models suitable for mail categorization.
+type MailDeciderCache = (Vec<String>, Vec<(String, torro_core::ai::AiModel)>);
+
 /// Loads everything the pages show; the search providers only `with_providers` (the setup is open).
-fn load(with_providers: bool) -> Task<Message> {
+fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Message> {
     // How long the core took to answer, with `TORRO_TIMING` (issue #206).
     let started = Instant::now();
     Task::perform(
@@ -2083,6 +2095,31 @@ fn load(with_providers: bool) -> Task<Message> {
             // The setup's AI step offers them as what a new chat starts with (issue #131).
             if let Ok(Response::Engines { engines }) = client::call(&socket, &Request::ListEngines).await {
                 data.engines = engines;
+            }
+            if let Some((from, cached)) = ai_cache {
+                let accounts: Vec<String> = data
+                    .accounts
+                    .iter()
+                    .filter(|account| account.kind == "ai")
+                    .map(|account| account.id.clone())
+                    .collect();
+                if from == accounts {
+                    data.ai_deciders = cached;
+                } else {
+                    for account in &accounts {
+                        if let Ok(Response::AiModels { models, .. }) =
+                            client::call(&socket, &Request::AiModels { account: account.clone(), all: true }).await
+                        {
+                            data.ai_deciders.extend(
+                                models
+                                    .into_iter()
+                                    .filter(|model| model.enabled && model.decision == Some(true))
+                                    .map(|model| (account.clone(), model)),
+                            );
+                        }
+                    }
+                }
+                data.ai_deciders_from = accounts;
             }
             // MCP servers (task MA.7): a failure is shown in its group, not over the page.
             let servers = listing(&socket, Request::ListExtensions, |answer| match answer {

@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, svg};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::{Alignment, Element, Fill, Length, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{palette, space};
@@ -97,6 +97,9 @@ pub enum Scene {
 /// request on its way. Answers come back through [`answered`], whatever page is shown meanwhile.
 #[derive(Debug)]
 pub struct State {
+    create_open: bool,
+    calendar_open: bool,
+    calendar_month: NaiveDate,
     pub source: BackupScope,
     pub since: String,
     pub file_name: String,
@@ -119,6 +122,9 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            create_open: false,
+            calendar_open: false,
+            calendar_month: chrono::Utc::now().date_naive().with_day(1).expect("first of month"),
             source: BackupScope::Server,
             since: String::new(),
             file_name: String::new(),
@@ -141,6 +147,12 @@ impl Default for State {
 /// What a row of the backup and restore groups reports.
 #[derive(Debug, Clone)]
 pub enum Message {
+    OpenCreate,
+    CloseCreate,
+    ToggleCalendar,
+    PreviousMonth,
+    NextMonth,
+    PickDay(NaiveDate),
     Source(BackupScope),
     Since(String),
     FileName(String),
@@ -261,6 +273,35 @@ impl State {
 /// request is on its way, or one whose button is off, does nothing.
 pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A> {
     match message {
+        Message::OpenCreate if state.pending.is_none() && !state.active_job() => {
+            state.create_open = true;
+            state.calendar_open = false;
+        }
+        Message::CloseCreate => {
+            state.create_open = false;
+            state.calendar_open = false;
+        }
+        Message::ToggleCalendar => {
+            state.calendar_open = !state.calendar_open;
+            if state.calendar_open
+                && let Ok(day) = NaiveDate::parse_from_str(&state.since, "%Y-%m-%d")
+            {
+                state.calendar_month = day.with_day(1).expect("first of month");
+            }
+        }
+        Message::PreviousMonth => {
+            let previous = state.calendar_month - chrono::Duration::days(1);
+            state.calendar_month = previous.with_day(1).expect("first of month");
+        }
+        Message::NextMonth => {
+            let after = state.calendar_month + chrono::Duration::days(32);
+            state.calendar_month = after.with_day(1).expect("first of month");
+        }
+        Message::PickDay(day) => {
+            state.since = day.format("%Y-%m-%d").to_string();
+            state.calendar_month = day.with_day(1).expect("first of month");
+            state.calendar_open = false;
+        }
         Message::Source(source) => state.source = source,
         Message::Since(since) => state.since = since,
         Message::FileName(file_name) => state.file_name = file_name,
@@ -374,6 +415,8 @@ fn create<A>(state: &mut State, account: &str) -> Action<A> {
     state.job_directory = (!destination.is_empty()).then(|| PathBuf::from(destination));
     state.clear(&[Place::Create, Place::Job]);
     state.pending = Some(Pending::Create);
+    state.create_open = false;
+    state.calendar_open = false;
     Action::Ask(Request::MailBackupCreate { account: account.into(), source: state.source, since, file_name })
 }
 
@@ -465,7 +508,35 @@ pub fn poll_request(state: &mut State, account: &str) -> Option<Request> {
 /// The groups "Backup" and "Restore" of `account`'s page. Status, warnings and errors carry an
 /// icon in their colour and wrap, so nothing is cut off in a narrow window.
 pub fn view<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
-    column![backup_group(state), restore_group(state, account)].spacing(torro_gui::layout::section_gap()).into()
+    let create = if state.pending == Some(Pending::Create) {
+        widgets::busy_button(tr("Starting backup…"), style::button::secondary)
+    } else {
+        widgets::text_button(
+            None,
+            tr("Create backup"),
+            style::button::primary,
+            (state.pending.is_none() && !state.active_job()).then_some(Message::OpenCreate),
+        )
+    };
+    let mut rows = vec![row_frame(create, false)];
+    if let Some(job) = &state.job {
+        job_rows(&mut rows, state, job);
+    }
+    error_row(&mut rows, state, Place::Job);
+    let summary = widgets::group(tr("Backup"), rows, None);
+    let base = column![summary, restore_group(state, account)].spacing(torro_gui::layout::section_gap());
+    if state.create_open { widgets::modal(base, backup_group(state), 700.0, Message::CloseCreate) } else { base.into() }
+}
+
+/// Escape dismisses the backup form or its date grid before the account page handles the key.
+pub fn escape(state: &State) -> Option<Message> {
+    if state.calendar_open {
+        Some(Message::ToggleCalendar)
+    } else if state.create_open {
+        Some(Message::CloseCreate)
+    } else {
+        None
+    }
 }
 
 /// How a status line looks: the icon in front and its colour.
@@ -552,7 +623,12 @@ fn backup_group(state: &State) -> Element<'_, Message> {
             None,
             tr("From date"),
             Some(tr("Leave empty for all mail.").into()),
-            field(tr("YYYY-MM-DD"), &state.since).on_input(Message::Since).on_submit_maybe(submit()),
+            row![
+                field(tr("YYYY-MM-DD"), &state.since).on_input(Message::Since).on_submit_maybe(submit()),
+                widgets::icon_button(Icon::CalendarDays, tr("Choose date"), Some(Message::ToggleCalendar)),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center),
         ),
         setting_row(
             None,
@@ -573,6 +649,9 @@ fn backup_group(state: &State) -> Element<'_, Message> {
             ),
         ),
     ];
+    if state.calendar_open {
+        rows.insert(4, calendar(state));
+    }
     let creating = (state.pending == Some(Pending::Create)).then_some(tr("Starting backup…"));
     rows.push(buttons(vec![action(tr("Create backup"), creating, submit())]));
     error_row(&mut rows, state, Place::Create);
@@ -582,6 +661,40 @@ fn backup_group(state: &State) -> Element<'_, Message> {
     error_row(&mut rows, state, Place::Job);
     widgets::group(tr("Backup"), rows,
         Some(tr("The ZIP is readable without Torro and is not encrypted. Keep it in a private location. Local backup includes only retained original mails.").into()))
+}
+
+fn calendar(state: &State) -> Element<'_, Message> {
+    let month = state.calendar_month;
+    let title = format!("{} {}", torro_gui::datetime::month_name(month.month()), month.year());
+    let heading = row![
+        widgets::icon_button(Icon::ChevronLeft, tr("Previous month"), Some(Message::PreviousMonth)),
+        iced::widget::space().width(Length::Fill),
+        typo::text(typo::body_strong(), title),
+        iced::widget::space().width(Length::Fill),
+        widgets::icon_button(Icon::ChevronRight, tr("Next month"), Some(Message::NextMonth)),
+    ]
+    .align_y(Alignment::Center);
+    let weekdays: Vec<Element<'_, Message>> = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        .into_iter()
+        .map(|day| {
+            container(typo::text(typo::meta(), tr(day)).style(theme::text_2)).width(Length::FillPortion(1)).into()
+        })
+        .collect();
+    let mut grid = column![heading, row(weekdays).spacing(space::xs())].spacing(space::xs());
+    for week in torro_gui::datetime::month_grid(month).chunks(7) {
+        let cells: Vec<Element<'_, Message>> = week
+            .iter()
+            .map(|day| {
+                let label = day.day().to_string();
+                let press = (day.month() == month.month()).then_some(Message::PickDay(*day));
+                container(widgets::text_button(None, label, style::button::ghost, press))
+                    .width(Length::FillPortion(1))
+                    .into()
+            })
+            .collect();
+        grid = grid.push(row(cells).spacing(space::xs()));
+    }
+    row_frame(grid, true)
 }
 
 /// The job: its phase with the counts so far, the archive once there is one, its warnings, and while
@@ -873,6 +986,27 @@ mod tests {
                 file_name: Some("anna.zip".into()),
             })
         );
+    }
+
+    #[test]
+    fn backup_dialog_calendar_sets_the_date_and_closes_after_create() {
+        let mut state = State::default();
+        assert_eq!(update::<()>(&mut state, ACCOUNT, Message::OpenCreate), Action::None);
+        assert!(state.create_open);
+        let _ = view(&state, ACCOUNT);
+        assert_eq!(update::<()>(&mut state, ACCOUNT, Message::ToggleCalendar), Action::None);
+        assert!(state.calendar_open);
+        assert!(matches!(escape(&state), Some(Message::ToggleCalendar)));
+        let day = NaiveDate::from_ymd_opt(2026, 10, 20).expect("date");
+        assert_eq!(update::<()>(&mut state, ACCOUNT, Message::PickDay(day)), Action::None);
+        assert_eq!(state.since, "2026-10-20");
+        assert!(!state.calendar_open);
+        assert!(matches!(
+            update::<()>(&mut state, ACCOUNT, Message::Create),
+            Action::Ask(Request::MailBackupCreate { since: Some(chosen), .. }) if chosen == day
+        ));
+        assert!(!state.create_open);
+        assert!(escape(&state).is_none());
     }
 
     #[test]

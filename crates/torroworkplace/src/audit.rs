@@ -346,6 +346,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         // condition's value or a category – a person's own words about their mail. A sorting
         // rule is named by its id only.
         Request::CreateCategory { .. }
+        | Request::CreateCategoryGroup { .. }
+        | Request::UpdateCategoryGroup { .. }
         | Request::UpdateCategory { .. }
         | Request::RemoveCategory { .. }
         | Request::ListSortRules
@@ -384,7 +386,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         // Mail (security rule 3 of task M2.1): never the address signed in with, nor a search, a
         // subject, a recipient, a file or a folder name. The account as for collections; message,
         // draft and folder ids only hashed, so lines can be matched but not with a mailbox.
-        Request::ConnectMail { .. } => Vec::new(),
+        Request::ConnectMail { .. } | Request::ReconfigureMail { .. } => Vec::new(),
         // TorroMail's accounts (task M7.4): no address, and no id of another app's keychain.
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.
@@ -1198,6 +1200,7 @@ pub(crate) mod tests {
             id: "mail:anna@mailbox.org".into(),
             sender_name: Some("Anna Example".into()),
             signature: None,
+            signature_format: None,
             notify: None,
             services: None,
             folder_roles: None,

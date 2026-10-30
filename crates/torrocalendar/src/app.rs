@@ -255,6 +255,7 @@ fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -> Page<'a
         sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
         actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
         save_bar: page.save_bar.map(|bar| bar.map(into)),
+        max_width: page.max_width,
     }
 }
 
@@ -2185,6 +2186,7 @@ impl App {
             sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
             actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
             save_bar: page.save_bar.map(|bar| bar.map(Message::SettingsPage)),
+            max_width: page.max_width,
         };
         pane.host.view(class, page, Message::SettingsHost)
     }

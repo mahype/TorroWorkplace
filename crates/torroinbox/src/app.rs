@@ -1512,6 +1512,8 @@ pub enum Open {
     AccountFolders,
     /// That page at the tab "Writing" with the sender name changed, so the save bar stands.
     AccountWriting,
+    /// That account's offline selection and storage comparison.
+    AccountStorage,
     /// That page's overview with its open questions: the open folder role and the sync problem.
     AccountQuestion,
     /// "Unfiltered" (until issue #337 "With attachments") with the demo's invoice open (task M12.6)
@@ -1544,7 +1546,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 65] = [
+    const ALL: [(&'static str, Open); 66] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1598,6 +1600,7 @@ impl Open {
         ("account", Open::Account),
         ("account-folders", Open::AccountFolders),
         ("account-writing", Open::AccountWriting),
+        ("account-storage", Open::AccountStorage),
         ("account-question", Open::AccountQuestion),
         ("attachment-menu", Open::AttachmentMenu),
         ("save-all-menu", Open::SaveAllMenu),
@@ -1631,6 +1634,7 @@ impl Open {
             Open::Account | Open::AccountQuestion => Some(AccountScene::Overview),
             Open::AccountFolders => Some(AccountScene::Folders),
             Open::AccountWriting => Some(AccountScene::Writing),
+            Open::AccountStorage => Some(AccountScene::Storage),
             _ => None,
         }
     }
@@ -1643,6 +1647,7 @@ enum AccountScene {
     Folders,
     /// "Writing" with a changed sender name, so the save bar stands.
     Writing,
+    Storage,
 }
 
 impl AccountScene {
@@ -1653,6 +1658,7 @@ impl AccountScene {
             AccountScene::Overview => Vec::new(),
             AccountScene::Folders => vec![Account::Tab(Tab::Folders.index())],
             AccountScene::Writing => vec![Account::Tab(Tab::Writing.index()), Account::SenderName(DEMO_SENDER.into())],
+            AccountScene::Storage => vec![Account::Tab(Tab::Storage.index())],
         }
     }
 }
@@ -2229,7 +2235,7 @@ struct SettingsPane {
 enum SettingsState {
     /// The Notification Hub and the App Feed: Notifications, Sources, Rules.
     Inbox(settings_inbox::State),
-    /// The mail window: Accounts, Reading, Categorization, Storage & index.
+    /// The mail window: Accounts, Reading & writing, Attachments, Categorization, Filters.
     Mail(Box<settings_mail::State>),
 }
 
@@ -2366,6 +2372,7 @@ fn wrap_settings<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -
         sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
         actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
         save_bar: page.save_bar.map(|bar| bar.map(into)),
+        max_width: page.max_width,
     }
 }
 
@@ -4773,8 +4780,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 {
                     settings_mail::sent(state);
                     settings_mail::filters_sent(state, result);
+                    settings_mail::editor_sent(state, result);
                 }
                 let outcome = pane.host.update(message);
+                if let SettingsState::Mail(state) = &mut pane.sections {
+                    settings_mail::loaded(state, pane.host.data());
+                }
                 if loaded {
                     self.show_staged_backup();
                 }
@@ -7160,12 +7171,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Outcome::OpenUrl(url) => self.open_url(url),
             Outcome::Answer(answer) => {
+                // The mail settings ask one at a time (issue #397): the answer is the waiting
+                // section's, and the next ask goes out now.
+                let mut next = Task::none();
                 if let Some(pane) = self.settings.as_mut()
                     && let SettingsState::Mail(state) = &mut pane.sections
                 {
                     settings_mail::answered(state, &answer);
+                    if let Some(request) = settings_mail::next_ask(state) {
+                        let action = torro_settings_ui::Action::<settings_mail::AppAction>::Ask(request);
+                        if let Outcome::Work(task) = pane.host.act(action) {
+                            next = task.map(Message::SettingsHost);
+                        }
+                    }
                 }
-                Task::none()
+                // A saved mail connection (`accounts.reconfigure_mail`, asked so a certificate
+                // question comes back) changed the account: load as after a send, so the page
+                // compares with the new servers and the list shows them at once.
+                let saved = matches!(answer.as_ref(), Ok(torro_ipc::Response::MailConnected { .. }));
+                match self.settings.as_mut() {
+                    Some(pane) if saved => {
+                        let reload = pane.host.reload().map(Message::SettingsHost);
+                        Task::batch([next, reload, self.load()])
+                    }
+                    _ => next,
+                }
             }
             Outcome::ControlCentre(section) => {
                 connect::open_section(&section);
@@ -7197,6 +7227,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
             actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
             save_bar: page.save_bar.map(|bar| bar.map(Message::SettingsPage)),
+            max_width: page.max_width,
         };
         pane.host.view(class, page, Message::SettingsHost)
     }
@@ -8945,7 +8976,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let edit = |remember| Message::SetCategory(id(), category, remember);
                 let sender = Self::mail_sender_of(item).unwrap_or_else(|| item.source.label().to_string());
                 let always = trf("Always for {sender}", &[("sender", &sender)]);
-                let mark = mail::group_mark(mail::category_look(&self.categories, category).1).0;
+                let mark = mail::group_look(&self.categories, mail::category_look(&self.categories, category).1).0;
                 vec![
                     choice(mark, tr("Only this mail").to_owned(), edit(false)),
                     choice(Icon::Repeat, always, edit(true)),
@@ -9551,7 +9582,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// there; the arms for them only keep the matches whole).
     ///
     /// The settings (task S.20), while they are open, take the header and the content area instead;
-    /// the sidebar stays with the app switcher above it, and what is open behind them – the panel,
+    /// the app sidebar becomes a rail so the settings have room, and what is open behind them – the panel,
     /// a search – is kept and comes back with the content area. Pressing the app switcher there
     /// shows entries again ([`shows_entries`]), so the only layer over the settings is the host's
     /// own section menu.
@@ -9563,6 +9594,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
+            let settings_rail = matches!(class, SizeClass::Wide | SizeClass::Medium)
+                .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
             // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
             // The app switcher cannot be open at the same time: every `Message::Switcher` shows
             // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
@@ -9571,7 +9604,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // menu cannot be open with it, as a click next to that menu only closes it.
             let overlay = self.settings_dialog(class).or(frame.overlay);
             return shell::shell(class, sidebar, frame.header, frame.body, None)
-                .rail(rail)
+                .rail(settings_rail)
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(overlay)
@@ -10433,7 +10466,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return Vec::new();
         }
         let mut branches = Vec::new();
-        for group in CategoryGroup::ALL {
+        for group in category_group_order(&self.categories) {
             let of_group: Vec<&CategoryInfo> =
                 self.categories.iter().filter(|held| held.group == group).filter(occurs).collect();
             if of_group.is_empty() {
@@ -10446,11 +10479,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let open = folds && self.open_groups.contains(&group);
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
             // four colours are learnt. The line of its branch takes it too (issue #300).
-            let (mark, at) = mail::group_mark(group);
+            let mark = mail::category_symbol(of_group[0].group_icon);
+            let at = usize::from(of_group[0].group_color.min(4));
             let line = self.category_colour(at);
             let entry = NavEntry {
                 mark: Mark::Tinted(mark, line),
-                label: torro_core::category::group_label(group).to_string(),
+                label: of_group[0].group_label.clone(),
                 count: (unread > 0).then_some(unread as usize),
                 active: if folds { self.category_group_active(group) } else { self.category_group_shown(group) },
                 view: self.category_group_view(group),
@@ -10544,8 +10578,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let occurs = |held: &&CategoryInfo| held.messages > 0 && !hidden.contains(&held.category);
             self.categories.iter().filter(|held| held.group == group).filter(occurs).count()
         };
-        let most = CategoryGroup::ALL.into_iter().map(held).max().filter(|most| *most > 0)?;
-        CategoryGroup::ALL.into_iter().find(|group| held(*group) == most)
+        let groups = category_group_order(&self.categories);
+        let most = groups.iter().copied().map(held).max().filter(|most| *most > 0)?;
+        groups.into_iter().find(|group| held(*group) == most)
     }
 
     /// Puts the category start states in place once the catalogue is in; the window then loads
@@ -11006,7 +11041,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         } else {
             self.categories.clone()
         };
-        let shown: Vec<&CategoryInfo> = CategoryGroup::ALL
+        let shown: Vec<&CategoryInfo> = category_group_order(&catalogue)
             .into_iter()
             .flat_map(|group| {
                 catalogue
@@ -11020,7 +11055,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let width = needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel());
         let mut list = column![menu_caption(tr("Category"))];
         let mut at = 0;
-        for group in CategoryGroup::ALL {
+        for group in category_group_order(&catalogue) {
             let of_group: Vec<&CategoryInfo> = catalogue
                 .iter()
                 .filter(|held| held.group == group && !(held.built_in && held.category.by_rule_only()))
@@ -11028,11 +11063,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             if of_group.is_empty() {
                 continue;
             }
-            let (group_icon, color_at) = mail::group_mark(group);
+            let group_icon = mail::category_symbol(of_group[0].group_icon);
+            let color_at = usize::from(of_group[0].group_color.min(4));
             let color = palette(&self.theme()).category[color_at];
             let group_heading = row![
                 icon::icon(group_icon, icon::SIZE).style(move |_, _| iced::widget::svg::Style { color: Some(color) }),
-                typo::text(typo::caption(), torro_core::category::group_label(group).to_owned())
+                typo::text(typo::caption(), of_group[0].group_label.clone())
                     .style(move |_| iced::widget::text::Style { color: Some(color) })
             ]
             .spacing(space::s())
@@ -11576,6 +11612,16 @@ struct MailGroup {
 
 /// A group of "Categories" with its categories (issue #300): the sidebar draws the group as a row
 /// that folds and its categories indented in a branch, the menu the categories nested under it.
+fn category_group_order(catalogue: &[CategoryInfo]) -> Vec<CategoryGroup> {
+    let mut groups = Vec::new();
+    for category in catalogue {
+        if !groups.contains(&category.group) {
+            groups.push(category.group);
+        }
+    }
+    groups
+}
+
 struct CategoryBranch {
     /// The group's row; its target is [`Target::Fold`].
     group: NavEntry,
@@ -19069,11 +19115,9 @@ mod tests {
         for (words, ids) in [
             (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
-            // Mail settings include attachments (task M12.7), categorization and storage controls.
-            (
-                vec!["--view", "mail"],
-                vec!["accounts", "reading", "attachments", "categorization", "filters", "storage"],
-            ),
+            // Mail settings include attachments (task M12.7), categorization and filters; storage
+            // controls live inside each account.
+            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization", "filters"]),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
@@ -19336,14 +19380,24 @@ mod tests {
         for words in [vec![], vec!["--view", "mail"], vec!["--view", "notifications"]] {
             let mut app = overview_at(&words);
             let _ = app.update(Message::OpenSettings);
+            if app.launch.kind == Kind::Mail {
+                let data = block_on(torro_settings_ui::load(
+                    Arc::new(torro_settings_ui::demo::Demo::new()),
+                    settings_mail::wanted(),
+                ));
+                let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+            }
             for size in [(1600.0, 1000.0), (1100.0, 800.0), (800.0, 600.0), (480.0, 900.0), (360.0, 700.0)] {
                 let _ = app.update(Message::Resized(Size::new(size.0, size.1)));
                 let _ = app.view();
             }
             // The sections of the open window, and only those, answer to `Host::open`.
-            let pane = app.settings.as_mut().expect("open");
             for section in app.launch.kind.settings_sections() {
-                assert!(pane.host.open(section.id), "{}", section.id);
+                assert!(app.settings.as_mut().expect("open").host.open(section.id), "{}", section.id);
+                for size in [(1600.0, 1000.0), (800.0, 600.0), (360.0, 700.0)] {
+                    let _ = app.update(Message::Resized(Size::new(size.0, size.1)));
+                    let _ = app.view();
+                }
             }
         }
     }

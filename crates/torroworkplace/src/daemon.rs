@@ -823,6 +823,8 @@ fn describe(request: &Request) -> String {
         Request::ControlClearCategories { id, action } => format!("{action:?} category reset {id}"),
         // Never a name, a description or a condition (task E15.1).
         Request::CreateCategory { .. } => "create a mail category".into(),
+        Request::CreateCategoryGroup { .. } => "create a main mail category".into(),
+        Request::UpdateCategoryGroup { .. } => "change a main mail category".into(),
         Request::UpdateCategory { .. } => "change a mail category".into(),
         Request::RemoveCategory { .. } => "remove a mail category".into(),
         Request::ListSortRules => "list sorting rules".into(),
@@ -930,6 +932,7 @@ fn describe(request: &Request) -> String {
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of
         // task M2.1); message and folder ids would let lines be matched with a mailbox.
         Request::ConnectMail { .. } => "connect mail".into(),
+        Request::ReconfigureMail { .. } => "check or change mail connection".into(),
         Request::UpdateMailAccount { .. } => "update mail account".into(),
         Request::TorroMailAccounts => "torromail accounts".into(),
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),

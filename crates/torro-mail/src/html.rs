@@ -99,14 +99,30 @@ pub fn to_text(html: &str) -> String {
 /// (each line of it escaped, line breaks as `<br>`) in front of the first top-level element with
 /// the class [`QUOTE_CLASS`], else at the end. A missing or blank signature adds nothing.
 pub fn sign(html: &str, signature: Option<&str>) -> String {
+    sign_inner(html, signature, false)
+}
+
+/// As [`sign`], with the signature written in the compose editor's safe markup. Rendering runs
+/// through the same HTML parser and whitelist as the message body before it enters the mail.
+pub fn sign_formatted(html: &str, signature: Option<&str>) -> String {
+    sign_inner(html, signature, true)
+}
+
+fn sign_inner(html: &str, signature: Option<&str>, formatted: bool) -> String {
     let mut nodes = parse(html);
     let Some(signature) = signature.map(str::trim_end).filter(|signature| !signature.trim().is_empty()) else {
         return serialize(&nodes);
     };
-    let mut children = vec![Node::Text("-- ".to_owned())];
-    for line in signature.replace("\r\n", "\n").split('\n') {
-        children.push(Node::Element(Element::void("br")));
-        children.push(Node::Text(clean_text(line)));
+    let mut children = vec![Node::Text("-- ".to_owned()), Node::Element(Element::void("br"))];
+    if formatted {
+        children.extend(parse(&crate::markup::to_html(signature, None)));
+    } else {
+        for (at, line) in signature.replace("\r\n", "\n").split('\n').enumerate() {
+            if at > 0 {
+                children.push(Node::Element(Element::void("br")));
+            }
+            children.push(Node::Text(clean_text(line)));
+        }
     }
     let block = Node::Element(Element { name: "div", attrs: vec![("class", SIGNATURE_CLASS.to_owned())], children });
     let quote = nodes.iter().position(|node| matches!(node, Node::Element(element) if element.has_class(QUOTE_CLASS)));
@@ -843,5 +859,20 @@ mod tests {
         assert_eq!(sign("<p>New</p>", Some("Anna")), "<p>New</p><div class=\"torro-signature\">-- <br>Anna</div>");
         assert_eq!(sign("<p>New</p>", Some("  \n")), "<p>New</p>");
         assert_eq!(sign("<p>New<script>x</script></p>", None), "<p>New</p>", "cleaned too");
+    }
+
+    #[test]
+    fn a_formatted_signature_keeps_safe_marks_and_a_plain_text_copy() {
+        let signed = sign_formatted(
+            "<p>Thanks!</p><div class=\"torro-quote\">Old</div>",
+            Some("**Anna** · [Profile](https://example.org)\n- Support\n<script>bad</script>"),
+        );
+        assert!(signed.contains("<strong>Anna</strong>"), "{signed}");
+        assert!(signed.contains("<a href=\"https://example.org\">Profile</a>"), "{signed}");
+        assert!(signed.contains("<ul><li>Support</li></ul>"), "{signed}");
+        assert!(!signed.contains("<script>"), "{signed}");
+        assert!(signed.find("torro-signature").unwrap() < signed.find("torro-quote").unwrap());
+        let plain = to_text(&signed);
+        assert!(plain.contains("Anna · Profile <https://example.org>"), "{plain}");
     }
 }

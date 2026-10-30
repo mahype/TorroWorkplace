@@ -311,6 +311,51 @@ impl AttachmentCache {
         Ok((count, bytes))
     }
 
+    /// Keep at most `limit` bytes of an account's previously downloaded attachment files. The
+    /// oldest cache folders go first; the account's selected retention period is an upper bound,
+    /// while a local size limit may remove them earlier.
+    pub fn trim_account_to_bytes(&self, account: &str, limit: u64) -> Result<usize, MailStoreError> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => return Err(err.into()),
+        };
+        let prefix = account_cache_prefix(account);
+        let mut folders = Vec::new();
+        let mut total = 0u64;
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if !metadata.is_dir() {
+                continue;
+            }
+            let mut bytes = 0u64;
+            for file in fs::read_dir(entry.path())? {
+                let file = file?;
+                let metadata = fs::symlink_metadata(file.path())?;
+                if metadata.is_file() {
+                    bytes = bytes.saturating_add(metadata.len());
+                }
+            }
+            total = total.saturating_add(bytes);
+            folders.push((metadata.modified()?, entry.path(), bytes));
+        }
+        folders.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        let mut removed = 0;
+        for (_, path, bytes) in folders {
+            if total <= limit {
+                break;
+            }
+            fs::remove_dir_all(path)?;
+            total = total.saturating_sub(bytes);
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
     /// `path` is a regular file inside the managed folder: not a symbolic link, and not outside
     /// after the system resolved `..` and links on the way. A path that is not there is not
     /// inside.
@@ -466,6 +511,21 @@ mod tests {
         assert!(cache.contains(&path));
         let other = cache.store("escape.txt", b"again").expect("stored twice");
         assert_ne!(path, other, "the same name never meets itself");
+    }
+
+    #[test]
+    fn size_limit_trims_only_the_chosen_accounts_attachment_cache() {
+        let (_tmp, cache) = cache();
+        let anna_a = cache.store_for_part("mail:anna@example.org", "m:1", "1", "a.pdf", b"aaaa").expect("anna a");
+        let anna_b = cache.store_for_part("mail:anna@example.org", "m:2", "1", "b.pdf", b"bbbb").expect("anna b");
+        let ben = cache.store_for_part("mail:ben@example.org", "m:3", "1", "c.pdf", b"ccc").expect("ben");
+        assert_eq!(cache.account_usage("mail:anna@example.org").expect("before"), (2, 8));
+        assert_eq!(cache.trim_account_to_bytes("mail:anna@example.org", 4).expect("trim"), 1);
+        assert_eq!(cache.account_usage("mail:anna@example.org").expect("after"), (1, 4));
+        assert!(anna_a.exists() || anna_b.exists());
+        assert!(ben.exists());
+        assert_eq!(cache.trim_account_to_bytes("mail:anna@example.org", 0).expect("none"), 1);
+        assert_eq!(cache.account_usage("mail:anna@example.org").expect("empty"), (0, 0));
     }
 
     #[test]

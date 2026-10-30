@@ -3535,16 +3535,41 @@ pub fn ellipsized<'a, M: 'a>(
     one_line(level, text, colour)
 }
 
+/// [`ellipsized`] set against the end of its room: a value in a column of values right of their
+/// labels (the system folders of a mail account, issue #397), each ending at the same edge.
+pub fn ellipsized_end<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    one_line_at(level, text, colour, iced::alignment::Horizontal::Right)
+}
+
 fn one_line<'a, M: 'a>(
     level: typo::Level,
     text: impl IntoFragment<'a>,
     colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    one_line_at(level, text, colour, iced::alignment::Horizontal::Left)
+}
+
+fn one_line_at<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+    align: iced::alignment::Horizontal,
 ) -> Element<'a, M> {
     let full = text.into_fragment().into_owned();
     responsive(move |room| {
         let shown = typo::ellipsize(&full, level, room.width);
         let cut = shown != full;
         let line = container(typo::text(level, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+        // Only against the end does the line take its room: at the start it keeps its own width,
+        // as every [`ellipsized`] did before, so a tooltip covers the text only.
+        let line = match align {
+            iced::alignment::Horizontal::Left => line,
+            _ => line.width(Length::Fill).align_x(align),
+        };
         if cut { with_tooltip(line, full.clone()) } else { line.into() }
     })
     .height(Length::Shrink)
@@ -3684,6 +3709,29 @@ pub fn label_choice<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     choice_chip_with(Some(label_dot(hex, Scale::Row.dot())), name, on, on_press)
+}
+
+/// A [`choice_chip`] with a dot in the group colour `at` of the active design
+/// (`Palette::category`), for the colour of a main category (issue #343): the dot is drawn with the
+/// theme of the moment, so it follows a change of design; the name carries the meaning.
+pub fn category_choice_chip<'a, M: Clone + 'a>(
+    label: impl IntoFragment<'a>,
+    at: usize,
+    on: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let size = Scale::Row.dot();
+    let dot = container(blank().width(size).height(size))
+        .style(move |t: &Theme| {
+            let colours = &palette(t).category;
+            container::Style {
+                background: Some(Background::Color(colours[at.min(colours.len() - 1)])),
+                border: border::rounded(size / 2.0),
+                ..Default::default()
+            }
+        })
+        .into();
+    choice_chip_with(Some(dot), label, on, on_press)
 }
 
 /// The chip of [`choice_chip`] with `lead` (already drawn) after the check mark of a chosen chip.
@@ -4780,6 +4828,130 @@ pub fn share_strip<'a, M: 'a>(parts: Vec<SharePart>, rest: Option<(String, u64)>
     }
     let legend = row(entries).spacing(space::l()).wrap().vertical_spacing(space::xs());
     column![bar, legend].spacing(space::s()).width(Fill).into()
+}
+
+/// One mail inventory on a shared server-size scale. The upper track shows readable mail on this
+/// device, the additional download selected by the policy (hatched), and mail that stays online.
+/// The yellow index track is directly adjacent and never extends past the local part. The caller
+/// shows the one legend beneath a list of accounts or beneath a detail chart.
+pub fn mail_coverage_bars<'a, M: 'a>(actual: u64, planned: u64, indexed: u64, total: u64) -> Element<'a, M> {
+    canvas(MailCoverage { actual, planned, indexed, total }).width(Fill).height(14).into()
+}
+
+struct MailCoverage {
+    actual: u64,
+    planned: u64,
+    indexed: u64,
+    total: u64,
+}
+
+impl<M> canvas::Program<M> for MailCoverage {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let p = palette(theme);
+        let width = bounds.width.max(0.0);
+        let fraction = |part: u64| {
+            if self.total == 0 { 0.0 } else { width * (part.min(self.total) as f32 / self.total as f32) }
+        };
+        let actual = fraction(self.actual);
+        let planned = fraction(self.planned.max(self.actual));
+        let indexed = fraction(self.indexed.min(self.actual));
+        frame.fill_rectangle(Point::new(0.0, 0.0), Size::new(width, 8.0), p.line_strong);
+        frame.fill_rectangle(Point::new(0.0, 0.0), Size::new(actual, 8.0), p.chart_color(ChartColor::Series(0)));
+        if planned > actual {
+            frame.fill_rectangle(Point::new(actual, 0.0), Size::new(planned - actual, 8.0), p.raised);
+            let mut x = actual - 8.0;
+            while x < planned {
+                let from = x.max(actual);
+                let to = (x + 8.0).min(planned);
+                if to > from {
+                    let line = canvas::Path::line(Point::new(from, 8.0 - (from - x)), Point::new(to, 8.0 - (to - x)));
+                    frame.stroke(
+                        &line,
+                        canvas::Stroke::default().with_color(p.chart_color(ChartColor::Series(0))).with_width(1.0),
+                    );
+                }
+                x += 8.0;
+            }
+        }
+        frame.fill_rectangle(Point::new(0.0, 10.0), Size::new(width, 4.0), p.line_strong);
+        frame.fill_rectangle(Point::new(0.0, 10.0), Size::new(indexed, 4.0), p.attention);
+        vec![frame.into_geometry()]
+    }
+}
+
+/// The four labels shared by the bars on the account list and on account storage details.
+pub fn mail_coverage_legend<'a, M: 'a>() -> Element<'a, M> {
+    let entries = [
+        (tr("On this device"), 0),
+        (tr("Planned download"), 1),
+        (tr("Stays online"), 2),
+        (tr("Indexed for full-text search"), 3),
+    ];
+    row(entries.into_iter().map(|(label, kind)| {
+        let mark = canvas(MailLegendMark(kind)).width(SWATCH).height(SWATCH);
+        row![mark, typo::text(typo::meta(), label).style(theme::text_2)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center)
+            .into()
+    }))
+    .spacing(space::l())
+    .wrap()
+    .vertical_spacing(space::xs())
+    .into()
+}
+
+struct MailLegendMark(usize);
+
+impl<M> canvas::Program<M> for MailLegendMark {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let p = palette(theme);
+        let fill = match self.0 {
+            0 => p.chart_color(ChartColor::Series(0)),
+            1 => p.raised,
+            2 => p.line_strong,
+            _ => p.attention,
+        };
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), fill);
+        if self.0 == 1 {
+            let mut x = -bounds.height;
+            while x < bounds.width {
+                let from = x.max(0.0);
+                let to = (x + bounds.height).min(bounds.width);
+                if to > from {
+                    let line = canvas::Path::line(
+                        Point::new(from, bounds.height - (from - x)),
+                        Point::new(to, bounds.height - (to - x)),
+                    );
+                    frame.stroke(
+                        &line,
+                        canvas::Stroke::default().with_color(p.chart_color(ChartColor::Series(0))).with_width(1.0),
+                    );
+                }
+                x += bounds.height;
+            }
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 /// One entry of the legend of a [`share_strip`]: swatch (or the track's colour for the rest), word

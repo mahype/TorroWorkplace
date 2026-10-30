@@ -1536,7 +1536,16 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             *subscribed,
         ),
         Request::RemoveAccount { id } => trf("Remove the account {account}", &[("account", &named(id))]),
-        Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles, format } => trf(
+        Request::UpdateMailAccount {
+            id,
+            sender_name,
+            signature,
+            signature_format,
+            notify,
+            services,
+            folder_roles,
+            format,
+        } => trf(
             "Change the mail account {account}: {changes}",
             &[
                 ("account", &named(id)),
@@ -1545,6 +1554,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                     &mail_account_changes(
                         sender_name.as_deref(),
                         signature.as_deref(),
+                        *signature_format,
                         notify.is_some(),
                         services.as_ref(),
                         folder_roles.as_ref(),
@@ -2611,6 +2621,10 @@ pub struct InboxFacts {
     /// uses for a category already there. Empty for requests that name none; a category not in
     /// it is named by the suite's word ([`category_name`]).
     pub categories: Vec<torro_mail::CategoryDef>,
+    /// The main categories as the inbox keeps them (issue #343): the names a summary uses for a
+    /// main category already there, also one the person made. Empty for requests that name none; a
+    /// built-in one not in it is named by the suite's word ([`group_name`]).
+    pub groups: Vec<torro_mail::CategoryGroupDef>,
     /// The sorting rule `inbox.update_sort_rule`, `inbox.remove_sort_rule` or
     /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
     /// held across the awaits of asking for an approval, deep in the stack.
@@ -2631,6 +2645,32 @@ fn category_name(facts: &InboxFacts, category: torro_mail::Category) -> String {
     format!("\"{}\"", quote(&name))
 }
 
+/// What a person reads for the main category `group` in a summary (issue #343): its name in the
+/// catalogue the inbox keeps, quoted – the suite's word for a built-in one nobody renamed, the
+/// person's own name for one they made, never one the client sent. A main category of the person's
+/// that is not there is named by its key.
+fn group_name(facts: &InboxFacts, group: torro_mail::CategoryGroup) -> String {
+    let held = facts.groups.iter().find(|def| def.group == group).and_then(|def| def.name.as_deref());
+    let name = match (held.map(str::trim).filter(|name| !name.is_empty()), group) {
+        (Some(name), _) => name.to_string(),
+        (None, torro_mail::CategoryGroup::Custom(_)) => group.key().into_owned(),
+        (None, _) => torro_core::category::group_label(group).to_string(),
+    };
+    format!("\"{}\"", quote(&name))
+}
+
+/// The colour `color` of a main category as the editor in the mail settings names it.
+fn colour_word(color: u8) -> String {
+    match color {
+        0 => tr("Blue").to_string(),
+        1 => tr("Amber").to_string(),
+        2 => tr("Teal").to_string(),
+        3 => tr("Violet").to_string(),
+        4 => tr("Rose").to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// The conditions of a sorting rule in words (task E15.1): "from billing@shop.example and with
 /// \"invoice\" in the subject", each value quoted.
 fn conditions_words(conditions: &[torro_inbox::SortCondition]) -> String {
@@ -2638,11 +2678,53 @@ fn conditions_words(conditions: &[torro_inbox::SortCondition]) -> String {
         .iter()
         .map(|condition| {
             let value = format!("\"{}\"", quote(&condition.value));
-            match condition.field {
-                torro_inbox::SortField::Sender => trf("from {sender}", &[("sender", &value)]),
-                torro_inbox::SortField::Domain => trf("from anyone at {domain}", &[("domain", &value)]),
-                torro_inbox::SortField::Subject => trf("with {text} in the subject", &[("text", &value)]),
-                torro_inbox::SortField::Text => trf("with {text} in the text", &[("text", &value)]),
+            let comparison = if condition.comparison == torro_inbox::SortComparison::Auto {
+                condition.field.default_comparison()
+            } else {
+                condition.comparison
+            };
+            let field = match condition.field {
+                torro_inbox::SortField::Sender => tr("Sender address"),
+                torro_inbox::SortField::Domain => tr("Sender domain"),
+                torro_inbox::SortField::ReplyTo => tr("Reply address"),
+                torro_inbox::SortField::Recipient => tr("Recipient (To/Cc)"),
+                torro_inbox::SortField::Subject => tr("Subject"),
+                torro_inbox::SortField::Text => tr("Message text"),
+                torro_inbox::SortField::Attachment => tr("Attachment"),
+                torro_inbox::SortField::AttachmentName => tr("Attachment name or type"),
+                torro_inbox::SortField::Size => tr("Message size"),
+                torro_inbox::SortField::ListId => tr("Mailing list (List-ID)"),
+                torro_inbox::SortField::Account => tr("Email account"),
+            };
+            let compared = match comparison {
+                torro_inbox::SortComparison::Auto => tr("matches"),
+                torro_inbox::SortComparison::Is => tr("is"),
+                torro_inbox::SortComparison::IsNot => tr("is not"),
+                torro_inbox::SortComparison::Contains => tr("contains"),
+                torro_inbox::SortComparison::NotContains => tr("does not contain"),
+                torro_inbox::SortComparison::StartsWith => tr("starts with"),
+                torro_inbox::SortComparison::EndsWith => tr("ends with"),
+                torro_inbox::SortComparison::Present => tr("present"),
+                torro_inbox::SortComparison::Absent => tr("not present"),
+                torro_inbox::SortComparison::GreaterThan => tr("larger than"),
+                torro_inbox::SortComparison::LessThan => tr("smaller than"),
+            };
+            match (condition.comparison, condition.field) {
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Sender) => {
+                    trf("from {sender}", &[("sender", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Domain) => {
+                    trf("from anyone at {domain}", &[("domain", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Subject) => {
+                    trf("with {text} in the subject", &[("text", &value)])
+                }
+                (torro_inbox::SortComparison::Auto, torro_inbox::SortField::Text) => {
+                    trf("with {text} in the text", &[("text", &value)])
+                }
+                (_, torro_inbox::SortField::Attachment) => format!("{field} {compared}"),
+                (_, torro_inbox::SortField::Size) => format!("{field} {compared} {value} MB"),
+                _ => format!("{field} {compared} {value}"),
             }
         })
         .collect();
@@ -2851,10 +2933,51 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             "Add the mail category {name} to {group} with icon {icon}",
             &[
                 ("name", &format!("\"{}\"", quote(name))),
-                ("group", &format!("\"{}\"", torro_core::category::group_label(*group))),
+                ("group", &group_name(facts, *group)),
                 ("icon", &format!("{:?}", icon)),
             ],
         ),
+        // The main categories (issue #343): a new one as it will be written, one already there by
+        // its name in the catalogue, then every field that changes.
+        Request::CreateCategoryGroup { name, icon, color } => trf(
+            "Add the main mail category {name} with icon {icon} and colour {color}",
+            &[
+                ("name", &format!("\"{}\"", quote(name))),
+                ("icon", &format!("{:?}", icon)),
+                ("color", &colour_word(*color)),
+            ],
+        ),
+        Request::UpdateCategoryGroup { group, name, icon, color } => {
+            let held = facts.groups.iter().find(|def| def.group == *group);
+            let mut changes: Vec<String> = Vec::new();
+            // An empty name puts back the suite's word of a built-in one only: the core refuses it
+            // for a main category of the person's own, so the summary promises nothing there.
+            let own = matches!(group, torro_mail::CategoryGroup::Custom(_));
+            match name.trim() {
+                "" if !own && held.is_none_or(|def| def.name.is_some()) => {
+                    changes.push(tr("put back the suite's name").to_string());
+                }
+                "" => {}
+                name if held.is_none_or(|def| def.name.as_deref() != Some(name)) => {
+                    changes.push(trf("call it {name}", &[("name", &format!("\"{}\"", quote(name)))]));
+                }
+                _ => {}
+            }
+            if held.is_none_or(|def| def.icon != *icon) {
+                changes.push(trf("set its icon to {icon}", &[("icon", &format!("{:?}", icon))]));
+            }
+            if held.is_none_or(|def| def.color != *color) {
+                changes.push(trf("set its colour to {color}", &[("color", &colour_word(*color))]));
+            }
+            let group = group_name(facts, *group);
+            match changes.is_empty() {
+                true => trf("Change the main mail category {group}", &[("group", &group)]),
+                false => trf(
+                    "Change the main mail category {group}: {changes}",
+                    &[("group", &group), ("changes", &changes.join(", "))],
+                ),
+            }
+        }
         // Every field that changes is named (API review of #255): a new description steers the
         // model, a group or the model switch decides what is offered – none of it hidden behind
         // "change".
@@ -2866,8 +2989,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 None => {}
             }
             if let Some(group) = group {
-                let group = format!("\"{}\"", torro_core::category::group_label(*group));
-                changes.push(trf("move it to {group}", &[("group", &group)]));
+                changes.push(trf("move it to {group}", &[("group", &group_name(facts, *group))]));
             }
             if let Some(icon) = icon {
                 changes.push(trf("set its icon to {icon}", &[("icon", &format!("{:?}", icon))]));
@@ -3289,6 +3411,7 @@ fn when(start: &EventTime, today: chrono::NaiveDate) -> String {
 fn mail_account_changes(
     sender_name: Option<&str>,
     signature: Option<&str>,
+    signature_format: Option<bool>,
     notify: bool,
     services: Option<&torro_mail::Services>,
     folder_roles: Option<&BTreeMap<Role, String>>,
@@ -3304,6 +3427,9 @@ fn mail_account_changes(
         Some("") => changes.push(tr("no signature").to_string()),
         Some(text) => changes.push(trf("signature \"{start}\"", &[("start", &quote(text))])),
         None => {}
+    }
+    if let Some(formatted) = signature_format {
+        changes.push(if formatted { tr("formatted signature") } else { tr("plain signature") }.to_string());
     }
     if notify {
         changes.push(tr("new mail in the Notification Hub").to_string());
@@ -3342,15 +3468,24 @@ fn mail_cache_account(facts: &Facts, id: &str) -> String {
 fn mail_cache_changes(policy: &torro_ipc::mail::MailCachePolicy) -> String {
     use torro_ipc::mail::MailCacheMode;
     let mode = match policy.mode {
-        MailCacheMode::HeadersOnly => tr("keep no mail texts"),
-        MailCacheMode::Recent90Days => tr("keep the mail texts of the last 90 days"),
-        MailCacheMode::AllOffline => tr("keep all mail texts"),
+        MailCacheMode::HeadersOnly => tr("keep no mail texts").to_string(),
+        MailCacheMode::Recent90Days => tr("keep the mail texts of the last 90 days").to_string(),
+        MailCacheMode::AllOffline => tr("keep all mail texts").to_string(),
+        MailCacheMode::SinceDate => {
+            trf("keep mail texts from {date}", &[("date", &policy.since_date.as_deref().unwrap_or("?"))])
+        }
+        MailCacheMode::MaxSize => {
+            trf("keep the newest mail up to {mb} MiB", &[("mb", &policy.max_local_mb.unwrap_or(0))])
+        }
     };
-    let attachments = match policy.prefetch_attachments {
-        true => tr("download attachments in advance"),
-        false => tr("download attachments only when opened"),
+    // Attachments are only ever downloaded when opened since #343: the core sets
+    // `prefetch_attachments` back to false, so the summary says what runs, not what was sent.
+    let attachments = tr("download attachments only when opened");
+    let days = match policy.attachment_retention_days {
+        0 => tr("keep no downloaded attachments").to_string(),
+        u32::MAX => tr("keep all downloaded attachments").to_string(),
+        days => trf("delete downloaded attachments after {days} days", &[("days", &days)]),
     };
-    let days = trf("delete downloaded attachments after {days} days", &[("days", &policy.attachment_retention_days)]);
     format!("{mode}, {attachments}, {days}")
 }
 
@@ -4949,6 +5084,8 @@ pub(crate) mod tests {
             policy: MailCachePolicy {
                 account: "mail:anna@mailbox.org".into(),
                 mode,
+                since_date: None,
+                max_local_mb: None,
                 prefetch_attachments,
                 attachment_retention_days: days,
             },
@@ -4962,7 +5099,8 @@ pub(crate) mod tests {
                     &format!(
                         "{}, {}, {}",
                         tr("keep no mail texts"),
-                        tr("download attachments in advance"),
+                        // Asked for in advance, but the core loads them only when opened (#397).
+                        tr("download attachments only when opened"),
                         trf("delete downloaded attachments after {days} days", &[("days", &7)])
                     ),
                 ),
@@ -5335,6 +5473,7 @@ pub(crate) mod tests {
             id: "mail:anna@mailbox.org".into(),
             sender_name: None,
             signature: signature.map(str::to_string),
+            signature_format: None,
             notify: Some(torro_mail::Notify::Off),
             services,
             folder_roles: None,
@@ -5368,13 +5507,13 @@ pub(crate) mod tests {
         .join(", ");
         let account: (&str, &dyn std::fmt::Display) = ("account", &"mail:anna@mailbox.org");
         assert_eq!(said, trf("Change the mail account {account}: {changes}", &[account, ("changes", &changes)]));
-        assert_eq!(mail_account_changes(None, None, false, None, None, None), tr("nothing"));
-        let plain = mail_account_changes(None, None, false, None, None, Some(torro_mail::MailFormat::Plain));
+        assert_eq!(mail_account_changes(None, None, None, false, None, None, None), tr("nothing"));
+        let plain = mail_account_changes(None, None, None, false, None, None, Some(torro_mail::MailFormat::Plain));
         assert_eq!(plain, tr("write plain text mail"), "issue #125: the writing format is named");
 
         // Each role with the path it gets, the path made harmless.
         let roles = BTreeMap::from([(Role::Sent, "INBOX.Sent \"x\"".to_string()), (Role::Drafts, "Drafts".into())]);
-        let said = mail_account_changes(None, None, false, None, Some(&roles), None);
+        let said = mail_account_changes(None, None, None, false, None, Some(&roles), None);
         let drafts = trf("{role} → \"{path}\"", &[("role", &tr("Drafts")), ("path", &"Drafts")]);
         let sent = trf("{role} → \"{path}\"", &[("role", &tr("Sent")), ("path", &"INBOX.Sent 'x'")]);
         assert_eq!(said, format!("{drafts}, {sent}"));
@@ -6181,6 +6320,79 @@ pub(crate) mod tests {
         assert_eq!(refused("Bash", &"x".repeat(QUESTION_DETAILS_MAX + 1)), "error");
     }
 
+    /// Issue #343, #397: a main category is named as the catalogue calls it – a built-in one by the
+    /// suite's word or the person's, one the person made by its name –, and no summary of the
+    /// catalogue falls back to "Run …".
+    #[test]
+    fn main_categories_are_named_from_the_inbox() {
+        use torro_mail::{Category, CategoryGroup, CategoryGroupDef, CategoryIcon};
+
+        let own = CategoryGroup::Custom(6);
+        let mut groups = CategoryGroupDef::defaults();
+        groups.push(CategoryGroupDef {
+            group: own,
+            name: Some("Private".into()),
+            icon: CategoryIcon::Paperclip,
+            color: 4,
+        });
+        let facts = InboxFacts { groups, ..InboxFacts::default() };
+        let create = Request::CreateCategoryGroup { name: "Club".into(), icon: CategoryIcon::Users, color: 4 };
+        assert_eq!(
+            inbox_summary(&create, &facts),
+            trf(
+                "Add the main mail category {name} with icon {icon} and colour {color}",
+                &[("name", &"\"Club\""), ("icon", &"Users"), ("color", &tr("Rose"))]
+            )
+        );
+        let rename =
+            Request::UpdateCategoryGroup { group: own, name: "Family".into(), icon: CategoryIcon::Paperclip, color: 4 };
+        assert_eq!(
+            inbox_summary(&rename, &facts),
+            trf(
+                "Change the main mail category {group}: {changes}",
+                &[("group", &"\"Private\""), ("changes", &trf("call it {name}", &[("name", &"\"Family\"")]))]
+            ),
+            "the old name from the inbox, only what changes"
+        );
+        let unsorted = Request::UpdateCategoryGroup {
+            group: CategoryGroup::Unsorted,
+            name: String::new(),
+            icon: CategoryIcon::CircleDashed,
+            color: 4,
+        };
+        let label = format!("\"{}\"", torro_core::category::group_label(CategoryGroup::Unsorted));
+        assert_eq!(
+            inbox_summary(&unsorted, &facts),
+            trf("Change the main mail category {group}", &[("group", &label)])
+        );
+        let into_own = Request::CreateCategory {
+            group: own,
+            name: "Tax".into(),
+            description: "For the tax return.".into(),
+            model: true,
+            icon: CategoryIcon::Tag,
+        };
+        assert!(inbox_summary(&into_own, &facts).contains("\"Private\""), "a group of the person's by its name");
+        let moved = Request::UpdateCategory {
+            category: Category::Invoice,
+            group: Some(own),
+            name: None,
+            description: None,
+            model: None,
+            icon: None,
+        };
+        assert!(inbox_summary(&moved, &facts).contains("\"Private\""));
+        // An empty name is refused for a main category of the person's: nothing promised.
+        let blank =
+            Request::UpdateCategoryGroup { group: own, name: String::new(), icon: CategoryIcon::Paperclip, color: 4 };
+        assert!(!inbox_summary(&blank, &facts).contains(tr("put back the suite's name")));
+        let generic = trf("Run {command}", &[("command", &"")]);
+        for request in [create, rename, unsorted, into_own, moved] {
+            let words = inbox_summary(&request, &facts);
+            assert!(!words.starts_with(&generic), "{words}");
+        }
+    }
+
     /// Task E15.1: a summary names a category already there by its name in the catalogue and a
     /// stored sorting rule by what is stored – never by the words the client sends along.
     #[test]
@@ -6202,7 +6414,11 @@ pub(crate) mod tests {
         let rule = SortRule {
             id: "r1".into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: "shop.example".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: "shop.example".into(),
+            }],
             exceptions: Vec::new(),
             enabled: true,
             created: Utc::now(),
@@ -6222,7 +6438,11 @@ pub(crate) mod tests {
         let update = Request::UpdateSortRule {
             id: "r1".into(),
             category: tax,
-            conditions: vec![SortCondition { field: SortField::Sender, value: "evil@example.org".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Sender,
+                value: "evil@example.org".into(),
+            }],
             exceptions: None,
             enabled: Some(true),
         };
@@ -6246,7 +6466,11 @@ pub(crate) mod tests {
         let off = Request::UpdateSortRule {
             id: "r1".into(),
             category: Category::Invoice,
-            conditions: vec![SortCondition { field: SortField::Domain, value: "shop.example".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: "shop.example".into(),
+            }],
             exceptions: None,
             enabled: Some(false),
         };

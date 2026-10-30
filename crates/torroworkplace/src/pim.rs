@@ -1118,6 +1118,8 @@ impl PimService {
             | Request::ClearCategories { .. }
             | Request::ControlClearCategories { .. }
             | Request::CreateCategory { .. }
+            | Request::CreateCategoryGroup { .. }
+            | Request::UpdateCategoryGroup { .. }
             | Request::UpdateCategory { .. }
             | Request::RemoveCategory { .. }
             | Request::ListSortRules
@@ -1290,6 +1292,7 @@ impl PimService {
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
             // task M2.1).
             Request::ConnectMail { .. }
+            | Request::ReconfigureMail { .. }
             | Request::UpdateMailAccount { .. }
             | Request::TorroMailAccounts
             | Request::ImportTorroMailAccount { .. }

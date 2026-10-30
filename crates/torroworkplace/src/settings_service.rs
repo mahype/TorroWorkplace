@@ -199,6 +199,9 @@ impl SettingsStore {
             // Nor the reminder styles of calendars outside its selection (task ER1.2): it changes
             // them with `set_setting reminders`, which names each calendar.
             let calendars = std::mem::take(&mut settings.reminders.calendars);
+            // Nor the default sender (#397): it may name an account the client does not see, and it
+            // changes it with `set_setting mail_sender`, which checks the account.
+            let mail_sender = settings.mail_sender.take();
             let enabled = settings.voice.enabled && new.voice.enabled;
             let voice = Voice { enabled, ..new.voice.clone() };
             let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
@@ -223,6 +226,7 @@ impl SettingsStore {
                 allow_api_keys,
                 allow_mcp,
                 reminders,
+                mail_sender,
                 tools,
                 maps,
                 mail_attachments,
@@ -676,6 +680,7 @@ enum Change {
     /// The SearXNG address; `None` for none. Who may set one is the core's check
     /// (`Core::switches_on_for_people`).
     SearxngAddress(Option<String>),
+    MailSender(Option<String>),
 }
 
 impl Change {
@@ -720,6 +725,16 @@ impl Change {
             SettingKey::MailView => Change::MailView(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::MailAppearance => {
                 Change::MailAppearance(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
+            SettingKey::MailSender => {
+                let sender: Option<String> = serde_json::from_value(value.clone()).map_err(invalid)?;
+                if sender
+                    .as_ref()
+                    .is_some_and(|id| !id.starts_with("mail:") || id.len() > 320 || id.chars().any(char::is_control))
+                {
+                    return Err("mail_sender must be a mail account id or null".into());
+                }
+                Change::MailSender(sender)
             }
             SettingKey::MailAttachmentClick => {
                 Change::MailAttachmentClick(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -812,6 +827,7 @@ impl Change {
             Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
             Change::MailView(format) => settings.mail_view = format,
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
+            Change::MailSender(sender) => settings.mail_sender = sender,
             Change::MailAttachmentClick(click) => settings.mail_attachments.click = click,
             Change::MailDownloadsFolder(folder) => settings.mail_attachments.downloads = folder,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
@@ -1781,6 +1797,7 @@ mod tests {
                 components_off: BTreeSet::from([Component::Mail]),
                 mail_view: MailFormat::Html,
                 mail_appearance: MailAppearance::App,
+                mail_sender: None,
                 mail_attachments: MailAttachments::default(),
                 mail_to_cloud: false,
                 decide_mail_to_cloud: Some(false),
@@ -1863,6 +1880,19 @@ mod tests {
         store.set(SettingKey::MailAppearance, &json!("light")).expect("light");
         let current = store.current();
         assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::Light));
+    }
+
+    #[test]
+    fn default_mail_sender_round_trips_and_rejects_an_unrelated_account() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        assert_eq!(store.current().mail_sender, None);
+        store.set(SettingKey::MailSender, &json!("mail:anna@example.org")).expect("mail account");
+        assert_eq!(store.current().mail_sender.as_deref(), Some("mail:anna@example.org"));
+        assert!(store.set(SettingKey::MailSender, &json!("github:anna")).is_err());
+        assert_eq!(store.current().mail_sender.as_deref(), Some("mail:anna@example.org"));
+        store.set(SettingKey::MailSender, &json!(null)).expect("restore default");
+        assert_eq!(store.current().mail_sender, None);
     }
 
     /// Issue #290: removing a save target sets the click on attachments back to `open` only when it

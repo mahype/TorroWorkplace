@@ -582,9 +582,37 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         trusted_certificates: Vec<String>,
     },
+    /// Checks the IMAP and SMTP connection of an existing mail account with the entered values
+    /// (issue #343, the account's page: "Test credentials", "Save connection"). An omitted password
+    /// uses the account's keychain secret. With `save: false` the connection is only checked and
+    /// answered with [`Response::MailConnectionChecked`]; `save: true` keeps the new endpoints,
+    /// login and optional password after a successful check, as `accounts.connect_mail` does, and
+    /// answers as it does ([`Response::MailConnected`]). The sender name, calendars, tasks and
+    /// CalDAV address stay. The servers trust the account's stored certificates and those of
+    /// `trusted_certificates`; storing keeps those a server showed, as `accounts.connect_mail` does.
+    /// Codes: `not-found` for an id that is no mail account; `error` for an empty login, a login
+    /// with `/`, a server without host or port, or no password entered or stored; `auth` and
+    /// [`Response::UntrustedCertificate`] as for `accounts.connect_mail`. Only the app key may send
+    /// this request – every client key gets `forbidden`, whatever its rights, because a password
+    /// goes in. No password is returned.
+    #[serde(rename = "accounts.reconfigure_mail")]
+    ReconfigureMail {
+        id: String,
+        imap: Endpoint,
+        smtp: Endpoint,
+        login_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<Secret>,
+        save: bool,
+        /// SHA-256 fingerprints (`AB:CD:…`) of server certificates the person just trusted, as
+        /// for `accounts.connect_mail` (issue #284): after [`Response::UntrustedCertificate`]
+        /// the same request comes again with the one shown. Leave out when nothing new is trusted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        trusted_certificates: Vec<String>,
+    },
     /// Changes the settings of the mail account `id` (tasks M2.1, M2.7): only the fields given, the
-    /// others stay. Never servers or password: those change only with `accounts.connect_mail`, so
-    /// no agent can steer the password to another server. Answered with [`Response::Ok`];
+    /// others stay. Never servers or password: those change only with `accounts.connect_mail` and
+    /// `accounts.reconfigure_mail`, so no agent can steer the password to another server. Answered with [`Response::Ok`];
     /// `not-found` for an id that is no mail account; `error` for a sender name with a line break
     /// (or over 200 characters), a signature over 8 KiB, calendars or tasks for an account without
     /// a CalDAV address (connect it again with one) or a folder role the server did not leave
@@ -603,6 +631,9 @@ pub enum Request {
         /// The signature under new mail, replies and forwards; an empty text removes it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        /// Whether `signature` uses the mail editor's formatting marks. Left out: unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature_format: Option<bool>,
         /// Which new mail becomes an inbox entry: `all`, `for_me_only` or `off`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notify: Option<Notify>,
@@ -2131,6 +2162,40 @@ pub enum Request {
         /// Only count in this account: `mail:<address>`. Left out: every account in reach.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
+    },
+    /// Creates a main mail category with a stable key (`custom_group_<n>`, from 6 on: 1–5 are the
+    /// built-in ones) and answers with it ([`Response::CategoryGroup`]). `name` is what it is
+    /// called (one line, at most 60 characters, no other main category's name), `icon` its
+    /// monochrome icon, `color` one of the five theme colours (0–4). Existing categories are not
+    /// moved. Codes: `error` for an empty, multi-line, taken or too long name, a colour above 4 or
+    /// more than 20 main categories. Needs the person's approval.
+    #[serde(rename = "inbox.create_category_group")]
+    CreateCategoryGroup {
+        /// What it is called: one line, at most 60 characters, no other main category's name.
+        name: String,
+        /// Its monochrome icon.
+        icon: torro_mail::CategoryIcon,
+        /// One of the five colours of the group palette of the active design, 0–4.
+        #[schemars(range(max = 4))]
+        color: u8,
+    },
+    /// Renames or restyles the main category `group` – one of the five built-in ones or a
+    /// `custom_group_<n>` – without changing its key or the mail beneath it, and answers with it
+    /// ([`Response::CategoryGroup`]). `name`, `icon` and `color` (0–4) as for
+    /// [`Request::CreateCategoryGroup`]; an empty name restores a built-in name, a main category of
+    /// the person's own requires one. Codes: `not-found` for a main category that is not there;
+    /// `error` as for `inbox.create_category_group`. Needs the person's approval.
+    #[serde(rename = "inbox.update_category_group")]
+    UpdateCategoryGroup {
+        /// Which main category: a built-in key (`waiting_for_me` … `unsorted`) or `custom_group_<n>`.
+        group: torro_mail::CategoryGroup,
+        /// What it is called from now on; empty puts back the suite's name of a built-in one.
+        name: String,
+        /// Its monochrome icon.
+        icon: torro_mail::CategoryIcon,
+        /// One of the five colours of the group palette of the active design, 0–4.
+        #[schemars(range(max = 4))]
+        color: u8,
     },
     /// Files a mail under `category` by hand ([`Response::ItemCategory`], task E12.4): the
     /// category of the mail and of its entry becomes `person`, which no automatic run overwrites.
@@ -3823,6 +3888,9 @@ pub enum SettingKey {
     /// dark background, pictures unchanged). Only the mail, never the rest of the window. Open
     /// windows follow (`torro_core::settings::MailAppearance`).
     MailAppearance,
+    /// Account id (`mail:<address>`) used as the sender of a new mail. `null` restores the first
+    /// available account. Replies and forwards keep their message's account unless chosen anew.
+    MailSender,
     /// The data rule for mail (task C.17): `false` (the default) keeps mail with models on the
     /// person's own computers; `true` lets it go to models elsewhere as well, and to any coding
     /// agent that drives the assistant where one is offered (none since task C.18, issue #219).
@@ -4282,6 +4350,14 @@ pub enum Response {
     /// nothing here is foreign text.
     Categories {
         categories: Vec<crate::inbox::CategoryInfo>,
+        #[serde(default)]
+        groups: Vec<crate::inbox::CategoryGroupInfo>,
+    },
+    /// The main category after it was created or edited ([`Request::CreateCategoryGroup`],
+    /// [`Request::UpdateCategoryGroup`]): its key, the words a person reads, icon, colour and
+    /// whether the suite brings it.
+    CategoryGroup {
+        group: crate::inbox::CategoryGroupInfo,
     },
     /// A mail's category after it was set or asked anew ([`Request::SetItemCategory`],
     /// [`Request::ClassifyItem`]): the entry as it stands now, and the lasting rule when
@@ -4367,7 +4443,8 @@ pub enum Response {
     /// What muting by an entry changed ([`Request::MuteItem`]): the rule (none for a conversation
     /// hidden or moved for good), whether it is new, and the entries it marked done or moved.
     Muted(Muted),
-    /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
+    /// A mail account just connected ([`Request::ConnectMail`] or a saved
+    /// [`Request::ReconfigureMail`]), never with its password.
     MailConnected {
         /// The account as [`Request::Accounts`] lists it: one entry, also when it syncs calendars
         /// and tasks too.
@@ -4381,6 +4458,10 @@ pub enum Response {
         /// with `accounts.update_mail_account` (`folder_roles`). Empty when every role is clear.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         open_roles: Vec<Role>,
+    },
+    /// The entered IMAP and SMTP values worked, without changing the account.
+    MailConnectionChecked {
+        id: String,
     },
     /// A server of a mail account showed a certificate the system does not trust (issue #284),
     /// for [`Request::ConnectMail`] and [`Request::ImportTorroMailAccount`]. The password did not
@@ -4714,7 +4795,7 @@ pub enum Response {
     /// - `forbidden`: the client's rights do not cover the command (also `mail.send_draft` with
     ///   `outbound: never`), it is for the app key only (`clients` commands, `system.quit`,
     ///   `accounts.set_github_token`, `accounts.connect_caldav`, `accounts.connect_mail`,
-    ///   `accounts.connect_ai`, `approvals.decide_approval`), it needs a person's approval that the core could not
+    ///   `accounts.reconfigure_mail`, `accounts.connect_ai`, `approvals.decide_approval`), it needs a person's approval that the core could not
     ///   record (`approvals.json` cannot be written), or a security rule of the inbox or of mail
     ///   refuses it (a client changing an approval or an entry of the suite, or posting an
     ///   approval; a client attaching a file from outside the core's attachment folder), or the

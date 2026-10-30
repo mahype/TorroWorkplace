@@ -453,6 +453,10 @@ impl Demo {
             account: account.clone(),
             folders,
             messages: 24_813,
+            known_mail_bytes: Some(2_300_000_000),
+            offline_mail_bytes: Some(1_100_000_000),
+            planned_mail_bytes: Some(1_500_000_000),
+            indexed_offline_mail_bytes: Some(980_000_000),
             read: 23_565,
             unread: 1_248,
             oldest_known: date(2020, 11, 3),
@@ -782,7 +786,11 @@ impl Demo {
     /// exception, and one switched off.
     fn sort_rules(&self) -> Vec<torro_inbox::SortRule> {
         use torro_inbox::{SortCondition, SortField, SortRule};
-        let on = |field, value: &str| SortCondition { field, value: value.into() };
+        let on = |field, value: &str| SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let rule = |id: &str, category, conditions, exceptions, enabled| SortRule {
             id: id.into(),
             category,
@@ -1074,7 +1082,13 @@ impl Backend for Demo {
                 self.note(request);
                 Response::CategoryJob { job }
             }
-            Request::ListCategories { .. } => Response::Categories { categories: self.categories() },
+            Request::ListCategories { .. } => Response::Categories {
+                categories: self.categories(),
+                groups: torro_mail::CategoryGroupDef::defaults()
+                    .iter()
+                    .map(torro_ipc::inbox::CategoryGroupInfo::of)
+                    .collect(),
+            },
             Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
@@ -1084,6 +1098,8 @@ impl Backend for Demo {
                     MailCachePolicy {
                         account: account.clone(),
                         mode: MailCacheMode::Recent90Days,
+                        since_date: None,
+                        max_local_mb: None,
                         prefetch_attachments: false,
                         attachment_retention_days: 1,
                     },
@@ -1102,11 +1118,13 @@ impl Backend for Demo {
                         MailCacheMode::HeadersOnly => 0,
                         MailCacheMode::Recent90Days => 800,
                         MailCacheMode::AllOffline => 13_813,
+                        MailCacheMode::SinceDate | MailCacheMode::MaxSize => 800,
                     },
                     bodies_to_remove: match mode {
                         MailCacheMode::HeadersOnly => 11_000,
                         MailCacheMode::Recent90Days => 4_000,
                         MailCacheMode::AllOffline => 0,
+                        MailCacheMode::SinceDate | MailCacheMode::MaxSize => 4_000,
                     },
                     estimated_download_bytes: 210_000_000,
                     estimated_reclaim_bytes: 160_000_000,

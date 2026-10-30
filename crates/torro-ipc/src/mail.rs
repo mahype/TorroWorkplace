@@ -448,6 +448,20 @@ pub struct MailAccountStats {
     pub account: String,
     pub folders: Vec<MailFolderStats>,
     pub messages: u64,
+    /// Sum of the server-reported sizes of the known messages. `None` until every known message
+    /// has a size. This is an inventory size, never an IMAP quota or local disk usage.
+    #[serde(default)]
+    pub known_mail_bytes: Option<u64>,
+    /// Server-reported sizes of messages whose reading text or original is on this device.
+    /// Uses the same unit and message set as `known_mail_bytes` for a meaningful share bar.
+    #[serde(default)]
+    pub offline_mail_bytes: Option<u64>,
+    /// Server-reported sizes of messages selected by the account's offline policy.
+    #[serde(default)]
+    pub planned_mail_bytes: Option<u64>,
+    /// Server-reported sizes of locally readable messages whose full text is indexed.
+    #[serde(default)]
+    pub indexed_offline_mail_bytes: Option<u64>,
     pub read: u64,
     pub unread: u64,
     pub oldest_known: Option<DateTime<Utc>>,
@@ -505,6 +519,8 @@ pub enum MailCacheMode {
     #[default]
     Recent90Days = 1,
     AllOffline = 2,
+    SinceDate = 3,
+    MaxSize = 4,
 }
 
 /// Per-account local storage choice, persisted with the mail store.
@@ -512,7 +528,14 @@ pub enum MailCacheMode {
 pub struct MailCachePolicy {
     pub account: String,
     pub mode: MailCacheMode,
-    /// Fetch attachment parts in advance, separately from message texts.
+    /// Inclusive ISO calendar date for `SinceDate`; all known headers remain available.
+    #[serde(default)]
+    pub since_date: Option<String>,
+    /// Maximum mail content in MiB for `MaxSize`, with newest messages selected first.
+    #[serde(default)]
+    pub max_local_mb: Option<u64>,
+    /// Legacy wire field. The service ignores it and always returns `false`: attachment files
+    /// are fetched only when opened, then kept according to `attachment_retention_days`.
     #[serde(default)]
     pub prefetch_attachments: bool,
     /// Attachment files are removed after this many days; 1 by default.
@@ -692,7 +715,7 @@ fn valid_backup_filename(file_name: &str) -> bool {
 /// cursor and attachment part.
 fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
     let more: Vec<&str> = match request {
-        Request::UpdateMailAccount { id, .. } => vec![id],
+        Request::UpdateMailAccount { id, .. } | Request::ReconfigureMail { id, .. } => vec![id],
         Request::SearchMail { folder, cursor, .. } => folder.iter().chain(cursor).map(String::as_str).collect(),
         Request::MoveMail { to: MoveTarget::Folder(folder), .. } => vec![folder],
         Request::GetMailAttachment { attachment, .. } => vec![attachment],
@@ -975,6 +998,10 @@ mod tests {
             account: "mail:anna@example.org".into(),
             folders: vec![folder],
             messages: 2,
+            known_mail_bytes: Some(4096),
+            offline_mail_bytes: Some(2048),
+            planned_mail_bytes: Some(4096),
+            indexed_offline_mail_bytes: Some(2048),
             read: 1,
             unread: 1,
             oldest_known: None,

@@ -891,6 +891,10 @@ pub const SORT_RULES_MAX: usize = 500;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SortCondition {
     pub field: SortField,
+    /// How to compare the value. `auto` keeps the behaviour of rules saved before the editor
+    /// offered comparison choices.
+    #[serde(default, skip_serializing_if = "SortComparison::is_auto")]
+    pub comparison: SortComparison,
     /// What the field is compared with; one line.
     pub value: String,
 }
@@ -909,6 +913,96 @@ pub enum SortField {
     /// The text contains the value, as far as the suite holds the text: the start of it when
     /// mail arrives, more once it was read.
     Text,
+    /// `Reply-To:` addresses.
+    ReplyTo,
+    /// Addresses in `To:` and `Cc:`.
+    Recipient,
+    /// Whether the message has a regular attachment.
+    Attachment,
+    /// The name or MIME type of a downloaded attachment description.
+    AttachmentName,
+    /// `RFC822.SIZE`, compared as megabytes entered by the person.
+    Size,
+    /// The `List-ID:` header.
+    ListId,
+    /// The mail account's address.
+    Account,
+}
+
+impl SortField {
+    pub fn default_comparison(self) -> SortComparison {
+        match self {
+            Self::Sender | Self::Domain | Self::ReplyTo | Self::Recipient | Self::ListId | Self::Account => {
+                SortComparison::Is
+            }
+            Self::Subject | Self::Text | Self::AttachmentName => SortComparison::Contains,
+            Self::Attachment => SortComparison::Present,
+            Self::Size => SortComparison::GreaterThan,
+        }
+    }
+
+    pub fn allows(self, comparison: SortComparison) -> bool {
+        match self {
+            Self::Sender => matches!(
+                comparison,
+                SortComparison::Is | SortComparison::IsNot | SortComparison::Contains | SortComparison::NotContains
+            ),
+            Self::Domain | Self::Account => matches!(comparison, SortComparison::Is | SortComparison::IsNot),
+            Self::ReplyTo | Self::Recipient => {
+                matches!(comparison, SortComparison::Is | SortComparison::IsNot | SortComparison::Contains)
+            }
+            Self::Subject => matches!(
+                comparison,
+                SortComparison::Contains
+                    | SortComparison::NotContains
+                    | SortComparison::StartsWith
+                    | SortComparison::EndsWith
+            ),
+            Self::Text => matches!(comparison, SortComparison::Contains | SortComparison::NotContains),
+            Self::Attachment => matches!(comparison, SortComparison::Present | SortComparison::Absent),
+            Self::AttachmentName => {
+                matches!(comparison, SortComparison::Is | SortComparison::Contains | SortComparison::EndsWith)
+            }
+            Self::Size => matches!(comparison, SortComparison::GreaterThan | SortComparison::LessThan),
+            Self::ListId => matches!(comparison, SortComparison::Is | SortComparison::Contains),
+        }
+    }
+}
+
+/// Comparison of a sorting condition. `Auto` reads existing rules with their former meaning.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortComparison {
+    /// The field's former comparison ([`SortField::default_comparison`]): what rules from before
+    /// the comparisons mean.
+    #[default]
+    Auto,
+    /// The value exactly, ignoring case.
+    Is,
+    /// Anything but the value.
+    IsNot,
+    /// The value somewhere in the field.
+    Contains,
+    /// The value nowhere in the field.
+    NotContains,
+    /// The field starts with the value.
+    StartsWith,
+    /// The field ends with the value.
+    EndsWith,
+    /// The mail has the thing (an attachment); no value.
+    Present,
+    /// The mail does not have it; no value.
+    Absent,
+    /// Larger than the value (the size, in megabytes of 10^6 bytes).
+    GreaterThan,
+    /// Smaller than the value.
+    LessThan,
+}
+
+impl SortComparison {
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
 }
 
 #[cfg(test)]

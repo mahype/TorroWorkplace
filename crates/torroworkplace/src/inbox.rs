@@ -179,7 +179,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -581,6 +581,45 @@ UPDATE items SET hidden = NULL WHERE instr(source, 'mail:') = 1;
 DROP TABLE shown_mail;
 ";
 
+/// From schema version 17 to 18 (issue #343, merged in #397): main categories are catalogue
+/// entries. The first five IDs keep the built-in groups ([`CategoryGroup::database_id`]); SQLite's
+/// sequence gives every later group an ID that is never reused.
+///
+/// Two files reach this step as version 17: one of [`SCHEMA_V17`], and one of the branch of #343,
+/// which used 17 for `category_groups` with four groups and never ran the clean-up of issue #339.
+/// So every statement holds for both: the table only if it is missing, the groups only where their
+/// ID is free, and the clean-up of [`SCHEMA_V17`] again – it finds nothing left in a file that ran
+/// it already. A main category the person made in the branch's file may hold ID 5, which is
+/// Unsorted's now – it has a name, the built-in Unsorted has none: it moves to the next free ID first, and so do its categories
+/// (`custom_group_5` in `category_edits` and `custom_categories`), so nothing of it is lost.
+///
+/// [`CategoryGroup::database_id`]: torro_mail::CategoryGroup::database_id
+const SCHEMA_V18: &str = "
+CREATE TABLE IF NOT EXISTS category_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    icon TEXT NOT NULL,
+    color INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO category_groups (id, name, icon, color) VALUES
+    (1, NULL, 'user_check', 0),
+    (2, NULL, 'text_quote', 1),
+    (3, NULL, 'bell', 2),
+    (4, NULL, 'shield_alert', 3);
+INSERT INTO category_groups (name, icon, color)
+    SELECT name, icon, color FROM category_groups WHERE id = 5 AND name IS NOT NULL;
+UPDATE category_edits SET grp = 'custom_group_' || (SELECT max(id) FROM category_groups)
+    WHERE grp = 'custom_group_5' AND EXISTS (SELECT 1 FROM category_groups WHERE id = 5 AND name IS NOT NULL);
+UPDATE custom_categories SET grp = 'custom_group_' || (SELECT max(id) FROM category_groups)
+    WHERE grp = 'custom_group_5' AND EXISTS (SELECT 1 FROM category_groups WHERE id = 5 AND name IS NOT NULL);
+DELETE FROM category_groups WHERE id = 5 AND name IS NOT NULL;
+INSERT OR IGNORE INTO category_groups (id, name, icon, color) VALUES (5, NULL, 'circle_dashed', 4);
+DELETE FROM rules WHERE effect = 'muted' AND instr(source, 'mail:') = 1 AND (sender <> '' OR facet <> '');
+DELETE FROM muted_mail WHERE rule IS NOT NULL AND rule NOT IN (SELECT id FROM rules);
+UPDATE items SET hidden = NULL WHERE instr(source, 'mail:') = 1;
+DROP TABLE IF EXISTS shown_mail;
+";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -778,7 +817,18 @@ impl Inbox {
             }
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
             // Nobody is asked about a sorting rule the client may not see (task E15.3).
-            Request::UpdateSortRule { id, .. } | Request::RemoveSortRule { id } | Request::MoveSortRule { id, .. } => {
+            // Nor about one on a mail account it does not see (issue #343).
+            Request::UpdateSortRule { id, conditions, exceptions, .. } => {
+                let stored = visible_sort_rule(db, id, Some(client))?;
+                unseen_account_in(
+                    Some(client),
+                    conditions.iter().chain(exceptions.as_ref().unwrap_or(&stored.exceptions)),
+                )
+            }
+            Request::CreateSortRule { conditions, exceptions, .. } => {
+                unseen_account_in(Some(client), conditions.iter().chain(exceptions))
+            }
+            Request::RemoveSortRule { id } | Request::MoveSortRule { id, .. } => {
                 visible_sort_rule(db, id, Some(client)).map(drop)
             }
             // Nobody is asked to let the AI read an entry the client may not see (issue #120).
@@ -1171,8 +1221,14 @@ impl Inbox {
                 Request::CreateCategory { .. }
                 | Request::UpdateCategory { .. }
                 | Request::RemoveCategory { .. }
-                | Request::CreateSortRule { .. } => {
-                    InboxFacts { categories: catalogue::catalogue_in(db)?, ..InboxFacts::default() }
+                | Request::CreateSortRule { .. } => InboxFacts {
+                    categories: catalogue::catalogue_in(db)?,
+                    groups: catalogue::groups_in(db)?,
+                    ..InboxFacts::default()
+                },
+                // A main category is named as the catalogue calls it (issue #343).
+                Request::UpdateCategoryGroup { .. } => {
+                    InboxFacts { groups: catalogue::groups_in(db)?, ..InboxFacts::default() }
                 }
                 Request::UpdateSortRule { id, .. }
                 | Request::RemoveSortRule { id }
@@ -1457,6 +1513,29 @@ impl Inbox {
     /// of it, in the order the sidebar lists them. `Err` holds the message for the log.
     pub fn catalogue(&self) -> Result<Vec<torro_mail::CategoryDef>, String> {
         self.with(|db| catalogue::catalogue_in(db)).map_err(|failure| failure.to_string())
+    }
+
+    pub fn category_groups(&self) -> Result<Vec<torro_mail::CategoryGroupDef>, String> {
+        self.with(|db| catalogue::groups_in(db)).map_err(|failure| failure.to_string())
+    }
+
+    pub fn create_category_group(
+        &self,
+        name: &str,
+        icon: torro_mail::CategoryIcon,
+        color: u8,
+    ) -> Result<torro_mail::CategoryGroupDef, Response> {
+        self.with(|db| catalogue::create_group(db, name, icon, color)).map_err(Failure::response)
+    }
+
+    pub fn update_category_group(
+        &self,
+        group: torro_mail::CategoryGroup,
+        name: &str,
+        icon: torro_mail::CategoryIcon,
+        color: u8,
+    ) -> Result<torro_mail::CategoryGroupDef, Response> {
+        self.with(|db| catalogue::update_group(db, group, name, icon, color)).map_err(Failure::response)
     }
 
     /// What the sorting rules and the headers make of a mail of the inbox folder (task E15.4):
@@ -2403,6 +2482,7 @@ fn answer(
         // without read access to mail sees none, as it counts no category either.
         Request::ListSortRules => Ok(Response::SortRules { rules: sort_rules_for(db, client)? }),
         Request::CreateSortRule { category, conditions, exceptions, position, enabled } => {
+            unseen_account_in(client, conditions.iter().chain(&exceptions))?;
             let words = catalogue::RuleWords { category, conditions, exceptions, enabled };
             let position = full_position(db, client, position)?;
             let (rule, _) = catalogue::create_rule(db, words, position, now)?;
@@ -2413,6 +2493,7 @@ fn answer(
             // What the request leaves out stays as it is.
             let stored = visible_sort_rule(db, &id, client)?;
             let exceptions = exceptions.unwrap_or(stored.exceptions);
+            unseen_account_in(client, conditions.iter().chain(&exceptions))?;
             let words =
                 catalogue::RuleWords { category, conditions, exceptions, enabled: enabled.unwrap_or(stored.enabled) };
             let (rule, _) = catalogue::update_rule(db, &id, words)?;
@@ -3946,6 +4027,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 17 {
         tx.execute_batch(SCHEMA_V17)?;
     }
+    if version < 18 {
+        tx.execute_batch(SCHEMA_V18)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -4452,6 +4536,9 @@ pub struct NewMail {
     /// takes it before the sorting rules and the headers ([`Inbox::file_mail`]). `None` for every
     /// mail no filter gave one.
     pub category: Option<MailCategory>,
+    /// Extra header and MIME facts for deterministic sorting. Unknown values cannot satisfy
+    /// negative comparisons.
+    pub sort_facts: rules::SortFacts,
 }
 
 /// The value of `mail_messages.github` for a mail about `issue` (task E5.6): `owner/repo#<n>` in
@@ -4636,7 +4723,14 @@ fn pile_of_column(pile: &str) -> Option<MailPile> {
 /// first sorting rule that holds (task E15.3; they hold for **every** mail account, like a hidden
 /// sender, task E3.11), else what the headers and the folder say ([`rules::mail_category`]).
 fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Result<Option<MailCategory>, Failure> {
-    let input = rules::SortInput { sender, subject: &mail.subject, text: &mail.snippet };
+    let input = rules::SortInput {
+        sender,
+        subject: &mail.subject,
+        text: &mail.snippet,
+        account: Some(&mail.account),
+        list_id: mail.list.as_deref(),
+        facts: Some(&mail.sort_facts),
+    };
     rule_category_in(db, &input, mail.invite, mail.auto_submitted.as_deref(), mail.junk)
 }
 
@@ -4679,11 +4773,35 @@ fn sort_rules_for(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<to
     let rules = catalogue::list_rules(db)?;
     let mut shown = Vec::with_capacity(rules.len());
     for rule in rules {
-        if sees_source(&scope, catalogue::source_of(db, &rule.id)?.as_deref()) {
+        let conditions = rule.conditions.iter().chain(&rule.exceptions);
+        if sees_source(&scope, catalogue::source_of(db, &rule.id)?.as_deref())
+            && conditions.into_iter().all(|condition| sees_account_in(client, condition))
+        {
             shown.push(rule);
         }
     }
     Ok(shown)
+}
+
+/// `not-found` when one of `conditions` names a mail account `client` does not see
+/// ([`sees_account_in`]): a rule it could not list afterwards, about an account that looks unknown.
+fn unseen_account_in<'a>(
+    client: Option<&ClientInfo>,
+    mut conditions: impl Iterator<Item = &'a torro_inbox::SortCondition>,
+) -> Result<(), Failure> {
+    match conditions.all(|condition| sees_account_in(client, condition)) {
+        true => Ok(()),
+        false => Err(Failure::NotFound(tr("This mail account no longer exists.").into())),
+    }
+}
+
+/// Whether `client` may see `condition` (issue #343): one on the mail account (`SortField::Account`)
+/// names a collection, so a client outside it does not see the rule, as the account itself looks
+/// unknown to it. Its value is the address; a key that reaches every account sees all of them.
+fn sees_account_in(client: Option<&ClientInfo>, condition: &torro_inbox::SortCondition) -> bool {
+    let Some(client) = client else { return true };
+    condition.field != torro_inbox::SortField::Account
+        || client.rights.reaches_mail_account(&format!("mail:{}", condition.value.trim().to_lowercase()))
 }
 
 /// The place in the full order of the rule that stands at `position` in the list `client` sees
@@ -7203,6 +7321,7 @@ pub(crate) mod tests {
             auto_submitted: None,
             junk: false,
             category: None,
+            sort_facts: Default::default(),
         }
     }
 
@@ -7326,7 +7445,11 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let on = |field, value: &str| torro_inbox::SortCondition { field, value: value.into() };
+        let on = |field, value: &str| torro_inbox::SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let create = |category, value: &str, position| Request::CreateSortRule {
             category,
             conditions: vec![on(SortField::Domain, value)],
@@ -7400,6 +7523,44 @@ pub(crate) mod tests {
         assert_eq!(inbox.handle(Request::ListSortRules, Some(&blind), at(9, 0)), Response::SortRules { rules: vec![] });
     }
 
+    /// Issue #397: a sorting rule on a mail account (`SortField::Account`) names that account, so a
+    /// key outside it neither sees the rule nor makes one on it; nobody is asked about it either.
+    #[test]
+    fn a_rule_on_another_mail_account_stays_out_of_reach() {
+        use torro_inbox::{SortCondition, SortField};
+        use torro_mail::Category;
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let on = |address: &str| Request::CreateSortRule {
+            category: Category::Promotion,
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Is,
+                field: SortField::Account,
+                value: address.into(),
+            }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert!(matches!(inbox.handle(on("bob@example.org"), None, at(8, 0)), Response::SortRule { .. }));
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
+        let anna_only = client("c0ffee03", "agent", rights);
+        assert_eq!(
+            inbox.handle(Request::ListSortRules, Some(&anna_only), at(9, 0)),
+            Response::SortRules { rules: vec![] }
+        );
+        assert_eq!(inbox.refusal(&on("bob@example.org"), Some(&anna_only)).as_ref().map(code), Some("not-found"));
+        assert_eq!(code(&inbox.handle(on("Bob@Example.org"), Some(&anna_only), at(9, 1))), "not-found");
+        let anna = ANNA.strip_prefix("mail:").expect("an address");
+        assert_eq!(inbox.refusal(&on(anna), Some(&anna_only)), None, "its own account");
+        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, None, at(9, 2)) else {
+            panic!("rules")
+        };
+        assert_eq!(rules.len(), 1, "the person sees the rule");
+    }
+
     /// API review of #255: a rule "Always for this sender?" kept in a mail account a key may not
     /// read is no rule for that key – not listed, not changed, not moved, not removed, and not
     /// replaced when it files the same sender in its own account. Rules of the editor hold for
@@ -7420,7 +7581,11 @@ pub(crate) mod tests {
         let (kept, _) = kept.expect("kept");
         let editor = Request::CreateSortRule {
             category: Category::Promotion,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
             exceptions: Vec::new(),
             position: None,
             enabled: true,
@@ -7466,15 +7631,27 @@ pub(crate) mod tests {
         let off = Request::UpdateSortRule {
             id: editor_id.clone().expect("the editor's"),
             category: Category::Promotion,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
-            exceptions: Some(vec![SortCondition { field: SortField::Text, value: "invoice".into() }]),
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
+            exceptions: Some(vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Text,
+                value: "invoice".into(),
+            }]),
             enabled: Some(false),
         };
         assert!(matches!(inbox.handle(off, None, at(9, 4)), Response::SortRule { .. }));
         let renamed = Request::UpdateSortRule {
             id: editor_id.expect("the editor's"),
             category: Category::Newsletter,
-            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            conditions: vec![SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Subject,
+                value: "sale".into(),
+            }],
             exceptions: None,
             enabled: None,
         };
@@ -7505,7 +7682,11 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let on = |field, value: &str| torro_inbox::SortCondition { field, value: value.into() };
+        let on = |field, value: &str| torro_inbox::SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field,
+            value: value.into(),
+        };
         let rule = Request::CreateSortRule {
             category: Category::Booking,
             conditions: vec![on(SortField::Domain, "rail.example")],
@@ -7543,8 +7724,195 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn extended_sorting_rules_are_validated_and_file_new_mail() {
+        use torro_inbox::{SortComparison, SortCondition, SortField};
+        use torro_mail::{Category, MailCategory};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let condition = |field, comparison, value: &str| SortCondition { field, comparison, value: value.into() };
+        let create = |condition| Request::CreateSortRule {
+            category: Category::Invoice,
+            conditions: vec![condition],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert_eq!(
+            code(&inbox.handle(
+                create(condition(SortField::Attachment, SortComparison::Contains, "pdf")),
+                None,
+                at(8, 0)
+            )),
+            "error",
+        );
+        assert_eq!(
+            code(&inbox.handle(create(condition(SortField::Size, SortComparison::GreaterThan, "NaN")), None, at(8, 0))),
+            "error",
+        );
+        let accepted = create(condition(SortField::Attachment, SortComparison::Present, ""));
+        assert!(matches!(inbox.handle(accepted, None, at(8, 0)), Response::SortRule { .. }));
+        let mut incoming = mail("m:1", "t:1", "Your bill", "billing@shop.example", false, at(8, 1));
+        incoming.sort_facts.has_attachments = Some(true);
+        assert_eq!(inbox.mail_category_of(&incoming), Ok(Some(MailCategory::by_rule(Category::Invoice))));
+        incoming.sort_facts.has_attachments = None;
+        assert_eq!(inbox.mail_category_of(&incoming), Ok(None), "unknown is not a negative match");
+    }
+
     /// Task E15.2: what a category of the person's own may be called and how many a model may
     /// choose between in one group.
+    #[test]
+    fn main_categories_keep_their_ids_and_children_when_renamed() {
+        use torro_mail::{CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.category_groups().expect("defaults"), torro_mail::CategoryGroupDef::defaults());
+        assert_eq!(inbox.category_groups().expect("defaults").len(), 5, "Unsorted is the fifth");
+        let main = inbox.create_category_group("Private Belege", CategoryIcon::Paperclip, 2).expect("main");
+        assert_eq!(main.group, CategoryGroup::Custom(6), "the first after the five built-in ones");
+        let child = inbox
+            .create_category(main.group, "Rechnungen", "Bills to pay.", true, CategoryIcon::Mail, at(8, 0))
+            .expect("child");
+        assert!(inbox.create_category_group("Private Belege", CategoryIcon::Tag, 0).is_err(), "duplicate name");
+        assert!(inbox.create_category_group("Archive", CategoryIcon::Tag, 5).is_err(), "invalid colour");
+        let fifth = inbox.create_category_group("Archive", CategoryIcon::Tag, 4).expect("the fifth colour");
+        assert_eq!((fifth.group, fifth.color), (CategoryGroup::Custom(7), 4));
+        let changed =
+            inbox.update_category_group(main.group, "Dokumente", CategoryIcon::TextQuote, 1).expect("renamed");
+        assert_eq!((changed.group, changed.name.as_deref(), changed.color), (main.group, Some("Dokumente"), 1));
+        drop(inbox);
+
+        let reopened = inbox_in(dir.path());
+        assert!(reopened.category_groups().expect("groups").iter().any(|held| held == &changed));
+        let child_again = reopened
+            .catalogue()
+            .expect("catalogue")
+            .into_iter()
+            .find(|held| held.category == child.category)
+            .expect("child");
+        assert_eq!(child_again.group, main.group);
+    }
+
+    /// Issue #343, [`SCHEMA_V18`]: a file of schema 16 gains the five built-in main categories.
+    #[test]
+    fn version_16_catalogue_gains_editable_main_categories() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DROP TABLE category_groups;
+                     CREATE TABLE shown_mail (account TEXT NOT NULL, message TEXT NOT NULL, at TEXT NOT NULL,
+                         PRIMARY KEY (account, message));
+                     PRAGMA user_version = 16",
+                )?;
+                Ok(())
+            })
+            .expect("old schema");
+        drop(inbox);
+        let reopened = inbox_in(dir.path());
+        let groups = reopened.category_groups().expect("migrated groups");
+        assert_eq!(groups, torro_mail::CategoryGroupDef::defaults());
+        assert_eq!(groups.len(), 5);
+        assert_eq!(reopened.catalogue().expect("categories").len(), 23);
+    }
+
+    /// Issue #397, [`SCHEMA_V18`]: a file of the branch of #343 reached version 17 with four main
+    /// categories, "Show again" and the rules that hid mail, and never ran [`SCHEMA_V17`]. Version
+    /// 18 gives it Unsorted as the fifth, does the clean-up of issue #339 after, and the next main
+    /// category the person makes is the sixth.
+    #[test]
+    fn a_file_of_the_branch_of_343_gains_unsorted_and_forgets_what_hid_mail() {
+        use torro_mail::{CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let news = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let hiding = Rule {
+            id: "a".into(),
+            source: SourceRef::mail("anna@example.org"),
+            sender: Some("news@shop.example".into()),
+            domain: None,
+            effect: RuleEffect::Muted,
+            created: at(7, 0),
+            facet: None,
+            until: None,
+        };
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DELETE FROM category_groups WHERE id = 5;
+                     UPDATE sqlite_sequence SET seq = 4 WHERE name = 'category_groups';
+                     CREATE TABLE shown_mail (account TEXT NOT NULL, message TEXT NOT NULL, at TEXT NOT NULL,
+                         PRIMARY KEY (account, message));
+                     PRAGMA user_version = 17;",
+                )?;
+                insert_rule(db, hiding)?;
+                db.execute("UPDATE items SET hidden = 'a' WHERE id = ?1", params![news])?;
+                Ok(())
+            })
+            .expect("the branch's schema 17");
+        drop(inbox);
+
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.category_groups().expect("groups"), torro_mail::CategoryGroupDef::defaults());
+        assert!(rules_of(&inbox).is_empty(), "the rule that hid mail went");
+        let main = inbox.create_category_group("Private Belege", CategoryIcon::Paperclip, 2).expect("main");
+        assert_eq!(main.group, CategoryGroup::Custom(6));
+        drop(inbox);
+
+        let db = Connection::open(file_in(dir.path())).expect("opens");
+        let hidden: Option<String> =
+            db.query_row("SELECT hidden FROM items WHERE id = ?1", params![news], |row| row.get(0)).expect("entry");
+        assert_eq!(hidden, None, "the mail entry carries no mark");
+        let shown: i64 = db
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'shown_mail'", [], |row| row.get(0))
+            .expect("counted");
+        assert_eq!(shown, 0, "no more Show again");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    /// Issue #397, [`SCHEMA_V18`]: a main category the person made in the branch's file holds ID 5,
+    /// which is Unsorted's now. It moves to the next ID with its name and its categories, and
+    /// Unsorted gets 5.
+    #[test]
+    fn a_main_category_of_the_branch_on_id_5_moves_aside_for_unsorted() {
+        use torro_mail::{CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let child = inbox
+            .create_category(CategoryGroup::Info, "Training", "Club training.", false, CategoryIcon::Tag, at(8, 0))
+            .expect("a category");
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DELETE FROM category_groups WHERE id = 5;
+                     UPDATE sqlite_sequence SET seq = 4 WHERE name = 'category_groups';
+                     INSERT INTO category_groups (id, name, icon, color) VALUES (5, 'Club', 'users', 2);
+                     UPDATE custom_categories SET grp = 'custom_group_5';
+                     PRAGMA user_version = 17;",
+                )?;
+                Ok(())
+            })
+            .expect("the branch's schema 17 with a main category of its own");
+        drop(inbox);
+
+        let inbox = inbox_in(dir.path());
+        let groups = inbox.category_groups().expect("groups");
+        let unsorted = groups.iter().find(|held| held.group == CategoryGroup::Unsorted).expect("Unsorted");
+        assert_eq!((unsorted.name.as_deref(), unsorted.icon), (None, CategoryIcon::CircleDashed));
+        let club = groups.iter().find(|held| held.group == CategoryGroup::Custom(6)).expect("the club, moved");
+        assert_eq!((club.name.as_deref(), club.icon, club.color), (Some("Club"), CategoryIcon::Users, 2));
+        let moved = inbox.catalogue().expect("catalogue").into_iter().find(|def| def.category == child.category);
+        assert_eq!(moved.map(|def| def.group), Some(CategoryGroup::Custom(6)), "its category went along");
+        let next = inbox.create_category_group("Family", CategoryIcon::User, 0).expect("a new one");
+        assert_eq!(next.group, CategoryGroup::Custom(7));
+    }
+
     #[test]
     fn a_new_category_keeps_to_its_limits() {
         use torro_mail::{Category, CategoryGroup, CategoryIcon};
@@ -7698,6 +8066,7 @@ pub(crate) mod tests {
             id: "r1".into(),
             category: club.category,
             conditions: vec![torro_inbox::SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
                 field: torro_inbox::SortField::Domain,
                 value: "club.example".into(),
             }],
@@ -9689,6 +10058,8 @@ pub(crate) mod tests {
         assert_eq!(shown, 0, "no more Show again");
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+        let groups = inbox_in(dir.path()).category_groups().expect("groups");
+        assert_eq!(groups, torro_mail::CategoryGroupDef::defaults(), "and the five main categories (#343)");
     }
 
     #[test]

@@ -1,27 +1,16 @@
-//! The sections behind the gear of the inbox's mail window (task S.20 in
-//! `docs/tasks/steuerzentrale.md`, concept `docs/settings.md`): what belongs to writing and
-//! reading mail.
+//! The sections behind the gear of the inbox's mail window. Account setup, reading and writing,
+//! attachments, and automatic categorization each have one place.
 //!
 //! ```text
-//! Accounts  one row per mail account; its page holds the sender name, the signature,
-//!           "Write new mail as" and the folder questions the server left open
-//! Reading   "Show mail as" and "Mail colors" for the reader
-//! Attachments  what a click on an attachment does, the Downloads folder, the save targets
-//!              (task M12.7, [`attachments`])
-//! Categorization  sorting by a model, the sorting rules and the categories
-//! Filters   saved searches that move, mark or file new mail in the inbox (issue #339, [`filters`])
+//! Accounts        identity and connection, offline content, folders and backup per account
+//! Reading         display, default sender, compose format and formatted signature
+//! Attachments     default click, Downloads folder and save targets (task M12.7, [`attachments`])
+//! Categorization  rules before model sorting, plus editable categories
+//! Filters         saved searches that move, mark or file new mail in the inbox (issue #339, [`filters`])
 //! ```
 //!
-//! Task E10.3 adds a third section, "Keyboard shortcuts"; it is not built here.
-//!
-//! **What is not here:** everything about the account itself – servers, password, services,
-//! removing it – and which new mail becomes an inbox entry. Servers and passwords stay in the
-//! control centre, where the keychain is ([`crate::Action::ControlCentre`] leads there); "Show new
-//! mail" belongs to the Notification Hub's sources ([`crate::inbox::sources`]), so it has one
-//! place only.
-//!
-//! Ported from the control centre's mail account page and its group "Mail" under Appearance, which
-//! task S.21 removes.
+//! Passwords stay in the keychain; the page only sends a newly typed secret to the connection
+//! command. Notification Hub source choices remain in [`crate::inbox::sources`].
 
 use iced::Element;
 
@@ -36,10 +25,10 @@ mod editor;
 pub mod filters;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 6] = [
+pub const SECTIONS: [Section; 5] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: ACCOUNTS_SECTION, icon: Icon::Mail, label: "Accounts" },
-    Section { id: "reading", icon: Icon::MailOpen, label: "Reading" },
+    Section { id: "reading", icon: Icon::MailOpen, label: "Reading & writing" },
     // What a click on an attachment does and where it is saved (task M12.7, issue #290); "Manage
     // save targets…" in the menu of an attachment opens it ([`ATTACHMENTS_SECTION`]).
     Section { id: ATTACHMENTS_SECTION, icon: Icon::Paperclip, label: "Attachments" },
@@ -48,7 +37,6 @@ pub const SECTIONS: [Section; 6] = [
     // Saved searches with what to do with new mail (issue #339); "Create filter…" at a mail and
     // at the search field open a new one here ([`new_filter`]).
     Section { id: FILTERS_SECTION, icon: Icon::Filter, label: "Filters" },
-    Section { id: "storage", icon: Icon::Archive, label: "Storage & index" },
 ];
 
 /// The id of the section "Attachments": what `--settings attachments` takes and where "Manage save
@@ -124,6 +112,7 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
 pub struct State {
     /// Accounts: which account's page is open and what is typed into it. Reading keeps nothing.
     pub accounts: accounts::State,
+    pub reading: reading::State,
     /// Categorization: the page of a category or a sorting rule that is open (task E15.5).
     pub categorization: categorization::State,
     pub storage: storage::State,
@@ -131,6 +120,21 @@ pub struct State {
     pub attachments: attachments::State,
     /// Filters: the open filter's page and the question of "Apply" (issue #339).
     pub filters: filters::State,
+    /// The section whose ask is on its way (issue #397). An answer names no request, and a refusal
+    /// is a bare `error`, so one ask goes out at a time and its answer reaches only the section that
+    /// asked; the others wait in [`State::queued`] until it is back ([`next_ask`]).
+    asking: Option<Asker>,
+    queued: std::collections::VecDeque<(Asker, torro_ipc::Request)>,
+}
+
+/// A section that asks the core and takes the answer itself ([`Action::Ask`]). Backups are not
+/// among them: the window sends theirs on its own way, with the account ([`backup_answered`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asker {
+    Accounts,
+    Categorization,
+    Storage,
+    Filters,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -144,12 +148,70 @@ pub enum Message {
     Filters(filters::Message),
 }
 
-/// What a section's widget reported, and what the host is to do about it.
+/// What a section's widget reported, and what the host is to do about it. An ask while another one
+/// is on its way waits for it ([`State::asking`]).
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
+    let asker = match &message {
+        Message::Accounts(accounts::Message::Storage(_)) | Message::Storage(_) => Some(Asker::Storage),
+        Message::Accounts(_) => Some(Asker::Accounts),
+        Message::Categorization(_) => Some(Asker::Categorization),
+        Message::Filters(_) => Some(Asker::Filters),
+        Message::Reading(_) | Message::Attachments(_) => None,
+    };
+    let action = section_update(state, message, data);
+    match (action, asker) {
+        (Action::Ask(request), Some(asker)) if !is_backup_request(&request) => {
+            if state.asking.is_some() {
+                state.queued.push_back((asker, request));
+                return Action::None;
+            }
+            state.asking = Some(asker);
+            Action::Ask(request)
+        }
+        (action, _) => action,
+    }
+}
+
+/// The ask that waited for the one just answered ([`answered`]), now on its way; the window hands
+/// it to the host as [`Action::Ask`]. `None` while nothing waits.
+pub fn next_ask(state: &mut State) -> Option<torro_ipc::Request> {
+    if state.asking.is_some() {
+        return None;
+    }
+    let (asker, request) = state.queued.pop_front()?;
+    state.asking = Some(asker);
+    Some(request)
+}
+
+/// The requests of a backup, which the window sends itself and answers with their account.
+fn is_backup_request(request: &torro_ipc::Request) -> bool {
+    matches!(
+        request,
+        torro_ipc::Request::MailBackupCreate { .. }
+            | torro_ipc::Request::MailBackupStatus { .. }
+            | torro_ipc::Request::MailBackupCancel { .. }
+            | torro_ipc::Request::MailBackupVerify { .. }
+            | torro_ipc::Request::MailRestorePlan { .. }
+            | torro_ipc::Request::MailRestoreApply { .. }
+    )
+}
+
+fn section_update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
     match message {
+        Message::Accounts(accounts::Message::Storage(message)) => {
+            let Some(account) = accounts::current_account(&state.accounts) else { return Action::None };
+            storage::select_account(&mut state.storage, account);
+            storage::update(&mut state.storage, message, data)
+        }
         Message::Attachments(message) => attachments::update(&mut state.attachments, message, data),
-        Message::Accounts(message) => accounts::update(&mut state.accounts, message, data),
-        Message::Reading(message) => reading::update(message),
+        Message::Accounts(message) => {
+            let action = accounts::update(&mut state.accounts, message, data);
+            if let Some(account) = accounts::current_account(&state.accounts) {
+                storage::select_account(&mut state.storage, account);
+            }
+            action
+        }
+        Message::Reading(message) => reading::update(&mut state.reading, message, data),
         Message::Categorization(message) => categorization::update(&mut state.categorization, message, data),
         // "Show account" opens another section's page, so it is taken before the section sees it.
         Message::Storage(storage::Message::ShowAccount(id)) => {
@@ -165,12 +227,19 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAct
 /// Accounts, the section the gear lands on; the host only ever asks for one of [`SECTIONS`].
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
     match section {
-        "reading" => wrap(Page::new(reading::view(data)), Message::Reading),
+        "reading" => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
         "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
-        "storage" => wrap(storage::page(&state.storage, data), Message::Storage),
         FILTERS_SECTION => wrap(filters::page(&state.filters, data), Message::Filters),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
-        _ => wrap(accounts::page(&state.accounts, data), Message::Accounts),
+        // Only an account's page is wider than the usual reading width: identity and connection
+        // stand side by side there, two forms and the gap between them (issue #343).
+        _ => {
+            let page = wrap(accounts::page_with_storage(&state.accounts, &state.storage, data), Message::Accounts);
+            match accounts::current_account(&state.accounts) {
+                Some(_) => page.max_width(2.0 * torro_gui::theme::size::form_max() + torro_gui::theme::space::l()),
+                None => page,
+            }
+        }
     }
 }
 
@@ -202,6 +271,14 @@ pub fn attachments_escape(state: &State) -> Option<Message> {
 /// being saved is saved or failed, so the save bar of an account's page takes clicks again.
 pub fn sent(state: &mut State) {
     accounts::sent(&mut state.accounts);
+    reading::sent(&mut state.reading);
+}
+
+/// A fresh host load initializes the signature editor from the selected mail account. A draft
+/// already being typed stays in place while unrelated settings refresh.
+pub fn loaded(state: &mut State, data: &Data) {
+    reading::loaded(&mut state.reading, data);
+    editor::loaded(&mut state.categorization.editor, data);
 }
 
 /// A send of the host came back with `result` – the data loaded after it, or why it failed –: a
@@ -235,11 +312,22 @@ pub fn filters_escape(state: &State) -> Option<Message> {
 /// The answer of a one-off request: a preview of the selected sorting scope, or a filter's preview
 /// or run (issue #339). A filter's answer goes to "Filters" only.
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
-    if filters::answered(&mut state.filters, answer) {
-        return;
+    // Only the section that asked: another one's refusal reads the same (issue #397).
+    match state.asking.take() {
+        Some(Asker::Accounts) => accounts::answered(&mut state.accounts, answer),
+        Some(Asker::Categorization) => categorization::answered(&mut state.categorization, answer),
+        Some(Asker::Storage) => storage::answered(&mut state.storage, answer),
+        Some(Asker::Filters) => {
+            filters::answered(&mut state.filters, answer);
+        }
+        None => {}
     }
-    categorization::answered(&mut state.categorization, answer);
-    storage::answered(&mut state.storage, answer);
+}
+
+/// A send of the host came back with `result` (the window calls it on every `Sent`): a main
+/// category of the category editor is saved, or the refusal shows in its form (issue #397).
+pub fn editor_sent(state: &mut State, result: &Result<Data, String>) {
+    editor::sent(&mut state.categorization.editor, result);
 }
 
 /// Backup answers carry their originating account, so another section's pending answer cannot
@@ -283,7 +371,10 @@ pub fn stage_backup(state: &mut State, account: &str, scene: BackupScene) {
 /// account's backup page and the requests on their way, whose answers still arrive. The other
 /// sections start afresh, so a preview that was on its way never stays "Calculating…".
 pub fn kept(state: State) -> State {
-    State { accounts: state.accounts, ..State::default() }
+    // An ask on its way is answered into the closed settings and lost: nothing waits for it.
+    let mut accounts = state.accounts;
+    accounts::forget_pending(&mut accounts);
+    State { accounts, ..State::default() }
 }
 
 /// One section's page with its messages wrapped in [`Message`].
@@ -293,11 +384,12 @@ fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Messag
         sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
         actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
         save_bar: page.save_bar.map(|bar| bar.map(into)),
+        max_width: page.max_width,
     }
 }
 
-/// "Accounts": one row per mail account, and below it the account's own page – the sender name,
-/// the signature, how new mail is written and the folder questions the server left open.
+/// "Accounts": one row per mail account, and below it the account's own identity, connection,
+/// offline content, folder and backup pages. Signature and compose format are in Reading & writing.
 ///
 /// The sender name and the signature are typed into a draft and saved with "Save"
 /// (`accounts.update_mail_account`); everything else is sent the moment it is pressed, like every
@@ -308,23 +400,22 @@ pub mod accounts {
 
     use chrono::{DateTime, Utc};
     use iced::Alignment;
-    use iced::widget::text::Wrapping;
-    use iced::widget::{column, row, space as blank, text_editor};
+    use iced::Length;
+    use iced::widget::{column, container, responsive, row, space as blank, text_editor};
     use torro_core::i18n::trf;
-    use torro_gui::datetime::{format_exact, format_moment, month_name, month_name_short};
-    use torro_gui::theme::{self, ChartColor, size, space};
+    use torro_gui::datetime::{format_exact, format_moment};
+    use torro_gui::theme::{self, size, space};
     use torro_gui::units::{format_bytes, format_count};
     use torro_gui::widgets::{
-        Align, Anchor, ChartColumn, ChartSeries, HeadActions, MenuItem, MenuSection, PageAction, Placement, SharePart,
-        StatFigure, Status, TileFace, Trail,
+        Align, Anchor, HeadActions, MenuItem, MenuSection, PageAction, Placement, Status, TileFace, Trail,
     };
     use torro_gui::{layout, style, typo, widgets};
-    use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount};
-    use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request};
-    use torro_mail::{MailFormat, Role};
+    use torro_ipc::mail::{MailAccountStats, MailFolderStats};
+    use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request, Secret};
+    use torro_mail::{Endpoint, MailFormat, Role, Security};
 
     use super::*;
-    use crate::parts::{chevron, field, picker, pressable, setting_row};
+    use crate::parts::{chevron, field, pressable, row_frame, setting_row};
 
     /// Section state: the open account's draft, which is also what says that its page is open –
     /// one holds the other, so the page never stands without something to type into.
@@ -347,6 +438,10 @@ pub mod accounts {
         /// "Save" sent the name and the signature and the answer has not come yet: the save bar
         /// says "Saving…" and takes no second click.
         saving: bool,
+        /// One test or save of an account's server credentials, including when its page is closed.
+        /// Both are asked ([`Action::Ask`]): a server whose certificate is not trusted answers with
+        /// its fingerprint, which a plain send would lose.
+        pending_connection: Option<String>,
     }
 
     /// The parts of an account's page (task DS.6), "Overview" first.
@@ -355,18 +450,20 @@ pub mod accounts {
         #[default]
         Overview,
         Writing,
+        Storage,
         Folders,
         Backup,
     }
 
     impl Tab {
         /// The tabs in their order.
-        pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Writing, Tab::Folders, Tab::Backup];
+        pub const ALL: [Tab; 5] = [Tab::Overview, Tab::Writing, Tab::Storage, Tab::Folders, Tab::Backup];
 
         fn label(self) -> &'static str {
             match self {
                 Tab::Overview => tr("Overview"),
-                Tab::Writing => tr("Writing"),
+                Tab::Writing => tr("Settings"),
+                Tab::Storage => tr("Storage & search"),
                 Tab::Folders => tr("Folders"),
                 Tab::Backup => tr("Backup"),
             }
@@ -397,7 +494,7 @@ pub mod accounts {
         More,
         /// A click beside the open "…" menu, or Escape.
         CloseMore,
-        /// "Storage & index" from the "…" menu or a link of the overview.
+        /// "Storage & search" from the "…" menu or a link of the overview: the account's storage tab.
         OpenStorage,
         /// "Server settings": the account in the control centre, where servers and passwords are.
         ServerSettings,
@@ -405,6 +502,16 @@ pub mod accounts {
         Discard,
         /// Typing in the sender name.
         SenderName(String),
+        LoginName(String),
+        Password(Secret),
+        ManualServer(bool),
+        ServerHost(ServerKind, String),
+        ServerPort(ServerKind, String),
+        ServerSecurity(ServerKind, Security),
+        TestConnection,
+        SaveConnection,
+        /// "Trust certificate" for the one a server showed (issue #284): the last test or save again.
+        TrustCertificate,
         /// Typing in the signature.
         Signature(text_editor::Action),
         /// "Save" in the save bar: the sender name and the signature, as far as they differ from the
@@ -413,9 +520,14 @@ pub mod accounts {
         /// "Write new mail as" was set (issue #125).
         Format(MailFormat),
         /// "Use this folder" for a role the server left open.
-        PickFolder { role: Role, path: String },
+        PickFolder {
+            role: Role,
+            path: String,
+        },
         /// A row of the account's groups "Backup" and "Restore".
         Backup(backup::Message),
+        /// A storage choice on this account's own page.
+        Storage(storage::Message),
     }
 
     /// The sender name and the signature of one account as they are being typed.
@@ -424,14 +536,117 @@ pub mod accounts {
         account: String,
         sender_name: String,
         signature: text_editor::Content,
+        connection: ConnectionDraft,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum ServerKind {
+        Imap,
+        Smtp,
+    }
+
+    impl ServerKind {
+        fn default_port(self, security: Security) -> u16 {
+            match (self, security) {
+                (Self::Imap, Security::Tls) => 993,
+                (Self::Imap, Security::StartTls) => 143,
+                (Self::Smtp, Security::Tls) => 465,
+                (Self::Smtp, Security::StartTls) => 587,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ServerDraft {
+        host: String,
+        port: String,
+        security: Security,
+    }
+
+    impl ServerDraft {
+        fn of(endpoint: &Endpoint) -> Self {
+            Self { host: endpoint.host.clone(), port: endpoint.port.to_string(), security: endpoint.security }
+        }
+        fn endpoint(&self) -> Option<Endpoint> {
+            let port = self.port.trim().parse::<u16>().ok().filter(|port| *port > 0)?;
+            let host = self.host.trim();
+            (!host.is_empty()).then(|| Endpoint { host: host.to_string(), port, security: self.security })
+        }
+        fn set_security(&mut self, kind: ServerKind, security: Security) {
+            if self.port.trim() == kind.default_port(self.security).to_string() {
+                self.port = kind.default_port(security).to_string();
+            }
+            self.security = security;
+        }
+    }
+
+    #[derive(Debug)]
+    struct ConnectionDraft {
+        login_name: String,
+        password: Secret,
+        imap: ServerDraft,
+        smtp: ServerDraft,
+        manual: bool,
+        tried: bool,
+        pending: bool,
+        status: Option<String>,
+        /// The fingerprints trusted on this page (issue #284), sent with every test and save.
+        trusted: Vec<String>,
+        /// The certificate a server showed that this computer does not trust: (service, host,
+        /// SHA-256). "Trust certificate" sends the last test or save again with it.
+        untrusted: Option<(String, String, String)>,
+        /// Whether the last request was "Save connection", to repeat it after trusting.
+        saving: bool,
+    }
+
+    impl ConnectionDraft {
+        fn new(mail: &MailView, login_name: &str) -> Self {
+            Self {
+                login_name: login_name.to_string(),
+                password: Secret::new(""),
+                imap: ServerDraft::of(&mail.imap),
+                smtp: ServerDraft::of(&mail.smtp),
+                manual: false,
+                tried: false,
+                pending: false,
+                status: None,
+                trusted: Vec::new(),
+                untrusted: None,
+                saving: false,
+            }
+        }
+        fn server_mut(&mut self, kind: ServerKind) -> &mut ServerDraft {
+            match kind {
+                ServerKind::Imap => &mut self.imap,
+                ServerKind::Smtp => &mut self.smtp,
+            }
+        }
+        fn changed(&self, mail: &MailView, login_name: &str) -> bool {
+            self.login_name.trim() != login_name
+                || !self.password.is_blank()
+                || self.imap.endpoint().as_ref() != Some(&mail.imap)
+                || self.smtp.endpoint().as_ref() != Some(&mail.smtp)
+        }
+        fn request(&self, id: &str, save: bool) -> Option<Request> {
+            Some(Request::ReconfigureMail {
+                id: id.to_string(),
+                imap: self.imap.endpoint()?,
+                smtp: self.smtp.endpoint()?,
+                login_name: self.login_name.trim().to_string(),
+                password: (!self.password.is_blank()).then(|| self.password.clone()),
+                save,
+                trusted_certificates: self.trusted.clone(),
+            })
+        }
     }
 
     impl Draft {
-        fn new(account: &str, mail: &MailView) -> Draft {
+        fn new(account: &str, mail: &MailView, login_name: &str) -> Draft {
             Draft {
                 account: account.to_string(),
                 sender_name: mail.sender_name.clone(),
                 signature: text_editor::Content::with_text(mail.settings.signature.as_deref().unwrap_or_default()),
+                connection: ConnectionDraft::new(mail, login_name),
             }
         }
 
@@ -455,8 +670,8 @@ pub mod accounts {
         /// What the save bar says changed; `None` when nothing did (then there is no save bar).
         fn summary(&self, mail: &MailView) -> Option<&'static str> {
             match self.changed(mail) {
-                (Some(_), Some(_)) => Some(tr("Sender name and signature changed")),
-                (Some(_), None) => Some(tr("Sender name changed")),
+                (Some(_), Some(_)) => Some(tr("Display name and signature changed")),
+                (Some(_), None) => Some(tr("Display name changed")),
                 (None, Some(_)) => Some(tr("Signature changed")),
                 (None, None) => None,
             }
@@ -473,6 +688,7 @@ pub mod accounts {
                 id: self.account.clone(),
                 sender_name: changed_name,
                 signature: changed_signature,
+                signature_format: None,
                 notify: None,
                 services: None,
                 folder_roles: None,
@@ -497,7 +713,10 @@ pub mod accounts {
                             .unwrap_or_else(|| backup::State::from_preferences(&mail.settings.backup));
                     }
                     keep_draft(state, data);
-                    let draft = state.drafts_others.remove(&id).unwrap_or_else(|| Draft::new(&id, mail));
+                    let draft = state
+                        .drafts_others
+                        .remove(&id)
+                        .unwrap_or_else(|| Draft::new(&id, mail, login_of(data, &id, mail)));
                     state.draft = Some(draft);
                     state.tab = Tab::Overview;
                     state.more = false;
@@ -529,17 +748,19 @@ pub mod accounts {
             }
             Message::OpenStorage => {
                 state.more = false;
-                Action::Open("storage")
+                state.tab = Tab::Storage;
+                Action::None
             }
             Message::ServerSettings => {
                 state.more = false;
-                Action::ControlCentre("accounts".to_string())
+                state.tab = Tab::Writing;
+                Action::None
             }
             Message::Discard => {
                 if let Some(draft) = &state.draft
                     && let Some(mail) = mail_of(data, &draft.account)
                 {
-                    state.draft = Some(Draft::new(&draft.account, mail));
+                    state.draft = Some(Draft::new(&draft.account, mail, login_of(data, &draft.account, mail)));
                 }
                 Action::None
             }
@@ -548,6 +769,81 @@ pub mod accounts {
                     draft.sender_name = name;
                 }
                 Action::None
+            }
+            Message::LoginName(name) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.login_name = name;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::Password(password) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.password = password;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::ManualServer(manual) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.manual = manual;
+                }
+                Action::None
+            }
+            Message::ServerHost(kind, host) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.server_mut(kind).host = host;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::ServerPort(kind, port) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.server_mut(kind).port = port;
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::ServerSecurity(kind, security) => {
+                if let Some(draft) = &mut state.draft {
+                    draft.connection.server_mut(kind).set_security(kind, security);
+                    draft.connection.status = None;
+                }
+                Action::None
+            }
+            Message::TestConnection | Message::SaveConnection | Message::TrustCertificate
+                if state.pending_connection.is_some() =>
+            {
+                Action::None
+            }
+            Message::TrustCertificate => {
+                let Some(draft) = &mut state.draft else { return Action::None };
+                let Some((_, _, sha256)) = draft.connection.untrusted.take() else { return Action::None };
+                if !draft.connection.trusted.contains(&sha256) {
+                    draft.connection.trusted.push(sha256);
+                }
+                let again = if draft.connection.saving { Message::SaveConnection } else { Message::TestConnection };
+                update(state, again, data)
+            }
+            Message::TestConnection | Message::SaveConnection => {
+                let save = matches!(message, Message::SaveConnection);
+                let Some(draft) = &mut state.draft else { return Action::None };
+                draft.connection.tried = true;
+                if draft.connection.login_name.trim().is_empty() {
+                    draft.connection.status = Some(tr("Enter the user name.").into());
+                    return Action::None;
+                }
+                let Some(request) = draft.connection.request(&draft.account, save) else {
+                    draft.connection.status =
+                        Some(tr("Enter a server name and a valid port for IMAP and SMTP.").into());
+                    return Action::None;
+                };
+                draft.connection.status = None;
+                draft.connection.untrusted = None;
+                draft.connection.pending = true;
+                draft.connection.saving = save;
+                state.pending_connection = Some(draft.account.clone());
+                Action::Ask(request)
             }
             Message::Signature(action) => {
                 if let Some(draft) = &mut state.draft {
@@ -573,18 +869,21 @@ pub mod accounts {
                 .draft
                 .as_ref()
                 .map_or(Action::None, |draft| backup::update(&mut state.backup, &draft.account, message)),
+            Message::Storage(_) => Action::None,
         }
     }
 
     /// Takes the open draft off the page, kept for its account while it holds something unsaved.
     fn keep_draft(state: &mut State, data: &Data) {
         let Some(draft) = state.draft.take() else { return };
-        if mail_of(data, &draft.account).is_some_and(|mail| draft.changes(mail).is_some()) {
+        if mail_of(data, &draft.account).is_some_and(|mail| {
+            draft.changes(mail).is_some() || draft.connection.changed(mail, login_of(data, &draft.account, mail))
+        }) {
             state.drafts_others.insert(draft.account.clone(), draft);
         }
     }
 
-    /// Opens `id`'s page at "Overview" ("Show account" in Storage & index, task DS.7); an account
+    /// Opens `id`'s page at "Overview" ("Show account" of the storage, task DS.7); an account
     /// that is open already keeps what is typed into it.
     pub(super) fn show(state: &mut State, id: &str, data: &Data) {
         if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
@@ -646,6 +945,7 @@ pub mod accounts {
             id: draft.account.clone(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: None,
             folder_roles: change.folder_roles,
@@ -663,6 +963,80 @@ pub mod accounts {
         data.accounts.iter().find(|account| account.id == id).and_then(|account| account.mail.as_ref())
     }
 
+    fn login_of<'a>(data: &'a Data, id: &str, mail: &'a MailView) -> &'a str {
+        data.accounts
+            .iter()
+            .find(|account| account.id == id)
+            .and_then(|account| {
+                if let torro_pim::AccountState::Connected { login_name, .. } = &account.state {
+                    Some(login_name.as_str())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(&mail.address)
+    }
+
+    /// The test or save of a connection whose answer will not come (the settings closed): its page
+    /// takes clicks again.
+    pub(super) fn forget_pending(state: &mut State) {
+        let Some(id) = state.pending_connection.take() else { return };
+        let draft = match state.draft.as_mut().filter(|draft| draft.account == id) {
+            Some(draft) => Some(draft),
+            None => state.drafts_others.get_mut(&id),
+        };
+        if let Some(draft) = draft {
+            draft.connection.pending = false;
+        }
+    }
+
+    pub(super) fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+        let Some(id) = state.pending_connection.as_deref() else { return };
+        match answer {
+            Ok(torro_ipc::Response::MailConnectionChecked { id: answered }) if answered != id => return,
+            Ok(torro_ipc::Response::MailConnected { account, .. }) if account.id != id => return,
+            Ok(
+                torro_ipc::Response::MailConnectionChecked { .. }
+                | torro_ipc::Response::MailConnected { .. }
+                | torro_ipc::Response::UntrustedCertificate { .. }
+                | torro_ipc::Response::Error { .. },
+            )
+            | Err(_) => {}
+            _ => return,
+        }
+        let Some(id) = state.pending_connection.take() else { return };
+        let draft = if state.draft.as_ref().is_some_and(|draft| draft.account == id) {
+            state.draft.as_mut()
+        } else {
+            state.drafts_others.get_mut(&id)
+        };
+        let Some(draft) = draft else { return };
+        draft.connection.pending = false;
+        draft.connection.status = Some(match answer {
+            Ok(torro_ipc::Response::MailConnectionChecked { .. }) => tr("Connection successful.").into(),
+            Ok(torro_ipc::Response::MailConnected { .. }) => {
+                draft.connection.password = Secret::new("");
+                tr("Connection saved and tested.").into()
+            }
+            // As the add-account dialog asks (issue #284): nothing went to the server, nothing is
+            // stored; "Trust certificate" sends the same again with its fingerprint.
+            Ok(torro_ipc::Response::UntrustedCertificate { service, host, sha256, public }) => {
+                draft.connection.untrusted = Some((service.clone(), host.clone(), sha256.clone()));
+                let mut words = trf(
+                    "The certificate of {host} ({service}) is not trusted by this computer. Trust it only if this is your own server.",
+                    &[("host", host), ("service", service)],
+                );
+                if *public {
+                    words.push(' ');
+                    words.push_str(tr("This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider."));
+                }
+                words
+            }
+            Ok(torro_ipc::Response::Error { message, .. }) | Err(message) => message.clone(),
+            _ => return,
+        });
+    }
+
     /// The open draft with the stored account it measures itself against; `None` while the list is
     /// shown or the account is gone.
     fn open_draft<'a>(state: &'a State, data: &'a Data) -> Option<(&'a Draft, &'a MailView)> {
@@ -672,12 +1046,29 @@ pub mod accounts {
 
     /// The section's page: the list of accounts, or the open account's page below it.
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
+        page_with_optional_storage(state, None, data)
+    }
+
+    pub(super) fn page_with_storage<'a>(
+        state: &'a State,
+        storage: &'a storage::State,
+        data: &'a Data,
+    ) -> Page<'a, Message> {
+        page_with_optional_storage(state, Some(storage), data)
+    }
+
+    fn page_with_optional_storage<'a>(
+        state: &'a State,
+        storage: Option<&'a storage::State>,
+        data: &'a Data,
+    ) -> Page<'a, Message> {
         match open_draft(state, data) {
             Some((draft, mail)) => {
                 let label = account_label(data, &draft.account);
                 let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
                 let updating = data.updating(&Request::MailAccountStats { account: None });
-                let page = Page::new(account_page(state, draft, mail, stats, updating)).sub_page(label, Message::Back);
+                let page = Page::new(account_page(state, draft, mail, stats, storage, data, updating))
+                    .sub_page(label, Message::Back);
                 // A page that does not save itself: the bar stands while the name or the signature
                 // differs from what is stored, on every tab.
                 match draft.summary(mail) {
@@ -706,7 +1097,12 @@ pub mod accounts {
             .map_or_else(|| tr("Account").to_string(), |account| account.label.clone())
     }
 
-    /// One row per mail account, each opening its page; a quiet hint without any.
+    pub(super) fn current_account(state: &State) -> Option<&str> {
+        state.draft.as_ref().map(|draft| draft.account.as_str())
+    }
+
+    /// A compact inventory per account. Every bar compares RFC822.SIZE values from the same
+    /// message inventory; the database's physical size is shown only on the storage detail.
     fn list(data: &Data) -> Element<'_, Message> {
         let accounts = mail_accounts(data);
         if accounts.is_empty() {
@@ -715,16 +1111,83 @@ pub mod accounts {
                 tr("Add a mail account in Torro Workplace, under Accounts."),
             );
         }
+        let now = Utc::now();
         let rows = accounts
             .into_iter()
             .map(|(account, mail)| {
-                let name = Some(mail.sender_name.clone()).filter(|name| !name.trim().is_empty());
-                let row = setting_row(None, account.label.as_str(), name, chevron());
-                pressable(row, Some(Message::Open(account.id.clone())))
+                let stats = data.mail_stats.iter().find(|stats| stats.account == account.id);
+                let name = mail.sender_name.trim().to_string();
+                let address = account.label.clone();
+                let id = account.id.clone();
+                let sync = mail.mail.last_sync.or_else(|| stats.and_then(|stats| stats.last_sync));
+                let sync_label = if sync_problem(mail, stats).is_some() {
+                    tr("Sync problem").to_string()
+                } else {
+                    sync.map_or_else(|| tr("Not synced yet").to_string(), |at| format_moment(at, now))
+                };
+                let stats = stats.cloned();
+                let entry = responsive(move |room| {
+                    let inventory = inventory_content(stats.as_ref());
+                    let name_col = column![
+                        typo::text(typo::body_strong(), address.clone()),
+                        typo::text(typo::meta(), name.clone()).style(theme::text_2),
+                    ]
+                    .spacing(space::xs());
+                    let sync_col = typo::text(typo::meta(), sync_label.clone()).style(theme::text_2);
+                    if room.width < 680.0 {
+                        container(column![name_col, inventory, sync_col].spacing(space::m()))
+                            .width(Length::Fill)
+                            .padding([space::m(), space::l()])
+                            .into()
+                    } else {
+                        container(
+                            row![
+                                name_col.width(Length::FillPortion(3)),
+                                container(inventory).width(Length::FillPortion(5)),
+                                sync_col.width(Length::FillPortion(2)),
+                                chevron(),
+                            ]
+                            .spacing(space::l())
+                            .align_y(Alignment::Center),
+                        )
+                        .width(Length::Fill)
+                        .padding([space::m(), space::l()])
+                        .into()
+                    }
+                });
+                pressable(entry.into(), Some(Message::Open(id)))
             })
             .collect();
-        let footer = tr("The name and signature of each account, and how its mail is written.");
-        widgets::group(tr("Accounts"), rows, Some(footer.to_string()))
+        column![widgets::group(tr("Email accounts"), rows, None), widgets::mail_coverage_legend(),]
+            .spacing(space::m())
+            .into()
+    }
+
+    fn inventory_content<'a>(stats: Option<&MailAccountStats>) -> Element<'a, Message> {
+        let Some(stats) = stats else {
+            return typo::text(typo::meta(), tr("Statistics are not available yet.")).style(theme::text_2).into();
+        };
+        let online = stats.known_mail_bytes.map(format_bytes);
+        let local = stats.offline_mail_bytes.map(format_bytes);
+        let heading = match (local, online) {
+            (Some(local), Some(online)) => trf("{local} of {online} online", &[("local", &local), ("online", &online)]),
+            _ => tr("Mail sizes are being collected").to_string(),
+        };
+        let mut content = column![
+            typo::text(typo::body_strong(), heading),
+            typo::text(typo::meta(), trf("{n} emails total", &[("n", &format_count(stats.messages))]))
+                .style(theme::text_2),
+        ]
+        .spacing(space::xs());
+        if let (Some(total), Some(actual), Some(planned), Some(indexed)) = (
+            stats.known_mail_bytes,
+            stats.offline_mail_bytes,
+            stats.planned_mail_bytes,
+            stats.indexed_offline_mail_bytes,
+        ) {
+            content = content.push(widgets::mail_coverage_bars(actual, planned, indexed, total));
+        }
+        content.into()
     }
 
     /// One account's page (task DS.6): the head with the address, how it syncs and "Sync now", the
@@ -735,6 +1198,8 @@ pub mod accounts {
         draft: &'a Draft,
         mail: &'a MailView,
         stats: Option<&'a MailAccountStats>,
+        storage: Option<&'a storage::State>,
+        data: &'a Data,
         updating: bool,
     ) -> Element<'a, Message> {
         let now = Utc::now();
@@ -747,7 +1212,11 @@ pub mod accounts {
             .collect();
         let body = match state.tab {
             Tab::Overview => overview(mail, stats, updating, now),
-            Tab::Writing => writing(draft, mail),
+            Tab::Writing => account_settings(draft, mail, data),
+            Tab::Storage => storage.map_or_else(
+                || widgets::empty_state(tr("Storage is loading"), tr("Try again shortly.")),
+                |state| storage::account_view(state, data, &draft.account).map(Message::Storage),
+            ),
             Tab::Folders => folders(mail, stats),
             Tab::Backup => backup::view(&state.backup, &draft.account).map(Message::Backup),
         };
@@ -762,7 +1231,7 @@ pub mod accounts {
     }
 
     /// The head: letter tile, address, "Name · IMAP host:port · SMTP host:port", how the last sync
-    /// went, "Sync now" and the "…" with Storage & index and the server settings.
+    /// went, "Sync now" and the "…" with Storage & search and the server settings.
     fn head<'a>(
         state: &'a State,
         mail: &'a MailView,
@@ -795,7 +1264,7 @@ pub mod accounts {
             return None;
         }
         let items = vec![
-            MenuItem::new(Icon::Archive, tr("Storage & index"), Message::OpenStorage),
+            MenuItem::new(Icon::Archive, tr("Storage & search"), Message::OpenStorage),
             MenuItem::new(Icon::Settings, tr("Server settings"), Message::ServerSettings)
                 .trail(Trail::Icon(Icon::ArrowUpRight)),
         ];
@@ -805,6 +1274,11 @@ pub mod accounts {
 
     /// Escape closes the head's "…" menu while it is open.
     pub(super) fn escape(state: &State) -> Option<Message> {
+        if state.tab == Tab::Backup
+            && let Some(message) = backup::escape(&state.backup)
+        {
+            return Some(Message::Backup(message));
+        }
         state.more.then_some(Message::CloseMore)
     }
 
@@ -844,12 +1318,7 @@ pub mod accounts {
         let Some(stats) = stats else {
             return if updating { page.into() } else { page.push(no_statistics()).into() };
         };
-        page.push(widgets::stat_grid(figures(stats)))
-            .extend(as_of(stats, now))
-            .push(storage_card(stats))
-            .push(time_card(stats, now))
-            .push(index_card(stats, now))
-            .into()
+        page.extend(as_of(stats, now)).push(storage_card(stats)).into()
     }
 
     /// "As of Today 10:32" under the figures (issue #395): when the service counted them, the exact
@@ -871,311 +1340,236 @@ pub mod accounts {
     /// The sentence under the question for a folder role.
     const ROLE_DETAIL: &str = "The server has more than one folder that could hold it. Your choice is remembered.";
 
-    /// The four figures of the overview: mail, on the server, on this device, searchable.
-    pub(super) fn figures(stats: &MailAccountStats) -> Vec<StatFigure> {
-        vec![
-            StatFigure::new(
-                tr("Mail"),
-                format_count(stats.messages),
-                trf("{n} unread", &[("n", &format_count(stats.unread))]),
-            ),
-            server_figure(stats),
-            StatFigure::new(
-                tr("On this device"),
-                format_bytes(stats.database_bytes),
-                trf("{n} texts offline", &[("n", &format_count(stats.cached_bodies))]),
-            ),
-            StatFigure::new(
-                tr("Searchable"),
-                widgets::share_percent(stats.indexed_full, stats.messages),
-                trf("{n} with full text", &[("n", &format_count(stats.indexed_full))]),
-            ),
-        ]
-    }
-
-    /// "On the server": the quota with its limit where the server tells it, else the sum of the
-    /// folders' sizes without "of …" (decided in the planning of #314).
-    pub(super) fn server_figure(stats: &MailAccountStats) -> StatFigure {
-        let label = tr("On the server");
-        if let Some(quota) = &stats.quota {
-            let note = trf(
-                "of {total} · {share}",
-                &[
-                    ("total", &format_bytes(quota.limit_bytes)),
-                    ("share", &widgets::share_percent(quota.used_bytes, quota.limit_bytes)),
-                ],
-            );
-            return StatFigure::new(label, format_bytes(quota.used_bytes), note);
-        }
-        let known: Vec<u64> = stats.folders.iter().filter_map(|folder| folder.server_bytes).collect();
-        if known.is_empty() {
-            return StatFigure::new(label, UNKNOWN, tr("Sizes come with the next sync"));
-        }
-        let note = if known.len() < stats.folders.len() {
-            tr("Some sizes come with the next sync").to_string()
-        } else {
-            trf("in {n} folders", &[("n", &known.len())])
-        };
-        StatFigure::new(label, format_bytes(known.iter().sum()), note)
-    }
-
     /// What a cell shows for a value that is not known yet.
     const UNKNOWN: &str = "–";
-
-    /// The server's strip: the three largest folders, then "{n} other folders", and the free room
-    /// of the quota. The three keep the first three colours in their order: what the strip shows
-    /// is which folders are largest.
-    pub(super) fn server_parts(stats: &MailAccountStats) -> (Vec<SharePart>, Option<(String, u64)>) {
-        let mut sized: Vec<(&str, u64)> = stats
-            .folders
-            .iter()
-            .filter_map(|folder| Some((folder.folder.name.as_str(), folder.server_bytes?)))
-            .collect();
-        sized.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
-        let shown = sized.len().min(LARGEST_IN_STRIP);
-        let mut parts: Vec<SharePart> = sized[..shown]
-            .iter()
-            .enumerate()
-            .map(|(slot, (name, bytes))| SharePart::new(*name, *bytes, format_bytes(*bytes), ChartColor::Series(slot)))
-            .collect();
-        let others = &sized[shown..];
-        if !others.is_empty() {
-            let bytes = others.iter().map(|(_, bytes)| bytes).sum();
-            // One folder left over keeps its own name; several are counted.
-            let label = match others {
-                [(name, _)] => (*name).to_string(),
-                _ => trf("{n} other folders", &[("n", &others.len())]),
-            };
-            parts.push(SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Other));
-        }
-        // With a quota the strip is the quota, so "Free" is the free share.
-        if let Some(quota) = &stats.quota {
-            let (used, counted) = (quota.used_bytes, sized.iter().map(|(_, bytes)| bytes).sum::<u64>());
-            if counted > used {
-                // The folders count more than the server says is used (Gmail counts a mail in each of
-                // its labels): they are no parts of the quota, so the strip shows only the room used.
-                parts = vec![SharePart::new(tr("In use"), used, format_bytes(used), ChartColor::Series(0))];
-            } else {
-                // What no folder accounts for (sizes still coming) is a part of its own, in a colour
-                // of its own; below a hundredth of the used room it is rounding (KiB against bytes).
-                let rest = used - counted;
-                if rest > used / NOT_COUNTED_SHARE {
-                    let colour = ChartColor::Series(LARGEST_IN_STRIP);
-                    parts.push(SharePart::new(tr("Not counted by folder"), rest, format_bytes(rest), colour));
-                }
-            }
-        }
-        let free = stats
-            .quota
-            .as_ref()
-            .map(|quota| (tr("Free").to_string(), quota.limit_bytes.saturating_sub(quota.used_bytes)));
-        (parts, free)
-    }
-
-    /// How many folders the server's strip names before the rest is "other folders".
-    const LARGEST_IN_STRIP: usize = 3;
-
-    /// What no folder accounts for becomes a part of the server's strip from a hundredth of the
-    /// used room on.
-    const NOT_COUNTED_SHARE: u64 = 100;
-
-    /// The device's strip: search index, mail texts, originals and the rest of the database; never
-    /// below 0. Without the size of the index the rest says that it holds the index too.
-    pub(super) fn device_parts(stats: &MailAccountStats) -> Vec<SharePart> {
-        let part =
-            |label: &str, bytes: u64, slot| SharePart::new(label, bytes, format_bytes(bytes), ChartColor::Series(slot));
-        let mut parts = Vec::new();
-        if let Some(index) = stats.search_index_bytes {
-            parts.push(part(tr("Search index"), index, 0));
-        }
-        parts.push(part(tr("Mail texts"), stats.body_cache_bytes, 1));
-        parts.push(part(tr("Originals"), stats.original_bytes, 2));
-        let counted = stats.search_index_bytes.unwrap_or(0) + stats.body_cache_bytes + stats.original_bytes;
-        let rest = stats.database_bytes.saturating_sub(counted);
-        let label =
-            if stats.search_index_bytes.is_some() { tr("Headers & folders") } else { tr("Index, headers & folders") };
-        parts.push(part(label, rest, 3));
-        parts
-    }
 
     /// "Storage": the server and the device as strips, the attachments under them, and the way to
     /// the page that manages them.
     fn storage_card<'a>(stats: &MailAccountStats) -> Element<'a, Message> {
-        let caption = |text: &'static str| typo::text(typo::caption(), text).style(theme::text_3);
-        let (server, free) = server_parts(stats);
-        let server: Element<'a, Message> = if server.is_empty() && free.is_none() {
-            typo::text(typo::meta(), tr("Sizes on the server come with the next sync.")).style(theme::text_2).into()
-        } else {
-            widgets::share_strip(server, free)
-        };
-        let mut body = column![
-            column![caption(tr("On the server")), server].spacing(space::s()),
-            column![caption(tr("On this device")), widgets::share_strip(device_parts(stats), None)].spacing(space::s()),
+        let body = column![
+            inventory_content(Some(stats)),
+            widgets::mail_coverage_legend(),
+            typo::text(
+                typo::meta(),
+                trf("Local database incl. headers and index: {size}", &[("size", &format_bytes(stats.database_bytes))]),
+            )
+            .style(theme::text_2),
         ]
-        .spacing(space::l());
-        if stats.cached_attachments > 0 {
-            let attachments = trf(
-                "Attachments on this device: {n} · {size}",
-                &[
-                    ("n", &format_count(stats.cached_attachments)),
-                    ("size", &format_bytes(stats.attachment_cache_bytes.unwrap_or(0))),
-                ],
-            );
-            body = body.push(typo::text(typo::meta(), attachments).style(theme::text_2));
-        }
-        let manage = widgets::text_button(
-            None,
-            tr("Manage in Storage & index"),
-            style::button::ghost,
-            Some(Message::OpenStorage),
-        );
-        // Every follow-up of a card stands at its bottom right, like "Change" and "All folders".
-        widgets::chart_card(tr("Storage"), "", body.push(row![blank::horizontal(), manage]))
+        .spacing(space::s());
+        let manage =
+            widgets::text_button(None, tr("Storage & search"), style::button::ghost, Some(Message::OpenStorage));
+        widgets::chart_card(tr("Mail inventory"), "", body.push(row![blank::horizontal(), manage]))
     }
 
-    /// "Mail over time": the mail per year – per month when it all lies within two years –, readable
-    /// offline or headers only, then the oldest and newest mail and the offline window.
-    fn time_card<'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Element<'a, Message> {
-        let mut body = column![].spacing(space::m());
-        let columns = time_columns(&stats.months);
-        if columns.is_empty() {
-            body = body.push(typo::text(typo::meta(), tr("No mail yet.")).style(theme::text_2));
-        } else {
-            let series = vec![
-                ChartSeries { name: tr("Readable offline").to_string(), color: ChartColor::Series(0) },
-                ChartSeries { name: tr("Headers only").to_string(), color: ChartColor::Series(1) },
-            ];
-            body = body.push(widgets::chart_legend(&series)).push(widgets::column_chart(series, columns));
-        }
-        let moment =
-            |at: Option<DateTime<Utc>>| at.map_or_else(|| tr("Not known").to_string(), |at| format_moment(at, now));
-        let range = trf(
-            "Oldest {oldest} · newest {newest}",
-            &[("oldest", &moment(stats.oldest_known)), ("newest", &moment(stats.newest_known))],
-        );
-        body = body.push(dated(typo::text(typo::meta(), range).style(theme::text_2), stats.oldest_known));
-        let window = match stats.oldest_cached_body {
-            Some(at) => trf("Readable offline from {moment}", &[("moment", &format_moment(at, now))]),
-            None => tr("No mail texts on this device yet.").to_string(),
-        };
-        let change = widgets::text_button(None, tr("Change"), style::button::ghost, Some(Message::OpenStorage));
-        let window = row![
-            dated(typo::text(typo::meta(), window).style(theme::text_2), stats.oldest_cached_body),
-            blank::horizontal(),
-            change
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-        widgets::chart_card(tr("Mail over time"), "", body.push(window))
-    }
-
-    /// `content` with the exact moment `at` as its tooltip, when there is one.
-    fn dated<'a>(content: impl Into<Element<'a, Message>>, at: Option<DateTime<Utc>>) -> Element<'a, Message> {
-        match at {
-            Some(at) => widgets::with_tooltip(content, format_exact(at)),
-            None => content.into(),
-        }
-    }
-
-    /// The columns of "Mail over time": one per year from the first to the last with mail, or one per
-    /// month when they all lie within two years; gaps count as 0.
-    pub(super) fn time_columns(months: &[MailMonthCount]) -> Vec<ChartColumn> {
-        let (Some(first), Some(last)) =
-            (months.iter().min_by_key(|m| (m.year, m.month)), months.iter().max_by_key(|m| (m.year, m.month)))
-        else {
-            return Vec::new();
-        };
-        let values = |count: (u64, u64)| {
-            let offline = u32::try_from(count.1).unwrap_or(u32::MAX);
-            let headers = u32::try_from(count.0.saturating_sub(count.1)).unwrap_or(u32::MAX);
-            vec![offline, headers]
-        };
-        if last.year - first.year <= 1 {
-            let mut columns = Vec::new();
-            let (mut year, mut month) = (first.year, first.month);
-            while (year, month) <= (last.year, last.month) {
-                let count = months
-                    .iter()
-                    .filter(|m| m.year == year && m.month == month)
-                    .fold((0, 0), |sum, m| (sum.0 + m.messages, sum.1 + m.cached_bodies));
-                columns.push(ChartColumn {
-                    label: month_name_short(month).to_string(),
-                    title: trf("{month} {year}", &[("month", &month_name(month)), ("year", &year)]),
-                    values: values(count),
-                });
-                (year, month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
-            }
-            return columns;
-        }
-        (first.year..=last.year)
-            .map(|year| {
-                let count = months
-                    .iter()
-                    .filter(|m| m.year == year)
-                    .fold((0, 0), |sum, m| (sum.0 + m.messages, sum.1 + m.cached_bodies));
-                ChartColumn { label: year.to_string(), title: year.to_string(), values: values(count) }
-            })
-            .collect()
-    }
-
-    /// "Search index": how far the mail is searchable, and when the index last ran.
-    fn index_card<'a>(stats: &MailAccountStats, now: DateTime<Utc>) -> Element<'a, Message> {
-        let part = |label: &str, count: u64, colour| SharePart::new(label, count, format_count(count), colour);
-        // What is searchable in full stands in the figure "Searchable" already (each number once):
-        // here it is the quiet track, and the parts are what is not there yet.
-        let parts = vec![
-            part(tr("Partial or unverified"), stats.indexed_partial_or_unverified, ChartColor::Series(1)),
-            part(tr("Awaiting"), stats.awaiting_index, ChartColor::Series(2)),
-            part(tr("Text unavailable"), stats.text_unavailable, ChartColor::Series(3)),
-        ];
-        let searchable = Some((String::new(), stats.indexed_full));
-        let note = stats
-            .last_index_run
-            .map_or_else(String::new, |at| trf("Last run {moment}", &[("moment", &format_moment(at, now))]));
-        widgets::chart_card(tr("Search index"), note, widgets::share_strip(parts, searchable))
-    }
-
-    /// The tab "Writing": sender name, signature and "Write new mail as" as pairs with what they are
-    /// for. Name and signature save through the save bar; the format is sent at once.
-    fn writing<'a>(draft: &'a Draft, mail: &'a MailView) -> Element<'a, Message> {
+    /// Identity is kept beside access details. Sending preferences and the signature live in
+    /// Reading & writing, where they apply to the chosen sender account.
+    fn account_settings<'a>(draft: &'a Draft, mail: &'a MailView, data: &'a Data) -> Element<'a, Message> {
         let dirty = draft.changes(mail).is_some();
-        let name = widgets::setting_pair(
-            tr("Sender name"),
-            tr("Shown next to your address in the mail you send. Optional."),
-            move || {
-                field("Anna Example", &draft.sender_name)
-                    .on_input(Message::SenderName)
-                    .on_submit_maybe(dirty.then_some(Message::Save))
+        let connection_changed = draft.connection.changed(mail, login_of(data, &draft.account, mail));
+        let value = |label: &'static str, content: String| -> Element<'a, Message> {
+            row_frame(
+                column![typo::text(typo::meta(), tr(label)).style(theme::text_2), typo::text(typo::body(), content)]
+                    .spacing(space::xs()),
+                false,
+            )
+        };
+        responsive(move |room| {
+            let identity = widgets::group(
+                tr("Account details"),
+                vec![
+                    field_row(
+                        column![
+                            typo::text(typo::meta(), tr("Display name")).style(theme::text_2),
+                            field(tr("Your name"), &draft.sender_name)
+                                .on_input(Message::SenderName)
+                                .on_submit_maybe(dirty.then_some(Message::Save)),
+                        ]
+                        .spacing(space::xs()),
+                    ),
+                    value("Email address", mail.address.clone()),
+                    field_row(
+                        column![
+                            typo::text(typo::meta(), tr("Username")).style(theme::text_2),
+                            field(tr("Username"), &draft.connection.login_name).on_input(Message::LoginName),
+                        ]
+                        .spacing(space::xs()),
+                    ),
+                    field_row(
+                        column![
+                            typo::text(typo::meta(), tr("Password")).style(theme::text_2),
+                            // A short placeholder, the rule as a line below: the long one was cut off.
+                            field(tr("Saved password"), draft.connection.password.expose())
+                                .secure(true)
+                                .on_input(|typed| Message::Password(Secret::new(typed))),
+                            typo::text(typo::meta(), tr("Leave empty to keep the saved password")).style(theme::text_2),
+                        ]
+                        .spacing(space::xs()),
+                    ),
+                ],
+                None,
+            );
+            let mut server_rows: Vec<Element<'a, Message>> = vec![];
+            if draft.connection.manual {
+                server_rows.push(server_form(ServerKind::Imap, &draft.connection.imap));
+                server_rows.push(server_form(ServerKind::Smtp, &draft.connection.smtp));
+            } else {
+                let server = |label: &'static str, fields: &ServerDraft| {
+                    let security = match fields.security {
+                        Security::Tls => "TLS",
+                        Security::StartTls => "STARTTLS",
+                    };
+                    value(label, format!("{} · {} · {security}", fields.host, fields.port))
+                };
+                server_rows.push(server("IMAP server", &draft.connection.imap));
+                server_rows.push(server("SMTP server", &draft.connection.smtp));
+            }
+            server_rows.push(row_frame(
+                widgets::text_button(
+                    None,
+                    if draft.connection.manual { tr("Hide manual server fields") } else { tr("Edit servers manually") },
+                    style::button::secondary,
+                    Some(Message::ManualServer(!draft.connection.manual)),
+                ),
+                false,
+            ));
+            server_rows.push(
+                responsive(move |room| {
+                    let test = widgets::text_button(
+                        None,
+                        if draft.connection.pending { tr("Checking…") } else { tr("Test credentials") },
+                        style::button::secondary,
+                        (!draft.connection.pending).then_some(Message::TestConnection),
+                    );
+                    // Secondary: the page's primary action is "Save" in the save bar.
+                    let save = widgets::text_button(
+                        None,
+                        tr("Save connection"),
+                        style::button::secondary,
+                        (connection_changed && !draft.connection.pending).then_some(Message::SaveConnection),
+                    );
+                    if room.width < 440.0 {
+                        container(column![test, save].spacing(space::s()))
+                            .width(Length::Fill)
+                            .padding([space::s(), space::l()])
+                            .into()
+                    } else {
+                        row_frame(row![test, save].spacing(space::s()), false)
+                    }
+                })
+                .height(Length::Shrink)
+                .into(),
+            );
+            if let Some(status) = &draft.connection.status {
+                server_rows.push(row_frame(typo::text(typo::body(), status.clone()), false));
+            }
+            if let Some((_, _, sha256)) = &draft.connection.untrusted {
+                let trust = widgets::text_button(
+                    None,
+                    tr("Trust certificate"),
+                    style::button::secondary,
+                    (!draft.connection.pending).then_some(Message::TrustCertificate),
+                );
+                server_rows.push(setting_row(None, tr("Fingerprint (SHA-256)"), Some(sha256.clone()), trust));
+            }
+            let connection = widgets::group(tr("Connection"), server_rows, None);
+            let folders = system_folders(mail, data.mail_stats.iter().find(|stats| stats.account == draft.account));
+            let right = column![connection, folders].spacing(layout::section_gap());
+            if room.width >= 700.0 {
+                row![container(identity).width(Length::FillPortion(1)), container(right).width(Length::FillPortion(1))]
+                    .spacing(space::l())
+                    .align_y(Alignment::Start)
                     .into()
-            },
-        );
-        let signature =
-            widgets::setting_pair(tr("Signature"), tr("Added under new mail, replies and forwards."), move || {
-                text_editor(&draft.signature)
-                    .on_action(Message::Signature)
-                    .font(typo::body().font)
-                    .size(typo::body().size)
-                    .line_height(typo::body().line_height)
-                    .padding(style::INPUT_PADDING)
-                    .wrapping(Wrapping::WordOrGlyph)
-                    .height(signature_height())
-                    .style(style::text_editor)
-                    .into()
-            });
-        let format = mail.settings.format;
-        let format = widgets::setting_pair(
-            tr("Write new mail as"),
-            tr("Formatted mail can hold bold text, lists, links and quotes; a plain text copy goes along."),
-            move || picker(FORMAT_CHOICES, FormatChoice(format), |choice: FormatChoice| Message::Format(choice.0)),
-        );
-        widgets::setting_pairs(vec![name, signature, format])
+            } else {
+                column![identity, right].spacing(layout::section_gap()).into()
+            }
+        })
+        .height(Length::Shrink)
+        .into()
     }
 
-    /// The room of the signature field: four lines of text and the padding of a field.
-    const SIGNATURE_LINES: f32 = 4.0;
+    /// Show the resolved IMAP roles beside the server settings. Ambiguous roles link to the
+    /// existing folder picker; a missing first sync is reported instead of guessed.
+    /// A row of a group with a label above its field (and a hint below): as high as it needs, not
+    /// the fixed height of [`row_frame`], which leaves a label and a field 3 px and a hint none.
+    fn field_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+        container(content).width(Length::Fill).padding([space::m(), space::l()]).into()
+    }
 
-    fn signature_height() -> f32 {
-        SIGNATURE_LINES * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
+    fn system_folders<'a>(mail: &'a MailView, stats: Option<&'a MailAccountStats>) -> Element<'a, Message> {
+        let roles = [
+            (Role::Inbox, "Inbox"),
+            (Role::Drafts, "Drafts"),
+            (Role::Sent, "Sent"),
+            (Role::Archive, "Archive"),
+            (Role::Junk, "Spam"),
+            (Role::Trash, "Trash"),
+        ];
+        let rows = roles
+            .into_iter()
+            .map(|(role, label)| {
+                let mapped = stats
+                    .and_then(|stats| stats.folders.iter().find(|folder| folder.folder.role == Some(role)))
+                    .map(|folder| folder.folder.name.as_str())
+                    .or_else(|| mail.settings.folder_roles.get(&role).map(String::as_str));
+                let pending = mail.open_roles.iter().any(|open| open.role == role);
+                let detail = if pending { tr("Selection needed") } else { mapped.unwrap_or(tr("Not determined yet")) };
+                let control = widgets::text_button(
+                    None,
+                    tr("Choose folders"),
+                    style::button::secondary,
+                    pending.then_some(Message::Tab(Tab::Folders.index())),
+                );
+                if pending {
+                    setting_row(None, tr(label), Some(detail.to_string()), control)
+                } else {
+                    // The folder in a column of its own, right-aligned: every value starts at the
+                    // same place, and each has the room the label leaves.
+                    row_frame(
+                        row![
+                            container(typo::text(typo::body(), tr(label))).width(Length::FillPortion(2)),
+                            container(widgets::ellipsized_end(typo::body(), detail.to_string(), theme::text_2))
+                                .width(Length::FillPortion(3)),
+                        ]
+                        .spacing(space::s())
+                        .align_y(Alignment::Center),
+                        false,
+                    )
+                }
+            })
+            .collect();
+        widgets::group(tr("System folders"), rows, None)
+    }
+
+    fn server_form<'a>(kind: ServerKind, server: &'a ServerDraft) -> Element<'a, Message> {
+        let title = match kind {
+            ServerKind::Imap => tr("Incoming mail (IMAP)"),
+            ServerKind::Smtp => tr("Outgoing mail (SMTP)"),
+        };
+        let host = field(tr("Server"), &server.host)
+            .on_input(move |value| Message::ServerHost(kind, value))
+            .width(Length::FillPortion(3));
+        let port = field(tr("Port"), &server.port)
+            .on_input(move |value| Message::ServerPort(kind, value))
+            .width(Length::FillPortion(1));
+        widgets::group(
+            title,
+            vec![
+                row_frame(row![host, port].spacing(space::s()), false),
+                setting_row(
+                    None,
+                    tr("Security"),
+                    None,
+                    widgets::segmented(
+                        [
+                            ("TLS", Message::ServerSecurity(kind, Security::Tls)),
+                            ("STARTTLS", Message::ServerSecurity(kind, Security::StartTls)),
+                        ],
+                        usize::from(server.security == Security::StartTls),
+                    ),
+                ),
+            ],
+            None,
+        )
     }
 
     /// The tab "Folders": the roles the server left open, one press picks (task M5.2), then every
@@ -1279,21 +1673,6 @@ pub mod accounts {
         }
     }
 
-    /// "Write new mail as" as a choice of a pick list.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct FormatChoice(MailFormat);
-
-    const FORMAT_CHOICES: [FormatChoice; 2] = [FormatChoice(MailFormat::Html), FormatChoice(MailFormat::Plain)];
-
-    impl std::fmt::Display for FormatChoice {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(match self.0 {
-                MailFormat::Html => tr("Formatted (HTML)"),
-                MailFormat::Plain => tr("Plain text"),
-            })
-        }
-    }
-
     #[cfg(test)]
     pub(super) mod tests {
         use super::*;
@@ -1345,6 +1724,70 @@ pub mod accounts {
             assert!(page(&state, &data).sub_page.is_none());
         }
 
+        #[test]
+        fn connection_can_be_tested_without_saving_and_saved_with_separate_server_fields() {
+            let data = data();
+            let mut state = opened(&data);
+            let test: Action<()> = update(&mut state, Message::TestConnection, &data);
+            assert!(matches!(test, Action::Ask(Request::ReconfigureMail { save: false, password: None, .. })));
+            answered(
+                &mut state,
+                &Ok(torro_ipc::Response::MailConnectionChecked { id: "mail:anna@example.org".into() }),
+            );
+            assert!(state.pending_connection.is_none());
+            let _: Action<()> = update(&mut state, Message::ManualServer(true), &data);
+            let _: Action<()> =
+                update(&mut state, Message::ServerHost(ServerKind::Imap, "mail.example.org".into()), &data);
+            let _: Action<()> =
+                update(&mut state, Message::ServerSecurity(ServerKind::Smtp, Security::StartTls), &data);
+            let _: Action<()> = update(&mut state, Message::Password(Secret::new("new-secret")), &data);
+            let save: Action<()> = update(&mut state, Message::SaveConnection, &data);
+            let Action::Ask(Request::ReconfigureMail { imap, smtp, password, save: true, .. }) = save else {
+                panic!("edited connection must be asked, so its answer comes back")
+            };
+            assert_eq!((imap.host.as_str(), imap.port), ("mail.example.org", 993));
+            assert_eq!((smtp.port, smtp.security), (587, Security::StartTls));
+            assert_eq!(password, Some(Secret::new("new-secret")));
+
+            // Issue #284 in the account's page: the server's certificate is not trusted. The page
+            // says so, waits no longer, and "Trust certificate" saves again with its fingerprint.
+            let sha256 = format!("AB{}", ":CD".repeat(31));
+            answered(
+                &mut state,
+                &Ok(torro_ipc::Response::UntrustedCertificate {
+                    service: "IMAP".into(),
+                    host: "mail.example.org".into(),
+                    sha256: sha256.clone(),
+                    public: false,
+                }),
+            );
+            assert!(state.pending_connection.is_none(), "no longer checking");
+            let draft = state.draft.as_ref().expect("the page");
+            assert!(!draft.connection.pending);
+            assert!(draft.connection.status.as_deref().is_some_and(|words| words.contains("mail.example.org")));
+            let trusted: Action<()> = update(&mut state, Message::TrustCertificate, &data);
+            let Action::Ask(Request::ReconfigureMail { save: true, trusted_certificates, .. }) = trusted else {
+                panic!("the save again, with the certificate")
+            };
+            assert_eq!(trusted_certificates, [sha256]);
+        }
+
+        #[test]
+        fn invalid_server_port_stays_on_the_page_and_a_failed_test_can_be_retried() {
+            let data = data();
+            let mut state = opened(&data);
+            let _: Action<()> = update(&mut state, Message::ServerPort(ServerKind::Imap, "abc".into()), &data);
+            let invalid: Action<()> = update(&mut state, Message::TestConnection, &data);
+            assert_eq!(invalid, Action::None);
+            assert!(state.pending_connection.is_none());
+            let _: Action<()> = update(&mut state, Message::ServerPort(ServerKind::Imap, "143".into()), &data);
+            let sent: Action<()> = update(&mut state, Message::TestConnection, &data);
+            assert!(matches!(sent, Action::Ask(Request::ReconfigureMail { .. })));
+            answered(&mut state, &Ok(torro_ipc::Response::Error { code: "auth".into(), message: "Bad login".into() }));
+            assert_eq!(state.draft.as_ref().unwrap().connection.status.as_deref(), Some("Bad login"));
+            assert!(state.pending_connection.is_none());
+        }
+
         /// "Save" sends the sender name and the signature, each only when it differs; nothing
         /// while they hold what is stored.
         #[test]
@@ -1363,6 +1806,7 @@ pub mod accounts {
                     id: "mail:anna@example.org".into(),
                     sender_name: Some("Anna B.".into()),
                     signature: None,
+                    signature_format: None,
                     notify: None,
                     services: None,
                     folder_roles: None,
@@ -1385,6 +1829,7 @@ pub mod accounts {
                     id: "mail:anna@example.org".into(),
                     sender_name: None,
                     signature: None,
+                    signature_format: None,
                     notify: None,
                     services: None,
                     folder_roles: None,
@@ -1406,6 +1851,7 @@ pub mod accounts {
                     id: "mail:anna@example.org".into(),
                     sender_name: None,
                     signature: None,
+                    signature_format: None,
                     notify: None,
                     services: None,
                     folder_roles: Some(BTreeMap::from([(Role::Archive, "INBOX.Archive".to_string())])),
@@ -1566,86 +2012,6 @@ pub mod accounts {
             assert_eq!(nothing, Action::None, "the stored name is back");
         }
 
-        /// "On the server" with a quota names its limit and share; without one it is the sum of the
-        /// folders, and without sizes it waits for the next sync.
-        #[test]
-        fn the_server_figure_with_and_without_a_quota() {
-            const GIB: u64 = 1024 * 1024 * 1024;
-            let quota = stats(&[("INBOX", 30, 8, Some(1024))], Some((GIB * 236 / 100, 10 * GIB)));
-            let figure = server_figure(&quota);
-            assert_eq!(figure.value, format_bytes(GIB * 236 / 100));
-            let share = widgets::share_percent(GIB * 236 / 100, 10 * GIB);
-            assert_eq!(
-                figure.note,
-                trf("of {total} · {share}", &[("total", &format_bytes(10 * GIB)), ("share", &share)])
-            );
-            let sum = server_figure(&stats(&[("INBOX", 30, 8, Some(3072)), ("Sent", 10, 2, Some(1024))], None));
-            assert_eq!((sum.value, sum.note), (format_bytes(4096), trf("in {n} folders", &[("n", &2)])));
-            let unknown = server_figure(&stats(&[("INBOX", 30, 8, None)], None));
-            assert_eq!(unknown.value, UNKNOWN);
-            let (parts, free) = server_parts(&quota);
-            assert_eq!(parts.len(), 2, "the folder and what no folder accounts for");
-            assert_eq!(parts[1].label, tr("Not counted by folder"));
-            let whole: u64 = parts.iter().map(|part| part.value).sum::<u64>() + free.as_ref().map_or(0, |(_, b)| *b);
-            assert_eq!(whole, 10 * GIB, "the strip is the quota");
-            assert_eq!(free.map(|(_, bytes)| bytes), Some(10 * GIB - GIB * 236 / 100));
-            // A few KiB of rounding make no part; folders counting more than is used give way to
-            // the room used.
-            let close = stats(&[("INBOX", 30, 8, Some(GIB - 4096))], Some((GIB, 10 * GIB)));
-            assert_eq!(server_parts(&close).0.len(), 1);
-            let twice = stats(&[("INBOX", 30, 8, Some(GIB)), ("All Mail", 30, 8, Some(GIB))], Some((GIB, 10 * GIB)));
-            let (parts, _) = server_parts(&twice);
-            assert_eq!(parts.iter().map(|p| (p.label.as_str(), p.value)).collect::<Vec<_>>(), [(tr("In use"), GIB)]);
-            assert!(server_parts(&stats(&[("INBOX", 30, 8, Some(1))], None)).1.is_none(), "no quota, no free room");
-        }
-
-        /// The server's strip names the three largest folders and puts the rest together from the
-        /// fourth folder on.
-        #[test]
-        fn folders_past_the_third_become_other_folders() {
-            let folders = [("INBOX", 1, 0, Some(400)), ("Sent", 1, 0, Some(300)), ("Archive", 1, 0, Some(500))];
-            let (three, _) = server_parts(&stats(&folders, None));
-            assert_eq!(three.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["Archive", "INBOX", "Sent"]);
-            let mut four = folders.to_vec();
-            four.push(("Junk", 1, 0, Some(10)));
-            let (parts, _) = server_parts(&stats(&four, None));
-            assert_eq!(parts.len(), 4);
-            assert_eq!((parts[3].label.as_str(), parts[3].value), ("Junk", 10));
-            assert_eq!(parts[3].color, ChartColor::Other);
-            four.push(("Trash", 1, 0, Some(20)));
-            let (parts, _) = server_parts(&stats(&four, None));
-            assert_eq!((parts[3].label.clone(), parts[3].value), (trf("{n} other folders", &[("n", &2)]), 30));
-        }
-
-        /// The device's strip never goes below 0 and names the rest by what it holds.
-        #[test]
-        fn the_device_strip_adds_up_to_the_database() {
-            let mut stats = stats(&[("INBOX", 30, 8, None)], None);
-            let parts = device_parts(&stats);
-            assert_eq!(parts.iter().map(|p| p.value).sum::<u64>(), stats.database_bytes);
-            assert_eq!(parts.last().map(|p| p.label.as_str()), Some(tr("Headers & folders")));
-            stats.search_index_bytes = None;
-            stats.database_bytes = 1;
-            let parts = device_parts(&stats);
-            assert_eq!(parts.last().map(|p| (p.label.as_str(), p.value)), Some((tr("Index, headers & folders"), 0)));
-        }
-
-        /// Mail over time is counted per month within two years, else per year, gaps as 0.
-        #[test]
-        fn mail_over_time_per_month_or_per_year() {
-            let month = |year, month, messages, cached_bodies| MailMonthCount { year, month, messages, cached_bodies };
-            let months = time_columns(&[month(2025, 11, 10, 2), month(2026, 2, 30, 18)]);
-            assert_eq!(months.len(), 4, "Nov, Dec, Jan, Feb");
-            assert_eq!(months[0].values, vec![2, 8]);
-            assert_eq!(months[1].values, vec![0, 0]);
-            let years = time_columns(&[month(2020, 3, 5, 0), month(2026, 2, 30, 18)]);
-            assert_eq!(
-                years.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-                ["2020", "2021", "2022", "2023", "2024", "2025", "2026"]
-            );
-            assert!(time_columns(&[]).is_empty());
-        }
-
         /// The folder table has a total; a size the server has not told yet shows as unknown.
         #[test]
         fn the_folder_table_totals_its_columns() {
@@ -1656,11 +2022,9 @@ pub mod accounts {
             assert_eq!(rows[1][5], UNKNOWN);
             assert_eq!(total[1], format_count(40));
             assert_eq!(total[5], UNKNOWN, "not all sizes are known");
-            assert_eq!(figures(&stats(&[], None)).len(), 4);
         }
 
-        /// The "…" menu opens and closes, and its entries lead to Storage & index and the control
-        /// centre.
+        /// The "…" menu opens and closes, and its entries lead to this account's own tabs.
         #[test]
         fn the_more_menu_leads_on() {
             let data = data();
@@ -1670,44 +2034,66 @@ pub mod accounts {
             assert!(overlay(&state).is_some());
             assert!(matches!(escape(&state), Some(Message::CloseMore)));
             let storage: Action<()> = update(&mut state, Message::OpenStorage, &data);
-            assert_eq!(storage, Action::Open("storage"));
+            assert_eq!(storage, Action::None);
+            assert_eq!(state.tab, Tab::Storage);
             assert!(overlay(&state).is_none());
             let server: Action<()> = update(&mut state, Message::ServerSettings, &data);
-            assert_eq!(server, Action::ControlCentre("accounts".into()));
+            assert_eq!(server, Action::None);
+            assert_eq!(state.tab, Tab::Writing);
         }
 
-        /// DS.7: Storage & index shows none of the account's numbers, only estimates and the job: its
-        /// page reads no field of the statistics (the account's page is where they stand).
+        /// A storage choice from an account tab sends that account's policy only after its value
+        /// is valid. Invalid dates never reach the daemon.
         #[test]
-        fn storage_shows_none_of_the_accounts_numbers() {
-            let source = include_str!("mail.rs");
-            // With the line break in front, so the words in this test are not taken for the module.
-            let start = source.find("\npub mod storage {").expect("the storage section");
-            let page = &source[start..];
-            let page = &page[page.find("\n    pub fn page<'a>").expect("its page")..];
-            let page = &page[..page.find("\n    }\n").expect("the end of its page")];
-            for field in [
-                "cached_bodies",
-                "body_cache_bytes",
-                "search_index_bytes",
-                "last_index_run",
-                "oldest_cached_body",
-                "indexed_full",
-                "indexed_partial_or_unverified",
-                "text_unavailable",
-                "awaiting_index",
-                "database_bytes",
-                "cached_attachments",
-                "attachment_cache_bytes",
-                "messages",
-                "unread",
-                "quota",
-            ] {
-                assert!(!page.contains(&format!("stats.{field}")), "Storage & index shows {field}");
-            }
+        fn storage_selection_validates_the_date_on_the_open_account() {
+            use torro_ipc::mail::MailCacheMode;
+            let mut data = data();
+            data.mail_stats = vec![stats(&[("INBOX", 30, 8, Some(4096))], None)];
+            let mut state = crate::mail::State::default();
+            let _ = crate::mail::update(
+                &mut state,
+                crate::mail::Message::Accounts(Message::Open("mail:anna@example.org".into())),
+                &data,
+            );
+            let choice = |message| crate::mail::Message::Accounts(Message::Storage(message));
+            let _ = crate::mail::update(&mut state, choice(storage::Message::Select(MailCacheMode::SinceDate)), &data);
+            let _ = crate::mail::update(&mut state, choice(storage::Message::Date("wrong".into())), &data);
+            assert_eq!(crate::mail::update(&mut state, choice(storage::Message::Apply), &data), Action::None);
+            let _ = crate::mail::update(&mut state, choice(storage::Message::Date("01.01.2024".into())), &data);
+            let action = crate::mail::update(&mut state, choice(storage::Message::Apply), &data);
+            let Action::Send(requests) = action else { panic!("date policy sent") };
+            let Request::SetMailCachePolicy { policy } = &requests[0] else { panic!("policy first") };
+            assert_eq!(policy.account, "mail:anna@example.org");
+            assert_eq!(policy.mode, MailCacheMode::SinceDate);
+            assert_eq!(policy.since_date.as_deref(), Some("2024-01-01"));
         }
 
-        /// DS.7: "Show account" in Storage & index opens the account at "Overview"; an account
+        #[test]
+        fn storage_saves_attachment_retention_with_the_offline_strategy() {
+            use torro_ipc::mail::MailCacheMode;
+
+            let data = data();
+            let mut state = crate::mail::State::default();
+            let _: Action<AppAction> = crate::mail::update(
+                &mut state,
+                crate::mail::Message::Accounts(Message::Open("mail:anna@example.org".into())),
+                &data,
+            );
+            let choice = |message| crate::mail::Message::Accounts(Message::Storage(message));
+            assert_eq!(crate::mail::update(&mut state, choice(storage::Message::Retention(7)), &data), Action::None);
+            let _: Action<AppAction> =
+                crate::mail::update(&mut state, choice(storage::Message::Select(MailCacheMode::AllOffline)), &data);
+            let Action::Send(requests) = crate::mail::update(&mut state, choice(storage::Message::Apply), &data) else {
+                panic!("policy and cache job sent together");
+            };
+            assert_eq!(requests.len(), 2);
+            let Request::SetMailCachePolicy { policy } = &requests[0] else { panic!("policy first") };
+            assert_eq!(policy.mode, MailCacheMode::AllOffline);
+            assert_eq!(policy.attachment_retention_days, 7);
+            assert!(matches!(requests[1], Request::StartMailCacheJob { .. }));
+        }
+
+        /// DS.7: "Show account" of the storage opens the account at "Overview"; an account
         /// already open keeps what is typed and only goes back to "Overview".
         #[test]
         fn show_account_lands_on_the_accounts_overview() {
@@ -1729,7 +2115,6 @@ pub mod accounts {
             let _ = crate::mail::update(&mut state, show(), &data);
             assert_eq!(state.accounts.tab, Tab::Overview);
             assert!(page(&state.accounts, &data).save_bar.is_some(), "the typed name stays");
-            let _ = crate::mail::page(&state, &data, "storage").body;
         }
 
         /// Every role has its question, and every page builds – with and without an account.
@@ -1738,8 +2123,6 @@ pub mod accounts {
             for role in [Role::Inbox, Role::Drafts, Role::Sent, Role::Archive, Role::Junk, Role::Trash] {
                 assert!(!role_question(role).is_empty(), "{role:?}");
             }
-            let words: Vec<String> = FORMAT_CHOICES.iter().map(ToString::to_string).collect();
-            assert_eq!(words, [tr("Formatted (HTML)"), tr("Plain text")]);
             let mut state = State::default();
             let _ = page(&state, &Data::default()).body;
             let data = data();
@@ -1752,32 +2135,167 @@ pub mod accounts {
 /// "Reading": how a mail shows in the reader and its colours there (task M9.8). Only the mail's
 /// content follows "Mail colors", never the rest of the window.
 pub mod reading {
-    use iced::widget::column;
+    use std::sync::Arc;
+
+    use iced::Length;
+    use iced::widget::text::Wrapping;
+    use iced::widget::text_editor::{Edit, Motion};
+    use iced::widget::{column, container, row, text_editor};
     use torro_core::settings::{MailAppearance, MailFormat};
-    use torro_gui::{layout, widgets};
+    use torro_gui::theme::space;
+    use torro_gui::{layout, style, typo, widgets};
     use torro_ipc::{Request, SettingKey};
+    use torro_mail::MailFormat as ComposeFormat;
 
     use super::*;
     use crate::parts::{picker, setting_row};
 
+    const SIGNATURE_LINES: f32 = 8.0;
+
+    fn signature_height() -> f32 {
+        SIGNATURE_LINES * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
+    }
+
+    #[derive(Debug, Default)]
+    pub struct State {
+        account: Option<String>,
+        signature: text_editor::Content,
+        signature_format: bool,
+        dirty: bool,
+        saving: bool,
+    }
+
+    fn account<'a>(state: &State, data: &'a Data) -> Option<&'a torro_ipc::AccountInfo> {
+        data.accounts.iter().find(|account| state.account.as_deref() == Some(account.id.as_str()))
+    }
+
+    fn signature_text(state: &State) -> String {
+        state.signature.text().replace("\r\n", "\n").trim_end().to_string()
+    }
+
+    pub fn loaded(state: &mut State, data: &Data) {
+        let chosen = state
+            .account
+            .as_ref()
+            .and_then(|id| data.accounts.iter().find(|account| &account.id == id && account.mail.is_some()))
+            .or_else(|| data.settings.mail_sender.as_ref().and_then(|id| data.accounts.iter().find(|a| &a.id == id)))
+            .or_else(|| data.accounts.iter().find(|account| account.mail.is_some()));
+        let Some(chosen) = chosen else { return };
+        let Some(mail) = &chosen.mail else { return };
+        let stored = mail.settings.signature.as_deref().unwrap_or_default().trim_end();
+        if state.account.as_deref() != Some(chosen.id.as_str()) || !state.dirty || signature_text(state) == stored {
+            state.account = Some(chosen.id.clone());
+            state.signature = text_editor::Content::with_text(stored);
+            state.signature_format = mail.settings.signature_format;
+            state.dirty = false;
+        }
+    }
+
+    pub fn sent(state: &mut State) {
+        state.saving = false;
+    }
+
     /// What a row of this section changes; each is one `settings.set_setting`.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone)]
     pub enum Message {
         /// "Show mail as": how a mail with HTML first shows in the reader.
         Show(MailFormat),
         /// "Mail colors": the colours of a mail's content in the reader.
         Colors(MailAppearance),
+        /// Account used for a new message without an explicit account choice.
+        Sender(String),
+        Compose(ComposeFormat),
+        Signature(text_editor::Action),
+        FormatSignature(SignatureStyle),
+        SaveSignature,
+        DiscardSignature,
     }
 
-    pub fn update<A>(message: Message) -> Action<A> {
-        let (key, value) = match message {
-            Message::Show(format) => (SettingKey::MailView, serde_json::to_value(format).unwrap_or_default()),
-            Message::Colors(colors) => (SettingKey::MailAppearance, serde_json::to_value(colors).unwrap_or_default()),
-        };
-        Action::send(Request::SetSetting { key, value })
+    pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
+        match message {
+            Message::Show(format) => Action::send(Request::SetSetting {
+                key: SettingKey::MailView,
+                value: serde_json::to_value(format).unwrap_or_default(),
+            }),
+            Message::Colors(colors) => Action::send(Request::SetSetting {
+                key: SettingKey::MailAppearance,
+                value: serde_json::to_value(colors).unwrap_or_default(),
+            }),
+            Message::Sender(id) => {
+                if state.dirty || state.saving {
+                    return Action::None;
+                }
+                state.account = Some(id.clone());
+                if let Some(mail) = account(state, data).and_then(|account| account.mail.as_ref()) {
+                    state.signature =
+                        text_editor::Content::with_text(mail.settings.signature.as_deref().unwrap_or_default());
+                    state.signature_format = mail.settings.signature_format;
+                }
+                Action::send(Request::SetSetting { key: SettingKey::MailSender, value: serde_json::json!(id) })
+            }
+            Message::Compose(format) => {
+                let Some(account) = account(state, data) else { return Action::None };
+                Action::send(Request::UpdateMailAccount {
+                    id: account.id.clone(),
+                    sender_name: None,
+                    signature: None,
+                    signature_format: None,
+                    notify: None,
+                    services: None,
+                    folder_roles: None,
+                    format: Some(format),
+                })
+            }
+            Message::Signature(action) => {
+                state.signature.perform(action);
+                state.dirty = account(state, data).and_then(|account| account.mail.as_ref()).is_some_and(|mail| {
+                    signature_text(state) != mail.settings.signature.as_deref().unwrap_or_default().trim_end()
+                        || state.signature_format != mail.settings.signature_format
+                });
+                Action::None
+            }
+            Message::FormatSignature(style) => {
+                if !state.signature_format {
+                    let plain = signature_text(state);
+                    let escaped = escape_markup(&plain);
+                    state.signature = text_editor::Content::with_text(&escaped);
+                    state.signature.perform(text_editor::Action::Move(Motion::DocumentEnd));
+                    state.signature_format = true;
+                }
+                apply_signature_style(&mut state.signature, style);
+                state.dirty = true;
+                Action::None
+            }
+            Message::SaveSignature if state.dirty && !state.saving => {
+                let Some(account) = account(state, data) else { return Action::None };
+                let id = account.id.clone();
+                let signature = signature_text(state);
+                state.saving = true;
+                Action::send(Request::UpdateMailAccount {
+                    id,
+                    sender_name: None,
+                    signature: Some(signature),
+                    signature_format: Some(state.signature_format),
+                    notify: None,
+                    services: None,
+                    folder_roles: None,
+                    format: None,
+                })
+            }
+            Message::SaveSignature => Action::None,
+            Message::DiscardSignature => {
+                if let Some(mail) = account(state, data).and_then(|account| account.mail.as_ref()) {
+                    state.signature =
+                        text_editor::Content::with_text(mail.settings.signature.as_deref().unwrap_or_default());
+                    state.signature_format = mail.settings.signature_format;
+                    state.dirty = false;
+                }
+                Action::None
+            }
+        }
     }
 
-    pub fn view(data: &Data) -> Element<'_, Message> {
+    pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let settings = &data.settings;
         let show = picker(SHOW_CHOICES, ShowChoice(settings.mail_view), |choice: ShowChoice| Message::Show(choice.0));
         let colors = picker(COLOR_CHOICES, ColorChoice(settings.mail_appearance), |choice: ColorChoice| {
@@ -1785,16 +2303,185 @@ pub mod reading {
         });
         let group = widgets::group(
             tr("Reading"),
-            vec![
-                setting_row(None, tr("Show mail as"), None, show),
-                setting_row(None, tr("Mail colors"), None, colors),
-            ],
-            Some(
-                tr("Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.")
-                    .to_string(),
-            ),
+            vec![setting_row(None, tr("Show mail as"), None, show), setting_row(None, tr("Mail colors"), None, colors)],
+            None,
         );
-        column![group].spacing(layout::section_gap()).into()
+        let mut page = column![group].spacing(layout::section_gap());
+        let accounts: Vec<SenderChoice> = data
+            .accounts
+            .iter()
+            .filter_map(|account| {
+                let mail = account.mail.as_ref().filter(|mail| mail.settings.services.mail)?;
+                Some(SenderChoice { id: account.id.clone(), label: mail.address.clone() })
+            })
+            .collect();
+        if !accounts.is_empty() {
+            let chosen = state
+                .account
+                .as_ref()
+                .or(data.settings.mail_sender.as_ref())
+                .and_then(|id| accounts.iter().find(|account| &account.id == id))
+                .cloned()
+                .unwrap_or_else(|| accounts[0].clone());
+            let sender = picker(accounts, chosen, |choice: SenderChoice| Message::Sender(choice.id));
+            let mail = account(state, data).and_then(|account| account.mail.as_ref());
+            let compose = mail.map(|mail| {
+                picker(COMPOSE_CHOICES, ComposeChoice(mail.settings.format), |choice: ComposeChoice| {
+                    Message::Compose(choice.0)
+                })
+            });
+            let signature = text_editor(&state.signature)
+                .on_action(Message::Signature)
+                .font(typo::body().font)
+                .size(typo::body().size)
+                .line_height(typo::body().line_height)
+                .padding(style::INPUT_PADDING)
+                .wrapping(Wrapping::WordOrGlyph)
+                .height(signature_height())
+                .style(style::text_editor);
+            let toolbar = row(SignatureStyle::ALL
+                .map(|style| widgets::icon_button(style.icon(), style.name(), Some(Message::FormatSignature(style)))))
+            .spacing(space::xs());
+            let controls = row![
+                widgets::text_button(
+                    None,
+                    tr("Discard"),
+                    style::button::secondary,
+                    state.dirty.then_some(Message::DiscardSignature)
+                ),
+                widgets::text_button(
+                    None,
+                    tr("Save signature"),
+                    style::button::primary,
+                    (state.dirty && !state.saving).then_some(Message::SaveSignature)
+                ),
+            ]
+            .spacing(space::s());
+            let mut rows = vec![setting_row(None, tr("Default sender address"), None, sender)];
+            if let Some(compose) = compose {
+                rows.push(setting_row(None, tr("Write new mail as"), None, compose));
+                rows.push(
+                    container(
+                        column![typo::text(typo::body_strong(), tr("Signature")), toolbar, signature, controls]
+                            .spacing(space::s()),
+                    )
+                    .width(Length::Fill)
+                    .padding([space::s(), space::l()])
+                    .into(),
+                );
+            }
+            page = page.push(widgets::group(tr("Writing"), rows, None));
+        }
+        page.into()
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SenderChoice {
+        id: String,
+        label: String,
+    }
+
+    impl std::fmt::Display for SenderChoice {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.label)
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ComposeChoice(ComposeFormat);
+
+    const COMPOSE_CHOICES: [ComposeChoice; 2] =
+        [ComposeChoice(ComposeFormat::Html), ComposeChoice(ComposeFormat::Plain)];
+
+    impl std::fmt::Display for ComposeChoice {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(match self.0 {
+                ComposeFormat::Html => tr("Formatted (HTML)"),
+                ComposeFormat::Plain => tr("Plain text"),
+            })
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum SignatureStyle {
+        Bold,
+        Italic,
+        Underline,
+        Link,
+        Bullets,
+        Numbers,
+    }
+
+    impl SignatureStyle {
+        const ALL: [Self; 6] = [Self::Bold, Self::Italic, Self::Underline, Self::Link, Self::Bullets, Self::Numbers];
+
+        fn icon(self) -> Icon {
+            match self {
+                Self::Bold => Icon::Bold,
+                Self::Italic => Icon::Italic,
+                Self::Underline => Icon::Underline,
+                Self::Link => Icon::Link,
+                Self::Bullets => Icon::List,
+                Self::Numbers => Icon::ListOrdered,
+            }
+        }
+
+        fn name(self) -> &'static str {
+            match self {
+                Self::Bold => tr("Bold"),
+                Self::Italic => tr("Italic"),
+                Self::Underline => tr("Underline"),
+                Self::Link => tr("Link"),
+                Self::Bullets => tr("Bulleted list"),
+                Self::Numbers => tr("Numbered list"),
+            }
+        }
+    }
+
+    fn escape_markup(plain: &str) -> String {
+        let mut escaped = String::with_capacity(plain.len());
+        for character in plain.chars() {
+            if "\\*_[]()>-#`".contains(character) {
+                escaped.push('\\');
+            }
+            escaped.push(character);
+        }
+        escaped
+    }
+
+    fn apply_signature_style(content: &mut text_editor::Content, style: SignatureStyle) {
+        let selected = content.selection().unwrap_or_default();
+        let (replacement, back) = match style {
+            SignatureStyle::Bold => (format!("**{selected}**"), selected.is_empty().then_some(2)),
+            SignatureStyle::Italic => (format!("*{selected}*"), selected.is_empty().then_some(1)),
+            SignatureStyle::Underline => (format!("__{selected}__"), selected.is_empty().then_some(2)),
+            SignatureStyle::Link => (format!("[{selected}]()"), Some(if selected.is_empty() { 3 } else { 1 })),
+            SignatureStyle::Bullets => (
+                if selected.is_empty() {
+                    "- ".to_string()
+                } else {
+                    selected.lines().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
+                },
+                None,
+            ),
+            SignatureStyle::Numbers => (
+                if selected.is_empty() {
+                    "1. ".to_string()
+                } else {
+                    selected
+                        .lines()
+                        .enumerate()
+                        .map(|(at, line)| format!("{}. {line}", at + 1))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+                None,
+            ),
+        };
+        content.perform(text_editor::Action::Edit(Edit::Paste(Arc::new(replacement))));
+        for _ in 0..back.unwrap_or(0) {
+            content.perform(text_editor::Action::Move(Motion::Left));
+        }
     }
 
     /// "Show mail as" as a choice of a pick list.
@@ -1836,12 +2523,13 @@ pub mod reading {
         /// Each row sends `set_setting` with its own key and nothing else.
         #[test]
         fn each_row_sets_only_its_setting() {
-            let show: Action<()> = update(Message::Show(MailFormat::Text));
+            let show: Action<()> = update(&mut State::default(), Message::Show(MailFormat::Text), &Data::default());
             assert_eq!(
                 show,
                 Action::send(Request::SetSetting { key: SettingKey::MailView, value: serde_json::json!("text") })
             );
-            let colors: Action<()> = update(Message::Colors(MailAppearance::Dark));
+            let colors: Action<()> =
+                update(&mut State::default(), Message::Colors(MailAppearance::Dark), &Data::default());
             assert_eq!(
                 colors,
                 Action::send(Request::SetSetting { key: SettingKey::MailAppearance, value: serde_json::json!("dark") })
@@ -1859,28 +2547,82 @@ pub mod reading {
 
         #[test]
         fn the_page_builds() {
-            let _: Element<'_, Message> = view(&Data::default());
+            let _: Element<'_, Message> = view(&State::default(), &Data::default());
         }
     }
 }
 
 pub mod storage {
     use iced::Element;
-    use iced::widget::{column, row, space as blank};
+    use iced::Length;
+    use iced::widget::{column, container, radio, responsive, row, space as blank};
     use torro_core::i18n::{tr, trf};
-    use torro_gui::theme::space;
+    use torro_gui::theme::{self, space};
     use torro_gui::units::{format_bytes, format_count};
     use torro_gui::{layout, style, typo, widgets};
     use torro_ipc::mail::{MailCacheAction, MailCacheEstimate, MailCacheJobState, MailCacheMode, MailCachePolicy};
     use torro_ipc::{Request, Response};
 
     use super::*;
-    use crate::parts::row_frame;
+    use crate::parts::{field, picker, row_frame};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Retention {
+        None,
+        OneDay,
+        OneWeek,
+        OneMonth,
+        All,
+        Other(u32),
+    }
+
+    impl Retention {
+        const ALL: [Self; 5] = [Self::None, Self::OneDay, Self::OneWeek, Self::OneMonth, Self::All];
+
+        fn from_days(days: u32) -> Self {
+            match days {
+                0 => Self::None,
+                1 => Self::OneDay,
+                7 => Self::OneWeek,
+                30 => Self::OneMonth,
+                u32::MAX => Self::All,
+                days => Self::Other(days),
+            }
+        }
+
+        fn days(self) -> u32 {
+            match self {
+                Self::None => 0,
+                Self::OneDay => 1,
+                Self::OneWeek => 7,
+                Self::OneMonth => 30,
+                Self::All => u32::MAX,
+                Self::Other(days) => days,
+            }
+        }
+    }
+
+    impl std::fmt::Display for Retention {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let label = match self {
+                Self::None => tr("None"),
+                Self::OneDay => tr("1 day"),
+                Self::OneWeek => tr("7 days"),
+                Self::OneMonth => tr("30 days"),
+                Self::All => tr("All"),
+                Self::Other(days) => return write!(formatter, "{}", trf("{days} days", &[("days", &days)])),
+            };
+            formatter.write_str(label)
+        }
+    }
 
     #[derive(Debug, Default)]
     pub struct State {
-        account: Option<String>,
+        pub(super) account: Option<String>,
         pending_mode: Option<MailCacheMode>,
+        pending_retention: Option<u32>,
+        date_input: Option<String>,
+        size_input: Option<String>,
         estimate: Option<MailCacheEstimate>,
         cleanup_preview: Option<MailCacheEstimate>,
         previewing_cleanup: bool,
@@ -1890,10 +2632,11 @@ pub mod storage {
     #[derive(Debug, Clone)]
     pub enum Message {
         Account(String),
-        Preview(MailCacheMode),
+        Select(MailCacheMode),
+        Date(String),
+        Size(String),
         Apply,
         Retention(u32),
-        Prefetch(bool),
         Job(MailCacheAction),
         PreviewCleanup,
         Pause(String),
@@ -1908,37 +2651,58 @@ pub mod storage {
         state
             .account
             .as_deref()
-            .filter(|id| data.mail_stats.iter().any(|stats| stats.account == *id))
-            .or_else(|| data.mail_stats.first().map(|stats| stats.account.as_str()))
+            .filter(|id| data.accounts.iter().any(|account| account.id == *id && account.mail.is_some()))
+            .or_else(|| data.accounts.iter().find(|account| account.mail.is_some()).map(|account| account.id.as_str()))
+    }
+
+    pub(super) fn select_account(state: &mut State, account: &str) {
+        if state.account.as_deref() != Some(account) {
+            state.account = Some(account.to_string());
+            state.pending_mode = None;
+            state.pending_retention = None;
+            state.date_input = None;
+            state.size_input = None;
+            state.error = None;
+        }
     }
 
     pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         match message {
             Message::Account(account) => {
-                state.account = Some(account);
-                state.pending_mode = None;
+                select_account(state, &account);
                 state.estimate = None;
                 state.cleanup_preview = None;
                 Action::None
             }
-            Message::Preview(mode) => {
-                let Some(account) = selected(state, data).map(str::to_string) else { return Action::None };
+            Message::Select(mode) => {
                 state.pending_mode = Some(mode);
                 state.estimate = None;
                 state.cleanup_preview = None;
                 state.error = None;
                 state.previewing_cleanup = false;
-                Action::Ask(Request::PreviewMailCache { account, mode })
+                Action::None
+            }
+            Message::Date(value) => {
+                state.date_input = Some(value);
+                state.error = None;
+                Action::None
+            }
+            Message::Size(value) => {
+                state.size_input = Some(value);
+                state.error = None;
+                Action::None
             }
             Message::Apply => {
-                let (Some(account), Some(mode), Some(estimate)) =
-                    (selected(state, data), state.pending_mode, &state.estimate)
-                else {
+                let Some(account) = selected(state, data) else { return Action::None };
+                let current = policy(data, account);
+                let current_mode = current.mode;
+                let Some(mode) = state.pending_mode.or(match current.mode {
+                    MailCacheMode::HeadersOnly => None,
+                    MailCacheMode::Recent90Days => Some(MailCacheMode::SinceDate),
+                    mode => Some(mode),
+                }) else {
                     return Action::None;
                 };
-                if estimate.account != account {
-                    return Action::None;
-                }
                 if data
                     .mail_cache_jobs
                     .iter()
@@ -1946,10 +2710,40 @@ pub mod storage {
                 {
                     return Action::None;
                 }
-                let mut policy = policy(data, account);
+                let mut policy = current;
                 policy.mode = mode;
+                policy.attachment_retention_days = state.pending_retention.unwrap_or(policy.attachment_retention_days);
+                policy.prefetch_attachments = false;
+                if mode == MailCacheMode::SinceDate {
+                    let legacy =
+                        (chrono::Utc::now().date_naive() - chrono::Duration::days(90)).format("%Y-%m-%d").to_string();
+                    let typed = state
+                        .date_input
+                        .as_deref()
+                        .or(policy.since_date.as_deref())
+                        .unwrap_or_else(|| if current_mode == MailCacheMode::Recent90Days { &legacy } else { "" });
+                    let parsed = chrono::NaiveDate::parse_from_str(typed, "%d.%m.%Y")
+                        .or_else(|_| chrono::NaiveDate::parse_from_str(typed, "%Y-%m-%d"));
+                    let Ok(date) = parsed else {
+                        state.error = Some(tr("Enter a valid date (DD.MM.YYYY).").to_string());
+                        return Action::None;
+                    };
+                    policy.since_date = Some(date.format("%Y-%m-%d").to_string());
+                }
+                if mode == MailCacheMode::MaxSize {
+                    let mb = match state.size_input.as_deref() {
+                        Some(typed) => typed.trim().parse::<u64>().ok(),
+                        None => policy.max_local_mb,
+                    };
+                    let Some(mb) = mb.filter(|mb| (1..=1_000_000).contains(mb)) else {
+                        state.error = Some(tr("Enter a size in MiB from 1 to 1000000.").to_string());
+                        return Action::None;
+                    };
+                    policy.max_local_mb = Some(mb);
+                }
                 let account = account.to_string();
                 state.pending_mode = None;
+                state.pending_retention = None;
                 state.estimate = None;
                 state.cleanup_preview = None;
                 Action::Send(vec![
@@ -1958,16 +2752,9 @@ pub mod storage {
                 ])
             }
             Message::Retention(days) => {
-                let Some(account) = selected(state, data) else { return Action::None };
-                let mut policy = policy(data, account);
-                policy.attachment_retention_days = days;
-                Action::send(Request::SetMailCachePolicy { policy })
-            }
-            Message::Prefetch(enabled) => {
-                let Some(account) = selected(state, data) else { return Action::None };
-                let mut policy = policy(data, account);
-                policy.prefetch_attachments = enabled;
-                Action::send(Request::SetMailCachePolicy { policy })
+                state.pending_retention = Some(days);
+                state.error = None;
+                Action::None
             }
             Message::Job(action) => {
                 let Some(account) = selected(state, data).map(str::to_string) else { return Action::None };
@@ -2023,6 +2810,8 @@ pub mod storage {
         data.mail_cache_policies.iter().find(|policy| policy.account == account).cloned().unwrap_or(MailCachePolicy {
             account: account.to_string(),
             mode: MailCacheMode::Recent90Days,
+            since_date: None,
+            max_local_mb: None,
             prefetch_attachments: false,
             attachment_retention_days: 1,
         })
@@ -2032,183 +2821,253 @@ pub mod storage {
         widgets::text_button(None, tr(label), style::button::secondary, message)
     }
 
-    fn line<'a>(label: &'static str, value: String) -> Element<'a, Message> {
-        row_frame(
-            row![typo::text(typo::body(), tr(label)), blank::horizontal(), typo::text(typo::body_strong(), value)],
-            false,
-        )
+    /// The account's own storage tab; no account switcher or repeated account statistics.
+    /// While the statistics have not answered since the settings opened (issue #394) "Updating…"
+    /// stands over the figures the window still knew, and "As of …" says when they were counted.
+    pub(super) fn account_view<'a>(state: &'a State, data: &'a Data, account: &'a str) -> Element<'a, Message> {
+        let updating = data.updating(&Request::MailAccountStats { account: None });
+        let stats = data.mail_stats.iter().find(|stats| stats.account == account);
+        let mut head = column![].spacing(layout::section_gap());
+        if updating {
+            head = head.push(widgets::refresh_note(tr("Updating…")));
+        }
+        head = head.extend(stats.and_then(|stats| super::accounts::as_of(stats, chrono::Utc::now())));
+        let body = responsive(move |room| {
+            let summary = inventory_card(data, account);
+            let choices = offline_choices(state, data, account);
+            if room.width < 850.0 {
+                column![summary, choices].spacing(layout::section_gap()).into()
+            } else {
+                row![
+                    container(summary).width(Length::FillPortion(3)),
+                    container(choices).width(Length::FillPortion(2)),
+                ]
+                .spacing(layout::section_gap())
+                .align_y(iced::Alignment::Start)
+                .into()
+            }
+        })
+        .height(Length::Shrink);
+        head.push(body).into()
     }
 
-    pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
-        // The accounts come with the statistics: until their first answer (issue #394) the page
-        // says so instead of claiming there is no account.
-        let updating = data.updating(&Request::MailAccountStats { account: None });
-        let Some(account) = selected(state, data) else {
-            if updating {
-                return Page::new(widgets::refresh_note(tr("Updating…")));
-            }
-            return Page::new(widgets::empty_state(
-                tr("No mail account"),
-                tr("Add a mail account in Torro Workplace, under Accounts."),
-            ));
+    fn inventory_card<'a>(data: &Data, account: &str) -> Element<'a, Message> {
+        let Some(stats) = data.mail_stats.iter().find(|stats| stats.account == account) else {
+            return widgets::empty_state(
+                tr("Statistics are not available yet."),
+                tr("The mail service supplies these numbers from its local store."),
+            );
         };
-        let current = policy(data, account);
-        let mut account_rows = Vec::new();
-        for stats in &data.mail_stats {
-            let label = data
-                .accounts
-                .iter()
-                .find(|held| held.id == stats.account)
-                .map_or(stats.account.as_str(), |held| held.label.as_str());
-            account_rows.push(row_frame(
-                row![
-                    typo::text(typo::body_strong(), label.to_string()),
-                    blank::horizontal(),
-                    button(
-                        if stats.account == account { "Selected" } else { "Open" },
-                        (stats.account != account).then(|| Message::Account(stats.account.clone()))
-                    )
-                ],
-                false,
-            ));
-        }
-        // The account's numbers stand once, on its own page (task DS.7): here only the way there.
-        account_rows.push(row_frame(
-            row![
-                typo::text(typo::body(), tr("Numbers of this account")),
-                blank::horizontal(),
-                button("Show account", Some(Message::ShowAccount(account.to_string())))
+        let online = stats.known_mail_bytes.map_or_else(|| tr("Not known").to_string(), format_bytes);
+        let local = stats.offline_mail_bytes.map_or_else(|| tr("Not known").to_string(), format_bytes);
+        let numbers = row![
+            column![
+                typo::text(typo::meta(), tr("Online")).style(theme::text_2),
+                typo::text(typo::title(), online),
+                typo::text(typo::meta(), trf("{n} emails total", &[("n", &format_count(stats.messages))]))
+                    .style(theme::text_2),
             ]
-            .align_y(iced::Alignment::Center),
-            false,
-        ));
-        let mut page = column![].spacing(layout::section_gap());
-        if updating {
-            page = page.push(widgets::refresh_note(tr("Updating…")));
+            .spacing(space::xs())
+            .width(Length::Fill),
+            column![
+                typo::text(typo::meta(), tr("On this device")).style(theme::text_2),
+                typo::text(typo::title(), local),
+                typo::text(typo::meta(), trf("{n} emails offline", &[("n", &format_count(stats.cached_bodies))]))
+                    .style(theme::text_2),
+            ]
+            .spacing(space::xs())
+            .width(Length::Fill),
+        ]
+        .spacing(space::l());
+        let mut body = column![numbers].spacing(space::m());
+        if let (Some(total), Some(actual), Some(planned), Some(indexed)) = (
+            stats.known_mail_bytes,
+            stats.offline_mail_bytes,
+            stats.planned_mail_bytes,
+            stats.indexed_offline_mail_bytes,
+        ) {
+            body = body
+                .push(widgets::mail_coverage_bars(actual, planned, indexed, total))
+                .push(widgets::mail_coverage_legend());
+        } else {
+            body = body.push(typo::text(typo::meta(), tr("Mail sizes are being collected")).style(theme::text_2));
         }
-        page = page.push(widgets::group(tr("Mail account"), account_rows, None));
-        let stats = data.mail_stats.iter().find(|stats| stats.account == account);
-        page = page.extend(stats.and_then(|stats| super::accounts::as_of(stats, chrono::Utc::now())));
-        let mut policy_rows = vec![
-            line(
-                "Current strategy",
-                match current.mode {
-                    MailCacheMode::HeadersOnly => tr("Headers only"),
-                    MailCacheMode::Recent90Days => tr("Last 90 days"),
-                    MailCacheMode::AllOffline => tr("All mail offline"),
-                }
-                .to_string(),
-            ),
-            row_frame(button("Headers only", Some(Message::Preview(MailCacheMode::HeadersOnly))), false),
-            row_frame(button("Last 90 days", Some(Message::Preview(MailCacheMode::Recent90Days))), false),
-            row_frame(button("All mail offline", Some(Message::Preview(MailCacheMode::AllOffline))), false),
-        ];
-        if let Some(estimate) = state.estimate.as_ref().filter(|estimate| estimate.account == account) {
-            policy_rows.push(line(
-                "To download (estimate)",
-                format!(
-                    "{} · {}",
-                    format_count(estimate.bodies_to_fetch),
-                    format_bytes(estimate.estimated_download_bytes)
-                ),
-            ));
-            policy_rows.push(line(
-                "To remove (estimate)",
-                format!(
-                    "{} · {}",
-                    format_count(estimate.bodies_to_remove),
-                    format_bytes(estimate.estimated_reclaim_bytes)
-                ),
-            ));
-            policy_rows.push(row_frame(
-                row![
-                    blank::horizontal(),
-                    button(
-                        "Apply strategy",
-                        (!data
-                            .mail_cache_jobs
-                            .iter()
-                            .any(|job| job.account == account && job.state == MailCacheJobState::Running))
-                        .then_some(Message::Apply)
-                    )
-                ],
+        body = body.push(
+            typo::text(
+                typo::meta(),
+                trf("Local database incl. headers and index: {size}", &[("size", &format_bytes(stats.database_bytes))]),
+            )
+            .style(theme::text_2),
+        );
+        widgets::chart_card(tr("Online and on this device"), "", body)
+    }
+
+    fn offline_choices<'a>(state: &'a State, data: &'a Data, account: &'a str) -> Element<'a, Message> {
+        let current = policy(data, account);
+        let chosen = state.pending_mode.unwrap_or(match current.mode {
+            MailCacheMode::Recent90Days => MailCacheMode::SinceDate,
+            mode => mode,
+        });
+        let date = state.date_input.clone().unwrap_or_else(|| {
+            current
+                .since_date
+                .as_deref()
+                .and_then(|value| chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+                .map_or_else(
+                    || {
+                        if current.mode == MailCacheMode::Recent90Days {
+                            (chrono::Utc::now().date_naive() - chrono::Duration::days(90))
+                                .format("%d.%m.%Y")
+                                .to_string()
+                        } else {
+                            String::new()
+                        }
+                    },
+                    |date| date.format("%d.%m.%Y").to_string(),
+                )
+        });
+        let size = state
+            .size_input
+            .clone()
+            .unwrap_or_else(|| current.max_local_mb.map_or_else(String::new, |mb| mb.to_string()));
+        let choice = |label, mode| {
+            row_frame(
+                radio(label, mode, Some(chosen), Message::Select).size(style::CHECK_SIZE).style(style::radio),
                 false,
-            ));
+            )
+        };
+        let mut rows = vec![
+            choice(tr("All emails"), MailCacheMode::AllOffline),
+            choice(tr("Mail from date"), MailCacheMode::SinceDate),
+            choice(tr("Limit local size"), MailCacheMode::MaxSize),
+        ];
+        if current.mode == MailCacheMode::HeadersOnly && state.pending_mode.is_none() {
+            rows.insert(
+                0,
+                container(
+                    typo::text(
+                        typo::meta(),
+                        tr("This account still uses the previous header-only setting. Choose one of the three offline options."),
+                    )
+                    .style(theme::text_2),
+                )
+                .width(Length::Fill)
+                .padding([space::m(), space::l()])
+                .into(),
+            );
+        }
+        if chosen == MailCacheMode::SinceDate {
+            rows.push(
+                responsive(move |room| {
+                    let label = typo::text(typo::body(), tr("From date"));
+                    let input = field(tr("DD.MM.YYYY"), &date).on_input(Message::Date);
+                    if room.width < 460.0 {
+                        container(column![label, input].spacing(space::s()))
+                            .width(Length::Fill)
+                            .padding([space::m(), space::l()])
+                            .into()
+                    } else {
+                        row_frame(row![label, input].spacing(space::m()).align_y(iced::Alignment::Center), false)
+                    }
+                })
+                .height(Length::Shrink)
+                .into(),
+            );
+        }
+        if chosen == MailCacheMode::MaxSize {
+            rows.push(
+                responsive(move |room| {
+                    let label = typo::text(typo::body(), tr("Maximum"));
+                    let input = field(tr("MiB"), &size).on_input(Message::Size);
+                    let unit = typo::text(typo::meta(), tr("MiB")).style(theme::text_2);
+                    if room.width < 460.0 {
+                        container(column![label, row![input, unit].spacing(space::s())].spacing(space::s()))
+                            .width(Length::Fill)
+                            .padding([space::m(), space::l()])
+                            .into()
+                    } else {
+                        row_frame(row![label, input, unit].spacing(space::m()).align_y(iced::Alignment::Center), false)
+                    }
+                })
+                .height(Length::Shrink)
+                .into(),
+            );
         }
         if let Some(error) = &state.error {
-            policy_rows.push(row_frame(typo::text(typo::body(), error.clone()), false));
+            rows.push(
+                container(typo::text(typo::meta(), error.clone()).style(theme::text_2))
+                    .width(Length::Fill)
+                    .padding([space::m(), space::l()])
+                    .into(),
+            );
         }
-        page = page.push(widgets::group(tr("Offline strategy"), policy_rows, Some(tr("Estimates use the average size of local mail texts; actual downloads may differ. Search text remains independent of offline reading texts.").to_string())));
-
-        page = page.push(widgets::group(tr("Attachment cache"), vec![
-            line("Keep downloaded attachments", match current.attachment_retention_days { 1 => tr("1 day").to_string(), days => trf("{days} days", &[("days", &days)]) }),
-            row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(space::s()), false),
-            line("Prefetch attachments", if current.prefetch_attachments { tr("On") } else { tr("Off") }.to_string()),
-            row_frame(row![button("Turn on", (!current.prefetch_attachments).then_some(Message::Prefetch(true))), button("Turn off", current.prefetch_attachments.then_some(Message::Prefetch(false)))].spacing(space::s()), false),
-        ], Some(tr("Newly fetched mail can also download its attachment parts. Existing mail can be fetched by a maintenance job. Files have separate retention and can be large.").to_string())));
-        let job = data.mail_cache_jobs.iter().find(|job| job.account == account);
-        let running = job.is_some_and(|job| job.state == MailCacheJobState::Running);
-        let mut job_rows = vec![
-            row_frame(
+        let running =
+            data.mail_cache_jobs.iter().any(|job| job.account == account && job.state == MailCacheJobState::Running);
+        let retention = Retention::from_days(state.pending_retention.unwrap_or(current.attachment_retention_days));
+        let mut retention_options = Retention::ALL.to_vec();
+        if matches!(retention, Retention::Other(_)) {
+            retention_options.push(retention);
+        }
+        rows.push(
+            responsive(move |room| {
+                let label = typo::text(typo::body(), tr("Keep downloaded attachments"));
+                let select = picker(retention_options.clone(), retention, |choice| Message::Retention(choice.days()));
+                if room.width < 480.0 {
+                    container(column![label, select].spacing(space::s()))
+                        .width(Length::Fill)
+                        .padding([space::m(), space::l()])
+                        .into()
+                } else {
+                    row_frame(
+                        row![label, blank::horizontal(), select].spacing(space::m()).align_y(iced::Alignment::Center),
+                        false,
+                    )
+                }
+            })
+            .height(Length::Shrink)
+            .into(),
+        );
+        rows.push(row_frame(
+            row![
+                blank::horizontal(),
                 button(
-                    "Download missing mail texts",
-                    (!running).then_some(Message::Job(MailCacheAction::FetchMissingBodies)),
-                ),
-                false,
-            ),
-            row_frame(
-                button("Download attachments", (!running).then_some(Message::Job(MailCacheAction::FetchAttachments))),
-                false,
-            ),
-            row_frame(
-                button("Rebuild search index", (!running).then_some(Message::Job(MailCacheAction::RebuildIndex))),
-                false,
-            ),
-            row_frame(button("Preview cleanup", (!running).then_some(Message::PreviewCleanup)), false),
-        ];
-        if let Some(estimate) = state.cleanup_preview.as_ref().filter(|estimate| estimate.account == account) {
-            job_rows.push(line(
-                "To remove (estimate)",
-                format!(
-                    "{} · {}",
-                    format_count(estimate.bodies_to_remove),
-                    format_bytes(estimate.estimated_reclaim_bytes)
-                ),
-            ));
-            job_rows.push(row_frame(
-                button("Clean up cache", (!running).then_some(Message::Job(MailCacheAction::CleanCache))),
-                false,
-            ));
-        }
-        if let Some(job) = job {
-            let state_label = match job.state {
-                MailCacheJobState::Running => tr("Running"),
-                MailCacheJobState::Paused => tr("Paused"),
-                MailCacheJobState::Complete => tr("Complete"),
-                MailCacheJobState::Failed => tr("Failed"),
-            };
-            job_rows.push(line(
-                "Current job",
-                format!("{} · {} / {}", state_label, format_count(job.processed), format_count(job.total)),
-            ));
-            if let Some(error) = &job.error {
-                job_rows.push(row_frame(typo::text(typo::body(), error.clone()), false));
-            }
-            job_rows.push(row_frame(
-                row![
-                    button("Refresh", Some(Message::Refresh)),
-                    button("Pause", running.then(|| Message::Pause(job.id.clone()))),
-                    button(
-                        "Resume",
-                        matches!(job.state, MailCacheJobState::Paused | MailCacheJobState::Failed)
-                            .then(|| Message::Resume(job.id.clone()))
-                    ),
-                ]
-                .spacing(space::s()),
-                false,
+                    "Save offline selection",
+                    (!running && chosen != MailCacheMode::HeadersOnly).then_some(Message::Apply)
+                )
+            ],
+            false,
+        ));
+        let note = if chosen == MailCacheMode::MaxSize {
+            tr(
+                "The limit includes offline mail and downloaded attachments; headers and the search index use additional space.",
+            )
+        } else {
+            tr("Headers of all known emails stay on this device.")
+        };
+        let strategy = widgets::group(tr("Which content stays offline?"), rows, Some(note.to_string()));
+        let mut content = column![strategy].spacing(layout::section_gap());
+        if let Some(job) =
+            data.mail_cache_jobs.iter().find(|job| job.account == account && job.state == MailCacheJobState::Running)
+        {
+            content = content.push(widgets::group(
+                tr("Applying offline selection"),
+                vec![row_frame(
+                    row![
+                        widgets::progress_bar(job.processed as usize, job.total as usize),
+                        typo::text(
+                            typo::meta(),
+                            format!("{} / {}", format_count(job.processed), format_count(job.total)),
+                        )
+                        .style(theme::text_2),
+                    ]
+                    .spacing(space::m())
+                    .align_y(iced::Alignment::Center),
+                    false,
+                )],
+                None,
             ));
         }
-        Page::new(page.push(widgets::group(tr("Maintenance"), job_rows, Some(tr("Jobs keep their progress after a restart. Mail, drafts, folders, and server copies are not deleted.").to_string()))))
+        content.into()
     }
 }
 
@@ -2306,12 +3165,31 @@ mod tests {
         assert_eq!(accounts::backup_destination(&state.accounts), Some(folder.to_string_lossy().as_ref()));
     }
 
+    /// Issue #397: one ask at a time. A second waits for the first, whose answer – a refusal reads
+    /// the same in every section – goes to the section that asked; then the second goes out.
+    #[test]
+    fn asks_go_out_one_at_a_time_and_their_answers_to_who_asked() {
+        let data = Data::default();
+        let mut state = State::default();
+        let period = |period| Message::Categorization(categorization::Message::Period(period));
+        let first = update(&mut state, period(categorization::Period::Days30), &data);
+        assert!(matches!(first, Action::Ask(torro_ipc::Request::PreviewCategoryJob { .. })), "{first:?}");
+        let second = update(&mut state, period(categorization::Period::Year), &data);
+        assert_eq!(second, Action::None, "waits for the first");
+        assert_eq!(next_ask(&mut state), None, "the first is still out");
+        answered(&mut state, &Err("offline".into()));
+        assert!(matches!(next_ask(&mut state), Some(torro_ipc::Request::PreviewCategoryJob { .. })));
+        assert_eq!(next_ask(&mut state), None, "one at a time");
+        answered(&mut state, &Err("offline".into()));
+        assert_eq!(next_ask(&mut state), None, "nothing waits");
+    }
+
     /// The sections' ids and names, as the list and `--settings <section>` use them. "Keyboard
     /// shortcuts" of task E10.3 is not among them yet.
     #[test]
     fn the_sections_are_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization", "filters", "storage"]);
+        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization", "filters"]);
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
         assert_eq!(SECTIONS[2].name(), tr("Attachments"), "task M12.7");
         assert_eq!(SECTIONS[3].name(), tr("Categorization"), "task E12.10");
@@ -2736,18 +3614,28 @@ pub mod categorization {
     #[derive(Debug, Default)]
     pub struct State {
         pub(super) editor: super::editor::State,
+        tab: Tab,
         all_accounts: bool,
         accounts: Vec<String>,
         all_folders: bool,
         folders: Vec<String>,
         period: Period,
         again: bool,
+        /// The bulk operation stays compact until the person chooses to set its scope.
+        job_expanded: bool,
         preview: Option<CategoryJobPreview>,
         preview_error: Option<String>,
         pending_scope: Option<CategoryJobScope>,
         asking_clear: bool,
         /// `None` means the recommended choice: switch future automatic sorting off.
         disable_automatic_after_clear: Option<bool>,
+    }
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    enum Tab {
+        #[default]
+        Automatic,
+        Categories,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2762,6 +3650,8 @@ pub mod categorization {
     /// What a row of this section reports.
     #[derive(Debug, Clone)]
     pub enum Message {
+        /// Switch between automatic sorting and the category catalogue.
+        Tab(usize),
         /// The switch: sorting mail on or off.
         Enabled(bool),
         /// "Mail from contacts is personal" on or off (issue #390, `settings.set_setting
@@ -2773,6 +3663,7 @@ pub mod categorization {
         CatchUp(bool),
         /// "Sort again" (task E15.5): the whole window anew, after new rules or descriptions.
         SortAgain,
+        ShowJob(bool),
         /// Change the scope of the explicit sorting job and refresh its preview.
         AllAccounts,
         ToggleAccount(String),
@@ -2797,7 +3688,23 @@ pub mod categorization {
 
     pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         match message {
-            Message::Editor(message) => super::editor::update(&mut state.editor, message, data),
+            Message::Tab(index) => {
+                if index == 1 && state.editor.is_rule_open() {
+                    let action = super::editor::update(&mut state.editor, super::editor::Message::Back, data);
+                    if state.editor.is_rule_open() {
+                        return action;
+                    }
+                }
+                state.tab = if index == 1 { Tab::Categories } else { Tab::Automatic };
+                Action::None
+            }
+            Message::Editor(message) => {
+                let action = super::editor::update(&mut state.editor, message, data);
+                if state.editor.is_rule_open() {
+                    state.tab = Tab::Automatic;
+                }
+                action
+            }
             Message::AllAccounts => {
                 state.all_accounts = true;
                 state.accounts.clear();
@@ -2855,6 +3762,10 @@ pub mod categorization {
             }
             Message::ControlClear(id, action) => Action::send(Request::ControlClearCategories { id, action }),
             Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
+            Message::ShowJob(show) => {
+                state.job_expanded = show;
+                Action::None
+            }
             Message::ContactsPersonal(on) => Action::send(Request::SetSetting {
                 key: torro_ipc::SettingKey::MailContactsPersonal,
                 value: serde_json::json!(on),
@@ -2970,6 +3881,9 @@ pub mod categorization {
     /// The section's page: the list, or the open page of a category or a sorting rule with
     /// "‹ Back" (task E15.5).
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
+        if state.editor.is_rule_open() {
+            return Page::new(view(state, data));
+        }
         match super::editor::page(&state.editor, data) {
             Some((name, body, save)) => {
                 let back = Message::Editor(super::editor::Message::Back);
@@ -2980,43 +3894,52 @@ pub mod categorization {
     }
 
     pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+        let tabs = widgets::tabs(
+            vec![(tr("Automatic sorting").to_string(), None), (tr("Categories").to_string(), None)],
+            usize::from(state.tab == Tab::Categories),
+            Message::Tab,
+        );
+        if state.tab == Tab::Categories {
+            let mut page = column![tabs].spacing(layout::section_gap());
+            for group in super::editor::categories_groups(&state.editor, data) {
+                page = page.push(group.map(Message::Editor));
+            }
+            return page.into();
+        }
         let held = in_effect(data);
         let on = held.is_ready();
         let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
-        let sorting = widgets::group(
-            tr("Categorization"),
-            vec![switch_row],
-            Some(match data.settings.mail_to_cloud_in(AiSlot::Decide) {
-                true => tr("The chosen model sorts mail. Mail may leave this computer; no message is moved or deleted, and categories can be changed by hand.").to_string(),
-                false => tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.").to_string(),
-            }),
-        );
-        // Issue #390: mail from the address books goes to Personal, with a model or without one.
-        let contacts_on = data.settings.mail_contacts_personal;
+        // The rules first: they decide before the model (the mockup's order, `docs/kategorien.md`).
+        // "Always for this sender?" keeps its senders among them (task E15.3).
+        let sorting_rules = super::editor::rules_group(&state.editor, data).map(Message::Editor);
+        // Issue #390: mail from the address books goes to Personal after the rules and before the
+        // model, with a model or without one – so it stands between the two.
         let contacts = widgets::group(
             tr("Contacts"),
             vec![setting_row(
                 None,
                 tr("Mail from contacts is personal"),
                 None,
-                switch(contacts_on, Message::ContactsPersonal),
+                switch(data.settings.mail_contacts_personal, Message::ContactsPersonal),
             )],
             Some(
                 tr("Mail from an address in your address books goes to Personal. Newsletters, invitations and automatic replies are sorted as before.")
                     .to_string(),
             ),
         );
-        let models = widgets::group(tr("Model"), model_rows(data, &held), Some(model_note(data)));
-        let sorting_rules = super::editor::rules_group(data).map(Message::Editor);
-        // The rules before the long list of categories: they change more often. "Always for this
-        // sender?" keeps its senders among them (task E15.3), so no link to the Notification Hub.
-        // Whether the sidebar shows a category is on its page (task E15.5), not a second list.
-        let mut page =
-            column![sorting, contacts, models, job_group(state, data), sorting_rules].spacing(layout::section_gap());
-        for group in super::editor::categories_groups(data) {
-            page = page.push(group.map(Message::Editor));
-        }
-        page.into()
+        let mut model_choices = vec![switch_row];
+        model_choices.extend(model_rows(data, &held));
+        let cloud = match data.settings.mail_to_cloud_in(AiSlot::Decide) {
+            true => tr(
+                "The chosen model sorts mail. Mail may leave this computer; no message is moved or deleted, and categories can be changed by hand.",
+            ),
+            false => tr(
+                "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.",
+            ),
+        };
+        let note = format!("{cloud} {}", model_note(data));
+        let models = widgets::group(tr("2. Model sorting"), model_choices, Some(note));
+        column![tabs, sorting_rules, contacts, models, job_group(state, data)].spacing(layout::section_gap()).into()
     }
 
     fn toggle(selected: &mut Vec<String>, id: String) {
@@ -3072,6 +3995,32 @@ pub mod categorization {
 
     fn job_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         use iced::widget::column;
+        if !state.job_expanded {
+            let status = data.category_job.as_ref().map(|job| job_state_label(job.state).to_string());
+            let title = status.map_or_else(
+                || tr("Sort existing emails").to_string(),
+                |status| trf("Sort existing emails · {status}", &[("status", &status)]),
+            );
+            let detail = data.category_job.as_ref().map_or_else(
+                || tr("Choose time span, accounts and folders when needed.").to_string(),
+                |job| {
+                    let done: u64 = job.accounts.iter().map(|account| account.processed).sum();
+                    let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
+                    trf("{done} of {total}", &[("done", &done), ("total", &total)])
+                },
+            );
+            let compact = widgets::group(
+                tr("Existing emails"),
+                vec![setting_row(
+                    None,
+                    title,
+                    Some(detail),
+                    widgets::text_button(None, tr("Set up…"), style::button::secondary, Some(Message::ShowJob(true))),
+                )],
+                None,
+            );
+            return column![compact, clear_group(state, data)].spacing(layout::section_gap()).into();
+        }
         let all_accounts = state.all_accounts || state.accounts.is_empty();
         let mut account_rows: Vec<Element<'a, Message>> =
             vec![choice(tr("All mail accounts").to_string(), all_accounts, Message::AllAccounts)];
@@ -3107,7 +4056,7 @@ pub mod categorization {
         let period = widgets::group(
             tr("Time span"),
             vec![
-                choice(tr("All known mail").to_string(), state.period == Period::All, Message::Period(Period::All)),
+                choice(tr("All emails").to_string(), state.period == Period::All, Message::Period(Period::All)),
                 choice(tr("Last 30 days").to_string(), state.period == Period::Days30, Message::Period(Period::Days30)),
                 choice(tr("Last 90 days").to_string(), state.period == Period::Days90, Message::Period(Period::Days90)),
                 choice(tr("Last year").to_string(), state.period == Period::Year, Message::Period(Period::Year)),
@@ -3185,7 +4134,10 @@ pub mod categorization {
                     .to_string(),
             ),
         );
-        let mut page = column![accounts, folders, period, summary].spacing(layout::section_gap());
+        let close =
+            widgets::text_button(None, tr("Close selection"), style::button::ghost, Some(Message::ShowJob(false)));
+        let mut page =
+            column![row_frame(close, false), accounts, folders, period, summary].spacing(layout::section_gap());
         if let Some(job) = &data.category_job {
             let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
             let processed: u64 = job.accounts.iter().map(|account| account.processed).sum();
@@ -3267,7 +4219,12 @@ pub mod categorization {
         rows.push(setting_row(
             None,
             tr("Categories on mail"),
-            known.then(|| trf("{count} assignments across all accounts and folders", &[("count", &count)])),
+            known.then(|| {
+                trf(
+                    "{count} assignments across all accounts and folders",
+                    &[("count", &torro_gui::units::format_count(count))],
+                )
+            }),
             ask,
         ));
         if state.asking_clear {
@@ -3463,7 +4420,12 @@ pub mod categorization {
     /// to add one. The model in effect turned off since comes first ([`assigned_off`]), "Manage
     /// models…" last.
     fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
-        let offered = offered(data);
+        let mut offered = offered(data);
+        offered.sort_by(|(a_engine, a_model), (b_engine, b_model)| {
+            account_label(data, a_engine)
+                .cmp(&account_label(data, b_engine))
+                .then_with(|| a_model.name.cmp(&b_model.name))
+        });
         let off = assigned_off(data);
         // Which account a model is from matters only where more than one offers models.
         let mut engines: std::collections::BTreeSet<&str> = offered.iter().map(|(engine, _)| engine.as_str()).collect();
@@ -3484,7 +4446,12 @@ pub mod categorization {
             rows.push(setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none));
         }
         let own = own_exception(data);
-        rows.extend(offered.into_iter().map(|(engine, model)| {
+        let mut last_provider = None;
+        for (engine, model) in offered {
+            if several && last_provider.as_deref() != Some(engine.as_str()) {
+                rows.push(row_frame(typo::text(typo::body_strong(), account_label(data, &engine)), false));
+                last_provider = Some(engine.clone());
+            }
             let is = |held: &AiAssignment| {
                 held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
             };
@@ -3497,8 +4464,10 @@ pub mod categorization {
             .flatten()
             .collect();
             let detail = (!notes.is_empty()).then(|| notes.join(" · "));
-            model_choice(label(&engine, &model.name), detail, chosen, Message::Model(engine, model.id))
-        }));
+            // Under a provider's heading the provider is not repeated in the name.
+            let name = if several { model.name.clone() } else { label(&engine, &model.name) };
+            rows.push(model_choice(name, detail, chosen, Message::Model(engine, model.id)));
+        }
         // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
         let arrow = icon::icon(Icon::ArrowUpRight, icon::SIZE)
             .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });

@@ -737,6 +737,7 @@ async fn save(
         body: draft.body.clone(),
         html: draft.html.clone(),
         signature: None,
+        signature_format: false,
         reply,
         attachments,
         calendar: None,
@@ -1154,6 +1155,7 @@ pub(crate) async fn send_invitation_reply(
         body: reply_text(answer, &shown_name),
         html: None,
         signature: None,
+        signature_format: false,
         reply: read.reply(),
         attachments: Vec::new(),
         calendar: Some(CalendarPart {

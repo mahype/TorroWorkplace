@@ -1381,6 +1381,9 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
                 sender: facts.sender.as_deref(),
                 subject: &facts.content.subject,
                 text: &facts.content.text,
+                account: Some(&account),
+                list_id: facts.content.list.as_deref(),
+                facts: Some(&facts.sort_facts),
             };
             let ruled =
                 inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()).unwrap_or_else(|err| {
@@ -1533,6 +1536,9 @@ async fn category_job_run(
                     sender: facts.sender.as_deref(),
                     subject: &facts.content.subject,
                     text: &facts.content.text,
+                    account: Some(&account.account),
+                    list_id: facts.content.list.as_deref(),
+                    facts: Some(&facts.sort_facts),
                 };
                 let ruled = match inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()) {
                     Ok(category) => category,
@@ -4621,6 +4627,14 @@ impl Core {
                 (!self.pim.sees_collection(reach, collection).await).then(|| collection.clone())
             }
             // Only shown task lists in the selection: hidden lists and calendars look unknown.
+            // The default sender only among the mail accounts it sees (#397).
+            // Also not cleared while it names one outside: `null` would remove it unseen.
+            (Reach::Client(rights), Request::SetSetting { key: SettingKey::MailSender, value }) => {
+                match value.as_str() {
+                    Some(id) => (!rights.reaches_mail_account(id)).then(|| id.to_string()),
+                    None => self.settings.current().mail_sender.filter(|id| !rights.reaches_mail_account(id)),
+                }
+            }
             (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
                 let list = list_of(value)?;
                 (!self.pim.sees_task_list(reach, &list).await).then_some(list)
@@ -4662,6 +4676,43 @@ impl Core {
             self.bind_template_keys().await;
         }
         response
+    }
+
+    /// The changes of a mail account (`accounts.reconfigure_mail`, `accounts.update_mail_account`) of
+    /// [`Core::answer_within`], in a frame of their own.
+    async fn answer_mail_account(&self, request: Request, reach: Reach<'_>) -> Response {
+        match request {
+            Request::ReconfigureMail { id, imap, smtp, login_name, password, save, trusted_certificates } => {
+                if !matches!(reach, Reach::Suite) {
+                    return Refused::Forbidden { command: "accounts.reconfigure_mail" }.response();
+                }
+                let _deciding = self.calendar_sign_ins.lock().await;
+                let change = Reconnection { imap, smtp, login_name, password, save, trusted_certificates };
+                self.reconfigure_mail(&id, change).await
+            }
+            Request::UpdateMailAccount {
+                id,
+                sender_name,
+                signature,
+                signature_format,
+                notify,
+                services,
+                folder_roles,
+                format,
+            } => {
+                let change = MailSettingsChange {
+                    sender_name,
+                    signature,
+                    signature_format,
+                    notify,
+                    services,
+                    folder_roles,
+                    format,
+                };
+                self.update_mail_account(&id, change).await
+            }
+            _ => Response::Error { code: "unsupported".into(), message: tr("This command is not supported.").into() },
+        }
     }
 
     /// The mail backup and restore commands (#267) of [`Core::answer_within`], in a frame of their own.
@@ -5013,6 +5064,11 @@ impl Core {
                     if !rights.reaches_tool(torro_core::settings::ToolId::Web) {
                         settings.web_search.searxng = None;
                     }
+                    // Nor the default sender when it is a mail account outside its selection (#397):
+                    // that account looks unknown, as in `accounts.list_accounts`.
+                    if settings.mail_sender.as_deref().is_some_and(|id| !rights.reaches_mail_account(id)) {
+                        settings.mail_sender = None;
+                    }
                 }
                 Response::Settings { settings }
             }
@@ -5162,6 +5218,8 @@ impl Core {
             | Request::ListRules
             | Request::RemoveRule { .. }
             | Request::ListCategories { .. }
+            | Request::CreateCategoryGroup { .. }
+            | Request::UpdateCategoryGroup { .. }
             | Request::SetItemCategory { .. }
             | Request::ClassifyItem { .. }
             | Request::GetCategorization
@@ -5218,6 +5276,11 @@ impl Core {
                 let _deciding = self.calendar_sign_ins.lock().await;
                 self.connect_mail(sign_in).await
             }
+            request @ (Request::ReconfigureMail { .. } | Request::UpdateMailAccount { .. }) => {
+                // Boxed: the two changes of a mail account would grow this match's poll frame, which
+                // an approved request holds twice already (`run_approved`).
+                Box::pin(self.answer_mail_account(request, reach)).await
+            }
             // A client never reaches `connect_ai` either (`Rights::allows`, rule 5): it hands in a key.
             // Under the lock the other sign-ins take, so two connections never write `accounts.json`
             // over each other.
@@ -5269,10 +5332,6 @@ impl Core {
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
-            Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles, format } => {
-                let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles, format };
-                self.update_mail_account(&id, change).await
-            }
             Request::GetMailCachePolicy { account } => match self.mail.cache_policy(&account).await {
                 Ok(policy) => Response::MailCachePolicy { policy },
                 Err(err) => err.response(),
@@ -5995,14 +6054,19 @@ impl Core {
             Ok(catalogue) => catalogue,
             Err(message) => return Response::Error { code: "error".into(), message },
         };
+        let groups = match self.inbox.category_groups() {
+            Ok(groups) => groups.iter().map(torro_ipc::inbox::CategoryGroupInfo::of).collect::<Vec<_>>(),
+            Err(message) => return Response::Error { code: "error".into(), message },
+        };
         let categories = catalogue
             .iter()
             .map(|def| {
                 let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
-                torro_ipc::inbox::CategoryInfo::of(def, unread, messages)
+                let group = groups.iter().find(|group| group.group == def.group);
+                torro_ipc::inbox::CategoryInfo::of_with_group(def, unread, messages, group)
             })
             .collect();
-        Response::Categories { categories }
+        Response::Categories { categories, groups }
     }
 
     /// One category as `inbox.create_category` and `inbox.update_category` answer it (task E15.2):
@@ -6010,7 +6074,12 @@ impl Core {
     async fn category_answer(&self, def: &torro_mail::CategoryDef, reach: Reach<'_>) -> Response {
         let counts = self.mail.unread_by_category(reach, None).await.unwrap_or_default();
         let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
-        Response::Category { category: torro_ipc::inbox::CategoryInfo::of(def, unread, messages) }
+        let group = self.inbox.category_groups().ok().and_then(|groups| {
+            groups.iter().find(|group| group.group == def.group).map(torro_ipc::inbox::CategoryGroupInfo::of)
+        });
+        Response::Category {
+            category: torro_ipc::inbox::CategoryInfo::of_with_group(def, unread, messages, group.as_ref()),
+        }
     }
 
     /// `inbox.remove_category` (task E15.2): a category of the person's own goes, and what names
@@ -6919,6 +6988,18 @@ impl Core {
             // The catalogue and the backlog need the mail stores, so the core answers them, not
             // the inbox database (task E12.4).
             Request::ListCategories { account } => Box::pin(self.list_categories(account, reach)).await,
+            Request::CreateCategoryGroup { name, icon, color } => {
+                match self.inbox.create_category_group(&name, icon, color) {
+                    Ok(group) => Response::CategoryGroup { group: torro_ipc::inbox::CategoryGroupInfo::of(&group) },
+                    Err(refused) => refused,
+                }
+            }
+            Request::UpdateCategoryGroup { group, name, icon, color } => {
+                match self.inbox.update_category_group(group, &name, icon, color) {
+                    Ok(group) => Response::CategoryGroup { group: torro_ipc::inbox::CategoryGroupInfo::of(&group) },
+                    Err(refused) => refused,
+                }
+            }
             Request::GetCategorization => Box::pin(self.get_categorization(reach)).await,
             Request::CatchUpCategories { cancel, again } => {
                 Box::pin(self.catch_up_categories(cancel, again, reach)).await
@@ -8483,6 +8564,86 @@ impl Core {
         }
     }
 
+    /// `accounts.reconfigure_mail` (issue #343; app key only): checks edited server and login fields
+    /// of a stored mail account, and with `save` stores them through [`Core::connect_mail`]. An
+    /// empty password field means the secret already in the system keychain; the reply never
+    /// exposes it. Saving changes the connection only: the sender name, calendars, tasks and the
+    /// CalDAV address come from the stored account. The servers trust the account's certificates
+    /// and those the person just confirmed (`trusted_certificates`, issue #284), checked first; a
+    /// server with another one is answered with [`Response::UntrustedCertificate`], so a server in
+    /// the local network can be changed to as in the add-account dialog.
+    async fn reconfigure_mail(&self, id: &str, change: Reconnection) -> Response {
+        let Reconnection { imap, smtp, login_name, password, save, trusted_certificates } = change;
+        let Some(confirmed) = trusted_fingerprints(&trusted_certificates) else {
+            return refusal("error", tr("A trusted certificate is not a SHA-256 fingerprint.").into());
+        };
+        let login_name = login_name.as_str();
+        let stored = match self.mail.stored_accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        let Some(account) = stored.into_iter().find(|account| account.id == id && account.kind == AccountKind::Mail)
+        else {
+            return refusal("not-found", tr("This mail account no longer exists.").into());
+        };
+        let Some(mut config) = account.mail.clone() else {
+            return refusal("error", tr("The mail account has no server settings.").into());
+        };
+        let login_name = login_name.trim();
+        if login_name.is_empty() || login_name.contains('/') {
+            return refusal("error", tr("Enter the user name; it cannot contain \"/\".").into());
+        }
+        for (service, endpoint) in [("IMAP", &imap), ("SMTP", &smtp)] {
+            if endpoint.host.trim().is_empty() || endpoint.port == 0 {
+                return refusal("error", trf("Enter the {service} server and its port.", &[("service", &service)]));
+            }
+        }
+        let password = match password.filter(|password| !password.is_blank()) {
+            Some(password) => password,
+            None => match self.mail.password(&account).await {
+                Ok(Some(password)) => password,
+                Ok(None) => return refusal("error", tr("No saved password is available. Enter the password.").into()),
+                Err(message) => return refusal("error", message),
+            },
+        };
+        config.imap = imap.clone();
+        config.smtp = smtp.clone();
+        for pin in &confirmed {
+            if !config.trusted_certificates.contains(pin) {
+                config.trusted_certificates.push(pin.clone());
+            }
+        }
+        if !save {
+            let empty = std::collections::BTreeMap::new();
+            let chosen = if account.mail.as_ref().is_some_and(|old| old.imap != imap) {
+                &empty
+            } else {
+                account.mail_settings.as_ref().map_or(&empty, |settings| &settings.folder_roles)
+            };
+            if let Err(failed) = self.mail.check_sign_in(&config, login_name, &password, chosen).await {
+                return self.sign_in_refusal(failed, &config).await;
+            }
+            return Response::MailConnectionChecked { id: id.to_string() };
+        }
+        // What `connect_mail` would keep anyway, named here so saving the connection never reads as
+        // clearing the account's own data; the stored certificates it offers itself.
+        let old = account.mail.as_ref();
+        let services = account.mail_settings.as_ref().map(|settings| settings.services).unwrap_or_default();
+        self.connect_mail(MailSignIn {
+            address: config.address,
+            sender_name: old.map(|old| old.sender_name.clone()).unwrap_or_default(),
+            imap,
+            smtp,
+            login_name: login_name.to_string(),
+            password,
+            calendars: services.calendars,
+            tasks: services.tasks,
+            caldav: old.and_then(|old| old.caldav.clone()),
+            trusted_certificates: confirmed,
+        })
+        .await
+    }
+
     /// `accounts.connect_mail` (task M2.7; app key only, `Rights::allows` keeps every client key
     /// out): checks the sign-in, stores it and starts the account. In this order:
     ///
@@ -8563,6 +8724,11 @@ impl Core {
             services: torro_mail::Services { mail: true, calendars, tasks },
             ..MailSettings::default()
         });
+        // Folder paths belong to one IMAP server. Rediscover them when that server changes;
+        // keeping a former server's role paths would make an otherwise valid sign-in fail.
+        if existing.and_then(|account| account.mail.as_ref()).is_some_and(|old| old.imap != imap) {
+            settings.folder_roles.clear();
+        }
         // Adding calendars and tasks later (task M3.5): at an account that exists they are switched
         // on, never off (that is `accounts.update_mail_account`).
         settings.services.calendars |= calendars;
@@ -8836,7 +9002,8 @@ impl Core {
     ///
     /// Answered with [`Response::Ok`]; `not-found` for an id that is no mail account.
     async fn update_mail_account(&self, id: &str, change: MailSettingsChange) -> Response {
-        let MailSettingsChange { sender_name, signature, notify, services, folder_roles, format } = change;
+        let MailSettingsChange { sender_name, signature, signature_format, notify, services, folder_roles, format } =
+            change;
         if let Some(refused) = mail_text_refusal(sender_name.as_deref(), signature.as_deref()) {
             return refused;
         }
@@ -8886,6 +9053,9 @@ impl Core {
                 let settings = account.mail_settings.get_or_insert_with(MailSettings::default);
                 if let Some(signature) = signature {
                     settings.signature = (!signature.trim().is_empty()).then_some(signature);
+                }
+                if let Some(formatted) = signature_format {
+                    settings.signature_format = formatted;
                 }
                 if let Some(notify) = notify {
                     settings.notify = notify;
@@ -10487,6 +10657,16 @@ fn has_mail_account(ours: &[torro_core::Account], address: &str) -> bool {
         .is_ok_and(|id| ours.iter().any(|account| account.kind == AccountKind::Mail && account.id == id))
 }
 
+/// What `accounts.reconfigure_mail` brings (issue #343), as [`Request::ReconfigureMail`] has it.
+struct Reconnection {
+    imap: torro_mail::Endpoint,
+    smtp: torro_mail::Endpoint,
+    login_name: String,
+    password: Option<torro_ipc::Secret>,
+    save: bool,
+    trusted_certificates: Vec<String>,
+}
+
 /// What `accounts.connect_mail` brings (task M2.7), as [`Request::ConnectMail`] has it.
 struct MailSignIn {
     address: String,
@@ -10551,6 +10731,7 @@ fn trusted_fingerprints(typed: &[String]) -> Option<Vec<String>> {
 struct MailSettingsChange {
     sender_name: Option<String>,
     signature: Option<String>,
+    signature_format: Option<bool>,
     notify: Option<torro_mail::Notify>,
     services: Option<torro_mail::Services>,
     folder_roles: Option<std::collections::BTreeMap<torro_mail::Role, String>>,
@@ -13922,6 +14103,7 @@ mod tests {
                 auto_submitted: None,
                 junk: false,
                 category: None,
+                sort_facts: Default::default(),
             };
             entries
                 .push(core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry"));
@@ -15363,6 +15545,31 @@ mod tests {
         waits(ask(&core, Some(&key), manual("/tasks/work/")).await);
         let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
         assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
+    }
+
+    /// Issue #397: the default sender of new mail is a mail account; a client outside it neither
+    /// sees it, nor sets it, nor clears it by sending its settings back.
+    #[tokio::test]
+    async fn a_client_sees_and_sets_the_default_sender_only_among_its_mail_accounts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let sender = |id: &str| Request::SetSetting { key: SettingKey::MailSender, value: serde_json::json!(id) };
+        assert_eq!(core.handle(sender("mail:bob@example.org")).await, Response::Ok);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        rights.mail_accounts = Selection::Only(vec!["mail:anna@example.org".into()]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let Response::Settings { settings: seen } = ask(&core, Some(&key), Request::Settings).await else {
+            panic!("settings")
+        };
+        assert_eq!(seen.mail_sender, None, "bob's account looks unknown");
+        assert_eq!(code(&ask(&core, Some(&key), sender("mail:bob@example.org")).await), "not-found");
+        let answer = core.handle_within(Request::UpdateSettings { settings: seen }, Reach::Client(&rights)).await;
+        assert_eq!(answer, Response::Ok);
+        assert_eq!(settings(&core).await.mail_sender.as_deref(), Some("mail:bob@example.org"), "sent back, kept");
+        let clear = Request::SetSetting { key: SettingKey::MailSender, value: serde_json::Value::Null };
+        assert_eq!(code(&ask(&core, Some(&key), clear).await), "not-found", "nor cleared unseen");
+        waits(ask(&core, Some(&key), sender("mail:anna@example.org")).await);
     }
 
     #[tokio::test]
@@ -17141,7 +17348,7 @@ mod tests {
         let app_key = crate::clients::tests::app_key(dir.path());
 
         // The catalogue: every category, with its words and zero counts – there is no mailbox.
-        let Response::Categories { categories } =
+        let Response::Categories { categories, .. } =
             ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
         else {
             panic!("the catalogue answers with Categories");
@@ -17191,7 +17398,7 @@ mod tests {
         no_mail.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
         no_mail.mail_accounts = Selection::All;
         let (_, inbox_only) = client(&core, no_mail).await;
-        let Response::Categories { categories } =
+        let Response::Categories { categories, .. } =
             ask(&core, Some(&inbox_only), Request::ListCategories { account: None }).await
         else {
             panic!("the catalogue answers with Categories");
@@ -17219,6 +17426,27 @@ mod tests {
         assert!(matches!(ask(&core, Some(&key), Request::GetCategorization).await, Response::Categorization { .. }));
         let run = ask(&core, Some(&key), Request::CatchUpCategories { cancel: false, again: false }).await;
         assert_eq!(code(&run), "forbidden", "the backlog run needs the admin switch");
+    }
+
+    /// Issue #343, #397: a new main category waits for the person, with a summary that names it,
+    /// and nothing is there until they allow it.
+    #[tokio::test]
+    async fn a_new_main_category_waits_for_the_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, inbox_admin()).await;
+        let create =
+            Request::CreateCategoryGroup { name: "Club".into(), icon: torro_mail::CategoryIcon::Users, color: 1 };
+        let asked = waits(ask(&core, Some(&key), create).await);
+        assert_eq!(asked.command, "inbox.create_category_group");
+        assert!(asked.summary.contains("\"Club\""), "{}", asked.summary);
+        let Response::Categories { groups, .. } =
+            ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
+        else {
+            panic!("the catalogue");
+        };
+        assert_eq!(groups.len(), torro_mail::CategoryGroup::ALL.len(), "nothing made before the person allows it");
     }
 
     /// Full access with the admin switch of the inbox on, so muting waits for a person.
@@ -18509,6 +18737,7 @@ mod tests {
             auto_submitted: None,
             junk: false,
             category: None,
+            sort_facts: Default::default(),
         };
         let id =
             core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -19529,6 +19758,31 @@ mod tests {
         assert_eq!(code(&no_draft), "not-found", "sending: M3.3, but there is no such draft");
     }
 
+    #[tokio::test]
+    async fn only_the_app_can_test_or_change_a_saved_mail_connection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let (_, key) = client(&core, every_admin_switch()).await;
+        let endpoint =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let request = Request::ReconfigureMail {
+            id: "mail:anna@example.org".into(),
+            imap: endpoint.clone(),
+            smtp: endpoint,
+            login_name: "anna@example.org".into(),
+            password: Some(torro_ipc::Secret::new("test-secret")),
+            save: false,
+            trusted_certificates: Vec::new(),
+        };
+        let refused = ask(&core, Some(&key), request.clone()).await;
+        assert_eq!(code(&refused), "forbidden");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let missing = ask(&core, Some(&app_key), request).await;
+        assert_eq!(code(&missing), "error", "this test core has no mail home directory");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("audit log");
+        assert!(!log.contains("test-secret"), "the secret must never reach the audit log");
+    }
+
     /// An account outside a client's `mail_accounts` is `not-found` before anything else, limits
     /// are `error` before anyone is asked, and moving to the trash is deleting.
     #[tokio::test]
@@ -19693,6 +19947,60 @@ mod tests {
     fn fake_imap_certificate() -> String {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../torro-mail-imap/tests/fixtures/imap-tls/server.der");
         torro_mail_imap::tls::Fingerprint::of(&std::fs::read(path).expect("test certificate")).to_string()
+    }
+
+    /// Issue #397: "Test credentials" and "Save connection" in the account's page meet a server whose
+    /// certificate the system does not trust as the add-account dialog does: its fingerprint comes
+    /// back before the password went to it; trusted, the check passes and saving keeps the
+    /// certificate and the sender name.
+    #[tokio::test]
+    async fn a_reconnection_asks_about_an_untrusted_certificate_and_keeps_what_is_trusted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let untrusting = torro_mail_imap::imap::Trust::Only(Vec::new());
+        let (mail, _smtp) = service_trusting(dir.path(), &secrets, MAIL_PASSWORD, untrusting);
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let shown = fake_imap_certificate();
+        let mut first = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
+        let Request::ConnectMail { trusted_certificates, smtp, .. } = &mut first else { panic!("a sign-in") };
+        *trusted_certificates = vec![shown.clone()];
+        let smtp = smtp.clone();
+        let connected = ask(&core, Some(&app_key), first).await;
+        assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+        // As if the account had been moved to this server: it trusts nothing yet.
+        let mut moved = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        if let Some(mail) = moved[0].mail.as_mut() {
+            mail.trusted_certificates.clear();
+        }
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), &moved).expect("written");
+        core.mail.reload().await;
+        let logins = server.logins();
+
+        let again = |save: bool, trusted: Vec<String>| Request::ReconfigureMail {
+            id: ANNA_MAIL.into(),
+            imap: server.endpoint.clone(),
+            smtp: smtp.clone(),
+            login_name: "anna".into(),
+            password: None,
+            save,
+            trusted_certificates: trusted,
+        };
+        let asked = ask(&core, Some(&app_key), again(false, Vec::new())).await;
+        assert!(matches!(&asked, Response::UntrustedCertificate { sha256, .. } if *sha256 == shown), "{asked:?}");
+        assert_eq!(server.logins(), logins, "the password did not go out");
+        let checked = ask(&core, Some(&app_key), again(false, vec![shown.clone()])).await;
+        assert_eq!(checked, Response::MailConnectionChecked { id: ANNA_MAIL.into() });
+        let saved = ask(&core, Some(&app_key), again(true, vec![shown.clone()])).await;
+        assert!(matches!(saved, Response::MailConnected { .. }), "{saved:?}");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let config = stored[0].mail.clone().expect("a mail account");
+        assert_eq!(config.sender_name, "Anna", "the sender name stays");
+        assert_eq!(config.trusted_certificates, std::slice::from_ref(&shown), "the confirmed certificate stays");
+        let malformed = ask(&core, Some(&app_key), again(false, vec!["AB:CD".into()])).await;
+        assert_eq!(code(&malformed), "error");
+        nowhere(dir.path(), MAIL_PASSWORD, &[&connected, &asked, &checked, &saved]);
     }
 
     /// Issue #284 (M11.3): a server with a certificate the system does not trust (the fake IMAP
@@ -19921,7 +20229,7 @@ mod tests {
         assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
 
         let counted = |answer: Response| -> (u32, u32) {
-            let Response::Categories { categories } = answer else { panic!("the catalogue") };
+            let Response::Categories { categories, .. } = answer else { panic!("the catalogue") };
             categories
                 .iter()
                 .find(|held| held.category == torro_mail::Category::Invoice)
@@ -20033,7 +20341,7 @@ mod tests {
         // Filed under it by hand, counted and found like any other.
         let filed = Request::SetItemCategory { id: id.clone(), category: tax.category, remember: false };
         assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
-        let Response::Categories { categories } =
+        let Response::Categories { categories, .. } =
             ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
         else {
             panic!("the catalogue")
@@ -20060,7 +20368,8 @@ mod tests {
         };
         assert_eq!((bills.label.as_str(), bills.group, bills.renamed), ("Bills", CategoryGroup::WaitingForMe, true));
         let again = fresh().await;
-        let Response::Categories { categories } = again.handle(Request::ListCategories { account: None }).await else {
+        let Response::Categories { categories, .. } = again.handle(Request::ListCategories { account: None }).await
+        else {
             panic!("the catalogue")
         };
         let held = categories.iter().find(|held| held.category == Category::Invoice).expect("invoice");
@@ -20200,6 +20509,7 @@ mod tests {
             let rule = Request::CreateSortRule {
                 category,
                 conditions: vec![torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
                     field: torro_inbox::SortField::Domain,
                     value: value.into(),
                 }],
@@ -21451,6 +21761,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: Some("Anna Example".into()),
             signature: Some("-- \nAnna".into()),
+            signature_format: None,
             notify: Some(torro_mail::Notify::ForMeOnly),
             services: None,
             folder_roles: None,
@@ -21484,6 +21795,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services,
             folder_roles,
@@ -21562,6 +21874,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
             folder_roles: None,
@@ -21728,6 +22041,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
             folder_roles: None,
@@ -21812,6 +22126,7 @@ mod tests {
             auto_submitted: None,
             junk: false,
             category: None,
+            sort_facts: Default::default(),
         };
         core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed");
         let counted = || async {
@@ -21912,6 +22227,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: None,
             folder_roles: Some(std::collections::BTreeMap::from([(Role::Junk, path.to_string())])),
@@ -21957,6 +22273,7 @@ mod tests {
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
+            signature_format: None,
             notify: None,
             services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
             folder_roles: None,
@@ -22161,12 +22478,15 @@ mod tests {
         let policy = |mode, prefetch_attachments| MailCachePolicy {
             account: ANNA.into(),
             mode,
+            since_date: None,
+            max_local_mb: None,
             prefetch_attachments,
             attachment_retention_days: 3,
         };
         let headers = policy(MailCacheMode::HeadersOnly, true);
         let set = Request::SetMailCachePolicy { policy: headers.clone() };
-        assert_eq!(ask(&core, Some(&app_key), set).await, Response::MailCachePolicy { policy: headers.clone() });
+        let normalized = MailCachePolicy { prefetch_attachments: false, ..headers.clone() };
+        assert_eq!(ask(&core, Some(&app_key), set).await, Response::MailCachePolicy { policy: normalized });
         let start = Request::StartMailCacheJob { account: ANNA.into(), action: MailCacheAction::RebuildIndex };
         let Response::MailCacheJob { job: Some(job) } = ask(&core, Some(&app_key), start).await else {
             panic!("the job that started")
@@ -22185,6 +22505,8 @@ mod tests {
         let policy = |mode| MailCachePolicy {
             account: ANNA.into(),
             mode,
+            since_date: None,
+            max_local_mb: None,
             prefetch_attachments: false,
             attachment_retention_days: 3,
         };
@@ -27696,6 +28018,7 @@ mod tests {
                 auto_submitted: None,
                 junk: false,
                 category: None,
+                sort_facts: Default::default(),
             };
             let entry =
                 core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -28108,6 +28431,7 @@ mod tests {
             auto_submitted: None,
             junk: false,
             category: None,
+            sort_facts: Default::default(),
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let asked = ask(&core, Some(&app_key), Request::SuggestEventFromItem { id: filed.clone() }).await;
@@ -28159,6 +28483,7 @@ mod tests {
             auto_submitted: None,
             junk: false,
             category: None,
+            sort_facts: Default::default(),
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let suggested = |id: String| {

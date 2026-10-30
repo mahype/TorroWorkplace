@@ -103,6 +103,7 @@ pub(crate) fn english_group_label(group: CategoryGroup) -> &'static str {
         CategoryGroup::Info => "Info",
         CategoryGroup::Junk => "Unwanted",
         CategoryGroup::Unsorted => "Unsorted",
+        CategoryGroup::Custom(_) => "Category",
     }
 }
 
@@ -161,6 +162,7 @@ pub fn group_description(group: CategoryGroup) -> &'static str {
         }
         CategoryGroup::Junk => "Unwanted mail: spam, or an attempt to deceive me.",
         CategoryGroup::Unsorted => "Mail no other group fits, or where it is unclear what it is.",
+        CategoryGroup::Custom(_) => "Mail in this main category.",
     }
 }
 

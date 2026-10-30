@@ -1014,7 +1014,10 @@ impl CategoryView {
     /// The whole `group`, with the categories the catalogue puts in it now.
     pub fn of_group(group: CategoryGroup, catalogue: &[CategoryInfo]) -> CategoryView {
         let categories = catalogue.iter().filter(|held| held.group == group).map(|held| held.category).collect();
-        let label = torro_core::category::group_label(group).to_string();
+        let label = catalogue
+            .iter()
+            .find(|held| held.group == group)
+            .map_or_else(|| torro_core::category::group_label(group).to_string(), |held| held.group_label.clone());
         CategoryView { group, only: None, categories, label }
     }
 
@@ -2035,6 +2038,7 @@ pub(crate) fn group_mark(group: CategoryGroup) -> (Icon, usize) {
         CategoryGroup::Info => (Icon::Info, 2),
         CategoryGroup::Junk => (Icon::ShieldAlert, 3),
         CategoryGroup::Unsorted => (Icon::CircleDashed, 4),
+        CategoryGroup::Custom(_) => (Icon::Tag, 0),
     }
 }
 
@@ -2065,6 +2069,7 @@ pub(crate) fn category_symbol(icon: torro_mail::CategoryIcon) -> Icon {
         torro_mail::CategoryIcon::Trash2 => Icon::Trash2,
         torro_mail::CategoryIcon::Eye => Icon::Eye,
         torro_mail::CategoryIcon::Ellipsis => Icon::Ellipsis,
+        torro_mail::CategoryIcon::CircleDashed => Icon::CircleDashed,
         torro_mail::CategoryIcon::Tag => Icon::Tag,
     }
 }
@@ -2082,6 +2087,16 @@ pub(crate) fn category_look(categories: &[CategoryInfo], category: torro_mail::C
     }
 }
 
+/// The icon and the place in `Palette::category` of the main category `group` as the catalogue
+/// holds it (issue #343): the person may give any main category its own icon and colour, and one
+/// they made has no fixed mark. Without an entry the suite's mark ([`group_mark`]).
+pub(crate) fn group_look(categories: &[CategoryInfo], group: CategoryGroup) -> (Icon, usize) {
+    match categories.iter().find(|held| held.group == group) {
+        Some(held) => (category_symbol(held.group_icon), usize::from(held.group_color)),
+        None => group_mark(group),
+    }
+}
+
 /// What a person reads for `held` beside the pill: the category, and that a model guessed it.
 pub(crate) fn category_words(held: MailCategory, categories: &[CategoryInfo]) -> String {
     let (label, _) = category_look(categories, held.category);
@@ -2092,7 +2107,7 @@ pub(crate) fn category_words(held: MailCategory, categories: &[CategoryInfo]) ->
 /// the words in the tooltip. The whole pill goes where there is room – the reader and the card.
 pub(crate) fn category_mark<'a>(held: MailCategory, categories: &[CategoryInfo]) -> (Element<'a, Message>, f32) {
     let (_, group) = category_look(categories, held.category);
-    let (_, group) = group_mark(group);
+    let (_, group) = group_look(categories, group);
     let category_icon = categories
         .iter()
         .find(|info| info.category == held.category)
@@ -2110,7 +2125,7 @@ pub(crate) fn category_mark<'a>(held: MailCategory, categories: &[CategoryInfo])
 /// The whole pill of a mail's category, for the reader and the card (task E12.8).
 pub(crate) fn category_pill<'a>(held: MailCategory, categories: &[CategoryInfo]) -> Element<'a, Message> {
     let (label, group) = category_look(categories, held.category);
-    let (_, group_at) = group_mark(group);
+    let (_, group_at) = group_look(categories, group);
     let category_icon = categories
         .iter()
         .find(|info| info.category == held.category)
@@ -4593,6 +4608,23 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
+    }
+
+    /// Issue #397: a main category's mark comes from the catalogue – one the person made in the icon
+    /// and colour they chose –, the suite's without an entry (Unsorted: the fifth colour).
+    #[test]
+    fn a_main_category_is_marked_as_the_catalogue_holds_it() {
+        use torro_mail::{Category, CategoryDef, CategoryGroupDef, CategoryIcon, CustomCategory};
+
+        let own = CategoryGroup::Custom(6);
+        let group = CategoryGroupDef { group: own, name: Some("Club".into()), icon: CategoryIcon::Users, color: 4 };
+        let mut def = CategoryDef::built_in(Category::Invoice).expect("built in");
+        def.category = Category::Custom(CustomCategory::new(1).expect("a number"));
+        def.group = own;
+        let info = torro_ipc::inbox::CategoryGroupInfo::of(&group);
+        let categories = vec![CategoryInfo::of_with_group(&def, 0, 0, Some(&info))];
+        assert_eq!(group_look(&categories, own), (Icon::Users, 4));
+        assert_eq!(group_look(&[], CategoryGroup::Unsorted), (Icon::CircleDashed, 4));
     }
 
     /// The click of a reading in the tests: open, the default.

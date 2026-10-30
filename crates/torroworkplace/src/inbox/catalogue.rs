@@ -24,11 +24,96 @@ use rusqlite::{Connection, OptionalExtension, params};
 use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_RULES_MAX, SORT_VALUE_MAX};
 use torro_inbox::{Rule, RuleEffect, SortCondition, SortField, SortRule, SourceRef};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
-use torro_mail::{Category, CategoryDef, CategoryGroup, CustomCategory};
+use torro_mail::{Category, CategoryDef, CategoryGroup, CategoryGroupDef, CategoryIcon, CustomCategory};
 
 use super::{Failure, Scope, StoreError, read_items, stamp, text, write_item};
 use chrono::{DateTime, Utc};
 use torro_core::i18n::{tr, trf};
+
+/// Main categories, including empty ones; each has a stable key independent of its name.
+pub(super) fn groups_in(db: &Connection) -> Result<Vec<CategoryGroupDef>, Failure> {
+    let mut statement = db.prepare("SELECT id, name, icon, color FROM category_groups ORDER BY id")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+    })?;
+    let mut groups = Vec::new();
+    for row in rows {
+        let (id, name, icon, color) = row?;
+        let Some(group) = u32::try_from(id).ok().and_then(CategoryGroup::from_database_id) else { continue };
+        let color = u8::try_from(color).ok().filter(|color| *color < 5).unwrap_or(0);
+        groups.push(CategoryGroupDef { group, name, icon: CategoryIcon::from_key(&icon), color });
+    }
+    Ok(groups)
+}
+
+fn find_group(db: &Connection, group: CategoryGroup) -> Result<CategoryGroupDef, Failure> {
+    groups_in(db)?
+        .into_iter()
+        .find(|held| held.group == group)
+        .ok_or_else(|| Failure::NotFound(trf("There is no main category {group}.", &[("group", &group.key())])))
+}
+
+fn checked_group_name(db: &Connection, group: Option<CategoryGroup>, name: &str) -> Result<String, Failure> {
+    let name = checked_name(name)?;
+    let taken = groups_in(db)?.into_iter().any(|held| {
+        Some(held.group) != group
+            && held
+                .name
+                .as_deref()
+                .unwrap_or_else(|| torro_core::category::group_label(held.group))
+                .eq_ignore_ascii_case(&name)
+    });
+    if taken {
+        return Err(Failure::Invalid(trf("There is a main category called “{name}” already.", &[("name", &name)])));
+    }
+    Ok(name)
+}
+
+pub(super) fn create_group(
+    db: &Connection,
+    name: &str,
+    icon: CategoryIcon,
+    color: u8,
+) -> Result<CategoryGroupDef, Failure> {
+    if color >= 5 {
+        return Err(Failure::Invalid(tr("Choose a category colour.").into()));
+    }
+    if groups_in(db)?.len() >= 20 {
+        return Err(Failure::Invalid(tr("There can be at most 20 main categories.").into()));
+    }
+    let name = checked_group_name(db, None, name)?;
+    db.execute(
+        "INSERT INTO category_groups (name, icon, color) VALUES (?1, ?2, ?3)",
+        params![name, icon.key(), color],
+    )?;
+    let id = u32::try_from(db.last_insert_rowid()).map_err(|_| Failure::Invalid("no more main category IDs".into()))?;
+    let group =
+        CategoryGroup::from_database_id(id).ok_or_else(|| Failure::Invalid("invalid main category ID".into()))?;
+    Ok(CategoryGroupDef { group, name: Some(name), icon, color })
+}
+
+pub(super) fn update_group(
+    db: &Connection,
+    group: CategoryGroup,
+    name: &str,
+    icon: CategoryIcon,
+    color: u8,
+) -> Result<CategoryGroupDef, Failure> {
+    find_group(db, group)?;
+    if color >= 5 {
+        return Err(Failure::Invalid(tr("Choose a category colour.").into()));
+    }
+    let name = if name.trim().is_empty() && !matches!(group, CategoryGroup::Custom(_)) {
+        None
+    } else {
+        Some(checked_group_name(db, Some(group), name)?)
+    };
+    db.execute(
+        "UPDATE category_groups SET name = ?2, icon = ?3, color = ?4 WHERE id = ?1",
+        params![group.database_id(), name, icon.key(), color],
+    )?;
+    Ok(CategoryGroupDef { group, name, icon, color })
+}
 
 /// Every category of the catalogue, by group in the order of [`CategoryGroup::ALL`]; within a
 /// group the suite's first in their order, then the person's own in the order they were made. A
@@ -89,7 +174,7 @@ pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure>
         });
     }
     // By group, as the sidebar lists them; within a group the suite's order, then the person's.
-    defs.sort_by_key(|def| CategoryGroup::ALL.iter().position(|group| *group == def.group));
+    defs.sort_by_key(|def| def.group.database_id());
     Ok(defs)
 }
 
@@ -126,6 +211,7 @@ pub(super) fn create(
     icon: torro_mail::CategoryIcon,
     now: DateTime<Utc>,
 ) -> Result<CategoryDef, Failure> {
+    find_group(db, group)?;
     let name = checked_name(name)?;
     let description = checked_description(description)?
         .ok_or_else(|| Failure::Invalid(tr("Describe what belongs in the category.").into()))?;
@@ -170,6 +256,7 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
     let mut catalogue = catalogue_in(db)?;
     let mut def = find(&catalogue, category)?.clone();
     if let Some(group) = changes.group {
+        find_group(db, group)?;
         def.group = group;
     }
     if let Some(model) = changes.model {
@@ -559,7 +646,11 @@ pub(super) fn keep_sender(
     let rule = SortRule {
         id: super::new_id()?,
         category,
-        conditions: vec![SortCondition { field: SortField::Sender, value: sender.to_string() }],
+        conditions: vec![SortCondition {
+            comparison: torro_inbox::SortComparison::Auto,
+            field: SortField::Sender,
+            value: sender.to_string(),
+        }],
         exceptions: Vec::new(),
         enabled: true,
         created: now,
@@ -606,10 +697,13 @@ fn as_rule(rule: &SortRule, source: &str) -> Option<Rule> {
         return None;
     }
     let [condition] = rule.conditions.as_slice() else { return None };
+    if !matches!(condition.comparison, torro_inbox::SortComparison::Auto | torro_inbox::SortComparison::Is) {
+        return None;
+    }
     let (sender, domain) = match condition.field {
         SortField::Sender => (Some(condition.value.clone()), None),
         SortField::Domain => (None, Some(condition.value.clone())),
-        SortField::Subject | SortField::Text => return None,
+        _ => return None,
     };
     Some(Rule {
         id: rule.id.clone(),
@@ -671,14 +765,31 @@ fn checked_rule(db: &Connection, words: &RuleWords) -> Result<(Vec<SortCondition
         conditions
             .iter()
             .map(|condition| {
+                let comparison = if condition.comparison == torro_inbox::SortComparison::Auto {
+                    condition.field.default_comparison()
+                } else {
+                    condition.comparison
+                };
+                if !condition.field.allows(comparison) {
+                    return Err(Failure::Invalid(tr("This comparison does not fit the selected mail field.").into()));
+                }
                 let value = match condition.field {
                     SortField::Sender | SortField::Domain => {
                         torro_inbox::rules::sort_value(condition.field, &condition.value)
                     }
-                    SortField::Subject | SortField::Text => condition.value.trim().to_string(),
+                    SortField::Attachment => String::new(),
+                    _ => condition.value.trim().to_string(),
                 };
-                if value.is_empty() {
+                if value.is_empty() && condition.field != SortField::Attachment {
                     return Err(Failure::Invalid(tr("A condition needs a value.").into()));
+                }
+                if condition.field == SortField::Size
+                    && value
+                        .parse::<f64>()
+                        .ok()
+                        .is_none_or(|mb| !mb.is_finite() || mb < 0.0 || mb * 1_000_000.0 > u64::MAX as f64)
+                {
+                    return Err(Failure::Invalid(tr("Enter the message size in megabytes.").into()));
                 }
                 if value.chars().any(char::is_control) {
                     return Err(Failure::Invalid(tr("A condition's value is one line.").into()));
@@ -690,7 +801,7 @@ fn checked_rule(db: &Connection, words: &RuleWords) -> Result<(Vec<SortCondition
                         &[("most", &most)],
                     )));
                 }
-                Ok(SortCondition { field: condition.field, value })
+                Ok(SortCondition { field: condition.field, comparison: condition.comparison, value })
             })
             .collect()
     };
@@ -712,8 +823,16 @@ pub(super) fn move_kept_rules(db: &Connection) -> Result<(), StoreError> {
     for rule in kept {
         let RuleEffect::Category { category } = rule.effect else { continue };
         let condition = match (&rule.sender, &rule.domain) {
-            (Some(sender), _) => SortCondition { field: SortField::Sender, value: sender.clone() },
-            (None, Some(domain)) => SortCondition { field: SortField::Domain, value: domain.clone() },
+            (Some(sender), _) => SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Sender,
+                value: sender.clone(),
+            },
+            (None, Some(domain)) => SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: domain.clone(),
+            },
             (None, None) => continue,
         };
         let sorting = SortRule {

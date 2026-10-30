@@ -1689,6 +1689,8 @@ impl Request {
             Request::SetItemLane { .. } => &SET_ITEM_LANE,
             Request::MuteSource { .. } => &MUTE_SOURCE,
             Request::ListCategories { .. } => &LIST_CATEGORIES,
+            Request::CreateCategoryGroup { .. } => &CREATE_CATEGORY_GROUP,
+            Request::UpdateCategoryGroup { .. } => &UPDATE_CATEGORY_GROUP,
             Request::SetItemCategory { .. } => &SET_ITEM_CATEGORY,
             Request::ClassifyItem { .. } => &CLASSIFY_ITEM,
             Request::GetCategorization => &GET_CATEGORIZATION,
@@ -1716,6 +1718,7 @@ impl Request {
             Request::GetStats { .. } => &GET_STATS,
             Request::GetQuiet => &GET_QUIET,
             Request::ConnectMail { .. } => &CONNECT_MAIL,
+            Request::ReconfigureMail { .. } => &RECONFIGURE_MAIL,
             Request::UpdateMailAccount { .. } => &UPDATE_MAIL_ACCOUNT,
             Request::TorroMailAccounts => &LIST_TORROMAIL_ACCOUNTS,
             Request::ImportTorroMailAccount { .. } => &IMPORT_TORROMAIL_ACCOUNT,
@@ -1951,6 +1954,7 @@ pub static CATALOGUE: &[&Command] = &[
     &DISCOVER_SERVICES,
     &CONNECT_CALDAV,
     &CONNECT_MAIL,
+    &RECONFIGURE_MAIL,
     &UPDATE_MAIL_ACCOUNT,
     &LIST_TORROMAIL_ACCOUNTS,
     &IMPORT_TORROMAIL_ACCOUNT,
@@ -2005,6 +2009,8 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_PULLS,
     &CANCEL_PULL,
     &LIST_CATEGORIES,
+    &CREATE_CATEGORY_GROUP,
+    &UPDATE_CATEGORY_GROUP,
     &SET_ITEM_CATEGORY,
     &CLASSIFY_ITEM,
     &GET_CATEGORIZATION,
@@ -2881,6 +2887,17 @@ static CONNECT_MAIL: Command = Command {
                   trusted_certificates). Returns the account, never the password. Only the app key may use it.",
 };
 
+// The optional password comes only from the suite UI; clients never read or supply it.
+static RECONFIGURE_MAIL: Command = Command {
+    name: "accounts.reconfigure_mail",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Checks an existing mail account with edited IMAP and SMTP endpoints and login. An omitted password \
+                  uses the existing keychain secret. With save false nothing is stored; with save true the values are \
+                  stored after a successful sign-in. Only the app key may use it and the password is never returned.",
+};
+
 static UPDATE_MAIL_ACCOUNT: Command = Command {
     name: "accounts.update_mail_account",
     area: Area::Accounts,
@@ -3728,8 +3745,9 @@ static LIST_CATEGORIES: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, \
-                  `info`, `junk` for unwanted mail, `unsorted`), the words a person reads for both, its \
+    description: "Lists the catalogue of mail categories and the main categories, including empty ones. Each child \
+                  has a stable group key (`waiting_for_me`, `paper_trail`, `info`, `junk` for unwanted mail, \
+                  `unsorted` or `custom_group_<n>` for one the person made), the words a person reads for both, its \
                   monochrome `icon` in the group's colour, \
                   how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder \
                   only, so mail thrown away, marked as spam \
@@ -3741,6 +3759,29 @@ static LIST_CATEGORIES: Command = Command {
                   brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or \
                   the person's own, not foreign text. Use it to offer the categories and to build a sidebar; \
                   filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.",
+};
+
+static CREATE_CATEGORY_GROUP: Command = Command {
+    name: "inbox.create_category_group",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Creates a main mail category with a stable `custom_group_<n>` key, a name, an icon and a theme \
+                  colour (`color` 0–4, one of the five colours of the active design) and returns it. Its child \
+                  categories can then be created or moved into it. `error` for an empty, multi-line, taken or too long \
+                  name, a colour above 4 or more than 20 main categories. Needs the person's approval.",
+};
+
+static UPDATE_CATEGORY_GROUP: Command = Command {
+    name: "inbox.update_category_group",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Changes the name, icon and theme colour (`color` 0–4) of a main mail category, one of the five \
+                  built-in ones (`waiting_for_me`, `paper_trail`, `info`, `junk`, `unsorted`) or a \
+                  `custom_group_<n>`, and returns it, without changing its stable key or the mail in its child \
+                  categories. An empty name restores a built-in label. `not-found` for a main category that is not \
+                  there; `error` as for create_category_group. Needs the person's approval.",
 };
 
 static SET_ITEM_CATEGORY: Command = Command {
@@ -3860,9 +3901,10 @@ static CREATE_CATEGORY: Command = Command {
     area: Area::Inbox,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Makes a mail category of the person's own in one of the five groups and returns it; its key is \
+    description: "Makes a mail category of the person's own in an existing main category and returns it; its key is \
                   `custom_<n>` and never changes. `group` is `waiting_for_me`, `paper_trail`, `info`, `junk` \
-                  (unwanted mail: spam, phishing) or `unsorted` (mail no other group fits). `icon` chooses a monochrome category icon; the group supplies \
+                  (unwanted mail: spam, phishing), `unsorted` (mail no other group fits) or a `custom_group_<n>` \
+                  the person made. `icon` chooses a monochrome category icon; the group supplies \
                   its colour. `description` says what belongs there, with examples and \
                   exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. \
                   A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or \
@@ -3916,7 +3958,11 @@ static CREATE_SORT_RULE: Command = Command {
     mcp: Mcp::Tool,
     description: "Adds a sorting rule for mail at `position` (0 first; left out: last) and returns it. From then on \
                   new mail that meets every condition and no exception is filed as `category`; mail already \
-                  filed changes only with inbox_catch_up_categories and `again`. `error` for no condition, more \
+                  filed changes only with inbox_catch_up_categories and `again`. A condition names a `field` \
+                  (sender, domain, reply_to, recipient, subject, text, attachment, attachment_name, size, \
+                  list_id, account), a `comparison` the field allows (left out: the field's usual one) and a \
+                  `value`; `attachment` with `present` or `absent` takes none, `size` counts in megabytes \
+                  (10^6 bytes) with `greater_than` or `less_than`, `account` is the address. `error` for no condition, more \
                   than 10 conditions or 10 exceptions, an empty, multi-line or over-long value (200 characters), a \
                   category not in the catalogue, or more than 500 rules. Needs the person's approval.",
 };
@@ -4146,7 +4192,7 @@ static ACCOUNT_STATS: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals; only `quota` and `server_bytes` below come from the server. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop. `quota` (used and limit bytes, and `checked`, when the sync asked) is `null` unless the server supports IMAP QUOTA and reports a STORAGE limit. Each folder's `server_bytes` is the sum of the sizes the server reported (`RFC822.SIZE`) for the messages stored locally, `null` until all of them have one (a message the server gives no size for counts as 0); after an interrupted sync it covers only the messages stored so far. Both are as of the last sync, not live values. `months` counts stored messages and offline texts per month by message date in UTC. `originals` and `original_bytes` count only kept originals of mail still on the server; the folder values need not add up to the account's, for example for a folder renamed since the last sync. `as_of` is when the counts (attachments included) were computed: the service answers from its last computation, which can be older than a minute; when it is, the counts are computed anew in the background for the next call. `last_sync` and `sync_problem` are always current.",
+    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. The counts and dates are what the local store knows, not verified server totals; only `quota` and `server_bytes` below come from the server. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop. `quota` (used and limit bytes, and `checked`, when the sync asked) is `null` unless the server supports IMAP QUOTA and reports a STORAGE limit. Each folder's `server_bytes` is the sum of the sizes the server reported (`RFC822.SIZE`) for the messages stored locally, `null` until all of them have one (a message the server gives no size for counts as 0); after an interrupted sync it covers only the messages stored so far. Both are as of the last sync, not live values. `known_mail_bytes`, `offline_mail_bytes`, `planned_mail_bytes` and `indexed_offline_mail_bytes` all use the same server-reported RFC822.SIZE measure and are null until every known message has a size: suitable for a relative inventory bar, not for physical disk use; `database_bytes` includes metadata and indexes. `months` counts stored messages and offline texts per month by message date in UTC. `originals` and `original_bytes` count only kept originals of mail still on the server; the folder values need not add up to the account's, for example for a folder renamed since the last sync. `as_of` is when the counts (attachments included) were computed: the service answers from its last computation, which can be older than a minute; when it is, the counts are computed anew in the background for the next call. `last_sync` and `sync_problem` are always current.",
 };
 
 static GET_CACHE_POLICY: Command = Command {
@@ -4154,21 +4200,21 @@ static GET_CACHE_POLICY: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.",
+    description: "Reads one account's offline mail and attachment policy. Search indexing and header synchronization remain active. `mode` is `all_offline`, `since_date` (requires ISO `since_date`), or `max_size` (requires `max_local_mb`, selecting newest messages by server-reported RFC822.SIZE); `headers_only` and `recent90_days` remain readable for older saved policies. Downloaded attachments can be kept for 0, 1–365 days, or all (`4294967295`).",
 };
 static SET_CACHE_POLICY: Command = Command {
     name: "mail.set_cache_policy",
     area: Area::Mail,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Sets an account's offline body and attachment retention policy after a mail.preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.",
+    description: "Sets one account's offline body and attachment retention policy. `since_date` must be YYYY-MM-DD and `max_local_mb` 1–1000000 when their modes are selected. A size cap selects newest messages by RFC822.SIZE; physical disk usage can differ because metadata, search indexes and attachment files are separate. The change persists per account; automatic sync uses it, and `mail.start_cache_job` with `apply_policy` applies it to already synchronized mail. Server mail, drafts and search text are not deleted.",
 };
 static PREVIEW_CACHE: Command = Command {
     name: "mail.preview_cache",
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything. Returns the current body count, the bodies to fetch or remove and the estimated download and reclaim bytes. The average locally kept text size is used because IMAP sizes are not stored.",
+    description: "Estimates how many message bodies a mode will fetch or remove without changing anything. The request accepts a mode, so date and size parameters come from the currently saved policy. Byte estimates use the average size of local reading texts and may differ from the download or the SQLite file's physical change.",
 };
 static START_CACHE_JOB: Command = Command {
     name: "mail.start_cache_job",
@@ -5398,6 +5444,17 @@ mod tests {
             Request::AiPulls,
             Request::CancelAiPull { id: "p1".into() },
             Request::ListCategories { account: None },
+            Request::CreateCategoryGroup {
+                name: "Receipts".into(),
+                icon: torro_mail::CategoryIcon::Paperclip,
+                color: 1,
+            },
+            Request::UpdateCategoryGroup {
+                group: torro_mail::CategoryGroup::PaperTrail,
+                name: "Documents".into(),
+                icon: torro_mail::CategoryIcon::TextQuote,
+                color: 1,
+            },
             Request::SetItemCategory { id: "i1".into(), category: torro_mail::Category::Invoice, remember: true },
             Request::ClassifyItem { id: "i1".into() },
             Request::GetCategorization,
@@ -5432,6 +5489,7 @@ mod tests {
             Request::CreateSortRule {
                 category: torro_mail::Category::Invoice,
                 conditions: vec![torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
                     field: torro_inbox::SortField::Domain,
                     value: "shop.example".into(),
                 }],
@@ -5443,6 +5501,7 @@ mod tests {
                 id: "r1".into(),
                 category: torro_mail::Category::Receipt,
                 conditions: vec![torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
                     field: torro_inbox::SortField::Subject,
                     value: "receipt".into(),
                 }],
@@ -5472,6 +5531,23 @@ mod tests {
             },
             Request::GetQuiet,
             connect_mail(),
+            Request::ReconfigureMail {
+                id: "mail:anna@mailbox.org".into(),
+                imap: torro_mail::Endpoint {
+                    host: "imap.mailbox.org".into(),
+                    port: 993,
+                    security: torro_mail::Security::Tls,
+                },
+                smtp: torro_mail::Endpoint {
+                    host: "smtp.mailbox.org".into(),
+                    port: 587,
+                    security: torro_mail::Security::StartTls,
+                },
+                login_name: "anna@mailbox.org".into(),
+                password: None,
+                save: false,
+                trusted_certificates: Vec::new(),
+            },
             Request::TorroMailAccounts,
             Request::ImportTorroMailAccount { id: "4c1d".into() },
             Request::UpdateMailAccount {
@@ -5479,6 +5555,7 @@ mod tests {
                 id: "mail:anna@mailbox.org".into(),
                 sender_name: None,
                 signature: Some("Anna".into()),
+                signature_format: None,
                 notify: Some(torro_mail::Notify::ForMeOnly),
                 services: None,
                 folder_roles: None,
@@ -5490,6 +5567,8 @@ mod tests {
                 policy: crate::mail::MailCachePolicy {
                     account: "mail:anna@mailbox.org".into(),
                     mode: crate::mail::MailCacheMode::Recent90Days,
+                    since_date: None,
+                    max_local_mb: None,
                     prefetch_attachments: false,
                     attachment_retention_days: 1,
                 },
@@ -5993,6 +6072,7 @@ mod tests {
                         | "accounts.set_github_token"
                         | "accounts.connect_caldav"
                         | "accounts.connect_mail"
+                        | "accounts.reconfigure_mail"
                         | "accounts.import_torromail_account"
                         | "accounts.connect_ai"
                         | "accounts.set_ntfy_login"
@@ -7079,6 +7159,7 @@ mod tests {
                 "mail_attachment_click",
                 "mail_downloads_folder",
                 "mail_appearance",
+                "mail_sender",
                 "mail_to_cloud",
                 "decide_mail_to_cloud",
                 "mail_contacts_personal",
@@ -7278,6 +7359,8 @@ mod tests {
                 "inbox.set_item_lane",
                 "inbox.mute_source",
                 "inbox.list_categories",
+                "inbox.create_category_group",
+                "inbox.update_category_group",
                 "inbox.set_item_category",
                 "inbox.classify_item",
                 "inbox.get_categorization",
