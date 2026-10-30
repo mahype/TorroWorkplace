@@ -9,6 +9,9 @@ Ziel: `git tag v0.1.0 && git push --tags` baut die ganze Suite (`torroworkplace`
 `torro-inbox-notifications`, `torrocalendar`, `torrotasks`, `torroassistant`) für Linux, macOS und Windows, legt sie in ein GitHub Release und aktualisiert die
 Paketquellen.
 
+Künftig ist jede App auch einzeln herunterladbar und läuft ohne Hauptanwendung; Pakete je App, das
+Release-Skript dafür und der App-Katalog kommen mit #411 ([einzelne-apps.md](einzelne-apps.md)).
+
 ## Empfehlung
 
 `dist` (früher cargo-dist) für das Release, dazu zwei kleine eigene Workflows für das, was `dist` nicht kann.

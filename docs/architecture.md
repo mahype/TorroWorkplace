@@ -146,6 +146,9 @@ Jede App hat eine feste ID (`crates/torro-core/src/app.rs`):
 | Windows | Autostart-Eintrag |
 | alle, ohne Autostart | die **erste App**, die ein Mensch öffnet: `torro_gui::source::ensure_core` startet den Dienst, wenn niemand am Socket antwortet. Nach Tray › Quit startet kein MCP-Server ihn neu, erst die nächste App ([lebenszyklus.md](lebenszyklus.md)) |
 
+Ohne installierte Hauptanwendung läuft der Dienst auf jedem dieser Wege still, ohne Tray-Icon und ohne
+Einrichtung ([einzelne-apps.md](einzelne-apps.md), #408).
+
 ## Pfade
 
 `crates/torro-core/src/paths.rs`:
