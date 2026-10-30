@@ -281,7 +281,9 @@ async fn mail_overview(
     for sender in counted.senders {
         let Some((_, store)) = stores.iter().find(|(id, _)| *id == sender.latest.account) else { continue };
         let id = sender.latest.id.clone();
-        if let Some(latest) = store.read(move |store| store.summary(&id)).await.map_err(store_failed)? {
+        // A sender whose newest mail went meanwhile, or cannot be read, is left out: the rest of the
+        // overview stands without it.
+        if let Ok(Some(latest)) = store.read(move |store| store.summary(&id)).await {
             overview.senders.push(sender.with(latest));
         }
     }

@@ -2268,8 +2268,14 @@ mod tests {
         assert_eq!(call("mail_get_thread", json!({"id": "m:1"})), Ok(Request::GetMailThread { id: "m:1".into() }));
         let attachment = call("mail_get_attachment", json!({"id": "m:1", "attachment": "2"}));
         assert_eq!(attachment, Ok(Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() }));
-        let reading =
-            ["mail_list_folders", "mail_search_messages", "mail_get_message", "mail_get_thread", "mail_get_attachment"];
+        let reading = [
+            "mail_list_folders",
+            "mail_search_messages",
+            "mail_get_message",
+            "mail_get_thread",
+            "mail_get_attachment",
+            "mail_overview",
+        ];
         let status = tools().iter().find(|tool| tool.name == "mail_index_status").cloned().expect("a tool");
         assert_eq!(status.annotations.and_then(|hints| hints.read_only_hint), Some(true));
         for name in reading {
