@@ -1,5 +1,6 @@
-//! Sizes and counts as people read them: one size format for every page ("60.9 MB", "2.36 GB")
-//! and counts with the thousands separator of the language ("4,796", German "4.796").
+//! Sizes, counts and durations as people read them: one size format for every page ("60.9 MB",
+//! "2.36 GB"), counts with the thousands separator of the language ("4,796", German "4.796") and
+//! how long something took ("0.8 s", "2 min 14 s", "1 h 3 min", issue #422).
 //!
 //! Task DS.2 in `docs/tasks/detailseiten.md`. Sizes use base 1024 with the units B, KB, MB, GB
 //! and TB, so an IMAP quota (reported in KiB) of 10485760 shows as "10 GB", as the provider sells
@@ -19,6 +20,41 @@ pub fn format_bytes(bytes: u64) -> String {
 /// `4,796` (German `4.796`).
 pub fn format_count(count: u64) -> String {
     format_count_in(lang(), count)
+}
+
+/// How long something took, from milliseconds: `0.8 s` (one decimal below ten seconds), `42 s`,
+/// `2 min 14 s`, `1 h 3 min`; German with a decimal comma (`0,8 s`). Two units at most: next to a
+/// minute the tenths of a second, next to an hour the seconds say nothing. The units are the
+/// international symbols, the same in every language.
+pub fn format_duration(ms: u64) -> String {
+    format_duration_in(lang(), ms)
+}
+
+/// [`format_duration`] in a given language, so tests can check both.
+pub fn format_duration_in(lang: Lang, ms: u64) -> String {
+    let tenths = ms.saturating_add(50) / 100;
+    if tenths < 100 {
+        let (whole, tenth) = (tenths / 10, tenths % 10);
+        if tenth == 0 {
+            return format!("{whole} s");
+        }
+        let comma = match lang {
+            Lang::En => '.',
+            Lang::De => ',',
+        };
+        return format!("{whole}{comma}{tenth} s");
+    }
+    let seconds = ms.saturating_add(500) / 1000;
+    if seconds < 60 {
+        return format!("{seconds} s");
+    }
+    if seconds < 3600 {
+        let (minutes, rest) = (seconds / 60, seconds % 60);
+        return if rest == 0 { format!("{minutes} min") } else { format!("{minutes} min {rest} s") };
+    }
+    let minutes = ms.saturating_add(30_000) / 60_000;
+    let (hours, rest) = (minutes / 60, minutes % 60);
+    if rest == 0 { format!("{hours} h") } else { format!("{hours} h {rest} min") }
 }
 
 /// [`format_bytes`] in a given language, so tests can check both.
@@ -112,6 +148,27 @@ mod tests {
         assert_eq!(format_bytes_in(Lang::De, 60 * MIB + 921 * KIB), "60,9 MB");
         assert_eq!(format_bytes_in(Lang::De, 2 * GIB + 369 * MIB), "2,36 GB");
         assert_eq!(format_bytes_in(Lang::De, 512 * MIB), "512 MB");
+    }
+
+    #[test]
+    fn durations_use_at_most_two_units() {
+        let en = |ms| format_duration_in(Lang::En, ms);
+        assert_eq!(en(0), "0 s");
+        assert_eq!(en(800), "0.8 s");
+        assert_eq!(en(2_000), "2 s");
+        assert_eq!(en(9_940), "9.9 s");
+        assert_eq!(en(9_960), "10 s", "ten seconds lose their tenth");
+        assert_eq!(en(42_300), "42 s");
+        assert_eq!(en(59_600), "1 min", "rounds up into the next minute");
+        assert_eq!(en(134_000), "2 min 14 s");
+        assert_eq!(en(3_780_000), "1 h 3 min");
+        assert_eq!(en(7_200_000), "2 h");
+    }
+
+    #[test]
+    fn german_durations_use_a_decimal_comma() {
+        assert_eq!(format_duration_in(Lang::De, 800), "0,8 s");
+        assert_eq!(format_duration_in(Lang::De, 134_000), "2 min 14 s");
     }
 
     #[test]
