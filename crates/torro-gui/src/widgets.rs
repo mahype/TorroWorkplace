@@ -29,7 +29,7 @@
 //! Iced 0.14 (without its `advanced` feature) has no dropdown widget, so a menu is two pieces:
 //!
 //! 1. the **trigger** registers where it is on screen in an [`Anchor`] ([`menu_button`],
-//!    [`select_button`], or any widget wrapped in [`anchored`]);
+//!    [`select_button`], [`select_button_fill`], or any widget wrapped in [`anchored`]);
 //! 2. the **layer** ([`floating`]) draws the card ([`menu`] or [`popover`]) next to that anchor,
 //!    above the whole window, and sends `on_dismiss` on a click next to it. The app hands the layer
 //!    to [`crate::shell::Shell::overlay`] and closes it on Escape with [`escape`].
@@ -2498,6 +2498,30 @@ pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragmen
     .spacing(ICON_GAP)
     .align_y(Alignment::Center);
     let b = button(container(content).center_y(Fill))
+        .height(size::control_sm())
+        .padding(style::button_padding())
+        .style(style::button::secondary)
+        .on_press(on_press);
+    anchored(anchor, b)
+}
+
+/// A [`select_button`] as wide as its place, for a choice in a narrow row (issue #421, the model of
+/// Sorting stacked under its label): the label on one line, cut with "…" to the width left beside
+/// the chevron, which stands at the right end. Registers `anchor`.
+pub fn select_button_fill<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    label: impl IntoFragment<'a>,
+    on_press: M,
+) -> Element<'a, M> {
+    let label = label.into_fragment().to_string();
+    let label = measured_line(typo::caption(), move |size| {
+        let shown = typo::ellipsize(&label, typo::caption(), size.width);
+        typo::text(typo::caption(), shown).wrapping(Wrapping::None).into()
+    });
+    let content =
+        row![label, toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3)].spacing(ICON_GAP).align_y(Alignment::Center);
+    let b = button(container(content).center_y(Fill))
+        .width(Fill)
         .height(size::control_sm())
         .padding(style::button_padding())
         .style(style::button::secondary)
@@ -6967,6 +6991,7 @@ mod tests {
             menu(vec![MenuSection::titled("View", vec![MenuItem::new(Icon::Calendar, "Week", Msg::Go)])]),
             menu_button(&anchor, Some(Icon::Sun), "Today", Msg::Go),
             select_button(&anchor, "Week", Msg::Go),
+            select_button_fill(&anchor, "Ollama · a model with a very long name", Msg::Go),
             floating(&anchor, Placement::Below(Align::End), blank(), Msg::Close),
             popover(
                 blank(),

@@ -6806,6 +6806,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Only for sorting mail", "Nur zum Einordnen von E-Mails"),
     ("Answers in a fixed format, slower", "Antwortet in festem Format, langsamer"),
+    // Decision models first where a model sorts mail (issue #421).
+    ("Decision models (fast)", "Entscheidungsmodelle (schnell)"),
+    ("Other models", "Andere Modelle"),
+    ("No decision model", "Kein Entscheidungsmodell"),
+    (
+        "Decision models answer directly and sort mail much faster than chat models.",
+        "Entscheidungsmodelle antworten direkt und ordnen E-Mails viel schneller ein als Chat-Modelle.",
+    ),
+    (
+        "Sorting runs slower with a chat model. Settings › AI suggests one to download.",
+        "Mit einem Chat-Modell läuft das Einordnen langsamer. Einstellungen › KI schlägt eins zum Laden vor.",
+    ),
     // The tiers and reasons of the recommended models (MW.5, issue #325); "Medium", "This computer" and
     // "Needs {program}" stand above.
     ("Mac with large memory", "Mac mit viel Arbeitsspeicher"),
