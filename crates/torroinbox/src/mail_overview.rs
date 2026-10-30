@@ -106,6 +106,8 @@ pub struct State {
     pub muting: Option<String>,
     /// "Refresh" asked for the numbers anew, however fresh they are.
     pub stale: bool,
+    /// The overview showed at the last look: coming into view again checks the age of its numbers.
+    pub showing: bool,
 }
 
 impl Default for State {
@@ -120,6 +122,7 @@ impl Default for State {
             asked: None,
             muting: None,
             stale: false,
+            showing: false,
         }
     }
 }
@@ -131,8 +134,9 @@ impl State {
     }
 
     /// Whether the numbers must be asked for at `now`: they are not on their way, and there are none
-    /// for what is chosen or they are older than [`FRESH`].
-    pub fn due(&self, now: Instant) -> bool {
+    /// for what is chosen, "Refresh" asked, or – when the overview comes into view (`anew`) – they are
+    /// older than [`FRESH`].
+    pub fn due(&self, now: Instant, anew: bool) -> bool {
         let key = self.key();
         if self.asked.as_ref() == Some(&key) {
             return false;
@@ -141,7 +145,7 @@ impl State {
             return true;
         }
         match &self.data {
-            Some(loaded) if loaded.key == key => now.saturating_duration_since(loaded.at) > FRESH,
+            Some(loaded) if loaded.key == key => anew && now.saturating_duration_since(loaded.at) > FRESH,
             _ => true,
         }
     }
@@ -1197,17 +1201,22 @@ mod tests {
     fn an_answer_counts_only_for_what_was_asked() {
         let mut state = State::default();
         let now = Instant::now();
-        assert!(state.due(now));
+        assert!(state.due(now, false));
         let month = state.ask();
-        assert!(!state.due(now), "on its way");
+        assert!(!state.due(now, true), "on its way");
         state.range = StatsRange::Week;
-        assert!(state.due(now), "another span is asked anew");
+        assert!(state.due(now, false), "another span is asked anew");
         let week = state.ask();
         assert!(!state.answered(month, Ok(overview()), now), "the month came late");
         assert!(state.data.is_none());
         assert!(state.answered(week, Ok(overview()), now));
-        assert!(!state.due(now));
-        assert!(state.due(now + FRESH + Duration::from_secs(1)), "older than a minute");
+        assert!(!state.due(now, true));
+        let later = now + FRESH + Duration::from_secs(1);
+        assert!(!state.due(later, false), "not on every tick while it stands");
+        assert!(state.due(later, true), "older than a minute when it comes into view");
+        state.stale = true;
+        assert!(state.due(now, false), "Refresh asks anew");
+        state.stale = false;
         state.account = Some("mail:anna@example.org".into());
         assert!(state.updating(), "the numbers of all accounts stay while one account loads");
     }

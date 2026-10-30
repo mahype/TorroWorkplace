@@ -2763,6 +2763,9 @@ pub struct App<S> {
     /// A mail of the overview's "Latest from people" that the list did not hold: it opens once the
     /// view "Personal" is loaded.
     open_after_load: Option<String>,
+    /// The order the window had before "Show them" of the overview listed oldest first (issue
+    /// #409): it comes back with the next view, so the person's own order is never changed for good.
+    order_back: Option<Order>,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -4021,6 +4024,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             },
             mail_overview: staged_overview(open, (Utc::now() + offset).with_timezone(&chrono::Local).date_naive()),
             open_after_load: None,
+            order_back: None,
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -4327,9 +4331,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.reading = false;
         self.cursor = None;
         self.pinned_mail = None;
-        // Another view shows the list: the overview's panel or page closes (issue #409).
+        // Another view shows the list: the overview's panel or page closes, and the order "Show them"
+        // set for its newsletters goes back (issue #409).
         self.mail_overview.open = false;
         self.open_after_load = None;
+        if let Some(order) = self.order_back.take() {
+            self.order = order;
+        }
         // Another view, or the pile again from the sidebar, ends "Focus & reply" (task E19.5), with
         // the undo of what was typed.
         self.end_focus();
@@ -4443,7 +4451,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 match result {
                     Ok(loaded) => {
                         let task = self.take(loaded);
-                        self.open_waiting_mail();
+                        self.open_pinned_person();
                         return task;
                     }
                     Err(err) => self.error = Some(load_failed(&err)),
@@ -5448,8 +5456,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::MailOverviewAllPeople => return self.show_view(self.personal_view()),
             Message::MailOverviewTidy => return self.show_old_newsletters(),
             Message::MailOverviewSender(address) => {
+                // A new search over all mail, at once – not in the scope of a search shown before.
                 self.mail_overview.open = false;
-                return self.update(Message::Suggest(mail_overview::from_query(&address)));
+                let query = mail_overview::from_query(&address);
+                self.search = query.clone();
+                self.suggesting = false;
+                self.search_due = None;
+                return self.show_search(View::Search(SearchView::new(&query, Scope::All, Sort::Relevance)));
             }
             Message::MailOverviewMute(address) => return self.mute_sender(&address),
             Message::Stats(range, stats) => {
@@ -5833,7 +5846,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             self.launch.open,
             Some(Open::MailOverviewLoading | Open::MailOverviewError | Open::MailOverviewEmpty)
         );
-        if forced || !self.mail_overview_shown() || !self.mail_overview.due(Instant::now()) {
+        let shown = self.mail_overview_shown();
+        // Numbers older than a minute are asked anew only when the overview comes into view, not on
+        // every tick while it stands (issue #409): counting reads the whole store.
+        let anew = shown && !self.mail_overview.showing;
+        self.mail_overview.showing = shown;
+        if forced || !shown || !self.mail_overview.due(Instant::now(), anew) {
             return Task::none();
         }
         let key = self.mail_overview.ask();
@@ -5893,19 +5911,41 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
+    /// After the first load of "Personal": the mail of "Latest from people" opens also when that page
+    /// does not hold it (another order, another account shown, further down), pinned in the reader as
+    /// a mail of `--message` is ([`App::pinned_mail`]). It never waits for a later load.
+    fn open_pinned_person(&mut self) {
+        self.open_waiting_mail();
+        let Some(id) = self.open_after_load.take() else { return };
+        self.selected_mail.clear();
+        self.cursor = Some(id.clone());
+        self.reading = true;
+        self.pinned_mail = Some(id);
+    }
+
     /// "Show them" of the overview's suggestion (issue #409): the newsletters and ads, oldest first,
-    /// to look through. Nothing is archived; the order is not remembered for the window.
+    /// to look through. Nothing is archived; the window's own order comes back with the next view
+    /// ([`App::order_back`]) and is not stored.
     fn show_old_newsletters(&mut self) -> Task<Message> {
+        if self.holds_round() {
+            self.close_menus();
+            return Task::none();
+        }
         let view = View::Category(mail::CategoryView {
             group: CategoryGroup::Info,
             only: None,
             categories: mail_overview::NEWSLETTERS_AND_ADS.to_vec(),
             label: tr("Newsletters and ads").to_owned(),
         });
-        let again = view == self.view && self.order != Order::OldestFirst;
-        self.order = Order::OldestFirst;
+        let again = view == self.view;
+        // The order before any earlier "Show them" is the one to come back.
+        let back = self.order_back.take().unwrap_or(self.order);
         let show = self.show_view(view);
-        if again { self.load() } else { show }
+        self.order = Order::OldestFirst;
+        self.order_back = (back != Order::OldestFirst).then_some(back);
+        self.more = None;
+        // `show_view` asked in the order before; asked again, its answer is dropped as stale.
+        if again || back != Order::OldestFirst { Task::batch([show, self.load()]) } else { show }
     }
 
     /// "Mute" of a sender in the overview (issue #409): the bell's menu for its newest mail, at its
@@ -9367,6 +9407,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// remembers it for its key ([`Launch::window_key`]) – not in the demo, which stores nothing.
     fn set_order(&mut self, order: Order) -> Task<Message> {
         self.order = order;
+        // Chosen by the person: it stays with the next view (issue #409).
+        self.order_back = None;
         self.order_chosen = true;
         self.more = None;
         let load = self.load();
@@ -10297,11 +10339,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         let label = matches!(class, SizeClass::Wide | SizeClass::Medium).then(|| tr("Overview"));
         let here = self.mail_overview_shown();
+        // Escape shows it only where it stands beside the mail (wide); medium and narrow close it.
+        let key = (class == SizeClass::Wide).then_some("Esc");
         let crumb = widgets::crumb_button(
             Icon::ChartColumn,
             label,
             tr("Show overview"),
-            Some("Esc"),
+            key,
             here,
             Some(Message::ShowMailOverview),
         );
@@ -12155,9 +12199,6 @@ fn order_words(class: SizeClass, choose_column: bool, arrange: bool) -> bool {
     class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange)
 }
 
-/// The header's button that turns the order (task E8.15): the icon and word of the order shown
-/// now ("Newest first", "Oldest first"), the word beside the icon with `words`, else as tooltip; a
-/// click turns it.
 /// The chevron between the steps of a path, quiet.
 fn path_chevron<'a>() -> Element<'a, Message> {
     icon::icon(Icon::ChevronRight, icon::SIZE_SM)
@@ -12165,6 +12206,9 @@ fn path_chevron<'a>() -> Element<'a, Message> {
         .into()
 }
 
+/// The header's button that turns the order (task E8.15): the icon and word of the order shown
+/// now ("Newest first", "Oldest first"), the word beside the icon with `words`, else as tooltip; a
+/// click turns it.
 fn order_button<'a>(order: Order, words: bool) -> Element<'a, Message> {
     let (icon, word) = match order {
         Order::NewestFirst => (Icon::ArrowDownWideNarrow, tr("Newest first")),
@@ -18637,6 +18681,43 @@ mod tests {
         let _ = app.update(Message::MailOverviewTidy);
         assert_eq!(app.order, Order::OldestFirst);
         assert!(matches!(&app.view, View::Category(view) if view.categories == mail_overview::NEWSLETTERS_AND_ADS));
+        let _ = app.update(Message::Show(View::All));
+        assert_eq!(app.order, Order::NewestFirst, "the window's own order comes back with the next view");
+        // A mail of a person the first page of "Personal" does not hold opens pinned in the reader,
+        // and no later load opens it by surprise.
+        let _ = app.update(Message::MailOverviewPerson("m:far".into()));
+        load(&mut app);
+        assert_eq!(
+            (app.cursor.as_deref(), app.reading, app.pinned_mail.as_deref()),
+            (Some("m:far"), true, Some("m:far"))
+        );
+        assert!(app.open_after_load.is_none());
+    }
+
+    /// Issue #409: the overview asks again when it comes into view with numbers older than a minute,
+    /// not on every tick while it stands, and on "Refresh".
+    #[test]
+    fn the_overview_asks_again_only_when_shown_anew_or_refreshed() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        deliver_overview(&mut app);
+        let asked =
+            |app: &App<DemoSource>| app.sent.iter().filter(|sent| matches!(sent, Sent::MailOverview(..))).count();
+        let before = asked(&app);
+        if let Some(loaded) = app.mail_overview.data.as_mut()
+            && let Some(old) = loaded.at.checked_sub(mail_overview::FRESH * 2)
+        {
+            loaded.at = old;
+        }
+        let _ = app.update(Message::Tick);
+        assert_eq!(asked(&app), before, "not on a tick while it stands");
+        let first = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(first));
+        let _ = app.update(Message::Escape);
+        assert_eq!(asked(&app), before + 1, "shown anew with old numbers");
+        deliver_overview(&mut app);
+        let _ = app.update(Message::Refresh);
+        assert_eq!(asked(&app), before + 2, "Refresh asks anew");
     }
 
     /// Issue #409: every demo state of the overview draws in every size.
