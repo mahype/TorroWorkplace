@@ -852,8 +852,8 @@ pub(crate) struct Mailbox {
     /// The last step of the indexer reached the server and found texts to fetch (issue #136):
     /// `indexing` in `mail.index_status`; `waiting` while it is not.
     indexing: AtomicBool,
-    /// Where its sync stands (`mail.sync_status`, issue #422); the service keeps it by id, so it
-    /// outlives this mailbox when the account is opened anew.
+    /// Where its sync stands (`mail.sync_status`, issue #422); a mailbox of the account opened
+    /// anew takes it over ([`SyncProgress::after`]).
     progress: Arc<SyncProgress>,
     events: broadcast::Sender<MailChange>,
     connector: Connector,
@@ -1234,8 +1234,8 @@ pub struct MailService {
     filters: super::filters::MailFilters,
     /// The last statistics of each account (issue #395, `mail.account_stats`).
     stats: KeptStats,
-    /// Where the sync of each account stands, by its id (issue #422, `mail.sync_status`): kept here
-    /// rather than at the mailbox alone, so opening an account anew keeps what its runs did.
+    /// The sync state of each account's newest mailbox, by its id (issue #422, `mail.sync_status`),
+    /// for the next mailbox of the account to take over what its runs did.
     progress: StdMutex<HashMap<String, Arc<SyncProgress>>>,
     /// Woken by every change of any account's [`SyncProgress`].
     progress_wake: Arc<Notify>,
@@ -2203,11 +2203,18 @@ impl MailService {
         }
     }
 
-    /// Where the sync of the account `id` stands, kept across openings of the account.
+    /// The sync state for a new mailbox of the account `id`: its own, taking over what the
+    /// account's mailbox before it kept ([`SyncProgress::after`]), so a run the old mailbox still
+    /// finishes never writes into it.
     fn progress_of(&self, id: &str) -> Arc<SyncProgress> {
         let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
-        let wake = &self.progress_wake;
-        Arc::clone(progress.entry(id.to_string()).or_insert_with(|| Arc::new(SyncProgress::new(Arc::clone(wake)))))
+        let fresh = match progress.get(id) {
+            Some(before) => SyncProgress::after(before),
+            None => SyncProgress::new(Arc::clone(&self.progress_wake)),
+        };
+        let fresh = Arc::new(fresh);
+        progress.insert(id.to_string(), Arc::clone(&fresh));
+        fresh
     }
 
     /// The mail accounts whose mail is on and that `reach` sees, or `account` alone of them, in the
@@ -2257,13 +2264,13 @@ impl MailService {
             .fold(0, u64::wrapping_add)
     }
 
-    /// Waits until the sync version of what `reach` sees (or of `account`) is no longer `after`:
-    /// at once when it is not, else for the next change, at most [`Timing::sync_wait`] after
-    /// `arrived`, and then no sooner than [`Timing::sync_pace`] after it. Changes of accounts out of
-    /// reach wake it, but it goes on waiting: they never change the sum it watches.
+    /// Waits until the sync version of what `reach` sees (or of `account`) is no longer `after`,
+    /// at most [`Timing::sync_wait`] after `arrived`, and in any case until [`Timing::sync_pace`]
+    /// after it: a client asking again with each answer, while a run changes the state many times a
+    /// second, gets no more than two answers a second. Changes of accounts out of reach wake it,
+    /// but it goes on waiting: they never change the sum it watches.
     pub async fn wait_for_sync(&self, reach: Reach<'_>, account: Option<&str>, after: u64, arrived: Instant) {
         let deadline = arrived + self.timing.sync_wait;
-        let mut waited = false;
         loop {
             // Registered before the version is read, so a change in between still wakes it.
             let notified = self.progress_wake.notified();
@@ -2272,14 +2279,11 @@ impl MailService {
             if self.sync_version(reach, account).await != after {
                 break;
             }
-            waited = true;
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 return;
             }
         }
-        if waited {
-            tokio::time::sleep_until((arrived + self.timing.sync_pace).min(deadline)).await;
-        }
+        tokio::time::sleep_until((arrived + self.timing.sync_pace).min(deadline)).await;
     }
 
     /// The stores of the mail accounts `reach` sees, in the order of `accounts.json`, each with

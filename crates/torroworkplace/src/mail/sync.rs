@@ -184,12 +184,12 @@ async fn sync_all_folders(mailbox: &Mailbox) -> Result<(), MailError> {
     progress.listed(&names);
     let mut conn = Conn::Commands(mailbox);
     for (index, target) in targets.iter().enumerate() {
-        progress.folder_begins(Some(index), &target.id);
+        let folder = progress.folder_begins(Some(index), &target.id);
         match sync_folder(&mut conn, mailbox, &store, target, Utc::now()).await {
-            Ok(outcome) => progress.folder_ends(outcome),
-            Err(MailError::Server(ImapError::NotFound(_))) => progress.folder_gone(),
+            Ok(outcome) => folder.end(outcome),
+            Err(MailError::Server(ImapError::NotFound(_))) => folder.gone(),
             Err(err) => {
-                progress.folder_ends(MailFolderSyncState::Failed);
+                folder.end(MailFolderSyncState::Failed);
                 return Err(err);
             }
         }
@@ -248,14 +248,14 @@ pub(crate) async fn sync_inbox(session: &mut Session, mailbox: &Mailbox) -> Resu
     let target = Target { id: folder.id, path, name: String::new(), role: Some(Role::Inbox) };
     // Only the inbox's record: this is no run of all folders (issue #422).
     let progress = mailbox.progress();
-    progress.folder_begins(None, &target.id);
+    let folder = progress.folder_begins(None, &target.id);
     match sync_folder(&mut Conn::Own(session), mailbox, &store, &target, Utc::now()).await {
         Ok(outcome) => {
-            progress.folder_ends(outcome);
+            folder.end(outcome);
             Ok(())
         }
         Err(err) => {
-            progress.folder_ends(MailFolderSyncState::Failed);
+            folder.end(MailFolderSyncState::Failed);
             Err(err)
         }
     }
@@ -2546,6 +2546,13 @@ mod tests {
         let mailbox = mailbox(dir.path(), &server).await;
 
         sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
+        // The inbox first: three new headers, their three texts (recent), no size missing.
+        let phases = mailbox.progress().phases();
+        assert_eq!(
+            phases[..3],
+            [(MailSyncPhase::Headers, 3), (MailSyncPhase::Texts, 3), (MailSyncPhase::Sizes, 0)],
+            "{phases:?}"
+        );
         let status = mailbox.progress().status(mailbox.id());
         assert_eq!(status.running, None);
         assert!(!status.queued);

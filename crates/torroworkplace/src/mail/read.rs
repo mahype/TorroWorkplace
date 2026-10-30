@@ -1688,9 +1688,9 @@ pub(crate) mod tests {
         (service, anna, bernd, second.id)
     }
 
-    /// #422: `mail.sync_status` answers at once without `after` and with an old version; with the
-    /// current one it waits for a change (answering no sooner than the pace) or until the wait is
-    /// over, unchanged. The states hold every folder with how many messages this device keeps.
+    /// #422: `mail.sync_status` answers at once without `after`, after the pace with an old version;
+    /// with the current one it waits for a change (answering no sooner than the pace) or until the
+    /// wait is over, unchanged. The states hold every folder with how many messages this device keeps.
     #[tokio::test]
     async fn the_sync_status_waits_for_a_change_or_until_the_wait_is_over() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1702,7 +1702,9 @@ pub(crate) mod tests {
         let begun = std::time::Instant::now();
         let (old, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, Some(version.wrapping_sub(1)))).await);
         assert_eq!(old, version);
-        assert!(begun.elapsed() < std::time::Duration::from_millis(100), "an old version answers at once");
+        let took = begun.elapsed();
+        assert!(took >= std::time::Duration::from_millis(100), "an old version waits for the pace: {took:?}");
+        assert!(took < std::time::Duration::from_millis(550), "but not for a change: {took:?}");
 
         let begun = std::time::Instant::now();
         let (same, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, Some(version))).await);
