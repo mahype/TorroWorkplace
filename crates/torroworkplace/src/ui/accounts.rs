@@ -2838,7 +2838,7 @@ pub fn sorting_sections(state: &State, data: &Data) -> SortingSections {
 
 /// The menu of *Sorting* under its button (issue #421): "None" and a chosen model the lists do not
 /// hold without a title, then "Decision models (fast)" and "Other models"; a section without models is
-/// left out. The slot's model carries the dot of the current choice.
+/// left out. The slot's model carries the dot of the current choice. Higher than a panel, it scrolls.
 fn sorting_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let SortingSections { first, fast, other, chosen } = sorting_sections(state, data);
     let items = |choices: Vec<SlotChoice>| -> Vec<MenuItem<'a, Message>> {
@@ -2860,12 +2860,14 @@ fn sorting_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     if !other.is_empty() {
         sections.push(MenuSection::titled(tr("Other models"), items(other)));
     }
-    widgets::floating(
-        &state.sorting_anchor,
-        Placement::Below(Align::End),
-        widgets::menu(sections),
-        Message::CloseSortingMenu,
-    )
+    // Many models turned on (OpenRouter) would reach past the window: past a panel's height it scrolls,
+    // as the pick list it replaces did.
+    let menu = scrollable(widgets::menu(sections))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .height(iced::Length::Shrink);
+    let menu = container(menu).max_height(size::panel());
+    widgets::floating(&state.sorting_anchor, Placement::Below(Align::End), menu, Message::CloseSortingMenu)
 }
 
 /// A model turned on that can take `slot`.
