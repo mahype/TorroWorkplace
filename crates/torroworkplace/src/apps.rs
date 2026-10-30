@@ -68,6 +68,7 @@ pub const MAIN_APP_VAR: &str = "TORRO_MAIN_APP";
 
 /// The systems [`main_app_found`] knows how to look on; a value, so every rule is tested everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "only the tests build the other systems' variants"))]
 enum System {
     /// The bundle `Torro Workplace.app`.
     MacOs,
