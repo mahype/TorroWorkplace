@@ -77,8 +77,8 @@ use torro_pim::EventTime;
 
 use crate::assistant::EngineKind;
 use crate::mail::{
-    AttachmentPlan, Delivery, FailedFile, MailHighlight, MailIndexProgress, MailSort, MoveTarget, PileFilter, SaveTo,
-    SavedFile,
+    AttachmentPlan, Delivery, FailedFile, MailHighlight, MailIndexProgress, MailOverview, MailSort, MoveTarget,
+    PileFilter, SaveTo, SavedFile,
 };
 use crate::{EventSuggestion, InboxStats, IpcError, Quiet, Request, Response, StatsRange, TaskSuggestion};
 
@@ -888,6 +888,47 @@ impl InboxClient {
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.overview` (issue #409): what came in over `range` up to today, by category and sender,
+    /// and what lies in the inbox, for `account` (`mail:<address>`) or every account the window
+    /// reaches. Sender names, addresses and their newest mail are foreign text.
+    pub async fn mail_overview(&self, account: Option<String>, range: StatsRange) -> Result<MailOverview, InboxError> {
+        match self.ask(Request::MailOverview { account, range }).await? {
+            Response::MailOverview { overview } => Ok(overview),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The newest `limit` messages of `categories` (issue #409, "Latest from people"): as
+    /// [`InboxClient::search_by_category`] – newest first, without the mail on a pile –, but only of
+    /// `account` when one is given.
+    pub async fn latest_in_categories(
+        &self,
+        account: Option<String>,
+        categories: Vec<Category>,
+        limit: u32,
+    ) -> Result<Vec<MessageSummary>, InboxError> {
+        let request = Request::SearchMail {
+            account,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories,
+            pile: Some(PileFilter::Without),
+        };
+        match self.ask(request).await? {
+            Response::MailMessages { messages, .. } => Ok(messages),
             other => Err(unexpected(other)),
         }
     }
@@ -1999,6 +2040,65 @@ mod tests {
         client.move_mail(vec!["m:1".into()], archive).await.expect("archived");
         client.delete_mail(vec!["m:1".into(), "m:2".into()]).await.expect("into the trash, not for good");
         assert_eq!(client.delete_mail(vec!["m:3".into()]).await, Err(InboxError::NotFound));
+    }
+
+    /// Issue #409: the overview asks `mail.overview` with its account and span, and the latest mail
+    /// of people as a search by category with the account and without the piles.
+    #[tokio::test]
+    async fn the_overview_asks_for_its_account_and_span() {
+        let core = start(|request| async move {
+            match request {
+                Request::MailOverview { account, range: StatsRange::Quarter } => {
+                    let day = NaiveDate::from_ymd_opt(2026, 10, 30).expect("a day");
+                    // One day for the account asked for, none for all: what arrived shows.
+                    let days = account
+                        .filter(|account| account == "mail:anna@example.org")
+                        .map(|_| crate::mail::OverviewDay { day, groups: Vec::new() })
+                        .into_iter()
+                        .collect();
+                    let overview = MailOverview {
+                        from: day,
+                        until: day,
+                        as_of: at(9),
+                        days,
+                        categories: Vec::new(),
+                        senders: Vec::new(),
+                        inbox: Vec::new(),
+                    };
+                    Response::MailOverview { overview }
+                }
+                Request::SearchMail {
+                    account,
+                    folder: None,
+                    query: None,
+                    limit: 5,
+                    cursor: None,
+                    order: None,
+                    categories,
+                    pile: Some(PileFilter::Without),
+                    ..
+                } if categories == [Category::Personal] => Response::MailMessages {
+                    messages: vec![summary(&format!("{account:?}"), "f:inbox")],
+                    cursor: None,
+                    source: crate::mail::MailSource::Cache,
+                    complete: true,
+                    incomplete_reason: None,
+                    highlights: Vec::new(),
+                    total_estimate: None,
+                },
+                other => Response::Error { code: "error".into(), message: format!("{other:?}") },
+            }
+        })
+        .await;
+        let client = core.client();
+        let overview = client.mail_overview(Some("mail:anna@example.org".into()), StatsRange::Quarter).await;
+        assert_eq!(overview.expect("counted").days.len(), 1, "the account went along");
+        let all = client.mail_overview(None, StatsRange::Quarter).await.expect("counted");
+        assert!(all.days.is_empty(), "no account: every one");
+        let people = client.latest_in_categories(Some("mail:anna@example.org".into()), vec![Category::Personal], 5);
+        assert_eq!(people.await.expect("found")[0].id, "Some(\"mail:anna@example.org\")");
+        let people = client.latest_in_categories(None, vec![Category::Personal], 5).await.expect("found");
+        assert_eq!(people[0].id, "None");
     }
 
     /// Answers the searches by role (task E18.3) with what arrived: a

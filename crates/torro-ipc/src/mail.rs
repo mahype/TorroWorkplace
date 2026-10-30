@@ -510,6 +510,91 @@ pub struct MailAccountStats {
     pub as_of: Option<DateTime<Utc>>,
 }
 
+/// What `mail.overview` counted (issue #409): how much mail came in over a span of local days, of
+/// which kind, from whom and how much of it was opened, and what lies in the inbox now. Counted from
+/// the core's store of every reachable account (or of one): every folder but Sent and Drafts, a
+/// message kept in two folders or accounts (the same `Message-ID`) once. Opened is what the server
+/// marks as seen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailOverview {
+    /// The first local day counted.
+    pub from: NaiveDate,
+    /// The last local day counted: today.
+    pub until: NaiveDate,
+    /// When the numbers were counted.
+    pub as_of: DateTime<Utc>,
+    /// Every day from `from` to `until`, also those without mail.
+    pub days: Vec<OverviewDay>,
+    /// The categories of what came in over the span, the most first. Mail without a category (not
+    /// sorted yet) counts under `category: null`.
+    pub categories: Vec<OverviewCategory>,
+    /// The senders with the most mail over the span, the most first, at most
+    /// [`OVERVIEW_SENDERS`].
+    pub senders: Vec<OverviewSender>,
+    /// The inbox folders now, per category, by age.
+    pub inbox: Vec<OverviewInbox>,
+}
+
+/// How many senders `mail.overview` names at most.
+pub const OVERVIEW_SENDERS: usize = 6;
+
+/// What came in on one local day, per main category ([`MailOverview::days`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewDay {
+    pub day: NaiveDate,
+    /// Only groups with mail; `group: null` is mail without a category.
+    pub groups: Vec<OverviewGroupCount>,
+}
+
+/// How much mail of one main category came in on a day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewGroupCount {
+    /// `None`: mail without a category, or of a category without a group.
+    pub group: Option<torro_mail::CategoryGroup>,
+    pub count: u32,
+}
+
+/// One category of what came in ([`MailOverview::categories`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewCategory {
+    /// `None`: mail that has no category yet.
+    pub category: Option<torro_mail::Category>,
+    /// Its main category in the catalogue now.
+    pub group: Option<torro_mail::CategoryGroup>,
+    pub count: u32,
+    /// Of `count`, the mail marked as seen.
+    pub opened: u32,
+}
+
+/// One of the senders with the most mail ([`MailOverview::senders`]). Name, address and `latest`
+/// come from the mail and are foreign text (`untrusted`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewSender {
+    /// The name of the sender's newest mail.
+    pub name: Option<String>,
+    /// The address, in lower case.
+    pub address: String,
+    pub count: u32,
+    /// Of `count`, the mail marked as seen.
+    pub opened: u32,
+    /// The category most of the sender's mail has; `None` when most has none.
+    pub category: Option<torro_mail::Category>,
+    /// The sender's newest mail outside the trash (the newest of all when every one is there).
+    pub latest: torro_mail::MessageSummary,
+}
+
+/// The mail of one category in the inbox folders by age ([`MailOverview::inbox`]): today, the six
+/// days before, older. Local days.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverviewInbox {
+    /// `None`: mail that has no category yet.
+    pub category: Option<torro_mail::Category>,
+    pub group: Option<torro_mail::CategoryGroup>,
+    pub today: u32,
+    pub week: u32,
+    pub older: u32,
+}
+
 /// How many message bodies an account keeps for offline reading. Search text is independent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -760,7 +845,7 @@ fn filter_folder(file: Option<&torro_mail::FilterFile>) -> Option<&str> {
 }
 
 impl Request {
-    /// The mail account a request names itself: `account` of `mail.list_folders`,
+    /// The mail account a request names itself: `account` of `mail.list_folders`, `mail.overview`,
     /// `mail.search_messages`, `mail.index_status` and the mail filters (`mail.create_filter`,
     /// `mail.update_filter`, `mail.preview_filter`, issue #339), the draft's `account` of `mail.save_draft`. `None` for every other
     /// request, and when the field is left out (then the core takes every account the caller
@@ -770,6 +855,7 @@ impl Request {
         match self {
             Request::MailFolders { account }
             | Request::MailAccountStats { account }
+            | Request::MailOverview { account, .. }
             | Request::SearchMail { account, .. }
             | Request::MailIndexStatus { account }
             // A mail filter for one account (issue #339); without one it runs in every account.
