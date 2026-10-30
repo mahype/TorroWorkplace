@@ -4529,14 +4529,16 @@ pub mod categorization {
                 let detail = (!notes.is_empty()).then(|| notes.join(" · "));
                 model_choice(label(&engine, &model.name), detail, chosen, Message::Model(engine, model.id))
             };
-            rows.push(heading(tr("Decision models (fast)")));
             if fast.is_empty() {
-                // Loading one lives in Settings › AI with its progress: "Use suggestion" offers one there.
+                // In place of the group: loading one lives in Settings › AI with its progress, where "Use
+                // suggestion" offers one (and turns on one already loaded).
                 let detail = tr("Sorting runs slower with a chat model. Settings › AI suggests one to download.");
                 let none = setting_row(None, tr("No decision model"), Some(detail.to_owned()), arrow());
                 rows.push(pressable(none, Some(Message::ManageModels)));
+            } else {
+                rows.push(heading(tr("Decision models (fast)")));
+                rows.extend(fast.into_iter().map(choice));
             }
-            rows.extend(fast.into_iter().map(choice));
             if !other.is_empty() {
                 rows.push(heading(tr("Other models")));
                 rows.extend(other.into_iter().map(choice));
