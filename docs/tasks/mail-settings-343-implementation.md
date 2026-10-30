@@ -4,13 +4,17 @@ Quelle: https://github.com/mahype/TorroWorkplace/issues/343 und `docs/prototypes
 
 Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, wenn native Bedienung, Speicherung und ein passender Laufzeit- oder Testnachweis vorliegen. Die HTML-Mockups selbst sind keine Implementierung.
 
-## Zwischenstand im Worktree
+## Stand nach #397
+
+Die Umsetzung ist mit Issue #397 (PR #407) auf `main` gekommen. Dabei gilt, was `main` inzwischen hatte: fünf eingebaute Hauptkategorien mit „Unsorted“ (#338), eigene ab `custom_group_6` mit fünf Farben, Filter statt Verstecken als fünfter Abschnitt (#339), der Platz *Sortieren* auch im Einrichtungsassistenten (#325), Laden Antwort für Antwort (#394/#395) und Kontakte als Sortierstufe (#390). Nur ein geöffnetes Konto ist breiter als die normale Lesebreite. Der Zwischenstand unten beschreibt den Branch vor dieser Übernahme.
+
+## Zwischenstand im Worktree (vor #397)
 
 - Kontenliste und Kontodetail verwenden jetzt vergleichbare Mailgrößen (RFC822.SIZE), einen schraffierten Soll-Anteil und den angrenzenden Indexstreifen. Fehlende Größen verhindern eine irreführende Verhältnisgrafik. Die tatsächliche SQLite-Größe steht gesondert.
-- Die allgemeine Speicher-Seite ist aus der Navigation entfernt; Offline-Auswahl und Anhang-Aufbewahrung stehen im Konto-Reiter „Speicher & Suche“. Die Mail-Seiten dürfen auf breiten Fenstern bis 1200 Pixel nutzen.
+- Die allgemeine Speicher-Seite ist aus der Navigation entfernt; Offline-Auswahl und Anhang-Aufbewahrung stehen im Konto-Reiter „Speicher & Suche“. Die Mail-Seiten durften auf breiten Fenstern bis 1200 Pixel nutzen; seit #397 gilt das nur für ein geöffnetes Konto (zwei Formulare nebeneinander).
 - Datum und maximale Größe sind als gespeicherte Konto-Strategien ergänzt. Die Synchronisierung und der Cache-Job verwenden denselben Auswahlbereich; eine bestehende 90-Tage-Strategie erscheint als entsprechendes Datum. Der Maximalwert verwendet bislang die gemeldete RFC822.SIZE-Summe und ist noch keine harte Grenze für Anhang-Cache, Index und Datenbankdatei.
 - Die Kategorisierung hat die Reihenfolge Automatische Einsortierung → Kategorien; Regel-Editoren stehen innerhalb ihrer Regelkarte.
-- Hauptkategorien haben nun stabile eigene IDs, Namen, sichtbare Icons und eine wählbare Designfarbe. Die vier bisherigen Gruppen werden bei der Datenbankmigration als bearbeitbare Hauptkategorien angelegt. Neue Hauptkategorien können leer beginnen; vorhandene Unterkategorien behalten bei einer Umbenennung ihre Schlüssel. Die Kategorienseite zeigt offene Gruppen und direkt bearbeitbare Beschreibungen der Unterkategorien.
+- Hauptkategorien haben nun stabile eigene IDs, Namen, sichtbare Icons und eine wählbare Designfarbe. Die eingebauten Gruppen werden bei der Datenbankmigration als bearbeitbare Hauptkategorien angelegt (seit #397 fünf, mit „Unsorted“, Schema 18). Neue Hauptkategorien können leer beginnen; vorhandene Unterkategorien behalten bei einer Umbenennung ihre Schlüssel. Die Kategorienseite zeigt offene Gruppen und direkt bearbeitbare Beschreibungen der Unterkategorien.
 - Neue Regeln werden an Position 0 gespeichert. Die Modellauswahl zeigt nur aktivierte Entscheidungsmodelle und gruppiert mehrere Anbieter. Kategorie-Icons erscheinen als sichtbares Raster.
 - „Lesen & Schreiben“ enthält die Standard-Absenderadresse, das Schreibformat und eine hohe Signaturfläche mit Formatierungsaktionen. Formatierte Signaturen werden sicher in HTML und als Textkopie versendet. Der Konto-Reiter zeigt Identität und Verbindung, ohne die Signatur zu duplizieren.
 - Die frühere Anhang-Vorabladeoption ist auch für alte gespeicherte Policies deaktiviert. Alte „Nur Kopfzeilen“-Konten werden ausdrücklich zur Auswahl einer der drei neuen Strategien aufgefordert.
@@ -27,7 +31,7 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 - Die Sichtprüfung von `--demo --open account-writing` im 1100-Punkt-Fenster zeigte zunächst untereinander gestapelte Kontodaten und Server. Die Umschaltbreite ist korrigiert: jetzt stehen die vier Zugangsfelder links und Verbindung plus offene Systemordner rechts. Die beiden Verbindungsaktionen stehen in der schmalen rechten Spalte untereinander.
 - `--demo --settings reading` zeigt Leseformat, Farben, Standard-Absender, Schreibformat und die acht Zeilen hohe Signatur mit Formatierungsleiste ohne Vorschau. Ein langer Erklärungstext unter den zwei Leseoptionen ist entfernt, damit die Signatur früher sichtbar wird.
 - Der vollständige Push-Gate-Abgleich hat nicht mehr verwendete Statistik-Karten und deren Tests aus dem Code entfernt. Clippy für alle Workspace-Ziele und `cargo test --workspace` bestehen. Der Erstabgleich-Test hat jetzt eine eindeutig ältere Nachricht statt eines sekundengenauen 90-Tage-Grenzfalls; ein unter Vollast einmal abgelaufener Erweiterungs-Test bestand isoliert und im zweiten vollständigen Lauf.
-- Build und gezielte Tests laufen; native Sichtprüfung und die übrigen Anforderungen stehen noch aus.
+- Build und gezielte Tests liefen; die native Sichtprüfung in allen Größenklassen folgte mit #397.
 
 ## Navigation und Oberfläche
 
@@ -68,6 +72,6 @@ Diese Liste bildet die Produktanforderungen ab. Ein Punkt gilt erst als fertig, 
 
 ## Abnahme
 
-- [ ] Schmale Fensterbreiten visuell prüfen; der Render-Test baut alle Mail-Einstellungsseiten bei 360 Pixeln, native Screenshots liegen bisher nur für das Standardfenster vor.
+- [x] Schmale Fensterbreiten visuell prüfen: mit #397 in allen sechs Größenklassen (`--demo`), Muss-Funde behoben.
 - [x] Gezielte Daten-/UI-Tests und Repository-Prüfungen ausführen.
 - [ ] Letzte Laufzeitabnahme mit echtem IMAP-Konto und KI-Entscheidungsmodell; die Demo und Unit-Tests decken die Bedienung und Datenpfade ab.
