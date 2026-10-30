@@ -2069,7 +2069,7 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
             if let Ok(Response::Settings { settings }) = client::call(&socket, &Request::Settings).await {
                 data.settings = settings;
             }
-            if let Ok(Response::Apps { apps }) = client::call(&socket, &Request::ListApps).await {
+            if let Ok(Response::Apps { apps, .. }) = client::call(&socket, &Request::ListApps).await {
                 data.apps = Some(apps);
             }
             if let Ok(Response::Approvals { approvals }) = client::call(&socket, &Request::ListApprovals).await {

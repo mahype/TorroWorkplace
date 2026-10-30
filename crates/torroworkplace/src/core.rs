@@ -5142,7 +5142,9 @@ impl Core {
             // A client's target comes through `handle_client` or `run_approved` with its maker; here
             // a client reaches no file of the tools (`Core::open_target`).
             Request::OpenApp { app, target } => self.open_app_request(&app, target.as_deref(), reach, Maker::App).await,
-            Request::ListApps => Response::Apps { apps: crate::apps::list() },
+            Request::ListApps => {
+                Response::Apps { apps: crate::apps::list(), main_app: crate::apps::main_app_installed() }
+            }
             Request::ListClients => Response::Clients { clients: self.clients.list() },
             // A bot's client is made with its bot (`bots.save_bot`, task B.1), never on its own.
             Request::CreateClient { kind, .. } if kind.trim() == torro_ipc::api::BOT_CLIENT => Response::Error {
@@ -15708,9 +15710,11 @@ mod tests {
     #[tokio::test]
     async fn apps_are_listed_without_the_core() {
         let dir = tempfile::tempdir().unwrap();
-        let Response::Apps { apps } = core(dir.path()).handle(Request::ListApps).await else {
+        let Response::Apps { apps, main_app } = core(dir.path()).handle(Request::ListApps).await else {
             panic!("ListApps is answered with Apps");
         };
+        // Whether the main application is installed comes with the list (issue #408).
+        assert_eq!(main_app, crate::apps::main_app_installed());
         let classes: Vec<_> = apps.iter().map(|app| app.window_class.as_str()).collect();
         // The inbox is three windows of one binary (task E8.1).
         assert_eq!(
