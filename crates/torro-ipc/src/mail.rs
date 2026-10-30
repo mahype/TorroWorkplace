@@ -510,6 +510,149 @@ pub struct MailAccountStats {
     pub as_of: Option<DateTime<Utc>>,
 }
 
+/// Where the sync of one mail account stands (`mail.sync_status`, issue #422): the run under way,
+/// the last one and every folder the service saw since it started. Kept only in memory: after a
+/// restart of the core it is empty until the first run begins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailSyncStatus {
+    /// The account: `mail:<address>`.
+    pub account: String,
+    /// The run of all folders under way, if one is.
+    #[serde(default)]
+    pub running: Option<MailSyncRun>,
+    /// A run waits for the one under way (or for the inbox sync of the IDLE connection) to end.
+    #[serde(default)]
+    pub queued: bool,
+    /// The last run of all folders that ended since the core started.
+    #[serde(default)]
+    pub last_run: Option<MailSyncLastRun>,
+    /// Every folder the runs listed, in their order (the inbox first), with what the last run did.
+    #[serde(default)]
+    pub folders: Vec<MailFolderSync>,
+}
+
+/// What started a run of all folders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailSyncTrigger {
+    /// The first run after the account's worker started.
+    Start,
+    /// The run every five minutes.
+    Scheduled,
+    /// `accounts.sync` ("Sync now").
+    Manual,
+}
+
+/// The step a run is at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailSyncPhase {
+    /// Listing the folders on the server.
+    Listing,
+    /// Comparing a folder's messages and flags with the server.
+    Checking,
+    /// Loading the headers of new messages.
+    Headers,
+    /// Loading the texts the offline policy keeps.
+    Texts,
+    /// Asking for the sizes the store lacks.
+    Sizes,
+    /// Cleaning up kept texts and originals and reading the quota.
+    Finishing,
+}
+
+/// The run of all folders under way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailSyncRun {
+    pub trigger: MailSyncTrigger,
+    pub started: DateTime<Utc>,
+    pub phase: MailSyncPhase,
+    /// The folder being synced, counted from 1; 0 while the folders are listed.
+    pub folder_index: u32,
+    /// How many folders this run syncs; 0 while they are listed.
+    pub folder_count: u32,
+    /// The folder being synced (`f:…`), if any.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// How many items of the phase are done (headers, texts or sizes).
+    pub done: u32,
+    /// Of how many; 0 when the phase counts nothing.
+    pub of: u32,
+}
+
+/// How the last run of all folders ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailSyncLastRun {
+    pub trigger: MailSyncTrigger,
+    pub started: DateTime<Utc>,
+    pub finished: DateTime<Utc>,
+    /// Every folder was synced and the run ended without an error.
+    pub ok: bool,
+    /// Why it did not, for people (localized).
+    #[serde(default)]
+    pub problem: Option<String>,
+    /// How many folders were synced to their end.
+    pub folders_done: u32,
+    /// How many folders the run listed; 0 when it ended before.
+    pub folder_count: u32,
+    /// How long listing the folders took.
+    pub listing_ms: u64,
+    /// How long the clean-up and the quota at the end took.
+    pub finishing_ms: u64,
+}
+
+/// What became of one folder in the last run that reached it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailFolderSyncState {
+    /// Nothing changed on the server since the last complete sync.
+    UpToDate,
+    /// Synced to its end.
+    Synced,
+    /// Being synced now.
+    Running,
+    /// Listed by the run under way, not reached yet.
+    Waiting,
+    /// The sync of this folder failed; the run ended there.
+    Failed,
+    /// The run ended before it reached this folder.
+    NotReached,
+    /// The server renumbered the folder meanwhile; the next run starts it over.
+    Interrupted,
+}
+
+/// How long the steps of a folder's sync took, in milliseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailFolderSteps {
+    pub checking_ms: u64,
+    pub headers_ms: u64,
+    pub texts_ms: u64,
+    pub sizes_ms: u64,
+}
+
+/// One folder of `mail.sync_status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailFolderSync {
+    /// The folder's id (`f:…`).
+    pub folder: String,
+    /// Its name as the server lists it: data from outside.
+    pub name: String,
+    /// How many messages the server reported at the last `SELECT`; `None` before one.
+    #[serde(default)]
+    pub on_server: Option<u32>,
+    /// How many messages this device keeps of it.
+    pub stored: u64,
+    /// When its sync last ended.
+    #[serde(default)]
+    pub last_synced: Option<DateTime<Utc>>,
+    /// How long its last sync took; `None` before one ended.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub steps: MailFolderSteps,
+    pub state: MailFolderSyncState,
+}
+
 /// What `mail.overview` counted (issue #409): how much mail came in over a span of local days, of
 /// which kind, from whom and how much of it was opened, and what lies in the inbox now. Counted from
 /// the core's store of every reachable account (or of one): every folder but Sent and Drafts, a
@@ -845,7 +988,7 @@ fn filter_folder(file: Option<&torro_mail::FilterFile>) -> Option<&str> {
 }
 
 impl Request {
-    /// The mail account a request names itself: `account` of `mail.list_folders`, `mail.overview`,
+    /// The mail account a request names itself: `account` of `mail.list_folders`, `mail.overview`, `mail.sync_status`,
     /// `mail.search_messages`, `mail.index_status` and the mail filters (`mail.create_filter`,
     /// `mail.update_filter`, `mail.preview_filter`, issue #339), the draft's `account` of `mail.save_draft`. `None` for every other
     /// request, and when the field is left out (then the core takes every account the caller
@@ -853,6 +996,8 @@ impl Request {
     /// ([`Request::message_ids`]).
     pub fn mail_account(&self) -> Option<&str> {
         match self {
+            // The sync's state (issue #422): without `account`, every account in reach.
+            Request::MailSyncStatus { account, .. } => account.as_deref(),
             Request::MailFolders { account }
             | Request::MailAccountStats { account }
             | Request::MailOverview { account, .. }
