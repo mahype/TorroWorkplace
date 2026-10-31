@@ -340,7 +340,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{seat} · open models from many makers", "{seat} · offene Modelle vieler Hersteller"),
     ("{seat} · open weights", "{seat} · offene Gewichte"),
     ("{seat} · decides only", "{seat} · entscheidet nur"),
-    ("For sorting mail", "Zum Sortieren"),
+    ("For sorting mail", "Zum Sortieren von Mail"),
     // Control centre: when the setup shows (W.9)
     ("Continue setup", "Einrichtung fortsetzen"),
     ("Finish setup", "Einrichtung abschließen"),
@@ -3075,7 +3075,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Nur wenn der Server einen verlangt. Er bleibt im Schlüsselbund des Systems; Agenten sehen ihn nie.",
     ),
     ("Open models from many makers, with one API key", "Offene Modelle vieler Hersteller mit einem API-Schlüssel"),
-    ("Sorts mail only, no chat", "Sortiert nur Mail, kein Chat"),
+    ("{seat} · sorts mail only, no chat", "{seat} · sortiert nur Mail, kein Chat"),
     (
         "OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.",
         "OpenRouter bietet offene Modelle wie Qwen, Llama und Mistral über einen API-Schlüssel an. Torro Workplace listet die Modelle mit offenen Gewichten.",

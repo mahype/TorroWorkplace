@@ -1713,31 +1713,37 @@ fn signing_in_step(data: &Data) -> Element<'_, Message> {
 fn ai_step(state: &State) -> Element<'_, Message> {
     let local = AiProvider::LOCAL.into_iter().map(|provider| local_ai_row(&state.ai, provider)).collect();
     let footer = tr("Models on this computer run here. Nothing you ask them leaves it.");
-    let way = |provider, name: &'static str, summary: &'static str| {
-        pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(Message::ChooseAi(provider)))
+    let way = |provider, name: &'static str, summary: String| {
+        pressable(setting_row(None, name, Some(summary), chevron()), Some(Message::ChooseAi(provider)))
     };
-    let mut others: Vec<Element<'_, Message>> =
-        AiProvider::CLOUD.into_iter().map(|provider| way(provider, provider.name(), ai_summary(provider))).collect();
+    // Jev only sorts mail (issue #323): a group of its own right after this computer, as in the setup.
+    let sorting = vec![way(AiProvider::Jev, AiProvider::Jev.name(), ai_summary(AiProvider::Jev))];
+    let mut others: Vec<Element<'_, Message>> = AiProvider::CLOUD
+        .into_iter()
+        .filter(|provider| *provider != AiProvider::Jev)
+        .map(|provider| way(provider, provider.name(), ai_summary(provider)))
+        .collect();
     others.push(way(
         AiProvider::OpenAiCompatible,
         tr("Other OpenAI-compatible server"),
-        tr("vLLM, llama.cpp or a server of your own"),
+        tr("vLLM, llama.cpp or a server of your own").to_string(),
     ));
     column![
         widgets::group(tr("On this computer"), local, Some(footer.to_string())),
+        widgets::group(tr("For sorting mail"), sorting, None),
         widgets::group(tr("More providers"), others, None),
     ]
     .spacing(layout::section_gap())
     .into()
 }
 
-/// What a cloud provider's row says in the AI step: OpenRouter what it offers, Jev that it only
-/// sorts mail (issue #323), every other provider where it is.
-fn ai_summary(provider: AiProvider) -> &'static str {
+/// What a cloud provider's row says in the AI step: OpenRouter what it offers, Jev where it is and
+/// that it only sorts mail (issue #323), every other provider where it is.
+fn ai_summary(provider: AiProvider) -> String {
     match provider {
-        AiProvider::OpenRouter => tr("Open models from many makers, with one API key"),
-        AiProvider::Jev => tr("Sorts mail only, no chat"),
-        _ => provider.seat().label(),
+        AiProvider::OpenRouter => tr("Open models from many makers, with one API key").to_string(),
+        AiProvider::Jev => trf("{seat} · sorts mail only, no chat", &[("seat", &provider.seat().label())]),
+        _ => provider.seat().label().to_string(),
     }
 }
 
@@ -2672,10 +2678,12 @@ mod tests {
 
     use super::*;
 
-    /// Issue #323: Jev's row in the AI step says it only sorts mail; the others keep theirs.
+    /// Issue #323: Jev's row in the AI step says where it is and that it only sorts mail; the others
+    /// keep theirs.
     #[test]
     fn the_ai_step_says_jev_sorts_mail_only() {
-        assert_eq!(ai_summary(AiProvider::Jev), tr("Sorts mail only, no chat"));
+        let seat = AiProvider::Jev.seat().label();
+        assert_eq!(ai_summary(AiProvider::Jev), trf("{seat} · sorts mail only, no chat", &[("seat", &seat)]));
         assert_eq!(ai_summary(AiProvider::OpenRouter), tr("Open models from many makers, with one API key"));
         assert_eq!(ai_summary(AiProvider::Mistral), AiProvider::Mistral.seat().label());
     }

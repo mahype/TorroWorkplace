@@ -694,8 +694,6 @@ fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Elem
     setting_row(Some(tile), provider.name(), Some(detail), control)
 }
 
-/// A cloud provider: its first letter, its name, where it is (and open weights), and "Add key" or
-/// "Connected".
 /// The cloud providers in their groups, after the servers on this computer: first Jev, which only
 /// sorts mail (issue #323), then the open models, the providers and those in China.
 fn cloud_groups() -> Vec<(&'static str, Vec<AiProvider>)> {
@@ -721,6 +719,8 @@ fn cloud_detail(provider: AiProvider) -> String {
     }
 }
 
+/// A cloud provider: its first letter, its name, where it is (and open weights), and "Add key" or
+/// "Connected".
 fn cloud_row(data: &Data, provider: AiProvider) -> Element<'_, Message> {
     let tile = widgets::source_tile(TileFace::letter(provider.name()), TileSize::Medium, None);
     let detail = cloud_detail(provider);
