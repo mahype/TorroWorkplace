@@ -24973,6 +24973,84 @@ mod tests {
         assert_eq!(category_job_decider(&core.settings, &core.ai, &scope).await, Err(categorize::Refusal::NotLocal));
     }
 
+    /// Issue #323: Jev is a model elsewhere like every cloud model. With the permission of the slot
+    /// Sorting off it is not asked; with it on, `inbox.classify_item` takes its category as the
+    /// model's, with its confidence.
+    #[tokio::test]
+    async fn jev_sorts_mail_only_with_the_permission_of_sorting() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_core::ai::AiSlot;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        let raw = format!(
+            "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: Invoice 7\r\n\
+             Date: {}\r\nMessage-ID: <m1@example.org>\r\nContent-Type: text/plain\r\n\r\nPlease pay.\r\n",
+            Utc::now().to_rfc2822()
+        );
+        imap.add("INBOX", &raw, &[]);
+        let anna = mail_account("anna@example.org", &imap.endpoint);
+        store_accounts(dir.path(), &keys, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &keys);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+
+        let jev = httpmock::MockServer::start_async().await;
+        let (decides, _) = crate::account::ai::tests::mock_jev(&jev).await;
+        let core = Core {
+            ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())),
+            ..audited(dir.path())
+        }
+        .with_mail(mail);
+        let key = torro_core::account::Secret::new(crate::account::ai::tests::KEY);
+        let engine = core.ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), key).await.expect("jev").id;
+        let probes = decides.calls_async().await;
+        assert_eq!(core.handle(switch(&engine, torro_core::ai::JEV_MODEL, true)).await, Response::Ok);
+        let answer = core.handle(set_slot(AiSlot::Decide, Some(&engine), Some(torro_core::ai::JEV_MODEL))).await;
+        assert!(matches!(answer, Response::AiAssignments { .. }), "the person picks Jev: {answer:?}");
+
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };
+        let id = messages.first().expect("the mail").id.clone();
+
+        // The permission off: refused, and Jev is not asked.
+        let off = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
+        assert_eq!(core.handle(off).await, Response::Ok);
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NotLocal));
+        let refused = core.handle(Request::ClassifyItem { id: id.clone() }).await;
+        assert!(!matches!(refused, Response::ItemCategory { .. }), "{refused:?}");
+        assert_eq!(decides.calls_async().await, probes, "Jev was not asked");
+
+        // The permission on: Jev decides, and the category is the model's.
+        let on = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        let answer = core.handle(Request::ClassifyItem { id }).await;
+        assert!(matches!(answer, Response::ItemCategory { .. }), "{answer:?}");
+        assert_eq!(decides.calls_async().await, probes + 1, "asked once");
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        let held = messages.first().and_then(|message| message.category).expect("a category");
+        assert_eq!(
+            (held.category, held.source, held.confidence),
+            (torro_mail::Category::Invoice, torro_mail::CategorySource::Model, Some(88))
+        );
+    }
+
     /// Review of issue #325: a client that names a model for a sorting run gets one elsewhere only when
     /// it is what sorting uses now – before any approval and in the handler an approval runs on to –,
     /// since the permission of Sorting was given to that model, not to whichever an agent names. A
