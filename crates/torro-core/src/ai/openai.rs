@@ -63,8 +63,9 @@ pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) 
             | AiProvider::Gemini => {
                 body["reasoning_effort"] = json!(effort.id());
             }
-            // Anthropic and OpenAI use their own request bodies and never come through here.
-            AiProvider::Anthropic | AiProvider::OpenAi => {}
+            // Anthropic and OpenAI use their own request bodies, and Jev cannot chat (issue #323):
+            // none of them comes through here.
+            AiProvider::Anthropic | AiProvider::OpenAi | AiProvider::Jev => {}
             // Not documented for their OpenAI-compatible APIs, and an unknown field may be refused:
             // these think as their models do.
             AiProvider::Mistral

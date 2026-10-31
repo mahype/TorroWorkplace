@@ -86,6 +86,10 @@ pub enum AiProvider {
     /// MiniMax, its international endpoint. Written `minimax`.
     #[serde(rename = "minimax")]
     MiniMax,
+    /// Jev by TypeSafe (`https://api.typesafe.ai/v1`, issue #323): a decision model in the cloud. It
+    /// only decides over the SystemOne protocol ([`systemone`]) and cannot chat; its one model is
+    /// fixed ([`AiProvider::fixed_models`]), the server lists none.
+    Jev,
 }
 
 /// Where a provider's servers are (task W.3, `docs/einrichtung.md`): shown with each provider, so
@@ -119,8 +123,9 @@ impl Seat {
 
 impl AiProvider {
     /// Every provider in the order the suite lists them (Open First): this computer, open models in
-    /// the cloud, the providers, those run from China, and any other server last.
-    pub const ALL: [AiProvider; 14] = [
+    /// the cloud, the providers, those run from China, Jev (it only sorts mail, issue #323), and any
+    /// other server last.
+    pub const ALL: [AiProvider; 15] = [
         AiProvider::Ollama,
         AiProvider::LmStudio,
         AiProvider::Strata,
@@ -134,6 +139,7 @@ impl AiProvider {
         AiProvider::Kimi,
         AiProvider::Glm,
         AiProvider::MiniMax,
+        AiProvider::Jev,
         AiProvider::OpenAiCompatible,
     ];
 
@@ -142,7 +148,7 @@ impl AiProvider {
     pub const LOCAL: [AiProvider; 3] = [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::Strata];
 
     /// The cloud providers with an API key of their own (task W.3), in the order of [`AiProvider::ALL`].
-    pub const CLOUD: [AiProvider; 10] = [
+    pub const CLOUD: [AiProvider; 11] = [
         AiProvider::OpenRouter,
         AiProvider::Anthropic,
         AiProvider::OpenAi,
@@ -153,6 +159,7 @@ impl AiProvider {
         AiProvider::Kimi,
         AiProvider::Glm,
         AiProvider::MiniMax,
+        AiProvider::Jev,
     ];
 
     /// The product's name, not translated: `Ollama`, `LM Studio`, `OpenRouter`; the protocol's name
@@ -173,6 +180,7 @@ impl AiProvider {
             AiProvider::Kimi => "Kimi",
             AiProvider::Glm => "GLM",
             AiProvider::MiniMax => "MiniMax",
+            AiProvider::Jev => "Jev",
         }
     }
 
@@ -194,6 +202,7 @@ impl AiProvider {
             AiProvider::Kimi => "kimi",
             AiProvider::Glm => "glm",
             AiProvider::MiniMax => "minimax",
+            AiProvider::Jev => "jev",
         }
     }
 
@@ -220,6 +229,8 @@ impl AiProvider {
             AiProvider::Kimi => Some("https://api.moonshot.ai/v1"),
             AiProvider::Glm => Some("https://api.z.ai/api/paas/v4"),
             AiProvider::MiniMax => Some("https://api.minimax.io/v1"),
+            // TypeSafe's SystemOne API (issue #323): decisions go to `<base>/systemone`.
+            AiProvider::Jev => Some("https://api.typesafe.ai/v1"),
         }
     }
 
@@ -256,6 +267,8 @@ impl AiProvider {
             AiProvider::Kimi => Some("https://platform.moonshot.ai/console/api-keys"),
             AiProvider::Glm => Some("https://z.ai/manage-apikey/apikey-list"),
             AiProvider::MiniMax => Some("https://platform.minimax.io/user-center/basic-information/interface-key"),
+            // The page "API Keys" of TypeSafe's console (issue #323, confirmed on 2026-10-31).
+            AiProvider::Jev => Some("https://console.typesafe.ai/keys"),
             AiProvider::Ollama | AiProvider::LmStudio | AiProvider::Strata | AiProvider::OpenAiCompatible => None,
         }
     }
@@ -265,7 +278,12 @@ impl AiProvider {
         match self {
             AiProvider::Ollama | AiProvider::LmStudio | AiProvider::Strata => Seat::ThisComputer,
             AiProvider::OpenAiCompatible => Seat::OwnServer,
-            AiProvider::OpenRouter | AiProvider::Anthropic | AiProvider::OpenAi | AiProvider::Gemini => Seat::Us,
+            // TypeSafe is in San Francisco (decision 2 of the plan for issue #323).
+            AiProvider::OpenRouter
+            | AiProvider::Anthropic
+            | AiProvider::OpenAi
+            | AiProvider::Gemini
+            | AiProvider::Jev => Seat::Us,
             AiProvider::Mistral => Seat::Eu,
             AiProvider::DeepSeek | AiProvider::Qwen | AiProvider::Kimi | AiProvider::Glm | AiProvider::MiniMax => {
                 Seat::China
@@ -288,7 +306,31 @@ impl AiProvider {
                 | AiProvider::MiniMax
         )
     }
+
+    /// The models of a provider whose server lists none (issue #323): Jev's one model,
+    /// [`JEV_MODEL`], which decides only – no tools, no reasoning, closed weights, computed in the
+    /// cloud, and off like every cloud model until the person turns it on. `None` for every other
+    /// provider, whose models come from its server.
+    pub fn fixed_models(self) -> Option<Vec<AiModel>> {
+        match self {
+            AiProvider::Jev => Some(vec![AiModel {
+                id: JEV_MODEL.to_string(),
+                name: "Jev".to_string(),
+                tools: Some(false),
+                open_weights: Some(false),
+                context: None,
+                reasoning: Some(false),
+                remote: Some(true),
+                decision: Some(true),
+                enabled: false,
+            }]),
+            _ => None,
+        }
+    }
 }
+
+/// The id of Jev's one model ([`AiProvider::fixed_models`]), as TypeSafe's API names it.
+pub const JEV_MODEL: &str = "jev-latest";
 
 /// One model an AI account offers, as `ai.list_models` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -709,9 +751,11 @@ impl Effort {
 
 /// `models` without those known to have closed weights (Open First, decision 4 in
 /// `docs/assistent.md`): a model whose [`AiModel::open_weights`] is unknown stays, so the filter
-/// changes nothing on a local server. The order stays.
+/// changes nothing on a local server. A decision model ([`AiModel::decision`] is `true`, like Jev)
+/// stays as well (issue #323): it writes no text, it only picks among given options, so sorting mail
+/// keeps it in sight. The order stays.
 pub fn open_weights_only(models: Vec<AiModel>) -> Vec<AiModel> {
-    models.into_iter().filter(|model| model.open_weights != Some(false)).collect()
+    models.into_iter().filter(|model| model.open_weights != Some(false) || model.decision == Some(true)).collect()
 }
 
 /// Who wrote a message of a conversation.
@@ -952,8 +996,9 @@ pub trait Provider: Send + Sync {
     /// with probabilities out. No text, nothing streamed.
     ///
     /// The default refuses, so only a server that speaks the protocol need override it – today
-    /// Ollama from 0.35 on. Anthropic and every other provider keep the default, and asking the
-    /// wrong account is an orderly [`AiError::Invalid`] instead of a request that goes nowhere.
+    /// Ollama from 0.35 on and Jev (issue #323). Anthropic and every other provider keep the
+    /// default, and asking the wrong account is an orderly [`AiError::Invalid`] instead of a request
+    /// that goes nowhere.
     fn decide<'a>(
         &'a self,
         request: &'a systemone::DecisionRequest,
@@ -1066,6 +1111,39 @@ mod tests {
             vec![model("qwen/qwen3-14b", Some(true)), model("openai/gpt-4o", Some(false)), model("qwen3:8b", None)];
         let kept: Vec<String> = open_weights_only(models).into_iter().map(|m| m.id).collect();
         assert_eq!(kept, ["qwen/qwen3-14b", "qwen3:8b"]);
+    }
+
+    /// Issue #323: a closed decision model like Jev stays, it only decides.
+    #[test]
+    fn the_filter_keeps_a_closed_decision_model() {
+        let jev = AiProvider::Jev.fixed_models().expect("a fixed list");
+        let models = [vec![model("openai/gpt-4o", Some(false))], jev].concat();
+        let kept: Vec<String> = open_weights_only(models).into_iter().map(|m| m.id).collect();
+        assert_eq!(kept, [JEV_MODEL]);
+    }
+
+    /// Issue #323: Jev is a cloud provider in the US with a key, one fixed model that decides only
+    /// and is off at first; no other provider has a fixed list.
+    #[test]
+    fn jev_decides_only_with_one_fixed_model() {
+        let jev = AiProvider::Jev;
+        assert_eq!((jev.name(), jev.id()), ("Jev", "jev"));
+        assert_eq!(jev.default_url(), Some("https://api.typesafe.ai/v1"));
+        assert_eq!(jev.key_url(), Some("https://console.typesafe.ai/keys"));
+        assert_eq!(jev.seat(), Seat::Us);
+        assert!(jev.needs_key() && !jev.open_weights() && jev.china_url().is_none());
+        let models = jev.fixed_models().expect("a fixed list");
+        assert_eq!(models.len(), 1);
+        let only = &models[0];
+        assert_eq!(only.id, JEV_MODEL);
+        assert_eq!(
+            (only.tools, only.open_weights, only.reasoning, only.remote, only.decision),
+            (Some(false), Some(false), Some(false), Some(true), Some(true))
+        );
+        assert!(!only.enabled && only.can_decide() && !only.decides_by_chat());
+        for other in AiProvider::ALL.into_iter().filter(|provider| *provider != jev) {
+            assert!(other.fixed_models().is_none(), "{other:?}");
+        }
     }
 
     #[test]
