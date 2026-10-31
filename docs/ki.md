@@ -56,6 +56,7 @@ benutzt nie den Schlüssel eines Agenten.
 | **Selbst gehostet** | eigener Server mit einem der obigen; Nextcloud Assistant (TaskProcessing-API, z. B. mit lokalem LLM auf dem Nextcloud-Server) | OpenAI-kompatibel bzw. über das vorhandene Nextcloud-Konto, ohne neuen Schlüssel |
 | **Offene Modelle in der Cloud** | **OpenRouter** (Qwen, Llama, Mistral, DeepSeek … über einen Schlüssel; Filter „open weights“) | OpenAI-kompatibel (`https://openrouter.ai/api/v1`); API-Schlüssel |
 | **Anbieter** | Anthropic, OpenAI, Mistral, Google | eigene Schnittstelle (Anthropic) bzw. OpenAI-kompatibel; API-Schlüssel |
+| **Zum Sortieren** | **Jev** von TypeSafe (Issue #323), nur Entscheiden | SystemOne (`https://api.typesafe.ai/v1/systemone`); API-Schlüssel, ein festes Modell `jev-latest` |
 
 **Strata** (MIT, Standardadresse `http://127.0.0.1:8080/v1`) ist ein lokaler Server für sehr große offene
 Modelle auf einem PC mit RTX- oder Radeon-Karte. Es ist ein Katalogeintrag, kein neues Protokoll. Auf Port 8080
@@ -64,7 +65,14 @@ läuft auch der llama.cpp-Server und beide beantworten `/v1/models` gleich; die 
 kein Modell geladen ist. Strata sagt nicht, ob ein Modell Werkzeuge kann (`tools` bleibt unbekannt); seine Modelle
 rechnen auf diesem Rechner (`remote: false`) und unterliegen der Datenregel wie die von Ollama.
 
-Zwei Protokolle decken fast alles ab: **OpenAI-kompatibel** und **Anthropic**. Weitere kommen als
+**Jev** (Cloud · US, geschlossene Gewichte) schreibt keinen Text, es entscheidet nur: Es nimmt nur den Platz
+*Sortieren*, ein Chat damit wird mit einer Meldung abgelehnt. Eine Modell-Liste hat Jev nicht; der Kern kennt
+das eine Modell fest und prüft den Schlüssel beim Verbinden mit einer kleinen Probe-Entscheidung. Wie jedes
+Cloud-Modell ist es nach dem Verbinden aus und bekommt Mail nur mit der Erlaubnis des Platzes *Sortieren*.
+Einzelheiten zu Preis und Schnittstelle: [kategorien.md](kategorien.md), „Das Protokoll“.
+
+Zwei Protokolle decken fast alles ab: **OpenAI-kompatibel** und **Anthropic**; zum Sortieren dazu
+**SystemOne** (Ollama ab 0.35, Jev). Weitere kommen als
 Eintrag im Katalog dazu, nie als Umbau. Die Modell-Liste holt der Kern vom Anbieter (`/v1/models`),
 damit niemand Modellnamen tippen muss.
 
@@ -192,8 +200,11 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
 
 ## Ersatzweg beim Sortieren
 
-Sortieren braucht kein Entscheidermodell. Ein gewöhnliches Chat-Modell, das Werkzeuge nutzen kann, tut es auch:
-Die Auswahl (`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ein Chat-Modell.
+Sortieren braucht kein Entscheidermodell. Es gibt zwei Wege: direkt über ein **Entscheidermodell** (Ollama auf
+diesem Rechner oder Jev in der Cloud, [kategorien.md](kategorien.md), „Das Protokoll“) oder über den
+**Ersatzweg** mit einem gewöhnlichen Chat-Modell, das Werkzeuge nutzen kann. Die Auswahl
+(`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ein Chat-Modell; die Auswahl in den
+Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 
 - Die Fragen gehen als ein Werkzeug `answer` (`torro_core::ai::decide_chat`): die Kategorie als Auswahl der
   angebotenen Namen, ob eine Antwort erwartet wird, als Ja/Nein, die Dringlichkeit als Zahl.

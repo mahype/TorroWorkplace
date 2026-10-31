@@ -106,9 +106,10 @@ Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug
    der Gruppe von `personal` oder `phishing` (siehe [Vorrang](#vorrang)).
 4. **Modell** für den Rest, gewählt über den Platz *Sortieren* ([ki.md](ki.md), Abschnitt „Plätze“) oder
    eine Ausnahme je Funktion: **ein** Aufruf über die SystemOne-/Jev-Schnittstelle mit **einer**
-   `choice`-Frage über die 20 Kategorien aus Schritt „Der Katalog“ und zwei Zusatzfragen. Ein
-   **Entscheidermodell** antwortet direkt; unter der Konfidenzschwelle bleibt es `other`. Ist nur ein
-   **Chat-Modell** da, antwortet es über den Ersatzweg (`docs/ki.md`, „Ersatzweg beim Sortieren“): streng
+   `choice`-Frage über die 20 Kategorien aus Schritt „Der Katalog“ und zwei Zusatzfragen. Gewählt
+   werden kann ein **Entscheidermodell auf diesem Rechner** (Ollama), **Jev** in der Cloud (Issue #323)
+   oder ein **Chat-Modell**. Ein Entscheidermodell antwortet direkt; unter der Konfidenzschwelle bleibt
+   es `other`. Ein **Chat-Modell** antwortet über den Ersatzweg (`docs/ki.md`, „Ersatzweg beim Sortieren“): streng
    gelesen, ohne Konfidenz, eine nicht angebotene Kategorie wird `other`. Herkunft `model`.
 5. **Von Hand** setzt der Mensch jede Kategorie über `inbox.set_item_category`, mit der Rückfrage
    „Always for this sender?“ wie beim Umsortieren der Spur. Herkunft `person`. Eine Kategorie
@@ -139,8 +140,17 @@ benannte Fragen und liefert je Frage Wahrscheinlichkeiten, die gewählte Option 
   hält die engeren Werte ein**, damit später auch `jeff-serve` und die Jev-Referenz bedient werden
   können, ohne dass der Aufruf umgebaut wird.
 - Anbieter: **Ollama ≥ 0.35** zuerst. Ollama markiert taugliche Modelle in `/api/show` mit der
-  Fähigkeit `decision` und reicht nur solche an `/v1/systemone` weiter. `jeff-serve` als eigener
-  Anbieter kommt in einem zweiten Schritt.
+  Fähigkeit `decision` und reicht nur solche an `/v1/systemone` weiter. `jeff-serve` kommt nicht als
+  eigener Anbieter dazu (siehe [Abgrenzung](#abgrenzung)).
+- Anbieter **Jev** von TypeSafe (Issue #323): gehostet in den USA („Cloud · US“), geschlossene Gewichte.
+  Endpunkt `POST https://api.typesafe.ai/v1/systemone`, Modell `jev-latest`, Schlüssel als
+  `Authorization: Bearer`, angelegt in der Konsole (`https://console.typesafe.ai/keys`, zurzeit Early
+  Access mit Warteliste). Preis laut TypeSafe 0,042 $ je Million Eingabe-Tokens, Ausgabe frei; bei rund
+  1.700 Tokens je Mail etwa 0,15 $ je 2.000 Mails. Jev listet keine Modelle: Torro kennt das eine Modell
+  fest und prüft den Schlüssel beim Verbinden mit einer kleinen Probe-Entscheidung. Jev sortiert nur,
+  chatten kann man damit nicht. Der Filter für offene Modelle versteckt Jev nicht, weil ein
+  Entscheidermodell keinen Text schreibt; in der Auswahl steht Jev nach den Modellen auf diesem
+  Rechner.
 
 ### Die drei Fragen
 
@@ -173,7 +183,9 @@ echten Mails.
 - Solange die Erlaubnis des Platzes *Sortieren* aus ist (`decide_mail_to_cloud`, [ki.md](ki.md), Abschnitt
   „Erlaubnis je Platz“), gehen Mails nur an Modelle **auf diesem Rechner** (`AiModel::remote`,
   `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Ein Entscheidermodell in der Cloud wird für Mail gar
-  nicht angeboten, ebenso kein Chat-Modell in der Cloud für den Ersatzweg. „Automatic“ an einem Konto auf
+  nicht angeboten, ebenso kein Chat-Modell in der Cloud für den Ersatzweg. **Jev ist ein Cloud-Modell**:
+  Es ist nach dem Verbinden aus wie jedes Cloud-Modell und bekommt Mail nur mit dieser Erlaubnis.
+  „Automatic“ an einem Konto auf
   diesem Rechner nimmt nur Modelle hier, auch bei eingeschalteter Erlaubnis ([ki.md](ki.md), „Erlaubnis je
   Platz“): ein `:cloud`-Modell des lokalen Ollama sortiert nur, wenn ein Mensch es ausdrücklich wählt.
 - Kein Training, keine gesammelten Mails. Das Protokoll (`audit.jsonl`) hält nur Funktion, Konto,
