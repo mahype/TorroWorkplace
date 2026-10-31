@@ -107,8 +107,8 @@ Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug
 4. **Modell** für den Rest, gewählt über den Platz *Sortieren* ([ki.md](ki.md), Abschnitt „Plätze“) oder
    eine Ausnahme je Funktion: **ein** Aufruf über die SystemOne-/Jev-Schnittstelle mit **einer**
    `choice`-Frage über die 20 Kategorien aus Schritt „Der Katalog“ und zwei Zusatzfragen. Gewählt
-   werden kann ein **Entscheidermodell auf diesem Rechner** (Ollama), **Jev** in der Cloud (Issue #323)
-   oder ein **Chat-Modell**. Ein Entscheidermodell antwortet direkt; unter der Konfidenzschwelle bleibt
+   werden kann ein **Entscheidermodell** (Ollama, auf diesem Rechner oder mit Erlaubnis als
+   `:cloud`-Modell), **Jev** in der Cloud (Issue #323) oder ein **Chat-Modell**. Ein Entscheidermodell antwortet direkt; unter der Konfidenzschwelle bleibt
    es `other`. Ein **Chat-Modell** antwortet über den Ersatzweg (`docs/ki.md`, „Ersatzweg beim Sortieren“): streng
    gelesen, ohne Konfidenz, eine nicht angebotene Kategorie wird `other`. Herkunft `model`.
 5. **Von Hand** setzt der Mensch jede Kategorie über `inbox.set_item_category`, mit der Rückfrage
