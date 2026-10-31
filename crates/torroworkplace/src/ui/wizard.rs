@@ -1716,16 +1716,8 @@ fn ai_step(state: &State) -> Element<'_, Message> {
     let way = |provider, name: &'static str, summary: &'static str| {
         pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(Message::ChooseAi(provider)))
     };
-    let mut others: Vec<Element<'_, Message>> = AiProvider::CLOUD
-        .into_iter()
-        .map(|provider| {
-            let summary = match provider {
-                AiProvider::OpenRouter => tr("Open models from many makers, with one API key"),
-                _ => provider.seat().label(),
-            };
-            way(provider, provider.name(), summary)
-        })
-        .collect();
+    let mut others: Vec<Element<'_, Message>> =
+        AiProvider::CLOUD.into_iter().map(|provider| way(provider, provider.name(), ai_summary(provider))).collect();
     others.push(way(
         AiProvider::OpenAiCompatible,
         tr("Other OpenAI-compatible server"),
@@ -1737,6 +1729,16 @@ fn ai_step(state: &State) -> Element<'_, Message> {
     ]
     .spacing(layout::section_gap())
     .into()
+}
+
+/// What a cloud provider's row says in the AI step: OpenRouter what it offers, Jev that it only
+/// sorts mail (issue #323), every other provider where it is.
+fn ai_summary(provider: AiProvider) -> &'static str {
+    match provider {
+        AiProvider::OpenRouter => tr("Open models from many makers, with one API key"),
+        AiProvider::Jev => tr("Sorts mail only, no chat"),
+        _ => provider.seat().label(),
+    }
 }
 
 /// A server on this computer: while looking, "Looking on this computer…"; found, its address and
@@ -2669,6 +2671,14 @@ mod tests {
     use torro_pim::AccountState;
 
     use super::*;
+
+    /// Issue #323: Jev's row in the AI step says it only sorts mail; the others keep theirs.
+    #[test]
+    fn the_ai_step_says_jev_sorts_mail_only() {
+        assert_eq!(ai_summary(AiProvider::Jev), tr("Sorts mail only, no chat"));
+        assert_eq!(ai_summary(AiProvider::OpenRouter), tr("Open models from many makers, with one API key"));
+        assert_eq!(ai_summary(AiProvider::Mistral), AiProvider::Mistral.seat().label());
+    }
 
     fn account(id: &str, state: AccountState) -> AccountInfo {
         AccountInfo {
