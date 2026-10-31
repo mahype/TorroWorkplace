@@ -1385,8 +1385,16 @@ impl AiAccounts {
         // Models turned on by id count while the core has no list to check them against; with one,
         // only those the server still offers. So does a model "Automatic" took before the switches
         // came (#231), still to be kept on: nobody loses the assistant while its server is away.
-        let listed =
-            self.slots.read().await.iter().find(|slot| slot.account.id == id).and_then(|slot| slot.models.clone());
+        // A provider with a fixed list (Jev, issue #323) always has its list: its one model only
+        // decides, so it is never an engine for a chat, also before the core held a list.
+        let listed = self
+            .slots
+            .read()
+            .await
+            .iter()
+            .find(|slot| slot.account.id == id)
+            .and_then(|slot| slot.models.clone())
+            .or_else(|| server.0.fixed_models());
         if (turned_on || automatic) && listed.is_none() {
             return true;
         }
@@ -1936,6 +1944,24 @@ pub(crate) mod tests {
             chat,
             Err(AiError::Invalid(tr("Jev only sorts mail; it cannot chat. Pick another model for chatting.").into()))
         );
+    }
+
+    /// Issue #323: Jev's model turned on is no engine for a chat, also before the core holds a list
+    /// (after a restart).
+    #[tokio::test]
+    async fn jev_is_never_an_engine_for_a_chat() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let keys = MemoryTokens::default();
+        let jev = MockServer::start_async().await;
+        let _mocks = mock_jev(&jev).await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let info = ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), Secret::new(KEY)).await.expect("connected");
+        ai.set_enabled(&info.id, ai::JEV_MODEL, true).await.expect("turned on");
+        assert!(!ai.offers_a_model(&info.id).await, "with the list held");
+        let restarted = service(dir.path(), &keys, Vec::new());
+        restarted.load().await.expect("loaded");
+        assert_eq!(restarted.server(&info.id).await.map(|(provider, _)| provider), Some(AiProvider::Jev));
+        assert!(!restarted.offers_a_model(&info.id).await, "nothing listed yet after a restart");
     }
 
     /// Issue #323: a key Jev refuses (403) is `auth`, nothing is stored and the key is not shown;
