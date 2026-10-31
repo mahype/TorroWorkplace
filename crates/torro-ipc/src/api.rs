@@ -3022,7 +3022,7 @@ static LIST_MODELS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the models of an AI account (id `ai:…` from accounts_list_accounts), asked from its server \
-                  now: id, name, whether it can call tools, whether its weights are open and whether it runs \
+                  now (Jev: a fixed list): id, name, whether it can call tools, whether its weights are open and whether it runs \
                   elsewhere (`remote`: Ollama's cloud models compute on ollama.com), where the server tells. \
                   By default only open-weights models and those the server says nothing about; `all: true` lists \
                   closed models too (OpenRouter); decision models are always listed. `decision` says the model \
