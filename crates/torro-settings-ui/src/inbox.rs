@@ -359,7 +359,7 @@ pub mod sources {
         let sentence = match source.kind {
             SourceKind::Mail => tr("Only \"For me\" leaves out newsletters and other automatic mail."),
             SourceKind::Ntfy => tr(
-                "Muting takes the whole server, not one topic. Topics and their labels stay with the account in Torro Workplace.",
+                "Muting takes the whole server, not one topic. Topics and their labels are on the account's page under Accounts.",
             ),
             SourceKind::Github
             | SourceKind::Nextcloud

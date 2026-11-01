@@ -2818,7 +2818,7 @@ static CONNECT_GITHUB: Command = Command {
     mcp: Mcp::Tool,
     description: "Asks for a GitHub account to be connected. For agents and scripts the core only shows the Torro \
                   Workplace control centre on its accounts page – without the main application the settings of \
-                  Tasks at Accounts, else of the Notification Hub, with neither the control centre –, where a \
+                  Tasks at Accounts, else of the Notification Hub, with neither of them the control centre –, where a \
                   person picks the GitHub CLI's \
                   sign-in or pastes a token, and answers `opened`; the token never reaches the caller. The control centre \
                   itself takes over the GitHub CLI's sign-in (`gh auth token`) and gets `not-connected` without \
@@ -2975,7 +2975,7 @@ static CONNECT_NTFY: Command = Command {
     description: "Asks for an ntfy server's topics to be connected to the inbox. For agents and scripts the core \
                   only shows the Torro Workplace control centre on its accounts page – without the main \
                   application the settings of the Notification Hub at Accounts, else of the App Feed, with neither \
-                  the control centre –, where a \
+                  of them the control centre –, where a \
                   person enters the \
                   topics with their labels and, if a topic needs one, the login, and answers `opened`; nothing is \
                   stored by this call. The control centre itself checks the server and the topics without a login \

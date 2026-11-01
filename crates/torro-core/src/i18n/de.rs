@@ -4306,12 +4306,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No lists", "Keine Listen"),
     ("Lists appear here once an account has one.", "Listen erscheinen hier, sobald ein Konto eine hat."),
     (
-        "No calendars yet. Use “Sync now” at this account in the control centre.",
-        "Noch keine Kalender. Nutze „Jetzt synchronisieren“ bei diesem Konto in der Steuerzentrale.",
+        "No calendars yet. Use “Sync now” at this account under Accounts.",
+        "Noch keine Kalender. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
     ),
     (
-        "No task lists yet. Use “Sync now” at this account in the control centre.",
-        "Noch keine Aufgabenlisten. Nutze „Jetzt synchronisieren“ bei diesem Konto in der Steuerzentrale.",
+        "No task lists yet. Use “Sync now” at this account under Accounts.",
+        "Noch keine Aufgabenlisten. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
     ),
     (
         "Choose which kinds of events may remind you, whatever their own reminder says.",
@@ -4329,8 +4329,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Every topic of this server", "Jedes Thema dieses Servers"),
     ("Show new mail", "Neue E-Mails zeigen"),
     (
-        "Muting takes the whole server, not one topic. Topics and their labels stay with the account in Torro Workplace.",
-        "Stumm gilt für den ganzen Server, nicht für ein Thema. Themen und ihre Etiketten bleiben beim Konto in Torro Workplace.",
+        "Muting takes the whole server, not one topic. Topics and their labels are on the account's page under Accounts.",
+        "Stumm gilt für den ganzen Server, nicht für ein Thema. Themen und ihre Etiketten stehen auf der Seite des Kontos unter Konten.",
     ),
     ("No rules", "Keine Regeln"),
     (

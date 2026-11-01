@@ -1974,7 +1974,11 @@ pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
         if rows.is_empty() {
             rows.push(quiet_row(tr("No account yet.")));
         }
-        rows.push(add_row(group, group == Group::Mail && offers_import(state)));
+        rows.push(add_row(group, false));
+        // "Import from TorroMail…" in a row of its own: an app's page can be narrow (design review).
+        if group == Group::Mail && offers_import(state) {
+            rows.push(import_row());
+        }
         widgets::group(group.title(), rows, Some(group.about().to_string()))
     });
     column(page).spacing(layout::section_gap()).into()
@@ -2538,6 +2542,17 @@ fn provider_heading<'a>(group: Listed<'_>) -> Element<'a, Message> {
 /// step TorroMail can take over ([`wizard::can_import`]).
 fn offers_import(state: &State) -> bool {
     state.torromail.as_deref().is_some_and(wizard::can_import)
+}
+
+/// "Import from TorroMail…" as a row of its own, under the group's "Add" on an app's page.
+fn import_row<'a>() -> Element<'a, Message> {
+    let import = widgets::text_button(
+        Some(Icon::Mail),
+        tr("Import from TorroMail…"),
+        style::button::ghost,
+        Some(Message::ImportTorroMail),
+    );
+    row_frame(on_axis(import), false)
 }
 
 /// The last row of a fixed group: its "Add", and in Mail "Import from TorroMail…" next to it while
@@ -3904,7 +3919,8 @@ fn status_group<'a>(account: &'a AccountInfo, data: &dyn Seen, now: DateTime<Utc
 /// every window; `None` while none does, and then the row is left out.
 fn used_by_row<'a>(account: &AccountInfo, data: &dyn Seen) -> Option<Element<'a, Message>> {
     let names = used_by_names(account, data)?;
-    let value = typo::text(typo::body(), names).style(theme::text_2).wrapping(Wrapping::None);
+    // Cut with "…" and the whole list as a tooltip where the row is narrow (design review of #410).
+    let value = container(widgets::ellipsized(typo::body(), names, theme::text_2)).max_width(size::form_max() / 2.0);
     Some(setting_row(None, tr("Used by"), None, value))
 }
 
