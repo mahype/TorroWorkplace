@@ -2315,6 +2315,12 @@ impl SettingsBackend for CoreSettings {
             }
         })
     }
+
+    /// The answer as the core gave it, a refusal with its code (issue #410, `Backend::ask`).
+    fn ask(&self, request: torro_ipc::Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move { torro_ipc::client::call(&socket, &request).await.map_err(|err| err.to_string()) })
+    }
 }
 
 /// Asks where to save an attachment with the system's save dialog ("Save as…", task M12.6), starting

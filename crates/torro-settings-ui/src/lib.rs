@@ -94,6 +94,14 @@ pub trait Backend: Send + Sync + 'static {
     /// Sends `request` and waits for the answer.
     fn call(&self, request: Request) -> Answer;
 
+    /// Sends `request` and hands the answer back as the core gave it, a refusal as
+    /// `Response::Error` with its code (issue #410): for the group "Models" of AI, which tells `busy`
+    /// (the same model downloads already) from other refusals. `Err` only when no answer came. The
+    /// default is [`Backend::call`], which keeps only the message; an app's own backend keeps the code.
+    fn ask(&self, request: Request) -> Answer {
+        self.call(request)
+    }
+
     /// Whether this is the demo, which answers from memory: then the host also does nothing local,
     /// opens no folder and reads no designs from disk ([`suite::list`]).
     fn demo(&self) -> bool {

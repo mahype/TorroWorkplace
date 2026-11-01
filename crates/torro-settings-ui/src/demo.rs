@@ -1312,6 +1312,19 @@ impl Backend for Demo {
         Box::pin(async move { Ok(answer) })
     }
 
+    /// [`Backend::call`], but a refusal of the account pages' answers stays a `Response::Error`
+    /// with its code, as the core gives it.
+    fn ask(&self, request: Request) -> Answer {
+        let seen = crate::Data { accounts: self.accounts(), settings: self.settings.clone(), ..Default::default() };
+        match crate::accounts::demo::demo_answer(&request, &seen) {
+            Some(refusal @ Response::Error { .. }) => {
+                self.note(request);
+                Box::pin(async move { Ok(refusal) })
+            }
+            _ => self.call(request),
+        }
+    }
+
     fn demo(&self) -> bool {
         true
     }

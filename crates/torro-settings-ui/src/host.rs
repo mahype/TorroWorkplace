@@ -128,6 +128,12 @@ pub const SUITE_SECTIONS: [Section; 2] = [
 /// name the control centre gives it.
 pub const ACCOUNTS: Section = Section { id: "accounts", icon: Icon::Cloud, label: "Accounts" };
 
+/// How often Accounts and AI load the accounts again while they are on screen ([`Host::subscription`]).
+const ACCOUNTS_TICK: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How often while the add-account dialog waits for a sign-in in the browser.
+const ACCOUNTS_BUSY_TICK: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The section AI of an app ([`Host::with_accounts`]): the models and what each of them is for.
 pub const AI: Section = Section { id: "ai", icon: Icon::Sparkles, label: "AI" };
 
@@ -307,6 +313,8 @@ pub enum Message {
     Part { generation: u64, request: Box<Request>, result: Box<Result<Response, String>> },
     /// What a widget of the pages Accounts and AI reported ([`Host::with_accounts`]).
     Accounts(Box<accounts::Message>),
+    /// The tick of Accounts and AI while they are on screen ([`Host::subscription`]): load again.
+    Tick,
     /// The answer to a request of the pages Accounts and AI, for their add-account dialog and their
     /// dialogs ([`accounts::answered`]); then the data is asked for anew.
     AccountAnswered(Box<Result<Response, String>>),
@@ -399,6 +407,10 @@ pub struct Host {
     looks_asked: bool,
     /// The pages Accounts and AI while the app shows them ([`Host::with_accounts`]); `None` else.
     accounts: Option<accounts::State>,
+    /// Where in `sections` the host put Accounts and AI, by position: an app may have a section of
+    /// its own with the same word (Mail's "accounts"), which stays the app's.
+    accounts_at: Option<usize>,
+    ai_at: Option<usize>,
 }
 
 impl Host {
@@ -468,6 +480,8 @@ impl Host {
             own,
             looks_asked: false,
             accounts: None,
+            accounts_at: None,
+            ai_at: None,
         };
         let load = host.reload();
         (host, load)
@@ -492,6 +506,10 @@ impl Host {
         }
         for (at, section) in added.iter().enumerate() {
             self.sections.insert(self.own + at, *section);
+            match section.id == AI.id {
+                true => self.ai_at = Some(self.own + at),
+                false => self.accounts_at = Some(self.own + at),
+            }
         }
         // They stand among the app's own sections, before the line the suite's pages follow.
         self.own += added.len();
@@ -510,24 +528,44 @@ impl Host {
     /// Opens Accounts with the add-account dialog at `provider` (issue #410): what the start of an
     /// app without an account offers ([`torro_gui::connect`]).
     pub fn add_account<A>(&mut self, provider: accounts::wizard::Provider) -> Outcome<A> {
-        if !self.open(ACCOUNTS.id) {
-            return Outcome::None;
-        }
+        let Some(at) = self.accounts_at else { return Outcome::None };
+        self.open_at(at);
         self.update(Message::Accounts(Box::new(accounts::Message::Add(provider))))
     }
 
     /// What the pages Accounts and AI need to run while the settings are open: the tick of a running
     /// download (issue #325). The app adds it to its own subscriptions.
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        match &self.accounts {
-            Some(state) => accounts::subscription(state).map(|message| Message::Accounts(Box::new(message))),
-            None => iced::Subscription::none(),
+        let Some(state) = &self.accounts else { return iced::Subscription::none() };
+        let page = accounts::subscription(state).map(|message| Message::Accounts(Box::new(message)));
+        // While Accounts or AI is on screen the accounts are loaded again, as the control centre
+        // does: a sign-in in the browser ends in the core, and an account another app connected
+        // shows up here. Faster while the add-account dialog waits for a sign-in.
+        let every = match (state.busy(), self.on_accounts_page()) {
+            (true, _) => Some(ACCOUNTS_BUSY_TICK),
+            (false, true) => Some(ACCOUNTS_TICK),
+            (false, false) => None,
+        };
+        match every {
+            Some(every) => iced::Subscription::batch([page, iced::time::every(every).map(|_| Message::Tick)]),
+            None => page,
         }
     }
 
     /// Whether the section on screen is Accounts or AI, which the host shows itself.
     fn on_accounts_page(&self) -> bool {
-        self.accounts.is_some() && [ACCOUNTS.id, AI.id].contains(&self.current().id)
+        self.accounts_page_id().is_some()
+    }
+
+    /// Which of the host's own pages Accounts and AI is on screen, by its word; `None` on any other,
+    /// an app's section of the same word among them.
+    fn accounts_page_id(&self) -> Option<&'static str> {
+        self.accounts.as_ref()?;
+        match Some(self.current) {
+            at if at == self.accounts_at => Some(ACCOUNTS.id),
+            at if at == self.ai_at => Some(AI.id),
+            _ => None,
+        }
     }
 
     /// Carries out what a page of Accounts or AI returned: its requests go through the backend and
@@ -540,8 +578,9 @@ impl Host {
                 let ask = crate::ask(Arc::clone(&self.backend), request);
                 Outcome::Work(Task::perform(ask, |result| Message::AccountAnswered(Box::new(result))))
             }
+            // As the core gave it: the group "Models" tells `busy` from other refusals ([`Backend::ask`]).
             accounts::Action::AskAi(asks) => Outcome::Work(Task::batch(asks.into_iter().map(|(asked, request)| {
-                let ask = crate::ask(Arc::clone(&self.backend), request);
+                let ask = self.backend.ask(request);
                 Task::perform(ask, move |result| Message::AiAnswered(asked.clone(), Box::new(result)))
             }))),
             accounts::Action::OpenUrl(url) => Outcome::OpenUrl(url),
@@ -552,7 +591,7 @@ impl Host {
     /// reload): the add-account dialog follows a sign-in through the accounts, Accounts asks for
     /// TorroMail's accounts once, AI for what its group "Models" lacks.
     fn accounts_due(&mut self) -> Vec<Task<Message>> {
-        let on = self.on_accounts_page().then(|| self.current().id);
+        let on = self.accounts_page_id();
         let ready = self.loaded && self.data.error.is_none();
         let Some(state) = self.accounts.as_mut() else { return Vec::new() };
         if let Some(wizard) = state.wizard.as_mut() {
@@ -639,6 +678,12 @@ impl Host {
     /// nothing changed when no section has that id (the app then reports the ids it knows).
     pub fn open(&mut self, id: &str) -> bool {
         let Some(at) = self.sections.iter().position(|section| section.id == id) else { return false };
+        self.open_at(at);
+        true
+    }
+
+    /// Shows the section at `at` in `sections` ([`Host::open`]).
+    fn open_at(&mut self, at: usize) {
         // Leaving the suite's page closes its dropdowns and its question.
         if at != self.current
             && let Some(state) = self.suite.as_mut()
@@ -655,7 +700,6 @@ impl Host {
         self.current = at;
         self.list = false;
         self.menu = false;
-        true
     }
 
     /// The section on screen.
@@ -796,9 +840,13 @@ impl Host {
                 Outcome::Work(Task::perform(ask, |result| Message::Answered(Box::new(result))))
             }
             Action::OpenUrl(url) => Outcome::OpenUrl(url),
+            // A page opened by a row of another (General's "Manage models…" in the assistant) asks
+            // for what it shows, as when it is chosen in the list.
             Action::Open(id) => {
                 self.open(id);
-                Outcome::None
+                let mut tasks: Vec<Task<Message>> = self.looks_due().into_iter().collect();
+                tasks.extend(self.accounts_due());
+                work(tasks)
             }
             // The focus is the window's, not the daemon's: the host does it and nothing else
             // happens.
@@ -844,6 +892,7 @@ impl Host {
                     None => Outcome::Close,
                 }
             }
+            Message::Tick => Outcome::Work(self.reload()),
             Message::Accounts(message) => {
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
                 let action = accounts::update(state, *message, &self.data);
@@ -856,6 +905,8 @@ impl Host {
                 match *result {
                     Err(problem) if !shown => self.notice = Some(problem),
                     Err(_) => {}
+                    // What the page only read changes nothing for the app.
+                    Ok(Response::TorroMailAccounts { .. } | Response::AiModels { .. }) => {}
                     // An account came, changed or went: the app loads its own data after the reload.
                     Ok(_) => self.change = Some(true),
                 }
@@ -1037,7 +1088,7 @@ impl Host {
         wrap: fn(Message) -> M,
     ) -> Page<'a, M> {
         let inner = move |message: accounts::Message| wrap(Message::Accounts(Box::new(message)));
-        let body = match self.current().id == AI.id {
+        let body = match self.accounts_page_id() == Some(AI.id) {
             true => accounts::app_ai_view(state, &self.data, class),
             false => accounts::app_view(state, &self.data),
         };
@@ -1402,6 +1453,30 @@ mod tests {
         assert_eq!(host.notice.as_deref(), Some("refused"));
         assert!(matches!(host.update::<()>(Message::AccountAnswered(Box::new(Ok(Response::Ok)))), Outcome::Work(_)));
         assert_eq!(host.change, Some(true), "the app loads its own data after the reload");
+    }
+
+    /// Issue #410 (review): Mail's own section "accounts" stays Mail's page beside the host's AI, a
+    /// row that opens AI asks for what it shows, and what a page only read changes nothing.
+    #[test]
+    fn an_apps_own_accounts_stays_its_own_and_ai_opens_with_its_data() {
+        let own = vec![Section { id: "accounts", icon: Icon::Mail, label: "Accounts" }];
+        let (mail, _) = Host::new(Arc::new(Demo::new()), own, vec![Request::Settings]);
+        let mut mail = mail.with_accounts(AppId::INBOX_MAIL, &[], true);
+        let ai_account =
+            crate::accounts::demo::demo_data().accounts.into_iter().filter(|account| account.kind == "ai").collect();
+        mail.update::<()>(Message::Loaded(Box::new(Data { accounts: ai_account, ..Data::default() })));
+        assert!(mail.open("accounts"));
+        assert!(!mail.on_accounts_page(), "Mail's own page, not the host's");
+        assert_eq!(mail.accounts_page_id(), None);
+        // "Manage models…" of another section: AI opens and asks for its suggestion and models.
+        let opened: Outcome<()> = mail.act(Action::Open("ai"));
+        assert_eq!(mail.accounts_page_id(), Some(AI.id));
+        assert!(matches!(opened, Outcome::Work(_)), "AI asks for what its group \"Models\" shows");
+        drop(mail.subscription());
+
+        let listed = Response::TorroMailAccounts { accounts: Vec::new() };
+        let _: Outcome<()> = mail.update(Message::AccountAnswered(Box::new(Ok(listed))));
+        assert_eq!(mail.change, None, "a list read changes nothing for the app");
     }
 
     /// Issue #410: without providers and AI nothing is added, and an app's own section of the same

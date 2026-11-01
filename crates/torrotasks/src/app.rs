@@ -198,6 +198,12 @@ impl SettingsBackend for CoreSettings {
             }
         })
     }
+
+    /// The answer as the core gave it, a refusal with its code (issue #410, `Backend::ask`).
+    fn ask(&self, request: Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move { torro_ipc::client::call(&socket, &request).await.map_err(|err| err.to_string()) })
+    }
 }
 
 /// Whether `message` means the content area is to show the list again (task S.19): a click in

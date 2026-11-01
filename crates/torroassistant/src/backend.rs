@@ -96,4 +96,10 @@ impl torro_settings_ui::Backend for Socket {
             }
         })
     }
+
+    /// The answer as the core gave it, a refusal with its code (issue #410, `Backend::ask`).
+    fn ask(&self, request: Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move { torro_ipc::client::call(&socket, &request).await.map_err(|err| err.to_string()) })
+    }
 }
