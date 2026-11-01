@@ -25539,7 +25539,9 @@ mod tests {
         assert_eq!((progress.eligible, progress.processed, progress.changed, progress.failed), (16, 16, 16, 0));
         assert_eq!(progress.cursor, progress.max_sequence, "the cursor at the end");
         assert_eq!(decides.calls_async().await - probes, 16, "each mail asked once");
-        assert!(took < std::time::Duration::from_millis(2400), "took {took:?}");
+        // One after the other cannot take less than 16 answers of 300 ms, however idle the machine;
+        // two rounds take 0.6 s. The bound leaves room for a machine busy with the whole test suite.
+        assert!(took < std::time::Duration::from_millis(16 * 300), "took {took:?}");
     }
 
     /// Issue #420: a pause while Jev has mails in hand drops their answers and the count stands still;
