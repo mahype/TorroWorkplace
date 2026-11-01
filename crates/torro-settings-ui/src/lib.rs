@@ -15,6 +15,9 @@
 //!   the header bar with the path, the page, and the sending and loading around it.
 //! * [`suite`] – the pages of the whole suite, Appearance and General (issue #408): the control
 //!   centre shows them, and so does an app while the main application is not installed.
+//! * [`accounts`] – Accounts and AI (issue #410): the control centre shows them with every
+//!   provider, an app with the ones it uses behind its gear ([`Host::with_accounts`]); the accounts
+//!   stay one for the whole suite, in the daemon.
 //! * [`rights`] – the rights editor (task S.33): what a client may do, area by area and command by
 //!   command. The control centre shows it for keys and MCP clients, the assistant window for the
 //!   assistant and its bots (task S.34).

@@ -13,8 +13,8 @@ im [Bestand](#bestand-stand-2026-10-16)) noch „Agents & API“ oder „Account
 
 ### Die Regel
 
-**In die Steuerzentrale gehört, was mehrere Apps teilen oder ohne das keine App läuft:** Konten und ihre
-Verbindung (auch KI-Konten mit ihren Modellen und der Datenregel), Programme, die die Suite von außen nutzen,
+**In die Steuerzentrale gehört, was mehrere Apps teilen oder ohne das keine App läuft:** die Übersicht aller
+Konten (auch KI-Konten mit ihren Modellen und der Datenregel), Programme, die die Suite von außen nutzen,
 mit Schlüsseln und Rechten (API und MCP), Freigaben, Aussehen, Sprache und welche Apps an sind. Die Rechte von
 Assistent und Bots stehen seit #231 in deren Fenster (siehe [Accounts, API und MCP](#accounts-api-und-mcp-231)).
 
@@ -29,10 +29,14 @@ Einstellung und erscheint nirgends in den Einstellungen (`ui.json`, siehe [Besta
 Die Dichte des Eingangs gehört seit Issue #226 nicht mehr dazu: Sie ist ein Wert des Designs (seit Issue #291
 `[list] style`).
 
-Die Apps haben keine eigenen Kontoeinstellungen. Fehlt ihnen ein Konto, zeigen sie einen Hinweis mit dem
-Knopf „Open Settings“, der die Steuerzentrale an der richtigen Stelle öffnet. **Abgelöst mit #410:** Konten
-ziehen in die jeweilige App, damit sie ohne Hauptanwendung läuft ([einzelne-apps.md](einzelne-apps.md)); bis
-dahin gilt die Regel weiter.
+**Konten: ein Speicher, viele Türen (#410).** Die Konten liegen im Dienst und gelten für die ganze Suite. Jede
+App verbindet die Konten, die sie braucht, selbst: hinter dem Zahnrad unter „Accounts“ (Kalender: Nextcloud und
+Mail; Aufgaben: Nextcloud, Mail und GitHub; Notification Hub und App Feed: Nextcloud, GitHub und ntfy) und unter
+„AI“ (Assistent für den Chat, Mail fürs Sortieren). Mail verbindet seine Mail-Konten in seinem eigenen Abschnitt
+„Accounts“ („Add mail account…“, „Import from TorroMail…“, „Remove account…“). Das gilt immer, auch mit
+Hauptanwendung. Die Steuerzentrale zeigt dieselben Seiten mit allen Anbietern und je Konto „Used by …“, welche
+installierten Apps es nutzen; sie ist die Übersicht, nicht der einzige Weg. Fehlt einer App ein Konto, zeigt sie
+je Anbieter einen Knopf, der „Add account“ in der App öffnet ([einzelne-apps.md](einzelne-apps.md)).
 
 Vorbild sind die Einstellungen von **TorroWhisper** (Aufbau, Seiten, Speichern) und
 **TorroMail** (Konten, Anbieter-Katalog, Einrichtungsassistent, Zugriff für KI-Clients). Beide
