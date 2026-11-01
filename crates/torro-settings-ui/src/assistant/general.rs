@@ -46,8 +46,8 @@ pub enum Message {
     /// A row of "New chats", "Model" or "Effort": the whole default as it is to be stored, so two
     /// windows never leave half of it behind; `None` for the one used last.
     Default(Option<AssistantDefault>),
-    /// "No AI account yet", "No model is turned on" and "Manage models…": the AI section of the
-    /// control centre ([`AI_SECTION`]), where AI accounts are added and their models switched.
+    /// "No AI account yet", "No model is turned on" and "Manage models…": the section AI of these
+    /// settings ([`AI_SECTION`], issue #410), where AI accounts are added and their models switched.
     ManageAi,
 }
 
@@ -55,7 +55,7 @@ pub fn update(message: Message, _data: &Data) -> Action {
     match message {
         Message::Access => Action::Open(access::ID),
         Message::Default(default) => Action::send(set_chat(default)),
-        Message::ManageAi => Action::ControlCentre(AI_SECTION.to_string()),
+        Message::ManageAi => Action::Open(AI_SECTION),
     }
 }
 
@@ -134,7 +134,7 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
         }
     });
     // Which models are offered is set in AI (task S.26), the whole suite at once.
-    let manage = pressable(setting_row(None, tr("Manage models…"), None, arrow()), Some(Message::ManageAi));
+    let manage = pressable(setting_row(None, tr("Manage models…"), None, chevron()), Some(Message::ManageAi));
     let rows = std::iter::once(automatic).chain(rows).chain([manage]).collect();
     groups.push(widgets::group(tr("Model"), rows, None));
     if takes_effort(default, data) {
@@ -154,7 +154,7 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
 /// The row of "New chats" without any engine: where an AI account is added.
 fn no_engine_row<'a>() -> Element<'a, Message> {
     let detail = tr("Add Ollama on this computer or OpenRouter under AI");
-    let row = setting_row(None, tr("No AI account yet"), Some(detail.to_string()), arrow());
+    let row = setting_row(None, tr("No AI account yet"), Some(detail.to_string()), chevron());
     pressable(row, Some(Message::ManageAi))
 }
 
@@ -162,7 +162,7 @@ fn no_engine_row<'a>() -> Element<'a, Message> {
 /// turned on.
 fn no_model_row<'a>() -> Element<'a, Message> {
     let detail = tr("Turn on models in Settings › AI.");
-    let row = setting_row(None, tr("No model is turned on"), Some(detail.to_string()), arrow());
+    let row = setting_row(None, tr("No model is turned on"), Some(detail.to_string()), chevron());
     pressable(row, Some(Message::ManageAi))
 }
 
@@ -172,14 +172,6 @@ fn off_choice<'a>(name: String, on_press: Message) -> Element<'a, Message> {
     let check = icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) });
     let detail = tr("Turned off in Settings › AI").to_string();
     pressable(setting_row(None, name, Some(detail), check), Some(on_press))
-}
-
-/// The arrow at the end of a row that leads to another window, as the section list has it
-/// ("Appearance ↗"): 16, `text_3`.
-fn arrow<'a, M: 'a>() -> Element<'a, M> {
-    icon::icon(Icon::ArrowUpRight, icon::SIZE)
-        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
-        .into()
 }
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
@@ -319,7 +311,7 @@ mod tests {
         let data = Data { engines: Vec::new(), accounts: Vec::new(), ..data().await };
         assert!(!super::super::no_model_on(&data), "no AI account at all");
         let action = update(Message::ManageAi, &data);
-        assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "{action:?}");
+        assert!(matches!(action, Act::Open(section) if section == "ai"), "{action:?}");
         let _ = view(&data);
     }
 
@@ -344,7 +336,7 @@ mod tests {
         data.settings.ai_slots.chat = Some(off);
         let _ = view(&data);
         let action = update(Message::ManageAi, &data);
-        assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "Manage models…");
+        assert!(matches!(action, Act::Open(section) if section == "ai"), "Manage models…");
 
         // Nothing known about the account's models yet: no claim that the model is off.
         let unknown_list = Data { default_models: Vec::new(), ..data.clone() };
@@ -361,6 +353,6 @@ mod tests {
         assert!(!super::super::no_model_on(&super::super::tests::data().await), "an engine: models are on");
         let _ = view(&data);
         let action = update(Message::ManageAi, &data);
-        assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "{action:?}");
+        assert!(matches!(action, Act::Open(section) if section == "ai"), "{action:?}");
     }
 }

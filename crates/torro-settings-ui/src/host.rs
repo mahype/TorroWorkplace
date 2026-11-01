@@ -131,6 +131,13 @@ pub const ACCOUNTS: Section = Section { id: "accounts", icon: Icon::Cloud, label
 /// The section AI of an app ([`Host::with_accounts`]): the models and what each of them is for.
 pub const AI: Section = Section { id: "ai", icon: Icon::Sparkles, label: "AI" };
 
+/// The sections [`Host::with_accounts`] adds for `providers` and `ai`, in their order: what
+/// `--settings` takes besides the app's own words, like [`suite_sections`].
+pub fn account_sections(providers: &[Group], ai: bool) -> Vec<Section> {
+    let accounts = (!providers.is_empty()).then_some(ACCOUNTS);
+    accounts.into_iter().chain(ai.then_some(AI)).collect()
+}
+
 /// The suite's General where the app has a section "general" of its own (the assistant): its own
 /// word, and a name that tells the two apart.
 const SUITE_GENERAL_BESIDE: Section = Section { id: "suite-general", icon: Icon::Settings, label: "All apps" };

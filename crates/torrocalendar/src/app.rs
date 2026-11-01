@@ -70,6 +70,7 @@ use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
 use torro_pim::model::{Geo, SeriesScope};
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
+use torro_settings_ui::accounts::Group;
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, calendar, collections};
 
 use crate::editor::{self, Editor};
@@ -182,6 +183,11 @@ const SETTINGS_SECTIONS: [Section; 4] = [
     Section { id: "night", icon: Icon::Moon, label: "Night" },
     Section { id: "working-hours", icon: Icon::Clock, label: "Working hours" },
 ];
+
+/// The providers of accounts this app uses, behind its gear under Accounts (issue #410): the
+/// suite's accounts stay one for every app, and these are the ones whose calendars and lists it
+/// shows.
+const ACCOUNT_PROVIDERS: [Group; 2] = [Group::Nextcloud, Group::Mail];
 
 /// What one load of the settings needs: Calendars reads every account
 /// ([`collections::wanted`]); the other sections need only the suite-wide settings, already
@@ -460,7 +466,12 @@ impl Launch {
         let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
         // The app's own sections, and the suite's, which it shows without the main application
         // (issue #408).
-        let sections = [&SETTINGS_SECTIONS[..], &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS)].concat();
+        let sections = [
+            &SETTINGS_SECTIONS[..],
+            &torro_settings_ui::account_sections(&ACCOUNT_PROVIDERS, false),
+            &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS),
+        ]
+        .concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
             Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
@@ -886,6 +897,10 @@ impl App {
         // Only while typed text waits to be saved, so an idle panel costs nothing.
         if self.editor.as_ref().is_some_and(Editor::wants_autosave) {
             all.push(iced::time::every(AUTOSAVE).map(|_| Message::Editor(editor::Message::Flush)));
+        }
+        // A download under Settings › Accounts asks how far it is (issue #410).
+        if let Some(pane) = &self.settings {
+            all.push(pane.host.subscription().map(Message::SettingsHost));
         }
         Subscription::batch(all)
     }
@@ -2127,7 +2142,7 @@ impl App {
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
         // Settings open already leave their state in the memory first, for the new host.
         drop(self.settings.take());
-        let (mut host, load) = Host::with_memory(
+        let (host, load) = Host::with_memory(
             self.settings_backend(),
             SETTINGS_SECTIONS.to_vec(),
             settings_wanted(),
@@ -2135,6 +2150,8 @@ impl App {
             // Without the main application the suite\'s pages are this app\'s too (issue #408).
             !torro_gui::installed::main_app(),
         );
+        // Its accounts, always, also with the main application (issue #410).
+        let mut host = host.with_accounts(AppId::CALENDAR, &ACCOUNT_PROVIDERS, false);
         if let Some(id) = section {
             host.open(id);
         }

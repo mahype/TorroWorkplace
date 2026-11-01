@@ -13,8 +13,9 @@
 //! nothing else, so no setting has two places (`docs/settings.md`, "Die Regel").
 //!
 //! **What is not here:** the subscriptions and labels of the ntfy topics, which belong to the
-//! account and stay in the control centre ([`crate::Action::ControlCentre`] leads there), and
-//! everything about accounts, rights and keys. Muting works on a whole source only: a single ntfy
+//! account: they are on its page under Accounts of the same settings since issue #410
+//! ([`crate::Host::with_accounts`], [`crate::accounts`]), as in the control centre. Rights and keys
+//! stay in the control centre. Muting works on a whole source only: a single ntfy
 //! topic cannot be muted (`inbox.mute_source` knows servers, not topics).
 //!
 //! Ported from the control centre's pages (`torroworkplace::ui::inbox` and the group "Notification

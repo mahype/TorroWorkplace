@@ -233,6 +233,7 @@ use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, PileFilter, SaveTo};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, MailPile, Message as Mail, MessageSummary, Role};
+use torro_settings_ui::accounts::Group;
 use torro_settings_ui::{
     Backend as SettingsBackend, Host, Outcome, Page, Section, host, inbox as settings_inbox, mail as settings_mail,
 };
@@ -1810,6 +1811,16 @@ impl Kind {
         }
     }
 
+    /// The providers of accounts this window uses, behind its gear under Accounts, and whether it
+    /// has AI (issue #410): the Notification Hub and the App Feed show what Nextcloud, GitHub and
+    /// ntfy send; Mail keeps its own list of mail accounts and has AI for sorting.
+    pub fn account_providers(self) -> (&'static [Group], bool) {
+        match self {
+            Kind::Mail => (&[], true),
+            Kind::Notifications | Kind::Hub => (&[Group::Nextcloud, Group::GitHub, Group::Ntfy], false),
+        }
+    }
+
     /// What one load of those sections asks the core for.
     fn settings_wanted(self) -> Vec<torro_ipc::Request> {
         match self {
@@ -2059,7 +2070,9 @@ impl Launch {
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         // The suite's sections too, which the window shows without the main application (issue #408).
         let own = kind.settings_sections();
-        let sections = [&own[..], &torro_settings_ui::suite_sections(&own)].concat();
+        let (providers, ai) = kind.account_providers();
+        let accounts = torro_settings_ui::account_sections(providers, ai);
+        let sections = [&own[..], &accounts[..], &torro_settings_ui::suite_sections(&own)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
             Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
@@ -4221,6 +4234,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // The same for the sidebar's edge (issue #376).
         if self.side.dragging {
             subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        // A download under Settings › AI asks how far it is (issue #410).
+        if let Some(pane) = &self.settings {
+            subscriptions.push(pane.host.subscription().map(Message::SettingsHost));
         }
         Subscription::batch(subscriptions)
     }
@@ -7589,7 +7606,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let kind = self.launch.kind;
         // Settings open already leave their state in the memory first, for the new host.
         drop(self.settings.take());
-        let (mut host, load) = Host::with_memory(
+        let (host, load) = Host::with_memory(
             self.settings_backend(),
             kind.settings_sections(),
             kind.settings_wanted(),
@@ -7597,6 +7614,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // Without the main application the suite\'s pages are this app\'s too (issue #408).
             !torro_gui::installed::main_app(),
         );
+        // Its accounts and AI, always, also with the main application (issue #410).
+        let (providers, ai) = kind.account_providers();
+        let mut host = host.with_accounts(kind.app(), providers, ai);
         if let Some(id) = section {
             host.open(id);
         }

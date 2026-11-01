@@ -74,7 +74,7 @@ use torro_ipc::tools::ToolInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 use torro_pim::Collection;
 
-pub use host::{Form, Frame, Host, Outcome, Page, Section, form, suite_sections};
+pub use host::{Form, Frame, Host, Outcome, Page, Section, account_sections, form, suite_sections};
 
 /// The answer of a [`Backend`], boxed so a `dyn Backend` can be handed around.
 pub type Answer = Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>;
@@ -589,6 +589,22 @@ mod tests {
             }
         });
         assert!(found.is_empty(), "the settings library reaches the socket: {found:?}");
+    }
+
+    /// Issue #410: no section leads to the control centre for accounts or AI any more – both are
+    /// sections of the app's own settings ([`Host::with_accounts`]).
+    #[test]
+    fn no_section_sends_accounts_or_ai_to_the_control_centre() {
+        let mut found = Vec::new();
+        visit(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut |file: &Path, text: &str| {
+            for line in code_of(text) {
+                let names = ["\"accounts\"", "\"ai\"", "AI_SECTION", "ACCOUNTS_SECTION"];
+                if line.contains("ControlCentre(") && names.iter().any(|name| line.contains(name)) {
+                    found.push(format!("{}: {}", file.display(), line.trim()));
+                }
+            }
+        });
+        assert!(found.is_empty(), "a section still leads to the control centre: {found:?}");
     }
 
     /// The code of a source file: without comments (a doc comment may name what the code must not

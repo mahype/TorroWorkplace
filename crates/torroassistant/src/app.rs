@@ -170,7 +170,8 @@ pub const BOT_NAME: &str = "assistant-bot-name";
 pub const BOT_FORM: &str = "assistant-bot-form";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
-/// The control centre's AI page where accounts are added and their models turned on.
+/// The section AI of the window's own settings (issue #410), where accounts are added and their
+/// models turned on.
 pub const AI_PAGE: &str = settings::AI_SECTION;
 
 /// The id of the scrolling entries of the open conversation.
@@ -384,7 +385,7 @@ pub enum Message {
     /// From the permission mode's menu (issue #132).
     PickMode(PermissionMode),
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
-    /// control centre's AI section, where the models of each AI account are turned on and off.
+    /// section AI of the settings ([`AI_PAGE`]), where the models of each AI account are turned on and off.
     ManageModels,
     /// Whether there is an AI account at all (`accounts.list_accounts`), asked while no AI account
     /// is an engine (task S.26): then no model is on, or there is no AI account.
@@ -427,7 +428,7 @@ pub enum Message {
     /// "Set up access", "Change access": the settings at Access (task S.34), where the person
     /// chooses what the assistant – or the bot of the open conversation – may use.
     SetUp,
-    /// "Add an AI account": the control centre's AI section, where AI accounts are added.
+    /// "Add an AI account": the section AI of the settings ([`AI_PAGE`]), where AI accounts are added.
     AddAiAccount,
     /// The gear in the title band, "Settings" in the sidebar: the settings in the content area, or
     /// back to the chat (task S.18).
@@ -770,6 +771,10 @@ impl App {
         if !self.waiting {
             subscriptions.push(iced::time::every(REFRESH).map(|_| Message::Tick));
         }
+        // A download under Settings › AI asks how far it is (issue #410).
+        if let Some(pane) = &self.settings {
+            subscriptions.push(pane.host.subscription().map(Message::SettingsHost));
+        }
         Subscription::batch(subscriptions)
     }
 
@@ -948,7 +953,11 @@ impl App {
                 self.mode = mode;
                 self.menu = None;
             }
-            Message::ManageModels => self.open_section(AI_PAGE),
+            // The section AI of this window's own settings (issue #410), not the control centre.
+            Message::ManageModels => {
+                self.close_menus();
+                return self.open_settings(Some(AI_PAGE));
+            }
             Message::AiAccounts(Ok(any)) => self.ai_accounts = any,
             // An old core or none: the window keeps what it said.
             Message::AiAccounts(Err(_)) => {}
@@ -1038,7 +1047,10 @@ impl App {
             Message::AppOpened(Ok(())) => {}
             Message::AppOpened(Err(err)) => self.note(format!("{} {err}", tr("Couldn't open the app."))),
             Message::SetUp => return self.open_access(self.chat_bot().map(str::to_owned)),
-            Message::AddAiAccount => self.open_section(AI_PAGE),
+            Message::AddAiAccount => {
+                self.close_menus();
+                return self.open_settings(Some(AI_PAGE));
+            }
             Message::ToggleSettings => return self.toggle_settings(),
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
@@ -1812,7 +1824,7 @@ impl App {
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
         // Settings open already leave their state in the memory first, for the new host.
         drop(self.settings.take());
-        let (mut host, load) = Host::with_memory(
+        let (host, load) = Host::with_memory(
             self.backend.settings(),
             settings::SECTIONS.to_vec(),
             settings::wanted(),
@@ -1820,6 +1832,8 @@ impl App {
             // Without the main application the suite\'s pages are this app\'s too (issue #408).
             !torro_gui::installed::main_app(),
         );
+        // AI, always, also with the main application (issue #410): the models it chats with.
+        let mut host = host.with_accounts(AppId::ASSISTANT, &[], true);
         if let Some(id) = section {
             host.open(id);
         }

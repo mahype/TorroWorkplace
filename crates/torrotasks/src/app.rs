@@ -125,6 +125,7 @@ use torro_pim::demo::DemoSource;
 use torro_pim::model::{GitHubFilter, GitHubKind, GitHubState, Link};
 use torro_pim::source::move_plan;
 use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, ProviderError, Todo};
+use torro_settings_ui::accounts::Group;
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, collections};
 
 use crate::detail::{self, Detail, Fit};
@@ -162,6 +163,11 @@ pub enum Menu {
 /// The settings of this window (task S.19): which lists the suite shows, grouped by account.
 /// [`Section::id`] is what `--settings <id>` takes.
 const SETTINGS_SECTIONS: [Section; 1] = [Section { id: "lists", icon: Icon::ListTodo, label: "Lists" }];
+
+/// The providers of accounts this app uses, behind its gear under Accounts (issue #410): the
+/// suite's accounts stay one for every app, and these are the ones whose calendars and lists it
+/// shows.
+const ACCOUNT_PROVIDERS: [Group; 3] = [Group::Nextcloud, Group::Mail, Group::GitHub];
 
 /// The settings in the content area while they are open: the library's [`Host`] with
 /// [`SETTINGS_SECTIONS`]. Its one section keeps no state of its own: everything it shows comes
@@ -420,7 +426,12 @@ impl Launch {
         let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
         // The app's own sections, and the suite's, which it shows without the main application
         // (issue #408).
-        let sections = [&SETTINGS_SECTIONS[..], &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS)].concat();
+        let sections = [
+            &SETTINGS_SECTIONS[..],
+            &torro_settings_ui::account_sections(&ACCOUNT_PROVIDERS, false),
+            &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS),
+        ]
+        .concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
             Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
@@ -1079,6 +1090,10 @@ impl App {
         }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
+        }
+        // A download under Settings › Accounts asks how far it is (issue #410).
+        if let Some(pane) = &self.settings {
+            subscriptions.push(pane.host.subscription().map(Message::SettingsHost));
         }
         // Only while "Issue closed" or "List … created" shows: nothing ticks in a quiet window.
         if self.notice.is_some() || self.created.is_some() {
@@ -2419,7 +2434,7 @@ impl App {
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
         // Settings open already leave their state in the memory first, for the new host.
         drop(self.settings.take());
-        let (mut host, load) = Host::with_memory(
+        let (host, load) = Host::with_memory(
             self.settings_backend(),
             SETTINGS_SECTIONS.to_vec(),
             collections::wanted(),
@@ -2427,6 +2442,8 @@ impl App {
             // Without the main application the suite\'s pages are this app\'s too (issue #408).
             !torro_gui::installed::main_app(),
         );
+        // Its accounts, always, also with the main application (issue #410).
+        let mut host = host.with_accounts(AppId::TASKS, &ACCOUNT_PROVIDERS, false);
         if let Some(id) = section {
             host.open(id);
         }

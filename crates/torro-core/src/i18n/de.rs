@@ -3880,7 +3880,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} of {m} task lists", "{n} von {m} Aufgabenlisten"),
     ("No source", "Keine Quelle"),
     ("{n} of {m} sources", "{n} von {m} Quellen"),
-    ("No mail account", "Kein E-Mail-Konto"),
     ("{n} of {m} mail accounts", "{n} von {m} E-Mail-Konten"),
     ("No repositories · choose in Torro Workplace", "Keine Repositorys · in Torro Workplace wählen"),
     ("1 repository", "1 Repository"),
@@ -4333,10 +4332,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Eine Regel erscheint hier, wenn du etwas mit der Glocke stummschaltest oder Hinweise dauerhaft einer Spur zuordnest.",
     ),
     ("Reading", "Lesen"),
-    (
-        "Add a mail account in Torro Workplace, under Accounts.",
-        "Füge in Torro Workplace unter Konten ein E-Mail-Konto hinzu.",
-    ),
     (
         "The name and signature of each account, and how its mail is written.",
         "Name und Signatur jedes Kontos, und wie seine E-Mails geschrieben werden.",
