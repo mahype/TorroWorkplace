@@ -1185,7 +1185,8 @@ async fn decide_mail_with(
 ) -> Result<Option<torro_mail::MailCategory>, DecideError> {
     let held = mail.content_for_category(account, message).await.map_err(|err| DecideError::Mail(err.to_string()))?;
     let Some(content) = held else { return Ok(None) };
-    let Some(decided) = ask_model(ai, inbox, decider, &content, contact).await? else { return Ok(None) };
+    let catalogue = inbox.catalogue().map_err(DecideError::Mail)?;
+    let Some(decided) = ask_model(ai, decider, &content, &catalogue, contact).await? else { return Ok(None) };
     if inbox.category_clear_blocked().map_err(DecideError::Mail)? {
         return Ok(None);
     }
@@ -1197,23 +1198,26 @@ async fn decide_mail_with(
     Ok(Some(decided.category))
 }
 
-/// One question to the model about `content`, with the catalogue as the inbox keeps it now
-/// (task E15.4), each call the way the model takes it ([`ask_decider`]). The AI's own error, not its
+/// One question to the model about `content`, with the `catalogue` as the inbox keeps it (task
+/// E15.4), each call the way the model takes it ([`ask_decider`]). The AI's own error, not its
 /// words flattened: `offline` and `auth` must reach the person as themselves, not as a plain `error`.
+///
+/// The caller reads the catalogue: a run over many mails reads it once for a hundred of them (issue
+/// #420), not once for each.
 ///
 /// For mail of a `contact` (issue #390) only the group of Personal and Phishing are offered
 /// ([`categorize::for_contact`]), and an answer outside them keeps Personal.
 async fn ask_model(
     ai: &AiAccounts,
-    inbox: &Inbox,
     (engine, model): (&str, &str),
     content: &categorize::Content,
+    catalogue: &[torro_mail::CategoryDef],
     contact: bool,
 ) -> Result<Option<categorize::Decided>, DecideError> {
-    let mut catalogue = inbox.catalogue().map_err(DecideError::Mail)?;
-    if contact {
-        catalogue = categorize::for_contact(&catalogue);
-    }
+    let catalogue: std::borrow::Cow<'_, [torro_mail::CategoryDef]> = match contact {
+        true => categorize::for_contact(catalogue).into(),
+        false => catalogue.into(),
+    };
     // The person let the model choose fewer than two categories: there is nothing to ask.
     if categorize::plan(&catalogue) == categorize::Plan::Nothing {
         return Err(DecideError::NothingToChoose);
@@ -1325,28 +1329,167 @@ impl DecideError {
     }
 }
 
-/// How long the backlog run waits between two model calls (task E12.6): a local model must not
-/// take the machine over while the person works. And how long one mail may keep it busy: a model
-/// that hangs must not hold the run for ever, as the feed's own limit does for new mail
-/// ([`crate::mail::inbox_feed`]).
+/// How long a run waits after it asked a chat model about a mail (task E12.6): through the fallback
+/// ([`ask_decider`]) a chat model computes much longer than a decision model, and on this computer it
+/// must not take the machine over while the person works. A decision model is asked without a pause
+/// (issue #420): its answer is the time a mail takes, and the pause cost up to 12 % of a run. And how
+/// long one try at one mail may keep the model busy: a model that hangs must not hold the run for
+/// ever, as the feed's own limit does for new mail ([`crate::mail::inbox_feed`]).
 const CATEGORY_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 const CATEGORY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How many mails a run asks at once of Jev and of Ollama's cloud models (issue #420). Measured: Jev
+/// answers 8 side by side in 38 ms a mail instead of 220 ms one after the other, a cloud model of
+/// Ollama 4 in 230 ms instead of 600 ms. Every other model gets one mail after the other: a local
+/// Ollama computes one request of a model at a time, and asked side by side it was slower.
+const CATEGORY_PARALLEL_JEV: usize = 8;
+const CATEGORY_PARALLEL_CLOUD: usize = 4;
+
+/// How many mails a run reads, asks and writes as one section (issue #420): the catalogue is read
+/// once for them, not once for every mail. A sorting job's batch is as large.
+const CATEGORY_SECTION: usize = 100;
+
+/// How long a run waits for a model that is busy or limits requests (HTTP 429, 402) before it asks
+/// again (issue #420), one wait after the other; still busy after the last, the run stops as it did
+/// before. Short in tests, which must not wait seconds for a refusal.
+#[cfg(not(test))]
+const CATEGORY_BUSY_WAITS: [std::time::Duration; 3] =
+    [std::time::Duration::from_secs(1), std::time::Duration::from_secs(2), std::time::Duration::from_secs(4)];
+#[cfg(test)]
+const CATEGORY_BUSY_WAITS: [std::time::Duration; 3] = [std::time::Duration::from_millis(10); 3];
+
+/// How many mails in a row may come back without an answer before a run stops (issue #420): one
+/// mail too long for a small model's context goes by, a model that answers no mail at all ends it.
+const CATEGORY_FAILS_IN_A_ROW: u32 = 10;
+
+/// How a run asks its model (issue #420): how many mails at once, and whether it pauses after each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CategoryPace {
+    parallel: usize,
+    pause: bool,
+}
+
+impl CategoryPace {
+    /// One mail after the other with [`CATEGORY_PAUSE`] between: a chat model, or one the core cannot
+    /// tell – as every run went before issue #420.
+    const CAREFUL: CategoryPace = CategoryPace { parallel: 1, pause: true };
+}
+
+/// How a run asks `model` of the AI account `engine` (issue #420), by the account's list as the core
+/// holds it ([`AiAccounts::known_models`], as [`ask_decider`] reads it): a decision model without a
+/// pause – Jev [`CATEGORY_PARALLEL_JEV`] mails at once, a model of Ollama that computes elsewhere
+/// [`CATEGORY_PARALLEL_CLOUD`], any other one after the other. A chat model, and a model or account
+/// the core does not know, keep [`CategoryPace::CAREFUL`].
+async fn category_pace(ai: &AiAccounts, (engine, model): (&str, &str)) -> CategoryPace {
+    use torro_core::ai::AiProvider;
+    let Some((provider, server)) = ai.server(engine).await else { return CategoryPace::CAREFUL };
+    let Ok(listed) = ai.known_models(engine, Some(model)).await else { return CategoryPace::CAREFUL };
+    let Some(model) = listed.into_iter().find(|known| known.id == model) else { return CategoryPace::CAREFUL };
+    if model.decision != Some(true) {
+        return CategoryPace::CAREFUL;
+    }
+    let parallel = match provider {
+        AiProvider::Jev => CATEGORY_PARALLEL_JEV,
+        AiProvider::Ollama if crate::assistant::place_of(provider, &server, &model) != Place::Local => {
+            CATEGORY_PARALLEL_CLOUD
+        }
+        _ => 1,
+    };
+    CategoryPace { parallel, pause: false }
+}
+
+/// What asking the model about one mail came to in a run (issue #420, [`ask_to_sort`]).
+enum Asked {
+    /// The model's answer ([`ask_model`]).
+    Answer(Option<categorize::Decided>),
+    /// The catalogue leaves the model fewer than two categories: the rules alone sort, as without a
+    /// model.
+    NothingToChoose,
+    /// No answer for this one mail: none that reads (issue #398), or the server refused the mail
+    /// itself – a model with a small context refuses a long one (HTTP 400, 413, 422). It keeps no
+    /// category, so a later run asks again; the run goes on, one odd mail must not hold up all after
+    /// it ([`CATEGORY_FAILS_IN_A_ROW`]).
+    Unread(DecideError),
+    /// The server is gone, refuses the key, or is still busy after [`CATEGORY_BUSY_WAITS`]: the run
+    /// stops rather than hammer it with hundreds of mails.
+    Stop(DecideError),
+    /// One try took longer than [`CATEGORY_TIMEOUT`]: the run stops.
+    TimedOut,
+}
+
+/// Asks the model about one mail of a run ([`ask_model`], issue #420): each try within
+/// [`CATEGORY_TIMEOUT`], and a model that is busy once more after each of [`CATEGORY_BUSY_WAITS`] –
+/// with several mails asked at once, a limit of requests is reached sooner.
+async fn ask_to_sort(
+    ai: &AiAccounts,
+    decider: (&str, &str),
+    content: &categorize::Content,
+    catalogue: &[torro_mail::CategoryDef],
+    contact: bool,
+) -> Asked {
+    use torro_core::ai::AiError;
+    let mut waits = CATEGORY_BUSY_WAITS.into_iter();
+    loop {
+        let asking = ask_model(ai, decider, content, catalogue, contact);
+        let err = match tokio::time::timeout(CATEGORY_TIMEOUT, asking).await {
+            Err(_) => return Asked::TimedOut,
+            Ok(Ok(answer)) => return Asked::Answer(answer),
+            Ok(Err(DecideError::NothingToChoose)) => return Asked::NothingToChoose,
+            Ok(Err(err)) => err,
+        };
+        match (&err, waits.next()) {
+            (DecideError::Ai(AiError::Format(_) | AiError::Server { status: 400 | 413 | 422, .. }), _) => {
+                return Asked::Unread(err);
+            }
+            (DecideError::Ai(AiError::Busy(_)), Some(wait)) => tokio::time::sleep(wait).await,
+            _ => return Asked::Stop(err),
+        }
+    }
+}
+
+/// What the backlog run made of one mail before it writes (issue #420, [`catch_up_mail`]).
+enum CatchUpMail {
+    /// Nothing to write: the mail is gone or cannot be read, the person filed it, or the run stopped.
+    Skip,
+    /// What sorts the mail, if anything, against the category it `held`; `asked` when the model was.
+    Sorted {
+        held: Option<torro_mail::MailCategory>,
+        decided: Option<(torro_mail::MailCategory, Option<categorize::Decided>)>,
+        asked: bool,
+    },
+    /// The model gave the mail no answer ([`Asked::Unread`]).
+    Unread(DecideError),
+    /// The model stopped answering: the line for the log, and the run ends.
+    Stop(String),
+}
+
 /// The backlog run (task E12.6): for every account, the mail of the inbox that has no category
-/// yet, newest first, within the window – asked one at a time, with a pause between, and stopped
-/// at once when somebody cancels. What it sorted stays sorted.
+/// yet, newest first, within the window – stopped at once when somebody cancels. What it sorted
+/// stays sorted.
 ///
 /// The sorting rules and the headers come first (task E15.4), the model only for what they leave
 /// open. Sorting again (`again`) goes through every mail of the window, a category or not, and
 /// leaves only what the person filed by hand; without a model only the rules run then. How far
 /// it came per account is kept in [`CatchUp::progress`].
+///
+/// The mail goes in sections of [`CATEGORY_SECTION`] with the catalogue read once for each, and at
+/// the pace of the model ([`category_pace`], issue #420): several mails asked at once where the
+/// model computes them side by side, the answers written in order. A stop drops the answers still
+/// coming.
 async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
-    let CatchUpRun { mail, inbox, ai, state, generation, decider, known, again } = run;
+    use futures_util::StreamExt;
+
     let since = Utc::now() - chrono::Duration::days(CATEGORY_BACKLOG_DAYS);
+    let decider = run.decider.as_ref().map(|(engine, model)| (engine.as_str(), model.as_str()));
+    let pace = match decider {
+        Some(decider) => category_pace(&run.ai, decider).await,
+        None => CategoryPace::CAREFUL,
+    };
+    let mut fails = 0;
     for account in accounts {
-        let waiting = match again {
-            true => mail.in_window(&account, since, CATEGORY_BACKLOG_MAX).await,
-            false => mail.uncategorised(&account, since, CATEGORY_BACKLOG_MAX).await,
+        let waiting = match run.again {
+            true => run.mail.in_window(&account, since, CATEGORY_BACKLOG_MAX).await,
+            false => run.mail.uncategorised(&account, since, CATEGORY_BACKLOG_MAX).await,
         };
         let waiting = match waiting {
             Ok(waiting) => waiting,
@@ -1355,105 +1498,274 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
                 continue;
             }
         };
-        state.begin(&account, waiting.len() as u64);
-        for message in waiting {
-            if state.stopped(generation) {
+        run.state.begin(&account, waiting.len() as u64);
+        for section in waiting.chunks(CATEGORY_SECTION) {
+            if run.state.stopped(run.generation) {
                 return;
             }
-            let facts = match mail.sorting_facts(&account, &message).await {
-                Ok(Some(facts)) => facts,
-                Ok(None) => {
-                    state.step(&account);
-                    continue;
-                }
-                Err(err) => {
-                    eprintln!("torroworkplace: inbox: cannot read a mail of {account}: {err}");
-                    state.step(&account);
-                    continue;
-                }
+            // Without a model the rules alone sort, and they need no catalogue.
+            let catalogue = match decider {
+                Some(_) => match run.inbox.catalogue() {
+                    Ok(catalogue) => catalogue,
+                    Err(err) => {
+                        eprintln!("torroworkplace: inbox: cannot read the categories: {err}");
+                        return;
+                    }
+                },
+                None => Vec::new(),
             };
-            // What the person filed by hand stays theirs.
-            if facts.category.is_some_and(|held| held.source == torro_mail::CategorySource::Person) {
-                state.step(&account);
-                continue;
-            }
-            let input = torro_inbox::rules::SortInput {
-                sender: facts.sender.as_deref(),
-                subject: &facts.content.subject,
-                text: &facts.content.text,
-                account: Some(&account),
-                list_id: facts.content.list.as_deref(),
-                facts: Some(&facts.sort_facts),
-            };
-            let ruled =
-                inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()).unwrap_or_else(|err| {
-                    eprintln!("torroworkplace: inbox: cannot read the sorting rules: {err}");
-                    None
-                });
-            // Mail of a contact goes to Personal when no rule spoke (issue #390); a model only
-            // chooses within that group. Not while clearing all categories holds sorting back, as
-            // the rules are held back then.
-            let contact = ruled.is_none()
-                && from_contact(known.as_ref(), &account, &facts)
-                && !inbox.category_clear_blocked().unwrap_or(true);
-            let personal = contact.then(|| (by_contact(), None));
-            let (decided, asked) = match (ruled, &decider) {
-                (Some(category), _) => (Some((category, None)), false),
-                (None, Some((engine, model))) => {
-                    let asking = ask_model(&ai, &inbox, (engine, model), &facts.content, contact);
-                    match tokio::time::timeout(CATEGORY_TIMEOUT, asking).await {
-                        Ok(Ok(decided)) => {
-                            (decided.map(|decided| (decided.category, Some(decided))).or(personal), true)
-                        }
-                        // The model may choose nothing: the rules alone sort, as without a model.
-                        Ok(Err(DecideError::NothingToChoose)) => (personal, false),
-                        // One mail the model gave no readable answer for (issue #398, as the sorting
-                        // job since the PR review of #325): it keeps no category, so a later run asks
-                        // again; the run goes on – one odd mail must not hold up all after it, and the
-                        // newest would stop every run at the same place.
-                        Ok(Err(DecideError::Ai(torro_core::ai::AiError::Format(_)))) => {
+            let (asking, name, offered) = (&run, account.as_str(), catalogue.as_slice());
+            // Owned ids: a closure over borrowed ones would not be `Send` for every lifetime.
+            let steps = futures_util::stream::iter(section.to_vec())
+                .map(move |message| async move {
+                    let step = catch_up_mail(asking, name, offered, &message).await;
+                    (message, step)
+                })
+                .buffered(pace.parallel);
+            let mut steps = std::pin::pin!(steps);
+            while let Some((message, step)) = steps.next().await {
+                if run.state.stopped(run.generation) {
+                    return;
+                }
+                let mut asked = false;
+                match step {
+                    CatchUpMail::Skip => {}
+                    CatchUpMail::Stop(line) => {
+                        eprintln!("{line}");
+                        return;
+                    }
+                    CatchUpMail::Unread(err) => {
+                        (asked, fails) = (true, fails + 1);
+                        if fails >= CATEGORY_FAILS_IN_A_ROW {
                             eprintln!(
-                                "torroworkplace: inbox: the decision model gave a mail of {account} no readable answer"
-                            );
-                            (None, true)
-                        }
-                        // The server is gone or busy: stop, rather than hammer it for 500 messages.
-                        Ok(Err(err)) => {
-                            eprintln!("torroworkplace: inbox: the decision model stopped answering: {}", err.to_line());
-                            return;
-                        }
-                        Err(_) => {
-                            eprintln!(
-                                "torroworkplace: inbox: the decision model took too long for a mail of {account}"
+                                "torroworkplace: inbox: the decision model answered {fails} mails in a row with nothing: {}",
+                                err.to_line()
                             );
                             return;
                         }
+                        eprintln!(
+                            "torroworkplace: inbox: the decision model gave a mail of {account} no readable answer"
+                        );
+                    }
+                    CatchUpMail::Sorted { held, decided, asked: model } => {
+                        asked = model;
+                        if model {
+                            fails = 0;
+                        }
+                        if let Some((category, answers)) = decided
+                            && held != Some(category)
+                        {
+                            write_caught_up(&run, &account, &message, category, answers).await;
+                        }
                     }
                 }
-                // No rule holds and no model to ask: the mail keeps what it has, or a contact's
-                // goes to Personal.
-                (None, None) => (personal, false),
-            };
-            if let Some((category, answers)) = decided
-                && facts.category != Some(category)
-            {
-                if let Err(err) = mail.set_category(&account, std::slice::from_ref(&message), Some(category)).await {
-                    eprintln!("torroworkplace: inbox: cannot keep a category of {account}: {err}");
-                } else {
-                    if let Some(answers) = answers {
-                        let _ = mail.set_model_answers(&account, &message, answers.needs_reply, answers.urgency).await;
-                    }
-                    // The entry of that mail, where there is one, reads alike.
-                    if let Some(entry) = inbox.entry_of_message(&account, &message) {
-                        let _ = inbox.set_category(&entry, Some(category));
-                    }
+                run.state.step(&account);
+                if asked && pace.pause {
+                    tokio::time::sleep(CATEGORY_PAUSE).await;
                 }
-            }
-            state.step(&account);
-            if asked {
-                tokio::time::sleep(CATEGORY_PAUSE).await;
             }
         }
+    }
+}
+
+/// Reads one mail of `account` for the backlog run and asks the model where the rules leave it open
+/// (issue #420): everything of [`catch_up_run`] before it writes, so that several mails can be asked
+/// at once.
+async fn catch_up_mail(
+    run: &CatchUpRun,
+    account: &str,
+    catalogue: &[torro_mail::CategoryDef],
+    message: &str,
+) -> CatchUpMail {
+    // Stopped while this mail waited for its turn: nothing more goes to the model.
+    if run.state.stopped(run.generation) {
+        return CatchUpMail::Skip;
+    }
+    let facts = match run.mail.sorting_facts(account, message).await {
+        Ok(Some(facts)) => facts,
+        Ok(None) => return CatchUpMail::Skip,
+        Err(err) => {
+            eprintln!("torroworkplace: inbox: cannot read a mail of {account}: {err}");
+            return CatchUpMail::Skip;
+        }
+    };
+    // What the person filed by hand stays theirs.
+    if facts.category.is_some_and(|held| held.source == torro_mail::CategorySource::Person) {
+        return CatchUpMail::Skip;
+    }
+    let input = torro_inbox::rules::SortInput {
+        sender: facts.sender.as_deref(),
+        subject: &facts.content.subject,
+        text: &facts.content.text,
+        account: Some(account),
+        list_id: facts.content.list.as_deref(),
+        facts: Some(&facts.sort_facts),
+    };
+    let ruled = run.inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()).unwrap_or_else(|err| {
+        eprintln!("torroworkplace: inbox: cannot read the sorting rules: {err}");
+        None
+    });
+    // Mail of a contact goes to Personal when no rule spoke (issue #390); a model only chooses
+    // within that group. Not while clearing all categories holds sorting back, as the rules are
+    // held back then.
+    let contact = ruled.is_none()
+        && from_contact(run.known.as_ref(), account, &facts)
+        && !run.inbox.category_clear_blocked().unwrap_or(true);
+    let personal = contact.then(|| (by_contact(), None));
+    let (decided, asked) = match (ruled, &run.decider) {
+        (Some(category), _) => (Some((category, None)), false),
+        (None, Some((engine, model))) => {
+            match ask_to_sort(&run.ai, (engine, model), &facts.content, catalogue, contact).await {
+                Asked::Answer(decided) => (decided.map(|decided| (decided.category, Some(decided))).or(personal), true),
+                // The model may choose nothing: the rules alone sort, as without a model.
+                Asked::NothingToChoose => (personal, false),
+                Asked::Unread(err) => return CatchUpMail::Unread(err),
+                Asked::Stop(err) => {
+                    let line =
+                        format!("torroworkplace: inbox: the decision model stopped answering: {}", err.to_line());
+                    return CatchUpMail::Stop(line);
+                }
+                Asked::TimedOut => {
+                    let line =
+                        format!("torroworkplace: inbox: the decision model took too long for a mail of {account}");
+                    return CatchUpMail::Stop(line);
+                }
+            }
+        }
+        // No rule holds and no model to ask: the mail keeps what it has, or a contact's goes to
+        // Personal.
+        (None, None) => (personal, false),
+    };
+    CatchUpMail::Sorted { held: facts.category, decided, asked }
+}
+
+/// Keeps the `category` the backlog run found for `message` of `account`, with the model's other
+/// `answers`, and gives the inbox entry of that mail the same.
+async fn write_caught_up(
+    run: &CatchUpRun,
+    account: &str,
+    message: &str,
+    category: torro_mail::MailCategory,
+    answers: Option<categorize::Decided>,
+) {
+    let one = [message.to_string()];
+    if let Err(err) = run.mail.set_category(account, &one, Some(category)).await {
+        eprintln!("torroworkplace: inbox: cannot keep a category of {account}: {err}");
+        return;
+    }
+    if let Some(answers) = answers {
+        let _ = run.mail.set_model_answers(account, message, answers.needs_reply, answers.urgency).await;
+    }
+    // The entry of that mail, where there is one, reads alike.
+    if let Some(entry) = run.inbox.entry_of_message(account, message) {
+        let _ = run.inbox.set_category(&entry, Some(category));
+    }
+}
+
+/// What a sorting job made of one mail before it writes (issue #420, [`JobRun::prepare`]).
+enum JobMail {
+    /// The job is no longer this worker's: paused, cancelled, or resumed by another.
+    Halted,
+    /// Nothing to sort: the mail is gone, or the person or a filter set its category.
+    Pass,
+    /// What sorts the mail, if anything, against the category it `held`; `asked` when the model was.
+    Sorted {
+        held: Option<torro_mail::MailCategory>,
+        decided: Option<(torro_mail::MailCategory, Option<categorize::Decided>)>,
+        asked: bool,
+    },
+    /// The model gave the mail no answer ([`Asked::Unread`]): it counts as failed.
+    Unread(DecideError),
+    /// A store or model error, or a change of the person's, stops the job with this line.
+    Stop(String),
+}
+
+/// What one worker of a sorting job reads with (issue #420): the services, the settings, which job
+/// and generation it is, the model it asks and who counts as a contact.
+struct JobRun<'a> {
+    mail: &'a MailService,
+    inbox: &'a Inbox,
+    ai: &'a AiAccounts,
+    settings: &'a SettingsStore,
+    id: &'a str,
+    generation: u64,
+    decider: Option<&'a (String, String)>,
+    known: Option<&'a crate::mail::inbox_feed::KnownSender>,
+}
+
+impl JobRun<'_> {
+    /// The job while it is still this worker's to run.
+    fn current(&self) -> Option<torro_ipc::inbox::CategoryJob> {
+        self.inbox
+            .category_job(Some(self.id))
+            .ok()
+            .flatten()
+            .filter(|job| job.generation == self.generation && job.state == torro_ipc::inbox::CategoryJobState::Running)
+    }
+
+    /// Reads one mail of `account` for the job as it was when its batch began and asks the model
+    /// where the rules leave it open (issue #420): everything of [`category_job_run`] before it
+    /// writes, so that several mails can be asked at once. "Keep mail here" and a change of the model
+    /// for sorting are looked at right before each mail goes out.
+    async fn prepare(
+        &self,
+        job: &torro_ipc::inbox::CategoryJob,
+        account: &str,
+        catalogue: &[torro_mail::CategoryDef],
+        message: &str,
+    ) -> JobMail {
+        if self.current().is_none() {
+            return JobMail::Halted;
+        }
+        let facts = match self.mail.sorting_facts(account, message).await {
+            Ok(facts) => facts,
+            Err(err) => return JobMail::Stop(format!("{account}: {err}")),
+        };
+        let Some(facts) =
+            facts.filter(|facts| facts.category.is_none_or(|held| held.source == torro_mail::CategorySource::Model))
+        else {
+            return JobMail::Pass;
+        };
+        let input = torro_inbox::rules::SortInput {
+            sender: facts.sender.as_deref(),
+            subject: &facts.content.subject,
+            text: &facts.content.text,
+            account: Some(account),
+            list_id: facts.content.list.as_deref(),
+            facts: Some(&facts.sort_facts),
+        };
+        let ruled = match self.inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()) {
+            Ok(category) => category,
+            Err(err) => return JobMail::Stop(err),
+        };
+        // Mail of a contact goes to Personal when no rule spoke (issue #390); a model only chooses
+        // within that group.
+        let contact = ruled.is_none() && from_contact(self.known, account, &facts);
+        let personal = contact.then(|| (by_contact(), None));
+        let (decided, asked) = match (ruled, self.decider) {
+            (Some(category), _) => (Some((category, None)), false),
+            (None, Some(_))
+                if job.model_in_cloud == Some(true)
+                    && !self.settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) =>
+            {
+                return JobMail::Stop(tr("Sorting may no longer send mail to the cloud.").to_string());
+            }
+            (None, Some(held)) if left_behind(&self.settings.current(), &job.scope, held) => {
+                let why = tr("The model for Sorting changed. Resume the run to sort with the new one.");
+                return JobMail::Stop(why.to_string());
+            }
+            (None, Some((engine, model))) => {
+                match ask_to_sort(self.ai, (engine, model), &facts.content, catalogue, contact).await {
+                    Asked::Answer(answer) => (answer.map(|answer| (answer.category, Some(answer))).or(personal), true),
+                    Asked::NothingToChoose => (personal, true),
+                    Asked::Unread(err) => return JobMail::Unread(err),
+                    Asked::Stop(err) => return JobMail::Stop(err.to_line()),
+                    Asked::TimedOut => return JobMail::Stop("decision model timed out".into()),
+                }
+            }
+            (None, None) => (personal, false),
+        };
+        JobMail::Sorted { held: facts.category, decided, asked }
     }
 }
 
@@ -1464,6 +1776,11 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
 ///
 /// A run whose model computes elsewhere stops (`failed`) before the next mail once the permission of
 /// Sorting is off (`settings`, PR review of #325): "Keep mail here" holds for a run already going too.
+///
+/// Each batch of [`CATEGORY_SECTION`] mails reads the catalogue once and asks at the pace of the model
+/// ([`category_pace`], issue #420): several mails at once where the model computes them side by side.
+/// The answers are written and the cursor moved in the order of the mail, so a restart still takes up
+/// where the cursor stands; a pause or cancel drops the answers still coming.
 async fn category_job_run(
     (mail, inbox, ai): (Arc<MailService>, Arc<Inbox>, Arc<AiAccounts>),
     settings: SettingsStore,
@@ -1472,16 +1789,25 @@ async fn category_job_run(
     decider: Option<(String, String)>,
     known: Option<crate::mail::inbox_feed::KnownSender>,
 ) {
+    use futures_util::StreamExt;
     use torro_ipc::inbox::CategoryJobState;
 
-    let current = || {
-        inbox
-            .category_job(Some(&id))
-            .ok()
-            .flatten()
-            .filter(|job| job.generation == generation && job.state == CategoryJobState::Running)
+    let run = JobRun {
+        mail: &mail,
+        inbox: &inbox,
+        ai: &ai,
+        settings: &settings,
+        id: &id,
+        generation,
+        decider: decider.as_ref(),
+        known: known.as_ref(),
     };
-    while let Some(job) = current() {
+    let pace = match &decider {
+        Some((engine, model)) => category_pace(&ai, (engine, model)).await,
+        None => CategoryPace::CAREFUL,
+    };
+    let mut fails = 0;
+    while let Some(job) = run.current() {
         let Some(account) = job.accounts.iter().find(|account| account.cursor < account.max_sequence).cloned() else {
             let _ = inbox.change_category_job(&id, |job| {
                 if job.generation == generation && job.state == CategoryJobState::Running {
@@ -1491,7 +1817,13 @@ async fn category_job_run(
             break;
         };
         let batch = match mail
-            .category_job_batch(&account.account, &job.scope, account.cursor, account.max_sequence, 100)
+            .category_job_batch(
+                &account.account,
+                &job.scope,
+                account.cursor,
+                account.max_sequence,
+                CATEGORY_SECTION as u32,
+            )
             .await
         {
             Ok(batch) => batch,
@@ -1511,125 +1843,91 @@ async fn category_job_run(
             });
             continue;
         }
-        for (seq, message) in batch {
-            if current().is_none() {
+        // Without a model the rules alone sort, and they need no catalogue.
+        let catalogue = match &decider {
+            Some(_) => match inbox.catalogue() {
+                Ok(catalogue) => catalogue,
+                Err(err) => {
+                    category_job_error(&inbox, &id, generation, &account.account, &err);
+                    break;
+                }
+            },
+            None => Vec::new(),
+        };
+        let (asking, held_job, name, offered) = (&run, &job, account.account.as_str(), catalogue.as_slice());
+        let steps = futures_util::stream::iter(batch)
+            .map(move |(seq, message)| async move {
+                let step = asking.prepare(held_job, name, offered, &message).await;
+                (seq, message, step)
+            })
+            .buffered(pace.parallel);
+        let mut steps = std::pin::pin!(steps);
+        while let Some((seq, message, step)) = steps.next().await {
+            if run.current().is_none() {
                 break;
             }
             let (mut changed, mut asked, mut unread) = (false, false, false);
-            let facts = match mail.sorting_facts(&account.account, &message).await {
-                Ok(facts) => facts,
-                Err(err) => {
-                    category_job_error(
-                        &inbox,
-                        &id,
-                        generation,
-                        &account.account,
-                        &format!("{}: {err}", account.account),
-                    );
+            match step {
+                JobMail::Halted => break,
+                JobMail::Stop(line) => {
+                    category_job_error(&inbox, &id, generation, &account.account, &line);
                     break;
                 }
-            };
-            if let Some(facts) = facts
-                && facts.category.is_none_or(|held| held.source == torro_mail::CategorySource::Model)
-            {
-                let input = torro_inbox::rules::SortInput {
-                    sender: facts.sender.as_deref(),
-                    subject: &facts.content.subject,
-                    text: &facts.content.text,
-                    account: Some(&account.account),
-                    list_id: facts.content.list.as_deref(),
-                    facts: Some(&facts.sort_facts),
-                };
-                let ruled = match inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()) {
-                    Ok(category) => category,
-                    Err(err) => {
-                        category_job_error(&inbox, &id, generation, &account.account, &err);
+                JobMail::Pass => {}
+                // One mail the model gave no answer for (PR review of #325, issue #420): it keeps no
+                // category and counts as failed, so a later run asks again; the run goes on – one odd
+                // mail must not hold up all after it, but ten in a row stop it.
+                JobMail::Unread(err) => {
+                    if inbox.category_clear_blocked().unwrap_or(true) {
                         break;
                     }
-                };
-                // Mail of a contact goes to Personal when no rule spoke (issue #390); a model only
-                // chooses within that group.
-                let contact = ruled.is_none() && from_contact(known.as_ref(), &account.account, &facts);
-                let personal = contact.then(|| (by_contact(), None));
-                let decided = match (ruled, &decider) {
-                    (Some(category), _) => Some((category, None)),
-                    (None, Some(_))
-                        if job.model_in_cloud == Some(true)
-                            && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) =>
+                    (asked, unread, fails) = (true, true, fails + 1);
+                    if fails >= CATEGORY_FAILS_IN_A_ROW {
+                        category_job_error(&inbox, &id, generation, &account.account, &err.to_line());
+                        break;
+                    }
+                }
+                JobMail::Sorted { held, decided, asked: model } => {
+                    // Clearing the categories may begin while the model thinks. Do not apply that
+                    // late answer; nor one that came after a pause or cancel (above).
+                    if inbox.category_clear_blocked().unwrap_or(true) {
+                        break;
+                    }
+                    asked = model;
+                    if model {
+                        fails = 0;
+                    }
+                    if let Some((category, answers)) = decided
+                        && held != Some(category)
                     {
-                        let why = tr("Sorting may no longer send mail to the cloud.");
-                        category_job_error(&inbox, &id, generation, &account.account, why);
-                        break;
-                    }
-                    (None, Some(held)) if left_behind(&settings.current(), &job.scope, held) => {
-                        let why = tr("The model for Sorting changed. Resume the run to sort with the new one.");
-                        category_job_error(&inbox, &id, generation, &account.account, why);
-                        break;
-                    }
-                    (None, Some((engine, model))) => {
-                        asked = true;
-                        match tokio::time::timeout(
-                            CATEGORY_TIMEOUT,
-                            ask_model(&ai, &inbox, (engine, model), &facts.content, contact),
-                        )
-                        .await
-                        {
-                            Ok(Ok(answer)) => answer.map(|answer| (answer.category, Some(answer))).or(personal),
-                            Ok(Err(DecideError::NothingToChoose)) => personal,
-                            // One mail the model gave no readable answer for (PR review of #325): it
-                            // keeps no category and counts as failed, so a later run asks again; the
-                            // run goes on – one odd mail must not hold up all after it.
-                            Ok(Err(DecideError::Ai(torro_core::ai::AiError::Format(_)))) => {
-                                unread = true;
-                                None
+                        match mail.set_category_if_unchanged(&account.account, &message, held, category).await {
+                            Ok(true) => {
+                                changed = true;
+                                if let Some(answers) = answers {
+                                    let _ = mail
+                                        .set_model_answers(
+                                            &account.account,
+                                            &message,
+                                            answers.needs_reply,
+                                            answers.urgency,
+                                        )
+                                        .await;
+                                }
+                                if let Some(entry) = inbox.entry_of_message(&account.account, &message) {
+                                    let _ = inbox.set_category_if_automatic(&entry, category);
+                                }
                             }
-                            Ok(Err(err)) => {
-                                category_job_error(&inbox, &id, generation, &account.account, &err.to_line());
-                                break;
-                            }
-                            Err(_) => {
+                            Ok(false) => {}
+                            Err(err) => {
                                 category_job_error(
                                     &inbox,
                                     &id,
                                     generation,
                                     &account.account,
-                                    "decision model timed out",
+                                    &format!("{}: {err}", account.account),
                                 );
                                 break;
                             }
-                        }
-                    }
-                    (None, None) => personal,
-                };
-                // Pause/cancel may arrive while the model thinks. Do not apply that late answer.
-                if current().is_none() || inbox.category_clear_blocked().unwrap_or(true) {
-                    break;
-                }
-                if let Some((category, answers)) = decided
-                    && facts.category != Some(category)
-                {
-                    match mail.set_category_if_unchanged(&account.account, &message, facts.category, category).await {
-                        Ok(true) => {
-                            changed = true;
-                            if let Some(answers) = answers {
-                                let _ = mail
-                                    .set_model_answers(&account.account, &message, answers.needs_reply, answers.urgency)
-                                    .await;
-                            }
-                            if let Some(entry) = inbox.entry_of_message(&account.account, &message) {
-                                let _ = inbox.set_category_if_automatic(&entry, category);
-                            }
-                        }
-                        Ok(false) => {}
-                        Err(err) => {
-                            category_job_error(
-                                &inbox,
-                                &id,
-                                generation,
-                                &account.account,
-                                &format!("{}: {err}", account.account),
-                            );
-                            break;
                         }
                     }
                 }
@@ -1645,11 +1943,11 @@ async fn category_job_run(
                     progress.failed += u64::from(unread);
                 }
             });
-            if asked {
+            if asked && pace.pause {
                 tokio::time::sleep(CATEGORY_PAUSE).await;
             }
         }
-        if current().is_none() {
+        if run.current().is_none() {
             break;
         }
     }
@@ -25068,6 +25366,324 @@ mod tests {
             (held.category, held.source, held.confidence),
             (torro_mail::Category::Invoice, torro_mail::CategorySource::Model, Some(88))
         );
+    }
+
+    /// Issue #420: a core whose inbox holds one mail for each of `subjects`, the first the newest, and
+    /// that sorts with Jev on `jev`, mail let out for sorting. The fake IMAP server comes along: it must
+    /// outlive the run.
+    async fn core_sorting_with_jev(
+        dir: &std::path::Path,
+        jev: &httpmock::MockServer,
+        subjects: &[String],
+    ) -> (Core, FakeImap) {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_core::ai::AiSlot;
+
+        let keys = MemoryTokens::default();
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        let now = Utc::now();
+        for (at, subject) in subjects.iter().enumerate() {
+            let date = now - chrono::Duration::seconds(at as i64);
+            let raw = format!(
+                "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {}\r\n\
+                 Message-ID: <m{at}@example.org>\r\nContent-Type: text/plain\r\n\r\nSee you on Monday.\r\n",
+                date.to_rfc2822()
+            );
+            imap.add("INBOX", &raw, &[]);
+        }
+        let anna = mail_account("anna@example.org", &imap.endpoint);
+        store_accounts(dir, &keys, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir, &keys);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+
+        let core = Core { ai: Arc::new(crate::account::ai::tests::service(dir, &keys, Vec::new())), ..audited(dir) }
+            .with_mail(mail);
+        let key = torro_core::account::Secret::new(crate::account::ai::tests::KEY);
+        let engine = core.ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), key).await.expect("jev").id;
+        assert_eq!(core.handle(switch(&engine, torro_core::ai::JEV_MODEL, true)).await, Response::Ok);
+        let slot = set_slot(AiSlot::Decide, Some(&engine), Some(torro_core::ai::JEV_MODEL));
+        assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
+        let out = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
+        assert_eq!(core.handle(out).await, Response::Ok);
+        (core, imap)
+    }
+
+    /// Jev on `server` answering every decision after `delay` (issue #420), as
+    /// [`crate::account::ai::tests::mock_jev`] answers; a mail whose state holds `but` is left to
+    /// another mock.
+    async fn mock_jev_after<'a>(
+        server: &'a httpmock::MockServer,
+        delay: std::time::Duration,
+        but: Option<&str>,
+    ) -> httpmock::Mock<'a> {
+        server
+            .mock_async(|when, then| {
+                let when = when
+                    .method("POST")
+                    .path("/v1/systemone")
+                    .header("authorization", format!("Bearer {}", crate::account::ai::tests::KEY));
+                if let Some(but) = but {
+                    when.body_excludes(but);
+                }
+                then.status(200).delay(delay).json_body(serde_json::json!({
+                    "model": "jev-latest",
+                    "answers": {
+                        "ok": {"type": "noul", "noul": 0.97},
+                        "category": {"type": "choice", "choice": "invoice",
+                                     "probabilities": {"invoice": 0.88, "other": 0.12}, "confidence": 0.88},
+                        "needs_reply": {"type": "noul", "noul": 0.1},
+                        "urgency": {"type": "score", "score": 0.4, "confidence": 0.7}
+                    },
+                    "usage": {"input_tokens": 1700, "output_tokens": 9}
+                }));
+            })
+            .await
+    }
+
+    /// Starts a sorting job over all mail (issue #420) and waits up to `within` for it to end.
+    async fn sort_all(core: &Core, within: std::time::Duration) -> torro_ipc::inbox::CategoryJob {
+        let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
+        let answer = core.handle(start).await;
+        assert!(matches!(answer, Response::CategoryJob { job: Some(_) }), "{answer:?}");
+        job_ended(core, within).await
+    }
+
+    /// The newest sorting job once it no longer runs, waited for up to `within`.
+    async fn job_ended(core: &Core, within: std::time::Duration) -> torro_ipc::inbox::CategoryJob {
+        let until = std::time::Instant::now() + within;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let Response::CategoryJob { job: Some(job) } = core.handle(Request::GetCategoryJob { id: None }).await
+            else {
+                panic!("the job")
+            };
+            if job.state != torro_ipc::inbox::CategoryJobState::Running {
+                return job;
+            }
+            assert!(std::time::Instant::now() < until, "the job runs on: {job:?}");
+        }
+    }
+
+    /// Issue #420: how fast a run asks which model – a decision model without a pause, Jev 8 mails at
+    /// once, a cloud model of Ollama 4, one here one after the other; a chat model through the fallback,
+    /// and a model the account does not list, as before.
+    #[tokio::test]
+    async fn a_run_asks_each_model_at_its_pace() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama_deciding_here_and_elsewhere().await;
+        let jev = httpmock::MockServer::start_async().await;
+        let _mocks = crate::account::ai::tests::mock_jev(&jev).await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let local = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let local = local.expect("ollama").id;
+        let key = torro_core::account::Secret::new(crate::account::ai::tests::KEY);
+        let typesafe = core.ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), key).await.expect("jev").id;
+
+        let pace = |parallel, pause| CategoryPace { parallel, pause };
+        assert_eq!(category_pace(&core.ai, (&local, "nimble")).await, pace(1, false), "a decision model here");
+        assert_eq!(category_pace(&core.ai, (&local, "nimble:cloud")).await, pace(4, false), "one elsewhere");
+        assert_eq!(category_pace(&core.ai, (&typesafe, torro_core::ai::JEV_MODEL)).await, pace(8, false), "Jev");
+        assert_eq!(category_pace(&core.ai, (&local, "qwen3:8b")).await, CategoryPace::CAREFUL, "a chat model");
+        assert_eq!(category_pace(&core.ai, (&local, "gone")).await, CategoryPace::CAREFUL, "a model not listed");
+        assert_eq!(category_pace(&core.ai, ("ai:gone", "nimble")).await, CategoryPace::CAREFUL, "no account");
+    }
+
+    /// Issue #420: a sorting job asks Jev several mails at once – 16 mails at 300 ms an answer take two
+    /// rounds of 8, not 16 one after the other (4.8 s) –, sorts all of them and leaves the cursor at the
+    /// end.
+    #[tokio::test]
+    async fn a_sorting_job_asks_jev_several_mails_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_after(&jev, std::time::Duration::from_millis(300), None).await;
+        let subjects: Vec<String> = (1..=16).map(|n| format!("Hello {n}")).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+        let probes = decides.calls_async().await;
+
+        let started = std::time::Instant::now();
+        let job = sort_all(&core, std::time::Duration::from_secs(10)).await;
+        let took = started.elapsed();
+        assert_eq!(job.state, torro_ipc::inbox::CategoryJobState::Complete, "{:?}", job.errors);
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!((progress.eligible, progress.processed, progress.changed, progress.failed), (16, 16, 16, 0));
+        assert_eq!(progress.cursor, progress.max_sequence, "the cursor at the end");
+        assert_eq!(decides.calls_async().await - probes, 16, "each mail asked once");
+        assert!(took < std::time::Duration::from_millis(2400), "took {took:?}");
+    }
+
+    /// Issue #420: a pause while Jev has mails in hand drops their answers and the count stands still;
+    /// resumed, the job takes up at its cursor and ends with every mail counted once.
+    #[tokio::test]
+    async fn a_sorting_job_paused_with_mails_in_hand_resumes_at_its_cursor() {
+        use torro_ipc::inbox::{CategoryJobControl, CategoryJobState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let _decides = mock_jev_after(&jev, std::time::Duration::from_millis(300), None).await;
+        let subjects: Vec<String> = (1..=16).map(|n| format!("Hello {n}")).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+
+        let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
+        let Response::CategoryJob { job: Some(job) } = core.handle(start).await else { panic!("started") };
+        // The first round is in, the second still with Jev.
+        tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+        let pause = Request::ControlCategoryJob { id: job.id.clone(), action: CategoryJobControl::Pause };
+        let Response::CategoryJob { job: Some(paused) } = core.handle(pause).await else { panic!("paused") };
+        assert_eq!(paused.state, CategoryJobState::Paused);
+
+        // The worker lets go once the answers in hand are dropped; till then a resume is busy.
+        let resume = Request::ControlCategoryJob { id: job.id.clone(), action: CategoryJobControl::Resume };
+        let mut stood = None;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let Response::CategoryJob { job: Some(now) } = core.handle(Request::GetCategoryJob { id: None }).await
+            else {
+                panic!("the job")
+            };
+            stood = Some(now.accounts[0].processed);
+            match core.handle(resume.clone()).await {
+                Response::Error { code, .. } if code == "busy" => continue,
+                Response::CategoryJob { job: Some(resumed) } => {
+                    assert_eq!(resumed.state, CategoryJobState::Running);
+                    break;
+                }
+                other => panic!("resumed: {other:?}"),
+            }
+        }
+        let stood = stood.expect("read while paused");
+        assert!(stood < 16, "the pause came while mails were in hand: {stood}");
+
+        let job = job_ended(&core, std::time::Duration::from_secs(10)).await;
+        assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!((progress.eligible, progress.failed), (16, 0));
+        // No mail counted twice. A pause between a mail's write and its count leaves that one sorted
+        // but not counted, as before #420: resumed, the job no longer finds it without a category.
+        assert!((15..=16).contains(&progress.processed), "counted {}", progress.processed);
+        assert_eq!(progress.cursor, progress.max_sequence);
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 50,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        assert_eq!(messages.len(), 16);
+        assert!(messages.iter().all(|message| message.category.is_some()), "every mail sorted");
+    }
+
+    /// Issue #420: a mail the server refuses (HTTP 400, a mail too long for a small model's context)
+    /// counts as failed and the job goes on; ten such mails in a row stop it.
+    #[tokio::test]
+    async fn a_sorting_job_goes_past_a_refused_mail_but_not_past_ten_in_a_row() {
+        use torro_ipc::inbox::CategoryJobState;
+        async fn refusing(server: &httpmock::MockServer) -> httpmock::Mock<'_> {
+            server
+                .mock_async(|when, then| {
+                    when.method("POST").path("/v1/systemone").body_includes("Broken");
+                    then.status(400).json_body(serde_json::json!({"error": "the input is longer than the context"}));
+                })
+                .await
+        }
+
+        // One refused mail among others.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let refused = refusing(&jev).await;
+        mock_jev_after(&jev, std::time::Duration::ZERO, Some("Broken")).await;
+        let subjects: Vec<String> =
+            ["Hello 1", "Hello 2", "Broken 3", "Hello 4", "Hello 5"].into_iter().map(String::from).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+        let job = sort_all(&core, std::time::Duration::from_secs(10)).await;
+        assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!((progress.processed, progress.changed, progress.failed), (5, 4, 1));
+        assert_eq!(refused.calls_async().await, 1, "asked once, not again");
+
+        // Ten in a row.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let _refused = refusing(&jev).await;
+        mock_jev_after(&jev, std::time::Duration::ZERO, Some("Broken")).await;
+        let subjects: Vec<String> = (1..=12).map(|n| format!("Broken {n}")).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+        let job = sort_all(&core, std::time::Duration::from_secs(10)).await;
+        assert_eq!(job.state, CategoryJobState::Failed);
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!((progress.processed, progress.changed, progress.failed), (9, 0, 10), "stopped at the tenth");
+        assert_eq!(job.errors.len(), 1, "{:?}", job.errors);
+    }
+
+    /// Issue #420: a model that stays busy (HTTP 429) is asked again after each wait, then the job
+    /// stops as before.
+    #[tokio::test]
+    async fn a_sorting_job_stops_when_the_model_stays_busy() {
+        use torro_ipc::inbox::CategoryJobState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_after(&jev, std::time::Duration::ZERO, None).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+        // Connected: from now on Jev limits requests.
+        decides.delete_async().await;
+        let busy = jev
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(429).json_body(serde_json::json!({"error": "rate limit"}));
+            })
+            .await;
+
+        let job = sort_all(&core, std::time::Duration::from_secs(10)).await;
+        assert_eq!(job.state, CategoryJobState::Failed);
+        assert_eq!(busy.calls_async().await, CATEGORY_BUSY_WAITS.len() + 1, "asked again after each wait");
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!((progress.processed, progress.changed), (0, 0), "the mail waits for the next run");
+    }
+
+    /// Issue #420, the measurement for the PR: 2,000 mails sorted by a Jev that answers at once in
+    /// under 30 s, and by one that takes 220 ms an answer, as the real one does, in under 3 minutes.
+    /// `cargo test --release -p torroworkplace -- --ignored sorting_budget --nocapture`.
+    #[tokio::test]
+    #[ignore = "a measurement of minutes"]
+    async fn sorting_budget() {
+        use torro_ipc::inbox::{CategoryJobScope, CategoryJobState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let at_once = mock_jev_after(&jev, std::time::Duration::ZERO, None).await;
+        let subjects: Vec<String> = (1..=2000).map(|n| format!("Hello {n}")).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+
+        let started = std::time::Instant::now();
+        let job = sort_all(&core, std::time::Duration::from_secs(60)).await;
+        let took = started.elapsed();
+        assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
+        assert_eq!(job.accounts[0].processed, 2000);
+        println!("sorting_budget: 2000 mails, Jev at once: {took:?} ({:?} a mail)", took / 2000);
+        assert!(took < std::time::Duration::from_secs(30), "took {took:?}");
+
+        // The same mail again, with Jev taking 220 ms an answer.
+        at_once.delete_async().await;
+        mock_jev_after(&jev, std::time::Duration::from_millis(220), None).await;
+        let again =
+            Request::StartCategoryJob { scope: CategoryJobScope { again: true, ..CategoryJobScope::default() } };
+        let started = std::time::Instant::now();
+        let answer = core.handle(again).await;
+        assert!(matches!(answer, Response::CategoryJob { job: Some(_) }), "{answer:?}");
+        let job = job_ended(&core, std::time::Duration::from_secs(240)).await;
+        let took = started.elapsed();
+        assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
+        assert_eq!(job.accounts[0].processed, 2000);
+        println!("sorting_budget: 2000 mails, Jev at 220 ms: {took:?} ({:?} a mail)", took / 2000);
+        assert!(took < std::time::Duration::from_secs(180), "took {took:?}");
     }
 
     /// Review of #430: Jev is a model elsewhere, so only people choose it for sorting mail – an agent

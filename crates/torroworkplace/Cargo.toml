@@ -81,6 +81,8 @@ dom_query.workspace = true
 # The tool web (WEB.3): the main content of a page as Markdown.
 dom_smoothie.workspace = true
 encoding_rs.workspace = true
+# A sorting run asks several mails of a decision model at once, answers in order (issue #420).
+futures-util.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
 # script, so a cross build for Windows (cargo-xwin) would not get the crate. `build.rs` decides by the target OS.
