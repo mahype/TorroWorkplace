@@ -53,7 +53,8 @@
 //! `tasks.list_todos` shows it to every model; tasks are the person's own data from then on.
 
 use serde_json::{Value, json};
-use torro_core::ai::{AiModel, AiProvider, is_this_computer, openai};
+use torro_core::ai::AiModel;
+pub use torro_core::ai::{Place, place_of};
 use torro_inbox::{Item, Rule, SourceKind};
 use torro_ipc::api::Area;
 use torro_ipc::assistant::Note;
@@ -62,46 +63,6 @@ use torro_ipc::{Request, Response};
 /// What a model reads in place of content its data rule keeps from it. English: it is for the
 /// model, not for people.
 pub const WITHHELD: &str = "withheld by your data rule";
-
-/// Where the model of an AI account runs, as far as the data rule cares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Place {
-    /// On a computer of the person: a model of a local server (Ollama, LM Studio, Strata) that computes
-    /// there, or of another OpenAI-compatible server at an address of this computer.
-    Local,
-    /// Anywhere else: OpenRouter, a server of a provider, a server in the network that is no
-    /// Ollama, LM Studio or Strata, a cloud model of Ollama (task S.23).
-    Remote,
-}
-
-/// Where `model` of an AI account of `provider` at the base address `server` runs (task S.23: local
-/// means the model computes on the person's computer, not that its server is there):
-///
-/// - Ollama: local only for a model it says runs on its own machine ([`AiModel::remote`] `false`)
-///   and whose name is no cloud name ([`openai::ollama_cloud_name`]); a model it did not describe
-///   (not listed, or the list failed) counts as elsewhere, so mail stays home in doubt;
-/// - Strata (issue #322): local for a model marked [`AiModel::remote`] `false`. Strata says nothing
-///   about where a model runs; the core sets the mark for every model of a Strata account, so a
-///   model of an unknown origin stays remote;
-/// - LM Studio: local wherever it runs (on the person's own machines), unless the model is known to
-///   run elsewhere;
-/// - OpenRouter and the other cloud providers (task W.3): never (an address of this computer would
-///   be a proxy to one);
-/// - any other server: only at an address of this computer (`localhost`, `127.0.0.1`, `::1`), and
-///   not for a model known to run elsewhere.
-///
-/// Ask it once the model is chosen, "Automatic" too (`super::ModelAccess::automatic`).
-pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
-    let elsewhere = model.remote == Some(true);
-    match provider {
-        AiProvider::Ollama if model.remote == Some(false) && !openai::ollama_cloud_name(&model.id) => Place::Local,
-        AiProvider::Strata if model.remote == Some(false) => Place::Local,
-        AiProvider::LmStudio if !elsewhere => Place::Local,
-        AiProvider::OpenAiCompatible if !elsewhere && is_this_computer(server) => Place::Local,
-        // Every cloud provider (task W.3), and any other server elsewhere.
-        _ => Place::Remote,
-    }
-}
 
 /// What the person lets go to models outside their computers (task C.17): the setting
 /// `mail_to_cloud` as it is when a run starts. The default keeps mail local.
@@ -375,65 +336,6 @@ mod tests {
 
     fn agent_source() -> SourceRef {
         SourceRef { kind: SourceKind::Agent, name: "claude-code".into() }
-    }
-
-    /// A model as a server lists it, with what it says about where the model runs.
-    fn model(id: &str, remote: Option<bool>) -> AiModel {
-        AiModel {
-            id: id.into(),
-            name: id.into(),
-            tools: None,
-            open_weights: None,
-            context: None,
-            reasoning: None,
-            remote,
-            decision: None,
-            enabled: false,
-        }
-    }
-
-    #[test]
-    fn local_servers_are_ollama_lm_studio_and_this_computer() {
-        let local = model("qwen3:8b", Some(false));
-        let unknown = model("qwen3:8b", None);
-        assert_eq!(place_of(AiProvider::Ollama, "http://localhost:11434/v1", &local), Place::Local);
-        assert_eq!(place_of(AiProvider::Ollama, "http://gpu.local:11434/v1", &local), Place::Local);
-        assert_eq!(place_of(AiProvider::LmStudio, "http://localhost:1234/v1", &unknown), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://127.0.0.1:8000/v1", &unknown), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://[::1]:8000/v1", &unknown), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "https://ai.example.org/v1", &unknown), Place::Remote);
-        assert_eq!(place_of(AiProvider::OpenRouter, "https://openrouter.ai/api/v1", &unknown), Place::Remote);
-        assert_eq!(place_of(AiProvider::OpenRouter, "http://localhost:8080/api/v1", &local), Place::Remote, "a proxy");
-        assert_eq!(
-            place_of(AiProvider::Anthropic, "http://localhost:8080/v1", &local),
-            Place::Remote,
-            "a proxy to Anthropic is still Anthropic"
-        );
-        for cloud in AiProvider::CLOUD {
-            assert_eq!(place_of(cloud, cloud.default_url().unwrap_or_default(), &local), Place::Remote, "{cloud:?}");
-        }
-    }
-
-    /// Issue #322: Strata is local for a model it says computes on its machine, remote in doubt.
-    #[test]
-    fn strata_is_local_for_models_that_run_on_its_machine() {
-        let strata = "http://127.0.0.1:8080/v1";
-        assert_eq!(place_of(AiProvider::Strata, strata, &model("qwen3.8-flash-next", Some(false))), Place::Local);
-        assert_eq!(place_of(AiProvider::Strata, strata, &model("qwen3.8-flash-next", None)), Place::Remote);
-        assert_eq!(place_of(AiProvider::Strata, strata, &model("qwen3.8-flash-next", Some(true))), Place::Remote);
-    }
-
-    /// Task S.23: Ollama's cloud models run on `ollama.com`, though Ollama runs here.
-    #[test]
-    fn a_cloud_model_of_ollama_runs_elsewhere() {
-        let ollama = "http://localhost:11434/v1";
-        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("glm-5.3:cloud", Some(true))), Place::Remote);
-        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("kimi-k2.6:cloud", Some(false))), Place::Remote);
-        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("my-glm:latest", Some(true))), Place::Remote, "copied");
-        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("qwen3:8b", None)), Place::Remote, "not described");
-        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("qwen3:8b", Some(false))), Place::Local);
-        let lm_studio = "http://localhost:1234/v1";
-        assert_eq!(place_of(AiProvider::LmStudio, lm_studio, &model("qwen3-8b", Some(true))), Place::Remote);
     }
 
     #[test]

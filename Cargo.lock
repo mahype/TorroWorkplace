@@ -7205,6 +7205,7 @@ dependencies = [
  "torro-inbox",
  "torro-ipc",
  "torro-mail",
+ "torro-ntfy",
  "torro-pim",
 ]
 

@@ -19,7 +19,7 @@
 //! this computer, and no request follows a redirect.
 //!
 //! Errors carry a fixed code for the API ([`NtfyError::code`]). Their text is this crate's own,
-//! never the server's, and meant for logs; the core says to people what a code means.
+//! never the server's, and meant for logs; [`NtfyError::message`] says to people what went wrong.
 
 pub mod message;
 pub mod server;
@@ -27,9 +27,17 @@ pub mod subscribe;
 
 use std::fmt;
 
+use torro_core::i18n::tr;
+
 pub use message::{Event, Message, MessageId, read_event};
 pub use server::{DEFAULT_SERVER, Login, Server, Topic};
 pub use subscribe::{MAX_LINE, Ntfy, QUIET, Subscription};
+
+/// The longest label of a topic, in characters.
+pub const LABEL_MAX: usize = 60;
+
+/// The most topics one account subscribes to: they all travel in the address of one request.
+pub const TOPICS_MAX: usize = 50;
 
 /// Why an address, a topic or a request did not work. No variant holds a topic, a login or the
 /// server's words.
@@ -55,6 +63,33 @@ pub enum NtfyError {
 }
 
 impl NtfyError {
+    /// What to tell people, in the user's language (`torro_core::i18n::tr`): the [`fmt::Display`]
+    /// texts are for logs. Here, not in the daemon, so the add-account dialog of every app words a
+    /// refusal the way the daemon does (issue #410).
+    pub fn message(&self) -> String {
+        match self {
+            NtfyError::InvalidServer => {
+                tr("This is not the address of an ntfy server. Enter it without a topic, like ntfy.sh or \
+             https://push.example.org.")
+                .to_string()
+            }
+            NtfyError::InvalidTopic => {
+                tr("A topic name has 1 to 64 letters, digits, hyphens or underscores.").to_string()
+            }
+            NtfyError::InsecureLogin => {
+                tr("A login is only sent over https or to this computer. Use an https address.").to_string()
+            }
+            NtfyError::Auth => {
+                tr("The ntfy server refused: the topics need a login, or this login may not read them.").to_string()
+            }
+            NtfyError::Busy => tr("The ntfy server asks to wait. Try again in a moment.").to_string(),
+            NtfyError::Offline => {
+                tr("The ntfy server could not be reached. Check the address and the connection.").to_string()
+            }
+            NtfyError::Server(_) => tr("The server did not answer like an ntfy server. Check the address.").to_string(),
+        }
+    }
+
     /// The error code of the API answer (`docs/api.md`): `auth`, `busy`, `offline`, else `error`.
     pub fn code(&self) -> &'static str {
         match self {
