@@ -176,6 +176,13 @@ pub enum Action {
     OpenUrl(String),
 }
 
+/// The provider of the add-account dialog for an account of `kind` (`nextcloud`, `mail`, `github`,
+/// `ntfy`, `ai`), as the start of an app without an account names it (`torro_gui::connect`,
+/// issue #410); `None` for a kind the dialog does not add.
+pub fn provider_of(kind: &str) -> Option<wizard::Provider> {
+    Group::ALL.into_iter().find(|group| group.kinds()[0] == kind).map(Group::provider)
+}
+
 /// What the pages of this module read of the loaded data (issue #410): the control centre's and an
 /// app's settings ([`crate::Data`]) hold it each in their own shape, so the pages read it through
 /// this and never care whose it is.

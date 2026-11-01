@@ -1,10 +1,12 @@
-//! The "no account yet" screen every app shows.
+//! The "no account yet" screen every app shows, and the way into the control centre.
 //!
-//! Task S.10 in `docs/tasks/steuerzentrale.md`. The apps no longer sign in themselves: while
-//! the core has no account ([`torro_pim::AccountState::NotConnected`]) the screen names the
-//! app and points to the control centre, whose "Open Settings" button starts
-//! `torroworkplace ui --section accounts`. While a sign-in runs (`SigningIn`) it only says so.
-//! The app keeps polling the core and loads by itself once the account is `Connected`.
+//! Task S.10 in `docs/tasks/steuerzentrale.md`, issue #410: while the core has no account
+//! ([`torro_pim::AccountState::NotConnected`]) the screen names the app and offers the providers it
+//! uses, one button each ([`Connect::view`]); a button reports [`Action::Add`] with its kind, and the
+//! app opens its own settings at Accounts with the add-account dialog of that kind. Nothing starts
+//! the control centre for it: an app works without the main application. While a sign-in runs
+//! (`SigningIn`) the screen only says so. The app keeps polling the core and loads by itself once
+//! the account is `Connected`.
 //!
 //! UI text is English (the base language); German comes through the translation table.
 
@@ -26,50 +28,52 @@ pub struct Connect;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The user pressed "Open Settings".
-    OpenSettings,
+    /// The button of a provider was pressed: `nextcloud`, `mail` or `github`.
+    Add(String),
 }
 
 /// What the app should do after an update.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Call [`open_settings`].
-    OpenSettings,
+    /// Open the settings at Accounts with the add-account dialog of this kind of account.
+    Add(String),
 }
 
 impl Connect {
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::OpenSettings => Action::OpenSettings,
+            Message::Add(kind) => Action::Add(kind),
         }
     }
 
-    /// The screen for the current account state (`NotConnected` or `SigningIn`).
+    /// The screen for the current account state (`NotConnected` or `SigningIn`), with a button per
+    /// kind of account in `kinds` (`nextcloud`, `mail`, `github`), the first the window's one primary
+    /// button, the others secondary. A kind the screen does not know gets no button.
     ///
-    /// Any state other than `SigningIn` shows the hint and the button, so a `Connected`
-    /// account that is still on screen does not show a blank card. The card is a floating card
-    /// (`style::container::popover`, as wide as one) centred on the window background: app name
-    /// in `TITLE`, the hint in `text_2`, "Open Settings" as the window's one primary button.
-    pub fn view<'a>(&'a self, account: &'a AccountState, app_name: &'a str) -> Element<'a, Message> {
+    /// Any state other than `SigningIn` shows the hint and the buttons, so a `Connected` account
+    /// that is still on screen does not show a blank card. The card is a floating card
+    /// (`style::container::popover`, as wide as one) centred on the window background: app name in
+    /// `TITLE`, the hint in `text_2`.
+    pub fn view<'a>(&'a self, account: &'a AccountState, app_name: &'a str, kinds: &[&str]) -> Element<'a, Message> {
         let heading = typo::text(typo::title(), app_name);
 
         let body: Element<'a, Message> = match account {
             AccountState::SigningIn { .. } => typo::text(typo::body(), tr("Signing in to Nextcloud …")).into(),
-            _ => column![
-                typo::text(
-                    typo::body(),
-                    tr("Set up your Nextcloud in Torro Workplace's settings to see events and tasks here.")
-                )
-                .style(theme::text_2),
-                row![widgets::text_button(
-                    None,
-                    tr("Open Settings"),
-                    style::button::primary,
-                    Some(Message::OpenSettings)
-                )],
-            ]
-            .spacing(space::l())
-            .into(),
+            _ => {
+                let buttons = kinds.iter().filter_map(|kind| Some((*kind, button_label(kind)?))).enumerate().map(
+                    |(at, (kind, label))| {
+                        let look = if at == 0 { style::button::primary } else { style::button::secondary };
+                        widgets::text_button(None, label, look, Some(Message::Add(kind.to_string())))
+                    },
+                );
+                column![
+                    typo::text(typo::body(), tr("Connect an account to see your calendars and tasks here."))
+                        .style(theme::text_2),
+                    row(buttons).spacing(space::s()).wrap(),
+                ]
+                .spacing(space::l())
+                .into()
+            }
         };
 
         let card = container(column![heading, body].spacing(space::s()).width(Fill))
@@ -82,23 +86,27 @@ impl Connect {
     }
 }
 
-/// Opens the control centre on the accounts page. The app does not wait for it; the process
-/// is reaped in the background once it exits. Failures are only logged, the app keeps polling.
-pub fn open_settings() {
-    open_section("accounts");
-}
-
-/// Opens the first-run setup at `step` (`calendar`, `tasks`, `inbox` …) as long as it is not done,
-/// else the accounts page (task W.9): what an app without an account offers as "Open Settings".
-/// Not waited for, failures only logged, like [`open_settings`].
-pub fn open_setup_or_settings(step: &str) {
-    spawn_ui(&["ui", "--section", "accounts", "--setup-if-open", "--step", step]);
+/// The words of the button that adds an account of `kind`; `None` for a kind the screen does not know.
+fn button_label(kind: &str) -> Option<&'static str> {
+    match kind {
+        "nextcloud" => Some(tr("Connect Nextcloud")),
+        "mail" => Some(tr("Add mail account")),
+        "github" => Some(tr("Connect GitHub")),
+        _ => None,
+    }
 }
 
 /// Opens the control centre on the page `section`, what `torroworkplace ui --section` takes
-/// (`accounts`, `assistant` …), like [`open_settings`]: not waited for, failures only logged.
+/// (`appearance`, `connections` …): what a settings section points at that stays the whole suite's.
+/// Not waited for, failures only logged.
 pub fn open_section(section: &str) {
     spawn_ui(&["ui", "--section", section]);
+}
+
+/// Opens the control centre, or brings an open one to the front: what an entry about the suite
+/// links to. Not waited for, failures only logged.
+pub fn open_control_centre() {
+    spawn_ui(&["ui"]);
 }
 
 /// Starts the control centre with `args`: not waited for, in a process group of its own, failures
@@ -129,10 +137,13 @@ fn spawn_ui(args: &[&str]) {
 mod tests {
     use super::*;
 
+    /// Issue #410: a provider's button asks to add an account of its kind in the app.
     #[test]
-    fn open_settings_button_asks_for_settings() {
+    fn a_button_asks_to_add_its_kind() {
         let mut connect = Connect;
-        assert_eq!(connect.update(Message::OpenSettings), Action::OpenSettings);
+        assert_eq!(connect.update(Message::Add("mail".into())), Action::Add("mail".into()));
+        assert!(button_label("nextcloud").is_some() && button_label("github").is_some());
+        assert_eq!(button_label("slack"), None, "no button for a kind the screen does not know");
     }
 
     #[test]
@@ -146,7 +157,8 @@ mod tests {
             },
         ];
         for state in &states {
-            let _element = connect.view(state, "Calendar");
+            let _element = connect.view(state, "Calendar", &["nextcloud", "mail"]);
+            let _element = connect.view(state, "Tasks", &[]);
         }
     }
 }

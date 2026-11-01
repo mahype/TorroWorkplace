@@ -54,6 +54,12 @@ pub fn new_filter(query: String, account: Option<String>) -> Message {
     Message::Filters(filters::Message::New { query, account })
 }
 
+/// The message that opens the add-account dialog in "Accounts" (issue #410) – what torroinbox sends
+/// after opening the section for "Add mail account…" of the mail window without an account.
+pub fn add_account() -> Message {
+    Message::Accounts(accounts::Message::Add)
+}
+
 /// The id of the section "Accounts", whose account page has a menu of its own (task DS.6).
 pub const ACCOUNTS_SECTION: &str = "accounts";
 

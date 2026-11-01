@@ -485,10 +485,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Cancel", "Abbrechen"),
     ("Close", "Schließen"),
     ("Loading …", "Lade …"),
-    ("Open Settings", "Einstellungen öffnen"),
+    // The start without an account (issue #410, `torro_gui::connect`).
     (
-        "Set up your Nextcloud in Torro Workplace's settings to see events and tasks here.",
-        "Richte deine Nextcloud in den Einstellungen von Torro Workplace ein, um Termine und Aufgaben hier zu sehen.",
+        "Connect an account to see your calendars and tasks here.",
+        "Verbinde ein Konto, um deine Kalender und Aufgaben hier zu sehen.",
+    ),
+    ("Connect GitHub", "GitHub verbinden"),
+    ("Connect Nextcloud", "Nextcloud verbinden"),
+    (
+        "Connect your mailbox to read and write mail here.",
+        "Verbinde dein Postfach, um hier E-Mails zu lesen und zu schreiben.",
     ),
     ("Notes", "Notizen"),
     ("Save", "Speichern"),

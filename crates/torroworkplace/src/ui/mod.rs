@@ -1228,7 +1228,7 @@ impl Ui {
                     self.data.error = data.error;
                     return Task::none();
                 }
-                // `--setup-if-open` (an app's "Open Settings", task W.9): the setup, at the app's step,
+                // `--setup-if-open` (task W.9; since issue #410 for callers from outside, no app sends it): the setup, at the app's step,
                 // as long as it is not done; decided once, with the first settings that came.
                 let first = !self.loaded;
                 // The catalog comes apart from the rest ([`Message::Catalog`]): a reload keeps it.
@@ -2833,7 +2833,7 @@ mod tests {
         assert!(ui.loaded, "a failed answer ends the loading state too");
     }
 
-    /// Task W.9: an app's "Open Settings" opens the setup at its step while the setup is not done,
+    /// Task W.9: `--setup-if-open` (once an app's "Open Settings") opens the setup at its step while the setup is not done,
     /// else the section; the overview and General open it at its first step.
     #[test]
     fn the_setup_opens_from_an_app_only_while_it_is_not_done() {

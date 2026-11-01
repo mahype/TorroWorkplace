@@ -1723,6 +1723,9 @@ impl<'a> MailList<'a> {
     }
 }
 
+/// What the mail window without an account says under "No mail account yet." (issue #410).
+const NO_ACCOUNT_HINT: &str = "Connect your mailbox to read and write mail here.";
+
 /// The open entry of `entries` that holds the message `id` (it links to it, [`Link::Mail`]).
 pub fn entry_of<'a>(entries: &'a [Item], id: &str) -> Option<&'a Item> {
     entries
@@ -1735,8 +1738,10 @@ pub fn entry_of<'a>(entries: &'a [Item], id: &str) -> Option<&'a Item> {
 pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
     if data.messages.is_empty() {
         let (which, title, hint) = match data.view {
+            // Mail connects its accounts itself (issue #410): the button opens the dialog.
             _ if data.no_accounts => {
-                (Icon::Mail, tr("No mail account yet."), tr("Connect one in Settings, under Accounts."))
+                let add = (tr("Add mail account…"), Message::AddMailAccount);
+                return list::empty_state_with(Icon::Mail, tr("No mail account yet."), tr(NO_ACCOUNT_HINT), add);
             }
             View::Search(search) => crate::search::empty_texts(search),
             View::Folder(folder) => {

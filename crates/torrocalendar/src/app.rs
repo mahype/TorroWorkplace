@@ -34,9 +34,10 @@
 //! hours ([`torro_settings_ui::calendar`]) – and back ([`App::toggle_settings`]). They are shown by the
 //! library's [`Host`], which talks to the core through [`App::settings_backend`]; the sidebar
 //! stays, and a click there that shows the calendar again closes the settings
-//! ([`App::leave_settings`]). `--settings <section>` opens the window with them open; the hint
-//! without an account ("Open Settings") still opens the control centre at Accounts
-//! ([`connect::open_setup_or_settings`]), unchanged.
+//! ([`App::leave_settings`]). `--settings <section>` opens the window with them open. Accounts
+//! (Nextcloud and mail) is a section of its own since issue #410 ([`Host::with_accounts`]); the
+//! start without an account offers both providers, and a button opens Accounts with the add-account
+//! dialog ([`App::add_account`]), never the control centre.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -188,6 +189,10 @@ const SETTINGS_SECTIONS: [Section; 4] = [
 /// suite's accounts stay one for every app, and these are the ones whose calendars and lists it
 /// shows.
 const ACCOUNT_PROVIDERS: [Group; 2] = [Group::Nextcloud, Group::Mail];
+
+/// The kinds of account the start without an account offers, one button each (issue #410): the
+/// providers under Accounts, Nextcloud first.
+const CONNECT_KINDS: [&str; 2] = ["nextcloud", "mail"];
 
 /// What one load of the settings needs: Calendars reads every account
 /// ([`collections::wanted`]); the other sections need only the suite-wide settings, already
@@ -989,9 +994,9 @@ impl App {
                 self.error = Some(load_failed(&err));
             }
             Message::Connect(message) => match self.connect.update(message) {
-                // The account is set up in the control centre – in the first-run setup at this app's
-                // step while that is not done (task W.9); the polling in `Tick` picks it up.
-                connect::Action::OpenSettings => connect::open_setup_or_settings("calendar"),
+                // The account is connected in this app, behind its gear (issue #410); the polling in
+                // `Tick` picks it up.
+                connect::Action::Add(kind) => return self.add_account(&kind),
             },
             Message::Loaded(result) => {
                 self.loading = false;
@@ -1428,10 +1433,14 @@ impl App {
                     None => widgets::loading(),
                 };
             }
-            Some(account @ (AccountState::NotConnected | AccountState::SigningIn { .. })) => {
-                return self.connect.view(account, tr("Calendar")).map(Message::Connect);
+            // The settings take the window while they are open, also before the first account
+            // (issue #410): that is where it is added.
+            Some(account @ (AccountState::NotConnected | AccountState::SigningIn { .. }))
+                if self.settings.is_none() =>
+            {
+                return self.connect.view(account, tr("Calendar"), &CONNECT_KINDS).map(Message::Connect);
             }
-            Some(AccountState::Connected { .. }) => {}
+            Some(_) => {}
         }
         let class = self.class();
         if is_glance(class) {
@@ -2134,6 +2143,16 @@ impl App {
             return Task::none();
         }
         self.open_settings(None)
+    }
+
+    /// Opens the settings at Accounts with the add-account dialog of `kind` (issue #410): what a
+    /// button of the start without an account does.
+    fn add_account(&mut self, kind: &str) -> Task<Message> {
+        let open = self.open_settings(Some(torro_settings_ui::host::ACCOUNTS.id));
+        let Some(provider) = torro_settings_ui::accounts::provider_of(kind) else { return open };
+        let Some(pane) = self.settings.as_mut() else { return open };
+        let outcome = pane.host.add_account(provider);
+        Task::batch([open, self.settings_outcome(outcome)])
     }
 
     /// The settings in the content area, at `section` when one is named (`--settings <section>`,
@@ -3397,6 +3416,26 @@ mod tests {
         }
         let _ = app.update(Message::ToggleSettings);
         assert!(app.settings.is_none(), "a second press closes them");
+    }
+
+    /// Issue #410: Accounts and AI stand behind the gear; a button of the start without an account
+    /// opens Accounts with the add-account dialog of its kind, and the window draws the settings
+    /// before the first account too.
+    #[test]
+    fn a_button_of_the_start_adds_its_account_in_the_app() {
+        let launch = Launch::parse(&args(&["--demo", "--settings", "accounts"])).expect("Accounts is a word");
+        assert_eq!(launch.settings.as_deref(), Some("accounts"));
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Connect(connect::Message::Add("mail".into())));
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, "accounts");
+        app.account = Some(AccountState::NotConnected);
+        for class in [SizeClass::Wide, SizeClass::Narrow] {
+            let _ = app.update(Message::Resized(class_size(class)));
+            let _ = app.view();
+        }
+        app.settings = None;
+        let _ = app.view();
     }
 
     /// `--settings <section>` opens the window with that section already open; an unknown word
