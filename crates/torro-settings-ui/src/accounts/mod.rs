@@ -1956,7 +1956,7 @@ pub fn view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass, palette:
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, (!beside(class)).then_some(palette), false, false),
+        None => list(state, data, now, (!beside(class)).then_some(palette), false, false, true),
     }
 }
 
@@ -1966,7 +1966,7 @@ pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> El
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, None, true, !beside(class)),
+        None => list(state, data, now, None, true, !beside(class), true),
     }
 }
 
@@ -1974,20 +1974,16 @@ pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> El
 /// its own, one under the other – its accounts, its sign-ins in progress and its "Add", the
 /// sentence of what belongs there under it –, since an app has two or three of them and no room
 /// for a column beside its own list of sections; an account's page as in the control centre.
-pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+///
+/// The heading ([`page_heading`]) only where the header bar does not name the section already: in a
+/// narrow window it does (design review of #410).
+pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> Element<'a, Message> {
     let now = Utc::now();
     if let Some(account) = selected(state, data) {
         return detail(state, account, data, now);
     }
     let entries = entries(data);
-    // The heading as on AI and in the control centre (design review of #410): what the section is,
-    // and that an account is one for the whole suite.
-    let heading = column![
-        typo::text(typo::headline(), tr("Accounts")).wrapping(Wrapping::None),
-        typo::text(typo::meta(), tr("One account for the whole suite: connected here, every app knows it."))
-            .style(theme::text_2),
-    ]
-    .spacing(space::xs());
+    let heading = beside(class).then(page_heading);
     let groups = account_providers(state, &entries).into_iter().filter_map(|group| match group {
         Listed::Fixed(fixed) => Some(fixed),
         Listed::Other(_) => None,
@@ -2011,7 +2007,20 @@ pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
         }
         widgets::group(group.title(), rows, Some(group.about().to_string()))
     });
-    column![heading].extend(page).spacing(layout::section_gap()).into()
+    column![].push(heading).extend(page).spacing(layout::section_gap()).into()
+}
+
+/// The heading of Accounts in an app, as AI and the control centre have one (design review of
+/// #410): what the section is, and that an account is one for the whole suite. Mail's own page of
+/// its accounts starts with it too.
+pub fn page_heading<'a, M: 'a>() -> Element<'a, M> {
+    column![
+        typo::text(typo::headline(), tr("Accounts")).wrapping(Wrapping::None),
+        typo::text(typo::meta(), tr("One account for the whole suite: connected here, every app knows it."))
+            .style(theme::text_2),
+    ]
+    .spacing(space::xs())
+    .into()
 }
 
 /// The page AI in an app's settings (issue #410): the control centre's ([`ai_view`]), the slots
@@ -2020,7 +2029,8 @@ pub fn app_ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, None, true, !matches!(class, SizeClass::Wide)),
+        // In a narrow window the header bar names AI already (design review of #410).
+        None => list(state, data, now, None, true, !matches!(class, SizeClass::Wide), beside(class)),
     }
 }
 
@@ -2502,6 +2512,7 @@ fn list<'a>(
     chips: Option<&Palette>,
     ai: bool,
     stacked: bool,
+    heading: bool,
 ) -> Element<'a, Message> {
     let entries = entries(data);
     let groups = account_providers(state, &entries);
@@ -2510,7 +2521,9 @@ fn list<'a>(
     if let Some(palette) = chips {
         page = page.push(provider_chips(&groups, shown, &entries, palette));
     }
-    page = page.push(provider_heading(shown));
+    if heading {
+        page = page.push(provider_heading(shown));
+    }
     let mut rows: Vec<Element<'a, Message>> = entries
         .iter()
         .filter(|account| shown.holds(&account.kind))
@@ -3052,10 +3065,6 @@ pub fn sorting_sections(state: &State, data: &dyn Seen) -> SortingSections {
     sections
 }
 
-/// The menu of *Sorting* under its button (issue #421): "None" and a chosen model the lists do not
-/// hold without a title, then "Decision models (fast)" and "Other models"; a section without models is
-/// left out. With several AI accounts the account stands as a word after a model's name. The slot's
-/// model carries the dot of the current choice. Higher than a panel, it scrolls.
 /// The menu of *Chat* (design review of #410): its choices ([`slot_choices`]) under the button, the
 /// chosen one checked, scrolling past a panel's height like the menu of *Sorting*.
 fn chat_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
@@ -3077,6 +3086,10 @@ fn chat_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
     widgets::floating(&state.chat_anchor, Placement::Below(Align::End), menu, Message::CloseChatMenu)
 }
 
+/// The menu of *Sorting* under its button (issue #421): "None" and a chosen model the lists do not
+/// hold without a title, then "Decision models (fast)" and "Other models"; a section without models is
+/// left out. With several AI accounts the account stands as a word after a model's name. The slot's
+/// model carries the dot of the current choice. Higher than a panel, it scrolls.
 fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
     let SortingSections { first, fast, other, chosen } = sorting_sections(state, data);
     let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
@@ -3974,8 +3987,9 @@ fn status_group<'a>(account: &'a AccountInfo, data: &dyn Seen, now: DateTime<Utc
 /// every window; `None` while none does, and then the row is left out.
 fn used_by_row<'a>(account: &AccountInfo, data: &dyn Seen) -> Option<Element<'a, Message>> {
     let names = used_by_names(account, data)?;
-    // Cut with "…" and the whole list as a tooltip where the row is narrow (design review of #410).
-    let value = container(widgets::ellipsized(typo::body(), names, theme::text_2)).max_width(size::form_max() / 2.0);
+    // Cut with "…" and the whole list as a tooltip where the row is narrow, flush right like the
+    // values of Connection (design review of #410).
+    let value = container(widgets::ellipsized(typo::body(), names, theme::text_2)).width(Fill).align_x(Alignment::End);
     Some(setting_row(None, tr("Used by"), None, value))
 }
 
@@ -5675,10 +5689,11 @@ mod tests {
         let offered = account_providers(&state, &entries);
         assert_eq!(offered, [Listed::Fixed(Group::Nextcloud), Listed::Fixed(Group::Mail)]);
         assert!(account_providers(&State::default(), &entries).len() > offered.len(), "the control centre: all");
-        drop(app_view(&state, &data));
+        drop(app_view(&state, &data, SizeClass::Wide));
+        drop(app_view(&state, &data, SizeClass::Narrow));
         let caldav = data.accounts.iter().find(|account| account.kind == "caldav").expect("caldav");
         let open = State { selected: Some(caldav.id.clone()), ..state };
-        drop(app_view(&open, &data));
+        drop(app_view(&open, &data, SizeClass::Wide));
         assert!(collections_moved(&open, &data).is_some(), "Tasks is still offered");
         let tasks = State::default().in_window(AppId::TASKS);
         assert!(collections_moved(&tasks, &data).is_some(), "Calendar is still offered");

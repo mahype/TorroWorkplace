@@ -1110,7 +1110,7 @@ impl Host {
         let inner = move |message: accounts::Message| wrap(Message::Accounts(Box::new(message)));
         let body = match self.accounts_page_id() == Some(AI.id) {
             true => accounts::app_ai_view(state, &self.data, class),
-            false => accounts::app_view(state, &self.data),
+            false => accounts::app_view(state, &self.data, class),
         };
         let page = Page::new(body.map(inner));
         match accounts::sub_page(state, &self.data) {

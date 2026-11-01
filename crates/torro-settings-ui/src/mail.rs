@@ -1386,11 +1386,16 @@ pub mod accounts {
             style::button::ghost,
             Some(Message::ImportTorroMail),
         );
-        let buttons = row![add, import].spacing(space::s()).align_y(Alignment::Center);
-        rows.push(row_frame(crate::accounts::on_axis(buttons.into()), false));
-        column![widgets::group(tr("Email accounts"), rows, None), widgets::mail_coverage_legend(),]
-            .spacing(space::m())
-            .into()
+        // Each in a row of its own, under the heading of the suite's Accounts (design review of #410).
+        rows.push(row_frame(crate::accounts::on_axis(add), false));
+        rows.push(row_frame(crate::accounts::on_axis(import), false));
+        column![
+            crate::accounts::page_heading(),
+            widgets::group(tr("Email accounts"), rows, None),
+            widgets::mail_coverage_legend(),
+        ]
+        .spacing(space::m())
+        .into()
     }
 
     fn inventory_content<'a>(stats: Option<&MailAccountStats>) -> Element<'a, Message> {

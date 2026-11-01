@@ -345,7 +345,7 @@ impl Demo {
             state: AccountState::Connected {
                 server: "imap.mailbox.org".into(),
                 login_name: MAIL_ADDRESS.into(),
-                last_sync: None,
+                last_sync: Some(Utc::now() - chrono::Duration::minutes(2)),
                 problem: None,
             },
             collections: Vec::new(),
@@ -361,7 +361,10 @@ impl Demo {
                     role: Role::Archive,
                     candidates: vec![folder("Archive", "INBOX.Archive"), folder("All Mail", "INBOX.All")],
                 }],
-                mail: ServiceState { last_sync: None, problem: self.mail_problem.clone() },
+                mail: ServiceState {
+                    last_sync: Some(Utc::now() - chrono::Duration::minutes(2)),
+                    problem: self.mail_problem.clone(),
+                },
                 calendars: None,
                 trusted_certificates: Vec::new(),
             }),
