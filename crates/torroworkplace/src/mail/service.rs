@@ -2848,7 +2848,8 @@ pub(crate) mod tests {
         retry_first: Duration::from_millis(50),
         retry_max: Duration::from_millis(200),
         index: false,
-        sync_wait: Duration::from_millis(600),
+        // Long enough that "answered before the wait was over" stays clear on a busy machine.
+        sync_wait: Duration::from_millis(2000),
         sync_pace: Duration::from_millis(100),
     };
 

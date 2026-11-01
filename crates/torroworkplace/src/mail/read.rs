@@ -1683,8 +1683,20 @@ pub(crate) mod tests {
             states.len() == 2 && states.iter().all(|state| state.last_run.is_some() && state.running.is_none())
         })
         .await;
-        // The IDLE connections are up once the inbox was synced on them as well.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Each worker then opens its IDLE connection (a second login) and syncs the inbox on it:
+        // wait for both logins, then until the state stays put, so no late change of the start ends
+        // a wait the tests expect to run out.
+        crate::mail::service::tests::eventually("both IDLE connections", || async {
+            anna.logins() >= 2 && bernd.logins() >= 2
+        })
+        .await;
+        crate::mail::service::tests::eventually("a quiet state", || async {
+            let (before, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let (after, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
+            before == after
+        })
+        .await;
         (service, anna, bernd, second.id)
     }
 
@@ -1704,12 +1716,12 @@ pub(crate) mod tests {
         assert_eq!(old, version);
         let took = begun.elapsed();
         assert!(took >= std::time::Duration::from_millis(100), "an old version waits for the pace: {took:?}");
-        assert!(took < std::time::Duration::from_millis(550), "but not for a change: {took:?}");
+        assert!(took < std::time::Duration::from_millis(1500), "but not for a change: {took:?}");
 
         let begun = std::time::Instant::now();
         let (same, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, Some(version))).await);
         assert_eq!(same, version, "nothing changed");
-        assert!(begun.elapsed() >= std::time::Duration::from_millis(550), "it waited: {:?}", begun.elapsed());
+        assert!(begun.elapsed() >= std::time::Duration::from_millis(1900), "it waited: {:?}", begun.elapsed());
 
         let begun = std::time::Instant::now();
         let waiting = answer(&service, Reach::Suite, sync_status(None, Some(version)));
@@ -1745,7 +1757,7 @@ pub(crate) mod tests {
         };
         let (answered, ()) = tokio::join!(waiting, arriving);
         assert_eq!(sync_of(answered).0, mine, "Bernd's change is none of the client's");
-        assert!(begun.elapsed() >= std::time::Duration::from_millis(550), "it went on waiting");
+        assert!(begun.elapsed() >= std::time::Duration::from_millis(1900), "it went on waiting");
         let (now, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
         assert_ne!(now, all, "Bernd's sync did change meanwhile");
 
@@ -1758,7 +1770,7 @@ pub(crate) mod tests {
         let (answered, ()) = tokio::join!(waiting, removing);
         let (_, states) = sync_of(answered);
         assert_eq!(states.iter().map(|state| state.account.clone()).collect::<Vec<_>>(), [bernds]);
-        assert!(begun.elapsed() < std::time::Duration::from_millis(550), "the removal ended the wait");
+        assert!(begun.elapsed() < std::time::Duration::from_millis(1500), "the removal ended the wait");
     }
 
     /// The overview of an answer to `mail.overview`.
