@@ -1046,13 +1046,29 @@ impl AiAccounts {
     }
 
     /// One call to the decision model of the account `id` (task E12.6, `torro_core::ai::systemone`).
-    /// `not-connected` when the account has no key on this device, `not-found` when it is gone.
+    /// `not-connected` when the account has no key on this device, `not-found` when it is gone. The
+    /// answer is the server's word on the account as a model list is (issue #323): an answer renews
+    /// when it last answered, a refused key becomes its problem – for Jev, whose list asks no server,
+    /// the only way a key it no longer takes shows at the account.
     pub async fn decide(
         &self,
         id: &str,
         request: &systemone::DecisionRequest,
     ) -> Result<systemone::DecisionReply, AiError> {
-        self.client(id).await?.decide(request).await
+        let result = self.client(id).await?.decide(request).await;
+        if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
+            match &result {
+                Ok(_) => {
+                    slot.checked = Some(Utc::now());
+                    slot.problem = None;
+                }
+                Err(AiError::Auth) => {
+                    slot.problem = Some(tr("Connect again: the server does not accept the API key").into());
+                }
+                Err(_) => {}
+            }
+        }
+        result
     }
 
     /// One turn of a decision through a chat model (task MW.3, `torro_core::ai::decide_chat::request`) to
@@ -1136,16 +1152,19 @@ impl AiAccounts {
         .await
     }
 
-    /// The models of the account `id`, asked from its server now ([`Provider::models`]); without
+    /// The models of the account `id`, asked from its server now ([`Provider::models`]), or the
+    /// provider's fixed list without a request (Jev, issue #323, [`AiProvider::fixed_models`]); without
     /// `all` only those not known to have closed weights ([`ai::open_weights_only`]). Reading
     /// changes no data, only how the account is shown: an answer renews when it last answered, a
-    /// refused key becomes its problem until it answers again. The whole list is kept for
+    /// refused key becomes its problem until it answers again. A fixed list is no answer, so it
+    /// leaves both alone; for Jev a decision tells ([`AiAccounts::decide`]). The whole list is kept for
     /// [`AiAccounts::known_models`]. The one exception (#231): the first list after the update keeps
     /// on what "Automatic" used at the account ([`AiAccounts::take_over`]), once.
     pub async fn models(&self, id: &str, all: bool) -> Result<Vec<AiModel>, AiError> {
         let result = self.provider(id).await?.models().await;
         if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
             match &result {
+                Ok(models) if slot.provider().fixed_models().is_some() => slot.models = Some(models.clone()),
                 Ok(models) => {
                     slot.checked = Some(Utc::now());
                     slot.problem = None;
@@ -1944,6 +1963,48 @@ pub(crate) mod tests {
             chat,
             Err(AiError::Invalid(tr("Jev only sorts mail; it cannot chat. Pick another model for chatting.").into()))
         );
+    }
+
+    /// Review of #430: a key Jev no longer takes shows at the account at the first decision it
+    /// refuses; listing its fixed models neither renews when it was checked nor clears that problem,
+    /// and a decision it answers again does.
+    #[tokio::test]
+    async fn a_key_jev_no_longer_takes_shows_at_the_account() {
+        use std::collections::BTreeMap;
+        use torro_core::ai::systemone::{DecisionRequest, Question};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let keys = MemoryTokens::default();
+        let jev = MockServer::start_async().await;
+        let (decides, refuses) = mock_jev(&jev).await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let info = ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), Secret::new(KEY)).await.expect("connected");
+        let checked = |info: &AccountInfo| match &info.state {
+            AccountState::Connected { last_sync, problem, .. } => (*last_sync, problem.clone()),
+            other => panic!("connected, not {other:?}"),
+        };
+        let state = || async { ai.infos().await.into_iter().find(|held| held.id == info.id).expect("listed") };
+        let (connected_at, problem) = checked(&state().await);
+        assert!(problem.is_none());
+        ai.models(&info.id, true).await.expect("the fixed list");
+        assert_eq!(checked(&state().await), (connected_at, None), "a fixed list is no answer");
+
+        // The key revoked: every request is refused now.
+        decides.delete_async().await;
+        let mut questions = BTreeMap::new();
+        questions.insert("ok".to_string(), Question::Noul { instructions: "Is it?".into() });
+        let asked = DecisionRequest { model: ai::JEV_MODEL.into(), state: "A mail".into(), questions };
+        assert_eq!(ai.decide(&info.id, &asked).await, Err(AiError::Auth));
+        let (_, problem) = checked(&state().await);
+        assert_eq!(problem.as_deref(), Some(tr("Connect again: the server does not accept the API key")));
+        ai.models(&info.id, true).await.expect("the fixed list");
+        assert!(checked(&state().await).1.is_some(), "listing does not clear the problem");
+
+        // Taken again: the next decision clears it.
+        refuses.delete_async().await;
+        let _again = mock_jev(&jev).await;
+        ai.decide(&info.id, &asked).await.expect("a decision");
+        assert_eq!(checked(&state().await).1, None);
     }
 
     /// Issue #323: Jev's model turned on is no engine for a chat, also before the core holds a list
