@@ -789,6 +789,21 @@ impl Host {
         let newer = self.applied.iter().any(|(held, put)| *held == request && *put > generation);
         if !newer {
             match result {
+                // Another set of accounts than before, from a reload of Accounts or AI (a sign-in
+                // that ended in the browser, an account another app connected): the app loads its
+                // own data too once the load is reported ([`Outcome::Changed`]).
+                Ok(Response::Accounts { accounts })
+                    if request == Request::Accounts
+                        && self.accounts.is_some()
+                        && self.applied.iter().any(|(held, _)| *held == request)
+                        && ids(&accounts) != ids(&self.data.accounts) =>
+                {
+                    self.change = Some(true);
+                    self.data.put(&request, Response::Accounts { accounts });
+                    if !self.answered.contains(&request) {
+                        self.answered.push(request.clone());
+                    }
+                }
                 Ok(response) => {
                     self.data.put(&request, response);
                     if !self.answered.contains(&request) {
@@ -906,7 +921,12 @@ impl Host {
                     Err(problem) if !shown => self.notice = Some(problem),
                     Err(_) => {}
                     // What the page only read changes nothing for the app.
-                    Ok(Response::TorroMailAccounts { .. } | Response::AiModels { .. }) => {}
+                    Ok(
+                        Response::TorroMailAccounts { .. }
+                        | Response::AiModels { .. }
+                        | Response::Discovery { .. }
+                        | Response::AiServers { .. },
+                    ) => {}
                     // An account came, changed or went: the app loads its own data after the reload.
                     Ok(_) => self.change = Some(true),
                 }
@@ -1286,6 +1306,11 @@ impl Drop for Host {
     }
 }
 
+/// The ids of the accounts that are signed in, a sign-in that still runs left out.
+fn ids(accounts: &[torro_ipc::AccountInfo]) -> Vec<&str> {
+    accounts.iter().filter(|account| !account.id.is_empty()).map(|account| account.id.as_str()).collect()
+}
+
 /// The tasks of a load as the host's work, nothing when there are none.
 fn work<A>(tasks: Vec<Task<Message>>) -> Outcome<A> {
     if tasks.is_empty() { Outcome::None } else { Outcome::Work(Task::batch(tasks)) }
@@ -1477,6 +1502,21 @@ mod tests {
         let listed = Response::TorroMailAccounts { accounts: Vec::new() };
         let _: Outcome<()> = mail.update(Message::AccountAnswered(Box::new(Ok(listed))));
         assert_eq!(mail.change, None, "a list read changes nothing for the app");
+
+        // A reload that brings another account than the last answer (a sign-in that ended in the
+        // browser) is a change for the app; the same accounts again are none.
+        let all = crate::accounts::demo::demo_data().accounts;
+        let answer = |accounts: Vec<torro_ipc::AccountInfo>, generation| Message::Part {
+            generation,
+            request: Box::new(Request::Accounts),
+            result: Box::new(Ok(Response::Accounts { accounts })),
+        };
+        let _: Outcome<()> = mail.update(answer(all[..1].to_vec(), mail.generation));
+        assert_eq!(mail.change, None, "the first answer is no change");
+        let _: Outcome<()> = mail.update(answer(all[..1].to_vec(), mail.generation));
+        assert_eq!(mail.change, None, "the same accounts again");
+        let _: Outcome<()> = mail.update(answer(all[..2].to_vec(), mail.generation));
+        assert_eq!(mail.change, Some(true), "an account came");
     }
 
     /// Issue #410: without providers and AI nothing is added, and an app's own section of the same
