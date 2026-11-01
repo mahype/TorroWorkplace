@@ -264,6 +264,9 @@ pub struct State {
     /// and the kinds of account none of them holds – the control centre's overview; an app names
     /// the ones it uses ([`State::with_providers`]).
     providers: Option<Vec<Group>>,
+    /// The window the page stands in (issue #410), by its window class: the groups that open a
+    /// window leave it out, since the person is in it ([`moved_group`]). `None` in the control centre.
+    window: Option<&'static str>,
 }
 
 impl State {
@@ -271,6 +274,18 @@ impl State {
     /// and lists the accounts of those – the calendar its Nextcloud and mail accounts, not GitHub.
     pub fn with_providers(providers: &[Group]) -> State {
         State { providers: Some(providers.to_vec()), ..State::default() }
+    }
+
+    /// The same page standing in the window of `app` (issue #410): nothing on it opens that window.
+    pub fn in_window(self, app: AppId) -> State {
+        State { window: Some(app.window_class), ..self }
+    }
+
+    /// Whether a group may offer to open the window `class` ([`moved_group`]): not the one the page
+    /// stands in, and not one of an app that is not installed.
+    fn opens(&self, class: &str, data: &dyn Seen) -> bool {
+        let installed = AppId::ALL.iter().find(|app| app.window_class == class).is_none_or(|app| data.installed(*app));
+        self.window != Some(class) && installed
     }
 
     /// Whether the list offers `group` ([`State::providers`]).
@@ -601,7 +616,7 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// The "Add" of a group (task S.30): the add-account dialog at that provider's first step.
     Add(wizard::Provider),
@@ -1912,17 +1927,59 @@ pub fn view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass, palette:
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, !beside(class), palette, false, false),
+        None => list(state, data, now, (!beside(class)).then_some(palette), false, false),
     }
 }
 
 /// The dedicated AI section uses the same account details, model switches and add dialog; in the
 /// narrow `class` the lists of the slots stand under their names (task MW.8).
-pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass, palette: &Palette) -> Element<'a, Message> {
+pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> Element<'a, Message> {
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, false, palette, true, !beside(class)),
+        None => list(state, data, now, None, true, !beside(class)),
+    }
+}
+
+/// The page Accounts in an app's settings (issue #410): every provider the app offers as a group of
+/// its own, one under the other – its accounts, its sign-ins in progress and its "Add", the
+/// sentence of what belongs there under it –, since an app has two or three of them and no room
+/// for a column beside its own list of sections; an account's page as in the control centre.
+pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+    let now = Utc::now();
+    if let Some(account) = selected(state, data) {
+        return detail(state, account, data, now);
+    }
+    let entries = entries(data);
+    let groups = account_providers(state, &entries).into_iter().filter_map(|group| match group {
+        Listed::Fixed(fixed) => Some(fixed),
+        Listed::Other(_) => None,
+    });
+    let page = groups.map(|group| {
+        let mut rows: Vec<Element<'a, Message>> = entries
+            .iter()
+            .filter(|account| group.kinds().contains(&account.kind.as_str()))
+            .map(|account| match account.id.is_empty() {
+                true => pending_row(account),
+                false => account_row(account, None, now),
+            })
+            .collect();
+        if rows.is_empty() {
+            rows.push(quiet_row(tr("No account yet.")));
+        }
+        rows.push(add_row(group, group == Group::Mail && offers_import(state)));
+        widgets::group(group.title(), rows, Some(group.about().to_string()))
+    });
+    column(page).spacing(layout::section_gap()).into()
+}
+
+/// The page AI in an app's settings (issue #410): the control centre's ([`ai_view`]), the slots
+/// under their names where the page is narrow.
+pub fn app_ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> Element<'a, Message> {
+    let now = Utc::now();
+    match selected(state, data) {
+        Some(account) => detail(state, account, data, now),
+        None => list(state, data, now, None, true, !matches!(class, SizeClass::Wide)),
     }
 }
 
@@ -2398,8 +2455,7 @@ fn list<'a>(
     state: &'a State,
     data: &'a dyn Seen,
     now: DateTime<Utc>,
-    chips: bool,
-    palette: &Palette,
+    chips: Option<&Palette>,
     ai: bool,
     stacked: bool,
 ) -> Element<'a, Message> {
@@ -2407,7 +2463,7 @@ fn list<'a>(
     let groups = account_providers(state, &entries);
     let shown = if ai { Listed::Fixed(Group::Ai) } else { chosen(state.provider.as_deref(), &groups, &entries) };
     let mut page = column![].spacing(layout::section_gap());
-    if chips {
+    if let Some(palette) = chips {
         page = page.push(provider_chips(&groups, shown, &entries, palette));
     }
     page = page.push(provider_heading(shown));
@@ -3224,7 +3280,7 @@ fn detail<'a>(
     now: DateTime<Utc>,
 ) -> Element<'a, Message> {
     if let Some(mail) = &account.mail {
-        return mail_detail(account, mail, data, now);
+        return mail_detail(state, account, mail, data, now);
     }
     if let Some(view) = &account.ntfy {
         return ntfy_detail(account, view, data, now);
@@ -3234,11 +3290,11 @@ fn detail<'a>(
     let middle = match account.kind.as_str() {
         "github" => Some(permissions_group(account.scopes.as_deref())),
         AI_KIND => Some(models_group(state, account)),
-        _ => Some(collections_moved()),
+        _ => collections_moved(state, data),
     };
     column![heading(account), status_group(account, data, now)]
         .push(middle)
-        .push(sources_moved(account))
+        .push(sources_moved(state, account, data))
         .push(connection_group(account))
         .push(remove_button())
         .spacing(layout::section_gap())
@@ -3251,26 +3307,34 @@ fn detail<'a>(
 ///
 /// The control centre cannot open the settings of a running window from here: only a person opens
 /// settings (`docs/settings.md` › Technik), so there is no such target for `apps.open_app`.
+///
+/// A row whose window the page stands in, or whose app is not installed, is left out (issue #410,
+/// [`State::opens`]); without a row the group is left out too.
 fn moved_group<'a>(
+    state: &State,
+    data: &dyn Seen,
     title: &'a str,
     rows: Vec<(&'a str, &'static str, &'static str)>,
     footer: &'a str,
-) -> Element<'a, Message> {
-    let rows = rows
+) -> Option<Element<'a, Message>> {
+    let rows: Vec<Element<'a, Message>> = rows
         .into_iter()
+        .filter(|(_, _, window_class)| state.opens(window_class, data))
         .map(|(name, button, window_class)| {
             let open =
                 widgets::text_button(None, button, style::button::secondary, Some(Message::OpenApp(window_class)));
             setting_row(None, name, None, open)
         })
         .collect();
-    widgets::group(title, rows, Some(footer.to_string()))
+    (!rows.is_empty()).then(|| widgets::group(title, rows, Some(footer.to_string())))
 }
 
 /// In place of "Calendars and lists": which of them the suite shows is chosen in Calendar and in
 /// Tasks now, behind the gear.
-fn collections_moved<'a>() -> Element<'a, Message> {
+fn collections_moved<'a>(state: &State, data: &dyn Seen) -> Option<Element<'a, Message>> {
     moved_group(
+        state,
+        data,
         tr("Calendars and lists"),
         vec![
             (tr("Calendars"), tr("Open Calendar"), AppId::CALENDAR.window_class),
@@ -3283,23 +3347,27 @@ fn collections_moved<'a>() -> Element<'a, Message> {
 /// In place of the switches of a GitHub or Nextcloud account's notifications: they are switched on
 /// in the Notification Hub now. `None` for an account that brings none (task E5.14 listed the
 /// sources by kind; here the two kinds that had switches).
-fn sources_moved<'a>(account: &AccountInfo) -> Option<Element<'a, Message>> {
+fn sources_moved<'a>(state: &State, account: &AccountInfo, data: &dyn Seen) -> Option<Element<'a, Message>> {
     let source = account.id.parse::<SourceRef>().ok()?;
     if !matches!(source.kind, SourceKind::Github | SourceKind::Nextcloud) {
         return None;
     }
-    Some(moved_group(
+    moved_group(
+        state,
+        data,
         tr("Notification Hub"),
         vec![(tr("Notifications"), tr("Open Notification Hub"), AppId::INBOX.window_class)],
         tr("What this account sends to the Notification Hub is switched on there, under the gear."),
-    ))
+    )
 }
 
 /// In place of a mail account's sender name, signature, writing format and folder questions: they
 /// are set in the mail window now, and whether new mail shows up in the Notification Hub there.
-fn mail_moved<'a>() -> Vec<Element<'a, Message>> {
-    vec![
+fn mail_moved<'a>(state: &State, data: &dyn Seen) -> Vec<Element<'a, Message>> {
+    [
         moved_group(
+            state,
+            data,
             tr("Mail"),
             vec![(tr("Sender name and signature"), tr("Open Mail"), AppId::INBOX_MAIL.window_class)],
             tr(
@@ -3307,11 +3375,16 @@ fn mail_moved<'a>() -> Vec<Element<'a, Message>> {
             ),
         ),
         moved_group(
+            state,
+            data,
             tr("Notification Hub"),
             vec![(tr("New mail"), tr("Open Notification Hub"), AppId::INBOX.window_class)],
             tr("Whether new mail of this account shows up there is set in the Notification Hub, under the gear."),
         ),
     ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 // ----- A mail account's page (task M5.2) ----------------------------------------------------
@@ -3383,13 +3456,14 @@ fn calendar_part_name(services: Services) -> Option<&'static str> {
 /// its place in the Notification Hub are now ([`mail_moved`]), the services and the connection, and
 /// the removal at the end.
 fn mail_detail<'a>(
+    state: &State,
     account: &'a AccountInfo,
     mail: &'a MailView,
     data: &dyn Seen,
     now: DateTime<Utc>,
 ) -> Element<'a, Message> {
     column![heading(account), mail_status_group(account, mail, data, now)]
-        .extend(mail_moved())
+        .extend(mail_moved(state, data))
         .push(services_group(mail))
         .push(mail_connection_group(account, mail))
         .push(trusted_certificates_group(mail))
@@ -4416,7 +4490,7 @@ mod tests {
         // Every page builds: no accounts, accounts, an unknown kind.
         draw(&State::default(), &Data::default());
         draw(&State::default(), &Data { accounts: vec![slack, github, a], ..Data::default() });
-        drop(ai_view(&State::default(), &Data::default(), SizeClass::Wide, &Palette::dark()));
+        drop(ai_view(&State::default(), &Data::default(), SizeClass::Wide));
     }
 
     /// Task S.30: a mail provider's CalDAV account stands in the group Mail and says "CalDAV".
@@ -4668,7 +4742,7 @@ mod tests {
                 "{action:?}"
             );
         }
-        drop(collections_moved());
+        drop(collections_moved(&State::default(), &data));
     }
 
     // ----- A mail provider's account (task M7.2) -------------------------------------------------
@@ -4836,7 +4910,9 @@ mod tests {
                 "{action:?}"
             );
         }
-        assert_eq!(mail_moved().len(), 2, "Mail and the Notification Hub");
+        assert_eq!(mail_moved(&State::default(), &data).len(), 2, "Mail and the Notification Hub");
+        let in_mail = State::default().in_window(AppId::INBOX_MAIL);
+        assert_eq!(mail_moved(&in_mail, &data).len(), 1, "Mail opens no Mail");
     }
 
     #[test]
@@ -5377,7 +5453,7 @@ mod tests {
         let data = super::demo::demo_data();
         let of = |id: &str| {
             let account = data.accounts.iter().find(|account| account.id == id).expect("demo account");
-            sources_moved(account).is_some()
+            sources_moved(&State::default(), account, &data).is_some()
         };
         assert!(of("github:anna-dev"));
         assert!(of("nextcloud:anna@cloud.example.org"));
@@ -5509,6 +5585,25 @@ mod tests {
         let account = data.accounts.iter().find(|account| account.id == NTFY).cloned().expect("demo ntfy");
         assert!(answered(&mut state, &Ok(Response::Account { account })));
         assert!(state.login.is_none());
+    }
+
+    /// Issue #410: an app's page offers its providers only, in the list's order, and no kind of its
+    /// own; it draws them one under the other, and an account's page from there.
+    #[test]
+    fn an_apps_page_offers_its_providers_only() {
+        let data = demo::demo_data();
+        let entries = entries(&data);
+        let state = State::with_providers(&[Group::Mail, Group::Nextcloud]).in_window(AppId::CALENDAR);
+        let offered = account_providers(&state, &entries);
+        assert_eq!(offered, [Listed::Fixed(Group::Nextcloud), Listed::Fixed(Group::Mail)]);
+        assert!(account_providers(&State::default(), &entries).len() > offered.len(), "the control centre: all");
+        drop(app_view(&state, &data));
+        let caldav = data.accounts.iter().find(|account| account.kind == "caldav").expect("caldav");
+        let open = State { selected: Some(caldav.id.clone()), ..state };
+        drop(app_view(&open, &data));
+        assert!(collections_moved(&open, &data).is_some(), "Tasks is still offered");
+        let tasks = State::default().in_window(AppId::TASKS);
+        assert!(collections_moved(&tasks, &data).is_some(), "Calendar is still offered");
     }
 
     /// Issue #410: an account's page says which installed apps use it, by name in alphabetical
@@ -6213,10 +6308,9 @@ mod tests {
     }
 
     fn draw_ai(state: &State, data: &Data) {
-        for palette in [Palette::dark(), Palette::light()] {
-            for class in [SizeClass::Wide, SizeClass::Narrow] {
-                drop(ai_view(state, data, class, &palette));
-            }
+        for class in [SizeClass::Wide, SizeClass::Narrow] {
+            drop(ai_view(state, data, class));
+            drop(app_ai_view(state, data, class));
         }
     }
 }

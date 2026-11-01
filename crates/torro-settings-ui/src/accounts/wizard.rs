@@ -690,7 +690,7 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// Cancel, Done, Escape or a click next to the dialog.
     Close,

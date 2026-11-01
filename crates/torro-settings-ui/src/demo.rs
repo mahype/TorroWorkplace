@@ -1295,9 +1295,18 @@ impl Backend for Demo {
                 self.note(request);
                 Response::Transcript { text: "What is on today?".into() }
             }
+            // What the pages Accounts and AI ask (issue #410): the control centre's demo answers,
+            // over these accounts; a refusal among them ("wrong" as the password) is the error.
             _ => {
+                let seen =
+                    crate::Data { accounts: self.accounts(), settings: self.settings.clone(), ..Default::default() };
+                let answer = crate::accounts::demo::demo_answer(&request, &seen);
                 self.note(request);
-                Response::Ok
+                match answer {
+                    Some(Response::Error { message, .. }) => return Box::pin(async move { Err(message) }),
+                    Some(answer) => answer,
+                    None => Response::Ok,
+                }
             }
         };
         Box::pin(async move { Ok(answer) })

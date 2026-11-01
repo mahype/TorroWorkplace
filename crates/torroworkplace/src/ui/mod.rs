@@ -1966,7 +1966,7 @@ impl Ui {
         let page: Element<'_, Message> = match self.section {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
             Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
-            Section::Ai => accounts::ai_view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
+            Section::Ai => accounts::ai_view(&self.accounts, &self.data, class).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data, class).map(Message::Workspaces),
             Section::Api => api::view(&self.api, &self.data).map(Message::Api),
             Section::Mcp => mcp::view(&self.mcp, &self.data).map(Message::Mcp),
