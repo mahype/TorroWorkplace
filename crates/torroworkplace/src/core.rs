@@ -25739,6 +25739,138 @@ mod tests {
         assert_eq!(progress.processed, 0, "the mail waits for the next run");
     }
 
+    /// The backlog run once it has ended (issue #420), waited for up to `within`: how much of Anna's
+    /// mail it looks at and how much it went through.
+    async fn backlog_ended(core: &Core, within: std::time::Duration) -> (u64, u64) {
+        let until = std::time::Instant::now() + within;
+        while core.catch_up.running.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(std::time::Instant::now() < until, "the backlog run goes on");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        core.catch_up.progress_of("mail:anna@example.org").expect("Anna's mail")
+    }
+
+    /// The subjects of Anna's mail with whether each has a category (issue #420).
+    async fn sorted_subjects(core: &Core) -> Vec<(String, bool)> {
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 50,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        messages.into_iter().map(|message| (message.subject, message.category.is_some())).collect()
+    }
+
+    /// Jev on `server` refusing every mail whose state holds "Broken" (HTTP 400, as a small model's
+    /// server refuses a mail too long for its context, issue #420).
+    async fn mock_jev_refusing(server: &httpmock::MockServer) -> httpmock::Mock<'_> {
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone").body_includes("Broken");
+                then.status(400).json_body(serde_json::json!({"error": "the input is longer than the context"}));
+            })
+            .await
+    }
+
+    /// Issue #420 (PR review): the backlog run asks Jev several mails at once too – 12 mails at 300 ms
+    /// an answer take less than one after the other would (3.6 s) –, goes past a mail the server
+    /// refuses and leaves that one without a category.
+    #[tokio::test]
+    async fn the_backlog_run_asks_jev_several_mails_at_once_and_goes_past_a_refused_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let refused = mock_jev_refusing(&jev).await;
+        mock_jev_after(&jev, std::time::Duration::from_millis(300), Some("Broken")).await;
+        let subjects: Vec<String> =
+            (1..=12).map(|n| if n == 6 { format!("Broken {n}") } else { format!("Hello {n}") }).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+
+        let started = std::time::Instant::now();
+        let backlog = Request::CatchUpCategories { cancel: false, again: false };
+        assert!(matches!(core.handle(backlog).await, Response::Categorization { .. }));
+        let came = backlog_ended(&core, std::time::Duration::from_secs(10)).await;
+        let took = started.elapsed();
+        assert_eq!(came, (12, 12), "through every mail");
+        assert!(took < std::time::Duration::from_millis(12 * 300), "took {took:?}");
+        assert_eq!(refused.calls_async().await, 1);
+        for (subject, sorted) in sorted_subjects(&core).await {
+            assert_eq!(sorted, subject.starts_with("Hello"), "{subject}");
+        }
+    }
+
+    /// Issue #420 (PR review): ten mails in a row without an answer stop the backlog run; the mail
+    /// keeps no category.
+    #[tokio::test]
+    async fn ten_refused_mails_in_a_row_stop_the_backlog_run() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let _refused = mock_jev_refusing(&jev).await;
+        mock_jev_after(&jev, std::time::Duration::ZERO, Some("Broken")).await;
+        let subjects: Vec<String> = (1..=12).map(|n| format!("Broken {n}")).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+
+        let backlog = Request::CatchUpCategories { cancel: false, again: false };
+        assert!(matches!(core.handle(backlog).await, Response::Categorization { .. }));
+        assert_eq!(backlog_ended(&core, std::time::Duration::from_secs(10)).await, (12, 9), "stopped at the tenth");
+        assert!(sorted_subjects(&core).await.iter().all(|(_, sorted)| !sorted), "no mail sorted");
+    }
+
+    /// Issue #420 (PR review): cancelling a job or the backlog run while Jev has mails in hand stops
+    /// it – nothing more goes to Jev, and the count stands still.
+    #[tokio::test]
+    async fn cancelling_a_run_with_mails_in_hand_sends_nothing_more() {
+        use torro_ipc::inbox::{CategoryJobControl, CategoryJobState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_after(&jev, std::time::Duration::from_millis(300), None).await;
+        let subjects: Vec<String> = (1..=24).map(|n| format!("Hello {n}")).collect();
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+
+        // A job.
+        let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
+        let Response::CategoryJob { job: Some(job) } = core.handle(start).await else { panic!("started") };
+        tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+        let cancel = Request::ControlCategoryJob { id: job.id.clone(), action: CategoryJobControl::Cancel };
+        let Response::CategoryJob { job: Some(cancelled) } = core.handle(cancel).await else { panic!("cancelled") };
+        assert_eq!(cancelled.state, CategoryJobState::Cancelled);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while core.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() {
+            assert!(std::time::Instant::now() < until, "the worker lets go");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let (asked, counted) = (decides.calls_async().await, job_ended(&core, std::time::Duration::from_secs(1)).await);
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert_eq!(decides.calls_async().await, asked, "nothing more went to Jev");
+        let now = job_ended(&core, std::time::Duration::from_secs(1)).await;
+        assert_eq!(now.state, CategoryJobState::Cancelled);
+        assert_eq!(now.accounts[0].processed, counted.accounts[0].processed, "the count stands still");
+        assert!(now.accounts[0].processed < 24, "cancelled with mail left");
+
+        // The backlog run, sorting all of it again.
+        let backlog = Request::CatchUpCategories { cancel: false, again: true };
+        assert!(matches!(core.handle(backlog).await, Response::Categorization { .. }));
+        tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+        let stop = Request::CatchUpCategories { cancel: true, again: false };
+        assert!(matches!(core.handle(stop).await, Response::Categorization { .. }));
+        let (messages, done) = backlog_ended(&core, std::time::Duration::from_secs(5)).await;
+        let asked = decides.calls_async().await;
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert_eq!(decides.calls_async().await, asked, "nothing more went to Jev");
+        assert_eq!(core.catch_up.progress_of("mail:anna@example.org"), Some((messages, done)), "stands still");
+        assert!(done < messages, "stopped with mail left: {done} of {messages}");
+    }
+
     /// Issue #420, the measurement for the PR: 2,000 mails sorted by a Jev that answers at once in
     /// under 30 s, and by one that takes 220 ms an answer, as the real one does, in under 3 minutes.
     /// `cargo test --release -p torroworkplace -- --ignored sorting_budget --nocapture`.
