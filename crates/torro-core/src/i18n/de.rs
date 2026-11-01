@@ -106,6 +106,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Unknown", "Unbekannt"),
     ("Updated {when}", "Aktualisiert {when}"),
+    ("Used by", "Genutzt von"),
     ("User", "Benutzer"),
     ("Version", "Version"),
     ("Version {version}", "Version {version}"),

@@ -920,8 +920,9 @@ pub enum Switcher {
 
 /// The short name of an app in the switcher ("Tasks", "Calendar", "Workplace"); the inbox's three
 /// windows by their kind ("Notification Hub", "Mail", "App Feed"), since they share one binary. The
-/// three names share no word (issue #127), so nobody takes one window for another.
-fn app_name(app: AppId) -> &'static str {
+/// three names share no word (issue #127), so nobody takes one window for another. Translated; the
+/// accounts' "Used by …" names the apps with it too (issue #410).
+pub fn app_name(app: AppId) -> &'static str {
     match app.window_class {
         "torro-inbox" => tr("Notification Hub"),
         "torro-inbox-mail" => tr("Mail"),

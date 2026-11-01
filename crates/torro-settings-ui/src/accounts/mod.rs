@@ -3224,7 +3224,7 @@ fn detail<'a>(
     now: DateTime<Utc>,
 ) -> Element<'a, Message> {
     if let Some(mail) = &account.mail {
-        return mail_detail(account, mail, now);
+        return mail_detail(account, mail, data, now);
     }
     if let Some(view) = &account.ntfy {
         return ntfy_detail(account, view, data, now);
@@ -3236,7 +3236,7 @@ fn detail<'a>(
         AI_KIND => Some(models_group(state, account)),
         _ => Some(collections_moved()),
     };
-    column![heading(account), status_group(account, now)]
+    column![heading(account), status_group(account, data, now)]
         .push(middle)
         .push(sources_moved(account))
         .push(connection_group(account))
@@ -3382,8 +3382,13 @@ fn calendar_part_name(services: Services) -> Option<&'static str> {
 /// A mail account's page: the state of each service with "Sync now", where its mail settings and
 /// its place in the Notification Hub are now ([`mail_moved`]), the services and the connection, and
 /// the removal at the end.
-fn mail_detail<'a>(account: &'a AccountInfo, mail: &'a MailView, now: DateTime<Utc>) -> Element<'a, Message> {
-    column![heading(account), mail_status_group(account, mail, now)]
+fn mail_detail<'a>(
+    account: &'a AccountInfo,
+    mail: &'a MailView,
+    data: &dyn Seen,
+    now: DateTime<Utc>,
+) -> Element<'a, Message> {
+    column![heading(account), mail_status_group(account, mail, data, now)]
         .extend(mail_moved())
         .push(services_group(mail))
         .push(mail_connection_group(account, mail))
@@ -3395,11 +3400,17 @@ fn mail_detail<'a>(account: &'a AccountInfo, mail: &'a MailView, now: DateTime<U
 
 /// One row per service that is in use, each with its dot, its last sync or its problem; "Sync now"
 /// at the end of the first. An account that is not signed in has one row and nothing to sync.
-fn mail_status_group<'a>(account: &'a AccountInfo, mail: &'a MailView, now: DateTime<Utc>) -> Element<'a, Message> {
+fn mail_status_group<'a>(
+    account: &'a AccountInfo,
+    mail: &'a MailView,
+    data: &dyn Seen,
+    now: DateTime<Utc>,
+) -> Element<'a, Message> {
     if !matches!(account.state, AccountState::Connected { .. }) {
         let line = status_line(&account.state);
         let row = setting_row(Some(widgets::status_dot(line.tone.status())), line.text, None, Space::new());
-        return widgets::group(tr("Status"), vec![row], None);
+        let rows = std::iter::once(row).chain(used_by_row(account, data)).collect();
+        return widgets::group(tr("Status"), rows, None);
     }
     let services = mail.settings.services;
     let sync = || {
@@ -3411,6 +3422,7 @@ fn mail_status_group<'a>(account: &'a AccountInfo, mail: &'a MailView, now: Date
         let state = mail.calendars.clone().unwrap_or_default();
         rows.push(service_row(name, service_status(true, &state, now), None));
     }
+    rows.extend(used_by_row(account, data));
     widgets::group(tr("Status"), rows, None)
 }
 
@@ -3786,7 +3798,7 @@ fn notice_icon<'a>() -> Element<'a, Message> {
 
 /// The status as a dot and a word, when it last synced, and "Sync now" for a connected account.
 /// An AI account gets the dot and the word only: nothing of it syncs.
-fn status_group<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
+fn status_group<'a>(account: &'a AccountInfo, data: &dyn Seen, now: DateTime<Utc>) -> Element<'a, Message> {
     let line = status_line(&account.state);
     let (detail, sync) = match &account.state {
         AccountState::Connected { .. } if account.kind == AI_KIND || account.kind == NTFY_KIND => (None, None),
@@ -3802,7 +3814,25 @@ fn status_group<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a,
         AccountState::NotConnected | AccountState::SigningIn { .. } => (None, None),
     };
     let row = setting_row(Some(widgets::status_dot(line.tone.status())), line.text, detail, sync);
-    widgets::group(tr("Status"), vec![row], None)
+    let rows = std::iter::once(row).chain(used_by_row(account, data)).collect();
+    widgets::group(tr("Status"), rows, None)
+}
+
+/// "Used by  Calendar, Tasks" (issue #410): the installed apps that use the account
+/// ([`AccountInfo::used_by`]), by name in alphabetical order, so the same account reads the same in
+/// every window; `None` while none does, and then the row is left out.
+fn used_by_row<'a>(account: &AccountInfo, data: &dyn Seen) -> Option<Element<'a, Message>> {
+    let names = used_by_names(account, data)?;
+    let value = typo::text(typo::body(), names).style(theme::text_2).wrapping(Wrapping::None);
+    Some(setting_row(None, tr("Used by"), None, value))
+}
+
+/// The names of [`used_by_row`], joined with ", "; `None` while no installed app uses the account.
+pub fn used_by_names(account: &AccountInfo, data: &dyn Seen) -> Option<String> {
+    let mut names: Vec<&str> =
+        account.used_by(|app| data.installed(app)).into_iter().map(torro_gui::shell::app_name).collect();
+    names.sort_unstable();
+    (!names.is_empty()).then(|| names.join(", "))
 }
 
 /// Server and user, and where the app password lives. Nothing to show without a server.
@@ -3937,7 +3967,7 @@ fn ntfy_detail<'a>(
     let health = account.id.parse::<SourceRef>().ok().and_then(|source| source_health(data, &source));
     column![
         heading(account),
-        status_group(account, now),
+        status_group(account, data, now),
         topics_group(view, health),
         ntfy_connection_group(view),
         remove_button(),
@@ -5479,6 +5509,47 @@ mod tests {
         let account = data.accounts.iter().find(|account| account.id == NTFY).cloned().expect("demo ntfy");
         assert!(answered(&mut state, &Ok(Response::Account { account })));
         assert!(state.login.is_none());
+    }
+
+    /// Issue #410: an account's page says which installed apps use it, by name in alphabetical
+    /// order; a sign-in that still runs names none, and every detail page draws with the row.
+    #[test]
+    fn a_page_says_which_apps_use_the_account() {
+        struct Only(Data, Vec<AppId>);
+        impl Seen for Only {
+            fn accounts(&self) -> &[AccountInfo] {
+                &self.0.accounts
+            }
+            fn settings(&self) -> &Settings {
+                &self.0.settings
+            }
+            fn sources(&self) -> &[torro_inbox::SourceInfo] {
+                &self.0.sources
+            }
+            fn error(&self) -> Option<&str> {
+                None
+            }
+            fn installed(&self, app: AppId) -> bool {
+                self.1.contains(&app)
+            }
+        }
+        let data = demo::demo_data();
+        let every = Only(data.clone(), AppId::ALL.to_vec());
+        let of_kind = |kind: &str| data.accounts.iter().find(|account| account.kind == kind).expect(kind);
+        let mut names = [tr("Calendar"), tr("Tasks"), tr("Notification Hub"), tr("App Feed")];
+        names.sort_unstable();
+        assert_eq!(used_by_names(of_kind("nextcloud"), &every), Some(names.join(", ")));
+        let mut ai = [tr("Assistant"), tr("Mail")];
+        ai.sort_unstable();
+        assert_eq!(used_by_names(of_kind("ai"), &every), Some(ai.join(", ")));
+        let calendar = Only(data.clone(), vec![AppId::CALENDAR]);
+        assert_eq!(used_by_names(of_kind("nextcloud"), &calendar), Some(tr("Calendar").to_string()));
+        assert_eq!(used_by_names(of_kind("github"), &calendar), None, "Tasks is not installed");
+        assert_eq!(used_by_names(&demo::demo_ollama_account(), &Only(data.clone(), Vec::new())), None);
+        for account in listed(&data.accounts) {
+            let state = State { selected: Some(account.id.clone()), ..State::default() };
+            drop(view(&state, &every, SizeClass::Wide, &Palette::dark()));
+        }
     }
 
     // ----- The slots (issue #325, task MW.8) -----------------------------------------------------
