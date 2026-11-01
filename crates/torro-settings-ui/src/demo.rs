@@ -210,11 +210,15 @@ impl Demo {
     ///
     /// Built as the structs they are, not parsed from JSON: a sample that cannot be read would
     /// have to be unwrapped, and the workspace allows no `expect` outside tests.
+    ///
+    /// Synced a few minutes ago, as the control centre's sample accounts are (`accounts::demo`):
+    /// Settings › Accounts of an app shows the same "Last synced" as the control centre.
     fn accounts(&self) -> Vec<AccountInfo> {
+        let synced = Some(Utc::now() - chrono::Duration::minutes(4));
         let connected = |server: &str, login: &str| AccountState::Connected {
             server: server.to_string(),
             login_name: login.to_string(),
-            last_sync: None,
+            last_sync: synced,
             problem: None,
         };
         let account =
@@ -296,8 +300,8 @@ impl Demo {
             .collect()
     }
 
-    /// The sample ntfy account: one server with two topics, whose subscriptions stay with the
-    /// account in the control centre – "Sources" only mutes the whole server.
+    /// The sample ntfy account: one server with two topics, whose subscriptions are on the account's
+    /// page under Accounts – "Sources" only mutes the whole server.
     fn ntfy_account(&self) -> AccountInfo {
         let topic = |label: &str| NtfyTopicView { label: label.to_string(), topic: None };
         AccountInfo {
@@ -307,7 +311,7 @@ impl Demo {
             state: AccountState::Connected {
                 server: "https://ntfy.sh".into(),
                 login_name: "anna".into(),
-                last_sync: None,
+                last_sync: Some(Utc::now() - chrono::Duration::minutes(1)),
                 problem: None,
             },
             collections: Vec::new(),

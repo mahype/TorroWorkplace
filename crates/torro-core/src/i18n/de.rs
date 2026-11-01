@@ -3919,8 +3919,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No suggestion: {why}", "Kein Vorschlag: {why}"),
     ("Set up an AI first", "Richte zuerst eine KI ein"),
     (
-        "Set up an AI first: connect an AI account in the control centre.",
-        "Richte zuerst eine KI ein: Verbinde ein KI-Konto in der Steuerzentrale.",
+        "Set up an AI first: connect an AI account under Settings › AI.",
+        "Richte zuerst eine KI ein: Verbinde unter Einstellungen › KI ein KI-Konto.",
     ),
     (
         "Suggested by your AI. Check it before you create it.",
@@ -5192,14 +5192,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{mail} E-Mails, {entries} Einträge und {rules} Sortierregeln sind als „{category}“ abgelegt. Wähl eine Kategorie für sie.",
     ),
     // Accounts, API and MCP; models on and off (issue #231)
-    ("1 model on", "1 Modell an"),
+    ("1 model turned on", "1 Modell eingeschaltet"),
     ("Accounts in TorroMail", "Konten in TorroMail"),
-    ("Add AI provider…", "KI-Anbieter hinzufügen…"),
+    ("Add AI account…", "KI-Konto hinzufügen…"),
     ("Add GitHub account…", "GitHub-Konto hinzufügen…"),
     ("Add mail account…", "Mail-Konto hinzufügen…"),
-    ("Add Nextcloud…", "Nextcloud hinzufügen…"),
-    ("Add ntfy server…", "ntfy-Server hinzufügen…"),
+    ("Add Nextcloud account…", "Nextcloud-Konto hinzufügen…"),
+    ("Add ntfy account…", "ntfy-Konto hinzufügen…"),
     ("No account yet.", "Noch kein Konto."),
+    (
+        "One account for the whole suite: connected here, every app knows it.",
+        "Ein Konto für die ganze Suite: hier verbunden, kennt es jede App.",
+    ),
     ("Allow API keys", "API-Schlüssel erlauben"),
     ("Allow MCP", "MCP erlauben"),
     (
@@ -5271,8 +5275,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Torro's MCP server", "Torros MCP-Server"),
     ("Models", "Modelle"),
     (
-        "Models for the assistant and its bots, on this computer or in the cloud.",
-        "Modelle für den Assistenten und seine Bots, auf diesem Rechner oder in der Cloud.",
+        "Models for chatting and for sorting mail, on this computer or in the cloud.",
+        "Modelle zum Chatten und zum Einordnen von E-Mails, auf diesem Rechner oder in der Cloud.",
     ),
     ("Name the client and choose what it may do.", "Gib dem Client einen Namen und wähle, was er darf."),
     ("No model is turned on", "Kein Modell ist eingeschaltet"),
@@ -5386,7 +5390,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{name} loses access at once: its key stops working. Where Connect client set them up, its configuration entry and its Notification Hub hooks are removed too.",
         "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Client verbinden“ sie eingerichtet hat, werden auch sein Eintrag in der Konfiguration und seine Hooks für die Mitteilungszentrale entfernt.",
     ),
-    ("{n} models on", "{n} Modelle an"),
+    ("{n} models turned on", "{n} Modelle eingeschaltet"),
     ("{n} off", "{n} aus"),
     ("{n}K context", "{n}K Kontext"),
     ("{n}M context", "{n}M Kontext"),

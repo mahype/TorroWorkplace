@@ -146,7 +146,7 @@ use torro_pim::AccountState;
 use torro_core::ai::{Place, place_of};
 use torro_ntfy::TOPICS_MAX;
 
-use crate::parts::{chevron, confirm, dialog, notice, picker, picker_fill, pressable, row_frame, setting_row};
+use crate::parts::{chevron, confirm, dialog, notice, pressable, row_frame, setting_row};
 use server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 
 pub mod connect;
@@ -267,6 +267,10 @@ pub struct State {
     pub sorting_menu: bool,
     /// Where the button of *Sorting* is, for the menu that floats under it.
     sorting_anchor: Anchor,
+    /// The menu of *Chat* is open (design review of #410): the same kind of button and menu as
+    /// *Sorting*, so the two lists of the group look alike.
+    pub chat_menu: bool,
+    chat_anchor: Anchor,
     /// The providers the list offers (issue #410): `None` every one, in the order of [`Group::ALL`],
     /// and the kinds of account none of them holds – the control centre's overview; an app names
     /// the ones it uses ([`State::with_providers`]).
@@ -710,6 +714,10 @@ pub enum Message {
     ToggleSortingMenu,
     /// A click next to the menu of *Sorting*, or Escape.
     CloseSortingMenu,
+    /// The button of *Chat*: opens its menu, or closes it when it is open.
+    ToggleChatMenu,
+    /// A click next to the menu of *Chat*, or Escape.
+    CloseChatMenu,
     /// "Use suggestion" of a slot: the chain of [`Using`] for the suggestion of `ai.recommend`.
     UseSuggestion(AiSlot),
     /// "Cancel" of a download shown under a slot, by the download's id: `ai.cancel_pull`.
@@ -762,6 +770,8 @@ pub fn escape(state: &State) -> Option<Message> {
         Some(Message::CancelRemove)
     } else if state.sorting_menu {
         Some(Message::CloseSortingMenu)
+    } else if state.chat_menu {
+        Some(Message::CloseChatMenu)
     } else {
         None
     }
@@ -789,6 +799,7 @@ pub fn leave(state: &mut State) {
     close_dialogs(state);
     // Accounts and AI share the layer: a menu left open would float over the other section.
     state.sorting_menu = false;
+    state.chat_menu = false;
     // The section asks again when it opens; a chain under way and the downloads go on in the core.
     state.slots.asked = false;
     state.slots.asked_models.clear();
@@ -858,10 +869,21 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         }
         Message::PickSlot(slot, choice) => {
             state.sorting_menu = false;
+            state.chat_menu = false;
             pick_slot(state, data, slot, choice)
         }
         Message::ToggleSortingMenu => {
             state.sorting_menu = !state.sorting_menu;
+            state.chat_menu = false;
+            Action::None
+        }
+        Message::ToggleChatMenu => {
+            state.chat_menu = !state.chat_menu;
+            state.sorting_menu = false;
+            Action::None
+        }
+        Message::CloseChatMenu => {
+            state.chat_menu = false;
             Action::None
         }
         Message::CloseSortingMenu => {
@@ -1958,6 +1980,14 @@ pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
         return detail(state, account, data, now);
     }
     let entries = entries(data);
+    // The heading as on AI and in the control centre (design review of #410): what the section is,
+    // and that an account is one for the whole suite.
+    let heading = column![
+        typo::text(typo::headline(), tr("Accounts")).wrapping(Wrapping::None),
+        typo::text(typo::meta(), tr("One account for the whole suite: connected here, every app knows it."))
+            .style(theme::text_2),
+    ]
+    .spacing(space::xs());
     let groups = account_providers(state, &entries).into_iter().filter_map(|group| match group {
         Listed::Fixed(fixed) => Some(fixed),
         Listed::Other(_) => None,
@@ -1981,7 +2011,7 @@ pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
         }
         widgets::group(group.title(), rows, Some(group.about().to_string()))
     });
-    column(page).spacing(layout::section_gap()).into()
+    column![heading].extend(page).spacing(layout::section_gap()).into()
 }
 
 /// The page AI in an app's settings (issue #410): the control centre's ([`ai_view`]), the slots
@@ -2087,6 +2117,9 @@ pub fn overlay<'a>(state: &'a State, data: &'a dyn Seen) -> Option<Element<'a, M
         return Some(login_dialog(change, view));
     }
     if !state.confirm_remove {
+        if state.chat_menu {
+            return Some(chat_menu(state, data));
+        }
         return state.sorting_menu.then(|| sorting_menu(state, data));
     }
     // With several accounts the dialog says which one goes.
@@ -2283,7 +2316,7 @@ impl Group {
             Group::Nextcloud => tr("Calendars and tasks from your Nextcloud."),
             Group::Mail => tr("Mailboxes, and the calendars and tasks of the same provider."),
             Group::GitHub => tr("Issues, pull requests and projects from GitHub."),
-            Group::Ai => tr("Models for the assistant and its bots, on this computer or in the cloud."),
+            Group::Ai => tr("Models for chatting and for sorting mail, on this computer or in the cloud."),
             Group::Ntfy => tr("Notifications from your servers and scripts, by topic."),
         }
     }
@@ -2291,11 +2324,11 @@ impl Group {
     /// The words of the group's "Add" button.
     fn add_label(self) -> &'static str {
         match self {
-            Group::Nextcloud => tr("Add Nextcloud…"),
+            Group::Nextcloud => tr("Add Nextcloud account…"),
             Group::Mail => tr("Add mail account…"),
             Group::GitHub => tr("Add GitHub account…"),
-            Group::Ai => tr("Add AI provider…"),
-            Group::Ntfy => tr("Add ntfy server…"),
+            Group::Ai => tr("Add AI account…"),
+            Group::Ntfy => tr("Add ntfy account…"),
         }
     }
 }
@@ -2910,16 +2943,17 @@ fn held_model<'a>(state: &'a State, data: &'a dyn Seen, slot: AiSlot) -> Held<'a
 /// ([`slot_choices`]); `stacked` (narrow) the list under the text, as wide as the row, so both slots'
 /// lists line up.
 fn slot_row<'a>(state: &'a State, data: &'a dyn Seen, slot: AiSlot, stacked: bool) -> Element<'a, Message> {
-    let (choices, chosen) = slot_choices(state, data, slot);
+    let (_, chosen) = slot_choices(state, data, slot);
     let (detail, alert) = slot_detail(state, data, slot);
-    let on_pick = move |choice: SlotChoice| Message::PickSlot(slot, choice);
-    // A pick list shows no titles, so *Sorting* opens a menu in sections instead (issue #421).
-    let anchor = &state.sorting_anchor;
-    let pick = match (slot, stacked) {
-        (AiSlot::Decide, true) => widgets::select_button_fill(anchor, chosen.label, Message::ToggleSortingMenu),
-        (AiSlot::Decide, false) => widgets::select_button(anchor, chosen.label, Message::ToggleSortingMenu),
-        (AiSlot::Chat, true) => picker_fill(choices, chosen, on_pick),
-        (AiSlot::Chat, false) => picker(choices, chosen, on_pick),
+    // A pick list shows no titles, so *Sorting* opens a menu in sections instead (issue #421), and
+    // *Chat* a menu of the same kind, so the two lists of the group look alike (design review of #410).
+    let (anchor, toggle) = match slot {
+        AiSlot::Decide => (&state.sorting_anchor, Message::ToggleSortingMenu),
+        AiSlot::Chat => (&state.chat_anchor, Message::ToggleChatMenu),
+    };
+    let pick = match stacked {
+        true => widgets::select_button_fill(anchor, chosen.label, toggle),
+        false => widgets::select_button(anchor, chosen.label, toggle),
     };
     models_row(None, slot.label(), Some(detail), alert, Some(pick), stacked)
 }
@@ -3022,6 +3056,27 @@ pub fn sorting_sections(state: &State, data: &dyn Seen) -> SortingSections {
 /// hold without a title, then "Decision models (fast)" and "Other models"; a section without models is
 /// left out. With several AI accounts the account stands as a word after a model's name. The slot's
 /// model carries the dot of the current choice. Higher than a panel, it scrolls.
+/// The menu of *Chat* (design review of #410): its choices ([`slot_choices`]) under the button, the
+/// chosen one checked, scrolling past a panel's height like the menu of *Sorting*.
+fn chat_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+    let (choices, chosen) = slot_choices(state, data, AiSlot::Chat);
+    let items = choices
+        .into_iter()
+        .map(|choice| {
+            let current = choice == chosen;
+            let mut item = MenuItem::new(Icon::Check, choice.label.clone(), Message::PickSlot(AiSlot::Chat, choice));
+            item.mark = None;
+            item.current(current)
+        })
+        .collect();
+    let menu = scrollable(widgets::menu(vec![MenuSection::new(items)]))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .height(iced::Length::Shrink);
+    let menu = container(menu).max_height(size::panel());
+    widgets::floating(&state.chat_anchor, Placement::Below(Align::End), menu, Message::CloseChatMenu)
+}
+
 fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
     let SortingSections { first, fast, other, chosen } = sorting_sections(state, data);
     let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
@@ -3247,11 +3302,11 @@ fn models_on(state: &State, id: &str) -> Option<usize> {
     state.models.get(id).map(|models| models.iter().filter(|model| model.enabled).count())
 }
 
-/// "1 model on", "3 models on".
+/// "1 model turned on", "3 models turned on".
 fn models_on_text(n: usize) -> String {
     match n {
-        1 => tr("1 model on").to_string(),
-        n => trf("{n} models on", &[("n", &n)]),
+        1 => tr("1 model turned on").to_string(),
+        n => trf("{n} models turned on", &[("n", &n)]),
     }
 }
 
@@ -5310,10 +5365,10 @@ mod tests {
         let account = data.accounts.iter().find(|account| account.id == OPENROUTER).expect("demo AI account");
         assert_eq!(
             row_detail(account, models_on(&state, OPENROUTER), Utc::now()),
-            format!("{} · {}", tr("Connected"), trf("{n} models on", &[("n", &2)]))
+            format!("{} · {}", tr("Connected"), trf("{n} models turned on", &[("n", &2)]))
         );
         assert_eq!(row_detail(account, None, Utc::now()), tr("Connected"), "not listed yet: the status alone");
-        assert_eq!(models_on_text(1), tr("1 model on"));
+        assert_eq!(models_on_text(1), tr("1 model turned on"));
         assert!(answered(&mut state, &Ok(Response::Ok)));
         assert!(listed_model(&state, "deepseek/deepseek-chat-v3.1").enabled, "taken: it stays on");
         // Switching to what it is, or a model the page does not list, sends nothing.
