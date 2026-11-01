@@ -20,7 +20,7 @@ use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::AccountState;
 
 use super::super::wizard::field;
-use super::super::{Action, Data};
+use super::super::{Action, Seen};
 
 /// A Nextcloud sign-in: the address as typed and, while Login Flow v2 runs, what it compares
 /// against to tell how it ended.
@@ -65,8 +65,8 @@ impl NextcloudSignIn {
 
     /// Starts Login Flow v2 at the typed address and notes what the accounts are, so
     /// [`NextcloudSignIn::observe`] can tell the end. The core opens the browser.
-    pub fn start(&mut self, data: &Data) -> Action {
-        let before = data.accounts.iter().map(|account| (account.id.clone(), problem_of(&account.state))).collect();
+    pub fn start(&mut self, data: &dyn Seen) -> Action {
+        let before = data.accounts().iter().map(|account| (account.id.clone(), problem_of(&account.state))).collect();
         self.running = Some(Running { started: Utc::now(), before, seen_pending: false, server: None });
         Action::Send(Request::ConnectNextcloud { server: self.server.trim().to_string() })
     }
@@ -77,16 +77,16 @@ impl NextcloudSignIn {
     }
 
     /// Follows the sign-in through a reload of `data`; `Some` once it has ended.
-    pub fn observe(&mut self, data: &Data) -> Option<Ended> {
+    pub fn observe(&mut self, data: &dyn Seen) -> Option<Ended> {
         let running = self.running.as_mut()?;
-        if let Some(pending) = data.accounts.iter().find(|account| account.id.is_empty()) {
+        if let Some(pending) = data.accounts().iter().find(|account| account.id.is_empty()) {
             running.seen_pending = true;
             if let AccountState::SigningIn { server, .. } = &pending.state {
                 running.server = Some(server.clone());
             }
             return None;
         }
-        let ended = match data.accounts.iter().find(|account| signed_in(running, account)) {
+        let ended = match data.accounts().iter().find(|account| signed_in(running, account)) {
             Some(account) => Ended::SignedIn(account.id.clone()),
             None if running.seen_pending => Ended::Failed,
             None => return None,
@@ -132,8 +132,8 @@ fn problem_of(state: &AccountState) -> Option<String> {
 }
 
 /// The login URL of the account that is signing in, if the core reports one.
-pub fn login_url(data: &Data) -> Option<&str> {
-    data.accounts.iter().find_map(|account| match &account.state {
+pub fn login_url(data: &dyn Seen) -> Option<&str> {
+    data.accounts().iter().find_map(|account| match &account.state {
         AccountState::SigningIn { login_url, .. } => Some(login_url.as_str()),
         _ => None,
     })
@@ -153,7 +153,7 @@ pub fn address<'a, M: Clone + 'a>(
 
 /// While the browser signs in: the explanation, the waiting line, the login link to copy and a
 /// button to open it again (`on_open`; `on_edit` is ignored, the link field only lets it be copied).
-pub fn waiting<'a, M: Clone + 'a>(data: &'a Data, on_open: M, on_edit: fn(String) -> M) -> Element<'a, M> {
+pub fn waiting<'a, M: Clone + 'a>(data: &'a dyn Seen, on_open: M, on_edit: fn(String) -> M) -> Element<'a, M> {
     let login = login_url(data);
     let mut body = column![
         typo::text(
@@ -182,6 +182,7 @@ pub fn waiting<'a, M: Clone + 'a>(data: &'a Data, on_open: M, on_edit: fn(String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Data;
 
     fn nextcloud(id: &str, last_sync: Option<DateTime<Utc>>, problem: Option<&str>) -> AccountInfo {
         AccountInfo {

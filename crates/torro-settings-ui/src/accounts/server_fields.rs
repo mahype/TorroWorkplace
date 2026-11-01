@@ -12,7 +12,8 @@ use torro_gui::theme::space;
 use torro_gui::widgets;
 use torro_mail::{Endpoint, Security};
 
-use super::{row_frame, setting_row, wizard};
+use super::wizard;
+use crate::parts::{row_frame, setting_row};
 
 /// The two mail servers of an account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

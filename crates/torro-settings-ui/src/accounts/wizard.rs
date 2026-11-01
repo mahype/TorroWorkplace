@@ -12,7 +12,7 @@
 //!    no page shows it any more.
 //! 2. Nextcloud: **Server** – the address; Enter or "Continue" sends
 //!    `Request::ConnectNextcloud { server }`. Then **Sign in**: "Nextcloud handles the sign-in.
-//!    …" The browser opens (the core does that); the login URL from `data.accounts`
+//!    …" The browser opens (the core does that); the login URL from `data.accounts()`
 //!    (`AccountState::SigningIn`, the entry with an empty id) is a fallback link to copy.
 //! 3. GitHub: **two ways** – "Use GitHub CLI sign-in" sends `Request::ConnectGithub` (pressing it
 //!    is the one confirmation; the core runs `gh auth token`, never this window), "Paste a token"
@@ -46,7 +46,7 @@
 //!    back to the step it was sent from, in the footer.
 //! 6. ntfy (task E5.14): **Server** – the address, empty for `ntfy.sh`; **Topics** – a row per
 //!    topic with its name and the label the inbox shows ("Add topic", at most
-//!    [`crate::account::ntfy::TOPICS_MAX`]); "Connect" sends `Request::ConnectNtfy` and waits in
+//!    [`torro_ntfy::TOPICS_MAX`]); "Connect" sends `Request::ConnectNtfy` and waits in
 //!    **Checking**. When the server wants a login (the core's `auth` sentence) the dialog goes on to
 //!    **Login** – a user name and password, or an access token, the secret a [`Secret`] taken when
 //!    sent – and sends `Request::SetNtfyLogin`. Topic names work like passwords on public servers,
@@ -99,13 +99,14 @@ use torro_ipc::{AiServer, Request, Response, TopicName, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
 use torro_ntfy::{NtfyError, Topic};
 
-use crate::account::ntfy::{LABEL_MAX, NtfyAccountError, TOPICS_MAX};
+use torro_ntfy::{LABEL_MAX, TOPICS_MAX};
 
-use super::accounts::on_axis;
 use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
+use super::on_axis;
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
-use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
+use super::{Action, Seen};
+use crate::parts::{chevron, one_line, pressable, row_frame, setting_row};
 
 /// The step the dialog is on. Each step has its own subtitle and footer button.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -350,7 +351,7 @@ impl NtfyLogin {
 /// What is wrong with a topic name as typed (trimmed), in the core's sentence so both say the
 /// same; `None` for a name `torro_ntfy` takes.
 pub(super) fn topic_problem(name: &str) -> Option<String> {
-    Topic::parse(name.trim()).err().map(|err| NtfyAccountError::Ntfy(err).message())
+    Topic::parse(name.trim()).err().map(|err| err.message())
 }
 
 /// What is wrong with a label as typed: blank, longer than [`LABEL_MAX`] characters or more than
@@ -367,7 +368,7 @@ pub(super) fn label_problem(label: &str) -> Option<String> {
 /// The core's answer when the topics need a login (`auth` of `accounts.connect_ntfy`). Compared
 /// with the message because the shell passes on messages, not codes; both run in the same language.
 fn login_needed(message: &str) -> bool {
-    message == NtfyAccountError::Ntfy(NtfyError::Auth).message()
+    message == NtfyError::Auth.message()
 }
 
 /// The AI provider path (task KI.1a): the servers found on this computer, what was typed, and the
@@ -666,7 +667,7 @@ impl State {
     /// "Add" on the accounts page and the steps of the setup open it. Returns the request that step
     /// sends as it opens – `Request::FindAiServers` for the AI providers, else `Action::None`. The
     /// same as pressing `provider` on the catalog, so every rule of the provider's path holds.
-    pub fn at(provider: Provider, data: &Data) -> (State, Action) {
+    pub fn at(provider: Provider, data: &dyn Seen) -> (State, Action) {
         let mut state = State::new();
         let action = update(&mut state, Message::ChooseProvider(provider), data);
         state.origin = state.step;
@@ -773,7 +774,7 @@ pub enum Message {
 /// Call it on every reload of `data` while the dialog is open; only the sign-in step reacts.
 /// While waiting it also copies the shell's error (for example "daemon not running") into the
 /// footer.
-pub fn observe(state: &mut State, data: &Data) {
+pub fn observe(state: &mut State, data: &dyn Seen) {
     if state.step != Step::SigningIn || !state.nextcloud.running() {
         return;
     }
@@ -787,7 +788,7 @@ pub fn observe(state: &mut State, data: &Data) {
             state.error = Some(tr("Signing in did not finish. Try again.").to_string());
         }
         // While waiting the footer shows the shell's error (for example "daemon not running").
-        None => state.error = data.error.clone(),
+        None => state.error = data.error().map(str::to_string),
     }
 }
 
@@ -1068,7 +1069,7 @@ fn fill_from_torromail(state: &mut State, account: &TorroMailAccount) {
     go(state, Step::MailPassword);
 }
 
-pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
+pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
     // Every message first looks at the latest data, so a finished sign-in is noticed at once.
     observe(state, data);
     match message {
@@ -1445,7 +1446,7 @@ fn connect_request(mail: &mut Mail) -> Option<Request> {
     })
 }
 
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+pub fn view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
     // Opened by "Import from TorroMail…", the dialog is an import all the way, also on the mail
     // path behind "Enter password".
     let title = if state.origin == Step::TorroMail { tr("Import from TorroMail") } else { tr("Add account") };
@@ -1702,7 +1703,7 @@ fn token_step(state: &State) -> Element<'_, Message> {
 }
 
 /// The explanation, the waiting line, the login link to copy and a button to open it again.
-fn signing_in_step(data: &Data) -> Element<'_, Message> {
+fn signing_in_step(data: &dyn Seen) -> Element<'_, Message> {
     nextcloud::waiting(data, Message::OpenLoginPage, |_| Message::LoginLinkEdited)
 }
 
@@ -2550,11 +2551,11 @@ impl Demo {
 }
 
 /// The messages that lead to `demo` the way a person would get there, once the dialog is open where
-/// [`Demo::start`] says. The demo's answers to the requests come from `launch::demo_answer`; the
+/// [`Demo::start`] says. The demo's answers to the requests come from `super::demo::answer`; the
 /// passwords "wrong" (IMAP) and "wrong-smtp" are the ones it refuses, and an IMAP host on `.lan` or
 /// `.example` shows a certificate it does not trust until one is trusted.
 pub fn demo_messages(demo: Demo) -> Vec<Message> {
-    // TorroMail's accounts are on its step once the dialog is open (`launch::demo_torromail`).
+    // TorroMail's accounts are on its step once the dialog is open (`super::demo::torromail`).
     match demo {
         Demo::TorroMail => return Vec::new(),
         Demo::TorroMailFailed => return vec![Message::UseTorroMail("tm-fastmail".into())],
@@ -2568,7 +2569,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     if let Some(steps) = ntfy_demo(demo) {
         return steps;
     }
-    // The AI providers search this computer when they open (`launch::demo_answer` finds Ollama).
+    // The AI providers search this computer when they open (`super::demo::answer` finds Ollama).
     let openrouter = Message::ChooseAi(AiProvider::OpenRouter);
     match demo {
         Demo::AiProviders => return Vec::new(),
@@ -2637,7 +2638,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     steps
 }
 
-/// The script of an ntfy demo state; `None` for the other paths. `launch::demo_answer` refuses the
+/// The script of an ntfy demo state; `None` for the other paths. `super::demo::answer` refuses the
 /// topics of `push.example.org` without a login and takes any login but the password "wrong".
 fn ntfy_demo(demo: Demo) -> Option<Vec<Message>> {
     let topic = |at, name: &str, label: &str| {
@@ -2677,6 +2678,7 @@ mod tests {
     use torro_pim::AccountState;
 
     use super::*;
+    use crate::Data;
 
     /// Issue #323: Jev's row in the AI step says where it is and that it only sorts mail; the others
     /// keep theirs.
@@ -3074,7 +3076,7 @@ mod tests {
         let mut sent = Vec::new();
         for message in messages {
             if let Action::Send(request) = update(state, message, &data) {
-                if let Some(response) = super::super::launch::demo_answer(&request, &data_with_caldav()) {
+                if let Some(response) = super::super::demo::demo_answer(&request, &data_with_caldav()) {
                     answered(state, &Ok(response));
                 }
                 sent.push(request);
@@ -3085,7 +3087,7 @@ mod tests {
 
     /// The demo's data, which holds the CalDAV account its `ConnectCalDav` answer is built from.
     fn data_with_caldav() -> Data {
-        super::super::launch::demo_data()
+        super::super::demo::demo_data()
     }
 
     /// The dialog opened where `demo` starts ([`Demo::start`]), the way the accounts page opens it,
@@ -3096,7 +3098,7 @@ mod tests {
             Start::TorroMail => State::torromail(),
         };
         if let Action::Send(request) = action
-            && let Some(answer) = super::super::launch::demo_answer(&request, data)
+            && let Some(answer) = super::super::demo::demo_answer(&request, data)
         {
             answered(&mut state, &Ok(answer));
         }
@@ -3447,7 +3449,7 @@ mod tests {
         assert_eq!(state.step, Step::MailConnecting);
         // Task M11.4: the copy is held only until the answer, which is no question here.
         let Action::Send(request) = action else { panic!("expected a request") };
-        let answer = super::super::launch::demo_answer(&request, &data_with_caldav()).expect("the demo answers");
+        let answer = super::super::demo::demo_answer(&request, &data_with_caldav()).expect("the demo answers");
         assert!(answered(&mut state, &Ok(answer)));
         assert_eq!(state.step, Step::Done);
         assert!(state.mail.password.is_blank(), "the dialog keeps no copy");
@@ -3626,7 +3628,7 @@ mod tests {
             assert_eq!(state.step, Step::MailCertificate, "{demo:?}");
             let asked = state.mail.certificates.asking().expect("asked");
             assert_eq!(asked.public, public, "{demo:?}");
-            assert_eq!(asked.sha256, super::super::launch::DEMO_FINGERPRINT);
+            assert_eq!(asked.sha256, super::super::demo::DEMO_FINGERPRINT);
         }
     }
 
@@ -4008,7 +4010,7 @@ mod tests {
 
     #[test]
     fn the_ai_demos_lead_where_they_say() {
-        let data = super::super::launch::demo_data();
+        let data = super::super::demo::demo_data();
         for (demo, step) in [
             (Demo::AiProviders, Step::AiChoose),
             (Demo::AiOpenRouter, Step::AiKey),
@@ -4020,7 +4022,7 @@ mod tests {
             let mut state = opened(demo, &data);
             for message in demo_messages(demo) {
                 if let Action::Send(request) = update(&mut state, message, &data) {
-                    let answer = super::super::launch::demo_answer(&request, &data).expect("the demo answers");
+                    let answer = super::super::demo::demo_answer(&request, &data).expect("the demo answers");
                     answered(&mut state, &Ok(answer));
                 }
             }
@@ -4051,7 +4053,7 @@ mod tests {
 
     /// The core's answer when the topics need a login.
     fn needs_login() -> Result<Response, String> {
-        Err(NtfyAccountError::Ntfy(NtfyError::Auth).message())
+        Err(NtfyError::Auth.message())
     }
 
     fn ntfy_account() -> AccountInfo {
@@ -4156,7 +4158,7 @@ mod tests {
     fn another_refusal_goes_back_to_the_topics_with_the_core_message() {
         let mut state = at_ntfy_topics("example.org", &[("backups-7f3a", "Backups")]);
         send(&mut state, Message::Continue);
-        let wrong = NtfyAccountError::Ntfy(NtfyError::InvalidServer).message();
+        let wrong = NtfyError::InvalidServer.message();
         assert!(answered(&mut state, &Err(wrong.clone())));
         assert_eq!((state.step, state.error.clone()), (Step::NtfyTopics, Some(wrong)));
         send(&mut state, Message::Back);
@@ -4167,7 +4169,7 @@ mod tests {
 
     #[test]
     fn the_ntfy_demos_lead_where_they_say() {
-        let data = super::super::launch::demo_data();
+        let data = super::super::demo::demo_data();
         for (demo, step) in [
             (Demo::NtfyServer, Step::NtfyServer),
             (Demo::NtfyTopics, Step::NtfyTopics),
@@ -4179,7 +4181,7 @@ mod tests {
             let mut state = opened(demo, &data);
             for message in demo_messages(demo) {
                 if let Action::Send(request) = update(&mut state, message, &data) {
-                    let answer = super::super::launch::demo_answer(&request, &data).expect("the demo answers");
+                    let answer = super::super::demo::demo_answer(&request, &data).expect("the demo answers");
                     answered(&mut state, &Ok(answer));
                 }
             }

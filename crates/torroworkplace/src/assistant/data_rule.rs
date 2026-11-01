@@ -53,7 +53,6 @@
 //! `tasks.list_todos` shows it to every model; tasks are the person's own data from then on.
 
 use serde_json::{Value, json};
-use torro_core::ai::AiModel;
 pub use torro_core::ai::{Place, place_of};
 use torro_inbox::{Item, Rule, SourceKind};
 use torro_ipc::api::Area;

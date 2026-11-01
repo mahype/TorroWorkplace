@@ -49,6 +49,7 @@
 //! its own socket connection, or [`demo::Demo`], which answers sample data from memory and never
 //! opens a socket. Nothing in this library knows the socket (a test watches over that).
 
+pub mod accounts;
 pub mod assistant;
 pub mod calendar;
 pub mod collections;

@@ -14,8 +14,9 @@ use torro_gui::theme::{self, space};
 use torro_gui::{style, typo, widgets};
 use torro_ipc::{Request, Response};
 
+use super::super::Action;
 use super::super::wizard::field;
-use super::super::{Action, chevron, pressable, setting_row};
+use crate::parts::{chevron, pressable, setting_row};
 
 /// GitHub's page for a new classic token, with the scope the suite needs (`repo`: private
 /// repositories, closing issues) and a name already filled in.

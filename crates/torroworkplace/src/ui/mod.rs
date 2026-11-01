@@ -55,7 +55,6 @@ mod accounts;
 mod agent_wizard;
 mod api;
 mod approvals;
-mod connect;
 // MCP servers (task MA.7): the built-in tools, the catalog of MCP servers and one's own.
 mod connections;
 mod general;
@@ -63,11 +62,9 @@ mod glance;
 mod launch;
 mod mcp;
 mod overview;
-mod server_fields;
 mod setup;
 // The dialog of a workspace template (task WS.6): over the window and as a window of its own.
 mod template_form;
-mod wizard;
 mod workspaces;
 
 use std::time::{Duration, Instant};
@@ -96,6 +93,9 @@ use torro_pim::Collection;
 use torro_setups::TemplateSummary;
 
 pub use launch::{ClientTarget, Launch, Open};
+// The add-account dialog and the sign-ins live with the account pages in the settings library
+// (issue #410); the setup uses them too.
+use accounts::{connect, wizard};
 
 /// The sections in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -633,7 +633,7 @@ impl Ui {
         // on MCP reads the hook notes; with a service the first load does (it waits for the core).
         let import = match demo && ui.section == Section::Accounts && accounts::unlisted(&ui.accounts) {
             true => {
-                let ask = accounts::opened(&mut ui.accounts);
+                let ask = accounts::act(accounts::opened(&mut ui.accounts));
                 ui.perform(ask)
             }
             false => Task::none(),
@@ -645,7 +645,7 @@ impl Ui {
         // The demo's start on AI asks for the suggestion and the models as choosing it does (task MW.8).
         let slots = match demo && ui.section == Section::Ai {
             true => {
-                let ask = accounts::ai_shown(&mut ui.accounts, &ui.data);
+                let ask = accounts::act(accounts::ai_shown(&mut ui.accounts, &ui.data));
                 ui.perform(ask)
             }
             false => Task::none(),
@@ -742,7 +742,7 @@ impl Ui {
             }
             // Ollama on this computer, the chat's "Use suggestion" pressed: its download runs (task MW.8).
             Open::AiModels => {
-                launch::demo_ollama(&mut self.data);
+                self.data.accounts.push(accounts::demo::demo_ollama_account());
                 vec![
                     Message::Select(Section::Ai),
                     Message::Accounts(accounts::Message::UseSuggestion(torro_core::ai::AiSlot::Chat)),
@@ -751,8 +751,8 @@ impl Ui {
             // nimble is off in the demo: switched on at Ollama's page, as a person would, so the menu has a
             // decision model to put first.
             Open::SortingMenu => {
-                launch::demo_ollama(&mut self.data);
-                let ollama = launch::DEMO_OLLAMA.to_string();
+                self.data.accounts.push(accounts::demo::demo_ollama_account());
+                let ollama = accounts::demo::DEMO_OLLAMA.to_string();
                 vec![
                     Message::Select(Section::Ai),
                     Message::Accounts(accounts::Message::Open(ollama)),
@@ -1176,9 +1176,9 @@ impl Ui {
                     // The parts may have changed in their folders since the page was last open.
                     Section::Appearance => Action::ListLooks,
                     // Whether TorroMail has an account to import (task S.30).
-                    Section::Accounts => accounts::opened(&mut self.accounts),
+                    Section::Accounts => accounts::act(accounts::opened(&mut self.accounts)),
                     // The suggestion, the downloads and the models for the slots (task MW.8).
-                    Section::Ai => accounts::ai_shown(&mut self.accounts, &self.data),
+                    Section::Ai => accounts::act(accounts::ai_shown(&mut self.accounts, &self.data)),
                     // Which agent each hook client reports for (task S.35).
                     Section::Mcp => mcp::opened(),
                     // The catalog is asked for only while the section is open (task MA.8).
@@ -1286,7 +1286,7 @@ impl Ui {
                 let ready = self.data.error.is_none();
                 let import = match unlisted && self.section == Section::Accounts && ready {
                     true => {
-                        let ask = accounts::opened(&mut self.accounts);
+                        let ask = accounts::act(accounts::opened(&mut self.accounts));
                         self.perform(ask)
                     }
                     false => Task::none(),
@@ -1299,7 +1299,7 @@ impl Ui {
                 // the models of an AI account that came with this reload (task MW.8).
                 let slots = match self.section == Section::Ai && ready {
                     true => {
-                        let ask = accounts::ai_shown(&mut self.accounts, &self.data);
+                        let ask = accounts::act(accounts::ai_shown(&mut self.accounts, &self.data));
                         self.perform(ask)
                     }
                     false => Task::none(),
@@ -1357,7 +1357,7 @@ impl Ui {
             // Only the group "Models" gets these: it shows a refusal under its slot itself.
             Message::AiAnswered(asked, result) => {
                 let reload = if asked.changes() { self.reload() } else { Task::none() };
-                let next = accounts::ai_answered(&mut self.accounts, asked, &result);
+                let next = accounts::act(accounts::ai_answered(&mut self.accounts, asked, &result));
                 return Task::batch([self.perform(next), reload]);
             }
             Message::Catalog(catalog) => {
@@ -1446,7 +1446,7 @@ impl Ui {
                 if ai { Action::Select(Section::Ai) } else { Action::Select(Section::Accounts) }
             }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
-            Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
+            Message::Accounts(m) => accounts::act(accounts::update(&mut self.accounts, m, &self.data)),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
             Message::Api(m) => api::update(&mut self.api, m, &self.data),
             Message::Mcp(m) => mcp::update(&mut self.mcp, m, &self.data),
@@ -1492,7 +1492,7 @@ impl Ui {
             // is chosen by the "Add" of its group (task S.30), so it opens the accounts' list.
             Switcher::New => {
                 self.select(Section::Accounts);
-                accounts::opened(&mut self.accounts)
+                accounts::act(accounts::opened(&mut self.accounts))
             }
         }
     }
@@ -1509,7 +1509,7 @@ impl Ui {
                 effort: *effort,
             });
             if *slot == torro_core::ai::AiSlot::Decide {
-                let elsewhere = chosen.as_ref().is_some_and(|chosen| !launch::demo_is_local(&chosen.engine));
+                let elsewhere = chosen.as_ref().is_some_and(|chosen| !accounts::demo::demo_is_local(&chosen.engine));
                 self.data.settings.decide_mail_to_cloud = Some(elsewhere);
             }
             match slot {
@@ -3352,7 +3352,8 @@ mod tests {
         let using = models.accounts.slots.using.as_ref().expect("the chat's suggestion is in use");
         assert_eq!(using.step, accounts::UseStep::Pull(Some("p1".into())));
         assert!(
-            models.accounts.slots.recommendation.is_some() && models.accounts.models.contains_key(launch::DEMO_OLLAMA)
+            models.accounts.slots.recommendation.is_some()
+                && models.accounts.models.contains_key(accounts::demo::DEMO_OLLAMA)
         );
         // Issue #421: the menu of Sorting open, with nimble switched on at Ollama as a decision model.
         let sorting = started(&["--demo", "--open", "sorting-menu"]);
