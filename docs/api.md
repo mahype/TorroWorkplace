@@ -715,7 +715,9 @@ Eintrags, nie Titel, Text oder Merkmalswerte.
 ¹⁸ **ntfy-Konten** (E5.12, [tasks/eingang.md › E5.12](tasks/eingang.md#e512-ntfy-konto-gerüst-requests-katalog)):
 `connect_ntfy` prüft Server (`/v1/health`) und Themen ohne Anmeldung und legt das Konto `ntfy:<host>` an
 (`auth`, wenn ein Thema eine Anmeldung braucht, `conflict` bei einem zweiten Konto desselben Servers); ein
-Client-Schlüssel öffnet wie bei `connect_github` nur die Steuerzentrale und bekommt `opened`. `set_ntfy_login`
+Client-Schlüssel öffnet wie bei `connect_github` nur die Steuerzentrale und bekommt `opened`; ohne
+Hauptanwendung die Einstellungen des Notification Hub bei Accounts, sonst des App Feed (bei `connect_github`: Aufgaben,
+sonst Notification Hub, #410), und ist keine davon installiert, wie bisher die Steuerzentrale. `set_ntfy_login`
 (Benutzer und Passwort oder Token `tk_…`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`, Punkt 5); die Anmeldung
 geht nur über `https` oder an diesen Rechner, sonst `error`, und liegt nur im Schlüsselbund. `set_ntfy_topic`
 abonniert, benennt um oder bestellt ab; die Freigabe nennt Server und Etikett. Themen-Namen sind auf öffentlichen
