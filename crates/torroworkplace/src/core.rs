@@ -25063,6 +25063,42 @@ mod tests {
         );
     }
 
+    /// Review of #430: Jev is a model elsewhere, so only people choose it for sorting mail – an agent
+    /// with every right is refused it as the slot Sorting and as the exception, also while the
+    /// permission is on, before anything is approved.
+    #[tokio::test]
+    async fn only_people_choose_jev_for_sorting_mail() {
+        use torro_core::ai::AiSlot;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let _mocks = crate::account::ai::tests::mock_jev(&jev).await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let key = torro_core::account::Secret::new(crate::account::ai::tests::KEY);
+        let engine = core.ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), key).await.expect("jev").id;
+        assert_eq!(core.handle(switch(&engine, torro_core::ai::JEV_MODEL, true)).await, Response::Ok);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, agent) = client(&core, rights).await;
+        let refused = |command: &'static str| Refused::Lacks { command, lack: Lack::ForPeople };
+        let from_agent = |request: Request| {
+            let door = door_for(&core, Some(&agent));
+            let (core, agent) = (&core, &agent);
+            async move { Box::pin(core.handle_from(Some(agent), door, request)).await }
+        };
+        let slot = set_slot(AiSlot::Decide, Some(&engine), Some(torro_core::ai::JEV_MODEL));
+        let exception = set_sorting(Some(&engine), Some(torro_core::ai::JEV_MODEL), true);
+        for permission in [false, true] {
+            let set = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(permission) };
+            assert_eq!(core.handle(set).await, Response::Ok);
+            assert_eq!(from_agent(slot.clone()).await.err(), Some(refused("ai.set_slot")), "{permission}");
+            assert_eq!(from_agent(exception.clone()).await.err(), Some(refused("ai.set_assignment")), "{permission}");
+        }
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert!(core.settings.current().ai_slots.decide.is_none() && core.settings.current().ai_assignments.is_empty());
+    }
+
     /// Review of issue #325: a client that names a model for a sorting run gets one elsewhere only when
     /// it is what sorting uses now – before any approval and in the handler an approval runs on to –,
     /// since the permission of Sorting was given to that model, not to whichever an agent names. A
