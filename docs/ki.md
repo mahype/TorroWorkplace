@@ -205,6 +205,12 @@ Die Auswahl (`categorize::pick_model`) nimmt erst ein Entscheidermodell, dann ei
 - Das Chat-Modell gibt **keine Konfidenz**. Seine Kategorie gilt ohne Schwellwert und ohne Zahl; was es nicht
   sinnvoll beantwortet, wird `other`.
 - Der Text der Mail bleibt im Zaun `<message>` wie bisher; die Anweisungen stehen nur im System-Text.
+- **Entscheidermodelle zuerst** (#421): Wo ein Modell zum Sortieren gewählt wird (Steuerzentrale › AI, Platz
+  *Sorting*, und Mail-Fenster › Categorization), stehen die Entscheidermodelle oben unter „Decision models (fast)“,
+  die Chat-Modelle des Ersatzwegs darunter unter „Other models“; ein Satz sagt, dass Entscheidermodelle direkt
+  antworten und viel schneller einordnen. Ohne Entscheidermodell zeigt das Mail-Fenster an Stelle der ersten Gruppe
+  „No decision model“ mit dem Weg zu Einstellungen › AI, wo „Use suggestion“ eines zum Laden anbietet. Die API
+  braucht dafür nichts Neues: `ai.list_models` sagt mit `decision`, welches Modell direkt entscheidet.
 
 ## API und MCP
 

@@ -3452,6 +3452,45 @@ mod tests {
         let _ = categorization::view(&Default::default(), &data);
     }
 
+    /// Issue #421: the decision models come first, the models that sort through the fallback after
+    /// them, each part by account and name; without a decision model only the others are left, and
+    /// the page still builds with its row "No decision model".
+    #[test]
+    fn decision_models_are_offered_first() {
+        use torro_core::ai::AiModel;
+
+        let ollama = "ai:ollama@localhost:11434";
+        let strata = "ai:strata@localhost:8080";
+        let model = |engine: &str, id: &str, decision: Option<bool>, tools: Option<bool>| {
+            (engine.to_string(), AiModel { decision, tools, remote: Some(false), enabled: true, ..AiModel::named(id) })
+        };
+        let mut data = Data {
+            decider_models: vec![
+                model(strata, "qwen3:4b", Some(false), Some(true)),
+                model(ollama, "qwen3:8b", Some(false), Some(true)),
+                model(strata, "nimble", Some(true), Some(false)),
+                model(ollama, "nimble", Some(true), Some(false)),
+                model(ollama, "brisk", Some(true), Some(false)),
+            ],
+            ..Data::default()
+        };
+        let ids = |part: Vec<(String, AiModel)>| -> Vec<String> {
+            part.into_iter().map(|(engine, model)| format!("{engine} {}", model.id)).collect()
+        };
+        let (fast, other) = categorization::grouped(&data);
+        let fast_ids = [format!("{ollama} brisk"), format!("{ollama} nimble"), format!("{strata} nimble")];
+        assert_eq!(ids(fast), fast_ids);
+        assert_eq!(ids(other), [format!("{ollama} qwen3:8b"), format!("{strata} qwen3:4b")]);
+        data.settings.ai_slots.decide = Some(slot("qwen3:8b"));
+        let _ = categorization::view(&Default::default(), &data);
+
+        data.decider_models.retain(|(_, model)| model.decision != Some(true));
+        let (fast, other) = categorization::grouped(&data);
+        assert!(fast.is_empty());
+        assert_eq!(other.len(), 2);
+        let _ = categorization::view(&Default::default(), &data);
+    }
+
     /// Task MW.3: an exception with a model of its own is what sorts, and the page shows it as such.
     #[test]
     fn an_exception_with_its_own_model_sorts_instead_of_the_slot() {
@@ -3568,8 +3607,9 @@ mod tests {
 /// ```text
 /// Sort mail into categories   on/off
 /// Contacts                    "Mail from contacts is personal" on/off (issue #390)
-/// Model                       the models of the AI accounts that can sort: decision models, and
-///                             chat models that answer in a fixed format (task MW.3)
+/// Model                       the models of the AI accounts that can sort: "Decision models (fast)"
+///                             first, then "Other models", chat models that answer in a fixed
+///                             format (task MW.3, issue #421)
 /// Catch up                    how far the backlog has come, "Catch up now" / "Cancel"
 /// Show in the sidebar         one switch per category
 /// Rules ↗                     the kept senders, in the Notification Hub
@@ -3594,6 +3634,11 @@ mod tests {
 /// AI section are offered (task S.26). The assigned one turned off since stands on top of "Model"
 /// with "Turned off in Settings › AI" and an alert in the attention colour – the core sorts
 /// nothing then ([`assigned_off`]) –, and "Manage models…" ends the group, the way to turn it on.
+///
+/// **Decision models first** (issue #421, [`grouped`]): they answer directly and sort much faster
+/// than a chat model through the fallback, and the group's note says so. Without one, "No decision
+/// model" stands in place of their group and leads to Settings › AI, where "Use suggestion" offers one
+/// to download with its progress.
 pub mod categorization {
     use iced::Theme;
     use iced::widget::text::Wrapping;
@@ -3937,7 +3982,8 @@ pub mod categorization {
                 "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.",
             ),
         };
-        let note = format!("{cloud} {}", model_note(data));
+        let fast = tr("Decision models answer directly and sort mail much faster than chat models.");
+        let note = format!("{cloud} {fast} {}", model_note(data));
         let models = widgets::group(tr("2. Model sorting"), model_choices, Some(note));
         column![tabs, sorting_rules, contacts, models, job_group(state, data)].spacing(layout::section_gap()).into()
     }
@@ -4413,22 +4459,37 @@ pub mod categorization {
         }
     }
 
-    /// One row per model that may sort mail, the one in effect checked; picking one switches the
-    /// sorting on. A chat model says that it answers in a fixed format (the fallback, task MW.3), the
-    /// model of an exception that it is only for sorting mail. Without any, one row says so instead:
-    /// where to turn one on when there are models that can sort but none is on (task S.26), else where
-    /// to add one. The model in effect turned off since comes first ([`assigned_off`]), "Manage
-    /// models…" last.
-    fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
+    /// A model offered for sorting with its AI account (`ai:…`), as [`offered`] lists it.
+    pub(super) type Offered = (String, AiModel);
+
+    /// The models offered ([`offered`]) by how they sort (issue #421): the decision models, which
+    /// answer directly and much faster, then the others, which sort through the fallback; each part by
+    /// account name, then model name.
+    pub(super) fn grouped(data: &Data) -> (Vec<Offered>, Vec<Offered>) {
         let mut offered = offered(data);
         offered.sort_by(|(a_engine, a_model), (b_engine, b_model)| {
             account_label(data, a_engine)
                 .cmp(&account_label(data, b_engine))
                 .then_with(|| a_model.name.cmp(&b_model.name))
         });
+        offered.into_iter().partition(|(_, model)| model.decision == Some(true))
+    }
+
+    /// One row per model that may sort mail, the one in effect checked; picking one switches the
+    /// sorting on. Grouped by how they sort (issue #421): "Decision models (fast)" first, then "Other
+    /// models"; with more than one account the account stands before a model's name. A chat model
+    /// says that it answers in a fixed format (the fallback, task MW.3), the model of an exception that
+    /// it is only for sorting mail. Without a decision model a row in place of the first group says
+    /// that sorting runs slower and leads to Settings › AI, which suggests one to download. Without any
+    /// model, one row says so instead of both groups: where to turn one on when there are models that
+    /// can sort but none is on (task S.26), else where to add one. The model in effect turned off since
+    /// comes first ([`assigned_off`]), "Manage models…" last.
+    fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
+        let (fast, other) = grouped(data);
         let off = assigned_off(data);
         // Which account a model is from matters only where more than one offers models.
-        let mut engines: std::collections::BTreeSet<&str> = offered.iter().map(|(engine, _)| engine.as_str()).collect();
+        let mut engines: std::collections::BTreeSet<&str> =
+            fast.iter().chain(&other).map(|(engine, _)| engine.as_str()).collect();
         engines.extend(off.as_ref().map(|(engine, _)| engine.as_str()));
         let several = engines.len() > 1;
         let label = |engine: &str, name: &str| match several {
@@ -4437,41 +4498,67 @@ pub mod categorization {
         };
         let mut rows: Vec<Element<'a, Message>> =
             off.iter().map(|(engine, name)| off_row(label(engine, name))).collect();
-        if offered.is_empty() && off.is_none() {
-            let detail = match deciders(data).is_empty() {
-                true => tr("Add a local AI such as Ollama under AI and load a model that decides."),
-                false => tr("Turn on models in Settings › AI."),
-            };
-            let none = iced::widget::space().width(0);
-            rows.push(setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none));
-        }
-        let own = own_exception(data);
-        let mut last_provider = None;
-        for (engine, model) in offered {
-            if several && last_provider.as_deref() != Some(engine.as_str()) {
-                rows.push(row_frame(typo::text(typo::body_strong(), account_label(data, &engine)), false));
-                last_provider = Some(engine.clone());
+        let arrow = || {
+            icon::icon(Icon::ArrowUpRight, icon::SIZE)
+                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+        };
+        let heading = |title: &str| row_frame(typo::text(typo::body_strong(), title.to_owned()), false);
+        if fast.is_empty() && other.is_empty() {
+            if off.is_none() {
+                let detail = match deciders(data).is_empty() {
+                    true => tr("Add a local AI such as Ollama under AI and load a model that decides."),
+                    false => tr("Turn on models in Settings › AI."),
+                };
+                let none = iced::widget::space().width(0);
+                rows.push(setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none));
             }
-            let is = |held: &AiAssignment| {
-                held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
+        } else {
+            let own = own_exception(data);
+            let choice = |(engine, model): (String, AiModel)| {
+                let is = |held: &AiAssignment| {
+                    held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
+                };
+                let chosen = held.is_ready() && is(held);
+                let notes: Vec<&str> = [
+                    own.as_ref().filter(|own| is(own)).map(|_| tr("Only for sorting mail")),
+                    model.decides_by_chat().then(|| tr("Answers in a fixed format, slower")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let detail = (!notes.is_empty()).then(|| notes.join(" · "));
+                model_choice(label(&engine, &model.name), detail, chosen, Message::Model(engine, model.id))
             };
-            let chosen = held.is_ready() && is(held);
-            let notes: Vec<&str> = [
-                own.as_ref().filter(|own| is(own)).map(|_| tr("Only for sorting mail")),
-                model.decides_by_chat().then(|| tr("Answers in a fixed format, slower")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            let detail = (!notes.is_empty()).then(|| notes.join(" · "));
-            // Under a provider's heading the provider is not repeated in the name.
-            let name = if several { model.name.clone() } else { label(&engine, &model.name) };
-            rows.push(model_choice(name, detail, chosen, Message::Model(engine, model.id)));
+            if fast.is_empty() {
+                // In place of the group: loading one lives in Settings › AI with its progress, where "Use
+                // suggestion" offers one (and turns on one already loaded). The detail wraps instead of being
+                // cut: it says where to get one and must be read whole.
+                let detail = tr("Sorting runs slower with a chat model. Settings › AI suggests one to download.");
+                let lines = column![
+                    typo::text(typo::body(), tr("No decision model")).style(theme::text),
+                    typo::text(typo::meta(), detail).style(theme::text_2).width(iced::Fill),
+                ];
+                let none = iced::widget::row![lines.width(iced::Fill), arrow()]
+                    .spacing(torro_gui::theme::space::l())
+                    .align_y(iced::Alignment::Center);
+                // As high as a row with a detail line while the hint fits on one line, taller when it wraps.
+                let tall = torro_gui::theme::size::header() + torro_gui::theme::space::m();
+                let air = (tall - typo::line_height(typo::body()) - typo::line_height(typo::meta())) / 2.0;
+                let none = iced::widget::container(none)
+                    .width(iced::Fill)
+                    .padding([air.max(0.0), torro_gui::theme::space::l()]);
+                rows.push(pressable(none.into(), Some(Message::ManageModels)));
+            } else {
+                rows.push(heading(tr("Decision models (fast)")));
+                rows.extend(fast.into_iter().map(choice));
+            }
+            if !other.is_empty() {
+                rows.push(heading(tr("Other models")));
+                rows.extend(other.into_iter().map(choice));
+            }
         }
         // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
-        let arrow = icon::icon(Icon::ArrowUpRight, icon::SIZE)
-            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-        rows.push(pressable(setting_row(None, tr("Manage models…"), None, arrow), Some(Message::ManageModels)));
+        rows.push(pressable(setting_row(None, tr("Manage models…"), None, arrow()), Some(Message::ManageModels)));
         rows
     }
 

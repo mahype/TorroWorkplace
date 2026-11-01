@@ -73,6 +73,10 @@ pub enum Open {
     /// ([`demo_ollama`]): the suggestion for *Chat* downloading (its "Use suggestion" pressed, waiting
     /// for the download that runs), the one for *Sorting* ready, and *Sorting* in the cloud.
     AiModels,
+    /// The AI section with Ollama on this computer ([`demo_ollama`]), its decision model nimble
+    /// switched on there, and the menu of *Sorting* open (issue #421): "None", "Decision models
+    /// (fast)" and "Other models".
+    SortingMenu,
     /// The detail page of the demo's ntfy account (task E5.14): its topics and its login.
     NtfyDetail,
     /// The ntfy account's page with the dialog of its first topic (rename, unsubscribe).
@@ -213,7 +217,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 108] = [
+    pub const ALL: [(&'static str, Open); 109] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -252,6 +256,7 @@ impl Open {
         ("scopes-detail", Open::GithubDetail),
         ("account-detail-ai", Open::AiDetail),
         ("ai-models", Open::AiModels),
+        ("sorting-menu", Open::SortingMenu),
         ("ntfy-detail", Open::NtfyDetail),
         ("ntfy-topic", Open::NtfyTopic),
         ("ntfy-login", Open::NtfyLogin),

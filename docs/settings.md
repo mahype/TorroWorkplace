@@ -326,7 +326,12 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   `decide` mit `engine`, `model` und `effort`; gesetzt wird sie mit `ai.set_slot`. Jede Zeile zeigt das gewählte
   Modell und darunter den Vorschlag der Suite für diesen Rechner mit „Use suggestion“ (`ai.recommend`, Herunterladen
   in Ollama mit Fortschritt und „Cancel“). Leer heißt der Platz *Chat* „The one used last“ wie in Assistant › General
-  (der Assistent nimmt dann das zuletzt benutzte Modell), *Sorting* „None“. Ist schmaler als ein Formular, steht das
+  (der Assistent nimmt dann das zuletzt benutzte Modell), *Sorting* „None“. *Chat* wählt in einer Auswahlliste,
+  *Sorting* in einem Knopf mit Menü in Abschnitten (#421), weil die Liste keine Überschriften zeigen kann: oben ohne
+  Titel „None“ und ein gewähltes Modell, das die Listen nicht führen, dann „Decision models (fast)“, dann „Other
+  models“ (Chat-Modelle über den Ersatzweg); ein leerer Abschnitt entfällt, Escape oder ein Klick daneben schließt
+  es. Der Satz unter der Gruppe sagt, dass Entscheidungsmodelle direkt antworten und viel schneller einordnen als
+  Chat-Modelle. Ist schmaler als ein Formular, steht das
   Bedienelement jeder Zeile unter ihrem Text, damit nichts abgeschnitten wird. Ein Modell für Sorting nimmt vorher eine gespeicherte Ausnahme
   `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`, wie Einstellungen › Categorization), damit der
   Platz sortiert. Die Mail-Erlaubnisse stehen unter „Data rule“: `mailToCloud` („Chat may

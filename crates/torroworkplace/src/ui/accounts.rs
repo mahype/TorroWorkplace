@@ -18,7 +18,9 @@
 //! **The two slots (issue #325, task MW.8).** Above the data rule the AI section has the group
 //! "Models" ([`slots_group`]): the computer as measured, then *Chat* and *Sorting*, each with the
 //! model chosen as a pick list of the models turned on that serve the slot ("None" empties it,
-//! `ai.set_slot`), and under it what Torro suggests (`ai.recommend`) with "Use suggestion". That button
+//! `ai.set_slot`) – *Sorting* as a button with a menu in sections instead (issue #421,
+//! [`sorting_menu`]): the decision models first under "Decision models (fast)", then "Other models",
+//! which sort through a slower chat round; the group's footer says why –, and under it what Torro suggests (`ai.recommend`) with "Use suggestion". That button
 //! runs a chain ([`Using`]): a local model the account does not list yet is downloaded first
 //! (`ai.pull_model`, then `ai.list_pulls` every second while it runs, "Cancel" with `ai.cancel_pull`),
 //! then the account's models are read again (`ai.list_models`), the model turned on if it is off
@@ -123,7 +125,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, SidebarMode};
 use torro_gui::theme::{self, Palette, palette, size, space};
-use torro_gui::widgets::{self, Mark, Status, Trail};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Status, Trail};
 use torro_gui::{style, typo};
 use torro_inbox::item::SourceHealth;
 use torro_inbox::{SourceKind, SourceRef};
@@ -181,6 +183,10 @@ pub struct State {
     /// The group "Models" of the AI section (issue #325, task MW.8): the suggestion, the downloads and
     /// what "Use suggestion" or a slot's list is doing.
     pub slots: SlotsPage,
+    /// The menu of *Sorting* is open (issue #421): its models in sections, decision models first.
+    pub sorting_menu: bool,
+    /// Where the button of *Sorting* is, for the menu that floats under it.
+    sorting_anchor: Anchor,
 }
 
 /// The state of the group "Models" in the AI section (task MW.8) beside the models themselves
@@ -581,8 +587,13 @@ pub enum Message {
     /// "Show closed models" of OpenRouter, on or off.
     ShowClosed(bool),
     /// A model chosen in a slot's list (task MW.8), or "None": `ai.set_slot`. Ignored while another
-    /// choice or suggestion is under way, and for what the slot has already.
+    /// choice or suggestion is under way, and for what the slot has already. Closes the menu of
+    /// *Sorting*.
     PickSlot(AiSlot, SlotChoice),
+    /// The button of *Sorting* (issue #421): opens its menu, or closes it when it is open.
+    ToggleSortingMenu,
+    /// A click next to the menu of *Sorting*, or Escape.
+    CloseSortingMenu,
     /// "Use suggestion" of a slot: the chain of [`Using`] for the suggestion of `ai.recommend`.
     UseSuggestion(AiSlot),
     /// "Cancel" of a download shown under a slot, by the download's id: `ai.cancel_pull`.
@@ -619,7 +630,7 @@ impl fmt::Display for SlotChoice {
 }
 
 /// What Escape means on this page right now: close the add-account dialog, the password or server
-/// dialog or the remove confirmation.
+/// dialog or the remove confirmation, else the menu of *Sorting*.
 pub fn escape(state: &State) -> Option<Message> {
     if state.wizard.is_some() {
         Some(Message::Wizard(wizard::Message::Close))
@@ -633,6 +644,8 @@ pub fn escape(state: &State) -> Option<Message> {
         Some(Message::CloseLogin)
     } else if state.confirm_remove {
         Some(Message::CancelRemove)
+    } else if state.sorting_menu {
+        Some(Message::CloseSortingMenu)
     } else {
         None
     }
@@ -658,6 +671,8 @@ pub fn leave(state: &mut State) {
     state.selected = None;
     state.models_page = ModelsPage::default();
     close_dialogs(state);
+    // Accounts and AI share the layer: a menu left open would float over the other section.
+    state.sorting_menu = false;
     // The section asks again when it opens; a chain under way and the downloads go on in the core.
     state.slots.asked = false;
     state.slots.asked_models.clear();
@@ -725,7 +740,18 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.models_page.show_closed = on;
             Action::None
         }
-        Message::PickSlot(slot, choice) => pick_slot(state, data, slot, choice),
+        Message::PickSlot(slot, choice) => {
+            state.sorting_menu = false;
+            pick_slot(state, data, slot, choice)
+        }
+        Message::ToggleSortingMenu => {
+            state.sorting_menu = !state.sorting_menu;
+            Action::None
+        }
+        Message::CloseSortingMenu => {
+            state.sorting_menu = false;
+            Action::None
+        }
         Message::UseSuggestion(slot) => use_suggestion(state, data, slot),
         Message::CancelPull(slot, id) => ask_ai(Asked::Cancel(slot, id.clone()), Request::CancelAiPull { id }),
         Message::PollPulls => poll_pulls(state),
@@ -1875,7 +1901,8 @@ fn entries(data: &Data) -> Vec<&AccountInfo> {
 }
 
 /// The page's dialog over the whole window: the add-account dialog, else the password dialog, else
-/// the server dialog, else the "Remove this account?" confirmation; `None` while none is open.
+/// the server dialog, else the "Remove this account?" confirmation, else the menu of *Sorting*
+/// ([`sorting_menu`]); `None` while none is open.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     if let Some(wizard) = &state.wizard {
         let content = wizard::view(wizard, data).map(Message::Wizard);
@@ -1898,7 +1925,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         return Some(login_dialog(change, view));
     }
     if !state.confirm_remove {
-        return None;
+        return state.sorting_menu.then(|| sorting_menu(state, data));
     }
     // With several accounts the dialog says which one goes.
     let account = selected(state, data)?;
@@ -2529,8 +2556,12 @@ fn slots_group<'a>(state: &'a State, data: &'a Data, stacked: bool) -> Option<El
             }
         }
     }
-    let footer = tr("Torro suggests a model for each slot. Nothing changes until you choose one.");
-    Some(widgets::group(tr("Models"), rows, Some(footer.to_string())))
+    let footer = format!(
+        "{} {}",
+        tr("Torro suggests a model for each slot. Nothing changes until you choose one."),
+        tr("Decision models answer directly and sort mail much faster than chat models.")
+    );
+    Some(widgets::group(tr("Models"), rows, Some(footer)))
 }
 
 /// A row of "Models": `mark` in front (or nothing), `label` over `detail`, and `control`. Beside each
@@ -2700,9 +2731,13 @@ fn slot_row<'a>(state: &'a State, data: &'a Data, slot: AiSlot, stacked: bool) -
     let (choices, chosen) = slot_choices(state, data, slot);
     let (detail, alert) = slot_detail(state, data, slot);
     let on_pick = move |choice: SlotChoice| Message::PickSlot(slot, choice);
-    let pick = match stacked {
-        true => picker_fill(choices, chosen, on_pick),
-        false => picker(choices, chosen, on_pick),
+    // A pick list shows no titles, so *Sorting* opens a menu in sections instead (issue #421).
+    let anchor = &state.sorting_anchor;
+    let pick = match (slot, stacked) {
+        (AiSlot::Decide, true) => widgets::select_button_fill(anchor, chosen.label, Message::ToggleSortingMenu),
+        (AiSlot::Decide, false) => widgets::select_button(anchor, chosen.label, Message::ToggleSortingMenu),
+        (AiSlot::Chat, true) => picker_fill(choices, chosen, on_pick),
+        (AiSlot::Chat, false) => picker(choices, chosen, on_pick),
     };
     models_row(None, slot.label(), Some(detail), alert, Some(pick), stacked)
 }
@@ -2764,6 +2799,98 @@ pub fn slot_choices(state: &State, data: &Data, slot: AiSlot) -> (Vec<SlotChoice
     let chosen = SlotChoice { engine: Some(stored.engine.clone()), model: stored.model.clone(), label: name };
     choices.insert(1, chosen.clone());
     (choices, chosen)
+}
+
+/// The choices of *Sorting* in the sections of its menu (issue #421): `first` "None" and a chosen
+/// model the lists do not hold, `fast` the decision models, `other` the models that sort through the
+/// fallback; each in the order of [`slot_choices`], `chosen` what the slot has.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortingSections {
+    pub first: Vec<SlotChoice>,
+    pub fast: Vec<SlotChoice>,
+    pub other: Vec<SlotChoice>,
+    pub chosen: SlotChoice,
+}
+
+/// The list of *Sorting* ([`slot_choices`]) split by what its account lists of each model: a decision
+/// model answers directly and sorts much faster than a chat model through the fallback.
+pub fn sorting_sections(state: &State, data: &Data) -> SortingSections {
+    let (choices, chosen) = slot_choices(state, data, AiSlot::Decide);
+    let mut sections = SortingSections { first: Vec::new(), fast: Vec::new(), other: Vec::new(), chosen };
+    for choice in choices {
+        let listed = match (&choice.engine, &choice.model) {
+            (Some(engine), Some(id)) => state
+                .models
+                .get(engine)
+                .into_iter()
+                .flatten()
+                .find(|model| same_model(&model.id, id) && serves(model, AiSlot::Decide)),
+            _ => None,
+        };
+        match listed {
+            Some(model) if model.decision == Some(true) => sections.fast.push(choice),
+            Some(_) => sections.other.push(choice),
+            None => sections.first.push(choice),
+        }
+    }
+    sections
+}
+
+/// The menu of *Sorting* under its button (issue #421): "None" and a chosen model the lists do not
+/// hold without a title, then "Decision models (fast)" and "Other models"; a section without models is
+/// left out. With several AI accounts the account stands as a word after a model's name. The slot's
+/// model carries the dot of the current choice. Higher than a panel, it scrolls.
+fn sorting_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let SortingSections { first, fast, other, chosen } = sorting_sections(state, data);
+    let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
+    let several = accounts.len() > 1;
+    let items = |choices: Vec<SlotChoice>| -> Vec<MenuItem<'a, Message>> {
+        choices
+            .into_iter()
+            .map(|choice| {
+                let current = choice == chosen;
+                // The account as a quiet word after the name ("Qwen3 235B A22B  OpenRouter"): the menu is
+                // narrower than the list was, and a name with a word behind it is cut with "…".
+                let account = choice
+                    .engine
+                    .as_deref()
+                    .filter(|_| several)
+                    .and_then(|engine| accounts.iter().find(|account| account.id == engine))
+                    .map(|account| account.label.clone());
+                // Only where the label names it after the model: an account that picks its model itself is
+                // named by the account alone.
+                let split = account.and_then(|account| {
+                    let name = choice.label.strip_suffix(format!(" · {account}").as_str())?.to_string();
+                    Some((name, account))
+                });
+                let (name, account) = match split {
+                    Some((name, account)) => (name, Some(account)),
+                    None => (choice.label.clone(), None),
+                };
+                let mut item = MenuItem::new(Icon::Check, name, Message::PickSlot(AiSlot::Decide, choice));
+                item.mark = None;
+                if let Some(account) = account {
+                    item = item.tag(account, false);
+                }
+                item.current(current)
+            })
+            .collect()
+    };
+    let mut sections = vec![MenuSection::new(items(first))];
+    if !fast.is_empty() {
+        sections.push(MenuSection::titled(tr("Decision models (fast)"), items(fast)));
+    }
+    if !other.is_empty() {
+        sections.push(MenuSection::titled(tr("Other models"), items(other)));
+    }
+    // Many models turned on (OpenRouter) would reach past the window: past a panel's height it scrolls,
+    // as the pick list it replaces did.
+    let menu = scrollable(widgets::menu(sections))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .height(iced::Length::Shrink);
+    let menu = container(menu).max_height(size::panel());
+    widgets::floating(&state.sorting_anchor, Placement::Below(Align::End), menu, Message::CloseSortingMenu)
 }
 
 /// A model turned on that can take `slot`.
@@ -5499,6 +5626,70 @@ mod tests {
         data.accounts.retain(|account| account.id != DEMO_OLLAMA);
         let (one, _) = slot_choices(&state, &data, AiSlot::Chat);
         assert!(one.iter().any(|choice| choice.label == "Qwen3 235B A22B"), "one account: no account name");
+    }
+
+    /// Issue #421: the menu of Sorting puts the decision models first and the models that sort through
+    /// the fallback after them, each in the order of the list; "None" and a chosen model the lists do
+    /// not hold stand above both without a title.
+    #[test]
+    fn the_sorting_menu_puts_decision_models_first() {
+        let (mut state, mut data) = shown(false);
+        let ids = |choices: &[SlotChoice]| -> Vec<String> {
+            choices.iter().filter_map(|choice| choice.model.clone()).collect()
+        };
+        let sections = sorting_sections(&state, &data);
+        assert!(sections.fast.is_empty(), "nimble is off at both accounts: {sections:?}");
+        assert_eq!(sections.first, [slot_choices(&state, &data, AiSlot::Decide).0[0].clone()], "only None");
+        assert!(sections.other.contains(&sections.chosen), "Qwen3 235B sorts through the fallback");
+        for model in state.models.values_mut().flatten().filter(|model| model.decision == Some(true)) {
+            model.enabled = true;
+        }
+        let all = slot_choices(&state, &data, AiSlot::Decide).0;
+        let sections = sorting_sections(&state, &data);
+        let mut fast = ids(&sections.fast);
+        fast.sort();
+        assert_eq!(fast, ["nimble", "nimble:latest"]);
+        assert!(ids(&sections.other).contains(&"qwen3:8b".to_string()), "{sections:?}");
+        assert!(!ids(&sections.other).iter().any(|id| id.starts_with("nimble")));
+        let parts = [&sections.first, &sections.fast, &sections.other];
+        assert_eq!(parts.iter().map(|part| part.len()).sum::<usize>(), all.len(), "every choice in one section");
+        for part in parts {
+            let in_order: Vec<SlotChoice> = all.iter().filter(|choice| part.contains(choice)).cloned().collect();
+            assert_eq!(&in_order, part, "the order of the list");
+        }
+        // A chosen model turned off stands with "None", where the list shows it too.
+        if let Some(decide) = data.settings.ai_slots.decide.as_mut() {
+            decide.model = Some("deepseek/deepseek-chat-v3.1".into());
+        }
+        let sections = sorting_sections(&state, &data);
+        assert_eq!(ids(&sections.first), ["deepseek/deepseek-chat-v3.1"]);
+        assert_eq!(sections.first.len(), 2);
+        assert_eq!(sections.first[1], sections.chosen);
+    }
+
+    /// Issue #421: the button of Sorting opens its menu and closes it again; Escape, a choice and
+    /// leaving the section close it too, and the open menu is the page's layer.
+    #[test]
+    fn the_sorting_menu_opens_and_closes() {
+        let (mut state, data) = shown(false);
+        assert!(escape(&state).is_none() && overlay(&state, &data).is_none());
+        let _ = update(&mut state, Message::ToggleSortingMenu, &data);
+        assert!(state.sorting_menu && overlay(&state, &data).is_some());
+        assert!(matches!(escape(&state), Some(Message::CloseSortingMenu)));
+        draw_ai(&state, &data);
+        let _ = update(&mut state, Message::ToggleSortingMenu, &data);
+        assert!(!state.sorting_menu, "the button closes what it opened");
+        let _ = update(&mut state, Message::ToggleSortingMenu, &data);
+        let _ = update(&mut state, Message::CloseSortingMenu, &data);
+        assert!(!state.sorting_menu);
+        let _ = update(&mut state, Message::ToggleSortingMenu, &data);
+        let none = sorting_sections(&state, &data).first[0].clone();
+        let (_, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, none), &data));
+        assert_eq!(request, Request::SetAiSlot { slot: AiSlot::Decide, engine: None, model: None, effort: None });
+        assert!(!state.sorting_menu, "a choice closes the menu");
+        let _ = update(&mut state, Message::ToggleSortingMenu, &data);
+        leave(&mut state);
+        assert!(!state.sorting_menu, "the other section has no menu of Sorting");
     }
 
     /// Design review of #325: a model Ollama lists by an id with `:latest` reads without that tag; any
