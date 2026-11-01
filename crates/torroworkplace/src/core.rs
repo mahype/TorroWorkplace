@@ -1415,17 +1415,22 @@ enum Asked {
     Stop(DecideError),
     /// One try took longer than [`CATEGORY_TIMEOUT`]: the run stops.
     TimedOut,
+    /// The run may no longer ask while the model was busy – paused, cancelled, or "Keep mail here"
+    /// came –: the mail is not sent again.
+    Halted,
 }
 
 /// Asks the model about one mail of a run ([`ask_model`], issue #420): each try within
 /// [`CATEGORY_TIMEOUT`], and a model that is busy once more after each of [`CATEGORY_BUSY_WAITS`] –
-/// with several mails asked at once, a limit of requests is reached sooner.
+/// with several mails asked at once, a limit of requests is reached sooner. Before it asks again,
+/// `may_ask` says whether the run still may: a pause, a cancel or "Keep mail here" during the wait
+/// sends the mail nowhere (review of #420).
 async fn ask_to_sort(
     ai: &AiAccounts,
     decider: (&str, &str),
-    content: &categorize::Content,
-    catalogue: &[torro_mail::CategoryDef],
+    (content, catalogue): (&categorize::Content, &[torro_mail::CategoryDef]),
     contact: bool,
+    may_ask: impl Fn() -> bool,
 ) -> Asked {
     use torro_core::ai::AiError;
     let mut waits = CATEGORY_BUSY_WAITS.into_iter();
@@ -1443,6 +1448,9 @@ async fn ask_to_sort(
             }
             (DecideError::Ai(AiError::Busy(_)), Some(wait)) => tokio::time::sleep(wait).await,
             _ => return Asked::Stop(err),
+        }
+        if !may_ask() {
+            return Asked::Halted;
         }
     }
 }
@@ -1615,8 +1623,10 @@ async fn catch_up_mail(
     let (decided, asked) = match (ruled, &run.decider) {
         (Some(category), _) => (Some((category, None)), false),
         (None, Some((engine, model))) => {
-            match ask_to_sort(&run.ai, (engine, model), &facts.content, catalogue, contact).await {
+            let may_ask = || !run.state.stopped(run.generation);
+            match ask_to_sort(&run.ai, (engine, model), (&facts.content, catalogue), contact, may_ask).await {
                 Asked::Answer(decided) => (decided.map(|decided| (decided.category, Some(decided))).or(personal), true),
+                Asked::Halted => return CatchUpMail::Skip,
                 // The model may choose nothing: the rules alone sort, as without a model.
                 Asked::NothingToChoose => (personal, false),
                 Asked::Unread(err) => return CatchUpMail::Unread(err),
@@ -1754,9 +1764,20 @@ impl JobRun<'_> {
                 let why = tr("The model for Sorting changed. Resume the run to sort with the new one.");
                 return JobMail::Stop(why.to_string());
             }
-            (None, Some((engine, model))) => {
-                match ask_to_sort(self.ai, (engine, model), &facts.content, catalogue, contact).await {
+            (None, Some(held)) => {
+                let (engine, model) = held;
+                // The same as before the first try, at every try again.
+                let may_ask = || {
+                    self.current().is_some()
+                        && (job.model_in_cloud != Some(true)
+                            || self.settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide))
+                        && !left_behind(&self.settings.current(), &job.scope, held)
+                };
+                match ask_to_sort(self.ai, (engine, model), (&facts.content, catalogue), contact, may_ask).await {
                     Asked::Answer(answer) => (answer.map(|answer| (answer.category, Some(answer))).or(personal), true),
+                    // The batch ends; the next looks at the job and the permission again and stops it
+                    // with its reason.
+                    Asked::Halted => return JobMail::Halted,
                     Asked::NothingToChoose => (personal, true),
                     Asked::Unread(err) => return JobMail::Unread(err),
                     Asked::Stop(err) => return JobMail::Stop(err.to_line()),
@@ -1770,9 +1791,10 @@ impl JobRun<'_> {
 }
 
 /// Work through one durable, user-selected categorization job in bounded local batches. The
-/// inbox database holds its cursor after every message, so a restart or pause never needs to
-/// repeat a successful model call. Its ID and generation prevent an older worker from writing
-/// progress after a resume.
+/// inbox database holds its cursor after every message, so a restart or pause never repeats a mail
+/// whose answer was written – only those still with the model then, or answered behind it but not
+/// yet written (issue #420), are asked again. Its ID and generation prevent an older worker from
+/// writing progress after a resume.
 ///
 /// A run whose model computes elsewhere stops (`failed`) before the next mail once the permission of
 /// Sorting is off (`settings`, PR review of #325): "Keep mail here" holds for a run already going too.
@@ -25649,6 +25671,35 @@ mod tests {
         assert_eq!((progress.processed, progress.changed), (0, 0), "the mail waits for the next run");
     }
 
+    /// Review of #420: a model that is busy is asked again only while the run may still ask – after a
+    /// pause, a cancel or "Keep mail here" during the wait the mail is not sent again.
+    #[tokio::test]
+    async fn a_busy_model_is_not_asked_again_once_the_run_may_no_longer_ask() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_after(&jev, std::time::Duration::ZERO, None).await;
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
+        let key = torro_core::account::Secret::new(crate::account::ai::tests::KEY);
+        let engine = core.ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), key).await.expect("jev").id;
+        decides.delete_async().await;
+        let busy = jev
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(429).json_body(serde_json::json!({"error": "rate limit"}));
+            })
+            .await;
+        let catalogue = core.inbox.catalogue().expect("the catalogue");
+        let content = categorize::Content { subject: "Hello".into(), text: "See you.".into(), ..Default::default() };
+        let decider = (engine.as_str(), torro_core::ai::JEV_MODEL);
+
+        let asked = ask_to_sort(&core.ai, decider, (&content, &catalogue), false, || false).await;
+        assert!(matches!(asked, super::Asked::Halted), "not asked again");
+        assert_eq!(busy.calls_async().await, 1);
+        let asked = ask_to_sort(&core.ai, decider, (&content, &catalogue), false, || true).await;
+        assert!(matches!(asked, super::Asked::Stop(DecideError::Ai(torro_core::ai::AiError::Busy(_)))));
+        assert_eq!(busy.calls_async().await, 1 + CATEGORY_BUSY_WAITS.len() + 1, "asked again after each wait");
+    }
+
     /// Issue #420, the measurement for the PR: 2,000 mails sorted by a Jev that answers at once in
     /// under 30 s, and by one that takes 220 ms an answer, as the real one does, in under 3 minutes.
     /// `cargo test --release -p torroworkplace -- --ignored sorting_budget --nocapture`.
@@ -25676,7 +25727,12 @@ mod tests {
         let again =
             Request::StartCategoryJob { scope: CategoryJobScope { again: true, ..CategoryJobScope::default() } };
         let started = std::time::Instant::now();
-        let answer = core.handle(again).await;
+        // The worker of the first job lets go just after its job reads as ended.
+        let mut answer = core.handle(again.clone()).await;
+        while matches!(&answer, Response::Error { code, .. } if code == "busy") {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            answer = core.handle(again.clone()).await;
+        }
         assert!(matches!(answer, Response::CategoryJob { job: Some(_) }), "{answer:?}");
         let job = job_ended(&core, std::time::Duration::from_secs(240)).await;
         let took = started.elapsed();
