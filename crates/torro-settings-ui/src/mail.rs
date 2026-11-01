@@ -344,6 +344,30 @@ pub fn poll_request(state: &mut State) -> Option<torro_ipc::Request> {
     accounts::poll_request(&mut state.accounts)
 }
 
+/// The next question about the sync of the open account's page (`mail.sync_status`, issue #422),
+/// which the window sends on its own way, never as [`Action::Ask`]: the core may hold it up to 25
+/// seconds, and the sections' asks go one at a time (#397). `None` while nothing is to be asked;
+/// see [`accounts::sync_request`].
+pub fn sync_request(state: &mut State) -> Option<torro_ipc::Request> {
+    accounts::sync_request(&mut state.accounts)
+}
+
+/// The answer to the sync question for `account`, with the core's errors as `Ok(Response::Error)`.
+pub fn sync_answered(state: &mut State, account: &str, answer: &Result<torro_ipc::Response, String>) {
+    accounts::sync_answered(&mut state.accounts, account, answer);
+}
+
+/// The window's tick: a sync question that failed may be asked again.
+pub fn sync_tick(state: &mut State) {
+    accounts::sync_tick(&mut state.accounts);
+}
+
+/// Whether the arrows of the open account's "Syncing…" turn: the window redraws them often only
+/// then.
+pub fn spinning(state: &State) -> bool {
+    accounts::spinning(&state.accounts)
+}
+
 pub use backup::{Chooser as BackupChooser, Scene as BackupScene};
 
 /// The system chooser `message` asks the window to open ("Choose…" next to the backup folder or the
@@ -398,19 +422,24 @@ fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Messag
 pub mod accounts {
     use std::collections::BTreeMap;
 
-    use chrono::{DateTime, Utc};
+    use std::time::Instant;
+
+    use chrono::{DateTime, Local, Utc};
     use iced::Alignment;
     use iced::Length;
     use iced::widget::{column, container, responsive, row, space as blank, text_editor};
     use torro_core::i18n::trf;
-    use torro_gui::datetime::{format_exact, format_moment};
+    use torro_gui::datetime::{format_exact, format_moment, format_time};
     use torro_gui::theme::{self, size, space};
-    use torro_gui::units::{format_bytes, format_count};
+    use torro_gui::units::{format_bytes, format_count, format_duration};
     use torro_gui::widgets::{
         Align, Anchor, HeadActions, MenuItem, MenuSection, PageAction, Placement, Status, TileFace, Trail,
     };
     use torro_gui::{layout, style, typo, widgets};
-    use torro_ipc::mail::{MailAccountStats, MailFolderStats};
+    use torro_ipc::mail::{
+        MailAccountStats, MailFolderStats, MailFolderSyncState, MailSyncLastRun, MailSyncPhase, MailSyncRun,
+        MailSyncStatus, MailSyncTrigger,
+    };
     use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request, Secret};
     use torro_mail::{Endpoint, MailFormat, Role, Security};
 
@@ -442,6 +471,39 @@ pub mod accounts {
         /// Both are asked ([`Action::Ask`]): a server whose certificate is not trusted answers with
         /// its fingerprint, which a plain send would lose.
         pending_connection: Option<String>,
+        /// Where the open account's sync stands (issue #422): the window asks for it on its own way,
+        /// never as [`Action::Ask`], because the core holds that question up to 25 seconds and the
+        /// asks of the sections go one at a time (#397).
+        sync: SyncWatch,
+    }
+
+    /// What the page knows of the open account's sync (`mail.sync_status`, issue #422) and which
+    /// question about it is on its way. One question at a time, for the open account only; each
+    /// answer carries a version, and the next question waits for a change after it.
+    #[derive(Debug, Default)]
+    struct SyncWatch {
+        /// The account whose question is on its way.
+        asking: Option<String>,
+        /// The last answer taken, for the account that was open then.
+        seen: Option<SyncSeen>,
+        /// The last question failed: the next waits for the window's tick or "Retry", so a core
+        /// that refuses is not asked in a loop.
+        held: bool,
+        /// Since when the arrows of "Syncing…" turn: set when a run of the open account begins
+        /// or waits, cleared when it ended.
+        spin_since: Option<Instant>,
+    }
+
+    /// One answer of `mail.sync_status` for `account`.
+    #[derive(Debug)]
+    struct SyncSeen {
+        account: String,
+        /// The answer's version, what the next question passes as `after`; `None` after an error,
+        /// so the next asks afresh.
+        version: Option<u64>,
+        /// The account's status (`None` when the answer did not list it: the core has seen no run
+        /// since it started), or why the question failed, for people.
+        status: Result<Option<MailSyncStatus>, String>,
     }
 
     /// The parts of an account's page (task DS.6), "Overview" first.
@@ -452,12 +514,14 @@ pub mod accounts {
         Writing,
         Storage,
         Folders,
+        /// How the sync runs and ran, per folder (issue #422).
+        Sync,
         Backup,
     }
 
     impl Tab {
         /// The tabs in their order.
-        pub const ALL: [Tab; 5] = [Tab::Overview, Tab::Writing, Tab::Storage, Tab::Folders, Tab::Backup];
+        pub const ALL: [Tab; 6] = [Tab::Overview, Tab::Writing, Tab::Storage, Tab::Folders, Tab::Sync, Tab::Backup];
 
         fn label(self) -> &'static str {
             match self {
@@ -465,6 +529,7 @@ pub mod accounts {
                 Tab::Writing => tr("Settings"),
                 Tab::Storage => tr("Storage & search"),
                 Tab::Folders => tr("Folders"),
+                Tab::Sync => tr("Sync"),
                 Tab::Backup => tr("Backup"),
             }
         }
@@ -490,6 +555,8 @@ pub mod accounts {
         Tab(usize),
         /// "Sync now" in the head: every account syncs (`accounts.sync`).
         Sync,
+        /// "Retry" on the tab "Sync" after its question failed: the window asks again at once.
+        SyncRetry,
         /// The head's "…": open or close its menu.
         More,
         /// A click beside the open "…" menu, or Escape.
@@ -734,9 +801,16 @@ pub mod accounts {
                 state.more = false;
                 Action::None
             }
+            // While the run waits or runs the button has no message; this guards a click on its way.
+            Message::Sync if spinning(state) => Action::None,
             Message::Sync => {
                 state.more = false;
                 Action::send(Request::Sync)
+            }
+            // Nothing for the host: the window sees the hold released and asks ([`sync_request`]).
+            Message::SyncRetry => {
+                state.sync.held = false;
+                Action::None
             }
             Message::More => {
                 state.more = !state.more;
@@ -911,6 +985,77 @@ pub mod accounts {
     pub fn poll_request(state: &mut State) -> Option<Request> {
         let draft = state.draft.as_ref()?;
         backup::poll_request(&mut state.backup, &draft.account)
+    }
+
+    /// The next question about the open account's sync (`mail.sync_status`, issue #422), marked as
+    /// on its way; `None` while no account's page is open, while the question for it is on its way,
+    /// and after a failed one until [`sync_tick`] or "Retry". After an answer for the open account
+    /// it passes that answer's version as `after`, so the core answers when something changed;
+    /// otherwise it asks afresh. A question for another account still on its way is replaced: the
+    /// window drops it, so one question stays out.
+    pub fn sync_request(state: &mut State) -> Option<Request> {
+        let open = state.draft.as_ref()?.account.clone();
+        if state.sync.asking.as_deref() == Some(open.as_str()) {
+            return None;
+        }
+        let seen = state.sync.seen.as_ref().filter(|seen| seen.account == open);
+        if state.sync.held && seen.is_some_and(|seen| seen.status.is_err()) {
+            return None;
+        }
+        let after = seen.and_then(|seen| seen.version);
+        state.sync.asking = Some(open.clone());
+        Some(Request::MailSyncStatus { account: Some(open), after })
+    }
+
+    /// The answer to the sync question for `account`. The window passes the core's errors as
+    /// `Ok(Response::Error)`. An answer to a question that was replaced, or for an account that is
+    /// no longer open, is dropped; the next question for the open account then asks afresh.
+    pub fn sync_answered(state: &mut State, account: &str, answer: &Result<torro_ipc::Response, String>) {
+        if state.sync.asking.as_deref() != Some(account) {
+            return;
+        }
+        state.sync.asking = None;
+        if current_account(state) != Some(account) {
+            return;
+        }
+        let (version, status) = match answer {
+            Ok(torro_ipc::Response::MailSyncStatus { version, accounts }) => {
+                (Some(*version), Ok(accounts.iter().find(|status| status.account == account).cloned()))
+            }
+            Ok(torro_ipc::Response::Error { message, .. }) | Err(message) => (None, Err(message.clone())),
+            Ok(_) => (None, Err(tr("Torro Workplace gave an unexpected answer to the question.").to_string())),
+        };
+        state.sync.held = status.is_err();
+        state.sync.seen = Some(SyncSeen { account: account.to_string(), version, status });
+        state.sync.spin_since = if spinning(state) { state.sync.spin_since.or(Some(Instant::now())) } else { None };
+    }
+
+    /// The window's tick: a failed sync question may be asked again.
+    pub fn sync_tick(state: &mut State) {
+        state.sync.held = false;
+    }
+
+    /// The last status of the open account's sync, or why it could not be asked; `None` before an
+    /// answer for it.
+    fn open_sync(state: &State) -> Option<&Result<Option<MailSyncStatus>, String>> {
+        let open = current_account(state)?;
+        state.sync.seen.as_ref().filter(|seen| seen.account == open).map(|seen| &seen.status)
+    }
+
+    /// The run of the open account under way, if one is.
+    fn open_run(state: &State) -> Option<&MailSyncRun> {
+        open_sync(state)?.as_ref().ok()?.as_ref()?.running.as_ref()
+    }
+
+    /// Whether the open account's sync runs or waits for its turn: then the arrows of "Syncing…"
+    /// turn and the button takes no click.
+    pub fn spinning(state: &State) -> bool {
+        matches!(open_sync(state), Some(Ok(Some(status))) if status.running.is_some() || status.queued)
+    }
+
+    /// Since when the arrows turn, while they do ([`spinning`]).
+    pub fn spin_since(state: &State) -> Option<Instant> {
+        state.sync.spin_since.filter(|_| spinning(state))
     }
 
     /// The backup folder typed or chosen on the open account's page.
@@ -1218,6 +1363,7 @@ pub mod accounts {
                 |state| storage::account_view(state, data, &draft.account).map(Message::Storage),
             ),
             Tab::Folders => folders(mail, stats),
+            Tab::Sync => sync_tab(state, stats, now),
             Tab::Backup => backup::view(&state.backup, &draft.account).map(Message::Backup),
         };
         column![head(state, mail, stats, now), widgets::tabs(labels, state.tab.index(), Message::Tab), body]
@@ -1245,17 +1391,326 @@ pub mod accounts {
         let server = |host: &str, port: u16| format!("{host}:{port}");
         meta.push(trf("IMAP {server}", &[("server", &server(&mail.imap.host, mail.imap.port))]));
         meta.push(trf("SMTP {server}", &[("server", &server(&mail.smtp.host, mail.smtp.port))]));
+        let status = head_status(state, mail, stats, now);
+        let sync = match spin_since(state) {
+            // The run is under way or waits for its turn (issue #422): the arrows turn and a second
+            // click would only queue another full run behind it.
+            Some(since) => PageAction::new(tr("Syncing…"), None).spinning(widgets::spin_angle(since, Instant::now())),
+            None => PageAction::new(tr("Sync now"), Some(Message::Sync))
+                .icon(Icon::RefreshCw)
+                .tip(tr("Syncs all accounts, not only this one")),
+        };
+        let actions = HeadActions { action: Some(sync), more: Some((state.more_anchor.clone(), Message::More)) };
+        widgets::detail_head(TileFace::letter(&mail.address), mail.address.clone(), meta.join(" · "), status, actions)
+    }
+
+    /// The pill of the head: "Syncing · 3 of 12" while a run is under way ("Syncing…" while it lists
+    /// the folders, issue #422), else a sync problem or when the last sync ended. A run under way is
+    /// work going on, not yet a result: its dot is in the attention colour, as for a check that runs
+    /// (design skill); green says "synced" only once it is.
+    fn head_status(
+        state: &State,
+        mail: &MailView,
+        stats: Option<&MailAccountStats>,
+        now: DateTime<Utc>,
+    ) -> Option<(Status, String)> {
+        if let Some(run) = open_run(state) {
+            return Some((Status::Attention, syncing_words(run)));
+        }
         let last_sync = mail.mail.last_sync.or_else(|| stats.and_then(|stats| stats.last_sync));
-        let status = match (sync_problem(mail, stats), last_sync) {
+        match (sync_problem(mail, stats), last_sync) {
             (Some(_), _) => Some((Status::Error, tr("Sync problem").to_string())),
             (None, Some(at)) => Some((Status::Ok, trf("Synced {when}", &[("when", &format_moment(at, now))]))),
             (None, None) => None,
+        }
+    }
+
+    /// "Syncing · 3 of 12", or "Syncing…" while the run still lists the folders.
+    fn syncing_words(run: &MailSyncRun) -> String {
+        if run.folder_count == 0 {
+            return tr("Syncing…").to_string();
+        }
+        let (n, total) = (run.folder_index.to_string(), run.folder_count.to_string());
+        trf("Syncing · {n} of {total}", &[("n", &n), ("total", &total)])
+    }
+
+    /// The tab "Sync" (issue #422): the run under way ("Now"), how the last one ended, every folder
+    /// with what its last sync did, and what is still to come to this device. Before the core saw
+    /// a run since it started, an empty state says so; a failed question, with "Retry".
+    fn sync_tab<'a>(state: &'a State, stats: Option<&'a MailAccountStats>, now: DateTime<Utc>) -> Element<'a, Message> {
+        let status = match open_sync(state) {
+            Some(Err(problem)) => return widgets::error_state(problem.clone(), Message::SyncRetry),
+            Some(Ok(Some(status))) if !sync_is_empty(status) => status,
+            _ => {
+                return widgets::empty_state(
+                    tr("Not synced since Torro Workplace started"),
+                    tr("What the sync does shows here once it begins."),
+                );
+            }
         };
-        let sync = PageAction::new(tr("Sync now"), Some(Message::Sync))
-            .icon(Icon::RefreshCw)
-            .tip(tr("Syncs all accounts, not only this one"));
-        let actions = HeadActions { action: Some(sync), more: Some((state.more_anchor.clone(), Message::More)) };
-        widgets::detail_head(TileFace::letter(&mail.address), mail.address.clone(), meta.join(" · "), status, actions)
+        // Groups and table read at the width of a list, not stretched across a wide window.
+        let mut page = column![].spacing(layout::section_gap()).max_width(size::content_max());
+        if let Some(run) = &status.running {
+            page = page.push(now_block(status, run, now));
+        }
+        if let Some(last) = &status.last_run {
+            page = page.push(last_run_block(last, now));
+        }
+        if !status.folders.is_empty() {
+            // Narrower than a form the five columns would run into each other: then only the
+            // folder, how much of it is here and the result.
+            let grid = responsive(move |room| {
+                let (head, rows, total) = sync_table(status, now);
+                let keep = |cells: Vec<String>| -> Vec<String> {
+                    if room.width >= size::form_max() {
+                        return cells;
+                    }
+                    cells.into_iter().enumerate().filter(|(i, _)| SYNC_NARROW.contains(i)).map(|(_, c)| c).collect()
+                };
+                widgets::data_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
+            })
+            .height(Length::Shrink);
+            page = page.push(grid);
+        }
+        page.push(pending_block(status, stats)).into()
+    }
+
+    /// A status with nothing to show: no run under way or ended, no folder seen.
+    fn sync_is_empty(status: &MailSyncStatus) -> bool {
+        status.running.is_none() && status.last_run.is_none() && status.folders.is_empty()
+    }
+
+    /// "400 / 1,240": done of how many, as the table writes it.
+    fn of_count(done: u64, of: u64) -> String {
+        format!("{} / {}", format_count(done), format_count(of))
+    }
+
+    /// The progress at the right of a row of "Now": the bar flush with the right edge, so every bar
+    /// stands on one axis, and with `count` its numbers before it ("400 / 1,240"). Nothing while the
+    /// step counts nothing.
+    fn progress<'a>((done, of): (u32, u32), count: bool) -> Element<'a, Message> {
+        if of == 0 {
+            return blank().into();
+        }
+        let bar = widgets::progress_bar(done as usize, of as usize);
+        if !count {
+            return bar;
+        }
+        let numbers = of_count(u64::from(done), u64::from(of));
+        row![typo::text(typo::meta().tabular(), numbers).style(theme::text_3), bar]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into()
+    }
+
+    /// The block "Now": the folder the run is at (its bar only: "Folder 3 of 12" says the numbers)
+    /// and the step in it with its count; under it, since when and by what the whole run goes.
+    fn now_block<'a>(status: &MailSyncStatus, run: &MailSyncRun, now: DateTime<Utc>) -> Element<'a, Message> {
+        let lines = now_lines(status, run, now);
+        let mut rows = Vec::new();
+        // While the folders are listed there is no folder yet, only the step.
+        if let Some((folder, count)) = lines.folder {
+            rows.push(widgets::group_row(folder, None, progress(count, false)));
+        }
+        rows.push(widgets::group_row(lines.phase, None, progress(lines.step, true)));
+        widgets::group(tr("Now"), rows, Some(lines.since))
+    }
+
+    /// The words of the block "Now", so they can be checked without drawing.
+    #[derive(Debug, PartialEq, Eq)]
+    struct NowLines {
+        /// "Syncing since 10:41 · started by Sync now".
+        since: String,
+        /// "Folder 3 of 12 · Archive" with (3, 12); `None` while the folders are listed.
+        folder: Option<(String, (u32, u32))>,
+        /// "Loading headers".
+        phase: String,
+        /// How far the step is: (done, of), `of` 0 when it counts nothing.
+        step: (u32, u32),
+    }
+
+    fn now_lines(status: &MailSyncStatus, run: &MailSyncRun, now: DateTime<Utc>) -> NowLines {
+        let since = if run.started.with_timezone(&Local).date_naive() == now.with_timezone(&Local).date_naive() {
+            format_time(run.started.with_timezone(&Local).time())
+        } else {
+            format_moment(run.started, now)
+        };
+        let since = match run.trigger {
+            MailSyncTrigger::Manual => trf("Syncing since {time} · started by Sync now", &[("time", &since)]),
+            MailSyncTrigger::Scheduled => trf("Syncing since {time} · started by the schedule", &[("time", &since)]),
+            MailSyncTrigger::Start => trf("Syncing since {time} · started at startup", &[("time", &since)]),
+        };
+        let folder = (run.folder_count > 0).then(|| {
+            let (n, total) = (run.folder_index.to_string(), run.folder_count.to_string());
+            let mut words = trf("Folder {n} of {total}", &[("n", &n), ("total", &total)]);
+            // The name is the server's, shown as it is and never acted on.
+            let name = run
+                .folder
+                .as_deref()
+                .and_then(|id| status.folders.iter().find(|folder| folder.folder == id))
+                .map(|folder| folder.name.as_str());
+            if let Some(name) = name {
+                words = format!("{words} · {name}");
+            }
+            (words, (run.folder_index, run.folder_count))
+        });
+        NowLines { since, folder, phase: phase_label(run.phase).to_string(), step: (run.done, run.of) }
+    }
+
+    fn phase_label(phase: MailSyncPhase) -> &'static str {
+        match phase {
+            MailSyncPhase::Listing => tr("Listing folders"),
+            MailSyncPhase::Checking => tr("Checking for changes"),
+            MailSyncPhase::Headers => tr("Loading headers"),
+            MailSyncPhase::Texts => tr("Loading texts"),
+            MailSyncPhase::Sizes => tr("Loading sizes"),
+            MailSyncPhase::Finishing => tr("Finishing"),
+        }
+    }
+
+    /// The block "Last run": how it ended, when and how long it took, and a pill that says whether
+    /// it succeeded.
+    fn last_run_block<'a>(last: &MailSyncLastRun, now: DateTime<Utc>) -> Element<'a, Message> {
+        let lines = last_run_lines(last, now);
+        let pill = if lines.ok {
+            widgets::status_pill(Status::Ok, tr("Complete").to_string())
+        } else {
+            widgets::status_pill(Status::Error, tr("Failed").to_string())
+        };
+        widgets::group(tr("Last run"), vec![widgets::group_row(lines.result, Some(lines.when), pill)], None)
+    }
+
+    /// The words of the block "Last run", so they can be checked without drawing.
+    #[derive(Debug, PartialEq, Eq)]
+    struct LastRunLines {
+        /// "Complete, 12 of 12 folders", or where and why it failed.
+        result: String,
+        /// "Today 10:36 · 2 min 14 s".
+        when: String,
+        ok: bool,
+    }
+
+    fn last_run_lines(last: &MailSyncLastRun, now: DateTime<Utc>) -> LastRunLines {
+        let took = (last.finished - last.started).num_milliseconds().max(0) as u64;
+        let total = last.folder_count.to_string();
+        // Where it stopped, as the core noted it at the run's end: the folders' states may belong to
+        // a newer run or an inbox sync by now.
+        let problem = last.problem.as_deref();
+        let result = if last.ok {
+            trf("Complete, {n} of {total} folders", &[("n", &last.folders_done.to_string()), ("total", &total)])
+        } else if last.folder_count == 0 {
+            match problem {
+                Some(problem) => trf("Failed while listing folders: {problem}", &[("problem", &problem)]),
+                None => tr("Failed while listing folders").to_string(),
+            }
+        } else if let Some(n) = last.failed_at {
+            let n = n.to_string();
+            match problem {
+                Some(problem) => trf(
+                    "Failed at folder {n} of {total}: {problem}",
+                    &[("n", &n), ("total", &total), ("problem", &problem)],
+                ),
+                None => trf("Failed at folder {n} of {total}", &[("n", &n), ("total", &total)]),
+            }
+        } else {
+            // Every folder went through; the clean-up and the quota at the end did not.
+            match problem {
+                Some(problem) => trf("Failed while finishing: {problem}", &[("problem", &problem)]),
+                None => tr("Failed while finishing").to_string(),
+            }
+        };
+        let when = format!("{} · {}", format_moment(last.started, now), format_duration(took));
+        LastRunLines { result, when, ok: last.ok }
+    }
+
+    /// The columns of the sync table that a narrow page keeps: folder, synced, result.
+    const SYNC_NARROW: [usize; 3] = [0, 1, 4];
+
+    /// The table of the tab "Sync": head, one row per folder, and the total.
+    fn sync_table(status: &MailSyncStatus, now: DateTime<Utc>) -> (Vec<String>, Vec<Vec<String>>, Vec<String>) {
+        let head =
+            [tr("Folder"), tr("Synced"), tr("Last sync"), tr("Duration"), tr("Result")].map(str::to_string).to_vec();
+        let on_server = |count: Option<u32>| count.map_or_else(|| UNKNOWN.to_string(), |n| format_count(u64::from(n)));
+        let rows = status
+            .folders
+            .iter()
+            .map(|folder| {
+                // A folder being synced has no result of this run yet: what an earlier run did would
+                // read as this one's.
+                let running = folder.state == MailFolderSyncState::Running;
+                let last_sync = folder.last_synced.filter(|_| !running);
+                let duration = folder.duration_ms.filter(|_| !running);
+                vec![
+                    folder.name.clone(),
+                    format!("{} / {}", format_count(folder.stored), on_server(folder.on_server)),
+                    last_sync.map_or_else(|| UNKNOWN.to_string(), |at| format_moment(at, now)),
+                    duration.map_or_else(|| UNKNOWN.to_string(), format_duration),
+                    folder_state_label(folder.state).to_string(),
+                ]
+            })
+            .collect();
+        let stored: u64 = status.folders.iter().map(|folder| folder.stored).sum();
+        // Not every folder told its count yet: the sum of the others would read as the whole.
+        let server: Option<u64> = status.folders.iter().map(|folder| folder.on_server.map(u64::from)).sum();
+        let server = server.map_or_else(|| "…".to_string(), format_count);
+        let total = vec![
+            tr("All folders").to_string(),
+            format!("{} / {server}", format_count(stored)),
+            String::new(),
+            String::new(),
+            String::new(),
+        ];
+        (head, rows, total)
+    }
+
+    fn folder_state_label(state: MailFolderSyncState) -> &'static str {
+        match state {
+            MailFolderSyncState::UpToDate => tr("Up to date"),
+            MailFolderSyncState::Synced => tr("Synced"),
+            MailFolderSyncState::Running => tr("Running"),
+            MailFolderSyncState::Waiting => tr("Waiting"),
+            MailFolderSyncState::Failed => tr("Failed"),
+            MailFolderSyncState::NotReached => tr("Not reached"),
+            MailFolderSyncState::Interrupted => tr("Interrupted"),
+        }
+    }
+
+    /// The block "Pending": one row per kind of what is still to come, with its number at the right.
+    fn pending_block<'a>(status: &MailSyncStatus, stats: Option<&MailAccountStats>) -> Element<'a, Message> {
+        let rows = pending_rows(status, stats)
+            .into_iter()
+            .map(|(label, count)| {
+                let number: Element<'a, Message> = match count {
+                    Some(n) => typo::text(typo::body().tabular(), format_count(n)).style(theme::text_2).into(),
+                    None => blank().into(),
+                };
+                widgets::group_row(label, None, number)
+            })
+            .collect();
+        widgets::group(tr("Pending"), rows, None)
+    }
+
+    /// What is still to come to this device: headers the server has and the device not yet, and
+    /// texts waiting for the search index (from the account's statistics); a kind with nothing
+    /// pending is left out, and with nothing at all one row says so (without a number).
+    fn pending_rows(status: &MailSyncStatus, stats: Option<&MailAccountStats>) -> Vec<(&'static str, Option<u64>)> {
+        let headers: u64 = status
+            .folders
+            .iter()
+            .filter_map(|folder| folder.on_server.map(|server| u64::from(server).saturating_sub(folder.stored)))
+            .sum();
+        let texts = stats.map_or(0, |stats| stats.awaiting_index);
+        let mut rows = Vec::new();
+        if headers > 0 {
+            rows.push((tr("Headers not on this device"), Some(headers)));
+        }
+        if texts > 0 {
+            rows.push((tr("Texts waiting for the search index"), Some(texts)));
+        }
+        if rows.is_empty() {
+            rows.push((tr("Nothing pending"), None));
+        }
+        rows
     }
 
     /// The menu of the head's "…" while it is open.
@@ -2115,6 +2570,338 @@ pub mod accounts {
             let _ = crate::mail::update(&mut state, show(), &data);
             assert_eq!(state.accounts.tab, Tab::Overview);
             assert!(page(&state.accounts, &data).save_bar.is_some(), "the typed name stays");
+        }
+
+        const ANNA: &str = "mail:anna@example.org";
+
+        /// A status of anna's sync (issue #422): four folders, the third loading headers when
+        /// `running`, and a last run that ended `ok` or failed at the third folder.
+        fn sync_status(running: bool, ok: bool) -> MailSyncStatus {
+            let now = Utc::now();
+            let archive = match (running, ok) {
+                (true, _) => MailFolderSyncState::Running,
+                (false, true) => MailFolderSyncState::Synced,
+                (false, false) => MailFolderSyncState::Failed,
+            };
+            let folder = |id: &str, on_server, stored, state| torro_ipc::mail::MailFolderSync {
+                folder: id.into(),
+                name: id.trim_start_matches("f:").into(),
+                on_server,
+                stored,
+                last_synced: Some(now),
+                duration_ms: Some(800),
+                steps: torro_ipc::mail::MailFolderSteps::default(),
+                state,
+            };
+            MailSyncStatus {
+                account: ANNA.into(),
+                running: running.then(|| MailSyncRun {
+                    trigger: MailSyncTrigger::Manual,
+                    started: now,
+                    phase: MailSyncPhase::Headers,
+                    folder_index: 3,
+                    folder_count: 4,
+                    folder: Some("f:Archive".into()),
+                    done: 400,
+                    of: 1_240,
+                }),
+                queued: false,
+                last_run: Some(MailSyncLastRun {
+                    trigger: MailSyncTrigger::Scheduled,
+                    started: now - chrono::Duration::seconds(134),
+                    finished: now,
+                    ok,
+                    problem: (!ok).then(|| "Connection lost".to_string()),
+                    folders_done: if ok { 4 } else { 2 },
+                    folder_count: 4,
+                    failed_at: (!ok).then_some(3),
+                    listing_ms: 300,
+                    finishing_ms: 0,
+                }),
+                folders: vec![
+                    folder("f:INBOX", Some(30), 30, MailFolderSyncState::UpToDate),
+                    folder("f:Sent", Some(10), 10, MailFolderSyncState::Synced),
+                    folder("f:Archive", Some(1_640), 400, archive),
+                    folder("f:Old", None, 0, MailFolderSyncState::NotReached),
+                ],
+            }
+        }
+
+        /// The answer of the core for `statuses`, at `version`.
+        fn sync_answer(version: u64, statuses: Vec<MailSyncStatus>) -> Result<torro_ipc::Response, String> {
+            Ok(torro_ipc::Response::MailSyncStatus { version, accounts: statuses })
+        }
+
+        /// Issue #422: one question at a time for the open account; the next waits for a change
+        /// after the version of the last answer; nothing while the list shows.
+        #[test]
+        fn the_sync_is_asked_one_question_at_a_time_with_the_last_version() {
+            let data = data();
+            let mut state = State::default();
+            assert_eq!(sync_request(&mut state), None, "no account's page is open");
+            let _: Action<()> = update(&mut state, Message::Open(ANNA.into()), &data);
+            let first = sync_request(&mut state);
+            assert_eq!(first, Some(Request::MailSyncStatus { account: Some(ANNA.into()), after: None }));
+            assert_eq!(sync_request(&mut state), None, "the first is still on its way");
+            sync_answered(&mut state, ANNA, &sync_answer(7, vec![sync_status(true, true)]));
+            assert_eq!(
+                sync_request(&mut state),
+                Some(Request::MailSyncStatus { account: Some(ANNA.into()), after: Some(7) })
+            );
+            sync_answered(&mut state, ANNA, &sync_answer(8, vec![sync_status(false, true)]));
+            let _: Action<()> = update(&mut state, Message::Back, &data);
+            assert_eq!(sync_request(&mut state), None, "the page is closed");
+        }
+
+        /// Issue #422: an answer for an account that is no longer open is dropped, and the open one
+        /// is asked afresh, without a version.
+        #[test]
+        fn an_answer_for_another_account_is_dropped() {
+            let mut data = data();
+            data.accounts.push(account("ben@example.org", "Ben", None));
+            let mut state = opened(&data);
+            let _ = sync_request(&mut state);
+            sync_answered(&mut state, ANNA, &sync_answer(3, vec![sync_status(true, true)]));
+            let _ = sync_request(&mut state);
+            // Ben's page opens while anna's question waits: Ben's replaces it.
+            let _: Action<()> = update(&mut state, Message::Open("mail:ben@example.org".into()), &data);
+            let ben = sync_request(&mut state);
+            assert_eq!(
+                ben,
+                Some(Request::MailSyncStatus { account: Some("mail:ben@example.org".into()), after: None })
+            );
+            sync_answered(&mut state, ANNA, &sync_answer(4, vec![sync_status(true, true)]));
+            assert!(!spinning(&state), "anna's run is not Ben's");
+            assert_eq!(sync_request(&mut state), None, "Ben's question is still out");
+            sync_answered(&mut state, "mail:ben@example.org", &sync_answer(4, vec![]));
+            assert!(open_sync(&state).is_some_and(|status| matches!(status, Ok(None))), "nothing for Ben yet");
+            // Back on anna: her old version belongs to an answer no longer kept, so she is asked afresh.
+            let _: Action<()> = update(&mut state, Message::Open(ANNA.into()), &data);
+            assert_eq!(
+                sync_request(&mut state),
+                Some(Request::MailSyncStatus { account: Some(ANNA.into()), after: None })
+            );
+        }
+
+        /// Issue #422: a failed question shows on the tab with "Retry" and is asked again only on
+        /// the tick or "Retry", then afresh.
+        #[test]
+        fn a_failed_question_waits_for_the_tick_or_retry() {
+            let data = data();
+            let mut state = opened(&data);
+            let _ = sync_request(&mut state);
+            let refused = Ok(torro_ipc::Response::Error { code: "not-found".into(), message: "Gone".into() });
+            sync_answered(&mut state, ANNA, &refused);
+            assert!(matches!(open_sync(&state), Some(Err(message)) if message == "Gone"));
+            assert_eq!(sync_request(&mut state), None, "not in a loop");
+            sync_tick(&mut state);
+            assert_eq!(
+                sync_request(&mut state),
+                Some(Request::MailSyncStatus { account: Some(ANNA.into()), after: None })
+            );
+            sync_answered(&mut state, ANNA, &Err("offline".into()));
+            let retry: Action<()> = update(&mut state, Message::SyncRetry, &data);
+            assert_eq!(retry, Action::None, "the window asks, not the host");
+            assert!(sync_request(&mut state).is_some());
+        }
+
+        /// Issue #422: the arrows turn while the open account's run is under way or waits, and
+        /// "Sync now" takes no click then; afterwards they stand still.
+        #[test]
+        fn the_arrows_turn_only_while_the_sync_runs_or_waits() {
+            let data = data();
+            let mut state = opened(&data);
+            assert!(!spinning(&state) && spin_since(&state).is_none());
+            let _ = sync_request(&mut state);
+            sync_answered(&mut state, ANNA, &sync_answer(1, vec![sync_status(true, true)]));
+            assert!(spinning(&state));
+            let since = spin_since(&state);
+            assert!(since.is_some());
+            assert_eq!(update::<()>(&mut state, Message::Sync, &data), Action::None, "no second run");
+            let _ = sync_request(&mut state);
+            sync_answered(&mut state, ANNA, &sync_answer(2, vec![sync_status(true, true)]));
+            assert_eq!(spin_since(&state), since, "the turn goes on where it was");
+            let mut waiting = sync_status(false, true);
+            waiting.queued = true;
+            let _ = sync_request(&mut state);
+            sync_answered(&mut state, ANNA, &sync_answer(3, vec![waiting]));
+            assert!(spinning(&state), "a run waiting for its turn turns too");
+            let _ = sync_request(&mut state);
+            sync_answered(&mut state, ANNA, &sync_answer(4, vec![sync_status(false, true)]));
+            assert!(!spinning(&state) && spin_since(&state).is_none());
+            assert_eq!(update::<()>(&mut state, Message::Sync, &data), Action::send(Request::Sync));
+        }
+
+        /// Issue #422: the head counts the folders while a run is under way, says "Syncing…" while it
+        /// lists them, both in the attention colour of work going on, and says when the last sync
+        /// ended otherwise, in green.
+        #[test]
+        fn the_head_counts_the_folders_while_syncing() {
+            let mut data = data();
+            data.accounts[0].mail.as_mut().expect("mail").mail.last_sync = Some(Utc::now());
+            let mut state = opened(&data);
+            let mail = mail_of(&data, ANNA).expect("anna");
+            let now = Utc::now();
+            let idle = head_status(&state, mail, None, now);
+            assert_eq!(idle, Some((Status::Ok, trf("Synced {when}", &[("when", &format_moment(now, now))]))));
+            let _ = sync_request(&mut state);
+            sync_answered(&mut state, ANNA, &sync_answer(1, vec![sync_status(true, true)]));
+            let syncing = head_status(&state, mail, None, now);
+            let words = trf("Syncing · {n} of {total}", &[("n", &"3"), ("total", &"4")]);
+            assert_eq!(syncing, Some((Status::Attention, words)));
+            let mut listing = sync_status(true, true);
+            if let Some(run) = listing.running.as_mut() {
+                (run.phase, run.folder_index, run.folder_count, run.folder) = (MailSyncPhase::Listing, 0, 0, None);
+            }
+            let _ = sync_request(&mut state);
+            sync_answered(&mut state, ANNA, &sync_answer(2, vec![listing.clone()]));
+            assert_eq!(head_status(&state, mail, None, now), Some((Status::Attention, tr("Syncing…").to_string())));
+            let lines = now_lines(&listing, listing.running.as_ref().expect("a run"), now);
+            assert_eq!(lines.folder, None, "no folder while listing");
+            assert_eq!(lines.phase, tr("Listing folders"));
+            for tab in Tab::ALL {
+                let _: Action<()> = update(&mut state, Message::Tab(tab.index()), &data);
+                let _ = page(&state, &data).body;
+            }
+        }
+
+        /// Issue #422: "Now" names the trigger, the folder with its name from the list and the step
+        /// with its count.
+        #[test]
+        fn now_says_where_the_run_is() {
+            let status = sync_status(true, true);
+            let now = Utc::now();
+            let lines = now_lines(&status, status.running.as_ref().expect("a run"), now);
+            let time = format_time(now.with_timezone(&Local).time());
+            assert_eq!(lines.since, trf("Syncing since {time} · started by Sync now", &[("time", &time)]));
+            let folder = format!("{} · Archive", trf("Folder {n} of {total}", &[("n", &"3"), ("total", &"4")]));
+            assert_eq!(lines.folder, Some((folder, (3, 4))));
+            assert_eq!((lines.phase.as_str(), lines.step), (tr("Loading headers"), (400, 1_240)));
+        }
+
+        /// Issue #422: the last run says when it ran, how long it took and how it ended, complete or
+        /// where and why it failed.
+        #[test]
+        fn the_last_run_says_how_it_ended() {
+            let now = Utc::now();
+            let complete = sync_status(false, true);
+            let lines = last_run_lines(complete.last_run.as_ref().expect("a last run"), now);
+            let started = now - chrono::Duration::seconds(134);
+            assert_eq!(lines.when, format!("{} · {}", format_moment(started, now), format_duration(134_000)));
+            assert_eq!(lines.result, trf("Complete, {n} of {total} folders", &[("n", &"4"), ("total", &"4")]));
+            assert!(lines.ok);
+            let failed = sync_status(false, false);
+            let lines = last_run_lines(failed.last_run.as_ref().expect("a last run"), now);
+            let why = trf(
+                "Failed at folder {n} of {total}: {problem}",
+                &[("n", &"3"), ("total", &"4"), ("problem", &"Connection lost")],
+            );
+            assert_eq!(lines.result, why);
+            assert!(!lines.ok);
+        }
+
+        /// Issue #422: the folder a run failed at is the one the core noted at the run's end, also
+        /// while a newer run has set every folder waiting; without one the run failed at its end.
+        #[test]
+        fn a_failed_run_names_the_folder_that_failed() {
+            let now = Utc::now();
+            let status = sync_status(true, false);
+            let last = status.last_run.clone().expect("a last run");
+            let at = trf(
+                "Failed at folder {n} of {total}: {problem}",
+                &[("n", &"3"), ("total", &"4"), ("problem", &"Connection lost")],
+            );
+            assert_eq!(last_run_lines(&last, now).result, at, "not from the folders of the run under way");
+
+            let mut end = last.clone();
+            end.failed_at = None;
+            let finishing = trf("Failed while finishing: {problem}", &[("problem", &"Connection lost")]);
+            assert_eq!(last_run_lines(&end, now).result, finishing);
+            end.problem = None;
+            assert_eq!(last_run_lines(&end, now).result, tr("Failed while finishing"));
+            end.folder_count = 0;
+            assert_eq!(last_run_lines(&end, now).result, tr("Failed while listing folders"));
+        }
+
+        /// Issue #422: the table has a row per folder and a total; a count the server has not told
+        /// shows as unknown, and the total of the server as incomplete. Narrow keeps three columns.
+        #[test]
+        fn the_sync_table_and_what_is_pending() {
+            let status = sync_status(true, false);
+            let (head, rows, total) = sync_table(&status, Utc::now());
+            assert_eq!(head.len(), 5);
+            assert_eq!(rows.len(), 4);
+            assert_eq!(rows[2][1], format!("{} / {}", format_count(400), format_count(1_640)));
+            assert_eq!(rows[2][4], tr("Running"));
+            assert_eq!(rows[3][1], format!("0 / {UNKNOWN}"));
+            assert_eq!(rows[3][4], tr("Not reached"));
+            assert_eq!(total[0], tr("All folders"));
+            assert_eq!(total[1], format!("{} / …", format_count(440)));
+            let narrow: Vec<&String> =
+                head.iter().enumerate().filter(|(i, _)| SYNC_NARROW.contains(i)).map(|(_, c)| c).collect();
+            assert_eq!(narrow, [tr("Folder"), tr("Synced"), tr("Result")]);
+
+            let mut stats = stats(&[("INBOX", 30, 8, None)], None);
+            let headers = (tr("Headers not on this device"), Some(1_240));
+            let texts = (tr("Texts waiting for the search index"), Some(5));
+            assert_eq!(pending_rows(&status, Some(&stats)), [headers, texts]);
+            assert_eq!(pending_rows(&status, None), [headers], "no texts row without any");
+            stats.awaiting_index = 0;
+            let mut complete = sync_status(false, true);
+            for folder in &mut complete.folders {
+                folder.on_server = u32::try_from(folder.stored).ok();
+            }
+            assert_eq!(pending_rows(&complete, Some(&stats)), [(tr("Nothing pending"), None)]);
+        }
+
+        /// Issue #422: a folder being synced shows no last sync and no duration: those of an earlier
+        /// run would read as this one's.
+        #[test]
+        fn a_running_folder_shows_no_times_of_an_earlier_run() {
+            let now = Utc::now();
+            let status = sync_status(true, true);
+            assert!(status.folders[2].last_synced.is_some() && status.folders[2].duration_ms.is_some());
+            let (_, rows, _) = sync_table(&status, now);
+            assert_eq!((rows[2][2].as_str(), rows[2][3].as_str()), (UNKNOWN, UNKNOWN));
+            assert_eq!(rows[0][2], format_moment(now, now), "a finished folder keeps its time");
+            assert_eq!(rows[0][3], format_duration(800));
+        }
+
+        /// The progress of "Now" writes its numbers as the table does.
+        #[test]
+        fn progress_counts_read_like_the_table() {
+            assert_eq!(of_count(400, 1_240), format!("400 / {}", format_count(1_240)));
+        }
+
+        /// Issue #422: the tab "Sync" builds in every state: no answer yet, an answer without the
+        /// account, an error, a run under way, at rest.
+        #[test]
+        fn the_sync_tab_builds_in_every_state() {
+            let data = data();
+            let mut state = opened(&data);
+            let _: Action<()> = update(&mut state, Message::Tab(Tab::Sync.index()), &data);
+            assert_eq!(state.tab, Tab::Sync);
+            assert!(open_sync(&state).is_none());
+            let _ = page(&state, &data).body;
+            let answers = [
+                sync_answer(1, vec![]),
+                Ok(torro_ipc::Response::Error { code: "error".into(), message: "Broken".into() }),
+                sync_answer(2, vec![sync_status(true, false)]),
+                sync_answer(3, vec![sync_status(false, true)]),
+            ];
+            for answer in answers {
+                sync_tick(&mut state);
+                let _ = sync_request(&mut state);
+                sync_answered(&mut state, ANNA, &answer);
+                let _ = page(&state, &data).body;
+            }
+            assert!(sync_is_empty(&MailSyncStatus {
+                account: ANNA.into(),
+                running: None,
+                queued: false,
+                last_run: None,
+                folders: vec![]
+            }));
         }
 
         /// Every role has its question, and every page builds – with and without an account.

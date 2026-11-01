@@ -6,12 +6,13 @@
 //!   connection and its store (task M2.6); the commands (M3.1 to M3.3) start there.
 //! - [`read`]: the reading commands (`mail.list_folders`, `mail.search_messages`,
 //!   `mail.index_status`, `mail.get_message`, `mail.get_thread`, `mail.get_attachment`, task M3.1,
-//!   issue #136).
+//!   issue #136; `mail.sync_status`, issue #422).
 //! - [`overview`]: the numbers of `mail.overview` – what came in, from whom, how much was opened,
 //!   and what lies in the inbox (issue #409).
 //! - [`query`], [`fold`]: the query language of the search, and text as the search compares it
 //!   (folding, highlights; issue #136).
 //! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
+//! - [`progress`]: where each account's sync stands, for `mail.sync_status` (issue #422).
 //! - [`inbox_feed`]: new mail as entries of the inbox, and done entries back as read mail (task
 //!   E4.1).
 //! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
@@ -51,6 +52,7 @@ pub mod filters;
 pub mod fold;
 pub mod inbox_feed;
 pub mod overview;
+pub mod progress;
 pub mod query;
 pub mod read;
 pub mod save;

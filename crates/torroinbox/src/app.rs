@@ -334,6 +334,10 @@ impl RailShape {
 /// How often a group waiting for [`RAIL_DELAY`] checks its time. Only while one waits.
 const RAIL_TICK: Duration = Duration::from_millis(30);
 
+/// How often the arrows of "Syncing…" on a mail account's page turn a step (issue #422): 20 steps a
+/// second read as a smooth turn, and it only runs while a sync does.
+const SPIN_TICK: Duration = Duration::from_millis(50);
+
 /// "In 5 min" puts a reminder's entry off for this many minutes (task ER1.4).
 const REMINDER_SNOOZE_MINUTES: i64 = 5;
 
@@ -1031,6 +1035,8 @@ pub enum Sent {
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
+    /// `mail.sync_status` for this account, after this version (issue #422).
+    SyncStatus(String, Option<u64>),
     /// `approvals.decide_approval`: the approval, allowed or not.
     Decide(String, bool),
     /// The task lists were asked for (the dialog of "Make task" opened).
@@ -1520,6 +1526,8 @@ pub enum Open {
     AccountWriting,
     /// That account's offline selection and storage comparison.
     AccountStorage,
+    /// That account's tab "Sync" with the demo's run under way (issue #422).
+    AccountSync,
     /// That page's overview with its open questions: the open folder role and the sync problem.
     AccountQuestion,
     /// "Unfiltered" (until issue #337 "With attachments") with the demo's invoice open (task M12.6)
@@ -1563,7 +1571,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 71] = [
+    const ALL: [(&'static str, Open); 72] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1618,6 +1626,7 @@ impl Open {
         ("account-folders", Open::AccountFolders),
         ("account-writing", Open::AccountWriting),
         ("account-storage", Open::AccountStorage),
+        ("account-sync", Open::AccountSync),
         ("account-question", Open::AccountQuestion),
         ("attachment-menu", Open::AttachmentMenu),
         ("save-all-menu", Open::SaveAllMenu),
@@ -1657,6 +1666,7 @@ impl Open {
             Open::AccountFolders => Some(AccountScene::Folders),
             Open::AccountWriting => Some(AccountScene::Writing),
             Open::AccountStorage => Some(AccountScene::Storage),
+            Open::AccountSync => Some(AccountScene::Sync),
             _ => None,
         }
     }
@@ -1670,6 +1680,8 @@ enum AccountScene {
     /// "Writing" with a changed sender name, so the save bar stands.
     Writing,
     Storage,
+    /// The tab "Sync" (issue #422).
+    Sync,
 }
 
 impl AccountScene {
@@ -1681,6 +1693,7 @@ impl AccountScene {
             AccountScene::Folders => vec![Account::Tab(Tab::Folders.index())],
             AccountScene::Writing => vec![Account::Tab(Tab::Writing.index()), Account::SenderName(DEMO_SENDER.into())],
             AccountScene::Storage => vec![Account::Tab(Tab::Storage.index())],
+            AccountScene::Sync => vec![Account::Tab(Tab::Sync.index())],
         }
     }
 }
@@ -2516,6 +2529,10 @@ pub struct App<S> {
     /// The tab of `--open account…` (task DS.6), opened on the first mail account like a backup
     /// state.
     staged_account: Option<AccountScene>,
+    /// The sync question of an account's page on its way (issue #422). The core holds it until
+    /// something changes, up to 25 seconds; replacing the handle, because another account's page
+    /// opened, drops the old question, so one stays out.
+    sync_query: Option<iced::task::Handle>,
     /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
     launch: Launch,
     /// The one-time part of `launch.open` (opening a panel) has been done.
@@ -3076,6 +3093,11 @@ pub enum Message {
     /// The answer to one backup request, tagged with its originating mail account. The core's
     /// errors are `Ok(Response::Error)` with their code ([`App::ask_mail_backup`]).
     MailBackupAnswered(String, Box<Result<torro_ipc::Response, String>>),
+    /// The answer to the sync question of an account's page (`mail.sync_status`, issue #422), with
+    /// the account it asked about; the core's errors as `Ok(Response::Error)` ([`App::ask_mail_sync`]).
+    MailSyncAnswered(String, Box<Result<torro_ipc::Response, String>>),
+    /// The arrows of "Syncing…" turn a step further: only a redraw, sent while they turn.
+    SpinTick,
     /// What the system's chooser of a backup page returned: a path, or `None` when it was cancelled.
     BackupChosen(settings_mail::BackupChooser, Option<std::path::PathBuf>),
     /// What the system's folder chooser of Settings › Attachments returned (task M12.7): the folder
@@ -3879,6 +3901,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             settings_memory: torro_settings_ui::Memory::default(),
             staged_backup: open.and_then(Open::backup_scene),
             staged_account: open.and_then(Open::account_scene),
+            sync_query: None,
             opened: false,
             categories: Vec::new(),
             open_groups: std::collections::BTreeSet::new(),
@@ -4186,6 +4209,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // A group of the rail waits for the pointer to rest on its icon (decision B of E14).
         if self.rail_pending.is_some() {
             subscriptions.push(iced::time::every(RAIL_TICK).map(Message::RailTick));
+        }
+        // The arrows of "Syncing…" turn only while an account's sync really runs (issue #422);
+        // otherwise nothing moves and nothing redraws.
+        if self.sync_spinning() {
+            subscriptions.push(iced::time::every(SPIN_TICK).map(|_| Message::SpinTick));
         }
         if self.split.dragging {
             subscriptions.push(split::release().map(|()| Message::Split(SplitEvent::Release)));
@@ -4734,6 +4762,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     settings_mail::poll_request(state)
                 });
                 let backup_poll = backup_poll.map_or_else(Task::none, |request| self.ask_mail_backup(request));
+                // A sync question that failed is asked again now (issue #422).
+                if let Some(pane) = self.settings.as_mut()
+                    && let SettingsState::Mail(state) = &mut pane.sections
+                {
+                    settings_mail::sync_tick(state);
+                }
+                let sync = self.ask_mail_sync();
                 let settings = self.settings.as_mut().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 return Task::batch([
                     self.fetch_appearance(),
@@ -4742,6 +4777,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     self.zoom.fetch().map(Message::Zoom),
                     self.load(),
                     backup_poll,
+                    sync,
                     settings.unwrap_or_else(Task::none),
                 ]);
             }
@@ -4910,7 +4946,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if loaded {
                     self.show_staged_backup();
                 }
-                return self.settings_outcome(outcome);
+                // A load can open an account's page (`--open account…`): its sync is asked then.
+                let outcome = self.settings_outcome(outcome);
+                return Task::batch([outcome, self.ask_mail_sync()]);
             }
             Message::SettingsPage(message) => {
                 // "Choose…" on a backup page: the window opens the system's chooser, never the page.
@@ -4932,7 +4970,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
                 let outcome = pane.host.act(action);
-                return self.settings_outcome(outcome);
+                // A click may have opened an account's page or "Retry" on its tab "Sync" (issue #422).
+                let outcome = self.settings_outcome(outcome);
+                return Task::batch([outcome, self.ask_mail_sync()]);
             }
             Message::BackupChosen(chooser, Some(path)) => {
                 let chosen = SettingsMessage::Mail(settings_mail::backup_chosen(chooser, path));
@@ -4955,6 +4995,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     settings_mail::backup_answered(state, &account, &answer);
                 }
             }
+            // Closed settings keep the answer for when they open again; open ones ask the next
+            // question at once, which waits for the next change after this answer.
+            Message::MailSyncAnswered(account, answer) => {
+                if let Some(pane) = self.settings.as_mut()
+                    && let SettingsState::Mail(state) = &mut pane.sections
+                {
+                    settings_mail::sync_answered(state, &account, &answer);
+                } else if let Some(state) = self.saved_mail_settings.as_mut() {
+                    settings_mail::sync_answered(state, &account, &answer);
+                }
+                return self.ask_mail_sync();
+            }
+            // Nothing to change: the update alone makes the window draw the arrows at their new turn.
+            Message::SpinTick => {}
             Message::OpenControlCentre => {
                 self.close_menus();
                 connect::open_settings();
@@ -7428,6 +7482,64 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Task::done(Message::MailBackupAnswered(account, Box::new(Ok(answer))))
             }
         }
+    }
+
+    /// The mail settings while they show the section "Accounts" (where an account's page is).
+    fn accounts_settings(&mut self) -> Option<&mut settings_mail::State> {
+        let pane = self.settings.as_mut()?;
+        if pane.host.current().id != settings_mail::ACCOUNTS_SECTION {
+            return None;
+        }
+        match &mut pane.sections {
+            SettingsState::Mail(state) => Some(state),
+            SettingsState::Inbox(_) => None,
+        }
+    }
+
+    /// Whether the arrows of an open account's "Syncing…" turn ([`settings_mail::spinning`]).
+    fn sync_spinning(&self) -> bool {
+        self.settings.as_ref().is_some_and(|pane| {
+            pane.host.current().id == settings_mail::ACCOUNTS_SECTION
+                && matches!(&pane.sections, SettingsState::Mail(state) if settings_mail::spinning(state))
+        })
+    }
+
+    /// Sends the next sync question of the open account's page (`mail.sync_status`, issue #422),
+    /// if one is due ([`settings_mail::sync_request`]); its answer comes back as
+    /// [`Message::MailSyncAnswered`] with the account. Like a backup it goes straight to the socket,
+    /// never through the host: the core holds it until something changes, and the host's asks go
+    /// one at a time (#397). A new question drops the one on its way (another account's page
+    /// opened). The demo answers only a question without `after`: its run never changes, and
+    /// answering every one would ask in a loop.
+    fn ask_mail_sync(&mut self) -> Task<Message> {
+        let Some(request) = self.accounts_settings().and_then(settings_mail::sync_request) else { return Task::none() };
+        let torro_ipc::Request::MailSyncStatus { account: Some(account), after } = &request else {
+            return Task::none();
+        };
+        let (account, after) = (account.clone(), *after);
+        #[cfg(test)]
+        self.sent.push(Sent::SyncStatus(account.clone(), after));
+        let task = match &self.suite {
+            Source::Core(client) => {
+                let socket = client.socket.clone();
+                // The connection error names the socket path: a fixed text for the person instead.
+                let unreachable = || tr("Torro Workplace isn't responding. It may still be starting.").to_string();
+                Task::perform(
+                    async move { torro_ipc::client::call(&socket, &request).await.map_err(|_| unreachable()) },
+                    move |answer| Message::MailSyncAnswered(account, Box::new(answer)),
+                )
+            }
+            Source::Demo(_) if after.is_some() => return Task::none(),
+            Source::Demo(_) => {
+                let demo = torro_settings_ui::demo::Demo::new();
+                Task::perform(async move { demo.call(request).await }, move |answer| {
+                    Message::MailSyncAnswered(account, Box::new(answer))
+                })
+            }
+        };
+        let (task, handle) = task.abortable();
+        self.sync_query = Some(handle.abort_on_drop());
+        task
     }
 
     /// `--open backup…`: once the settings have the accounts, the staged demo page goes on the first
@@ -19958,6 +20070,47 @@ mod tests {
         assert!(shown.contains("Writing") && shown.contains(DEMO_SENDER), "{shown}");
         assert!(matches!(
             Launch::parse(&args(&["--demo", "--open", "account"])),
+            Err(LaunchError::Conflict("--open account…", _))
+        ));
+    }
+
+    /// Issue #422: `--open account-sync` opens the first account's tab "Sync"; its sync is asked one
+    /// question at a time, the next with the version of the last answer, and the arrows turn (and
+    /// redraw) while the run goes on.
+    #[test]
+    fn the_sync_of_an_account_page_is_asked_one_question_at_a_time() {
+        let launch = Launch::parse(&args(&["--demo", "--view", "mail", "--open", "account-sync"])).expect("valid");
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let mut app = pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0);
+        let demo = Arc::new(torro_settings_ui::demo::Demo::new());
+        let data = block_on(torro_settings_ui::load(demo.clone(), settings_mail::wanted()));
+        let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+        let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = app.settings.as_ref() else {
+            panic!("mail settings");
+        };
+        assert!(format!("{:?}", state.accounts).contains("tab: Sync"), "the tab Sync");
+        let account = "mail:anna@mailbox.org".to_string();
+        let asked = |app: &App<DemoSource>| {
+            app.sent.iter().filter(|sent| matches!(sent, Sent::SyncStatus(..))).cloned().collect::<Vec<_>>()
+        };
+        assert_eq!(asked(&app), [Sent::SyncStatus(account.clone(), None)], "the page asked at once");
+        let _ = app.update(Message::Tick);
+        let _ = app.update(Message::SettingsPage(SettingsMessage::Mail(settings_mail::Message::Accounts(
+            settings_mail::accounts::Message::Tab(0),
+        ))));
+        assert_eq!(asked(&app).len(), 1, "one question at a time");
+        assert!(!app.sync_spinning());
+
+        let request = torro_ipc::Request::MailSyncStatus { account: Some(account.clone()), after: None };
+        let answer = block_on(demo.call(request));
+        let _ = app.update(Message::MailSyncAnswered(account.clone(), Box::new(answer)));
+        assert_eq!(asked(&app).last(), Some(&Sent::SyncStatus(account.clone(), Some(1))), "then after its version");
+        assert!(app.sync_spinning(), "the demo's run goes on");
+        // In the demo that question is never answered, so nothing asks in a loop.
+        let _ = app.update(Message::Tick);
+        assert_eq!(asked(&app).len(), 2);
+        assert!(matches!(
+            Launch::parse(&args(&["--demo", "--open", "account-sync"])),
             Err(LaunchError::Conflict("--open account…", _))
         ));
     }

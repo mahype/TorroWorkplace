@@ -3405,6 +3405,19 @@ mod tests {
     }
 
     /// Issue #409: the overview takes a span and, without an account, counts every one in reach.
+    /// Issue #422: `mail_sync_status` is the one request `mail.sync_status`, with or without waiting.
+    #[test]
+    fn mail_sync_status_takes_an_account_and_a_version() {
+        assert_eq!(
+            request_for("mail_sync_status", args(json!({})), &Utc),
+            Ok(Request::MailSyncStatus { account: None, after: None })
+        );
+        assert_eq!(
+            request_for("mail_sync_status", args(json!({"account": "mail:anna@example.org", "after": 7})), &Utc),
+            Ok(Request::MailSyncStatus { account: Some("mail:anna@example.org".into()), after: Some(7) })
+        );
+    }
+
     #[test]
     fn mail_overview_takes_a_span() {
         let month = request_for("mail_overview", args(json!({"range": "month"})), &Utc);
