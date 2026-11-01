@@ -3989,7 +3989,7 @@ fn used_by_row<'a>(account: &AccountInfo, data: &dyn Seen) -> Option<Element<'a,
     let names = used_by_names(account, data)?;
     // Cut with "…" and the whole list as a tooltip where the row is narrow, flush right like the
     // values of Connection (design review of #410).
-    let value = container(widgets::ellipsized(typo::body(), names, theme::text_2)).width(Fill).align_x(Alignment::End);
+    let value = widgets::ellipsized_end(typo::body(), names, theme::text_2);
     Some(setting_row(None, tr("Used by"), None, value))
 }
 
