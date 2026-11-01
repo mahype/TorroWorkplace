@@ -225,6 +225,30 @@ pub fn installed_bundle(app: AppId) -> Option<PathBuf> {
     }
 }
 
+/// What a client asks to sign in to without a secret of its own (issue #410): a GitHub account
+/// (`accounts.connect_github`) or an ntfy server (`accounts.connect_ntfy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignIn {
+    GitHub,
+    Ntfy,
+}
+
+/// The app whose settings take a client's `sign_in` (issue #410): without the main application
+/// (`main_app`) the first of `installed` that uses such an account – GitHub Tasks, else the
+/// Notification Hub; ntfy the Notification Hub, else the App Feed. `None` with the main
+/// application, or with none of them installed: the control centre's accounts page, as before.
+pub fn sign_in_app(sign_in: SignIn, main_app: bool, installed: &[AppInfo]) -> Option<AppId> {
+    if main_app {
+        return None;
+    }
+    let doors: &[AppId] = match sign_in {
+        SignIn::GitHub => &[AppId::TASKS, AppId::INBOX],
+        SignIn::Ntfy => &[AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
+    };
+    let there = |app: &AppId| installed.iter().any(|info| info.installed && info.window_class == app.window_class);
+    doors.iter().copied().find(there)
+}
+
 /// How `Core::open_app` starts `app`'s window when the window manager shows none (issue #279): with
 /// its `bundle` ([`installed_bundle`]) `open -n -a <bundle>`, a new process whose program opens the
 /// entry's window without arguments or hands over to a running one through its instance channel;
@@ -740,6 +764,32 @@ pub mod tests {
 
     fn binary(name: &str) -> String {
         format!("{name}{}", std::env::consts::EXE_SUFFIX)
+    }
+
+    /// Issue #410: without the main application a client's sign-in opens the first installed app
+    /// that uses the account; with it, or with none of them, the control centre as before.
+    #[test]
+    fn a_sign_in_opens_the_first_app_that_uses_it() {
+        let only = |apps: &[AppId]| -> Vec<AppInfo> {
+            AppId::ALL
+                .iter()
+                .filter(|app| **app != AppId::WORKPLACE)
+                .map(|app| AppInfo {
+                    binary: app.binary.into(),
+                    name: app.display_name.into(),
+                    window_class: app.window_class.into(),
+                    installed: apps.contains(app),
+                })
+                .collect()
+        };
+        let every = only(AppId::ALL);
+        assert_eq!(sign_in_app(SignIn::GitHub, true, &every), None, "with the main application");
+        assert_eq!(sign_in_app(SignIn::GitHub, false, &every), Some(AppId::TASKS));
+        assert_eq!(sign_in_app(SignIn::GitHub, false, &only(&[AppId::INBOX])), Some(AppId::INBOX));
+        assert_eq!(sign_in_app(SignIn::Ntfy, false, &every), Some(AppId::INBOX));
+        let feed = only(&[AppId::INBOX_NOTIFICATIONS, AppId::CALENDAR]);
+        assert_eq!(sign_in_app(SignIn::Ntfy, false, &feed), Some(AppId::INBOX_NOTIFICATIONS));
+        assert_eq!(sign_in_app(SignIn::GitHub, false, &only(&[AppId::CALENDAR])), None, "none uses it");
     }
 
     /// A fake `torroassistant` in `dir` that runs the shell code `body` ([`fake_at`]).

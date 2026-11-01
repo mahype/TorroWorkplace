@@ -286,6 +286,17 @@ pub fn reminder_window_title(monitor: &str) -> String {
     format!("Reminder · {monitor}")
 }
 
+/// Whether the main application is installed and the suite's apps, looked up now (issue #410).
+fn installed_now() -> (bool, Vec<torro_ipc::AppInfo>) {
+    (crate::apps::main_app_installed(), crate::apps::list())
+}
+
+/// What tests say is installed: the main application, so a client's sign-in shows the control
+/// centre (which they count) and no app starts by accident.
+fn main_app_only() -> (bool, Vec<torro_ipc::AppInfo>) {
+    (true, Vec::new())
+}
+
 /// Opens `url` in the system browser, for `inbox.open_item`. The inbox let only `http`/`https`
 /// through ([`Inbox::opening`]).
 fn open_in_browser(url: &str) -> Result<(), String> {
@@ -2413,6 +2424,10 @@ pub struct Core {
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
+    /// Whether the main application is installed, and the suite's apps (issue #410): where a
+    /// client's sign-in opens ([`crate::apps::sign_in_app`]). Tests say "the main application", so
+    /// they start no app.
+    installed: fn() -> (bool, Vec<torro_ipc::AppInfo>),
     /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
     open_url: fn(&str) -> Result<(), String>,
     /// Tells a remote source that one of its entries is done (task E5.2,
@@ -2554,6 +2569,7 @@ impl Core {
             restore_plans: RestorePlans::default(),
             mail_dirs: None,
             start_control_centre,
+            installed: if cfg!(test) { main_app_only } else { installed_now },
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
             settle_done: crate::sources::settle_done,
             mail_discovery: OnceLock::new(),
@@ -9604,13 +9620,31 @@ impl Core {
     }
 
     /// `accounts.connect_github`. The control centre (app key, tray) takes over the GitHub CLI's
-    /// sign-in. A client never does: the core shows the person the accounts page
-    /// ([`show_control_centre`]) and answers `opened`.
+    /// sign-in. A client never does: the core shows the person the accounts page – of the control
+    /// centre, or without it of an app ([`Core::show_sign_in`]) – and answers `opened`.
     async fn connect_github(&self, client: bool) -> Response {
         if !client {
             return self.refresh_connected(account_answer(self.github.connect_cli().await));
         }
-        match show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await {
+        self.show_sign_in(crate::apps::SignIn::GitHub).await
+    }
+
+    /// Shows the person where a client's `sign_in` is finished (issue #410): without the main
+    /// application the settings of the first installed app that uses such an account, at Accounts
+    /// (`--settings accounts`, [`crate::apps::sign_in_app`]); else the control centre's accounts
+    /// page ([`show_control_centre`]). Answers `opened`, or why nothing could open.
+    async fn show_sign_in(&self, sign_in: crate::apps::SignIn) -> Response {
+        let (main_app, apps) = (self.installed)();
+        let shown = match crate::apps::sign_in_app(sign_in, main_app, &apps) {
+            Some(app) => {
+                let args = ["--settings".to_string(), "accounts".to_string()];
+                let bundle = crate::apps::installed_bundle(app);
+                let dirs = crate::apps::search_dirs();
+                crate::apps::launch(crate::apps::args_start(app, &args, &dirs, bundle.as_deref())).await
+            }
+            None => show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await,
+        };
+        match shown {
             Ok(()) => Response::Opened,
             Err(message) => Response::Error { code: "error".into(), message },
         }
@@ -9630,10 +9664,7 @@ impl Core {
     /// once. Any other request is not this function's and gets `error`.
     async fn ntfy_request(&self, request: Request, client: bool) -> Response {
         if client && matches!(request, Request::ConnectNtfy { .. }) {
-            return match show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await {
-                Ok(()) => Response::Opened,
-                Err(message) => Response::Error { code: "error".into(), message },
-            };
+            return self.show_sign_in(crate::apps::SignIn::Ntfy).await;
         }
         let _writing = self.calendar_sign_ins.lock().await;
         let answer = match request {

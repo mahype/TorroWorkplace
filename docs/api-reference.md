@@ -1931,7 +1931,7 @@ Starts signing in to a Nextcloud server and returns the login URL. A person fini
 
 Zugriff `admin` · MCP-Tool `accounts_connect_github`
 
-Asks for a GitHub account to be connected. For agents and scripts the core only shows the Torro Workplace control centre (an open one comes to the front, else it opens on its accounts page), where a person picks the GitHub CLI's sign-in or pastes a token, and answers `opened`; the token never reaches the caller. The control centre itself takes over the GitHub CLI's sign-in (`gh auth token`) and gets `not-connected` without one.
+Asks for a GitHub account to be connected. For agents and scripts the core only shows the Torro Workplace control centre on its accounts page – without the main application the settings of Tasks at Accounts, else of the Notification Hub –, where a person picks the GitHub CLI's sign-in or pastes a token, and answers `opened`; the token never reaches the caller. The control centre itself takes over the GitHub CLI's sign-in (`gh auth token`) and gets `not-connected` without one.
 
 Keine Felder.
 
@@ -2082,7 +2082,7 @@ Connects an AI account (Ollama, LM Studio, Strata, OpenRouter, Anthropic, anothe
 
 Zugriff `admin` · MCP-Tool `accounts_connect_ntfy`
 
-Asks for an ntfy server's topics to be connected to the inbox. For agents and scripts the core only shows the Torro Workplace control centre on its accounts page, where a person enters the topics with their labels and, if a topic needs one, the login, and answers `opened`; nothing is stored by this call. The control centre itself checks the server and the topics without a login and adds the account `ntfy:<host>`; `auth` means a topic needs a login, `conflict` that the server has an account already.
+Asks for an ntfy server's topics to be connected to the inbox. For agents and scripts the core only shows the Torro Workplace control centre on its accounts page – without the main application the settings of the Notification Hub at Accounts, else of the App Feed –, where a person enters the topics with their labels and, if a topic needs one, the login, and answers `opened`; nothing is stored by this call. The control centre itself checks the server and the topics without a login and adds the account `ntfy:<host>`; `auth` means a topic needs a login, `conflict` that the server has an account already.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
