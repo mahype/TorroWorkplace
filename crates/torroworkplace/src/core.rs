@@ -1956,9 +1956,15 @@ async fn category_job_run(
                     }
                 }
             }
+            // Counted also when a pause or cancel came while this mail was written (review of #420):
+            // it ran when the answer was taken, and a resumed job would not find a sorted mail again.
+            // A resume counts on under the next generation, after this worker let go.
             let _ = inbox.change_category_job(&id, |job| {
                 if job.generation == generation
-                    && job.state == CategoryJobState::Running
+                    && matches!(
+                        job.state,
+                        CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Cancelled
+                    )
                     && let Some(progress) = job.accounts.iter_mut().find(|item| item.account == account.account)
                 {
                     progress.cursor = seq;
@@ -25580,10 +25586,7 @@ mod tests {
         let job = job_ended(&core, std::time::Duration::from_secs(10)).await;
         assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
         let [progress] = job.accounts.as_slice() else { panic!("one account") };
-        assert_eq!((progress.eligible, progress.failed), (16, 0));
-        // No mail counted twice. A pause between a mail's write and its count leaves that one sorted
-        // but not counted, as before #420: resumed, the job no longer finds it without a category.
-        assert!((15..=16).contains(&progress.processed), "counted {}", progress.processed);
+        assert_eq!((progress.eligible, progress.processed, progress.failed), (16, 16, 0), "every mail once");
         assert_eq!(progress.cursor, progress.max_sequence);
         let search = Request::SearchMail {
             account: None,
@@ -25700,6 +25703,38 @@ mod tests {
         let asked = ask_to_sort(&core.ai, decider, (&content, &catalogue), false, || true).await;
         assert!(matches!(asked, super::Asked::Stop(DecideError::Ai(torro_core::ai::AiError::Busy(_)))));
         assert_eq!(busy.calls_async().await, 1 + CATEGORY_BUSY_WAITS.len() + 1, "asked again after each wait");
+    }
+
+    /// Review of #420: "Keep mail here" while a busy Jev is waited for stops the job with its reason,
+    /// and the mail is not sent again.
+    #[tokio::test]
+    async fn keeping_mail_here_while_jev_is_busy_stops_the_job_without_asking_again() {
+        use torro_ipc::inbox::CategoryJobState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_after(&jev, std::time::Duration::ZERO, None).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+        decides.delete_async().await;
+        // Busy, and slow to say so: the person keeps mail here before the first refusal comes.
+        let busy = jev
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(429).delay(std::time::Duration::from_millis(400)).json_body(serde_json::json!({}));
+            })
+            .await;
+
+        let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
+        assert!(matches!(core.handle(start).await, Response::CategoryJob { job: Some(_) }));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let keep = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
+        assert_eq!(core.handle(keep).await, Response::Ok);
+
+        let job = job_ended(&core, std::time::Duration::from_secs(10)).await;
+        assert_eq!(job.state, CategoryJobState::Failed);
+        assert_eq!(job.errors, [tr("Sorting may no longer send mail to the cloud.").to_string()]);
+        assert_eq!(busy.calls_async().await, 1, "not asked again");
+        let [progress] = job.accounts.as_slice() else { panic!("one account") };
+        assert_eq!(progress.processed, 0, "the mail waits for the next run");
     }
 
     /// Issue #420, the measurement for the PR: 2,000 mails sorted by a Jev that answers at once in
