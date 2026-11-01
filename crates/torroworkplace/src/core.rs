@@ -1415,8 +1415,8 @@ enum Asked {
     Stop(DecideError),
     /// One try took longer than [`CATEGORY_TIMEOUT`]: the run stops.
     TimedOut,
-    /// The run may no longer ask while the model was busy – paused, cancelled, or "Keep mail here"
-    /// came –: the mail is not sent again.
+    /// The run may no longer ask while the model was busy – paused, cancelled, "Keep mail here" came
+    /// or the model for sorting changed –: the mail is not sent again.
     Halted,
 }
 
@@ -1674,7 +1674,9 @@ async fn write_caught_up(
 
 /// What a sorting job made of one mail before it writes (issue #420, [`JobRun::prepare`]).
 enum JobMail {
-    /// The job is no longer this worker's: paused, cancelled, or resumed by another.
+    /// The job is no longer this worker's (paused, cancelled, or resumed by another), or it may no
+    /// longer ask while the model was busy ([`Asked::Halted`]): the batch ends, and the next stops the
+    /// job with its reason.
     Halted,
     /// Nothing to sort: the mail is gone, or the person or a filter set its category.
     Pass,
@@ -25729,7 +25731,10 @@ mod tests {
         let started = std::time::Instant::now();
         // The worker of the first job lets go just after its job reads as ended.
         let mut answer = core.handle(again.clone()).await;
-        while matches!(&answer, Response::Error { code, .. } if code == "busy") {
+        for _ in 0..500 {
+            if !matches!(&answer, Response::Error { code, .. } if code == "busy") {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             answer = core.handle(again.clone()).await;
         }
