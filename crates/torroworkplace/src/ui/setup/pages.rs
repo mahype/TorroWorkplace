@@ -565,14 +565,7 @@ fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             Some(tr("Models on this computer run here. Nothing you ask them leaves it.").to_string()),
         ),
     ];
-    let groups = [
-        (tr("Open models"), vec![AiProvider::OpenRouter]),
-        (tr("Providers"), vec![AiProvider::Anthropic, AiProvider::OpenAi, AiProvider::Gemini, AiProvider::Mistral]),
-        (
-            tr("Providers in China"),
-            vec![AiProvider::DeepSeek, AiProvider::Qwen, AiProvider::Kimi, AiProvider::Glm, AiProvider::MiniMax],
-        ),
-    ];
+    let groups = cloud_groups();
     let count = groups.len();
     for (index, (name, providers)) in groups.into_iter().enumerate() {
         let rows = providers.into_iter().map(|provider| cloud_row(data, provider)).collect();
@@ -701,16 +694,36 @@ fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Elem
     setting_row(Some(tile), provider.name(), Some(detail), control)
 }
 
+/// The cloud providers in their groups, after the servers on this computer: first Jev, which only
+/// sorts mail (issue #323), then the open models, the providers and those in China.
+fn cloud_groups() -> Vec<(&'static str, Vec<AiProvider>)> {
+    vec![
+        (tr("For sorting mail"), vec![AiProvider::Jev]),
+        (tr("Open models"), vec![AiProvider::OpenRouter]),
+        (tr("Providers"), vec![AiProvider::Anthropic, AiProvider::OpenAi, AiProvider::Gemini, AiProvider::Mistral]),
+        (
+            tr("Providers in China"),
+            vec![AiProvider::DeepSeek, AiProvider::Qwen, AiProvider::Kimi, AiProvider::Glm, AiProvider::MiniMax],
+        ),
+    ]
+}
+
+/// What a cloud provider's row says under its name: where it is, and what sets it apart.
+fn cloud_detail(provider: AiProvider) -> String {
+    let seat = provider.seat().label();
+    match provider {
+        AiProvider::OpenRouter => trf("{seat} · open models from many makers", &[("seat", &seat)]),
+        AiProvider::Jev => trf("{seat} · decides only", &[("seat", &seat)]),
+        _ if provider.open_weights() => trf("{seat} · open weights", &[("seat", &seat)]),
+        _ => seat.to_string(),
+    }
+}
+
 /// A cloud provider: its first letter, its name, where it is (and open weights), and "Add key" or
 /// "Connected".
 fn cloud_row(data: &Data, provider: AiProvider) -> Element<'_, Message> {
     let tile = widgets::source_tile(TileFace::letter(provider.name()), TileSize::Medium, None);
-    let seat = provider.seat().label();
-    let detail = match provider {
-        AiProvider::OpenRouter => trf("{seat} · open models from many makers", &[("seat", &seat)]),
-        _ if provider.open_weights() => trf("{seat} · open weights", &[("seat", &seat)]),
-        _ => seat.to_string(),
-    };
+    let detail = cloud_detail(provider);
     let control: Element<'_, Message> = match has_ai_account(data, provider) {
         true => widgets::state_pill(Icon::CircleCheck, tr("Connected")),
         false => widgets::text_button(None, tr("Add key"), style::button::secondary, Some(Message::AddAiKey(provider))),
@@ -1062,5 +1075,25 @@ pub(super) fn web_detail(state: &State, data: &Data) -> String {
     match names.is_empty() {
         true => tr("Web search off").to_string(),
         false => trf("Web search · {providers}", &[("providers", &names.join(", "))]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #323: Jev has a group of its own right after the servers on this computer, says it only
+    /// decides, and every cloud provider is in exactly one group.
+    #[test]
+    fn jev_comes_first_among_the_cloud_providers_and_decides_only() {
+        let groups = cloud_groups();
+        assert_eq!(groups[0], (tr("For sorting mail"), vec![AiProvider::Jev]));
+        let listed: Vec<AiProvider> = groups.iter().flat_map(|(_, providers)| providers.clone()).collect();
+        for cloud in AiProvider::CLOUD {
+            assert_eq!(listed.iter().filter(|provider| **provider == cloud).count(), 1, "{cloud:?}");
+        }
+        let seat = AiProvider::Jev.seat().label();
+        assert_eq!(cloud_detail(AiProvider::Jev), trf("{seat} · decides only", &[("seat", &seat)]));
+        assert_eq!(cloud_detail(AiProvider::Anthropic), AiProvider::Anthropic.seat().label());
     }
 }

@@ -3,9 +3,10 @@
 //! (`accounts.connect_ai`), its models (`ai.list_models`), finding local servers
 //! (`ai.find_local_servers`), removing it (`accounts.remove_account`).
 //!
-//! The wire formats are `torro_core::ai::{openai, responses, anthropic}`; here they are sent, one
-//! implementation of [`Provider`] per account family ([`OpenAiCompatible`] and [`Anthropic`]), both over
-//! the same [`Wire`], which holds the rules that must not differ between them. Where a model runs
+//! The wire formats are `torro_core::ai::{openai, responses, anthropic, systemone}`; here they are sent,
+//! one implementation of [`Provider`] per account family ([`OpenAiCompatible`], [`Anthropic`] and
+//! [`DecisionOnly`] for Jev, issue #323, which only decides), all over the same [`Wire`], which holds
+//! the rules that must not differ between them. Where a model runs
 //! (task S.23): Ollama's cloud models
 //! run on `ollama.com` through the local Ollama, so its model list says so per model
 //! ([`AiModel::remote`]), and the core keeps the last list per account ([`AiAccounts::known_models`])
@@ -185,6 +186,17 @@ impl Wire {
     /// `error` without any server text that repeats the key ([`openai::scrub`]).
     fn scrubbed(&self, error: AiError) -> AiError {
         openai::scrub(error, self.key.as_ref().map(Secret::expose))
+    }
+
+    /// `POST <base>/systemone` (task E12.3, issue #323): one decision of `request`, read as
+    /// [`systemone::read_decision`] reads it. The base already ends in `/v1`, so this is Ollama's and
+    /// TypeSafe's `/v1/systemone`; both servers speak the same protocol.
+    async fn decide(&self, request: &systemone::DecisionRequest) -> Result<systemone::DecisionReply, AiError> {
+        let body = systemone::decide_body_for(request)?;
+        let builder = self.request(reqwest::Method::POST, "systemone").json(&body);
+        let response = self.send(builder).await?;
+        let bytes = self.body(response).await?;
+        systemone::read_decision(&bytes)
     }
 }
 
@@ -414,9 +426,10 @@ impl Provider for OpenAiCompatible {
         })
     }
 
-    /// `POST <base>/systemone` (task E12.3): the base already ends in `/v1`, so this is Ollama's
-    /// `/v1/systemone`. Only Ollama speaks the protocol; every other OpenAI-compatible server
-    /// keeps the trait's default and refuses, rather than posting to an address it does not know.
+    /// `POST <base>/systemone` (task E12.3, [`Wire::decide`]): the base already ends in `/v1`, so
+    /// this is Ollama's `/v1/systemone`. Of the OpenAI-compatible servers only Ollama speaks the
+    /// protocol (Jev has a client of its own, [`DecisionOnly`]); every other one refuses, rather than
+    /// posting to an address it does not know.
     fn decide<'a>(
         &'a self,
         request: &'a systemone::DecisionRequest,
@@ -424,15 +437,74 @@ impl Provider for OpenAiCompatible {
         Box::pin(async move {
             if self.provider != AiProvider::Ollama {
                 return Err(AiError::Invalid(
-                    tr("Only Ollama offers decision models at the moment. Pick a model of an Ollama account.").into(),
+                    tr("Only Ollama and Jev offer decision models at the moment. Pick a model of one of them.").into(),
                 ));
             }
-            let body = systemone::decide_body_for(request)?;
-            let builder = self.wire.request(reqwest::Method::POST, "systemone").json(&body);
-            let response = self.wire.send(builder).await?;
-            let bytes = self.wire.body(response).await?;
-            systemone::read_decision(&bytes)
+            self.wire.decide(request).await
         })
+    }
+}
+
+/// An account whose server only decides (issue #323): Jev by TypeSafe, which answers the SystemOne
+/// protocol at `<base>/systemone` with `Authorization: Bearer` ([`Auth::Bearer`]) and nothing else.
+/// Its one model is fixed ([`AiProvider::fixed_models`]), so listing asks no server, and a chat is
+/// refused in words. `Debug` never shows the key ([`Secret`]).
+#[derive(Debug, Clone)]
+pub struct DecisionOnly {
+    wire: Wire,
+    provider: AiProvider,
+}
+
+impl DecisionOnly {
+    /// The server of `provider` at `base` with `key`. Sends nothing yet.
+    pub fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> DecisionOnly {
+        DecisionOnly { wire: Wire::new(http, base, key, Auth::Bearer), provider }
+    }
+
+    /// Whether the server takes this account: one small decision to [`ai::JEV_MODEL`], since the
+    /// server lists no models that could tell. A key it refuses (403) is [`AiError::Auth`]
+    /// ([`openai::error_of`]); the probe costs a few tokens and runs only when an account is
+    /// connected.
+    pub async fn check(&self) -> Result<(), AiError> {
+        let mut questions = std::collections::BTreeMap::new();
+        questions.insert(
+            "ok".to_string(),
+            systemone::Question::Noul { instructions: "Is this a check of the key?".to_string() },
+        );
+        let probe = systemone::DecisionRequest {
+            model: ai::JEV_MODEL.to_string(),
+            state: "Torro Workplace checks the key.".to_string(),
+            questions,
+        };
+        self.wire.decide(&probe).await.map(drop)
+    }
+}
+
+impl Provider for DecisionOnly {
+    /// The fixed list of the provider ([`AiProvider::fixed_models`]), without a request.
+    fn models(&self) -> BoxFuture<'_, Result<Vec<AiModel>, AiError>> {
+        let models = self.provider.fixed_models().unwrap_or_default();
+        Box::pin(async move { Ok(models) })
+    }
+
+    /// Refused: the server only decides.
+    fn chat<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+        on_text: &'a mut (dyn FnMut(&str) + Send),
+    ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
+        let _ = (request, on_text);
+        Box::pin(async {
+            Err(AiError::Invalid(tr("Jev only sorts mail; it cannot chat. Pick another model for chatting.").into()))
+        })
+    }
+
+    /// `POST <base>/systemone` ([`Wire::decide`]).
+    fn decide<'a>(
+        &'a self,
+        request: &'a systemone::DecisionRequest,
+    ) -> BoxFuture<'a, Result<systemone::DecisionReply, AiError>> {
+        Box::pin(self.wire.decide(request))
     }
 }
 
@@ -519,14 +591,17 @@ impl Provider for Anthropic {
 enum AiClient {
     OpenAi(OpenAiCompatible),
     Anthropic(Anthropic),
+    /// Jev (issue #323), which only decides.
+    DecisionOnly(DecisionOnly),
 }
 
 impl AiClient {
-    /// The server of `provider` at `base` with `key`. Anthropic speaks its own protocol, every
-    /// other provider the OpenAI-compatible one.
+    /// The server of `provider` at `base` with `key`. Anthropic speaks its own protocol, Jev only
+    /// the SystemOne one ([`DecisionOnly`]), every other provider the OpenAI-compatible one.
     fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> AiClient {
         match provider {
             AiProvider::Anthropic => AiClient::Anthropic(Anthropic::new(http, base, key)),
+            AiProvider::Jev => AiClient::DecisionOnly(DecisionOnly::new(http, provider, base, key)),
             _ => AiClient::OpenAi(OpenAiCompatible::new(http, provider, base, key)),
         }
     }
@@ -536,6 +611,7 @@ impl AiClient {
         match self {
             AiClient::OpenAi(client) => client.check().await,
             AiClient::Anthropic(client) => client.check().await,
+            AiClient::DecisionOnly(client) => client.check().await,
         }
     }
 }
@@ -545,6 +621,7 @@ impl Provider for AiClient {
         match self {
             AiClient::OpenAi(client) => client.models(),
             AiClient::Anthropic(client) => client.models(),
+            AiClient::DecisionOnly(client) => client.models(),
         }
     }
 
@@ -556,11 +633,12 @@ impl Provider for AiClient {
         match self {
             AiClient::OpenAi(client) => client.chat(request, on_text),
             AiClient::Anthropic(client) => client.chat(request, on_text),
+            AiClient::DecisionOnly(client) => client.chat(request, on_text),
         }
     }
 
-    /// Handed on, so a decision reaches the one protocol that speaks it (task E12.3); Anthropic
-    /// keeps the trait's default.
+    /// Handed on, so a decision reaches the protocols that speak it (task E12.3: Ollama; issue
+    /// #323: Jev); Anthropic keeps the trait's default.
     fn decide<'a>(
         &'a self,
         request: &'a systemone::DecisionRequest,
@@ -568,6 +646,7 @@ impl Provider for AiClient {
         match self {
             AiClient::OpenAi(client) => client.decide(request),
             AiClient::Anthropic(client) => client.decide(request),
+            AiClient::DecisionOnly(client) => client.decide(request),
         }
     }
 }
@@ -967,13 +1046,29 @@ impl AiAccounts {
     }
 
     /// One call to the decision model of the account `id` (task E12.6, `torro_core::ai::systemone`).
-    /// `not-connected` when the account has no key on this device, `not-found` when it is gone.
+    /// `not-connected` when the account has no key on this device, `not-found` when it is gone. The
+    /// answer is the server's word on the account as a model list is (issue #323): an answer renews
+    /// when it last answered, a refused key becomes its problem – for Jev, whose list asks no server,
+    /// the only way a key it no longer takes shows at the account.
     pub async fn decide(
         &self,
         id: &str,
         request: &systemone::DecisionRequest,
     ) -> Result<systemone::DecisionReply, AiError> {
-        self.client(id).await?.decide(request).await
+        let result = self.client(id).await?.decide(request).await;
+        if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
+            match &result {
+                Ok(_) => {
+                    slot.checked = Some(Utc::now());
+                    slot.problem = None;
+                }
+                Err(AiError::Auth) => {
+                    slot.problem = Some(tr("Connect again: the server does not accept the API key").into());
+                }
+                Err(_) => {}
+            }
+        }
+        result
     }
 
     /// One turn of a decision through a chat model (task MW.3, `torro_core::ai::decide_chat::request`) to
@@ -1057,16 +1152,19 @@ impl AiAccounts {
         .await
     }
 
-    /// The models of the account `id`, asked from its server now ([`Provider::models`]); without
+    /// The models of the account `id`, asked from its server now ([`Provider::models`]), or the
+    /// provider's fixed list without a request (Jev, issue #323, [`AiProvider::fixed_models`]); without
     /// `all` only those not known to have closed weights ([`ai::open_weights_only`]). Reading
     /// changes no data, only how the account is shown: an answer renews when it last answered, a
-    /// refused key becomes its problem until it answers again. The whole list is kept for
+    /// refused key becomes its problem until it answers again. A fixed list is no answer, so it
+    /// leaves both alone; for Jev a decision tells ([`AiAccounts::decide`]). The whole list is kept for
     /// [`AiAccounts::known_models`]. The one exception (#231): the first list after the update keeps
     /// on what "Automatic" used at the account ([`AiAccounts::take_over`]), once.
     pub async fn models(&self, id: &str, all: bool) -> Result<Vec<AiModel>, AiError> {
         let result = self.provider(id).await?.models().await;
         if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
             match &result {
+                Ok(models) if slot.provider().fixed_models().is_some() => slot.models = Some(models.clone()),
                 Ok(models) => {
                     slot.checked = Some(Utc::now());
                     slot.problem = None;
@@ -1306,8 +1404,16 @@ impl AiAccounts {
         // Models turned on by id count while the core has no list to check them against; with one,
         // only those the server still offers. So does a model "Automatic" took before the switches
         // came (#231), still to be kept on: nobody loses the assistant while its server is away.
-        let listed =
-            self.slots.read().await.iter().find(|slot| slot.account.id == id).and_then(|slot| slot.models.clone());
+        // A provider with a fixed list (Jev, issue #323) always has its list: its one model only
+        // decides, so it is never an engine for a chat, also before the core held a list.
+        let listed = self
+            .slots
+            .read()
+            .await
+            .iter()
+            .find(|slot| slot.account.id == id)
+            .and_then(|slot| slot.models.clone())
+            .or_else(|| server.0.fixed_models());
         if (turned_on || automatic) && listed.is_none() {
             return true;
         }
@@ -1669,6 +1775,35 @@ pub(crate) mod tests {
         server
     }
 
+    /// Jev by TypeSafe (issue #323) on `server`: `POST /v1/systemone` answers a decision for the
+    /// key [`KEY`] with `Authorization: Bearer`, any other request is refused with 403 as TypeSafe
+    /// does; there is no model list. Answers the two mocks, to count what was sent.
+    pub(crate) async fn mock_jev(server: &MockServer) -> (httpmock::Mock<'_>, httpmock::Mock<'_>) {
+        let decides = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone").header("authorization", format!("Bearer {KEY}"));
+                then.status(200).json_body(json!({
+                    "model": "jev-latest",
+                    "answers": {
+                        "ok": {"type": "noul", "noul": 0.97},
+                        "category": {"type": "choice", "choice": "invoice",
+                                     "probabilities": {"invoice": 0.88, "other": 0.12}, "confidence": 0.88},
+                        "needs_reply": {"type": "noul", "noul": 0.1},
+                        "urgency": {"type": "score", "score": 0.4, "confidence": 0.7}
+                    },
+                    "usage": {"input_tokens": 1700, "output_tokens": 9}
+                }));
+            })
+            .await;
+        let refuses = server
+            .mock_async(|when, then| {
+                when.any_request();
+                then.status(403).json_body(json!({"detail": {"error_type": "authentication_error"}}));
+            })
+            .await;
+        (decides, refuses)
+    }
+
     /// An Ollama with a cloud model first and a local one (task S.23), both calling tools; with
     /// `tags` it says in `/api/tags` which runs elsewhere, without it does not answer there.
     pub(crate) async fn fake_ollama_with_cloud(tags: bool) -> MockServer {
@@ -1776,6 +1911,141 @@ pub(crate) mod tests {
         assert!((confidence - 0.91).abs() < 0.001);
         assert!((reply.noul("needs_reply").expect("a noul") - 0.2).abs() < 0.001);
         assert_eq!(reply.usage.expect("counted").prompt_tokens, 120);
+    }
+
+    /// Issue #323: Jev is connected with a probe decision and its key as `Bearer`, lists its one
+    /// model without a request, decides at `/v1/systemone` and refuses to chat.
+    #[tokio::test]
+    async fn jev_is_checked_by_a_decision_lists_its_model_without_asking_and_never_chats() {
+        use std::collections::BTreeMap;
+        use torro_core::ai::systemone::{DecisionRequest, Question};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let keys = MemoryTokens::default();
+        let jev = MockServer::start_async().await;
+        let (decides, refuses) = mock_jev(&jev).await;
+        let base = jev.url("/v1");
+        let ai = service(dir.path(), &keys, Vec::new());
+
+        let info = ai.connect(AiProvider::Jev, Some(&base), Secret::new(KEY)).await.expect("connected");
+        let host = format!("127.0.0.1:{}", jev.port());
+        assert_eq!(info.id, format!("ai:jev@{host}"));
+        assert_eq!(info.label, format!("Jev ({host})"));
+        assert_eq!(keys.get_plain(&info.id).as_deref(), Some(KEY));
+        assert_eq!((decides.calls_async().await, refuses.calls_async().await), (1, 0), "one probe");
+
+        let models = ai.models(&info.id, false).await.expect("models, open ones only");
+        assert_eq!(models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(), [ai::JEV_MODEL]);
+        assert_eq!((models[0].decision, models[0].tools, models[0].remote), (Some(true), Some(false), Some(true)));
+        assert_eq!((decides.calls_async().await, refuses.calls_async().await), (1, 0), "the list asks no server");
+
+        let mut questions = BTreeMap::new();
+        questions.insert(
+            "category".to_string(),
+            Question::Choice {
+                instructions: "What is this mail?".into(),
+                criteria: vec![("invoice".into(), "A bill".into()), ("other".into(), "Anything else".into())],
+            },
+        );
+        questions.insert("needs_reply".to_string(), Question::Noul { instructions: "Is an answer waited for?".into() });
+        let asked = DecisionRequest { model: ai::JEV_MODEL.into(), state: "Your invoice".into(), questions };
+        let reply = ai.decide(&info.id, &asked).await.expect("a decision");
+        let (choice, confidence) = reply.choice("category").expect("a choice");
+        assert_eq!(choice, "invoice");
+        assert!((confidence - 0.88).abs() < 0.001);
+        assert!((reply.noul("needs_reply").expect("a noul") - 0.1).abs() < 0.001);
+        assert_eq!(reply.usage.expect("counted").prompt_tokens, 1700);
+        assert!(!reply.by_chat);
+
+        let client = ai.client(&info.id).await.expect("a client");
+        let chat = client.chat(&ask_calendar(), &mut |_| {}).await;
+        assert_eq!(
+            chat,
+            Err(AiError::Invalid(tr("Jev only sorts mail; it cannot chat. Pick another model for chatting.").into()))
+        );
+    }
+
+    /// Review of #430: a key Jev no longer takes shows at the account at the first decision it
+    /// refuses; listing its fixed models neither renews when it was checked nor clears that problem,
+    /// and a decision it answers again does.
+    #[tokio::test]
+    async fn a_key_jev_no_longer_takes_shows_at_the_account() {
+        use std::collections::BTreeMap;
+        use torro_core::ai::systemone::{DecisionRequest, Question};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let keys = MemoryTokens::default();
+        let jev = MockServer::start_async().await;
+        let (decides, refuses) = mock_jev(&jev).await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let info = ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), Secret::new(KEY)).await.expect("connected");
+        let checked = |info: &AccountInfo| match &info.state {
+            AccountState::Connected { last_sync, problem, .. } => (*last_sync, problem.clone()),
+            other => panic!("connected, not {other:?}"),
+        };
+        let state = || async { ai.infos().await.into_iter().find(|held| held.id == info.id).expect("listed") };
+        let (connected_at, problem) = checked(&state().await);
+        assert!(problem.is_none());
+        ai.models(&info.id, true).await.expect("the fixed list");
+        assert_eq!(checked(&state().await), (connected_at, None), "a fixed list is no answer");
+
+        // The key revoked: every request is refused now.
+        decides.delete_async().await;
+        let mut questions = BTreeMap::new();
+        questions.insert("ok".to_string(), Question::Noul { instructions: "Is it?".into() });
+        let asked = DecisionRequest { model: ai::JEV_MODEL.into(), state: "A mail".into(), questions };
+        assert_eq!(ai.decide(&info.id, &asked).await, Err(AiError::Auth));
+        let (_, problem) = checked(&state().await);
+        assert_eq!(problem.as_deref(), Some(tr("Connect again: the server does not accept the API key")));
+        ai.models(&info.id, true).await.expect("the fixed list");
+        assert!(checked(&state().await).1.is_some(), "listing does not clear the problem");
+
+        // Taken again: the next decision clears it.
+        refuses.delete_async().await;
+        let _again = mock_jev(&jev).await;
+        ai.decide(&info.id, &asked).await.expect("a decision");
+        assert_eq!(checked(&state().await).1, None);
+    }
+
+    /// Issue #323: Jev's model turned on is no engine for a chat, also before the core holds a list
+    /// (after a restart).
+    #[tokio::test]
+    async fn jev_is_never_an_engine_for_a_chat() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let keys = MemoryTokens::default();
+        let jev = MockServer::start_async().await;
+        let _mocks = mock_jev(&jev).await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let info = ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), Secret::new(KEY)).await.expect("connected");
+        ai.set_enabled(&info.id, ai::JEV_MODEL, true).await.expect("turned on");
+        assert!(!ai.offers_a_model(&info.id).await, "with the list held");
+        let restarted = service(dir.path(), &keys, Vec::new());
+        restarted.load().await.expect("loaded");
+        assert_eq!(restarted.server(&info.id).await.map(|(provider, _)| provider), Some(AiProvider::Jev));
+        assert!(!restarted.offers_a_model(&info.id).await, "nothing listed yet after a restart");
+    }
+
+    /// Issue #323: a key Jev refuses (403) is `auth`, nothing is stored and the key is not shown;
+    /// without a key nothing is sent.
+    #[tokio::test]
+    async fn jev_refuses_a_wrong_key_and_needs_one() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let keys = MemoryTokens::default();
+        let jev = MockServer::start_async().await;
+        let (decides, refuses) = mock_jev(&jev).await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let wrong = "ts-WRONGWRONGWRONG";
+
+        let refused = ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), Secret::new(wrong)).await;
+        assert_eq!(refused, Err(AiError::Auth));
+        assert!(!format!("{refused:?}").contains("WRONG"));
+        assert!(ai.infos().await.is_empty() && !accounts_file(dir.path()).exists());
+        assert_eq!(keys.get_plain(&Account::ai(AiProvider::Jev, &jev.url("/v1")).id), None);
+
+        assert_eq!((decides.calls_async().await, refuses.calls_async().await), (0, 1));
+        let keyless = ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), Secret::new("  ")).await;
+        assert!(matches!(&keyless, Err(AiError::Invalid(why)) if why.contains("Jev")), "{keyless:?}");
+        assert_eq!((decides.calls_async().await, refuses.calls_async().await), (0, 1), "nothing sent");
     }
 
     #[tokio::test]

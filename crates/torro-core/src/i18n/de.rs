@@ -339,6 +339,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("vLLM, llama.cpp, LocalAI or a server of your own", "vLLM, llama.cpp, LocalAI oder ein eigener Server"),
     ("{seat} · open models from many makers", "{seat} · offene Modelle vieler Hersteller"),
     ("{seat} · open weights", "{seat} · offene Gewichte"),
+    ("{seat} · decides only", "{seat} · entscheidet nur"),
+    ("For sorting mail", "Zum Sortieren von Mail"),
     // Control centre: when the setup shows (W.9)
     ("Continue setup", "Einrichtung fortsetzen"),
     ("Finish setup", "Einrichtung abschließen"),
@@ -3073,6 +3075,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Nur wenn der Server einen verlangt. Er bleibt im Schlüsselbund des Systems; Agenten sehen ihn nie.",
     ),
     ("Open models from many makers, with one API key", "Offene Modelle vieler Hersteller mit einem API-Schlüssel"),
+    ("{seat} · sorts mail only, no chat", "{seat} · sortiert nur Mail, kein Chat"),
     (
         "OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.",
         "OpenRouter bietet offene Modelle wie Qwen, Llama und Mistral über einen API-Schlüssel an. Torro Workplace listet die Modelle mit offenen Gewichten.",
@@ -4889,8 +4892,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("This AI server does not offer decision models.", "Dieser KI-Server bietet keine Entscheidermodelle."),
     (
-        "Only Ollama offers decision models at the moment. Pick a model of an Ollama account.",
-        "Entscheidermodelle bietet zurzeit nur Ollama. Nimm ein Modell eines Ollama-Kontos.",
+        "Only Ollama and Jev offer decision models at the moment. Pick a model of one of them.",
+        "Entscheidermodelle bieten zurzeit nur Ollama und Jev. Nimm ein Modell eines der beiden.",
+    ),
+    // Jev, the decision model of TypeSafe (issue #323)
+    (
+        "Jev only sorts mail; it cannot chat. Pick another model for chatting.",
+        "Jev sortiert nur Mail und kann nicht chatten. Nimm zum Chatten ein anderes Modell.",
     ),
     (
         "The question “{name}” has {n} options; it needs {least} to {most}.",

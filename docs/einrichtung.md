@@ -179,6 +179,7 @@ models only unless you change it.“
 | Lokal | Ollama, LM Studio | OpenAI-kompatibel | dieser Rechner | gibt es (KI.1a) |
 | Lokal | [Strata](https://github.com/Niko1221/Strata) (`http://127.0.0.1:8080/v1`) | OpenAI-kompatibel | dieser Rechner | offene Gewichte; erkannt an `/health` (#322) |
 | Lokal | Other local server (vLLM, llama.cpp, LocalAI) | OpenAI-kompatibel | dieser Rechner/Netz | gibt es als `openai_compatible` |
+| Zum Sortieren von Mail | Jev (TypeSafe, `https://api.typesafe.ai/v1`) | SystemOne | USA | nur Entscheiden, kein Chat; ein festes Modell, Schlüssel (#323) |
 | Selbst gehostet | Nextcloud Assistant | Nextcloud TaskProcessing | eigener Server | später, ohne neuen Schlüssel ([ki.md](ki.md), offen 3) |
 | Offene Modelle | OpenRouter | OpenAI-kompatibel | USA | gibt es |
 | Anbieter | Anthropic (Claude) | **Anthropic** | USA | gibt es (KI.1b–KI.1d) |

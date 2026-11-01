@@ -714,9 +714,10 @@ pub enum Request {
     ConnectAi {
         /// Which kind of server: `ollama`, `lm_studio`, `strata`, `openrouter`, `openai_compatible`, or a cloud
         /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`,
-        /// `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address
-        /// is its international API; for its platform for mainland China pass that address as
-        /// `server`.
+        /// `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`, and `jev` (issue #323, TypeSafe's
+        /// decision model, which only sorts mail and is checked with one small decision). A cloud
+        /// provider's usual address is its international API; for its platform for mainland China
+        /// pass that address as `server`.
         provider: AiProvider,
         /// The base address of the server's API (`http://localhost:11434/v1`; `localhost:11434` is
         /// completed). Leave out for the provider's usual address; needed for `openai_compatible`.
@@ -817,8 +818,10 @@ pub enum Request {
     /// server's order ([`Response::AiModels`]). Each says whether it can call tools and whether
     /// its weights are open, where the server tells. Without `all` only models known to have open
     /// weights and those the server says nothing about are listed (Open First: on OpenRouter only
-    /// open models, on a local server all of them). Each says whether it is turned on for the
-    /// suite (`enabled`, task S.24, [`Request::SetModelEnabled`]), from the core's switches. The
+    /// open models, on a local server all of them); decision models are listed always, they only
+    /// pick among given options (issue #323). Jev's list is fixed and asks no server. Each says
+    /// whether it is turned on for the suite (`enabled`, task S.24, [`Request::SetModelEnabled`]),
+    /// from the core's switches. The
     /// first list after the update that brought them keeps on, once, the model "Automatic" used at
     /// the account before (#231).
     ///

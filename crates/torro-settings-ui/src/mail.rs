@@ -3491,6 +3491,36 @@ mod tests {
         let _ = categorization::view(&Default::default(), &data);
     }
 
+    /// Issue #323: in each part the accounts with a model here come first, Jev and the cloud after
+    /// them, although "Jev" comes before "Ollama" by name; Ollama's cloud model stays with Ollama.
+    #[test]
+    fn models_here_are_listed_before_jev() {
+        use torro_core::ai::AiModel;
+
+        let ollama = "ai:ollama@localhost:11434";
+        let jev = "ai:jev@api.typesafe.ai";
+        let model = |engine: &str, id: &str, tools: Option<bool>, remote: bool| {
+            let decision = Some(tools == Some(false));
+            (engine.to_string(), AiModel { decision, tools, remote: Some(remote), enabled: true, ..AiModel::named(id) })
+        };
+        let mut data = Data {
+            decider_models: vec![
+                model(jev, torro_core::ai::JEV_MODEL, Some(false), true),
+                model(ollama, "nimble", Some(false), false),
+                model(ollama, "gpt-oss:120b-cloud", Some(true), true),
+            ],
+            ..Data::default()
+        };
+        data.settings.decide_mail_to_cloud = Some(true);
+        let ids = |part: Vec<(String, AiModel)>| -> Vec<String> {
+            part.into_iter().map(|(engine, model)| format!("{engine} {}", model.id)).collect()
+        };
+        let (fast, other) = categorization::grouped(&data);
+        assert_eq!(ids(fast), [format!("{ollama} nimble"), format!("{jev} {}", torro_core::ai::JEV_MODEL)]);
+        assert_eq!(ids(other), [format!("{ollama} gpt-oss:120b-cloud")]);
+        let _ = categorization::view(&Default::default(), &data);
+    }
+
     /// Task MW.3: an exception with a model of its own is what sorts, and the page shows it as such.
     #[test]
     fn an_exception_with_its_own_model_sorts_instead_of_the_slot() {
@@ -4463,13 +4493,22 @@ pub mod categorization {
     pub(super) type Offered = (String, AiModel);
 
     /// The models offered ([`offered`]) by how they sort (issue #421): the decision models, which
-    /// answer directly and much faster, then the others, which sort through the fallback; each part by
-    /// account name, then model name.
+    /// answer directly and much faster, then the others, which sort through the fallback. In each part
+    /// the accounts with a model on this computer come first, then those with models elsewhere only
+    /// (Jev, the cloud; issue #323, Open First), each by account name, then model name; an account
+    /// stays together.
     pub(super) fn grouped(data: &Data) -> (Vec<Offered>, Vec<Offered>) {
         let mut offered = offered(data);
+        let here: std::collections::BTreeSet<String> = offered
+            .iter()
+            .filter(|(engine, model)| stays_here(engine, model))
+            .map(|(engine, _)| engine.clone())
+            .collect();
         offered.sort_by(|(a_engine, a_model), (b_engine, b_model)| {
-            account_label(data, a_engine)
-                .cmp(&account_label(data, b_engine))
+            (!here.contains(a_engine))
+                .cmp(&!here.contains(b_engine))
+                .then_with(|| account_label(data, a_engine).cmp(&account_label(data, b_engine)))
+                .then_with(|| a_engine.cmp(b_engine))
                 .then_with(|| a_model.name.cmp(&b_model.name))
         });
         offered.into_iter().partition(|(_, model)| model.decision == Some(true))
