@@ -19981,6 +19981,18 @@ mod tests {
         }
         torro_core::account::save_to(&mail_accounts_file(dir.path()), &moved).expect("written");
         core.mail.reload().await;
+        // Counted only once the sync after the reload stopped at the certificate: until then the
+        // first sync, started by the sign-in, may still sign in (#323, a race under load).
+        crate::mail::service::tests::eventually("a problem at the account", || async {
+            let checks = core.mail.account_checks(Utc::now()).await.unwrap_or_default();
+            checks.iter().any(|check| {
+                matches!(
+                    check.health,
+                    crate::inbox::Health::Problem { trouble: crate::inbox::Trouble::SignInNeeded, .. }
+                )
+            })
+        })
+        .await;
         let logins = server.logins();
 
         let again = |save: bool, trusted: Vec<String>| Request::ReconfigureMail {
