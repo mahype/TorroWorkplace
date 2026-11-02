@@ -5508,9 +5508,9 @@ pub mod categorization {
 
     /// One row per model that may sort mail, the one in effect checked; picking one switches the
     /// sorting on. Grouped by how they sort (issue #421): "Decision models (fast)" first, then "Other
-    /// models"; with more than one account the account stands before a model's name. A chat model
-    /// says that it answers in a fixed format (the fallback, task MW.3), the model of an exception that
-    /// it is only for sorting mail. Without a decision model a row in place of the first group says
+    /// models"; each row names the model and, under it, its account, where it computes and how big it
+    /// is ([`model_facts`], issue #431). A chat model says that it answers in a fixed format (the
+    /// fallback, task MW.3), the model of an exception that it is only for sorting mail, in a third line. Without a decision model a row in place of the first group says
     /// that sorting runs slower and leads to Settings › AI, which suggests one to download. Without any
     /// model, one row says so instead of both groups: where to turn one on when there are models that
     /// can sort but none is on (task S.26), else where to add one. The model in effect turned off since
@@ -5518,14 +5518,12 @@ pub mod categorization {
     fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
         let (fast, other) = grouped(data);
         let off = assigned_off(data);
-        // The turned-off model stands apart from its facts: only its account helps to tell it.
-        let several = fast
-            .iter()
-            .chain(&other)
-            .map(|(engine, _)| engine.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .len()
-            > 1;
+        // The turned-off model has no line with facts under its name: its account helps to tell it, as
+        // soon as more than one account is in play.
+        let mut engines: std::collections::BTreeSet<&str> =
+            fast.iter().chain(&other).map(|(engine, _)| engine.as_str()).collect();
+        engines.extend(off.as_ref().map(|(engine, _)| engine.as_str()));
+        let several = engines.len() > 1;
         let label = |engine: &str, name: &str| match several {
             true => format!("{} · {}", account_label(data, engine), name),
             false => name.to_string(),

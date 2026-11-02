@@ -404,12 +404,13 @@ const MAX_DETAIL: usize = 32;
 
 /// The size of each of Ollama's models, from its `GET <root>/api/tags` answer (issue #431): like
 /// [`ollama_remote`] keyed by each model's `name` and `model`. A `size` of 0 and texts that are
-/// empty or longer than 32 characters count as unknown. `None` for an answer that is no model list.
+/// empty, longer than 32 characters or holding control characters count as unknown. `None` for an answer that is no model list.
 pub fn ollama_details(body: &[u8]) -> Option<HashMap<String, OllamaDetails>> {
     let answer: Value = serde_json::from_slice(body).ok()?;
     let detail = |model: &Value, key: &str| {
         let text = model.get("details")?.get(key)?.as_str()?.trim();
-        (!text.is_empty() && text.chars().count() <= MAX_DETAIL).then(|| text.to_string())
+        (!text.is_empty() && text.chars().count() <= MAX_DETAIL && !text.chars().any(char::is_control))
+            .then(|| text.to_string())
     };
     let mut details = HashMap::new();
     for model in answer.get("models")?.as_array()? {
