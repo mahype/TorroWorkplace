@@ -120,8 +120,18 @@ Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug
 Vor Schritt 1 steht seit Issue #339 die Kategorie eines Mail-Filters (siehe [Vorrang](#vorrang)).
 
 **Wann:** beim Eintreffen jeder neuen Mail. Zusätzlich rechnet der Kern den **Altbestand** einmal
-nach, begrenzt auf 30 Tage oder 500 Nachrichten je Konto, im Hintergrund und gedrosselt, mit
-Fortschritt und Abbrechen auf der Einstellungsseite.
+nach, begrenzt auf 30 Tage oder 500 Nachrichten je Konto, im Hintergrund, mit Fortschritt und
+Abbrechen auf der Einstellungsseite.
+
+**Tempo (Issue #420):** Altbestand und Sortieraufträge fragen ein **Decision-Modell** ohne Pause:
+Jev 8 Mails gleichzeitig, ein Cloud-Modell von Ollama 4, jedes andere eine Mail nach der anderen
+(ein lokales Ollama rechnet je Modell eine Anfrage zugleich, parallel war es langsamer). Die Antworten
+werden in der Reihenfolge der Mails geschrieben; Pausieren und Abbrechen verwerfen, was noch
+unterwegs ist. Der **Ersatzweg** über ein Chat-Modell bleibt bei einer Mail nach der anderen mit
+250 ms Pause, damit der Rechner nicht ausgelastet ist. Ist das Modell beschäftigt (HTTP 429, 402),
+wartet der Lauf 1, 2 und 4 Sekunden und fragt erneut. Lehnt der Server eine Mail selbst ab (HTTP 400,
+413, 422, etwa zu lang für den Kontext eines kleinen Modells), bleibt sie wie eine Mail ohne lesbare
+Antwort ohne Kategorie; erst 10 solche Mails in Folge stoppen den Lauf.
 
 **Ohne KI-Konto** fehlen genau die Kategorien aus Schritt 4; kein Hinweisbanner, kein „Upgrade“
 ([ki.md](ki.md), Grundsatz 1).

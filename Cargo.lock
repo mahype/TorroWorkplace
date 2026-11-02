@@ -7330,6 +7330,7 @@ dependencies = [
  "dom_query",
  "dom_smoothie",
  "encoding_rs",
+ "futures-util",
  "getrandom 0.4.3",
  "global-hotkey",
  "httpmock",
