@@ -43,7 +43,14 @@ pub fn setting_row<'a, M: 'a>(
 /// `content` as one line of a settings group: as high as the header bar (64 in Torro, 76 with two lines of
 /// text), 16 at the sides.
 pub fn row_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool) -> Element<'a, M> {
-    let height = if tall { size::header() + space::m() } else { size::header() };
+    row_frame_with_lines(content, tall, 0)
+}
+
+/// Like [`row_frame`], with `extra` more lines of `meta` text under the two a tall row holds (issue
+/// #431: the note under the facts of a model), so the height is counted in one place.
+pub fn row_frame_with_lines<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool, extra: usize) -> Element<'a, M> {
+    let base = if tall { size::header() + space::m() } else { size::header() };
+    let height = base + typo::line_height(typo::meta()) * extra as f32;
     container(content).width(Fill).center_y(height).padding([0.0, space::l()]).into()
 }
 

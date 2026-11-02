@@ -5624,10 +5624,10 @@ pub mod categorization {
                 .into(),
             false => iced::widget::space().width(icon::SIZE).into(),
         };
-        let extra = note.is_some();
+        let extra = usize::from(note.is_some());
         let mut lines = column![
             widgets::ellipsized(typo::body(), name, theme::text),
-            widgets::ellipsized(typo::meta(), facts, theme::text_2),
+            widgets::ellipsized(typo::meta(), facts, theme::text_3),
         ];
         if let Some(note) = note {
             lines = lines.push(widgets::ellipsized(typo::meta(), note, theme::text_2));
@@ -5635,15 +5635,8 @@ pub mod categorization {
         let content = iced::widget::row![lines.width(iced::Fill), check]
             .spacing(torro_gui::theme::space::l())
             .align_y(iced::Alignment::Center);
-        let mut height = torro_gui::theme::size::header() + torro_gui::theme::space::m();
-        if extra {
-            height += typo::line_height(typo::meta());
-        }
-        let row = iced::widget::container(content)
-            .width(iced::Fill)
-            .center_y(height)
-            .padding([0.0, torro_gui::theme::space::l()]);
-        pressable(row.into(), Some(on_press))
+        let row = crate::parts::row_frame_with_lines(content, true, extra);
+        pressable(row, Some(on_press))
     }
 
     /// The assigned model turned off (PR review #242), as a row of "Model": an alert in the attention
