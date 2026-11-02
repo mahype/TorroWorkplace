@@ -29,7 +29,6 @@
 //! the core marks a list it answers with ([`AiAccounts::mark_enabled`]). Where a model computes,
 //! which the rule at the start needs, is the data rule's word ([`crate::assistant::place_of`]).
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,6 +73,16 @@ const HEALTH_MAX: usize = 64 * 1024;
 /// one stuck model never holds up the list, and without the tags in time every model counts as
 /// elsewhere.
 const SHOW_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What Ollama's `/api/show` says about one model; `None` where it does not say.
+#[derive(Debug, Default)]
+struct OllamaShow {
+    tools: Option<bool>,
+    reasoning: Option<bool>,
+    decision: Option<bool>,
+    /// How many tokens fit into one conversation (issue #431).
+    context: Option<u64>,
+}
 
 /// The effort that switches thinking off at Ollama's `/v1` ([`OpenAiCompatible::chat_without_thinking`]). A
 /// decision through a chat model needs no thought: left to think, qwen3.6:35b-a3b ran past the answer's
@@ -283,9 +292,9 @@ impl OpenAiCompatible {
     }
 
     /// Ollama's word on whether `model` calls tools, thinks (issue #131) and decides (task
-    /// E12.3) – `POST <root>/api/show`; `None` for each when it does not answer within
-    /// [`SHOW_TIMEOUT`] or does not say.
-    async fn ollama_capabilities(&self, model: &str) -> (Option<bool>, Option<bool>, Option<bool>) {
+    /// E12.3), and how long its context is (issue #431) – `POST <root>/api/show`; `None` for each
+    /// when it does not answer within [`SHOW_TIMEOUT`] or does not say.
+    async fn ollama_capabilities(&self, model: &str) -> OllamaShow {
         let url = format!("{}/api/show", openai::ollama_root(&self.wire.base));
         let builder = self.wire.authorized(self.wire.http.post(url)).json(&openai::ollama_show_body(model));
         let asked = async {
@@ -293,23 +302,28 @@ impl OpenAiCompatible {
             response.bytes().await.ok()
         };
         match tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten() {
-            Some(body) => (openai::ollama_tools(&body), openai::ollama_thinking(&body), openai::ollama_decision(&body)),
-            None => (None, None, None),
+            Some(body) => OllamaShow {
+                tools: openai::ollama_tools(&body),
+                reasoning: openai::ollama_thinking(&body),
+                decision: openai::ollama_decision(&body),
+                context: openai::ollama_context(&body),
+            },
+            None => OllamaShow::default(),
         }
     }
 
-    /// Which of Ollama's models run elsewhere (`GET <root>/api/tags`, task S.23,
-    /// [`openai::ollama_remote`]): one request for all models. `None` when it does not answer
-    /// within [`SHOW_TIMEOUT`] or not with a model list; then every model counts as elsewhere.
-    async fn ollama_tags(&self) -> Option<HashMap<String, bool>> {
+    /// Ollama's answer to `GET <root>/api/tags`, whole: which models run elsewhere (task S.23,
+    /// [`openai::ollama_remote`]) and how big they are (issue #431, [`openai::ollama_details`]),
+    /// one request for all models. `None` when it does not answer within [`SHOW_TIMEOUT`]; then
+    /// every model counts as elsewhere and no size is known.
+    async fn ollama_tags(&self) -> Option<Vec<u8>> {
         let url = format!("{}/api/tags", openai::ollama_root(&self.wire.base));
         let builder = self.wire.authorized(self.wire.http.get(url));
         let asked = async {
             let response = self.wire.send(builder).await.ok()?;
             response.bytes().await.ok()
         };
-        let body = tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten()?;
-        openai::ollama_remote(&body)
+        tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten().map(|body| body.to_vec())
     }
 
     /// The answer of `POST <base>/chat/completions`, read as server-sent events, or whole when the
@@ -387,9 +401,19 @@ impl Provider for OpenAiCompatible {
             let mut models = self.list().await?;
             if self.provider == AiProvider::Ollama {
                 let tags = self.ollama_tags().await;
+                let remote = tags.as_deref().and_then(openai::ollama_remote);
+                let details = tags.as_deref().and_then(openai::ollama_details).unwrap_or_default();
                 for model in &mut models {
-                    (model.tools, model.reasoning, model.decision) = self.ollama_capabilities(&model.id).await;
-                    model.remote = Some(openai::ollama_runs_elsewhere(&model.id, tags.as_ref()));
+                    let show = self.ollama_capabilities(&model.id).await;
+                    (model.tools, model.reasoning, model.decision) = (show.tools, show.reasoning, show.decision);
+                    model.context = model.context.or(show.context);
+                    model.remote = Some(openai::ollama_runs_elsewhere(&model.id, remote.as_ref()));
+                    if let Some(found) = details.get(&model.id) {
+                        model.parameters = found.parameters.clone();
+                        model.quantization = found.quantization.clone();
+                        // A cloud model's size is that of its stub on the disk, no size of the model.
+                        model.size = found.size.filter(|_| model.remote == Some(false));
+                    }
                 }
             }
             if self.provider == AiProvider::Strata {
@@ -1820,7 +1844,9 @@ pub(crate) mod tests {
         server
             .mock_async(|when, then| {
                 when.method("POST").path("/api/show");
-                then.status(200).json_body(json!({"capabilities": ["completion", "tools"]}));
+                then.status(200).json_body(json!({"capabilities": ["completion", "tools"], "model_info": {
+                    "general.architecture": "qwen3", "qwen3.context_length": 40960,
+                }}));
             })
             .await;
         if tags {
@@ -1829,8 +1855,10 @@ pub(crate) mod tests {
                     when.method("GET").path("/api/tags");
                     then.status(200).json_body(json!({"models": [
                         {"name": "glm-5.3:cloud", "model": "glm-5.3:cloud", "remote_model": "glm-5.3",
-                         "remote_host": "https://ollama.com:443", "size": 384},
-                        {"name": "qwen3:8b", "model": "qwen3:8b", "size": 5_225_388_164_u64},
+                         "remote_host": "https://ollama.com:443", "size": 384,
+                         "details": {"parameter_size": "744B", "quantization_level": "FP8"}},
+                        {"name": "qwen3:8b", "model": "qwen3:8b", "size": 5_225_388_164_u64,
+                         "details": {"parameter_size": "8.2B", "quantization_level": "Q4_K_M"}},
                     ]}));
                 })
                 .await;
@@ -2093,6 +2121,25 @@ pub(crate) mod tests {
         let models = ai.models(&info.id, false).await.expect("models");
         assert_eq!(remote(&models), [("glm-5.3:cloud".into(), Some(true)), ("qwen3:8b".into(), Some(false))]);
         assert_eq!(serde_json::to_value(&models[0]).expect("json")["remote"], true, "ai.list_models shows it");
+        // Issue #431: the size comes from the tags, the context from `/api/show`; a cloud model's
+        // size on the disk is only its stub and stays unknown.
+        let sizes = |models: &[AiModel]| -> Vec<(Option<String>, Option<String>, Option<u64>, Option<u64>)> {
+            let facts = |m: &AiModel| (m.parameters.clone(), m.quantization.clone(), m.size, m.context);
+            models.iter().map(facts).collect()
+        };
+        assert_eq!(
+            sizes(&models),
+            [
+                (Some("744B".into()), Some("FP8".into()), None, Some(40960)),
+                (Some("8.2B".into()), Some("Q4_K_M".into()), Some(5_225_388_164), Some(40960)),
+            ]
+        );
+        let shown = serde_json::to_value(&models[1]).expect("json");
+        assert_eq!(
+            (&shown["parameters"], &shown["size"]),
+            (&json!("8.2B"), &json!(5_225_388_164_u64)),
+            "ai.list_models"
+        );
 
         // Kept: asked again only for a model the list lacks.
         ollama.reset_async().await;
@@ -2104,6 +2151,8 @@ pub(crate) mod tests {
         let info = ai.connect(AiProvider::Ollama, Some(&without.url("/v1")), Secret::default()).await.expect("ok");
         let known = ai.known_models(&info.id, None).await.expect("listed now");
         assert_eq!(remote(&known), [("glm-5.3:cloud".into(), Some(true)), ("qwen3:8b".into(), Some(true))]);
+        let unsized_ = |m: &AiModel| m.parameters.is_none() && m.quantization.is_none() && m.size.is_none();
+        assert!(known.iter().all(unsized_), "without tags no size: {known:?}");
     }
 
     #[tokio::test]
