@@ -1031,6 +1031,20 @@ impl Clients {
     /// unasked. Writes `clients.json` only when something changed; when that fails, memory goes back
     /// as well and the error says so.
     pub async fn forget_address_books(&self, books: &[String]) -> Result<(), ClientsError> {
+        self.strip_address_books(|book| books.iter().any(|gone| gone == book)).await
+    }
+
+    /// Keeps only the address books `known` in every client's rights (issue #392): what the contacts
+    /// store no longer holds is gone, also when [`Clients::forget_address_books`] could not save
+    /// right after the store let go of it (the store never tells of a book twice). Runs with every
+    /// round of the contacts, so a failed save is made up for. Same writing and rollback.
+    pub async fn keep_address_books(&self, known: &[String]) -> Result<(), ClientsError> {
+        self.strip_address_books(|book| !known.iter().any(|kept| kept == book)).await
+    }
+
+    /// Takes every address book for which `gone` is true out of every client's rights, in
+    /// `address_books` and `hidden_address_books`.
+    async fn strip_address_books(&self, gone: impl Fn(&str) -> bool) -> Result<(), ClientsError> {
         let _changing = self.shared.changing.lock().await;
         let before: Vec<(String, Rights)> = {
             let mut state = self.lock();
@@ -1039,9 +1053,9 @@ impl Clients {
                 let rights = &mut entry.record.rights;
                 let old = rights.clone();
                 if let Selection::Only(ids) = &mut rights.address_books {
-                    ids.retain(|book| !books.contains(book));
+                    ids.retain(|book| !gone(book));
                 }
-                rights.hidden_address_books.retain(|book| !books.contains(book));
+                rights.hidden_address_books.retain(|book| !gone(book));
                 if *rights != old {
                     before.push((entry.record.id.clone(), old));
                 }
@@ -2595,6 +2609,40 @@ pub(crate) mod tests {
         let rights = clients.list().into_iter().find(|client| client.id == agent.id).expect("listed").rights;
         assert_eq!(rights.address_books, Selection::Only(vec![format!("{nested}/contacts")]));
         assert!(rights.hidden_address_books.is_empty());
+    }
+
+    /// Issue #392: a book the store let go of stays in the rights when saving them failed; the
+    /// next round (`keep_address_books`) takes it out, the books the store still holds stay.
+    #[tokio::test]
+    async fn an_address_book_left_behind_by_a_failed_save_goes_with_the_next_round() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let account = "nextcloud:anna@cloud.example.org";
+        let (kept, old) = (format!("{account}/contacts"), format!("{account}/old"));
+        let mut rights = read_only();
+        rights.address_books = Selection::Only(vec![kept.clone(), old.clone()]);
+        rights.hidden_address_books = vec![old.clone()];
+        let (agent, _) = clients.add("Agent", "claude-code", rights).await.expect("added");
+        let rights_of =
+            |clients: &Clients| clients.list().into_iter().find(|client| client.id == agent.id).expect("listed").rights;
+
+        // The file cannot be replaced (a folder sits in its place): the first try fails.
+        let file = clients_file(dir.path());
+        let saved = std::fs::read(&file).expect("saved");
+        std::fs::remove_file(&file).expect("removed");
+        std::fs::create_dir(&file).expect("blocked");
+        assert!(clients.forget_address_books(std::slice::from_ref(&old)).await.is_err());
+        assert_eq!(rights_of(&clients).address_books, Selection::Only(vec![kept.clone(), old.clone()]));
+
+        std::fs::remove_dir(&file).expect("unblocked");
+        std::fs::write(&file, saved).expect("restored");
+        clients.keep_address_books(std::slice::from_ref(&kept)).await.expect("kept");
+        let rights = rights_of(&clients);
+        assert_eq!(rights.address_books, Selection::Only(vec![kept]));
+        assert!(rights.hidden_address_books.is_empty());
+        let reopened = open_in(dir.path());
+        let stored = reopened.records().into_iter().find(|record| record.id == agent.id).expect("stored").rights;
+        assert_eq!(stored.address_books, rights.address_books);
     }
 
     /// Issue #133: a `forbidden` from the gate names its cause – the engine that never gets mail, an

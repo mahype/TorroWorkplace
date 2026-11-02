@@ -3194,10 +3194,17 @@ impl Core {
     }
 
     /// One round of the contacts of every account; the books gone from their servers leave every
-    /// client's rights ([`Clients::forget_address_books`]).
+    /// client's rights ([`Clients::forget_address_books`]). Then the rights keep only the books the
+    /// store holds ([`Clients::keep_address_books`], issue #392): a save that failed right after the
+    /// store let go of a book is made up for here, as the store never tells of that book again.
     async fn sync_contacts(&self) {
         let removed = self.contacts.sync_all().await;
         self.forget_address_books(&removed).await;
+        if let Some(known) = self.contacts.book_ids()
+            && let Err(err) = self.clients.keep_address_books(&known).await
+        {
+            eprintln!("torroworkplace: removed address books stay in the clients' rights: {err}");
+        }
     }
 
     /// Takes the address books `books`, gone from their server or with their account, out of every

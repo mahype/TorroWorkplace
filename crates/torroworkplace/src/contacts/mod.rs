@@ -279,6 +279,13 @@ impl ContactsService {
         Some(known)
     }
 
+    /// The id of every address book the store holds, `None` when it cannot be read (issue #392):
+    /// the clients' rights keep only these ([`crate::clients::Clients::keep_address_books`]).
+    pub fn book_ids(&self) -> Option<Vec<String>> {
+        let store = self.store.as_ref()?;
+        sync::with(store, |s| s.books(None)).ok().map(|books| books.into_iter().map(|book| book.id).collect())
+    }
+
     /// Whether `address` is a mail address of a contact in a book that is not hidden
     /// ([`Store::knows_address`], issue #390). Without a store, or when it fails, it is not: mail
     /// is then sorted as without contacts; [`sync::with`] logs the error, never the address.
