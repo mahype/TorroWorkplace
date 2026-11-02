@@ -319,6 +319,9 @@ impl AiProvider {
                 tools: Some(false),
                 open_weights: Some(false),
                 context: None,
+                parameters: None,
+                quantization: None,
+                size: None,
                 reasoning: Some(false),
                 remote: Some(true),
                 decision: Some(true),
@@ -352,6 +355,19 @@ pub struct AiModel {
     /// How many tokens fit into one conversation, when the server tells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+    /// How many parameters the model has, as the server writes it (`8.2B`, issue #431): only
+    /// Ollama tells (`details.parameter_size` in `/api/tags`), never estimated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<String>,
+    /// How the model's weights are compressed, as the server writes it (`Q4_K_M`, issue #431):
+    /// only Ollama tells (`details.quantization_level` in `/api/tags`), never estimated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    /// How many bytes the model takes on the disk (issue #431): only Ollama tells (`size` in
+    /// `/api/tags`), and only for a model that runs on its own machine (`remote: false`); for a
+    /// cloud model Ollama keeps a stub of a few hundred bytes, which is no size. Never estimated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
     /// The model thinks before it answers and takes an [`Effort`] (issue #131): `true` or `false`
     /// where the server says so (OpenRouter's `supported_parameters` holds `reasoning`, Ollama's
     /// capabilities hold `thinking`), `null` where it does not tell. Apps offer an effort only for
@@ -392,6 +408,9 @@ impl AiModel {
             tools: None,
             open_weights: None,
             context: None,
+            parameters: None,
+            quantization: None,
+            size: None,
             reasoning: None,
             remote: None,
             decision: None,
@@ -1119,6 +1138,9 @@ mod tests {
             tools: None,
             open_weights,
             context: None,
+            parameters: None,
+            quantization: None,
+            size: None,
             reasoning: None,
             remote: None,
             decision: None,

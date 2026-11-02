@@ -316,6 +316,9 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 tools,
                 open_weights,
                 context: model.get("context_length").and_then(Value::as_u64),
+                parameters: None,
+                quantization: None,
+                size: None,
                 reasoning,
                 remote: None,
                 // Only Ollama says whether a model decides, and it says so per model in
@@ -380,6 +383,58 @@ pub fn ollama_remote(body: &[u8]) -> Option<HashMap<String, bool>> {
         }
     }
     Some(remote)
+}
+
+/// What Ollama's `GET <root>/api/tags` tells about the size of one model (issue #431), each part
+/// only where it says so; nothing is estimated.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OllamaDetails {
+    /// `details.parameter_size`, as Ollama writes it (`8.2B`).
+    pub parameters: Option<String>,
+    /// `details.quantization_level`, as Ollama writes it (`Q4_K_M`).
+    pub quantization: Option<String>,
+    /// `size`: the bytes on the disk. For a cloud model this is only the size of its stub; the
+    /// caller keeps it for models that run on Ollama's own machine.
+    pub size: Option<u64>,
+}
+
+/// The longest text of [`OllamaDetails`] that is taken: anything longer is no size but a broken
+/// or hostile answer, and it would not fit into a line of the model choice.
+const MAX_DETAIL: usize = 32;
+
+/// The size of each of Ollama's models, from its `GET <root>/api/tags` answer (issue #431): like
+/// [`ollama_remote`] keyed by each model's `name` and `model`. A `size` of 0 and texts that are
+/// empty or longer than 32 characters count as unknown. `None` for an answer that is no model list.
+pub fn ollama_details(body: &[u8]) -> Option<HashMap<String, OllamaDetails>> {
+    let answer: Value = serde_json::from_slice(body).ok()?;
+    let detail = |model: &Value, key: &str| {
+        let text = model.get("details")?.get(key)?.as_str()?.trim();
+        (!text.is_empty() && text.chars().count() <= MAX_DETAIL).then(|| text.to_string())
+    };
+    let mut details = HashMap::new();
+    for model in answer.get("models")?.as_array()? {
+        let found = OllamaDetails {
+            parameters: detail(model, "parameter_size"),
+            quantization: detail(model, "quantization_level"),
+            size: model.get("size").and_then(Value::as_u64).filter(|size| *size > 0),
+        };
+        for key in ["name", "model"] {
+            if let Some(id) = text_of(model.get(key)).filter(|id| !id.is_empty()) {
+                details.insert(id, found.clone());
+            }
+        }
+    }
+    Some(details)
+}
+
+/// How many tokens fit into one conversation with the model, from Ollama's `POST <root>/api/show`
+/// answer (issue #431): `model_info["<general.architecture>.context_length"]`. `None` when the
+/// answer does not say.
+pub fn ollama_context(body: &[u8]) -> Option<u64> {
+    let answer: Value = serde_json::from_slice(body).ok()?;
+    let info = answer.get("model_info")?;
+    let architecture = info.get("general.architecture")?.as_str()?;
+    info.get(format!("{architecture}.context_length"))?.as_u64().filter(|context| *context > 0)
 }
 
 /// Whether the name of an Ollama model says it is a cloud model: it ends in `:cloud`
@@ -720,6 +775,9 @@ mod tests {
                 tools: None,
                 open_weights: None,
                 context: None,
+                parameters: None,
+                quantization: None,
+                size: None,
                 reasoning: None,
                 remote: None,
                 decision: None,
@@ -748,6 +806,45 @@ mod tests {
         assert_eq!(ollama_root("http://localhost:11434/v1/"), "http://localhost:11434");
         assert_eq!(ollama_root("http://localhost:11434"), "http://localhost:11434");
         assert_eq!(ollama_show_body("qwen3:8b"), json!({"model": "qwen3:8b"}));
+    }
+
+    /// Issue #431: `/api/tags` tells each model's parameters, quantization and bytes on the disk; a
+    /// model without `details` or with a size of 0 has none of them, and nothing is made up.
+    #[test]
+    fn ollama_tags_tell_the_size_of_each_model() {
+        let tags =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ollama/tags.json")).expect("fixture");
+        let details = ollama_details(&tags).expect("tags");
+        let local = OllamaDetails {
+            parameters: Some("8.2B".into()),
+            quantization: Some("Q4_K_M".into()),
+            size: Some(5_225_388_164),
+        };
+        assert_eq!(details.get("qwen3:8b"), Some(&local));
+        let cloud = details.get("glm-5.3:cloud").expect("cloud model");
+        assert_eq!(
+            (cloud.parameters.as_deref(), cloud.size),
+            (Some("744B"), Some(384)),
+            "the caller drops the stub's size"
+        );
+        assert_eq!(details.get("my-model:latest"), Some(&OllamaDetails::default()), "no details, size 0");
+        assert_eq!(details.len(), 3);
+
+        let odd = br#"{"models":[{"name":"x","details":{"parameter_size":"  ","quantization_level":"QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"}}]}"#;
+        assert_eq!(ollama_details(odd).expect("tags").get("x"), Some(&OllamaDetails::default()));
+        assert_eq!(ollama_details(br#"{"data":[]}"#), None);
+        assert_eq!(ollama_details(b"<html>"), None);
+    }
+
+    /// Issue #431: `/api/show` tells the context length under the model's architecture.
+    #[test]
+    fn ollama_show_tells_the_context_length() {
+        let show = br#"{"capabilities":["completion"],"model_info":{"general.architecture":"qwen3","qwen3.context_length":40960,"llama.context_length":8192}}"#;
+        assert_eq!(ollama_context(show), Some(40960));
+        assert_eq!(ollama_context(br#"{"model_info":{"general.architecture":"qwen3"}}"#), None);
+        assert_eq!(ollama_context(br#"{"model_info":{"qwen3.context_length":40960}}"#), None);
+        assert_eq!(ollama_context(br#"{"capabilities":["completion"]}"#), None);
+        assert_eq!(ollama_context(b"<html>"), None);
     }
 
     /// Task S.23: Ollama's cloud models run on `ollama.com`; `/api/tags` names them by `remote_host`.

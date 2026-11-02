@@ -1,0 +1,43 @@
+{
+  "models": [
+    {
+      "name": "qwen3:8b",
+      "model": "qwen3:8b",
+      "modified_at": "2026-10-28T09:12:44.123456+01:00",
+      "size": 5225388164,
+      "digest": "500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "qwen3",
+        "families": ["qwen3"],
+        "parameter_size": "8.2B",
+        "quantization_level": "Q4_K_M"
+      }
+    },
+    {
+      "name": "glm-5.3:cloud",
+      "model": "glm-5.3:cloud",
+      "remote_model": "glm-5.3",
+      "remote_host": "https://ollama.com:443",
+      "modified_at": "2026-10-30T17:01:02.000000+01:00",
+      "size": 384,
+      "digest": "4d0bd4ba9e3e2c8a7e1d7e2ef6f6c2b8b1c0d7e8f9a0b1c2d3e4f5a6b7c8d9e0",
+      "details": {
+        "parent_model": "",
+        "format": "",
+        "family": "glm5",
+        "families": ["glm5"],
+        "parameter_size": "744B",
+        "quantization_level": "FP8"
+      }
+    },
+    {
+      "name": "my-model:latest",
+      "model": "my-model:latest",
+      "modified_at": "2026-10-31T08:00:00.000000+01:00",
+      "size": 0,
+      "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}
