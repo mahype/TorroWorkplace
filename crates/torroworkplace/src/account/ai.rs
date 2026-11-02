@@ -2123,7 +2123,8 @@ pub(crate) mod tests {
         assert_eq!(serde_json::to_value(&models[0]).expect("json")["remote"], true, "ai.list_models shows it");
         // Issue #431: the size comes from the tags, the context from `/api/show`; a cloud model's
         // size on the disk is only its stub and stays unknown.
-        let sizes = |models: &[AiModel]| -> Vec<(Option<String>, Option<String>, Option<u64>, Option<u64>)> {
+        type Sizes = (Option<String>, Option<String>, Option<u64>, Option<u64>);
+        let sizes = |models: &[AiModel]| -> Vec<Sizes> {
             let facts = |m: &AiModel| (m.parameters.clone(), m.quantization.clone(), m.size, m.context);
             models.iter().map(facts).collect()
         };
