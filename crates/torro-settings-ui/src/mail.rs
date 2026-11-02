@@ -1342,11 +1342,11 @@ pub mod accounts {
                 let stats = stats.cloned();
                 let entry = responsive(move |room| {
                     let inventory = inventory_content(stats.as_ref());
-                    let name_col = column![
-                        typo::text(typo::body_strong(), address.clone()),
-                        typo::text(typo::meta(), name.clone()).style(theme::text_2),
-                    ]
-                    .spacing(space::xs());
+                    // Without a sender name the address alone, centred in the row (design review of #410).
+                    let sender =
+                        (!name.is_empty()).then(|| typo::text(typo::meta(), name.clone()).style(theme::text_2));
+                    let name_col =
+                        column![typo::text(typo::body_strong(), address.clone())].push(sender).spacing(space::xs());
                     // One line, cut with "…" where the column is too narrow (design review of #410).
                     let sync_col = row![
                         widgets::status_dot(sync_status),
