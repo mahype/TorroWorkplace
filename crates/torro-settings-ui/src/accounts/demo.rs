@@ -473,7 +473,10 @@ pub fn demo_models() -> Vec<AiModel> {
         ..AiModel::named(id)
     };
     vec![
-        model("qwen/qwen3-235b-a22b", "Qwen3 235B A22B", 131_072, true, true),
+        AiModel {
+            parameters: Some("235B".into()),
+            ..model("qwen/qwen3-235b-a22b", "Qwen3 235B A22B", 131_072, true, true)
+        },
         model("deepseek/deepseek-chat-v3.1", "DeepSeek V3.1", 163_840, true, false),
         model("meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct", 131_072, false, false),
         model("mistralai/mistral-small-3.2-24b-instruct", "Mistral Small 3.2 24B", 128_000, false, false),
@@ -539,11 +542,22 @@ pub fn demo_ollama_models() -> Vec<AiModel> {
             tools: Some(true),
             remote: Some(false),
             context: Some(40_960),
+            parameters: Some("8.2B".into()),
+            quantization: Some("Q4_K_M".into()),
+            size: Some(5_225_388_164),
             reasoning: Some(true),
             enabled: true,
             ..AiModel::named("qwen3:8b")
         },
-        AiModel { tools: Some(false), decision: Some(true), remote: Some(false), ..AiModel::named("nimble:latest") },
+        AiModel {
+            tools: Some(false),
+            decision: Some(true),
+            remote: Some(false),
+            parameters: Some("3.8B".into()),
+            quantization: Some("Q4_K_M".into()),
+            size: Some(2_491_000_000),
+            ..AiModel::named("nimble:latest")
+        },
     ]
 }
 
