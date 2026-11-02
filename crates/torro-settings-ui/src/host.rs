@@ -783,6 +783,7 @@ impl Host {
     /// Puts in the answer to one request of the load `generation` ([`Message::Part`]) and sends
     /// what it opens up.
     fn part(&mut self, generation: u64, request: Request, result: Result<Response, String>) -> Vec<Task<Message>> {
+        let mut again = false;
         if let Some(at) = self.flight.iter().position(|(held, sent)| *held == request && *sent == generation) {
             self.flight.remove(at);
         }
@@ -799,6 +800,8 @@ impl Host {
                         && ids(&accounts) != ids(&self.data.accounts) =>
                 {
                     self.change = Some(true);
+                    // After a tick that asked for the accounts alone, the rest follows once.
+                    again = self.announced;
                     self.data.put(&request, Response::Accounts { accounts });
                     if !self.answered.contains(&request) {
                         self.answered.push(request.clone());
@@ -824,6 +827,9 @@ impl Host {
             self.data.updating.retain(|held| *held != request);
         }
         let mut tasks = self.pump();
+        if again {
+            tasks.push(self.reload());
+        }
         tasks.extend(self.looks_due());
         tasks.extend(self.accounts_due());
         // Nothing but the background is out: the load's first failure stands over the page now, or
@@ -907,7 +913,21 @@ impl Host {
                     None => Outcome::Close,
                 }
             }
-            Message::Tick => Outcome::Work(self.reload()),
+            // Only the accounts (review of #437): the app's other data, Mail's statistics among
+            // them, waits for a change of the accounts, which loads everything once ([`Host::part`]).
+            Message::Tick => {
+                if self.flight.iter().any(|(held, _)| *held == Request::Accounts) {
+                    return Outcome::None;
+                }
+                let generation = self.generation;
+                self.flight.push((Request::Accounts, generation));
+                let ask = crate::ask(Arc::clone(&self.backend), Request::Accounts);
+                Outcome::Work(Task::perform(ask, move |result| Message::Part {
+                    generation,
+                    request: Box::new(Request::Accounts),
+                    result: Box::new(result),
+                }))
+            }
             Message::Accounts(message) => {
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
                 let action = accounts::update(state, *message, &self.data);
@@ -1517,6 +1537,18 @@ mod tests {
         assert_eq!(mail.change, None, "the same accounts again");
         let _: Outcome<()> = mail.update(answer(all[..2].to_vec(), mail.generation));
         assert_eq!(mail.change, Some(true), "an account came");
+
+        // The tick asks for the accounts alone, once while it is on its way (review of #437).
+        let before: Vec<Request> = mail.flight.iter().map(|(held, _)| held.clone()).collect();
+        assert!(matches!(mail.update::<()>(Message::Tick), Outcome::Work(_)));
+        let asked: Vec<Request> = mail.flight.iter().map(|(held, _)| held.clone()).skip(before.len()).collect();
+        assert_eq!(asked, [Request::Accounts], "nothing but the accounts");
+        assert!(matches!(mail.update::<()>(Message::Tick), Outcome::None), "not asked twice");
+        // Its answer with another account loads everything once, as a change.
+        mail.announced = true;
+        let before = mail.generation;
+        let _: Outcome<()> = mail.update(answer(all[..3].to_vec(), mail.generation));
+        assert!(mail.generation > before, "everything is loaded again");
     }
 
     /// Issue #410: without providers and AI nothing is added, and an app's own section of the same
