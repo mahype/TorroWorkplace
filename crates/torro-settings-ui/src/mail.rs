@@ -1334,10 +1334,10 @@ pub mod accounts {
                 let address = account.label.clone();
                 let id = account.id.clone();
                 let sync = mail.mail.last_sync.or_else(|| stats.and_then(|stats| stats.last_sync));
-                let sync_label = if sync_problem(mail, stats).is_some() {
-                    tr("Sync problem").to_string()
-                } else {
-                    sync.map_or_else(|| tr("Not synced yet").to_string(), |at| format_moment(at, now))
+                // As the suite's Accounts says it (design review of #410): a dot and "Last synced …".
+                let (sync_status, sync_label) = match sync_problem(mail, stats) {
+                    Some(_) => (Status::Error, tr("Sync problem").to_string()),
+                    None => (Status::Ok, crate::accounts::last_synced_text(sync, now)),
                 };
                 let stats = stats.cloned();
                 let entry = responsive(move |room| {
@@ -1347,7 +1347,12 @@ pub mod accounts {
                         typo::text(typo::meta(), name.clone()).style(theme::text_2),
                     ]
                     .spacing(space::xs());
-                    let sync_col = typo::text(typo::meta(), sync_label.clone()).style(theme::text_2);
+                    let sync_col = row![
+                        widgets::status_dot(sync_status),
+                        typo::text(typo::meta(), sync_label.clone()).style(theme::text_2)
+                    ]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
                     if room.width < 680.0 {
                         container(column![name_col, inventory, sync_col].spacing(space::m()))
                             .width(Length::Fill)
@@ -1389,13 +1394,10 @@ pub mod accounts {
         // Each in a row of its own, under the heading of the suite's Accounts (design review of #410).
         rows.push(row_frame(crate::accounts::on_axis(add), false));
         rows.push(row_frame(crate::accounts::on_axis(import), false));
-        column![
-            crate::accounts::page_heading(),
-            widgets::group(tr("Mail"), rows, None),
-            widgets::mail_coverage_legend(),
-        ]
-        .spacing(space::m())
-        .into()
+        // The heading as far from the group as on the suite's Accounts (design review of #410).
+        let accounts =
+            column![widgets::group(tr("Mail"), rows, None), widgets::mail_coverage_legend()].spacing(space::m());
+        column![crate::accounts::page_heading(), accounts].spacing(layout::section_gap()).into()
     }
 
     fn inventory_content<'a>(stats: Option<&MailAccountStats>) -> Element<'a, Message> {
