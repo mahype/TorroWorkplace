@@ -1347,9 +1347,10 @@ pub mod accounts {
                         typo::text(typo::meta(), name.clone()).style(theme::text_2),
                     ]
                     .spacing(space::xs());
+                    // One line, cut with "…" where the column is too narrow (design review of #410).
                     let sync_col = row![
                         widgets::status_dot(sync_status),
-                        typo::text(typo::meta(), sync_label.clone()).style(theme::text_2)
+                        widgets::ellipsized(typo::meta(), sync_label.clone(), theme::text_2)
                     ]
                     .spacing(space::s())
                     .align_y(Alignment::Center);
@@ -1362,8 +1363,9 @@ pub mod accounts {
                         container(
                             row![
                                 name_col.width(Length::FillPortion(3)),
-                                container(inventory).width(Length::FillPortion(5)),
-                                sync_col.width(Length::FillPortion(2)),
+                                container(inventory).width(Length::FillPortion(4)),
+                                // Room for "Last synced 59 min ago" beside its dot.
+                                sync_col.width(Length::FillPortion(3)),
                                 chevron(),
                             ]
                             .spacing(space::l())
