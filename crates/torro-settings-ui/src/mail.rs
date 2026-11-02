@@ -4425,6 +4425,64 @@ mod tests {
         let _ = categorization::view(&Default::default(), &data);
     }
 
+    /// Issue #431: a model row names its account, where it computes and what is known of its size, in
+    /// this order; unknown parts are left out, and a model without any size says only account and place.
+    #[test]
+    fn a_model_row_names_account_place_and_size() {
+        use torro_core::ai::AiModel;
+
+        let ollama = "ai:ollama@localhost:11434";
+        let openai = "ai:openai@api.openai.com";
+        let account = |id: &str, label: &str| -> torro_ipc::AccountInfo {
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "kind": "ai",
+                "label": label,
+                "state": {"state": "connected", "server": "localhost", "login_name": "me"},
+                "collections": [],
+            }))
+            .expect("an account")
+        };
+        let mut data = Data { accounts: vec![account(ollama, "Ollama"), account(openai, "OpenAI")], ..Data::default() };
+        let local = AiModel {
+            parameters: Some("8.2B".into()),
+            quantization: Some("Q4_K_M".into()),
+            size: Some(5_225_388_164),
+            remote: Some(false),
+            enabled: true,
+            ..AiModel::named("qwen3:8b")
+        };
+        let disk = torro_gui::units::format_bytes(5_225_388_164);
+        let here = tr("On this computer");
+        assert_eq!(
+            categorization::model_facts(&data, ollama, &local),
+            format!("Ollama · {here} · 8.2B · {disk} · Q4_K_M")
+        );
+
+        let cloud = AiModel {
+            parameters: Some("671B".into()),
+            context: Some(131_072),
+            remote: Some(true),
+            enabled: true,
+            ..AiModel::named("deepseek:cloud")
+        };
+        let context = crate::parts::context_text(131_072);
+        let elsewhere = tr("Cloud");
+        assert_eq!(
+            categorization::model_facts(&data, ollama, &cloud),
+            format!("Ollama · {elsewhere} · 671B · {context}")
+        );
+
+        let plain = AiModel { enabled: true, tools: Some(true), ..AiModel::named("gpt-5-mini") };
+        assert_eq!(categorization::model_facts(&data, openai, &plain), format!("OpenAI · {elsewhere}"));
+
+        // The page builds with a note line under the facts, too (a chat model answers in a fixed format).
+        let chat = AiModel { tools: Some(true), decision: Some(false), ..cloud };
+        data.decider_models = vec![(ollama.to_string(), local), (ollama.to_string(), chat)];
+        data.settings.decide_mail_to_cloud = Some(true);
+        let _ = categorization::view(&Default::default(), &data);
+    }
+
     /// Issue #323: in each part the accounts with a model here come first, Jev and the cloud after
     /// them, although "Jev" comes before "Ollama" by name; Ollama's cloud model stays with Ollama.
     #[test]
@@ -5450,9 +5508,9 @@ pub mod categorization {
 
     /// One row per model that may sort mail, the one in effect checked; picking one switches the
     /// sorting on. Grouped by how they sort (issue #421): "Decision models (fast)" first, then "Other
-    /// models"; with more than one account the account stands before a model's name. A chat model
-    /// says that it answers in a fixed format (the fallback, task MW.3), the model of an exception that
-    /// it is only for sorting mail. Without a decision model a row in place of the first group says
+    /// models"; each row names the model and, under it, its account, where it computes and how big it
+    /// is ([`model_facts`], issue #431). A chat model says that it answers in a fixed format (the
+    /// fallback, task MW.3), the model of an exception that it is only for sorting mail, in a third line. Without a decision model a row in place of the first group says
     /// that sorting runs slower and leads to Settings › AI, which suggests one to download. Without any
     /// model, one row says so instead of both groups: where to turn one on when there are models that
     /// can sort but none is on (task S.26), else where to add one. The model in effect turned off since
@@ -5460,7 +5518,8 @@ pub mod categorization {
     fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
         let (fast, other) = grouped(data);
         let off = assigned_off(data);
-        // Which account a model is from matters only where more than one offers models.
+        // The turned-off model has no line with facts under its name: its account helps to tell it, as
+        // soon as more than one account is in play.
         let mut engines: std::collections::BTreeSet<&str> =
             fast.iter().chain(&other).map(|(engine, _)| engine.as_str()).collect();
         engines.extend(off.as_ref().map(|(engine, _)| engine.as_str()));
@@ -5497,8 +5556,9 @@ pub mod categorization {
                 .into_iter()
                 .flatten()
                 .collect();
-                let detail = (!notes.is_empty()).then(|| notes.join(" · "));
-                model_choice(label(&engine, &model.name), detail, chosen, Message::Model(engine, model.id))
+                let note = (!notes.is_empty()).then(|| notes.join(" · "));
+                let facts = model_facts(data, &engine, &model);
+                model_choice(model.name, facts, note, chosen, Message::Model(engine, model.id))
             };
             if fast.is_empty() {
                 // In place of the group: loading one lives in Settings › AI with its progress, where "Use
@@ -5533,11 +5593,26 @@ pub mod categorization {
         rows
     }
 
-    /// One model to pick, like [`choice`], with a line under its name where it has one: the row is
-    /// the button, a check at the end marks the one that sorts.
+    /// What a model row says under its name (issue #431): its account, where it computes ("On this
+    /// computer" or "Cloud", as [`stays_here`] judges) and how big it is ([`size_facts`]), joined with
+    /// " · ". What is unknown is left out.
+    pub(super) fn model_facts(data: &Data, engine: &str, model: &AiModel) -> String {
+        let place = match stays_here(engine, model) {
+            true => tr("On this computer"),
+            false => tr("Cloud"),
+        };
+        let mut facts = vec![account_label(data, engine), place.to_string()];
+        facts.extend(crate::parts::size_facts(model));
+        facts.join(" · ")
+    }
+
+    /// One model to pick, like [`choice`]: its name, its facts ([`model_facts`]) and, where it has
+    /// one, a third line with a note. The row is the button, a check at the end marks the one that
+    /// sorts. A long line is cut off at the end.
     fn model_choice<'a>(
-        label: String,
-        detail: Option<String>,
+        name: String,
+        facts: String,
+        note: Option<String>,
         chosen: bool,
         on_press: Message,
     ) -> Element<'a, Message> {
@@ -5547,7 +5622,19 @@ pub mod categorization {
                 .into(),
             false => iced::widget::space().width(icon::SIZE).into(),
         };
-        pressable(setting_row(None, label, detail, check), Some(on_press))
+        let extra = usize::from(note.is_some());
+        let mut lines = column![
+            widgets::ellipsized(typo::body(), name, theme::text),
+            widgets::ellipsized(typo::meta(), facts, theme::text_3),
+        ];
+        if let Some(note) = note {
+            lines = lines.push(widgets::ellipsized(typo::meta(), note, theme::text_2));
+        }
+        let content = iced::widget::row![lines.width(iced::Fill), check]
+            .spacing(torro_gui::theme::space::l())
+            .align_y(iced::Alignment::Center);
+        let row = crate::parts::row_frame_with_lines(content, true, extra);
+        pressable(row, Some(on_press))
     }
 
     /// The assigned model turned off (PR review #242), as a row of "Model": an alert in the attention

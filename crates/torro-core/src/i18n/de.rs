@@ -3549,7 +3549,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Change the assistant's note \"{old}\" to \"{note}\"", "Notiz des Assistenten „{old}“ ändern in „{note}“"),
     ("Change the profile of the assistant \"{name}\": {changes}", "Profil des Assistenten „{name}“ ändern: {changes}"),
-    ("Cloud", "Wolke"),
+    ("Cloud", "Cloud"),
     ("Description", "Beschreibung"),
     ("Description: {text}", "Beschreibung: {text}"),
     ("Discard", "Verwerfen"),

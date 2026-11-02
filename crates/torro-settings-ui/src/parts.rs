@@ -11,7 +11,8 @@ use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{Text, button, column, container, row, svg, text_input};
 use iced::{Alignment, Element, Fill, Padding, Theme};
 
-use torro_core::i18n::tr;
+use torro_core::ai::AiModel;
+use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::{style, typo, widgets};
@@ -42,7 +43,14 @@ pub fn setting_row<'a, M: 'a>(
 /// `content` as one line of a settings group: as high as the header bar (64 in Torro, 76 with two lines of
 /// text), 16 at the sides.
 pub fn row_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool) -> Element<'a, M> {
-    let height = if tall { size::header() + space::m() } else { size::header() };
+    row_frame_with_lines(content, tall, 0)
+}
+
+/// Like [`row_frame`], with `extra` more lines of `meta` text under the two a tall row holds (issue
+/// #431: the note under the facts of a model), so the height is counted in one place.
+pub fn row_frame_with_lines<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool, extra: usize) -> Element<'a, M> {
+    let base = if tall { size::header() + space::m() } else { size::header() };
+    let height = base + typo::line_height(typo::meta()) * extra as f32;
     container(content).width(Fill).center_y(height).padding([0.0, space::l()]).into()
 }
 
@@ -176,4 +184,56 @@ where
         .font(typo::caption().font)
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
+}
+
+/// "131K context", "1M context": how much fits into one conversation, rounded to thousands or, from
+/// a million on, to millions of tokens.
+pub fn context_text(tokens: u64) -> String {
+    match tokens {
+        1_000_000.. => trf("{n}M context", &[("n", &((tokens + 500_000) / 1_000_000))]),
+        _ => trf("{n}K context", &[("n", &((tokens + 500) / 1000).max(1))]),
+    }
+}
+
+/// How big a model is, as far as its server tells (issue #431): its parameters (`8.2B`), its bytes
+/// on the disk (`4.9 GB`), its quantization (`Q4_K_M`) and its context (`41K context`), in this
+/// order. What is unknown is left out, never written as "unknown". Used by the model choice of the
+/// mail settings and by the models of an AI account in the control centre, so both say the same.
+pub fn size_facts(model: &AiModel) -> Vec<String> {
+    let mut facts = Vec::new();
+    facts.extend(model.parameters.clone());
+    facts.extend(model.size.map(torro_gui::units::format_bytes));
+    facts.extend(model.quantization.clone());
+    facts.extend(model.context.map(context_text));
+    facts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_context_is_counted_in_thousands_or_millions() {
+        assert_eq!(context_text(131_072), trf("{n}K context", &[("n", &131)]));
+        assert_eq!(context_text(200_000), trf("{n}K context", &[("n", &200)]));
+        assert_eq!(context_text(300), trf("{n}K context", &[("n", &1)]));
+        assert_eq!(context_text(1_048_576), trf("{n}M context", &[("n", &1)]));
+    }
+
+    /// Issue #431: parameters, disk, quantization and context in this order; unknown ones are left out.
+    #[test]
+    fn the_size_of_a_model_lists_only_what_is_known() {
+        let model = AiModel {
+            parameters: Some("8.2B".into()),
+            quantization: Some("Q4_K_M".into()),
+            size: Some(5_225_388_164),
+            context: Some(40_960),
+            ..AiModel::named("qwen3:8b")
+        };
+        let disk = torro_gui::units::format_bytes(5_225_388_164);
+        assert_eq!(size_facts(&model), ["8.2B".to_string(), disk, "Q4_K_M".into(), context_text(40_960)]);
+        let cloud = AiModel { size: None, quantization: None, ..model };
+        assert_eq!(size_facts(&cloud), ["8.2B".to_string(), context_text(40_960)]);
+        assert!(size_facts(&AiModel::named("gpt-5-mini")).is_empty());
+    }
 }

@@ -111,6 +111,11 @@ Ursprünglich geplant: Seite **„AI“** in der Steuerzentrale (erscheint erst 
 
 Seit #325 ist die Zuordnung je Funktion der Ausnahmefall: Der Normalfall ist der Platz (Abschnitt „Plätze“).
 
+**Modellwahl der Sortierung (#431):** Jede Zeile zeigt unter dem Modellnamen das Konto, den Ort („On this computer“
+oder „Cloud“) und, soweit der Anbieter es nennt, Parameter, Platz auf der Platte, Quantisierung und Kontextlänge;
+Unbekanntes fällt weg. Parameter, Quantisierung und Platz kommen von Ollama (`/api/tags`), die Plattengröße nur für
+Modelle auf diesem Rechner; `ai.list_models` und `ai_list_models` liefern dieselben Angaben.
+
 ## Plätze
 
 Man wählt nicht mehr je Funktion ein Modell, sondern je **Platz** (`torro_core::ai::AiSlot`, Schlüssel `chat`

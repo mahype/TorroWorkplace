@@ -146,7 +146,7 @@ use torro_pim::AccountState;
 use torro_core::ai::{Place, place_of};
 use torro_ntfy::TOPICS_MAX;
 
-use crate::parts::{chevron, confirm, dialog, notice, pressable, row_frame, setting_row};
+use crate::parts::{chevron, confirm, dialog, notice, pressable, row_frame, setting_row, size_facts};
 use server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 
 pub mod connect;
@@ -3814,17 +3814,9 @@ pub fn has_switch(model: &AiModel) -> bool {
     model.is_usable()
 }
 
-/// "131K context", "1M context": how much fits into one conversation, rounded to thousands or, from
-/// a million on, to millions of tokens.
-fn context_text(tokens: u64) -> String {
-    match tokens {
-        1_000_000.. => trf("{n}M context", &[("n", &((tokens + 500_000) / 1_000_000))]),
-        _ => trf("{n}K context", &[("n", &((tokens + 500) / 1000).max(1))]),
-    }
-}
-
-/// The line under a model's name: what it can (tools, deciding, thinking, its context) and where it
-/// computes, "Tools · Thinking · 131K context · Cloud"; a decision model says "Decides", so one sees
+/// The line under a model's name: what it can (tools, deciding, thinking), where it computes and how
+/// big it is ([`size_facts`], issue #431), "Tools · Thinking · On this computer · 8.2B · 4.9 GB ·
+/// Q4_K_M · 41K context"; a decision model says "Decides", so one sees
 /// what it is for (#231), and a model that can do neither starts with "Can't use tools or decide".
 pub fn model_detail(model: &AiModel, place: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -3840,8 +3832,10 @@ pub fn model_detail(model: &AiModel, place: &str) -> String {
     if model.reasoning == Some(true) {
         parts.push(tr("Thinking").to_string());
     }
-    parts.extend(model.context.map(context_text));
+    // The place before the size: where a model computes decides about mail, and a narrow window cuts
+    // the end of the line.
     parts.push(place.to_string());
+    parts.extend(size_facts(model));
     parts.join(" · ")
 }
 
@@ -5345,21 +5339,13 @@ mod tests {
         assert_eq!(place, tr("Cloud"));
         assert_eq!(
             model_detail(qwen, place),
-            [tr("Tools"), tr("Thinking"), &trf("{n}K context", &[("n", &131)]), tr("Cloud")].join(" · ")
+            [tr("Tools"), tr("Thinking"), tr("Cloud"), "235B", &trf("{n}K context", &[("n", &131)])].join(" · ")
         );
         draw(&state, &data);
         let mut nextcloud = State::default();
         let action = update(&mut nextcloud, Message::Open("nextcloud:anna@cloud.example.org".into()), &data);
         assert!(matches!(action, Action::None) && !nextcloud.models_page.loading, "no models elsewhere");
         assert!(matches!(update(&mut nextcloud, Message::LoadModels, &data), Action::None));
-    }
-
-    #[test]
-    fn the_context_is_counted_in_thousands_or_millions() {
-        assert_eq!(context_text(131_072), trf("{n}K context", &[("n", &131)]));
-        assert_eq!(context_text(200_000), trf("{n}K context", &[("n", &200)]));
-        assert_eq!(context_text(300), trf("{n}K context", &[("n", &1)]));
-        assert_eq!(context_text(1_048_576), trf("{n}M context", &[("n", &1)]));
     }
 
     /// A switch sends `ai.set_model_enabled` for the open account's model and shows the new state
@@ -5404,6 +5390,22 @@ mod tests {
         assert!(has_switch(&nimble), "sorting mail uses it");
         let place = tr("On this computer");
         assert_eq!(model_detail(&nimble, place), format!("{} · {place}", tr("Decides")));
+        // Issue #431: how big it is follows where it computes, which a narrow window must not cut.
+        let sized = AiModel {
+            tools: Some(true),
+            reasoning: Some(true),
+            parameters: Some("8.2B".into()),
+            quantization: Some("Q4_K_M".into()),
+            size: Some(5_225_388_164),
+            context: Some(40_960),
+            ..AiModel::named("qwen3:8b")
+        };
+        let disk = torro_gui::units::format_bytes(5_225_388_164);
+        let context = crate::parts::context_text(40_960);
+        assert_eq!(
+            model_detail(&sized, place),
+            [tr("Tools"), tr("Thinking"), place, "8.2B", &disk, "Q4_K_M", &context].join(" · ")
+        );
         let deciding = listed_model(&state, "nimble");
         assert!(has_switch(deciding) && !deciding.enabled, "the demo's decision model has a switch");
         let action = update(&mut state, Message::SetModel("google/gemma-3-27b-it".into(), true), &data);

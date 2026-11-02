@@ -447,6 +447,9 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 tools: Some(true),
                 open_weights: None,
                 context: model.get("max_input_tokens").and_then(Value::as_u64),
+                parameters: None,
+                quantization: None,
+                size: None,
                 reasoning: takes_an_effort(model),
                 remote: None,
                 // Anthropic has no decision models; its provider keeps the default `decide`.
