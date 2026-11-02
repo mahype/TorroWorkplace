@@ -48,7 +48,7 @@ const WORK_CALENDAR: &str = "nextcloud:anna@cloud.example.org/work";
 
 /// The calendar the sample settings hide (task S.19): "Shared" of the second account, so
 /// "Calendars" shows a switch turned off.
-const SHARED_CALENDAR: &str = "nextcloud:ben@cloud.example.org/shared";
+const SHARED_CALENDAR: &str = "nextcloud:anna@work.example.net/shared";
 
 /// The sample mail account (task S.20), for the mail window's "Accounts" and the inbox's
 /// "Sources".
@@ -206,7 +206,9 @@ impl Demo {
     /// Two accounts with calendars and task lists, for "Calendars" (task S.19) and "Lists" to
     /// group by: a Nextcloud account with a calendar, a family calendar and a personal list, and
     /// a second one with a calendar the sample settings hide ([`SHARED_CALENDAR`]). The Shared
-    /// calendar is read-only, so a row shows what "Read-only" looks like.
+    /// calendar is read-only, so a row shows what "Read-only" looks like. The second cannot reach
+    /// its server. Then GitHub, the mail provider's CalDAV account, two mail accounts, ntfy and the
+    /// AI accounts: the same suite as the control centre's demo (issue #410), with Ollama besides.
     ///
     /// Built as the structs they are, not parsed from JSON: a sample that cannot be read would
     /// have to be unwrapped, and the workspace allows no `expect` outside tests.
@@ -241,7 +243,7 @@ impl Demo {
             writable,
             source: None,
         };
-        vec![
+        let mut accounts = vec![
             account(
                 "nextcloud:anna@cloud.example.org",
                 "nextcloud",
@@ -265,27 +267,42 @@ impl Demo {
                     ),
                 ],
             ),
+            // The second Nextcloud cannot reach its server, as in the control centre's demo (issue
+            // #410: the same sample accounts in every window).
             account(
-                "nextcloud:ben@cloud.example.org",
+                "nextcloud:anna@work.example.net",
                 "nextcloud",
-                "ben@cloud.example.org",
-                connected("https://cloud.example.org", "ben"),
+                "anna@work.example.net",
+                AccountState::Connected {
+                    server: "https://work.example.net".into(),
+                    login_name: "anna".into(),
+                    last_sync: Some(Utc::now() - chrono::Duration::days(2)),
+                    problem: Some("The server did not answer".into()),
+                },
                 vec![collection(SHARED_CALENDAR, "Shared", CollectionKind::Events, Some("#B06F12"), false)],
             ),
             // The accounts the inbox's "Sources" shows (task S.20): GitHub, an ntfy server and a
             // mail account, the last one also the mail window's "Accounts".
-            account(
-                "github:anna-berg",
-                "github",
-                "anna-berg",
-                connected("https://github.com", "anna-berg"),
-                Vec::new(),
-            ),
-            self.ntfy_account(),
-            self.mail_account(),
-            // The local AI, so the mail window's "Categorization" has a model to offer.
-            account("ai:ollama@localhost:11434", "ai", "Ollama", connected("http://localhost:11434", ""), Vec::new()),
-        ]
+            account("github:anna-dev", "github", "anna-dev", connected("https://github.com", "anna-dev"), Vec::new()),
+        ];
+        // The control centre's other sample accounts (`accounts::demo`): the mail provider's
+        // calendars, the work mail account and the AI in the cloud, so both show the same suite.
+        let suite = crate::accounts::demo::demo_data().accounts;
+        let of = |id: &str| suite.iter().find(|account| account.id == id).cloned();
+        accounts.extend(of("caldav:anna@posteo.de@posteo.de"));
+        accounts.push(self.mail_account());
+        accounts.extend(of("mail:anna@work.example.net"));
+        accounts.push(self.ntfy_account());
+        accounts.extend(of(crate::accounts::demo::DEMO_OPENROUTER));
+        // The local AI, so the mail window's "Categorization" has a model to offer.
+        accounts.push(account(
+            "ai:ollama@localhost:11434",
+            "ai",
+            "Ollama",
+            connected("http://localhost:11434", ""),
+            Vec::new(),
+        ));
+        accounts
     }
 
     /// The calendars (`events`) or the task lists of the sample accounts the suite shows, as
@@ -305,11 +322,11 @@ impl Demo {
     fn ntfy_account(&self) -> AccountInfo {
         let topic = |label: &str| NtfyTopicView { label: label.to_string(), topic: None };
         AccountInfo {
-            id: "ntfy:ntfy.sh".into(),
+            id: "ntfy:push.example.org".into(),
             kind: "ntfy".into(),
-            label: "ntfy.sh".into(),
+            label: "anna@push.example.org".into(),
             state: AccountState::Connected {
-                server: "https://ntfy.sh".into(),
+                server: "https://push.example.org".into(),
                 login_name: "anna".into(),
                 last_sync: Some(Utc::now() - chrono::Duration::minutes(1)),
                 problem: None,
@@ -318,8 +335,8 @@ impl Demo {
             scopes: None,
             mail: None,
             ntfy: Some(NtfyView {
-                server: "https://ntfy.sh".into(),
-                topics: vec![topic("Backups"), topic("Doorbell")],
+                server: "https://push.example.org".into(),
+                topics: vec![topic("Backups"), topic("CI builds"), topic("Home server")],
                 user: Some("anna".into()),
                 login: true,
             }),
@@ -572,8 +589,8 @@ impl Demo {
         vec![
             source(SourceRef::nextcloud("anna@cloud.example.org"), 3, false),
             source(SourceRef::talk("anna@cloud.example.org"), 0, true),
-            source(SourceRef::github("anna-berg"), 2, false),
-            source(SourceRef::ntfy("ntfy.sh"), 1, false),
+            source(SourceRef::github("anna-dev"), 2, false),
+            source(SourceRef::ntfy("push.example.org"), 1, false),
             source(SourceRef::mail(MAIL_ADDRESS), 7, false),
         ]
     }
@@ -598,7 +615,7 @@ impl Demo {
             rule("r2", SourceRef::script("cron"), RuleEffect::Muted, 11),
             Rule {
                 facet: Some(Facet { key: FacetKey::Tag, value: "backup".into() }),
-                ..rule("r3", SourceRef::ntfy("ntfy.sh"), RuleEffect::Muted, 12)
+                ..rule("r3", SourceRef::ntfy("push.example.org"), RuleEffect::Muted, 12)
             },
             Rule {
                 facet: Some(Facet { key: FacetKey::Bulk, value: "bulk".into() }),

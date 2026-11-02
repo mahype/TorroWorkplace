@@ -6703,7 +6703,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Oldest {oldest} · newest {newest}", "Älteste {oldest} · neueste {newest}"),
     ("On the server", "Auf dem Server"),
     ("On this device", "Auf diesem Gerät"),
-    ("Email accounts", "E-Mail-Konten"),
     ("{local} of {online} online", "{local} von {online} online"),
     ("{n} emails total", "{n} E-Mails insgesamt"),
     ("Mail sizes are being collected", "Mailgrößen werden noch erfasst"),

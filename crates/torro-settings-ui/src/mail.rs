@@ -1391,7 +1391,7 @@ pub mod accounts {
         rows.push(row_frame(crate::accounts::on_axis(import), false));
         column![
             crate::accounts::page_heading(),
-            widgets::group(tr("Email accounts"), rows, None),
+            widgets::group(tr("Mail"), rows, None),
             widgets::mail_coverage_legend(),
         ]
         .spacing(space::m())
