@@ -59,6 +59,7 @@ use torro_ipc::web::{SearchProviderId, SearchProviderInfo};
 use torro_ipc::{AiServer, ClientInfo, Request, Response, SettingKey};
 use torro_settings_ui::assistant::web;
 
+use super::accounts::act;
 use super::connect::caldav::{self, CalDavSignIn};
 use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
@@ -540,7 +541,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
                 return stay(Action::None);
             }
             state.error = None;
-            stay(state.nextcloud.start(data))
+            stay(act(state.nextcloud.start(data)))
         }
         Message::Next if state.step == Step::Nextcloud && state.nextcloud.running() => stay(Action::None),
         // On the calendar and tasks steps the primary button sends the open form.
@@ -653,7 +654,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
         Message::UseGithubCli if !state.github.checking() => {
             state.close_forms();
             state.error = None;
-            stay(state.github.use_cli())
+            stay(act(state.github.use_cli()))
         }
         Message::PasteToken => {
             state.close_forms();
@@ -675,7 +676,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             stay(Action::None)
         }
         Message::Dialog(message) => match state.dialog.as_mut() {
-            Some(dialog) => stay(wizard::update(dialog, message, data)),
+            Some(dialog) => stay(act(wizard::update(dialog, message, data))),
             None => stay(Action::None),
         },
         Message::Source(source, on) => {
@@ -870,7 +871,7 @@ fn open_dialog(state: &mut State, provider: Option<wizard::Provider>, data: &Dat
         None => wizard::State::torromail(),
     };
     state.dialog = Some(dialog);
-    action
+    act(action)
 }
 
 /// A source's key for the switches kept here: kind and name.
@@ -946,11 +947,11 @@ fn submit_form(state: &mut State) -> Action {
             return Action::None;
         }
         state.error = None;
-        return form.connect(calendars, tasks);
+        return act(form.connect(calendars, tasks));
     }
     if state.github_token && state.github.has_token() && !state.github.checking() {
         state.error = None;
-        return state.github.send_token();
+        return act(state.github.send_token());
     }
     Action::None
 }

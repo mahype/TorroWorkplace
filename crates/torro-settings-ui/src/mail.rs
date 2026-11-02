@@ -54,6 +54,12 @@ pub fn new_filter(query: String, account: Option<String>) -> Message {
     Message::Filters(filters::Message::New { query, account })
 }
 
+/// The message that opens the add-account dialog in "Accounts" (issue #410) – what torroinbox sends
+/// after opening the section for "Add mail account…" of the mail window without an account.
+pub fn add_account() -> Message {
+    Message::Accounts(accounts::Message::Add)
+}
+
 /// The id of the section "Accounts", whose account page has a menu of its own (task DS.6).
 pub const ACCOUNTS_SECTION: &str = "accounts";
 
@@ -256,7 +262,7 @@ pub fn overlay<'a>(
         ATTACHMENTS_SECTION => {
             attachments::overlay(&state.attachments, data, class).map(|dialog| dialog.map(Message::Attachments))
         }
-        ACCOUNTS_SECTION => accounts::overlay(&state.accounts).map(|menu| menu.map(Message::Accounts)),
+        ACCOUNTS_SECTION => accounts::overlay(&state.accounts, data).map(|menu| menu.map(Message::Accounts)),
         _ => None,
     }
 }
@@ -433,7 +439,7 @@ pub mod accounts {
     use torro_gui::theme::{self, size, space};
     use torro_gui::units::{format_bytes, format_count, format_duration};
     use torro_gui::widgets::{
-        Align, Anchor, HeadActions, MenuItem, MenuSection, PageAction, Placement, Status, TileFace, Trail,
+        Align, Anchor, HeadActions, MenuItem, MenuSection, PageAction, Placement, Status, TileFace,
     };
     use torro_gui::{layout, style, typo, widgets};
     use torro_ipc::mail::{
@@ -475,6 +481,11 @@ pub mod accounts {
         /// never as [`Action::Ask`], because the core holds that question up to 25 seconds and the
         /// asks of the sections go one at a time (#397).
         sync: SyncWatch,
+        /// The add-account dialog of the suite's Accounts (issue #410), at a mail account or at
+        /// TorroMail's accounts, while it is open: Mail connects its accounts itself.
+        wizard: Option<crate::accounts::wizard::State>,
+        /// The "Remove this account?" confirmation of the open account is open.
+        confirm_remove: bool,
     }
 
     /// What the page knows of the open account's sync (`mail.sync_status`, issue #422) and which
@@ -563,8 +574,20 @@ pub mod accounts {
         CloseMore,
         /// "Storage & search" from the "…" menu or a link of the overview: the account's storage tab.
         OpenStorage,
-        /// "Server settings": the account in the control centre, where servers and passwords are.
+        /// "Server settings": the account's tab with its servers, login and password.
         ServerSettings,
+        /// "Add mail account…" under the list (issue #410): the add-account dialog at a mail account.
+        Add,
+        /// "Import from TorroMail…": the dialog at TorroMail's accounts.
+        ImportTorroMail,
+        /// What the add-account dialog reported.
+        Wizard(crate::accounts::wizard::Message),
+        /// "Remove account…" in the head's "…": the confirmation.
+        AskRemove,
+        /// "Cancel" or a click beside the confirmation, or Escape.
+        CancelRemove,
+        /// "Remove account" in the confirmation: `accounts.remove_account` for the open account.
+        Remove,
         /// "Discard" in the save bar: the draft holds what is stored again.
         Discard,
         /// Typing in the sender name.
@@ -765,7 +788,42 @@ pub mod accounts {
     }
 
     pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
+        use crate::accounts::wizard::{self, Provider};
         match message {
+            Message::Add => {
+                state.more = false;
+                let (dialog, action) = wizard::State::at(Provider::Mail, data);
+                state.wizard = Some(dialog);
+                from_dialog(action)
+            }
+            Message::ImportTorroMail => {
+                let (dialog, action) = wizard::State::torromail();
+                state.wizard = Some(dialog);
+                from_dialog(action)
+            }
+            Message::Wizard(wizard::Message::Close) => {
+                state.wizard = None;
+                Action::None
+            }
+            Message::Wizard(message) => {
+                let Some(dialog) = state.wizard.as_mut() else { return Action::None };
+                from_dialog(wizard::update(dialog, message, data))
+            }
+            Message::AskRemove => {
+                state.more = false;
+                state.confirm_remove = state.draft.is_some();
+                Action::None
+            }
+            Message::CancelRemove => {
+                state.confirm_remove = false;
+                Action::None
+            }
+            Message::Remove => {
+                state.confirm_remove = false;
+                let Some(draft) = state.draft.take() else { return Action::None };
+                state.tab = Tab::default();
+                Action::send(Request::RemoveAccount { id: draft.account })
+            }
             Message::Open(id) => {
                 // Without the account in the loaded data there is nothing to show or type into;
                 // the list stays, and a press after the next load opens it.
@@ -1136,6 +1194,12 @@ pub mod accounts {
     }
 
     pub(super) fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+        // The dialog's requests are its own: it shows how they went (issue #410).
+        if let Some(dialog) = state.wizard.as_mut()
+            && crate::accounts::wizard::answered(dialog, answer)
+        {
+            return;
+        }
         let Some(id) = state.pending_connection.as_deref() else { return };
         match answer {
             Ok(torro_ipc::Response::MailConnectionChecked { id: answered }) if answered != id => return,
@@ -1190,6 +1254,17 @@ pub mod accounts {
     }
 
     /// The section's page: the list of accounts, or the open account's page below it.
+    /// What the add-account dialog wants, as the section's action: its requests are asked
+    /// ([`Action::Ask`]), so their answers come back to it ([`answered`]); a connected account
+    /// reloads the window there (`MailConnected`).
+    fn from_dialog<A>(action: crate::accounts::Action) -> Action<A> {
+        match action {
+            crate::accounts::Action::Send(request) => Action::Ask(request),
+            crate::accounts::Action::OpenUrl(url) => Action::OpenUrl(url),
+            crate::accounts::Action::None | crate::accounts::Action::AskAi(_) => Action::None,
+        }
+    }
+
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         page_with_optional_storage(state, None, data)
     }
@@ -1250,14 +1325,8 @@ pub mod accounts {
     /// message inventory; the database's physical size is shown only on the storage detail.
     fn list(data: &Data) -> Element<'_, Message> {
         let accounts = mail_accounts(data);
-        if accounts.is_empty() {
-            return widgets::empty_state(
-                tr("No mail account"),
-                tr("Add a mail account in Torro Workplace, under Accounts."),
-            );
-        }
         let now = Utc::now();
-        let rows = accounts
+        let mut rows: Vec<Element<'_, Message>> = accounts
             .into_iter()
             .map(|(account, mail)| {
                 let stats = data.mail_stats.iter().find(|stats| stats.account == account.id);
@@ -1265,20 +1334,26 @@ pub mod accounts {
                 let address = account.label.clone();
                 let id = account.id.clone();
                 let sync = mail.mail.last_sync.or_else(|| stats.and_then(|stats| stats.last_sync));
-                let sync_label = if sync_problem(mail, stats).is_some() {
-                    tr("Sync problem").to_string()
-                } else {
-                    sync.map_or_else(|| tr("Not synced yet").to_string(), |at| format_moment(at, now))
+                // As the suite's Accounts says it (design review of #410): a dot and "Last synced …".
+                let (sync_status, sync_label) = match sync_problem(mail, stats) {
+                    Some(_) => (Status::Error, tr("Sync problem").to_string()),
+                    None => (Status::Ok, crate::accounts::last_synced_text(sync, now)),
                 };
                 let stats = stats.cloned();
                 let entry = responsive(move |room| {
                     let inventory = inventory_content(stats.as_ref());
-                    let name_col = column![
-                        typo::text(typo::body_strong(), address.clone()),
-                        typo::text(typo::meta(), name.clone()).style(theme::text_2),
+                    // Without a sender name the address alone, centred in the row (design review of #410).
+                    let sender =
+                        (!name.is_empty()).then(|| typo::text(typo::meta(), name.clone()).style(theme::text_2));
+                    let name_col =
+                        column![typo::text(typo::body_strong(), address.clone())].push(sender).spacing(space::xs());
+                    // One line, cut with "…" where the column is too narrow (design review of #410).
+                    let sync_col = row![
+                        widgets::status_dot(sync_status),
+                        widgets::ellipsized(typo::meta(), sync_label.clone(), theme::text_2)
                     ]
-                    .spacing(space::xs());
-                    let sync_col = typo::text(typo::meta(), sync_label.clone()).style(theme::text_2);
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
                     if room.width < 680.0 {
                         container(column![name_col, inventory, sync_col].spacing(space::m()))
                             .width(Length::Fill)
@@ -1288,8 +1363,9 @@ pub mod accounts {
                         container(
                             row![
                                 name_col.width(Length::FillPortion(3)),
-                                container(inventory).width(Length::FillPortion(5)),
-                                sync_col.width(Length::FillPortion(2)),
+                                container(inventory).width(Length::FillPortion(4)),
+                                // Room for "Last synced 59 min ago" beside its dot.
+                                sync_col.width(Length::FillPortion(3)),
                                 chevron(),
                             ]
                             .spacing(space::l())
@@ -1303,9 +1379,27 @@ pub mod accounts {
                 pressable(entry.into(), Some(Message::Open(id)))
             })
             .collect();
-        column![widgets::group(tr("Email accounts"), rows, None), widgets::mail_coverage_legend(),]
-            .spacing(space::m())
-            .into()
+        // Mail connects its accounts itself (issue #410): "Add mail account…" and the import from
+        // TorroMail end the group, as under the suite's Accounts.
+        if rows.is_empty() {
+            let none = typo::text(typo::body(), tr("No mail account yet.")).style(theme::text_2);
+            rows.push(row_frame(none, false));
+        }
+        let add =
+            widgets::text_button(Some(Icon::Plus), tr("Add mail account…"), style::button::ghost, Some(Message::Add));
+        let import = widgets::text_button(
+            Some(Icon::Mail),
+            tr("Import from TorroMail…"),
+            style::button::ghost,
+            Some(Message::ImportTorroMail),
+        );
+        // Each in a row of its own, under the heading of the suite's Accounts (design review of #410).
+        rows.push(row_frame(crate::accounts::on_axis(add), false));
+        rows.push(row_frame(crate::accounts::on_axis(import), false));
+        // The heading as far from the group as on the suite's Accounts (design review of #410).
+        let accounts =
+            column![widgets::group(tr("Mail"), rows, None), widgets::mail_coverage_legend()].spacing(space::m());
+        column![crate::accounts::page_heading(), accounts].spacing(layout::section_gap()).into()
     }
 
     fn inventory_content<'a>(stats: Option<&MailAccountStats>) -> Element<'a, Message> {
@@ -1714,21 +1808,46 @@ pub mod accounts {
     }
 
     /// The menu of the head's "…" while it is open.
-    pub(super) fn overlay(state: &State) -> Option<Element<'_, Message>> {
+    pub(super) fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+        use crate::accounts::wizard;
+        if let Some(dialog) = &state.wizard {
+            let content = wizard::view(dialog, data).map(Message::Wizard);
+            return Some(crate::parts::dialog(content, size::form_max(), Message::Wizard(wizard::Message::Close)));
+        }
+        if state.confirm_remove {
+            let draft = state.draft.as_ref()?;
+            return Some(crate::parts::confirm(
+                tr("Remove this account?"),
+                trf(
+                    "This removes {account} from Torro Workplace. Your data stays on the server.",
+                    &[("account", &account_label(data, &draft.account))],
+                ),
+                tr("Remove account"),
+                Message::Remove,
+                Message::CancelRemove,
+            ));
+        }
         if !state.more || state.draft.is_none() {
             return None;
         }
         let items = vec![
             MenuItem::new(Icon::Archive, tr("Storage & search"), Message::OpenStorage),
-            MenuItem::new(Icon::Settings, tr("Server settings"), Message::ServerSettings)
-                .trail(Trail::Icon(Icon::ArrowUpRight)),
+            MenuItem::new(Icon::Settings, tr("Server settings"), Message::ServerSettings),
         ];
-        let menu = widgets::menu(vec![MenuSection::new(items)]);
+        let remove = vec![MenuItem::new(Icon::Trash2, tr("Remove account…"), Message::AskRemove)];
+        let menu = widgets::menu(vec![MenuSection::new(items), MenuSection::new(remove)]);
         Some(widgets::floating(&state.more_anchor, Placement::Below(Align::End), menu, Message::CloseMore))
     }
 
-    /// Escape closes the head's "…" menu while it is open.
+    /// Escape closes the add-account dialog or the confirmation, else the head's "…" menu while it
+    /// is open.
     pub(super) fn escape(state: &State) -> Option<Message> {
+        if state.wizard.is_some() {
+            return Some(Message::Wizard(crate::accounts::wizard::Message::Close));
+        }
+        if state.confirm_remove {
+            return Some(Message::CancelRemove);
+        }
         if state.tab == Tab::Backup
             && let Some(message) = backup::escape(&state.backup)
         {
@@ -2484,17 +2603,45 @@ pub mod accounts {
         fn the_more_menu_leads_on() {
             let data = data();
             let mut state = opened(&data);
-            assert!(overlay(&state).is_none());
+            assert!(overlay(&state, &data).is_none());
             let _: Action<()> = update(&mut state, Message::More, &data);
-            assert!(overlay(&state).is_some());
+            assert!(overlay(&state, &data).is_some());
             assert!(matches!(escape(&state), Some(Message::CloseMore)));
             let storage: Action<()> = update(&mut state, Message::OpenStorage, &data);
             assert_eq!(storage, Action::None);
             assert_eq!(state.tab, Tab::Storage);
-            assert!(overlay(&state).is_none());
+            assert!(overlay(&state, &data).is_none());
             let server: Action<()> = update(&mut state, Message::ServerSettings, &data);
             assert_eq!(server, Action::None);
             assert_eq!(state.tab, Tab::Writing);
+        }
+
+        /// Issue #410: Mail connects its accounts itself – "Add mail account…" and the import open the
+        /// suite's add-account dialog over the window, its requests are asked so their answers come
+        /// back to it, and "Remove account…" asks first and removes the open account only.
+        #[test]
+        fn mail_adds_and_removes_its_accounts_itself() {
+            let data = data();
+            let mut state = State::default();
+            drop(list(&data));
+            let _: Action<()> = update(&mut state, Message::Add, &data);
+            assert!(state.wizard.is_some() && overlay(&state, &data).is_some(), "the dialog over the window");
+            assert!(matches!(escape(&state), Some(Message::Wizard(crate::accounts::wizard::Message::Close))));
+            let _: Action<()> = update(&mut state, Message::Wizard(crate::accounts::wizard::Message::Close), &data);
+            assert!(state.wizard.is_none());
+            let import: Action<()> = update(&mut state, Message::ImportTorroMail, &data);
+            assert_eq!(import, Action::Ask(Request::TorroMailAccounts), "asked, so the answer comes back");
+            let _: Action<()> = update(&mut state, Message::Wizard(crate::accounts::wizard::Message::Close), &data);
+
+            let mut state = opened(&data);
+            let id = current_account(&state).expect("an account is open").to_string();
+            let _: Action<()> = update(&mut state, Message::More, &data);
+            let _: Action<()> = update(&mut state, Message::AskRemove, &data);
+            assert!(state.confirm_remove && overlay(&state, &data).is_some());
+            assert!(matches!(escape(&state), Some(Message::CancelRemove)));
+            let removed: Action<()> = update(&mut state, Message::Remove, &data);
+            assert_eq!(removed, Action::send(Request::RemoveAccount { id }));
+            assert!(current_account(&state).is_none(), "back on the list");
         }
 
         /// A storage choice from an account tab sends that account's policy only after its value
@@ -4360,10 +4507,10 @@ mod tests {
         };
         assert_eq!(categorization::assigned_off(&off), Some((engine.to_string(), "nimble (decides)".to_string())));
         let _ = categorization::view(&Default::default(), &off);
-        let Action::ControlCentre(section) =
+        let Action::Open(section) =
             categorization::update::<()>(&mut Default::default(), categorization::Message::ManageModels, &off)
         else {
-            panic!("the control centre")
+            panic!("the section AI of the same settings")
         };
         assert_eq!(section, crate::assistant::AI_SECTION);
 
@@ -4661,7 +4808,7 @@ pub mod categorization {
             }
             Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel, again: false }),
             Message::Shown(category, shown) => Action::send(super::editor::shown_request(data, category, shown)),
-            Message::ManageModels => Action::ControlCentre(crate::assistant::AI_SECTION.to_string()),
+            Message::ManageModels => Action::Open(crate::assistant::AI_SECTION),
         }
     }
 
@@ -5324,10 +5471,8 @@ pub mod categorization {
         };
         let mut rows: Vec<Element<'a, Message>> =
             off.iter().map(|(engine, name)| off_row(label(engine, name))).collect();
-        let arrow = || {
-            icon::icon(Icon::ArrowUpRight, icon::SIZE)
-                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
-        };
+        // The section AI of the same settings (issue #410): a page below, not another window.
+        let arrow = crate::parts::chevron::<Message>;
         let heading = |title: &str| row_frame(typo::text(typo::body_strong(), title.to_owned()), false);
         if fast.is_empty() && other.is_empty() {
             if off.is_none() {

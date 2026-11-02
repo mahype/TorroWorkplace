@@ -1005,10 +1005,9 @@ impl App {
                 MenuSection::titled(title, items)
             })
             .collect();
-        // Which models are offered is set in the control centre (task S.26), not here.
+        // Which models are offered is set under Settings › AI (task S.26, issue #410), not here.
         if self.engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
-            let manage = MenuItem::new(Icon::SlidersHorizontal, tr("Manage models…"), Message::ManageModels)
-                .trail(Trail::Icon(Icon::ArrowUpRight));
+            let manage = MenuItem::new(Icon::SlidersHorizontal, tr("Manage models…"), Message::ManageModels);
             sections.push(MenuSection::new(vec![manage]));
         }
         widgets::menu(sections)

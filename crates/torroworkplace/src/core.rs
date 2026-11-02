@@ -286,6 +286,31 @@ pub fn reminder_window_title(monitor: &str) -> String {
     format!("Reminder · {monitor}")
 }
 
+/// Whether the main application is installed and the suite's apps, looked up now (issue #410).
+fn installed_now() -> (bool, Vec<torro_ipc::AppInfo>) {
+    (crate::apps::main_app_installed(), crate::apps::list())
+}
+
+/// What [`Core::show_sign_in`] waits for while an app's settings open: `Ok` once the app started.
+type AppOpening = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
+/// Starts `app` with its settings at Accounts (`--settings accounts`, issue #410): through its bundle
+/// where it has one, else its program ([`crate::apps::args_start`]).
+fn open_app_accounts(app: AppId) -> AppOpening {
+    Box::pin(async move {
+        let args = ["--settings".to_string(), "accounts".to_string()];
+        let bundle = crate::apps::installed_bundle(app);
+        let dirs = crate::apps::search_dirs();
+        crate::apps::launch(crate::apps::args_start(app, &args, &dirs, bundle.as_deref())).await
+    })
+}
+
+/// What tests say is installed: the main application, so a client's sign-in shows the control
+/// centre (which they count) and no app starts by accident.
+fn main_app_only() -> (bool, Vec<torro_ipc::AppInfo>) {
+    (true, Vec::new())
+}
+
 /// Opens `url` in the system browser, for `inbox.open_item`. The inbox let only `http`/`https`
 /// through ([`Inbox::opening`]).
 fn open_in_browser(url: &str) -> Result<(), String> {
@@ -2413,6 +2438,13 @@ pub struct Core {
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
+    /// Whether the main application is installed, and the suite's apps (issue #410): where a
+    /// client's sign-in opens ([`crate::apps::sign_in_app`]). Tests say "the main application", so
+    /// they start no app.
+    installed: fn() -> (bool, Vec<torro_ipc::AppInfo>),
+    /// Opens an app's settings at Accounts for a client's sign-in ([`open_app_accounts`], issue #410);
+    /// tests record the app instead.
+    open_app_accounts: fn(AppId) -> AppOpening,
     /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
     open_url: fn(&str) -> Result<(), String>,
     /// Tells a remote source that one of its entries is done (task E5.2,
@@ -2554,6 +2586,8 @@ impl Core {
             restore_plans: RestorePlans::default(),
             mail_dirs: None,
             start_control_centre,
+            installed: if cfg!(test) { main_app_only } else { installed_now },
+            open_app_accounts,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
             settle_done: crate::sources::settle_done,
             mail_discovery: OnceLock::new(),
@@ -9604,13 +9638,27 @@ impl Core {
     }
 
     /// `accounts.connect_github`. The control centre (app key, tray) takes over the GitHub CLI's
-    /// sign-in. A client never does: the core shows the person the accounts page
-    /// ([`show_control_centre`]) and answers `opened`.
+    /// sign-in. A client never does: the core shows the person the accounts page – of the control
+    /// centre, or without it of an app ([`Core::show_sign_in`]) – and answers `opened`.
     async fn connect_github(&self, client: bool) -> Response {
         if !client {
             return self.refresh_connected(account_answer(self.github.connect_cli().await));
         }
-        match show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await {
+        self.show_sign_in(crate::apps::SignIn::GitHub).await
+    }
+
+    /// Shows the person where a client's `sign_in` is finished (issue #410): without the main
+    /// application the settings of the first installed app that uses such an account, at Accounts
+    /// (`--settings accounts`, [`crate::apps::sign_in_app`]); else the control centre's accounts
+    /// page ([`show_control_centre`]). Answers `opened`, or why nothing could open.
+    async fn show_sign_in(&self, sign_in: crate::apps::SignIn) -> Response {
+        // A handful of file checks: off the runtime's threads, like a launch.
+        let (main_app, apps) = tokio::task::spawn_blocking(self.installed).await.unwrap_or((true, Vec::new()));
+        let shown = match crate::apps::sign_in_app(sign_in, main_app, &apps) {
+            Some(app) => (self.open_app_accounts)(app).await,
+            None => show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await,
+        };
+        match shown {
             Ok(()) => Response::Opened,
             Err(message) => Response::Error { code: "error".into(), message },
         }
@@ -9630,10 +9678,7 @@ impl Core {
     /// once. Any other request is not this function's and gets `error`.
     async fn ntfy_request(&self, request: Request, client: bool) -> Response {
         if client && matches!(request, Request::ConnectNtfy { .. }) {
-            return match show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await {
-                Ok(()) => Response::Opened,
-                Err(message) => Response::Error { code: "error".into(), message },
-            };
+            return self.show_sign_in(crate::apps::SignIn::Ntfy).await;
         }
         let _writing = self.calendar_sign_ins.lock().await;
         let answer = match request {
@@ -16254,6 +16299,48 @@ mod tests {
         assert_eq!(code(&answer), "not-connected");
         let Response::Error { message, .. } = answer else { unreachable!() };
         assert!(message.contains("gh auth login"), "says what to do: {message}");
+    }
+
+    /// The apps a test core opened at Accounts for a client's sign-in (issue #410).
+    static APP_ACCOUNTS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_app_accounts(app: AppId) -> AppOpening {
+        APP_ACCOUNTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(app.window_class);
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Without the main application, only the Notification Hub and the calendar are installed.
+    fn without_main_app() -> (bool, Vec<torro_ipc::AppInfo>) {
+        let apps = [AppId::INBOX, AppId::CALENDAR]
+            .iter()
+            .map(|app| torro_ipc::AppInfo {
+                binary: app.binary.into(),
+                name: app.display_name.into(),
+                window_class: app.window_class.into(),
+                installed: true,
+            })
+            .collect();
+        (false, apps)
+    }
+
+    /// Issue #410: without the main application a client's sign-in opens the settings of the first
+    /// installed app that uses the account, not the control centre, and answers `opened`.
+    #[tokio::test]
+    async fn without_the_main_app_a_clients_sign_in_opens_an_apps_accounts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core {
+            installed: without_main_app,
+            open_app_accounts: record_app_accounts,
+            // The control centre would answer `error` here: `opened` comes only from the app.
+            start_control_centre: |_| Err("not the control centre".into()),
+            ..core_with_github(dir.path(), &MemoryTokens::default(), "http://127.0.0.1:9/graphql")
+        };
+        let rights = RightsTemplate::FullAccess.rights();
+        assert_eq!(core.handle_within(Request::ConnectGithub, Reach::Client(&rights)).await, Response::Opened);
+        let ntfy = Request::ConnectNtfy { server: "ntfy.sh".into(), topics: Vec::new() };
+        assert_eq!(core.handle_within(ntfy, Reach::Client(&rights)).await, Response::Opened);
+        let opened = APP_ACCOUNTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(opened, ["torro-inbox", "torro-inbox"], "Tasks is not installed: the Notification Hub");
     }
 
     #[tokio::test]

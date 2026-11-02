@@ -4908,6 +4908,41 @@ pub struct AccountInfo {
     pub services: Option<Vec<ServerService>>,
 }
 
+impl AccountInfo {
+    /// The apps of the suite that use this account (issue #410, "Used by …" on its page), in the
+    /// order of [`AppId::ALL`], and of those only the ones `installed` says are there; never the
+    /// main application, which shows every account. Nothing of it is stored – it follows from the
+    /// kind:
+    ///
+    /// - `nextcloud`: Calendar, Tasks, the Notification Hub and the App Feed;
+    /// - `mail`: Mail, and Calendar and Tasks while it syncs calendars and tasks (`mail.calendars`);
+    /// - `caldav`: Calendar and Tasks;
+    /// - `github`: Tasks, the Notification Hub and the App Feed;
+    /// - `ntfy`: the Notification Hub and the App Feed;
+    /// - `ai`: the Assistant and Mail (which sorts with it).
+    ///
+    /// A sign-in that still runs and a kind the suite does not know are used by none.
+    pub fn used_by(&self, installed: impl Fn(AppId) -> bool) -> Vec<AppId> {
+        let calendars = self.mail.as_ref().is_some_and(|mail| mail.calendars.is_some());
+        let users: &[AppId] = match self.kind.as_str() {
+            _ if self.id.is_empty() => &[],
+            "nextcloud" => &[AppId::CALENDAR, AppId::TASKS, AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
+            "mail" if calendars => &[AppId::CALENDAR, AppId::TASKS, AppId::INBOX_MAIL],
+            "mail" => &[AppId::INBOX_MAIL],
+            "caldav" => &[AppId::CALENDAR, AppId::TASKS],
+            "github" => &[AppId::TASKS, AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
+            "ntfy" => &[AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
+            "ai" => &[AppId::INBOX_MAIL, AppId::ASSISTANT],
+            _ => &[],
+        };
+        AppId::ALL
+            .iter()
+            .copied()
+            .filter(|app| *app != AppId::WORKPLACE && users.contains(app) && installed(*app))
+            .collect()
+    }
+}
+
 /// A service a server offers, in [`AccountInfo::services`] (task W.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -5913,6 +5948,62 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(json, r#"{"method":"workspaces.load_template","id":"dev","mode":"add"}"#);
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+    }
+
+    /// Issue #410: "Used by …" follows from the kind, a mail account's calendars bring Calendar and
+    /// Tasks, and only installed apps count, never the main application.
+    #[test]
+    fn an_account_is_used_by_the_apps_of_its_kind() {
+        let account = |id: &str, kind: &str| AccountInfo {
+            id: id.into(),
+            kind: kind.into(),
+            label: id.into(),
+            state: torro_pim::AccountState::NotConnected,
+            collections: Vec::new(),
+            scopes: None,
+            mail: None,
+            ntfy: None,
+            services: None,
+        };
+        let all = |_: AppId| true;
+        let used = |info: &AccountInfo| -> Vec<&str> { info.used_by(all).iter().map(|app| app.window_class).collect() };
+        assert_eq!(
+            used(&account("nextcloud:anna@cloud", "nextcloud")),
+            ["torro-inbox", "torro-inbox-notifications", "torro-tasks", "torro-calendar"]
+        );
+        assert_eq!(used(&account("caldav:anna", "caldav")), ["torro-tasks", "torro-calendar"]);
+        assert_eq!(
+            used(&account("github:anna", "github")),
+            ["torro-inbox", "torro-inbox-notifications", "torro-tasks"]
+        );
+        assert_eq!(used(&account("ntfy:push", "ntfy")), ["torro-inbox", "torro-inbox-notifications"]);
+        assert_eq!(used(&account("ai:ollama@localhost", "ai")), ["torro-inbox-mail", "torro-assistant"]);
+        assert!(used(&account("", "nextcloud")).is_empty(), "a sign-in that runs");
+        assert!(used(&account("slack:anna", "slack")).is_empty(), "a kind the suite does not know");
+
+        let endpoint =
+            || torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let view = MailView {
+            address: "anna@example.org".into(),
+            sender_name: String::new(),
+            imap: endpoint(),
+            smtp: endpoint(),
+            caldav: None,
+            settings: torro_mail::MailSettings::default(),
+            open_roles: Vec::new(),
+            mail: ServiceState { last_sync: None, problem: None },
+            calendars: None,
+            trusted_certificates: Vec::new(),
+        };
+        let mut mail = AccountInfo { mail: Some(view), ..account("mail:anna@example.org", "mail") };
+        assert_eq!(used(&mail), ["torro-inbox-mail"], "mail only");
+        if let Some(view) = mail.mail.as_mut() {
+            view.calendars = Some(ServiceState { last_sync: None, problem: None });
+        }
+        assert_eq!(used(&mail), ["torro-inbox-mail", "torro-tasks", "torro-calendar"], "with calendars and tasks");
+
+        let only_calendar = |app: AppId| app == AppId::CALENDAR || app == AppId::WORKPLACE;
+        assert_eq!(account("caldav:anna", "caldav").used_by(only_calendar), [AppId::CALENDAR], "installed only");
     }
 
     /// Issue #325: a slot carries its model beside its other fields, an empty one none, and an

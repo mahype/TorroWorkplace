@@ -15,6 +15,9 @@
 //!   the header bar with the path, the page, and the sending and loading around it.
 //! * [`suite`] – the pages of the whole suite, Appearance and General (issue #408): the control
 //!   centre shows them, and so does an app while the main application is not installed.
+//! * [`accounts`] – Accounts and AI (issue #410): the control centre shows them with every
+//!   provider, an app with the ones it uses behind its gear ([`Host::with_accounts`]); the accounts
+//!   stay one for the whole suite, in the daemon.
 //! * [`rights`] – the rights editor (task S.33): what a client may do, area by area and command by
 //!   command. The control centre shows it for keys and MCP clients, the assistant window for the
 //!   assistant and its bots (task S.34).
@@ -49,6 +52,7 @@
 //! its own socket connection, or [`demo::Demo`], which answers sample data from memory and never
 //! opens a socket. Nothing in this library knows the socket (a test watches over that).
 
+pub mod accounts;
 pub mod assistant;
 pub mod calendar;
 pub mod collections;
@@ -73,7 +77,7 @@ use torro_ipc::tools::ToolInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 use torro_pim::Collection;
 
-pub use host::{Form, Frame, Host, Outcome, Page, Section, form, suite_sections};
+pub use host::{Form, Frame, Host, Outcome, Page, Section, account_sections, form, suite_sections};
 
 /// The answer of a [`Backend`], boxed so a `dyn Backend` can be handed around.
 pub type Answer = Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>;
@@ -89,6 +93,14 @@ pub type Answer = Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>
 pub trait Backend: Send + Sync + 'static {
     /// Sends `request` and waits for the answer.
     fn call(&self, request: Request) -> Answer;
+
+    /// Sends `request` and hands the answer back as the core gave it, a refusal as
+    /// `Response::Error` with its code (issue #410): for the group "Models" of AI, which tells `busy`
+    /// (the same model downloads already) from other refusals. `Err` only when no answer came. The
+    /// default is [`Backend::call`], which keeps only the message; an app's own backend keeps the code.
+    fn ask(&self, request: Request) -> Answer {
+        self.call(request)
+    }
 
     /// Whether this is the demo, which answers from memory: then the host also does nothing local,
     /// opens no folder and reads no designs from disk ([`suite::list`]).
@@ -588,6 +600,22 @@ mod tests {
             }
         });
         assert!(found.is_empty(), "the settings library reaches the socket: {found:?}");
+    }
+
+    /// Issue #410: no section leads to the control centre for accounts or AI any more – both are
+    /// sections of the app's own settings ([`Host::with_accounts`]).
+    #[test]
+    fn no_section_sends_accounts_or_ai_to_the_control_centre() {
+        let mut found = Vec::new();
+        visit(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut |file: &Path, text: &str| {
+            for line in code_of(text) {
+                let names = ["\"accounts\"", "\"ai\"", "AI_SECTION", "ACCOUNTS_SECTION"];
+                if line.contains("ControlCentre(") && names.iter().any(|name| line.contains(name)) {
+                    found.push(format!("{}: {}", file.display(), line.trim()));
+                }
+            }
+        });
+        assert!(found.is_empty(), "a section still leads to the control centre: {found:?}");
     }
 
     /// The code of a source file: without comments (a doc comment may name what the code must not

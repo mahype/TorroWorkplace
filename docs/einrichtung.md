@@ -32,7 +32,7 @@ selbst wissen, wo er anfängt. Die Einrichtung führt einmal durch alles, was di
 |---|---|
 | Dienst startet, **kein Konto** und Einrichtung nie abgeschlossen | Der Dienst öffnet `torroworkplace ui --setup` (eine offene Steuerzentrale kommt nach vorn). Das wiederholt sich bei jedem Start, bis die Einrichtung abgeschlossen oder verschoben ist |
 | „Set up later“ in der Einrichtung | Stand `skipped`; Overview zeigt oben die Karte „Finish setup“ mit „Continue setup“ |
-| App ohne Konto, „Open Settings“ (`torro-gui/src/connect.rs`) | Solange die Einrichtung nicht fertig ist, öffnet der Knopf die Einrichtung beim Schritt der App |
+| App ohne Konto (`torro-gui/src/connect.rs`) | Seit #410 je Anbieter ein Knopf („Connect Nextcloud“, „Add mail account“ …), der „Add account“ in der App öffnet; die Einrichtung der Steuerzentrale startet nicht. `--setup-if-open` bleibt für Aufrufer von außen |
 | General › „Run setup again“ | Startet bei Schritt 1; Verbundenes steht schon als erledigt da |
 | Neue Version bringt einen neuen Schritt (z. B. KI) | Overview: „New in setup: AI“, nicht ungefragt öffnen |
 

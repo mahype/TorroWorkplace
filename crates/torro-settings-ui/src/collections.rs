@@ -116,8 +116,8 @@ fn page_in(data: &Data, role: Role, one_line: bool) -> Element<'_, Message> {
 /// bare box.
 fn waiting_group<'a>(label: &'a str, role: Role) -> Element<'a, Message> {
     let hint = match role {
-        Role::Calendar => tr("No calendars yet. Use “Sync now” at this account in the control centre."),
-        Role::TaskList => tr("No task lists yet. Use “Sync now” at this account in the control centre."),
+        Role::Calendar => tr("No calendars yet. Use “Sync now” at this account under Accounts."),
+        Role::TaskList => tr("No task lists yet. Use “Sync now” at this account under Accounts."),
     };
     column![widgets::section_title(label), typo::text(typo::body(), hint).style(theme::text_2)]
         .spacing(space::s())

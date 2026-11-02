@@ -291,6 +291,14 @@ fragt keinen Server. Ordnernamen kommen vom Mail-Server und sind Daten, keine An
 leerem `sender_name` behält bei einem vorhandenen Konto den gespeicherten Absendernamen (sonst löschte „Change
 password…“ ihn); entfernen geht mit `update_mail_account`.
 
+**Welche Apps ein Konto nutzen** (#410): Die Kontoseite zeigt „Used by …“ mit den installierten Apps, die ein Konto
+nutzen. Gespeichert wird das nicht, es folgt aus der Art (`torro_ipc::AccountInfo::used_by`), unter den Apps, die
+`apps.list_apps` als installiert meldet: `nextcloud` Kalender, Aufgaben, Notification Hub und App Feed; `mail` Mail,
+mit Kalenderteil (`mail.calendars`) auch Kalender und Aufgaben; `caldav` Kalender und Aufgaben; `github` Aufgaben,
+Notification Hub und App Feed; `ntfy` Notification Hub und App Feed; `ai` Mail und Assistent. Die Hauptanwendung
+zeigt jedes Konto und steht nie dabei. Agenten leiten es genauso aus `accounts_list_accounts` und `apps_list_apps`
+ab; die Regel steht in der Beschreibung von `accounts.list_accounts`.
+
 **Kalender später hinzufügen** (M3.5): `connect_mail` an einem vorhandenen Konto behält die gespeicherte
 CalDAV-Adresse, auch wenn Kalender und Aufgaben aus sind. `calendars`/`tasks` schalten diese Dienste dort ein (nie
 aus, das bleibt `update_mail_account`); sie brauchen eine CalDAV-Adresse, mitgeschickt oder gespeichert, sonst
@@ -707,7 +715,9 @@ Eintrags, nie Titel, Text oder Merkmalswerte.
 ¹⁸ **ntfy-Konten** (E5.12, [tasks/eingang.md › E5.12](tasks/eingang.md#e512-ntfy-konto-gerüst-requests-katalog)):
 `connect_ntfy` prüft Server (`/v1/health`) und Themen ohne Anmeldung und legt das Konto `ntfy:<host>` an
 (`auth`, wenn ein Thema eine Anmeldung braucht, `conflict` bei einem zweiten Konto desselben Servers); ein
-Client-Schlüssel öffnet wie bei `connect_github` nur die Steuerzentrale und bekommt `opened`. `set_ntfy_login`
+Client-Schlüssel öffnet wie bei `connect_github` nur die Steuerzentrale und bekommt `opened`; ohne
+Hauptanwendung die Einstellungen des Notification Hub bei Accounts, sonst des App Feed (bei `connect_github`: Aufgaben,
+sonst Notification Hub, #410), und ist keine davon installiert, wie bisher die Steuerzentrale. `set_ntfy_login`
 (Benutzer und Passwort oder Token `tk_…`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`, Punkt 5); die Anmeldung
 geht nur über `https` oder an diesen Rechner, sonst `error`, und liegt nur im Schlüsselbund. `set_ntfy_topic`
 abonniert, benennt um oder bestellt ab; die Freigabe nennt Server und Etikett. Themen-Namen sind auf öffentlichen

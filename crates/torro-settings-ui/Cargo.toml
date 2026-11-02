@@ -21,6 +21,8 @@ torro-inbox.workspace = true
 torro-pim.workspace = true
 # The settings of a mail account the sections change (`Notify`, `MailFormat`, `Role`, task S.20).
 torro-mail.workspace = true
+# The limits and the texts of an ntfy account's topics in the add-account dialog (issue #410).
+torro-ntfy.workspace = true
 iced.workspace = true
 # When a note of the assistant's memory was written (task S.17).
 chrono.workspace = true
@@ -28,6 +30,8 @@ chrono.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# The demo words why Gmail and Outlook.com cannot sign in as the core does; a test compares them.
+torro-mail-imap.workspace = true
 tokio.workspace = true
 # Draws a design pack's `preview.png` through the SVG renderer in a test of the suite's Appearance.
 resvg.workspace = true

@@ -342,7 +342,9 @@ fn the_effort_goes_with_the_message_where_the_model_thinks() {
     ));
 
     let _ = app.update(Message::ManageModels);
-    assert_eq!(app.sections, [AI_PAGE], "where the models are turned on");
+    // Issue #410: the section AI of this window's settings, not the control centre.
+    assert!(app.sections.is_empty(), "not the control centre");
+    assert_eq!(pane(&app).host.current().id, AI_PAGE, "where the models are turned on");
     assert_eq!(AI_PAGE, "ai");
     let _ = app.update(Message::CloseMenu);
     let _ = app.update(Message::ToggleMenu(Menu::Picker));
@@ -395,7 +397,8 @@ fn without_a_model_on_the_welcome_says_where_to_turn_one_on() {
     assert!(app.no_model_on());
     let _ = app.view();
     let _ = app.update(Message::ManageModels);
-    assert_eq!(app.sections, [AI_PAGE]);
+    assert!(app.sections.is_empty());
+    assert_eq!(pane(&app).host.current().id, AI_PAGE);
 
     // Once an AI account is an engine again, models are on.
     let mut on = started(&[]);
@@ -638,8 +641,9 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     assert!(none.engines_loaded && none.engines.is_empty());
     assert_eq!(none.choice, None, "nothing can answer");
     let _ = none.update(Message::AddAiAccount);
-    assert_eq!(none.sections, [AI_PAGE], "\"Add an AI account\" opens AI");
-    assert!(none.settings.is_none(), "the control centre, not the settings in the window");
+    // Issue #410: "Add an AI account" opens AI in this window's settings.
+    assert!(none.sections.is_empty(), "not the control centre");
+    assert_eq!(pane(&none).host.current().id, AI_PAGE, "\"Add an AI account\" opens AI");
 }
 
 /// Task S.34: "Change access" under a refused tool opens Access in this window, at the assistant –

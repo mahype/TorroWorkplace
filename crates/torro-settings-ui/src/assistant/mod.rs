@@ -96,9 +96,10 @@ pub const SECTIONS: [Section; 7] = [
     Section { id: "history", icon: Icon::History, label: "History" },
 ];
 
-/// Where an AI account is added and its models are turned on and off
-/// (`torroworkplace ui --section ai`): where General points when there is no engine at all
-/// and for "Manage models…" (task S.26). The control centre exposes it as `--section ai`.
+/// Where an AI account is added and its models are turned on and off: the section AI of the app's
+/// own settings since issue #410 ([`crate::host::AI`], `--settings ai`), where General points when
+/// there is no engine at all and for "Manage models…" (task S.26). The control centre has the same
+/// page as `--section ai`.
 pub const AI_SECTION: &str = "ai";
 
 /// What only the assistant app can do with these sections ([`crate::Action::App`]).

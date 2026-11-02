@@ -1,7 +1,7 @@
 # Einzelne Apps: jede App ohne Hauptanwendung
 
 Stand: 2026-10-30, entschieden in der Planung von Issue #408 (Themen-Issue mit den Sub-Issues #412–#415).
-Konten folgen mit #410, Pakete, Release und App-Katalog mit #411; was dort noch zu planen ist, steht unter
+Konten in den Apps kamen mit #410, Pakete, Release und App-Katalog folgen mit #411; was dort noch zu planen ist, steht unter
 „Drei Themen“.
 
 ## Ziel
@@ -11,8 +11,9 @@ und ist **einzeln herunterladbar**. Die Hauptanwendung (`torroworkplace`: Tray-I
 verbindende Element: Wer sie installiert, kann von dort weitere Apps dazunehmen. Wer nur eine App will, lädt
 nur diese und nutzt sie allein.
 
-Mit #279 sind die Apps schon eigene Programme ([lebenszyklus.md](lebenszyklus.md)). Konten, Aussehen, Sprache
-und der Dienst hängen aber noch an der Hauptanwendung; dieses Dokument hält fest, wie sie sich lösen.
+Mit #279 sind die Apps schon eigene Programme ([lebenszyklus.md](lebenszyklus.md)). Aussehen und Sprache (#414)
+und die Konten (#410) zeigen die Apps inzwischen selbst; dieses Dokument hält fest, wie sie sich von der
+Hauptanwendung lösen.
 
 ## Entschieden in der Planung (2026-10-30)
 
@@ -24,7 +25,7 @@ und der Dienst hängen aber noch an der Hauptanwendung; dieses Dokument hält fe
 - **Hauptanwendung installiert weitere Apps** über einen App-Katalog in der Steuerzentrale: Installieren,
   Aktualisieren (auch „Update all“ und die Hauptanwendung selbst) und Entfernen, in einem eigenen Fenster mit
   Fortschritt. Entwurf in #411.
-- **Einstellungen:** Konten ziehen in die Apps (#410). Aussehen, Sprache und Start beim Anmelden zeigen die
+- **Einstellungen:** Konten verbindet jede App selbst (#410, [settings.md](settings.md), „Die Regel“). Aussehen, Sprache und Start beim Anmelden zeigen die
   Apps selbst, solange die Hauptanwendung fehlt (#414). API, MCP, Freigaben und Workspaces bleiben in der
   Hauptanwendung.
 - **Lose Kopplung:** Die Logik bleibt im Dienst. Alles, was Daten anlegt (etwa eine Aufgabe aus einer Mail),
@@ -83,7 +84,7 @@ Hyprland-Konfiguration. Wer so arbeitet, setzt `TORRO_MAIN_APP=1` dort, wo der D
 
 | Einstellung | mit Hauptanwendung | ohne Hauptanwendung |
 |---|---|---|
-| Konten | Steuerzentrale › Accounts; mit #410 in der jeweiligen App | in der jeweiligen App (#410) |
+| Konten | in der jeweiligen App, Zahnrad › Accounts bzw. AI; die Steuerzentrale › Accounts zeigt alle mit „Used by …“ (#410) | in der jeweiligen App, Zahnrad › Accounts bzw. AI (#410) |
 | Was nur eine App betrifft (Kalender, Listen, Erinnerungen, Quellen …) | hinter dem Zahnrad der App ([settings.md](settings.md)) | ebenso |
 | Aussehen, Sprache, Start beim Anmelden | Steuerzentrale › Appearance bzw. General | in jeder App, Zahnrad › Appearance bzw. General |
 | Hintergrunddienst beenden | Tray › Quit | in jeder App, Zahnrad › General › Background service › „Quit…“ |

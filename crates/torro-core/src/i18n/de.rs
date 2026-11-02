@@ -106,6 +106,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Unknown", "Unbekannt"),
     ("Updated {when}", "Aktualisiert {when}"),
+    ("Used by", "Genutzt von"),
     ("User", "Benutzer"),
     ("Version", "Version"),
     ("Version {version}", "Version {version}"),
@@ -484,10 +485,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Cancel", "Abbrechen"),
     ("Close", "Schließen"),
     ("Loading …", "Lade …"),
-    ("Open Settings", "Einstellungen öffnen"),
+    // The start without an account (issue #410, `torro_gui::connect`).
     (
-        "Set up your Nextcloud in Torro Workplace's settings to see events and tasks here.",
-        "Richte deine Nextcloud in den Einstellungen von Torro Workplace ein, um Termine und Aufgaben hier zu sehen.",
+        "Connect an account to see your calendars and tasks here.",
+        "Verbinde ein Konto, um deine Kalender und Aufgaben hier zu sehen.",
+    ),
+    ("Connect GitHub", "GitHub verbinden"),
+    ("Connect Nextcloud", "Nextcloud verbinden"),
+    (
+        "Connect your mailbox to read and write mail here.",
+        "Verbinde dein Postfach, um hier E-Mails zu lesen und zu schreiben.",
     ),
     ("Notes", "Notizen"),
     ("Save", "Speichern"),
@@ -3879,7 +3886,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} of {m} task lists", "{n} von {m} Aufgabenlisten"),
     ("No source", "Keine Quelle"),
     ("{n} of {m} sources", "{n} von {m} Quellen"),
-    ("No mail account", "Kein E-Mail-Konto"),
     ("{n} of {m} mail accounts", "{n} von {m} E-Mail-Konten"),
     ("No repositories · choose in Torro Workplace", "Keine Repositorys · in Torro Workplace wählen"),
     ("1 repository", "1 Repository"),
@@ -3913,8 +3919,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No suggestion: {why}", "Kein Vorschlag: {why}"),
     ("Set up an AI first", "Richte zuerst eine KI ein"),
     (
-        "Set up an AI first: connect an AI account in the control centre.",
-        "Richte zuerst eine KI ein: Verbinde ein KI-Konto in der Steuerzentrale.",
+        "Set up an AI first: connect an AI account under Settings › AI.",
+        "Richte zuerst eine KI ein: Verbinde unter Einstellungen › KI ein KI-Konto.",
     ),
     (
         "Suggested by your AI. Check it before you create it.",
@@ -4300,12 +4306,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No lists", "Keine Listen"),
     ("Lists appear here once an account has one.", "Listen erscheinen hier, sobald ein Konto eine hat."),
     (
-        "No calendars yet. Use “Sync now” at this account in the control centre.",
-        "Noch keine Kalender. Nutze „Jetzt synchronisieren“ bei diesem Konto in der Steuerzentrale.",
+        "No calendars yet. Use “Sync now” at this account under Accounts.",
+        "Noch keine Kalender. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
     ),
     (
-        "No task lists yet. Use “Sync now” at this account in the control centre.",
-        "Noch keine Aufgabenlisten. Nutze „Jetzt synchronisieren“ bei diesem Konto in der Steuerzentrale.",
+        "No task lists yet. Use “Sync now” at this account under Accounts.",
+        "Noch keine Aufgabenlisten. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
     ),
     (
         "Choose which kinds of events may remind you, whatever their own reminder says.",
@@ -4323,8 +4329,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Every topic of this server", "Jedes Thema dieses Servers"),
     ("Show new mail", "Neue E-Mails zeigen"),
     (
-        "Muting takes the whole server, not one topic. Topics and their labels stay with the account in Torro Workplace.",
-        "Stumm gilt für den ganzen Server, nicht für ein Thema. Themen und ihre Etiketten bleiben beim Konto in Torro Workplace.",
+        "Muting takes the whole server, not one topic. Topics and their labels are on the account's page under Accounts.",
+        "Stumm gilt für den ganzen Server, nicht für ein Thema. Themen und ihre Etiketten stehen auf der Seite des Kontos unter Konten.",
     ),
     ("No rules", "Keine Regeln"),
     (
@@ -4332,10 +4338,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Eine Regel erscheint hier, wenn du etwas mit der Glocke stummschaltest oder Hinweise dauerhaft einer Spur zuordnest.",
     ),
     ("Reading", "Lesen"),
-    (
-        "Add a mail account in Torro Workplace, under Accounts.",
-        "Füge in Torro Workplace unter Konten ein E-Mail-Konto hinzu.",
-    ),
     (
         "The name and signature of each account, and how its mail is written.",
         "Name und Signatur jedes Kontos, und wie seine E-Mails geschrieben werden.",
@@ -5190,14 +5192,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{mail} E-Mails, {entries} Einträge und {rules} Sortierregeln sind als „{category}“ abgelegt. Wähl eine Kategorie für sie.",
     ),
     // Accounts, API and MCP; models on and off (issue #231)
-    ("1 model on", "1 Modell an"),
+    ("1 model turned on", "1 Modell eingeschaltet"),
     ("Accounts in TorroMail", "Konten in TorroMail"),
-    ("Add AI provider…", "KI-Anbieter hinzufügen…"),
+    ("Add AI account…", "KI-Konto hinzufügen…"),
     ("Add GitHub account…", "GitHub-Konto hinzufügen…"),
     ("Add mail account…", "Mail-Konto hinzufügen…"),
-    ("Add Nextcloud…", "Nextcloud hinzufügen…"),
-    ("Add ntfy server…", "ntfy-Server hinzufügen…"),
+    ("Add Nextcloud account…", "Nextcloud-Konto hinzufügen…"),
+    ("Add ntfy account…", "ntfy-Konto hinzufügen…"),
     ("No account yet.", "Noch kein Konto."),
+    (
+        "One account for the whole suite: connected here, every app knows it.",
+        "Ein Konto für die ganze Suite: hier verbunden, kennt es jede App.",
+    ),
     ("Allow API keys", "API-Schlüssel erlauben"),
     ("Allow MCP", "MCP erlauben"),
     (
@@ -5269,8 +5275,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Torro's MCP server", "Torros MCP-Server"),
     ("Models", "Modelle"),
     (
-        "Models for the assistant and its bots, on this computer or in the cloud.",
-        "Modelle für den Assistenten und seine Bots, auf diesem Rechner oder in der Cloud.",
+        "Models for chatting and for sorting mail, on this computer or in the cloud.",
+        "Modelle zum Chatten und zum Einordnen von E-Mails, auf diesem Rechner oder in der Cloud.",
     ),
     ("Name the client and choose what it may do.", "Gib dem Client einen Namen und wähle, was er darf."),
     ("No model is turned on", "Kein Modell ist eingeschaltet"),
@@ -5384,7 +5390,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{name} loses access at once: its key stops working. Where Connect client set them up, its configuration entry and its Notification Hub hooks are removed too.",
         "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Client verbinden“ sie eingerichtet hat, werden auch sein Eintrag in der Konfiguration und seine Hooks für die Mitteilungszentrale entfernt.",
     ),
-    ("{n} models on", "{n} Modelle an"),
+    ("{n} models turned on", "{n} Modelle eingeschaltet"),
     ("{n} off", "{n} aus"),
     ("{n}K context", "{n}K Kontext"),
     ("{n}M context", "{n}M Kontext"),
@@ -6697,7 +6703,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Oldest {oldest} · newest {newest}", "Älteste {oldest} · neueste {newest}"),
     ("On the server", "Auf dem Server"),
     ("On this device", "Auf diesem Gerät"),
-    ("Email accounts", "E-Mail-Konten"),
     ("{local} of {online} online", "{local} von {online} online"),
     ("{n} emails total", "{n} E-Mails insgesamt"),
     ("Mail sizes are being collected", "Mailgrößen werden noch erfasst"),

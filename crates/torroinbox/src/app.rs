@@ -233,6 +233,7 @@ use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, PileFilter, SaveTo};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, MailPile, Message as Mail, MessageSummary, Role};
+use torro_settings_ui::accounts::Group;
 use torro_settings_ui::{
     Backend as SettingsBackend, Host, Outcome, Page, Section, host, inbox as settings_inbox, mail as settings_mail,
 };
@@ -1810,6 +1811,16 @@ impl Kind {
         }
     }
 
+    /// The providers of accounts this window uses, behind its gear under Accounts, and whether it
+    /// has AI (issue #410): the Notification Hub and the App Feed show what Nextcloud, GitHub and
+    /// ntfy send; Mail keeps its own list of mail accounts and has AI for sorting.
+    pub fn account_providers(self) -> (&'static [Group], bool) {
+        match self {
+            Kind::Mail => (&[], true),
+            Kind::Notifications | Kind::Hub => (&[Group::Nextcloud, Group::GitHub, Group::Ntfy], false),
+        }
+    }
+
     /// What one load of those sections asks the core for.
     fn settings_wanted(self) -> Vec<torro_ipc::Request> {
         match self {
@@ -2059,7 +2070,9 @@ impl Launch {
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         // The suite's sections too, which the window shows without the main application (issue #408).
         let own = kind.settings_sections();
-        let sections = [&own[..], &torro_settings_ui::suite_sections(&own)].concat();
+        let (providers, ai) = kind.account_providers();
+        let accounts = torro_settings_ui::account_sections(providers, ai);
+        let sections = [&own[..], &accounts[..], &torro_settings_ui::suite_sections(&own)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
             Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
@@ -2301,6 +2314,12 @@ impl SettingsBackend for CoreSettings {
                 Err(err) => Err(err.to_string()),
             }
         })
+    }
+
+    /// The answer as the core gave it, a refusal with its code (issue #410, `Backend::ask`).
+    fn ask(&self, request: torro_ipc::Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move { torro_ipc::client::call(&socket, &request).await.map_err(|err| err.to_string()) })
     }
 }
 
@@ -3107,6 +3126,9 @@ pub enum Message {
     /// `Link::App` on `torroworkplace`). Its own message, never the gear's – an entry must not be
     /// able to open a settings section in this window (task S.20).
     OpenControlCentre,
+    /// "Add mail account…" of the mail window without an account (issue #410): Settings › Accounts
+    /// with the add-account dialog.
+    AddMailAccount,
     /// "All rules" in the bell's menu: the section Rules of this window's settings where it has
     /// one, else the Notification Hub's window, where the rules live ([`rules_message`], S.20).
     OpenRules,
@@ -4222,6 +4244,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.side.dragging {
             subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
         }
+        // A download under Settings › AI asks how far it is (issue #410).
+        if let Some(pane) = &self.settings {
+            subscriptions.push(pane.host.subscription().map(Message::SettingsHost));
+        }
         Subscription::batch(subscriptions)
     }
 
@@ -5011,7 +5037,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::SpinTick => {}
             Message::OpenControlCentre => {
                 self.close_menus();
-                connect::open_settings();
+                connect::open_control_centre();
+            }
+            // Issue #410: Mail connects its accounts itself, under Settings › Accounts.
+            Message::AddMailAccount => {
+                self.close_menus();
+                if self.launch.kind != Kind::Mail || self.holds_round() {
+                    return Task::none();
+                }
+                let open = self.open_settings(Some(settings_mail::ACCOUNTS_SECTION));
+                let add = SettingsMessage::Mail(settings_mail::add_account());
+                return Task::batch([open, self.update(Message::SettingsPage(add))]);
             }
             Message::OpenRules => {
                 self.close_menus();
@@ -7589,7 +7625,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let kind = self.launch.kind;
         // Settings open already leave their state in the memory first, for the new host.
         drop(self.settings.take());
-        let (mut host, load) = Host::with_memory(
+        let (host, load) = Host::with_memory(
             self.settings_backend(),
             kind.settings_sections(),
             kind.settings_wanted(),
@@ -7597,6 +7633,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // Without the main application the suite\'s pages are this app\'s too (issue #408).
             !torro_gui::installed::main_app(),
         );
+        // Its accounts and AI, always, also with the main application (issue #410).
+        let (providers, ai) = kind.account_providers();
+        let mut host = host.with_accounts(kind.app(), providers, ai);
         if let Some(id) = section {
             host.open(id);
         }
@@ -19976,6 +20015,22 @@ mod tests {
         assert_eq!(name, Some(tr("New filter").to_owned()));
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_some(), "Escape asks before the typed search goes");
+    }
+
+    /// Issue #410: "Add mail account…" of the mail window without an account opens Settings ›
+    /// Accounts with the add-account dialog over the window; Escape closes the dialog first.
+    #[test]
+    fn add_mail_account_opens_the_dialog_in_the_window() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::AddMailAccount);
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, settings_mail::ACCOUNTS_SECTION);
+        let SettingsState::Mail(state) = &pane.sections else { panic!("the mail window has mail settings") };
+        let class = torro_gui::layout::SizeClass::Wide;
+        let dialog = settings_mail::overlay(state, pane.host.data(), settings_mail::ACCOUNTS_SECTION, class).is_some();
+        assert!(dialog, "the add-account dialog");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_some(), "Escape closes the dialog first");
     }
 
     /// Issue #339: "Create filter from search…" only with words in the field; with the account the

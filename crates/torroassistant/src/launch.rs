@@ -228,7 +228,13 @@ impl Launch {
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
         // The suite's sections too, which the window shows without the main application (issue #408).
-        let sections = [&SECTIONS[..], &torro_settings_ui::suite_sections(&SECTIONS)].concat();
+        // AI (issue #410) follows its own: the models it chats with.
+        let sections = [
+            &SECTIONS[..],
+            &torro_settings_ui::account_sections(&[], true),
+            &torro_settings_ui::suite_sections(&SECTIONS),
+        ]
+        .concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
             Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),

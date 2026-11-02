@@ -130,7 +130,7 @@ impl SuggestError {
     pub fn response(&self) -> Response {
         let (code, message) = match self {
             SuggestError::NoAi => {
-                ("not-connected", tr("Set up an AI first: connect an AI account in the control centre.").to_string())
+                ("not-connected", tr("Set up an AI first: connect an AI account under Settings › AI.").to_string())
             }
             SuggestError::NoLocalAi => (
                 "not-connected",
@@ -670,7 +670,7 @@ mod tests {
             SuggestError::NoAi.response(),
             Response::Error {
                 code: "not-connected".into(),
-                message: tr("Set up an AI first: connect an AI account in the control centre.").into(),
+                message: tr("Set up an AI first: connect an AI account under Settings › AI.").into(),
             }
         );
     }

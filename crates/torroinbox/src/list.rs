@@ -1619,6 +1619,27 @@ pub(crate) fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Ele
     center(content).padding(space::xl()).into()
 }
 
+/// [`empty_state`] with a button under the words (issue #410): what the view lacks and the one
+/// thing that brings it, the window's primary button.
+pub(crate) fn empty_state_with<'a>(
+    which: Icon,
+    title: &'a str,
+    hint: &'a str,
+    (label, press): (&'a str, Message),
+) -> Element<'a, Message> {
+    let mark = icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let words = column![
+        typo::text(typo::body_strong(), title).align_x(Alignment::Center),
+        typo::text(typo::body(), hint).style(theme::text_2).align_x(Alignment::Center)
+    ]
+    .spacing(space::xs())
+    .align_x(Alignment::Center);
+    let button = widgets::text_button(None, label, style::button::primary, Some(press));
+    let content =
+        column![mark, words, button].spacing(space::m()).align_x(Alignment::Center).max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
+}
+
 /// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
 /// envelope for a mail account, and the services' own (task E5.15): GitHub's mark, a cloud for
 /// Nextcloud, a speech bubble for Talk and a radio tower for ntfy. Only the kind of the source

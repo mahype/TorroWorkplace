@@ -35,11 +35,7 @@ use torro_pim::AccountState;
 use super::github::{SystemTokens, TokenStore};
 use super::{keychain, with_account};
 
-/// The longest label of a topic, in characters.
-pub const LABEL_MAX: usize = 60;
-
-/// The most topics one account subscribes to: they all travel in the address of one request.
-pub const TOPICS_MAX: usize = 50;
+pub use torro_ntfy::{LABEL_MAX, TOPICS_MAX};
 
 /// Why connecting an ntfy account or changing its topics failed. No variant holds a secret or a
 /// topic's name.
@@ -71,33 +67,11 @@ impl NtfyAccountError {
         }
     }
 
-    /// What to tell people, in the core's language. `torro_ntfy`'s own texts are for logs, so the
-    /// server's errors are worded here.
+    /// What to tell people, in the core's language; the server's errors as
+    /// [`NtfyError::message`] words them.
     pub fn message(&self) -> String {
         match self {
-            NtfyAccountError::Ntfy(err) => match err {
-                NtfyError::InvalidServer => {
-                    tr("This is not the address of an ntfy server. Enter it without a topic, like ntfy.sh or \
-                     https://push.example.org.")
-                    .to_string()
-                }
-                NtfyError::InvalidTopic => {
-                    tr("A topic name has 1 to 64 letters, digits, hyphens or underscores.").to_string()
-                }
-                NtfyError::InsecureLogin => {
-                    tr("A login is only sent over https or to this computer. Use an https address.").to_string()
-                }
-                NtfyError::Auth => {
-                    tr("The ntfy server refused: the topics need a login, or this login may not read them.").to_string()
-                }
-                NtfyError::Busy => tr("The ntfy server asks to wait. Try again in a moment.").to_string(),
-                NtfyError::Offline => {
-                    tr("The ntfy server could not be reached. Check the address and the connection.").to_string()
-                }
-                NtfyError::Server(_) => {
-                    tr("The server did not answer like an ntfy server. Check the address.").to_string()
-                }
-            },
+            NtfyAccountError::Ntfy(err) => err.message(),
             NtfyAccountError::NotFound(message) | NtfyAccountError::Invalid(message) => message.clone(),
             NtfyAccountError::Conflict => {
                 tr("This ntfy server is connected already. Add topics on its account page.").to_string()
