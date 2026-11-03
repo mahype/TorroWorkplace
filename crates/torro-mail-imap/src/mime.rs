@@ -685,6 +685,35 @@ fn traits(message: &mail_parser::Message<'_>) -> MessageTraits {
     }
 }
 
+/// The headers `mail.unsubscribe` acts on (issue #416), as the message carries them: unfolded,
+/// controls turned into spaces, trimmed. Both come from outside; the core parses and checks the
+/// addresses in them before it uses one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsubscribeHeaders {
+    /// `List-Unsubscribe:` (RFC 2369): addresses in angle brackets, separated by commas.
+    pub list: String,
+    /// `List-Unsubscribe-Post:` (RFC 8058), `List-Unsubscribe=One-Click` for the one click; `None`
+    /// when the message has none (or an empty or over-long one).
+    pub post: Option<String>,
+}
+
+/// The longest `List-Unsubscribe` or `List-Unsubscribe-Post` value taken (bytes); a longer one is
+/// left as if it were missing.
+pub const UNSUBSCRIBE_HEADER_MAX: usize = 2048;
+
+/// The unsubscribe headers of a message ([`UnsubscribeHeaders`]); `None` when it cannot be read or
+/// has no `List-Unsubscribe` of at most [`UNSUBSCRIBE_HEADER_MAX`] bytes. Never fetches anything.
+pub fn unsubscribe_of(raw: &[u8]) -> Option<UnsubscribeHeaders> {
+    let message = MessageParser::default().parse_headers(raw)?;
+    let header = |name: &str| {
+        message
+            .header_raw(name)
+            .map(|value| one_line(value).trim().to_owned())
+            .filter(|value| !value.is_empty() && value.len() <= UNSUBSCRIBE_HEADER_MAX)
+    };
+    Some(UnsubscribeHeaders { list: header("List-Unsubscribe")?, post: header("List-Unsubscribe-Post") })
+}
+
 /// A reason as GitHub writes them (`review_requested`, `ci_activity`): small letters and `_`, at
 /// most [`GITHUB_REASON_MAX`] of them. Anything else is no reason GitHub sent.
 fn github_reason(reason: &str) -> bool {
@@ -1153,6 +1182,21 @@ mod legacy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsubscribe_headers_are_read_unfolded_and_bounded() {
+        let raw = b"From: news@shop.example\r\nList-Unsubscribe: <mailto:off@shop.example?subject=stop>,\r\n <https://shop.example/u/1>\r\nList-Unsubscribe-Post:  List-Unsubscribe=One-Click \r\nSubject: Sale\r\n\r\nText\r\n";
+        let headers = unsubscribe_of(raw).expect("headers");
+        assert_eq!(headers.list, "<mailto:off@shop.example?subject=stop>,   <https://shop.example/u/1>");
+        assert_eq!(headers.post.as_deref(), Some("List-Unsubscribe=One-Click"));
+
+        let without_post = b"List-Unsubscribe: <https://shop.example/u/1>\r\n\r\nText\r\n";
+        assert_eq!(unsubscribe_of(without_post).and_then(|headers| headers.post), None);
+        assert_eq!(unsubscribe_of(b"From: anna@example.org\r\n\r\nHello\r\n"), None, "no header");
+
+        let long = format!("List-Unsubscribe: <https://shop.example/{}>\r\n\r\n", "a".repeat(UNSUBSCRIBE_HEADER_MAX));
+        assert_eq!(unsubscribe_of(long.as_bytes()), None, "over-long is as if missing");
+    }
 
     #[test]
     fn content_types_are_tokens_or_octet_stream() {
