@@ -3080,6 +3080,36 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         collection: Option<String>,
     },
+    /// Unsubscribes from the mailing list a mail came from (issue #416), by its `List-Unsubscribe`
+    /// header as the core reads it from the server, never from the client. The first way that
+    /// fits is taken, never a second one after a failure:
+    ///
+    /// - **one click** (RFC 8058, `List-Unsubscribe-Post: List-Unsubscribe=One-Click` and an
+    ///   `https` address): the core posts `List-Unsubscribe=One-Click` to that address, only to a
+    ///   public host on port 443 and without following a redirect;
+    /// - **mail** (a `mailto:` address with one recipient): the core sends a short mail with the
+    ///   subject the address names (else `unsubscribe`) and the text `unsubscribe` from the account
+    ///   the mail went to, with a copy in Sent; nothing else of the address is taken over;
+    /// - **web** (an `http` or `https` address only): nothing is sent; the answer carries the
+    ///   address for the person to open.
+    ///
+    /// Answered with [`Response::Unsubscribed`]. The mails stay where they are. Granted in `mail`
+    /// (Write) and sending, like `mail.send_draft`: for a client key `api::Rights::outbound` decides
+    /// (`never` is `forbidden`, `with_approval` waits for a person, [`Response::Pending`]; the
+    /// summary names the account, the sender as the store holds it and the way with its address).
+    ///
+    /// Codes: `not-found` for an account or a mail the caller may not see; `forbidden` as above;
+    /// `unsupported` for a mail without a usable `List-Unsubscribe` (also one sorted as phishing);
+    /// `conflict` when the header changed between asking for approval and running; `error` for ids
+    /// over 300 bytes or a sender's server that did not answer the one click with success; the
+    /// send's codes as for `mail.send_draft` (`auth`, `offline`, `busy`, `error`).
+    #[serde(rename = "mail.unsubscribe")]
+    Unsubscribe {
+        /// The mail account: `mail:<address>` from `accounts.list_accounts`.
+        account: String,
+        /// The mail's id (`m:…`) from `mail.search_messages`.
+        id: String,
+    },
 
     // The assistant (task C.1, `docs/assistent.md`; wire types in [`assistant`]). The core keeps
     // the conversations in `<data>/assistant/<id>.jsonl` (0600) and runs the answers. For a client
@@ -4689,6 +4719,11 @@ pub enum Response {
         /// after `decline`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event: Option<Event>,
+    },
+    /// What [`Request::Unsubscribe`] did, by the way it took (`via`).
+    Unsubscribed {
+        #[serde(flatten)]
+        via: mail::UnsubscribeVia,
     },
     /// The models of an AI account ([`Request::AiModels`]), in the server's order.
     AiModels {

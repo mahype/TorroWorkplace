@@ -730,6 +730,41 @@ pub struct OverviewSender {
     pub category: Option<torro_mail::Category>,
     /// The sender's newest mail outside the trash (the newest of all when every one is there).
     pub latest: torro_mail::MessageSummary,
+    /// The sender's newest mail outside the trash that carries a `List-Unsubscribe` header, for
+    /// `mail.unsubscribe` (issue #416); `None` when no such mail is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsubscribe: Option<UnsubscribeTarget>,
+}
+
+/// The mail `mail.unsubscribe` unsubscribes by ([`OverviewSender::unsubscribe`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsubscribeTarget {
+    /// The mail account: `mail:<address>`.
+    pub account: String,
+    /// The mail's id (`m:…`).
+    pub id: String,
+}
+
+/// The way `mail.unsubscribe` took (issue #416). Addresses come from the mail and are foreign text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "via", rename_all = "snake_case")]
+pub enum UnsubscribeVia {
+    /// The sender's server took the one click (RFC 8058) at `host`.
+    OneClick {
+        /// The host the request went to.
+        host: String,
+    },
+    /// An unsubscribe mail went to `to` from the account, with a copy in Sent.
+    Mail {
+        to: String,
+        subject: String,
+        /// `accepted`, or `unknown` when the connection broke after it was handed over (it is never
+        /// sent again by itself).
+        delivery: Delivery,
+    },
+    /// The sender only offers a web page: nothing was sent. Open `url` (a person) or name it to
+    /// the person (an agent); it is foreign text.
+    Web { url: String },
 }
 
 /// The mail of one category in the inbox folders by age ([`MailOverview::inbox`]): today, the six
