@@ -274,9 +274,8 @@ pub struct State {
     /// *Sorting*, so the two lists of the group look alike.
     pub chat_menu: bool,
     chat_anchor: Anchor,
-    /// A choice of *Sorting* in the cloud waiting for the question before it (issue #424): the
-    /// [`Message::PickSlot`] or [`Message::UseSuggestion`] that "Use" carries out, "Cancel" drops.
-    pub cloud_consent: Option<Message>,
+    /// A choice of *Sorting* in the cloud waiting for the question before it (issue #424).
+    pub cloud_consent: Option<CloudConsent>,
     /// The providers the list offers (issue #410): `None` every one, in the order of [`Group::ALL`],
     /// and the kinds of account none of them holds – the control centre's overview; an app names
     /// the ones it uses ([`State::with_providers`]).
@@ -741,6 +740,19 @@ pub enum Message {
     CancelCloud,
 }
 
+/// A choice of *Sorting* in the cloud waiting for its question (issue #424): what "Use" carries out –
+/// [`Message::PickSlot`] or [`Message::UseSuggestion`] –, and the account and model it was made for,
+/// kept from the moment of the click, so a suggestion that changes meanwhile is not taken instead.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloudConsent {
+    pub then: Message,
+    pub engine: String,
+    pub model: Option<String>,
+    /// What the question calls the model and its provider.
+    pub name: String,
+    pub provider: String,
+}
+
 /// A choice in a slot's list (task MW.8): a model of an AI account, or "None" (both `None`). Two
 /// choices are the same when account and model are; `label` is what the list shows.
 #[derive(Debug, Clone, Eq)]
@@ -884,8 +896,12 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         Message::PickSlot(slot, choice) => {
             state.sorting_menu = false;
             state.chat_menu = false;
-            if state.slots.using.is_none() && picks_cloud(state, data, slot, &choice) {
-                state.cloud_consent = Some(Message::PickSlot(slot, choice));
+            if state.slots.using.is_none()
+                && picks_cloud(state, data, slot, &choice)
+                && let Some(engine) = choice.engine.clone()
+            {
+                let model = choice.model.clone();
+                state.cloud_consent = Some(consent(state, data, Message::PickSlot(slot, choice), engine, model, None));
                 return Action::None;
             }
             pick_slot(state, data, slot, choice, false)
@@ -909,17 +925,32 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             Action::None
         }
         Message::UseSuggestion(slot) => {
-            let elsewhere =
-                suggestion_of(state, slot).is_some_and(|suggestion| suggestion.engine.is_some() && !suggestion.local);
-            if state.slots.using.is_none() && slot == AiSlot::Decide && elsewhere {
-                state.cloud_consent = Some(Message::UseSuggestion(slot));
+            let elsewhere = suggestion_of(state, slot).filter(|suggestion| !suggestion.local).cloned();
+            if state.slots.using.is_none()
+                && slot == AiSlot::Decide
+                && let Some(suggestion) = elsewhere
+                && let Some(engine) = suggestion.engine.clone()
+            {
+                let provider = Some(suggestion.provider.name().to_string());
+                let then = Message::UseSuggestion(slot);
+                state.cloud_consent = Some(consent(state, data, then, engine, suggestion.model, provider));
                 return Action::None;
             }
             use_suggestion(state, data, slot)
         }
         Message::ConfirmCloud => match state.cloud_consent.take() {
-            Some(Message::PickSlot(slot, choice)) => pick_slot(state, data, slot, choice, true),
-            Some(Message::UseSuggestion(slot)) => use_suggestion(state, data, slot),
+            Some(CloudConsent { then: Message::PickSlot(slot, choice), .. }) => {
+                pick_slot(state, data, slot, choice, true)
+            }
+            // Only the suggestion the person said yes to: one that changed meanwhile asks anew.
+            Some(CloudConsent { then: Message::UseSuggestion(slot), engine, model, .. }) => {
+                let same = suggestion_of(state, slot)
+                    .is_some_and(|now| now.engine.as_deref() == Some(engine.as_str()) && now.model == model);
+                match same {
+                    true => use_suggestion(state, data, slot),
+                    false => Action::None,
+                }
+            }
             _ => Action::None,
         },
         Message::CancelCloud => {
@@ -2171,7 +2202,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a dyn Seen) -> Option<Element<'a, M
     }
     if !state.confirm_remove {
         if let Some(pending) = &state.cloud_consent {
-            return consent_dialog(state, data, pending);
+            return Some(consent_dialog(pending));
         }
         if state.chat_menu {
             return Some(chat_menu(state, data));
@@ -2192,30 +2223,33 @@ pub fn overlay<'a>(state: &'a State, data: &'a dyn Seen) -> Option<Element<'a, M
     ))
 }
 
-/// The question before *Sorting* takes a model in the cloud (issue #424, [`crate::parts::cloud_consent`]):
-/// the model by its name as the lists show it, the provider by its AI account's name – for a suggestion
-/// by the provider's. `None` for a message that is no such choice.
-fn consent_dialog<'a>(state: &'a State, data: &'a dyn Seen, pending: &Message) -> Option<Element<'a, Message>> {
-    let (engine, id, provider) = match pending {
-        Message::PickSlot(_, choice) => {
-            let engine = choice.engine.clone()?;
-            let provider = ai_accounts(data).find(|account| account.id == engine).map(|account| account.label.clone());
-            (engine.clone(), choice.model.clone(), provider.unwrap_or(engine))
-        }
-        Message::UseSuggestion(slot) => {
-            let suggestion = suggestion_of(state, *slot)?;
-            (suggestion.engine.clone()?, suggestion.model.clone(), suggestion.provider.name().to_string())
-        }
-        _ => return None,
-    };
-    let listed = id.as_deref().and_then(|id| state.models.get(&engine)?.iter().find(|model| same_model(&model.id, id)));
-    let model = match (listed, &id) {
-        (Some(model), _) => shown_id(&model.name),
+/// The question before *Sorting* takes a model in the cloud (issue #424, [`crate::parts::cloud_consent`]),
+/// with the names kept from the click ([`consent`]).
+fn consent_dialog<'a>(pending: &CloudConsent) -> Element<'a, Message> {
+    crate::parts::cloud_consent(&pending.name, &pending.provider, Message::ConfirmCloud, Message::CancelCloud)
+}
+
+/// The choice `then` of `model` at `engine` waiting for its question: the model by its name as the lists
+/// show it, the provider by its AI account's name unless one is given (a suggestion's provider); an
+/// account that picks its model itself is named by the provider alone.
+fn consent(
+    state: &State,
+    data: &dyn Seen,
+    then: Message,
+    engine: String,
+    model: Option<String>,
+    provider: Option<String>,
+) -> CloudConsent {
+    let account = ai_accounts(data).find(|account| account.id == engine).map(|account| account.label.clone());
+    let provider = provider.or(account).unwrap_or_else(|| engine.clone());
+    let listed =
+        model.as_deref().and_then(|id| state.models.get(&engine)?.iter().find(|known| same_model(&known.id, id)));
+    let name = match (listed, &model) {
+        (Some(known), _) => shown_id(&known.name),
         (None, Some(id)) => shown_id(id),
-        // The account picks its model itself: it is named by the provider alone.
         (None, None) => provider.clone(),
     };
-    Some(crate::parts::cloud_consent(&model, &provider, Message::ConfirmCloud, Message::CancelCloud))
+    CloudConsent { then, engine, model, name, provider }
 }
 
 /// "Change password": who it is for, the masked field, a refusal under it, "Cancel" and the primary
@@ -2986,9 +3020,14 @@ fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
 }
 
 /// *Sorting* holds a model in the cloud ([`sorts_elsewhere`]) while its permission is off (issue #424):
-/// the core sorts nothing with it until the person chooses it again and says yes.
+/// the core sorts nothing with it until the person chooses it again and says yes. Not while an exception
+/// switched on sorts instead of the slot.
 fn waits_for_consent(state: &State, data: &dyn Seen) -> bool {
     let settings = data.settings();
+    let exception = settings.ai_assignments.get(&AiFunction::InboxCategorize);
+    if exception.is_some_and(|own| own.engine.is_some() && own.enabled) {
+        return false;
+    }
     settings.ai_slots.get(AiSlot::Decide).is_some_and(|chosen| {
         sorts_elsewhere(data, &state.models, &chosen.engine, chosen.model.as_deref())
             && !settings.mail_to_cloud_in(AiSlot::Decide)
@@ -6088,6 +6127,10 @@ mod tests {
         let waiting = slot_detail(&state, &data, AiSlot::Decide);
         assert_eq!(waiting, (tr("Waiting for your OK – mail stays here").to_string(), true));
         draw_ai(&state, &data);
+        // An exception switched on sorts instead of the slot: nothing waits then.
+        let mut local = data.clone();
+        with_exception(&mut local, DEMO_OLLAMA, "nimble:latest", true);
+        assert!(!slot_detail(&state, &local, AiSlot::Decide).1);
         assert!(asks(update(&mut state, pick(&chosen), &data)).is_empty() && state.cloud_consent.is_some());
         let (_, request) = ask(update(&mut state, Message::ConfirmCloud, &data));
         assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "held, set again: {request:?}");
@@ -6110,6 +6153,16 @@ mod tests {
         }
         assert!(asks(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data)).is_empty());
         assert!(state.cloud_consent.is_some() && overlay(&state, &data).is_some());
+        // A suggestion that changed while it asked is not taken instead of the one said yes to.
+        let mut changed = State { cloud_consent: state.cloud_consent.clone(), ..State::default() };
+        changed.slots.recommendation = state.slots.recommendation.clone();
+        if let Some(recommendation) = changed.slots.recommendation.as_mut() {
+            for suggestion in recommendation.slots.iter_mut().filter(|suggestion| suggestion.slot == AiSlot::Decide) {
+                suggestion.model = Some("another".into());
+            }
+        }
+        assert!(asks(update(&mut changed, Message::ConfirmCloud, &data)).is_empty());
+        assert!(changed.slots.using.is_none() && changed.cloud_consent.is_none());
         assert!(!asks(update(&mut state, Message::ConfirmCloud, &data)).is_empty(), "the chain starts");
         assert!(state.slots.using.is_some());
     }
