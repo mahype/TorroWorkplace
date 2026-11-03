@@ -6825,6 +6825,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Choosing a model in the cloud for sorting is the consent, after one question (issue #424); "On this
     // computer", "Cancel" and "Use" stand above.
     ("In the cloud – mail leaves this computer", "In der Cloud – E-Mails verlassen diesen Rechner"),
+    ("In the cloud", "In der Cloud"),
     ("Sort mail in the cloud?", "E-Mails in der Cloud einordnen?"),
     (
         "{model} reads your mail at {provider} in the cloud. Use it?",

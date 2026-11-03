@@ -28,7 +28,7 @@
 //! `ai.set_slot`) – *Sorting* as a button with a menu in sections instead (issue #421,
 //! [`sorting_menu`]): the decision models first under "Decision models (fast)", then "Other models",
 //! which sort through a slower chat round; the group's footer says why; then the models in the cloud
-//! under "In the cloud – mail leaves this computer" (issue #424) –, and under it what Torro suggests (`ai.recommend`) with "Use suggestion". That button
+//! under "In the cloud" (issue #424) –, and under it what Torro suggests (`ai.recommend`) with "Use suggestion". That button
 //! runs a chain ([`Using`]): a local model the account does not list yet is downloaded first
 //! (`ai.pull_model`, then `ai.list_pulls` every second while it runs, "Cancel" with `ai.cancel_pull`),
 //! then the account's models are read again (`ai.list_models`), the model turned on if it is off
@@ -1336,13 +1336,19 @@ fn displaced(data: &dyn Seen, slot: AiSlot) -> Option<torro_core::ai::AiAssignme
 }
 
 /// Whether `choice` for `slot` asks before it is set (issue #424): a model in the cloud for *Sorting*
-/// ([`sorts_elsewhere`]), unless the slot has it already with the consent. Asked for every other model
+/// ([`sorts_elsewhere`]) or one at Ollama its list lacks, unless the slot has it already with the consent. Asked for every other model
 /// in the cloud too, since the consent is given to one provider.
 fn picks_cloud(state: &State, data: &dyn Seen, slot: AiSlot, choice: &SlotChoice) -> bool {
     let Some(engine) = choice.engine.as_deref().filter(|_| slot == AiSlot::Decide) else { return false };
     let consented =
         holds(data, slot, Some(engine), choice.model.as_deref()) && data.settings().mail_to_cloud_in(AiSlot::Decide);
-    sorts_elsewhere(data, &state.models, engine, choice.model.as_deref()) && !consented
+    // A model its account does not list (yet) at Ollama asks in doubt, as the core counts it elsewhere
+    // without its server's word: a copy of a cloud model may carry no `:cloud` in its name.
+    let unlisted = choice.model.as_deref().is_some_and(|id| {
+        let here = ai_provider(engine).is_some_and(|provider| provider.seat() == Seat::ThisComputer);
+        here && !state.models.get(engine).is_some_and(|models| models.iter().any(|known| same_model(&known.id, id)))
+    });
+    (unlisted || sorts_elsewhere(data, &state.models, engine, choice.model.as_deref())) && !consented
 }
 
 /// A choice in a slot's list: `ai.set_slot` at once – for Sorting the stored exception taken back first,
@@ -3203,14 +3209,15 @@ fn chat_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
 
 /// The menu of *Sorting* under its button (issue #421): "None" and a chosen model the lists do not
 /// hold without a title, then "Decision models (fast)" and "Other models" on this computer, then "In
-/// the cloud – mail leaves this computer" with a cloud at the end of each entry (issue #424); a section
-/// without models is left out. With several AI accounts the account stands as a word after a model's
+/// the cloud" with a cloud at the end of each entry (issue #424); a section without models is left out. With several AI accounts the account stands as a word after a model's
 /// name. The slot's model carries the dot of the current choice. Higher than a panel, it scrolls.
 fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
     let SortingSections { first, fast, other, cloud, chosen } = sorting_sections(state, data);
     let accounts: Vec<&AccountInfo> = ai_accounts(data).collect();
     let several = accounts.len() > 1;
-    let items = |choices: Vec<SlotChoice>, trail: Trail| -> Vec<MenuItem<'a, Message>> {
+    // `tagged`: the account stands after each name. In the cloud only while its models come from more
+    // than one account – the cloud at the end says where they compute, and the name keeps its room.
+    let items = |choices: Vec<SlotChoice>, trail: Trail, tagged: bool| -> Vec<MenuItem<'a, Message>> {
         choices
             .into_iter()
             .map(|choice| {
@@ -3220,7 +3227,7 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
                 let account = choice
                     .engine
                     .as_deref()
-                    .filter(|_| several)
+                    .filter(|_| tagged)
                     .and_then(|engine| accounts.iter().find(|account| account.id == engine))
                     .map(|account| account.label.clone());
                 // Only where the label names it after the model: an account that picks its model itself is
@@ -3242,16 +3249,19 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
             })
             .collect()
     };
-    let mut sections = vec![MenuSection::new(items(first, Trail::None))];
+    let mut sections = vec![MenuSection::new(items(first, Trail::None, several))];
     if !fast.is_empty() {
-        sections.push(MenuSection::titled(tr("Decision models (fast)"), items(fast, Trail::None)));
+        sections.push(MenuSection::titled(tr("Decision models (fast)"), items(fast, Trail::None, several)));
     }
     if !other.is_empty() {
-        sections.push(MenuSection::titled(tr("Other models"), items(other, Trail::None)));
+        sections.push(MenuSection::titled(tr("Other models"), items(other, Trail::None, several)));
     }
+    let cloud_accounts: BTreeSet<&Option<String>> = cloud.iter().map(|choice| &choice.engine).collect();
+    let cloud_tagged = several && cloud_accounts.len() > 1;
     if !cloud.is_empty() {
-        let title = tr("In the cloud – mail leaves this computer");
-        sections.push(MenuSection::titled(title, items(cloud, Trail::Icon(Icon::Cloud))));
+        // Short in the narrow menu, where the long head would wrap: that mail leaves this computer says
+        // the question before one is set (design review of #424).
+        sections.push(MenuSection::titled(tr("In the cloud"), items(cloud, Trail::Icon(Icon::Cloud), cloud_tagged)));
     }
     // Many models turned on (OpenRouter) would reach past the window: past a panel's height it scrolls,
     // as the pick list it replaces did.
