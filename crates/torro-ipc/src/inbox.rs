@@ -78,7 +78,7 @@ use torro_pim::EventTime;
 use crate::assistant::EngineKind;
 use crate::mail::{
     AttachmentPlan, Delivery, FailedFile, MailHighlight, MailIndexProgress, MailOverview, MailSort, MoveTarget,
-    PileFilter, SaveTo, SavedFile,
+    PileFilter, SaveTo, SavedFile, UnsubscribeVia,
 };
 use crate::{EventSuggestion, InboxStats, IpcError, Quiet, Request, Response, StatsRange, TaskSuggestion};
 
@@ -655,6 +655,20 @@ impl InboxClient {
     ) -> Result<Delivery, InboxError> {
         match self.ask(Request::RespondToInvitation { account, id, answer, collection }).await? {
             Response::InvitationAnswered { delivery, .. } => Ok(delivery),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.unsubscribe` (issue #416, the window's "Unsubscribe…"): unsubscribes from the list the
+    /// message `id` (`m:…`) of the mail account `account` came from, by its `List-Unsubscribe` header
+    /// as the core reads it. Answers the way it took ([`UnsubscribeVia`]: one click, a mail, or only a
+    /// page for the person to open). Errors as mapped above: [`InboxError::NotFound`] for an account or
+    /// mail the app may not see, [`InboxError::Unsupported`] for a mail that offers no way,
+    /// [`InboxError::Busy`], [`InboxError::Other`] with the core's words for a one click the sender's
+    /// server refused or a send that failed.
+    pub async fn unsubscribe(&self, account: String, id: String) -> Result<UnsubscribeVia, InboxError> {
+        match self.ask(Request::Unsubscribe { account, id }).await? {
+            Response::Unsubscribed { via } => Ok(via),
             other => Err(unexpected(other)),
         }
     }
@@ -1334,6 +1348,17 @@ mod tests {
             Request::RespondToInvitation { .. } => {
                 Response::Error { code: "error".into(), message: "This mail holds no invitation.".into() }
             }
+            // Issue #416: a newsletter by mail, another without a way.
+            Request::Unsubscribe { id, .. } if id == "m:news" => Response::Unsubscribed {
+                via: UnsubscribeVia::Mail {
+                    to: "off@shop.example".into(),
+                    subject: "unsubscribe".into(),
+                    delivery: Delivery::Accepted,
+                },
+            },
+            Request::Unsubscribe { .. } => {
+                Response::Error { code: "unsupported".into(), message: "No way to unsubscribe.".into() }
+            }
             Request::Events { start, end } if start < end => Response::Events {
                 events: vec![
                     event("Standup", EventTime::DateTime(start), "work".into()),
@@ -1720,6 +1745,15 @@ mod tests {
         assert_eq!(maybe.await, Ok(Delivery::Unknown));
         let none = client.respond_to_invitation(account(), "m:1".into(), InvitationAnswer::Decline, None).await;
         assert_eq!(none, Err(InboxError::Other("This mail holds no invitation.".into())));
+        // Issue #416: unsubscribing answers the way it took; a mail without one is unsupported.
+        let unsubscribed = client.unsubscribe(account(), "m:news".into()).await;
+        let wanted = UnsubscribeVia::Mail {
+            to: "off@shop.example".into(),
+            subject: "unsubscribe".into(),
+            delivery: Delivery::Accepted,
+        };
+        assert_eq!(unsubscribed, Ok(wanted));
+        assert!(matches!(client.unsubscribe(account(), "m:1".into()).await, Err(InboxError::Unsupported)));
 
         let events = client.list_events(at(9), at(11)).await.expect("events");
         let standup = &events[0];
