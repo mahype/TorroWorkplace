@@ -5594,6 +5594,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::MailOverviewLoaded(key, result) => {
                 self.mail_overview.answered(key, result, Instant::now());
+                self.forget_unsubscribed();
             }
             Message::MailOverviewPeople(account, people) => {
                 if account == self.mail_overview.account {
@@ -7229,15 +7230,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Ok(UnsubscribeVia::Web { url }) => (tr("Finish unsubscribing on the sender's page").to_owned(), Some(url)),
         };
         self.unsubscribed.insert(ask.address.clone());
-        if let Some(mail_overview::Loaded { result: Ok(overview), .. }) = self.mail_overview.data.as_mut() {
-            for held in overview.senders.iter_mut().filter(|held| held.address == ask.address) {
-                held.unsubscribe = None;
-            }
-        }
+        self.forget_unsubscribed();
         self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
         match open {
             Some(url) => self.open_url(url),
             None => Task::none(),
+        }
+    }
+
+    /// Drops "Unsubscribe…" of the overview's senders this window unsubscribed from in this run
+    /// (issue #416): their mail still carries the header, so the core names it again after a reload.
+    fn forget_unsubscribed(&mut self) {
+        if let Some(mail_overview::Loaded { result: Ok(overview), .. }) = self.mail_overview.data.as_mut() {
+            for held in overview.senders.iter_mut().filter(|held| self.unsubscribed.contains(&held.address)) {
+                held.unsubscribe = None;
+            }
         }
     }
 
@@ -9884,7 +9891,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let label = match self.menu? {
             Menu::Snooze | Menu::Pick | Menu::Lane | Menu::SaveAll { rail: true } => tr("File"),
             Menu::Task | Menu::Event | Menu::Category | Menu::CategoryAlways => tr("Torro"),
-            Menu::Hide | Menu::Mute | Menu::Move => tr("Mute"),
+            Menu::Hide | Menu::Mute | Menu::Move | Menu::Unsubscribe => tr("Mute"),
             _ => return None,
         };
         if !self.menu_from_panel() {
