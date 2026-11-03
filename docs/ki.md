@@ -188,7 +188,8 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
   („Sort mail in the cloud?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
   Anbieter gilt; erst „Use“ setzt Modell und Erlaubnis. Steht ein Modell in der Cloud im Platz, aber die
   Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigen beide Orte „Waiting for
-  your OK – mail stays here“; es noch einmal zu wählen fragt wieder. Wohin Mail geht, sagt die Zeile unter
+  your OK – mail stays here“; es noch einmal zu wählen fragt wieder. Dieselbe Rückfrage stellt die Einrichtung,
+  wenn ihr Schalter „Sort mail“ ein ausgeschaltetes Modell in der Cloud wieder einschalten würde. Wohin Mail geht, sagt die Zeile unter
   *Sortieren* in „Models“, solange das Modell, das gerade sortiert (Ausnahme vor Platz), anderswo rechnet.
 - **Einschalten nur Menschen**; ausschalten darf jeder Client mit Rechten.
 - **Ein Modell anderswo für Mail-Funktionen setzt nur ein Mensch**: als Platz *Sortieren* wie als Ausnahme
