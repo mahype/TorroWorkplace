@@ -4732,10 +4732,12 @@ mod tests {
 /// "on" takes it back (`engine: null`), and the slot sorts again. An exception with a model of its
 /// own says so at its row ("Only for sorting mail").
 ///
-/// Models that do not run on this computer are **not offered** while sorted mail may not leave it
-/// (the permission of the slot Sorting, `decide_mail_to_cloud`; `docs/ki.md`, principle 4); a quiet
-/// line says so. The core refuses such a model as well (task E12.5), so the rule holds even if this
-/// list were wrong.
+/// **Models in the cloud** (issue #424) are always offered, under "In the cloud – mail leaves this
+/// computer" with a cloud at each row. Picking one asks first ("Sort mail in the cloud?"); only "Use"
+/// sets it, and with the slot the core lets the mail out (the permission of the slot Sorting,
+/// `decide_mail_to_cloud`; `docs/ki.md`, principle 4) – there is no switch of its own. One in effect
+/// without that permission waits and says so. The core refuses such a model without it as well (task
+/// E12.5), so the rule holds even if this page were wrong.
 ///
 /// **A model turned off** (PR review #242): only models turned on in the control centre's
 /// AI section are offered (task S.26). The assigned one turned off since stands on top of "Model"
