@@ -7220,16 +7220,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let sender = list::one_line(&ask.sender);
         let (text, open) = match result {
             Err(err) => {
-                self.unsubscribed.remove(&ask.address);
-                // The overview offers it again too: `forget_unsubscribed` took its button away.
-                if let Some(mail_overview::Loaded { result: Ok(overview), .. }) = self.mail_overview.data.as_mut() {
-                    for held in overview.senders.iter_mut().filter(|held| held.address == ask.address) {
-                        held.unsubscribe.get_or_insert_with(|| UnsubscribeTarget {
-                            account: ask.account.clone(),
-                            id: ask.id.clone(),
-                        });
-                    }
-                }
+                self.offer_again(&ask);
                 let text = trf("Couldn't unsubscribe: {reason}", &[("reason", &err)]);
                 self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
                 return Task::none();
@@ -7243,12 +7234,32 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Ok(UnsubscribeVia::Web { url }) => (tr("Finish unsubscribing on the sender's page").to_owned(), Some(url)),
         };
-        self.unsubscribed.insert(ask.address.clone());
-        self.forget_unsubscribed();
+        // A page only is not done yet (review of #443): the person finishes there and may have to open
+        // it again, so "Unsubscribe…" stays offered.
+        match open {
+            Some(_) => self.offer_again(&ask),
+            None => {
+                self.unsubscribed.insert(ask.address.clone());
+                self.forget_unsubscribed();
+            }
+        }
         self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
         match open {
             Some(url) => self.open_url(url),
             None => Task::none(),
+        }
+    }
+
+    /// Offers "Unsubscribe…" for the sender of `ask` again (issue #416), in the rail and the overview,
+    /// after [`App::unsubscribe`] took it away while the core worked: after a failure, and when the
+    /// sender only offers a page.
+    fn offer_again(&mut self, ask: &UnsubscribeAsk) {
+        self.unsubscribed.remove(&ask.address);
+        if let Some(mail_overview::Loaded { result: Ok(overview), .. }) = self.mail_overview.data.as_mut() {
+            for held in overview.senders.iter_mut().filter(|held| held.address == ask.address) {
+                held.unsubscribe
+                    .get_or_insert_with(|| UnsubscribeTarget { account: ask.account.clone(), id: ask.id.clone() });
+            }
         }
     }
 
@@ -15393,6 +15404,8 @@ mod tests {
         let page = hint_after(&mut app, Ok(UnsubscribeVia::Web { url: "https://shop.example/u".into() }));
         assert_eq!(page, tr("Finish unsubscribing on the sender's page"));
         assert!(matches!(app.sent.last(), Some(Sent::Link(url)) if url == "https://shop.example/u"), "opened");
+        // A page only is not done yet: offered again, in the overview too, to open the page once more.
+        assert!(!app.unsubscribed.contains("news@shop.example") && offered(&app), "the page can be opened again");
     }
 
     /// Shift + Delete asks first; Escape leaves the mail, `Enter` (or "Delete") removes it for good,
