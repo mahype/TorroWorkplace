@@ -1179,21 +1179,43 @@ fn selected_mail_decider<'a>(state: &State, data: &'a Data) -> Option<(&'a Strin
 
 /// What the switch "on" would turn on in the cloud without the person's consent (issue #424): the
 /// exception switched off that "on" switches on again when the step offers no model of its own, while
-/// Sorting's permission is off – the step offers only models here then, so one it lacks counts as
-/// elsewhere. Its model's and provider's names for the question; `None` when nothing needs asking.
+/// Sorting's permission is off – if it computes elsewhere, as the data rule weighs it (`place_of`): a
+/// listed model by where it runs, one the list lacks in doubt elsewhere, naming none ("Automatic") by
+/// the account's seat. Its model's and provider's names for the question; `None` when nothing needs
+/// asking, as for a model here the step does not offer (a chat model, one turned off).
 fn cloud_to_turn_on(state: &State, data: &Data) -> Option<(String, String)> {
     if data.settings.mail_to_cloud_in(AiSlot::Decide) || selected_mail_decider(state, data).is_some() {
         return None;
     }
     let held = stored_mail_exception(data).filter(|held| !held.enabled)?;
     let engine = held.engine.clone()?;
-    let provider = data
+    let (provider_id, server) = engine.strip_prefix("ai:").and_then(|id| id.split_once('@')).unwrap_or_default();
+    let provider = AiProvider::ALL.into_iter().find(|provider| provider.id() == provider_id);
+    let listed = held
+        .model
+        .as_deref()
+        .and_then(|id| data.ai_deciders.iter().find(|(account, model)| *account == engine && model.id == id));
+    let elsewhere = match (provider, listed, &held.model) {
+        (Some(provider), Some((_, model)), _) => {
+            crate::assistant::place_of(provider, server, model) != crate::assistant::Place::Local
+        }
+        (Some(provider), None, None) => provider.seat() != torro_core::ai::Seat::ThisComputer,
+        _ => true,
+    };
+    if !elsewhere {
+        return None;
+    }
+    let account = data
         .accounts
         .iter()
         .find(|account| account.id == engine)
         .map_or_else(|| engine.clone(), |account| account.label.clone());
-    let model = held.model.clone().unwrap_or_else(|| provider.clone());
-    Some((model, provider))
+    let model = match (listed, &held.model) {
+        (Some((_, model)), _) => model.name.clone(),
+        (None, Some(id)) => id.clone(),
+        (None, None) => account.clone(),
+    };
+    Some((model, account))
 }
 
 /// What "Continue" on the AI step sends for sorting mail, as main's mail settings weigh it (issue
@@ -1927,6 +1949,15 @@ mod tests {
             matches!(&sent[..], [Request::SetAiAssignment { engine: Some(engine), enabled: true, .. }] if *engine == cloud),
             "{sent:?}"
         );
+        // A model here the step does not offer (turned off) asks nothing: no mail leaves.
+        let mut here_off = cloud_off.clone();
+        if let Some(held) = here_off.settings.ai_assignments.get_mut(&AiFunction::InboxCategorize) {
+            held.engine = Some(local.clone());
+            held.model = Some("off".into());
+        }
+        let mut on = state(Step::Ai);
+        update(&mut on, Message::SortMail(true), &here_off);
+        assert!(on.asking_cloud.is_none() && mail_sorting_on(&on, &here_off));
         // With the permission on, it was said yes to already: on without a question.
         let mut allowed = cloud_off.clone();
         allowed.settings.decide_mail_to_cloud = Some(true);
