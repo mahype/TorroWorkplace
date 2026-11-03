@@ -185,6 +185,7 @@
 //! with two limits of its own: an approval has no "done" (it closes once decided), and the suite
 //! as a source is neither muted nor given a remembered lane – that would silence approvals.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -229,7 +230,7 @@ use torro_ipc::inbox::{
     CalendarEvent, CategoryInfo, EventFields, MailByRole, MailFind, MailFound, MailInPile, SaveTargets,
     SavedAttachments,
 };
-use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, PileFilter, SaveTo};
+use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, PileFilter, SaveTo, UnsubscribeVia};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, MailPile, Message as Mail, MessageSummary, Role};
@@ -1072,6 +1073,8 @@ pub enum Sent {
     /// `mail.respond_to_invitation` (task E8.3b): account, message, answer and the calendar chosen
     /// (task E8.3c; `None`: the core's choice).
     Answer(String, String, InvitationAnswer, Option<String>),
+    /// `mail.unsubscribe` (issue #416): account and message.
+    Unsubscribe(String, String),
     /// `calendar.list_events` around an invitation (task E8.3c): the message and the span asked.
     Events(String, DateTime<Utc>, DateTime<Utc>),
     /// `tasks.create_todo_from_mail` (task E8.7b): account, message, list, title (`None`: the
@@ -1369,6 +1372,9 @@ pub enum Menu {
     /// The question "Delete permanently?" for [`App::mail_subject`] (task E10.1): a dialog over the
     /// window ([`App::question_layer`]), `Enter` or "Delete" removes the message for good.
     DeleteForGood,
+    /// The question "Unsubscribe from …?" for [`App::unsubscribe_ask`] (issue #416): a dialog over the
+    /// window like "Delete permanently?", `Enter` or "Unsubscribe" asks the core.
+    Unsubscribe,
     /// The menu of an attachment's triangle (task M12.6, `mail::file_menu`) of the mail held: its ways
     /// to open and save, at that triangle. The attachment by its place among the mail's attachments
     /// that are not `inline` (`mail::files_of`).
@@ -1569,10 +1575,13 @@ pub enum Open {
     MailOverviewError,
     /// The overview of a span without mail and an empty inbox, kept for good.
     MailOverviewEmpty,
+    /// "Unfiltered" with the demo's first newsletter open and the question "Unsubscribe from …?"
+    /// over the window (issue #416).
+    Unsubscribe,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 72] = [
+    const ALL: [(&'static str, Open); 73] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1645,6 +1654,7 @@ impl Open {
         ("mail-overview-loading", Open::MailOverviewLoading),
         ("mail-overview-error", Open::MailOverviewError),
         ("mail-overview-empty", Open::MailOverviewEmpty),
+        ("unsubscribe", Open::Unsubscribe),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2673,6 +2683,11 @@ pub struct App<S> {
     /// The answers this window gave to invitations while it runs, by message id (task E8.3b): kept
     /// over what loads (the demo keeps no answers, and the core's sync may lag behind).
     answers: Vec<(String, InvitationAnswer)>,
+    /// What "Unsubscribe from …?" asks about while [`Menu::Unsubscribe`] is open (issue #416).
+    unsubscribe_ask: Option<UnsubscribeAsk>,
+    /// The senders (addresses in lower case) this window unsubscribed from while it runs (issue #416):
+    /// their mail offers "Unsubscribe…" no more until the window starts again.
+    unsubscribed: HashSet<String>,
     /// The calendars an invitation's event can go to (task E8.3c), asked once the first invitation
     /// is read: `None` until they are in, then the answer.
     invite_calendars: Option<Result<Vec<TaskList>, String>>,
@@ -2852,6 +2867,20 @@ pub struct App<S> {
     design: Follow,
 }
 
+/// What "Unsubscribe…" asks about (issue #416): the mail to unsubscribe by and its sender, by name
+/// (or address) for the question and the hint, and by address for what this run left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsubscribeAsk {
+    /// The mail account: `mail:<address>`.
+    pub account: String,
+    /// The mail's id (`m:…`).
+    pub id: String,
+    /// The sender's name, else the address; foreign text, shown as such.
+    pub sender: String,
+    /// The sender's address in lower case.
+    pub address: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
@@ -2971,6 +3000,13 @@ pub enum Message {
     MoveMail(String, String),
     /// "Delete" in the question "Delete permanently?" (task E10.1): remove its message for good.
     DeleteForGood,
+    /// "Unsubscribe…" of the rail's Mute or "Unsubscribe" of a sender of the overview (issue #416): the
+    /// question over the window.
+    AskUnsubscribe(UnsubscribeAsk),
+    /// "Unsubscribe" (or `Enter`) in that question: `mail.unsubscribe` for [`App::unsubscribe_ask`].
+    Unsubscribe,
+    /// The core's answer to `mail.unsubscribe`, with what was asked.
+    Unsubscribed(UnsubscribeAsk, Result<UnsubscribeVia, String>),
     /// The answer to fetching mail now (task E10.1, `accounts.sync`).
     Fetched(Result<(), String>),
     /// "Pick…" in the snooze menu: the date and time picker.
@@ -3964,7 +4000,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     | Open::SaveAllMenu
                     | Open::AttachmentSaved
                     | Open::Invitations
-                    | Open::Invitation,
+                    | Open::Invitation
+                    | Open::Unsubscribe,
                 ) => View::All,
                 Some(
                     Open::Overview
@@ -4024,6 +4061,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             deciding: None,
             answering: None,
             answers: Vec::new(),
+            unsubscribe_ask: None,
+            unsubscribed: HashSet::new(),
             invite_calendars: None,
             invite_pick: None,
             invite_events: None,
@@ -4212,7 +4251,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // or the picker has the keys.
             if on_entries
                 && self.can_undo()
-                && !matches!(self.menu, Some(Menu::Task | Menu::Event | Menu::Pick | Menu::DeleteForGood))
+                && !matches!(
+                    self.menu,
+                    Some(Menu::Task | Menu::Event | Menu::Pick | Menu::DeleteForGood | Menu::Unsubscribe)
+                )
             {
                 subscriptions.push(widgets::undo_key().map(|()| Message::Undo));
             }
@@ -4667,6 +4709,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Junk(id) => return self.move_to_junk(&id),
             Message::MoveMail(id, folder) => return self.move_mail(id, folder),
             Message::DeleteForGood => return self.delete_for_good(),
+            Message::AskUnsubscribe(ask) => return self.ask_unsubscribe(ask),
+            Message::Unsubscribe => return self.unsubscribe(),
+            Message::Unsubscribed(ask, result) => return self.unsubscribed(ask, result),
             Message::Fetched(Ok(())) => return self.load(),
             Message::Fetched(Err(err)) => {
                 // `accounts.sync` fetches calendars, tasks and GitHub too and answers the first failure of
@@ -7139,6 +7184,63 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.mail_edit(Some(MailEdit::DeleteForGood { ids: vec![id] }), Some(hint))
     }
 
+    /// Asks "Unsubscribe from …?" for `ask` (issue #416) in a dialog over the window: nothing brings a
+    /// list back, and the core may send a mail in the person's name.
+    fn ask_unsubscribe(&mut self, ask: UnsubscribeAsk) -> Task<Message> {
+        self.close_menus();
+        self.unsubscribe_ask = Some(ask);
+        self.menu = Some(Menu::Unsubscribe);
+        Task::none()
+    }
+
+    /// "Unsubscribe" (or `Enter`) in the question: `mail.unsubscribe` for [`App::unsubscribe_ask`].
+    /// The mails stay where they are; the answer comes as [`Message::Unsubscribed`].
+    fn unsubscribe(&mut self) -> Task<Message> {
+        let Some(ask) = self.unsubscribe_ask.take() else { return Task::none() };
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::Unsubscribe(ask.account.clone(), ask.id.clone()));
+        let inbox = self.inbox.clone();
+        let (account, id) = (ask.account.clone(), ask.id.clone());
+        Task::perform(
+            async move { inbox.unsubscribe(account, id).await.map_err(|err| err.to_string()) },
+            move |result| Message::Unsubscribed(ask.clone(), result),
+        )
+    }
+
+    /// The core's answer to `mail.unsubscribe` (issue #416): a hint without undo for each way – a page
+    /// only opens in the browser –, the sender's mail offers it no more in this run, and the overview
+    /// drops its button. A failure says so in the hint.
+    fn unsubscribed(&mut self, ask: UnsubscribeAsk, result: Result<UnsubscribeVia, String>) -> Task<Message> {
+        let sender = list::one_line(&ask.sender);
+        let (text, open) = match result {
+            Err(err) => {
+                let text = trf("Couldn't unsubscribe: {reason}", &[("reason", &err)]);
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+                return Task::none();
+            }
+            Ok(UnsubscribeVia::OneClick { .. }) => (trf("Unsubscribed from {sender}", &[("sender", &sender)]), None),
+            Ok(UnsubscribeVia::Mail { delivery: Delivery::Accepted, .. }) => {
+                (trf("Unsubscribe mail sent to {sender}", &[("sender", &sender)]), None)
+            }
+            Ok(UnsubscribeVia::Mail { delivery: Delivery::Unknown, .. }) => {
+                (tr("The unsubscribe mail may not have gone out; check your sent mail").to_owned(), None)
+            }
+            Ok(UnsubscribeVia::Web { url }) => (tr("Finish unsubscribing on the sender's page").to_owned(), Some(url)),
+        };
+        self.unsubscribed.insert(ask.address.clone());
+        if let Some(mail_overview::Loaded { result: Ok(overview), .. }) = self.mail_overview.data.as_mut() {
+            for held in overview.senders.iter_mut().filter(|held| held.address == ask.address) {
+                held.unsubscribe = None;
+            }
+        }
+        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+        match open {
+            Some(url) => self.open_url(url),
+            None => Task::none(),
+        }
+    }
+
     /// Fetches mail from the servers now (task E10.1, the shortcut "fetch", `accounts.sync`) and lists
     /// anew once it is through; nothing without a mail account.
     fn fetch_mail(&mut self) -> Task<Message> {
@@ -8029,7 +8131,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Move | Menu::Category | Menu::CategoryAlways) => {
                 Focus::Choices
             }
-            Some(Menu::DeleteForGood | Menu::PhishingLink) => Focus::Question,
+            Some(Menu::DeleteForGood | Menu::Unsubscribe | Menu::PhishingLink) => Focus::Question,
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task | Menu::Event) => Focus::Task,
@@ -8211,6 +8313,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::Confirm if self.menu == Some(Menu::Task) => self.create_task(),
             Command::Confirm if self.menu == Some(Menu::Event) => self.create_event(),
             Command::Confirm if self.menu == Some(Menu::DeleteForGood) => self.delete_for_good(),
+            Command::Confirm if self.menu == Some(Menu::Unsubscribe) => self.unsubscribe(),
             // "Open anyway" of a fraudulent mail (task E12.9): without its own arm `Enter` would
             // fall through to the picker and act on whatever entry was last touched.
             Command::Confirm if self.menu == Some(Menu::PhishingLink) => self.update(Message::OpenLinkAnyway),
@@ -9950,7 +10053,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return Cover::Nothing;
         }
         // A dialog of the settings (the save target's editor) covers the band like the window's own.
-        let question = self.menu == Some(Menu::DeleteForGood) || self.settings_dialog(class).is_some();
+        let question =
+            matches!(self.menu, Some(Menu::DeleteForGood | Menu::Unsubscribe)) || self.settings_dialog(class).is_some();
         // The overview's panel covers the band like a mail's (issue #409).
         let panel = self.panel_open() || (class == SizeClass::Medium && self.mail_overview_shown());
         Cover::dialog(question).or(Cover::panel(class, panel)).or(Cover::drawer(class, self.drawer))
@@ -9977,6 +10081,36 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     .style(theme::text_2),
                 // The whole address, wrapped, never shortened: shortening is how such links hide.
                 typo::text(typo::body_strong(), url.as_str()).wrapping(Wrapping::WordOrGlyph),
+                actions,
+            ]
+            .spacing(space::l());
+            let card = container(content).padding(space::xl()).width(Fill).style(style::container::popover);
+            return widgets::modal(
+                Space::new().width(Fill).height(Fill),
+                card,
+                widgets::POPOVER_WIDTH,
+                Message::CloseMenu,
+            );
+        }
+        // Issue #416: unsubscribing, named by the sender; the action is the dialog's one primary.
+        if self.menu == Some(Menu::Unsubscribe) {
+            let Some(ask) = &self.unsubscribe_ask else { return Space::new().into() };
+            let actions = row![
+                Space::new().width(Fill),
+                widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseMenu)),
+                widgets::text_button(None, tr("Unsubscribe"), style::button::primary, Some(Message::Unsubscribe)),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            let sender = list::one_line(&ask.sender);
+            let content = column![
+                typo::text(typo::title(), trf("Unsubscribe from {sender}?", &[("sender", &sender)]))
+                    .wrapping(Wrapping::WordOrGlyph),
+                typo::text(
+                    typo::body(),
+                    tr("Torro asks the sender to stop sending these mails. This can't be undone here.")
+                )
+                .style(theme::text_2),
                 actions,
             ]
             .spacing(space::l());
@@ -10218,7 +10352,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(widgets::floating(&hide_at, dialog, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
             // A question over the whole window ([`App::question_layer`]), not at a button.
-            Some(Menu::DeleteForGood | Menu::PhishingLink) => None,
+            Some(Menu::DeleteForGood | Menu::Unsubscribe | Menu::PhishingLink) => None,
             // At the triangle that opened it (task M12.6), its right edge in line, under it while
             // there is room – the reader's block stands at the bottom, so mostly over it.
             Some(Menu::Attachment(at)) => self.file_menu(Some(at)).map(|card| {
@@ -10690,6 +10824,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Menu::Attachment(at)) => Some(at),
                 _ => None,
             },
+            unsubscribed: &self.unsubscribed,
         })
     }
 
@@ -11922,6 +12057,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.subject = None;
         self.mail_subject = None;
         self.ai_suggesting = None;
+        self.unsubscribe_ask = None;
     }
 
     /// Asks the core for the stored appearance, on every tick, so a change in the control centre
@@ -12084,6 +12220,27 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                         Open::SaveAllMenu => Some(Menu::SaveAll { rail: false }),
                         _ => None,
                     };
+                }
+            }
+            Some(Open::Unsubscribe) => {
+                let newsletter = |message: &&MessageSummary| {
+                    message.category.as_ref().is_some_and(|held| {
+                        matches!(held.category, torro_mail::Category::Newsletter | torro_mail::Category::Promotion)
+                    })
+                };
+                if let Some(message) = self.messages.iter().find(newsletter).cloned()
+                    && let Some(from) = message.from.clone()
+                {
+                    self.cursor = Some(message.id.clone());
+                    self.reading = true;
+                    let sender = from.name.clone().unwrap_or_else(|| from.address.clone());
+                    let ask = UnsubscribeAsk {
+                        account: message.account.clone(),
+                        id: message.id.clone(),
+                        sender,
+                        address: from.address.to_lowercase(),
+                    };
+                    return self.ask_unsubscribe(ask);
                 }
             }
             Some(open @ (Open::MoveMail | Open::DeleteMail)) => {
@@ -12301,6 +12458,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::Reclassify(_)
             | Message::AskHide(_)
             | Message::AskMuteMail(_)
+            | Message::AskUnsubscribe(_)
             | Message::AskSaveAttachments(_)
             | Message::ShowMailAs(_)
             | Message::MailColors(_)
@@ -15130,6 +15288,66 @@ mod tests {
         let _ = shortcut(&mut app, S::Archive, false);
         assert_eq!(app.menu, Some(Menu::Task), "the dialog stays");
         assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(MailEdit::Move { .. }, _))));
+    }
+
+    /// Issue #416: "Unsubscribe…" asks first over the window; Escape leaves it, `Enter` (or the
+    /// dialog's button) asks the core. The hint says how it went, without an undo; a page only
+    /// opens in the browser, a failure says so, and the sender's mail offers it no more.
+    #[test]
+    fn unsubscribing_asks_first_and_says_how_it_went() {
+        let mut app = in_folder("f:work-inbox");
+        let ask = UnsubscribeAsk {
+            account: "mail:anna@work.example.org".into(),
+            id: "m:w14".into(),
+            sender: "Shop".into(),
+            address: "news@shop.example".into(),
+        };
+        let _ = app.update(Message::AskUnsubscribe(ask.clone()));
+        assert_eq!(app.menu, Some(Menu::Unsubscribe));
+        assert_eq!(app.cover(), Cover::Dialog);
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::Escape);
+        assert_eq!((app.menu, app.unsubscribe_ask.as_ref()), (None, None));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Unsubscribe(..))), "nothing before the answer");
+
+        let _ = app.update(Message::AskUnsubscribe(ask.clone()));
+        let _ = press(&mut app, Key::Enter);
+        assert!(
+            matches!(app.sent.last(), Some(Sent::Unsubscribe(account, id)) if *account == ask.account && id == "m:w14")
+        );
+        assert_eq!(app.menu, None);
+        let _ = app.update(Message::AskUnsubscribe(ask.clone()));
+        let _ = app.update(Message::Unsubscribe);
+        assert!(matches!(app.sent.last(), Some(Sent::Unsubscribe(..))), "the dialog's button does the same");
+
+        let hint_after = |app: &mut App<DemoSource>, result: Result<UnsubscribeVia, String>| {
+            let _ = app.update(Message::Unsubscribed(ask.clone(), result));
+            let hint = app.hint.as_ref().expect("a hint");
+            assert!(hint.undo.is_none(), "nothing takes it back");
+            hint.text.clone()
+        };
+        let failed = hint_after(&mut app, Err("The sender's server did not take it.".into()));
+        assert_eq!(
+            failed,
+            trf("Couldn't unsubscribe: {reason}", &[("reason", &"The sender's server did not take it.")])
+        );
+        assert!(!app.unsubscribed.contains("news@shop.example"), "a failure leaves it offered");
+        let one_click = hint_after(&mut app, Ok(UnsubscribeVia::OneClick { host: "shop.example".into() }));
+        assert_eq!(one_click, trf("Unsubscribed from {sender}", &[("sender", &"Shop")]));
+        assert!(app.unsubscribed.contains("news@shop.example"));
+        let mail = |delivery| UnsubscribeVia::Mail { to: "off@shop.example".into(), subject: "stop".into(), delivery };
+        assert_eq!(
+            hint_after(&mut app, Ok(mail(Delivery::Accepted))),
+            trf("Unsubscribe mail sent to {sender}", &[("sender", &"Shop")])
+        );
+        assert_eq!(
+            hint_after(&mut app, Ok(mail(Delivery::Unknown))),
+            tr("The unsubscribe mail may not have gone out; check your sent mail")
+        );
+        let page = hint_after(&mut app, Ok(UnsubscribeVia::Web { url: "https://shop.example/u".into() }));
+        assert_eq!(page, tr("Finish unsubscribing on the sender's page"));
+        assert!(matches!(app.sent.last(), Some(Sent::Link(url)) if url == "https://shop.example/u"), "opened");
     }
 
     /// Shift + Delete asks first; Escape leaves the mail, `Enter` (or "Delete") removes it for good,
