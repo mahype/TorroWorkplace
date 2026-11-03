@@ -242,6 +242,9 @@ pub struct State {
     /// Mail sorting is recommended on; an explicit choice here overrides the stored assignment.
     sort_mail: Option<bool>,
     sort_model: Option<(String, String)>,
+    /// The question before the switch turns on what sorted last in the cloud (issue #424), while it is
+    /// open: the model's and the provider's names.
+    asking_cloud: Option<(String, String)>,
     /// The engine chosen here for the assistant's new chats, by id.
     engine: Option<String>,
     /// The web search step (task WEB.7): a key or SearXNG's address being typed, and the address check.
@@ -288,6 +291,7 @@ impl State {
             ai_connected: BTreeSet::new(),
             sort_mail: None,
             sort_model: None,
+            asking_cloud: None,
             engine: None,
             web: web::State::default(),
             switched: BTreeMap::new(),
@@ -493,6 +497,10 @@ pub enum Message {
     Engine(String),
     /// Enable or disable model sorting of mail in the recommended AI setup.
     SortMail(bool),
+    /// "Use" in the question before the switch turns on a model in the cloud (issue #424).
+    UseCloud,
+    /// "Cancel" in that question, a click next to it, or Escape: the switch stays off.
+    CancelCloud,
     /// Choose a decision model for mail from the connected AI accounts.
     SortModel(String, String),
     /// The search providers of the web step (task WEB.7): the view of Assistant › Settings › Tools.
@@ -700,8 +708,23 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             let default = torro_core::settings::AssistantDefault { engine, model: None, effort: None };
             stay(set(SettingKey::AssistantDefault, torro_core::settings::AssistantDefault::to_value(Some(&default))))
         }
+        // Turning on what sorted last in the cloud asks first, as the mail settings do (issue #424).
+        Message::SortMail(true) if !mail_sorting_on(state, data) && cloud_to_turn_on(state, data).is_some() => {
+            state.asking_cloud = cloud_to_turn_on(state, data);
+            stay(Action::None)
+        }
         Message::SortMail(on) => {
             state.sort_mail = Some(on);
+            stay(Action::None)
+        }
+        Message::UseCloud => {
+            if state.asking_cloud.take().is_some() {
+                state.sort_mail = Some(true);
+            }
+            stay(Action::None)
+        }
+        Message::CancelCloud => {
+            state.asking_cloud = None;
             stay(Action::None)
         }
         Message::SortModel(engine, model) => {
@@ -1154,6 +1177,47 @@ fn selected_mail_decider<'a>(state: &State, data: &'a Data) -> Option<(&'a Strin
     candidates.into_iter().next()
 }
 
+/// What the switch "on" would turn on in the cloud without the person's consent (issue #424): the
+/// exception switched off that "on" switches on again when the step offers no model of its own, while
+/// Sorting's permission is off – if it computes elsewhere, as the data rule weighs it (`place_of`): a
+/// listed model by where it runs, one the list lacks in doubt elsewhere, naming none ("Automatic") by
+/// the account's seat. Its model's and provider's names for the question; `None` when nothing needs
+/// asking, as for a model here the step does not offer (a chat model, one turned off).
+fn cloud_to_turn_on(state: &State, data: &Data) -> Option<(String, String)> {
+    if data.settings.mail_to_cloud_in(AiSlot::Decide) || selected_mail_decider(state, data).is_some() {
+        return None;
+    }
+    let held = stored_mail_exception(data).filter(|held| !held.enabled)?;
+    let engine = held.engine.clone()?;
+    let (provider_id, server) = engine.strip_prefix("ai:").and_then(|id| id.split_once('@')).unwrap_or_default();
+    let provider = AiProvider::ALL.into_iter().find(|provider| provider.id() == provider_id);
+    let listed = held
+        .model
+        .as_deref()
+        .and_then(|id| data.ai_deciders.iter().find(|(account, model)| *account == engine && model.id == id));
+    let elsewhere = match (provider, listed, &held.model) {
+        (Some(provider), Some((_, model)), _) => {
+            crate::assistant::place_of(provider, server, model) != crate::assistant::Place::Local
+        }
+        (Some(provider), None, None) => provider.seat() != torro_core::ai::Seat::ThisComputer,
+        _ => true,
+    };
+    if !elsewhere {
+        return None;
+    }
+    let account = data
+        .accounts
+        .iter()
+        .find(|account| account.id == engine)
+        .map_or_else(|| engine.clone(), |account| account.label.clone());
+    let model = match (listed, &held.model) {
+        (Some((_, model)), _) => model.name.clone(),
+        (None, Some(id)) => id.clone(),
+        (None, None) => account.clone(),
+    };
+    Some((model, account))
+}
+
 /// What "Continue" on the AI step sends for sorting mail, as main's mail settings weigh it (issue
 /// #325): one request, so none can go through while another is refused.
 ///
@@ -1201,6 +1265,9 @@ fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
 /// Escape: stop waiting for the browser or adding another Nextcloud, else one step back; nothing
 /// on the first step.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.asking_cloud.is_some() {
+        return Some(Message::CancelCloud);
+    }
     if state.dialog.is_some() {
         return Some(Message::Dialog(wizard::Message::Close));
     }
@@ -1302,8 +1369,14 @@ pub fn header(state: &State, class: SizeClass) -> Element<'_, Message> {
     shell::header_bar([], title, later)
 }
 
-/// The add-account dialog over the whole window, while it is open.
+/// The add-account dialog over the whole window, while it is open; else the question before sorting
+/// mail in the cloud (issue #424).
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if state.dialog.is_none()
+        && let Some((model, provider)) = &state.asking_cloud
+    {
+        return Some(torro_settings_ui::parts::cloud_consent(model, provider, Message::UseCloud, Message::CancelCloud));
+    }
     let dialog = state.dialog.as_ref()?;
     let content = wizard::view(dialog, data).map(Message::Dialog);
     Some(super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close)))
@@ -1863,13 +1936,34 @@ mod tests {
                 enabled: false,
             },
         );
+        // Issue #424: without Sorting's permission it asks first; "Cancel" leaves it off.
         let mut on = state(Step::Ai);
         update(&mut on, Message::SortMail(true), &cloud_off);
+        assert!(overlay(&on, &cloud_off).is_some() && matches!(escape(&on), Some(Message::CancelCloud)));
+        update(&mut on, Message::CancelCloud, &cloud_off);
+        assert!(!mail_sorting_on(&on, &cloud_off) && overlay(&on, &cloud_off).is_none());
+        update(&mut on, Message::SortMail(true), &cloud_off);
+        update(&mut on, Message::UseCloud, &cloud_off);
         let sent = requests(update(&mut on, Message::Next, &cloud_off));
         assert!(
             matches!(&sent[..], [Request::SetAiAssignment { engine: Some(engine), enabled: true, .. }] if *engine == cloud),
             "{sent:?}"
         );
+        // A model here the step does not offer (turned off) asks nothing: no mail leaves.
+        let mut here_off = cloud_off.clone();
+        if let Some(held) = here_off.settings.ai_assignments.get_mut(&AiFunction::InboxCategorize) {
+            held.engine = Some(local.clone());
+            held.model = Some("off".into());
+        }
+        let mut on = state(Step::Ai);
+        update(&mut on, Message::SortMail(true), &here_off);
+        assert!(on.asking_cloud.is_none() && mail_sorting_on(&on, &here_off));
+        // With the permission on, it was said yes to already: on without a question.
+        let mut allowed = cloud_off.clone();
+        allowed.settings.decide_mail_to_cloud = Some(true);
+        let mut on = state(Step::Ai);
+        update(&mut on, Message::SortMail(true), &allowed);
+        assert!(on.asking_cloud.is_none() && mail_sorting_on(&on, &allowed));
 
         data.settings.decide_mail_to_cloud = Some(true);
         assert_eq!(mail_deciders(&data).len(), 3, "the cloud model needs Sorting's mail permission");

@@ -69,6 +69,9 @@ pub enum Open {
     /// switched on there, and the menu of *Sorting* open (issue #421): "None", "Decision models
     /// (fast)" and "Other models".
     SortingMenu,
+    /// The same, then another model of OpenRouter picked for *Sorting* (issue #424): the question
+    /// before a model in the cloud sorts mail, with "Cancel" and "Use".
+    SortingCloud,
     /// The detail page of the demo's ntfy account (task E5.14): its topics and its login.
     NtfyDetail,
     /// The ntfy account's page with the dialog of its first topic (rename, unsubscribe).
@@ -209,7 +212,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 109] = [
+    pub const ALL: [(&'static str, Open); 110] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -249,6 +252,7 @@ impl Open {
         ("account-detail-ai", Open::AiDetail),
         ("ai-models", Open::AiModels),
         ("sorting-menu", Open::SortingMenu),
+        ("sorting-cloud", Open::SortingCloud),
         ("ntfy-detail", Open::NtfyDetail),
         ("ntfy-topic", Open::NtfyTopic),
         ("ntfy-login", Open::NtfyLogin),

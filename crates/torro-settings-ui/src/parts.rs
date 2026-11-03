@@ -1,5 +1,5 @@
 //! The pieces a settings page is built from: rows of a group, rows that open a page, and the
-//! dialog over the window. Used by the sections of this library and by the control centre, so a
+//! dialogs over the window (a confirmation, the question before mail goes to the cloud). Used by the sections of this library and by the control centre, so a
 //! row looks and behaves the same in both (task S.16; they grew in the control centre's `ui/mod.rs`).
 //!
 //! Local stand-ins for what `torro_gui::widgets` does not offer yet (proposals for torro-gui in the
@@ -127,6 +127,31 @@ pub fn confirm<'a, M: Clone + 'a>(
     let content =
         column![typo::text(typo::title(), title), typo::text(typo::body(), consequence).style(theme::text_2), buttons]
             .spacing(space::l());
+    dialog(content, widgets::POPOVER_WIDTH, on_cancel)
+}
+
+/// The question before mail is sorted by a model in the cloud (issue #424), as a [`dialog`]: "Sort
+/// mail in the cloud?", which `model` reads the mail at which `provider`, and at the right "Cancel"
+/// and "Use". Choosing the model is the consent, so there is no switch of its own; "Use" is the
+/// primary button, not a danger one – nothing is removed. A click next to it cancels.
+pub fn cloud_consent<'a, M: Clone + 'a>(model: &str, provider: &str, on_use: M, on_cancel: M) -> Element<'a, M> {
+    let question = trf(
+        "{model} reads your mail at {provider} in the cloud. Use it?",
+        &[("model", &model), ("provider", &provider)],
+    );
+    let buttons = row![
+        blank::horizontal(),
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(on_cancel.clone())),
+        widgets::text_button(None, tr("Use"), style::button::primary, Some(on_use)),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    let content = column![
+        typo::text(typo::title(), tr("Sort mail in the cloud?")),
+        typo::text(typo::body(), question).style(theme::text_2),
+        buttons
+    ]
+    .spacing(space::l());
     dialog(content, widgets::POPOVER_WIDTH, on_cancel)
 }
 

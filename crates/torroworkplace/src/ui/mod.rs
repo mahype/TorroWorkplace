@@ -750,16 +750,27 @@ impl Ui {
             }
             // nimble is off in the demo: switched on at Ollama's page, as a person would, so the menu has a
             // decision model to put first.
-            Open::SortingMenu => {
+            Open::SortingMenu | Open::SortingCloud => {
                 self.data.accounts.push(accounts::demo::demo_ollama_account());
                 let ollama = accounts::demo::DEMO_OLLAMA.to_string();
-                vec![
+                let mut messages = vec![
                     Message::Select(Section::Ai),
                     Message::Accounts(accounts::Message::Open(ollama)),
                     Message::Accounts(accounts::Message::SetModel("nimble:latest".into(), true)),
                     Message::Accounts(accounts::Message::Back),
                     Message::Accounts(accounts::Message::ToggleSortingMenu),
-                ]
+                ];
+                // Issue #424: another model of OpenRouter than the one that sorts asks before it does.
+                if matches!(open, Open::SortingCloud) {
+                    let choice = accounts::SlotChoice {
+                        engine: Some(accounts::demo::DEMO_OPENROUTER.into()),
+                        model: Some("deepseek/deepseek-chat-v3.1".into()),
+                        label: "DeepSeek V3.1".into(),
+                    };
+                    let pick = accounts::Message::PickSlot(torro_core::ai::AiSlot::Decide, choice);
+                    messages.push(Message::Accounts(pick));
+                }
+                messages
             }
             Open::GithubDetail => {
                 let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
@@ -3363,6 +3374,12 @@ mod tests {
         let sections = accounts::sorting_sections(&sorting.accounts, &sorting.data);
         assert!(sections.fast.iter().any(|choice| choice.model.as_deref() == Some("nimble:latest")), "{sections:?}");
         assert!(sections.other.iter().any(|choice| choice.model.as_deref() == Some("qwen3:8b")), "{sections:?}");
+        // Issue #424: another model in the cloud asks before it sorts; nothing is sent until "Use".
+        let cloud = started(&["--demo", "--open", "sorting-cloud"]);
+        assert!(!cloud.accounts.sorting_menu && cloud.accounts.cloud_consent.is_some());
+        assert!(cloud.page_overlay().is_some(), "the question lies over the window");
+        let decide = cloud.data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.model.as_deref());
+        assert_eq!(decide, Some("qwen/qwen3-235b-a22b"), "the slot is unchanged while it asks");
         let section = started(&["--demo", "--section", "ai"]);
         assert!(section.accounts.slots.recommendation.is_some(), "a start on AI asks as choosing it does");
         let github = started(&["--demo", "--open", "scopes-detail"]);

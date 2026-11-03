@@ -770,8 +770,8 @@ impl Demo {
     }
 
     /// The models the sample AI account offers (`ai.list_models`): one that writes and one that
-    /// only decides, which is what sorting mail needs (task E12.10), both turned on; and one turned
-    /// off, which no choice offers (task S.26).
+    /// only decides, which is what sorting mail needs (task E12.10), both turned on; one turned
+    /// off, which no choice offers (task S.26); and a decision model in Ollama's cloud (issue #424).
     fn models(&self) -> Vec<AiModel> {
         vec![
             AiModel {
@@ -815,6 +815,22 @@ impl Demo {
                 remote: Some(false),
                 decision: Some(true),
                 enabled: false,
+            },
+            // Issue #424: a model of Ollama's cloud, offered under "In the cloud – mail leaves this
+            // computer"; picking it asks first.
+            AiModel {
+                id: "clef:cloud".into(),
+                name: "clef:cloud".into(),
+                tools: Some(false),
+                open_weights: Some(true),
+                context: Some(131072),
+                parameters: None,
+                quantization: None,
+                size: None,
+                reasoning: Some(false),
+                remote: Some(true),
+                decision: Some(true),
+                enabled: true,
             },
         ]
     }
@@ -1075,7 +1091,14 @@ impl Backend for Demo {
             Request::ListTools => Response::Tools { tools: self.tools() },
             Request::ListExtensions => Response::Extensions { extensions: self.extensions() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
-            Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
+            // Each account its own models (design review of #424): OpenRouter's are in the cloud.
+            Request::AiModels { account, .. } => {
+                let models = match account.as_str() {
+                    crate::accounts::demo::DEMO_OPENROUTER => crate::accounts::demo::demo_models(),
+                    _ => self.models(),
+                };
+                Response::AiModels { account: account.clone(), models }
+            }
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments(), slots: self.slots() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
             Request::PreviewClearCategories => Response::CategoryClearPreview {

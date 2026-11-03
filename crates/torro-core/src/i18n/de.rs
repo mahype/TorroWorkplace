@@ -4530,19 +4530,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ein Modell auf deinem Rechner sagt, was jede E-Mail ist. Keine E-Mail verlässt diesen Rechner, nichts \
          wird versteckt, verschoben oder gelöscht, und jede Kategorie kannst du von Hand ändern.",
     ),
-    (
-        "Only models on this computer are offered: mail stays here unless you choose a model elsewhere for Sorting in Settings › AI.",
-        "Angeboten werden nur Modelle auf diesem Rechner: E-Mails bleiben hier, solange du unter Einstellungen › KI \
-         für „Sortieren“ kein Modell anderswo wählst.",
-    ),
     ("No model that can sort mail", "Kein Modell, das E-Mails einordnen kann"),
     (
         "Add a local AI such as Ollama under AI and load a model that decides.",
         "Füge unter KI eine KI auf diesem Rechner hinzu, etwa Ollama, und lade ein Modell, das entscheidet.",
-    ),
-    (
-        "Mail may go to an AI elsewhere for sorting; every model that can sort it is offered.",
-        "E-Mails dürfen zum Einordnen zu einer KI anderswo gehen; angeboten wird jedes Modell, das sie einordnen kann.",
     ),
     ("Catch up", "Altbestand"),
     ("Catch up now", "Jetzt nachrechnen"),
@@ -6831,6 +6822,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Sorting runs slower with a chat model. Settings › AI suggests one to download.",
         "Mit einem Chat-Modell läuft das Einordnen langsamer. Einstellungen › KI schlägt eins zum Laden vor.",
     ),
+    // Choosing a model in the cloud for sorting is the consent, after one question (issue #424); "On this
+    // computer", "Cancel" and "Use" stand above.
+    ("In the cloud – mail leaves this computer", "In der Cloud – E-Mails verlassen diesen Rechner"),
+    ("In the cloud", "In der Cloud"),
+    ("Sort mail in the cloud?", "E-Mails in der Cloud einordnen?"),
+    (
+        "{model} reads your mail at {provider} in the cloud. Use it?",
+        "{model} liest deine E-Mails bei {provider} in der Cloud. Übernehmen?",
+    ),
+    ("Waiting for your OK – mail stays here", "Wartet auf dein OK – E-Mails bleiben hier"),
     // The tiers and reasons of the recommended models (MW.5, issue #325); "Medium", "This computer" and
     // "Needs {program}" stand above.
     ("Mac with large memory", "Mac mit viel Arbeitsspeicher"),
@@ -6869,10 +6870,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // computer", "Retry", "Saving…", "None", "Cancel", "Turned off in Settings › AI" and "Answers in a fixed
     // format, slower" stand above.
     ("Chat may read mail in the cloud", "Chat darf Mail in der Cloud lesen"),
-    ("Sorting sends mail to the cloud", "Sortieren schickt Mail in die Cloud"),
-    ("Sorting may send mail to the cloud", "Sortieren darf Mail in die Cloud schicken"),
-    ("The model that sorts now runs on this computer", "Das Modell, das jetzt sortiert, läuft auf diesem Rechner"),
-    ("Keep mail here", "Mail hier behalten"),
     ("{tier} class", "Klasse {tier}"),
     ("Wait until the download for {slot} has finished", "Warte, bis der Download für {slot} fertig ist"),
     ("Wait until {slot} is saved", "Warte, bis {slot} gespeichert ist"),
