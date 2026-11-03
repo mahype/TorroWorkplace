@@ -225,7 +225,8 @@ struct Message<'a> {
     copy: (&'a str, &'a str),
     /// Every copy lies in the trash.
     trash: bool,
-    /// A copy outside the trash that carries `List-Unsubscribe` (issue #416).
+    /// A copy outside the trash that carries `List-Unsubscribe` and is not sorted as phishing
+    /// ([`unsubscribable`], issue #416).
     unsubscribe: Option<(&'a str, &'a str)>,
 }
 
@@ -278,9 +279,12 @@ fn came_in<'a>(
     messages
 }
 
-/// `row` of `account` as the mail to unsubscribe by: outside the trash with `List-Unsubscribe`.
+/// `row` of `account` as the mail to unsubscribe by: outside the trash with `List-Unsubscribe`, not
+/// sorted as phishing – that copy's own category, as the core checks the copy it is given
+/// (`crate::mail::unsubscribe::offers_unsubscribe`).
 fn unsubscribable<'a>(account: &'a AccountRows, row: &'a CameIn) -> Option<(&'a str, &'a str)> {
-    (row.list_unsubscribe && !row.trash).then_some((account.account.as_str(), row.id.as_str()))
+    let phishing = row.category == Some(Category::Phishing);
+    (row.list_unsubscribe && !row.trash && !phishing).then_some((account.account.as_str(), row.id.as_str()))
 }
 
 /// A sender while counting.
@@ -293,8 +297,7 @@ struct Tally<'a> {
     newest: Option<&'a Message<'a>>,
     /// The newest mail outside the trash.
     kept: Option<&'a Message<'a>>,
-    /// The newest mail to unsubscribe by ([`Message::unsubscribe`]), not sorted as phishing: the core
-    /// would refuse that one (`crate::mail::unsubscribe::offers_unsubscribe`).
+    /// The newest mail to unsubscribe by ([`Message::unsubscribe`]).
     unsubscribe: Option<&'a Message<'a>>,
 }
 
@@ -325,7 +328,7 @@ fn senders(messages: &[Message<'_>]) -> Vec<SenderCount> {
         if !message.trash {
             tally.kept = Some(newer(tally.kept, message));
         }
-        if message.unsubscribe.is_some() && message.category != Some(Category::Phishing) {
+        if message.unsubscribe.is_some() {
             tally.unsubscribe = Some(newer(tally.unsubscribe, message));
         }
     }
@@ -602,18 +605,24 @@ mod tests {
         phishing.list_unsubscribe = true;
         let person = row("hello", at(0, 9, 0), "anna@x.org", None);
         let accounts = [rows(ANNA, vec![older, newer_one, thrown, plain, phishing, person])];
-        let counted = counted(&accounts, StatsRange::Week);
+        let found = counted(&accounts, StatsRange::Week);
         let target = |address: &str| {
-            counted
-                .senders
-                .iter()
-                .find(|sender| sender.address == address)
-                .and_then(|sender| sender.unsubscribe.clone())
+            found.senders.iter().find(|sender| sender.address == address).and_then(|sender| sender.unsubscribe.clone())
         };
         assert_eq!(target("news@shop.example"), Some(Latest { account: ANNA.into(), id: "newer".into() }));
         assert_eq!(target("bank@fake.example"), None, "never by a mail sorted as phishing");
         assert_eq!(target("anna@x.org"), None);
-        let sender = counted.senders.iter().find(|sender| sender.address == "news@shop.example").cloned().expect("one");
+        // The same mail in two accounts: the copy sorted as phishing is never the one to unsubscribe by.
+        let mut kept = row("both", at(0, 8, 0), "club@x.org", Some(Category::Newsletter));
+        kept.list_unsubscribe = true;
+        let mut forged = kept.clone();
+        forged.id = "both-fake".into();
+        forged.category = Some(Category::Phishing);
+        let twice = [rows(ANNA, vec![forged]), rows(BERND, vec![kept])];
+        let counted_twice = counted(&twice, StatsRange::Week);
+        let club = counted_twice.senders.iter().find(|sender| sender.address == "club@x.org").expect("club");
+        assert_eq!(club.unsubscribe, Some(Latest { account: BERND.into(), id: "both".into() }));
+        let sender = found.senders.iter().find(|sender| sender.address == "news@shop.example").cloned().expect("one");
         let summary: MessageSummary =
             serde_json::from_value(serde_json::json!({"id": "m:1", "account": ANNA, "folder": "f:1",
                 "thread_id": "t:1", "date": "2026-10-13T09:00:00Z"}))

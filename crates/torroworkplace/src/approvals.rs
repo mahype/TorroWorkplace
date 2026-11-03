@@ -2253,13 +2253,6 @@ fn reminders_changed(value: &serde_json::Value, facts: &Facts) -> String {
     parts.join(", ")
 }
 
-/// What answering an invitation would do, in words (task E8.3b): `Accept the invitation "Planning"
-/// on Thu 15 Oct 10:00: reply from anna@example.org to jonas@example.com, add the event to "Work"`;
-/// "Answer maybe to …" and "Decline …" alike, a decline with `, remove the event from "<calendar>"`
-/// when it removes the copy made before. Title and start as the mail store holds them
-/// ([`Facts::item`]), the account's address and the organizer from [`MailFacts`], the calendar by
-/// the name the core caches ([`Facts::name`]), else its id. All of it through [`quote`]. Without what
-/// the store holds: "Answer an unknown invitation".
 /// The summary of `mail.unsubscribe` (issue #416): the sender, the account and the way with its
 /// address, all as the core read them; "an unknown mailing list" without them.
 fn unsubscribed(account: &str, facts: &Facts) -> String {
@@ -2291,6 +2284,13 @@ fn unsubscribed(account: &str, facts: &Facts) -> String {
     }
 }
 
+/// What answering an invitation would do, in words (task E8.3b): `Accept the invitation "Planning"
+/// on Thu 15 Oct 10:00: reply from anna@example.org to jonas@example.com, add the event to "Work"`;
+/// "Answer maybe to …" and "Decline …" alike, a decline with `, remove the event from "<calendar>"`
+/// when it removes the copy made before. Title and start as the mail store holds them
+/// ([`Facts::item`]), the account's address and the organizer from [`MailFacts`], the calendar by
+/// the name the core caches ([`Facts::name`]), else its id. All of it through [`quote`]. Without what
+/// the store holds: "Answer an unknown invitation".
 fn invitation_answered(
     answer: torro_mail::InvitationAnswer,
     account: &str,

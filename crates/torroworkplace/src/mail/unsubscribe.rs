@@ -201,7 +201,8 @@ fn decoded(text: &str) -> Option<String> {
     let mut at = 0;
     while at < bytes.len() {
         if bytes[at] == b'%' {
-            let hex = text.get(at + 1..at + 3)?;
+            // Two hex digits exactly: `from_str_radix` alone would take `%+A`.
+            let hex = text.get(at + 1..at + 3).filter(|hex| hex.bytes().all(|byte| byte.is_ascii_hexdigit()))?;
             out.push(u8::from_str_radix(hex, 16).ok()?);
             at += 3;
         } else {
@@ -399,6 +400,7 @@ pub(crate) mod tests {
             "<mailto:a@x.example%2Cb@x.example>",
             "<mailto:nobody>",
             "<mailto:a%ZZ@x>",
+            "<mailto:a%+A@x.example>",
         ] {
             assert_eq!(way(bad), None, "{bad}");
         }

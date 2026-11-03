@@ -3336,7 +3336,7 @@ mod tests {
     }
 
     /// Issue #416: the tool takes account and mail and builds `mail.unsubscribe`; it cannot be taken
-    /// back and talks to the sender, so it is destructive, not idempotent and open.
+    /// back and talks to the sender, so it is destructive, not idempotent, and has no closed-world hint.
     #[test]
     fn mail_unsubscribe_builds_its_request() {
         let arguments = json!({"account": "mail:anna@mailbox.org", "id": "m:1"});
