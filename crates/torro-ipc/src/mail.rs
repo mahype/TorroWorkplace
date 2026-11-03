@@ -730,8 +730,8 @@ pub struct OverviewSender {
     pub category: Option<torro_mail::Category>,
     /// The sender's newest mail outside the trash (the newest of all when every one is there).
     pub latest: torro_mail::MessageSummary,
-    /// The sender's newest mail outside the trash that carries a `List-Unsubscribe` header, for
-    /// `mail.unsubscribe` (issue #416); `None` when no such mail is there.
+    /// The sender's newest mail outside the trash that carries a `List-Unsubscribe` header and is not
+    /// sorted as phishing, for `mail.unsubscribe` (issue #416); `None` when no such mail is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsubscribe: Option<UnsubscribeTarget>,
 }
