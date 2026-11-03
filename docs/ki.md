@@ -184,7 +184,7 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
   Modell anderswo (Cloud, Server im Netz), wird sie eingeschaltet (`ai.set_slot` setzt sie mit); wählt man ein
   Modell hier oder „None“, wird sie zurückgenommen. Einen eigenen Schalter hat sie nicht mehr (#424): Beide
   Auswahlen (Mail-Fenster › Categorization und Steuerzentrale › AI › Sorting) bieten alle Modelle an, die
-  in der Cloud unter „In the cloud – mail leaves this computer“ mit Wolke. Ein Modell dort fragt vorher
+  in der Cloud unter „In the cloud – mail leaves this computer“ (im Menü von Sorting kurz „In the cloud“) mit Wolke. Ein Modell dort fragt vorher
   („Sort mail in the cloud?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
   Anbieter gilt; erst „Use“ setzt Modell und Erlaubnis. Steht ein Modell in der Cloud im Platz, aber die
   Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigen beide Orte „Waiting for

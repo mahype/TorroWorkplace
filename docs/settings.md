@@ -340,7 +340,7 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`, wie Einstellungen › Categorization), damit der
   Platz sortiert. Unter „Data rule“ steht nur die Erlaubnis des Chats, `mailToCloud` („Chat may read mail in the
   cloud“). Die für Sorting, `decideMailToCloud`, hat keinen eigenen Schalter (#424): Das Menü von Sorting zeigt nach
-  „Other models“ den Abschnitt „In the cloud – mail leaves this computer“, jede Zeile mit Wolke; ein Modell dort
+  „Other models“ den Abschnitt „In the cloud“, jede Zeile mit Wolke; ein Modell dort
   fragt vorher („Sort mail in the cloud?“, „Cancel“/„Use“, auch „Use suggestion“ für ein Modell in der Cloud), und
   erst „Use“ setzt Modell und Erlaubnis. Ein Modell hier oder „None“ nimmt sie zurück. Steht ein Modell in der
   Cloud im Platz und die Erlaubnis ist aus, sagt die Zeile unter Sorting „Waiting for your OK – mail stays here“.
