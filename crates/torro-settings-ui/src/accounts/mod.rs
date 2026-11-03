@@ -3224,10 +3224,12 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
                 let current = choice == chosen;
                 // The account as a quiet word after the name ("Qwen3 235B A22B  OpenRouter"): the menu is
                 // narrower than the list was, and a name with a word behind it is cut with "…".
+                // The label names the account after the model whenever there are several; it is taken
+                // off the name either way, and stands as the word only where `tagged` asks for it.
                 let account = choice
                     .engine
                     .as_deref()
-                    .filter(|_| tagged)
+                    .filter(|_| several)
                     .and_then(|engine| accounts.iter().find(|account| account.id == engine))
                     .map(|account| account.label.clone());
                 // Only where the label names it after the model: an account that picks its model itself is
@@ -3242,7 +3244,7 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
                 };
                 let mut item = MenuItem::new(Icon::Check, name, Message::PickSlot(AiSlot::Decide, choice));
                 item.mark = None;
-                if let Some(account) = account {
+                if let Some(account) = account.filter(|_| tagged) {
                     item = item.tag(account, false);
                 }
                 item.trail(trail).current(current)
