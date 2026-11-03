@@ -230,7 +230,7 @@ use torro_ipc::inbox::{
     CalendarEvent, CategoryInfo, EventFields, MailByRole, MailFind, MailFound, MailInPile, SaveTargets,
     SavedAttachments,
 };
-use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, PileFilter, SaveTo, UnsubscribeVia};
+use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, PileFilter, SaveTo, UnsubscribeTarget, UnsubscribeVia};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, MailPile, Message as Mail, MessageSummary, Role};
@@ -7221,6 +7221,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let (text, open) = match result {
             Err(err) => {
                 self.unsubscribed.remove(&ask.address);
+                // The overview offers it again too: `forget_unsubscribed` took its button away.
+                if let Some(mail_overview::Loaded { result: Ok(overview), .. }) = self.mail_overview.data.as_mut() {
+                    for held in overview.senders.iter_mut().filter(|held| held.address == ask.address) {
+                        held.unsubscribe.get_or_insert_with(|| UnsubscribeTarget {
+                            account: ask.account.clone(),
+                            id: ask.id.clone(),
+                        });
+                    }
+                }
                 let text = trf("Couldn't unsubscribe: {reason}", &[("reason", &err)]);
                 self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
                 return Task::none();
@@ -15340,7 +15349,30 @@ mod tests {
             assert!(hint.undo.is_none(), "nothing takes it back");
             hint.text.clone()
         };
+        // The overview's button goes while the core works and comes back after a failure.
+        let mut overview = mail_overview::demo(app.now.date_naive(), torro_ipc::StatsRange::Month, false, &[]);
+        overview.senders = vec![torro_ipc::mail::OverviewSender {
+            name: Some("Shop".into()),
+            address: ask.address.clone(),
+            count: 3,
+            opened: 0,
+            category: None,
+            latest: app.messages[0].clone(),
+            unsubscribe: Some(UnsubscribeTarget { account: ask.account.clone(), id: ask.id.clone() }),
+        }];
+        app.mail_overview.data = Some(mail_overview::Loaded {
+            key: mail_overview::Key { account: None, range: torro_ipc::StatsRange::Month },
+            at: Instant::now(),
+            result: Ok(overview),
+        });
+        app.forget_unsubscribed();
+        let offered = |app: &App<DemoSource>| match &app.mail_overview.data {
+            Some(mail_overview::Loaded { result: Ok(overview), .. }) => overview.senders[0].unsubscribe.is_some(),
+            _ => false,
+        };
+        assert!(!offered(&app), "not while the core works");
         let failed = hint_after(&mut app, Err("The sender's server did not take it.".into()));
+        assert!(offered(&app), "a failure offers it in the overview again");
         assert_eq!(
             failed,
             trf("Couldn't unsubscribe: {reason}", &[("reason", &"The sender's server did not take it.")])
