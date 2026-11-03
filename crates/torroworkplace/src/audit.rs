@@ -381,6 +381,11 @@ pub fn ids(request: &Request) -> Vec<String> {
                 .flatten()
                 .collect()
         }
+        // Unsubscribing (issue #416): the account and the mail hashed as for sending; never the
+        // sender, the address or the page.
+        Request::Unsubscribe { account: name, id: message } => {
+            vec![account(name), format!("message:{}", hashed(message))]
+        }
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![random("rule", rule)],
         // Mail (security rule 3 of task M2.1): never the address signed in with, nor a search, a
@@ -1084,6 +1089,10 @@ pub(crate) mod tests {
             logged[0].clone(),
         ];
         assert_eq!(super::ids(&answer), expected);
+        // Issue #416: unsubscribing logs the account and the mail hashed, nothing else.
+        let unsubscribe = Request::Unsubscribe { account: "mail:anna@example.org".into(), id: "m:0a1b2c3d".into() };
+        let expected = vec!["account:mail:anna@example.org".to_string(), format!("message:{}", hashed("m:0a1b2c3d"))];
+        assert_eq!(super::ids(&unsubscribe), expected);
     }
 
     /// Task E8.7a: a task made of a mail logs its list only, opening an app with a target the app

@@ -17,6 +17,8 @@
 //!   E4.1).
 //! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
 //! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3).
+//! - [`unsubscribe`]: unsubscribing from a mailing list by the `List-Unsubscribe` header of a mail
+//!   (`mail.unsubscribe`, issue #416).
 //! - [`save`]: saving attachments to Downloads, a chosen place or a save target, and the save
 //!   targets themselves in `<data>/mail/save-targets.json` (task M12.3, issue #290).
 //! - [`filters`]: mail filters, a saved search with what to do with the mail it finds in the inbox,
@@ -60,6 +62,7 @@ pub mod send;
 pub mod service;
 pub mod store;
 pub mod sync;
+pub mod unsubscribe;
 pub mod write;
 
 /// Fetched attachments are deleted after this long (task M2.5).

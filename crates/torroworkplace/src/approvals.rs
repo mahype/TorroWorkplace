@@ -474,6 +474,29 @@ pub struct MailFacts {
     /// For `mail.respond_to_invitation` (task E8.3b): the organizer's address the answer goes to,
     /// as the invitation read from the server names it.
     pub organizer: Option<String>,
+    /// For `mail.unsubscribe` (issue #416): the sender and the way, as the store and the header
+    /// read from the server have them.
+    pub unsubscribe: Option<UnsubscribeFacts>,
+}
+
+/// What `mail.unsubscribe` would do, for [`MailFacts::unsubscribe`] (issue #416).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnsubscribeFacts {
+    /// The mail's sender as the store holds it: `Name <address>`, or the address.
+    pub sender: String,
+    pub way: UnsubscribeWay,
+    /// The host of a one click, the address of a mail, the page of the web.
+    pub target: String,
+    /// The subject of the unsubscribe mail; `None` for the other ways.
+    pub subject: Option<String>,
+}
+
+/// The way of [`UnsubscribeFacts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsubscribeWay {
+    OneClick,
+    Mail,
+    Web,
 }
 
 /// A draft as the core stores it, for [`MailFacts::draft`]: what the person must see before it
@@ -1738,6 +1761,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::RespondToInvitation { account, answer, collection, .. } => {
             invitation_answered(*answer, account, collection.as_deref(), facts, today)
         }
+        Request::Unsubscribe { account, .. } => unsubscribed(account, facts),
         Request::SendDraft { .. } => match facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) {
             Some(draft) => {
                 let account = facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or_default();
@@ -2227,6 +2251,37 @@ fn reminders_changed(value: &serde_json::Value, facts: &Facts) -> String {
         }
     }
     parts.join(", ")
+}
+
+/// The summary of `mail.unsubscribe` (issue #416): the sender, the account and the way with its
+/// address, all as the core read them; "an unknown mailing list" without them.
+fn unsubscribed(account: &str, facts: &Facts) -> String {
+    let Some(mail) = &facts.mail else { return tr("Unsubscribe from an unknown mailing list").to_string() };
+    let Some(unsubscribe) = &mail.unsubscribe else {
+        return tr("Unsubscribe from an unknown mailing list").to_string();
+    };
+    let account = quote(mail.account.as_deref().unwrap_or(account));
+    let sender = quote(&unsubscribe.sender);
+    let target = quote(&unsubscribe.target);
+    match unsubscribe.way {
+        UnsubscribeWay::OneClick => trf(
+            "Unsubscribe {account} from {sender}: one click at {target}",
+            &[("account", &account), ("sender", &sender), ("target", &target)],
+        ),
+        UnsubscribeWay::Mail => trf(
+            "Unsubscribe {account} from {sender}: send a mail to {target} with the subject {subject}",
+            &[
+                ("account", &account),
+                ("sender", &sender),
+                ("target", &target),
+                ("subject", &subject(unsubscribe.subject.as_deref().unwrap_or_default())),
+            ],
+        ),
+        UnsubscribeWay::Web => trf(
+            "Unsubscribe {account} from {sender}: nothing is sent, only the address {target} is given",
+            &[("account", &account), ("sender", &sender), ("target", &target)],
+        ),
+    }
 }
 
 /// What answering an invitation would do, in words (task E8.3b): `Accept the invitation "Planning"
@@ -4846,6 +4901,51 @@ pub(crate) mod tests {
         assert_eq!(unknown, tr("Answer an unknown invitation"));
     }
 
+    /// Issue #416: unsubscribing names the account, the sender and the way with its address as the
+    /// core read them, for each of the three ways; never what the client claims.
+    #[test]
+    fn unsubscribing_names_the_sender_and_the_way() {
+        let request = Request::Unsubscribe { account: "mail:anna@example.org".into(), id: "m:1".into() };
+        let known = |way, target: &str, subject: Option<&str>| Facts {
+            mail: Some(MailFacts {
+                account: Some("anna@example.org".into()),
+                count: 1,
+                unsubscribe: Some(UnsubscribeFacts {
+                    sender: "Shop <news@shop.example>".into(),
+                    way,
+                    target: target.into(),
+                    subject: subject.map(str::to_string),
+                }),
+                ..MailFacts::default()
+            }),
+            ..Facts::default()
+        };
+        let base = [("account", quote("anna@example.org")), ("sender", quote("Shop <news@shop.example>"))];
+        let filled = |text: &'static str, target: &str, extra: Option<String>| {
+            let mut args: Vec<(&str, String)> = base.to_vec();
+            args.push(("target", quote(target)));
+            if let Some(extra) = extra {
+                args.push(("subject", extra));
+            }
+            let args: Vec<(&str, &dyn std::fmt::Display)> =
+                args.iter().map(|(key, value)| (*key, value as &dyn std::fmt::Display)).collect();
+            trf(text, &args)
+        };
+        let one_click = summary(&request, &known(UnsubscribeWay::OneClick, "shop.example", None));
+        assert_eq!(
+            one_click,
+            filled("Unsubscribe {account} from {sender}: one click at {target}", "shop.example", None)
+        );
+        let mail = summary(&request, &known(UnsubscribeWay::Mail, "off@shop.example", Some("stop")));
+        let text = "Unsubscribe {account} from {sender}: send a mail to {target} with the subject {subject}";
+        assert_eq!(mail, filled(text, "off@shop.example", Some(subject("stop"))));
+        assert!(mail.contains("off@shop.example") && mail.contains("stop"), "{mail}");
+        let web = summary(&request, &known(UnsubscribeWay::Web, "https://shop.example/u", None));
+        let text = "Unsubscribe {account} from {sender}: nothing is sent, only the address {target} is given";
+        assert_eq!(web, filled(text, "https://shop.example/u", None));
+        assert_eq!(summary(&request, &Facts::default()), tr("Unsubscribe from an unknown mailing list"));
+    }
+
     /// `apps.open_app` by window class (task E8.1): the summary names the window as the suite does.
     #[test]
     fn opening_an_app_names_it_as_the_suite_does() {
@@ -5159,6 +5259,7 @@ pub(crate) mod tests {
                 folder: folder.map(str::to_string),
                 draft: None,
                 organizer: None,
+                unsubscribe: None,
             }),
             ..Facts::default()
         };

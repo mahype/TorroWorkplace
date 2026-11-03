@@ -50,6 +50,8 @@ pub struct CameIn {
     pub message_id: Option<String>,
     /// It lies in the trash folder.
     pub trash: bool,
+    /// It carries `List-Unsubscribe:` (issue #416).
+    pub list_unsubscribe: bool,
 }
 
 /// One message of the inbox folder, as [`MailStore::inbox_rows`] reads it.
@@ -91,6 +93,9 @@ pub struct SenderCount {
     pub category: Option<Category>,
     /// The newest mail outside the trash; the newest of all when every one lies there.
     pub latest: Latest,
+    /// The newest mail outside the trash that carries `List-Unsubscribe` and is not sorted as
+    /// phishing, for `mail.unsubscribe` (issue #416); `None` without one.
+    pub unsubscribe: Option<Latest>,
 }
 
 impl SenderCount {
@@ -103,6 +108,9 @@ impl SenderCount {
             opened: self.opened,
             category: self.category,
             latest,
+            unsubscribe: self
+                .unsubscribe
+                .map(|target| torro_ipc::mail::UnsubscribeTarget { account: target.account, id: target.id }),
         }
     }
 }
@@ -217,6 +225,9 @@ struct Message<'a> {
     copy: (&'a str, &'a str),
     /// Every copy lies in the trash.
     trash: bool,
+    /// A copy outside the trash that carries `List-Unsubscribe` and is not sorted as phishing
+    /// ([`unsubscribable`], issue #416).
+    unsubscribe: Option<(&'a str, &'a str)>,
 }
 
 /// What came in on the days `from` to `until`, every message once.
@@ -245,6 +256,9 @@ fn came_in<'a>(
                     message.copy = (account.account.as_str(), row.id.as_str());
                     message.trash = false;
                 }
+                if message.unsubscribe.is_none() {
+                    message.unsubscribe = unsubscribable(account, row);
+                }
                 continue;
             }
             if let Some(id) = message_id(row.message_id.as_ref()) {
@@ -258,10 +272,19 @@ fn came_in<'a>(
                 category: row.category,
                 copy: (account.account.as_str(), row.id.as_str()),
                 trash: row.trash,
+                unsubscribe: unsubscribable(account, row),
             });
         }
     }
     messages
+}
+
+/// `row` of `account` as the mail to unsubscribe by: outside the trash with `List-Unsubscribe`, not
+/// sorted as phishing – that copy's own category, as the core checks the copy it is given
+/// (`crate::mail::unsubscribe::offers_unsubscribe`).
+fn unsubscribable<'a>(account: &'a AccountRows, row: &'a CameIn) -> Option<(&'a str, &'a str)> {
+    let phishing = row.category == Some(Category::Phishing);
+    (row.list_unsubscribe && !row.trash && !phishing).then_some((account.account.as_str(), row.id.as_str()))
 }
 
 /// A sender while counting.
@@ -274,6 +297,8 @@ struct Tally<'a> {
     newest: Option<&'a Message<'a>>,
     /// The newest mail outside the trash.
     kept: Option<&'a Message<'a>>,
+    /// The newest mail to unsubscribe by ([`Message::unsubscribe`]).
+    unsubscribe: Option<&'a Message<'a>>,
 }
 
 /// The newer of `held` and `message`; on the same second the larger id, so the answer does not
@@ -303,6 +328,9 @@ fn senders(messages: &[Message<'_>]) -> Vec<SenderCount> {
         if !message.trash {
             tally.kept = Some(newer(tally.kept, message));
         }
+        if message.unsubscribe.is_some() {
+            tally.unsubscribe = Some(newer(tally.unsubscribe, message));
+        }
     }
     let mut senders: Vec<SenderCount> = tallies
         .into_iter()
@@ -323,6 +351,10 @@ fn senders(messages: &[Message<'_>]) -> Vec<SenderCount> {
                 opened: tally.opened,
                 category,
                 latest: Latest { account: latest.copy.0.to_string(), id: latest.copy.1.to_string() },
+                unsubscribe: tally
+                    .unsubscribe
+                    .and_then(|message| message.unsubscribe)
+                    .map(|(account, id)| Latest { account: account.to_string(), id: id.to_string() }),
             })
         })
         .collect();
@@ -417,6 +449,7 @@ mod tests {
             category,
             message_id: Some(format!("<{id}@example.org>")),
             trash: false,
+            list_unsubscribe: false,
         }
     }
 
@@ -553,6 +586,52 @@ mod tests {
         assert_eq!(latest("a@x.org"), Some(Latest { account: ANNA.into(), id: "kept".into() }));
         assert_eq!(latest("b@x.org"), Some(Latest { account: ANNA.into(), id: "only".into() }));
         assert_eq!(latest("c@x.org"), Some(Latest { account: BERND.into(), id: "twice-kept".into() }));
+    }
+
+    /// Issue #416: a sender's mail to unsubscribe by is the newest outside the trash with the header,
+    /// never one sorted as phishing; a sender without one has none.
+    #[test]
+    fn the_mail_to_unsubscribe_by_has_the_header_and_lies_outside_the_trash() {
+        let mut older = row("older", at(3, 9, 0), "news@shop.example", Some(Category::Newsletter));
+        older.list_unsubscribe = true;
+        let mut newer_one = row("newer", at(1, 9, 0), "news@shop.example", Some(Category::Newsletter));
+        newer_one.list_unsubscribe = true;
+        let mut thrown = row("thrown", at(0, 9, 0), "news@shop.example", Some(Category::Newsletter));
+        thrown.list_unsubscribe = true;
+        thrown.trash = true;
+        // The newest mail of the sender has no header: the one before it stands.
+        let plain = row("plain", at(0, 10, 0), "news@shop.example", Some(Category::Newsletter));
+        let mut phishing = row("fake", at(0, 9, 0), "bank@fake.example", Some(Category::Phishing));
+        phishing.list_unsubscribe = true;
+        let person = row("hello", at(0, 9, 0), "anna@x.org", None);
+        let accounts = [rows(ANNA, vec![older, newer_one, thrown, plain, phishing, person])];
+        let found = counted(&accounts, StatsRange::Week);
+        let target = |address: &str| {
+            found.senders.iter().find(|sender| sender.address == address).and_then(|sender| sender.unsubscribe.clone())
+        };
+        assert_eq!(target("news@shop.example"), Some(Latest { account: ANNA.into(), id: "newer".into() }));
+        assert_eq!(target("bank@fake.example"), None, "never by a mail sorted as phishing");
+        assert_eq!(target("anna@x.org"), None);
+        // The same mail in two accounts: the copy sorted as phishing is never the one to unsubscribe by.
+        let mut kept = row("both", at(0, 8, 0), "club@x.org", Some(Category::Newsletter));
+        kept.list_unsubscribe = true;
+        let mut forged = kept.clone();
+        forged.id = "both-fake".into();
+        forged.category = Some(Category::Phishing);
+        let twice = [rows(ANNA, vec![forged]), rows(BERND, vec![kept])];
+        let counted_twice = counted(&twice, StatsRange::Week);
+        let club = counted_twice.senders.iter().find(|sender| sender.address == "club@x.org").expect("club");
+        assert_eq!(club.unsubscribe, Some(Latest { account: BERND.into(), id: "both".into() }));
+        let sender = found.senders.iter().find(|sender| sender.address == "news@shop.example").cloned().expect("one");
+        let summary: MessageSummary =
+            serde_json::from_value(serde_json::json!({"id": "m:1", "account": ANNA, "folder": "f:1",
+                "thread_id": "t:1", "date": "2026-10-13T09:00:00Z"}))
+            .expect("a summary");
+        let answered = sender.with(summary);
+        assert_eq!(
+            answered.unsubscribe,
+            Some(torro_ipc::mail::UnsubscribeTarget { account: ANNA.into(), id: "newer".into() })
+        );
     }
 
     /// Groups come from the catalogue as it is now; categories go the most first with what was opened.

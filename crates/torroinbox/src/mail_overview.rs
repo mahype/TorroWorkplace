@@ -33,10 +33,12 @@ use torro_gui::widgets::{self, Anchor, ChartColumn, ChartSeries, PageAction, Row
 use torro_gui::{datetime, layout, style, typo};
 use torro_ipc::StatsRange;
 use torro_ipc::inbox::CategoryInfo;
-use torro_ipc::mail::{MailOverview, OverviewCategory, OverviewDay, OverviewGroupCount, OverviewInbox, OverviewSender};
+use torro_ipc::mail::{
+    MailOverview, OverviewCategory, OverviewDay, OverviewGroupCount, OverviewInbox, OverviewSender, UnsubscribeTarget,
+};
 use torro_mail::{Category, CategoryGroup, MessageSummary};
 
-use crate::app::Message;
+use crate::app::{Message, UnsubscribeAsk};
 #[cfg(doc)]
 use crate::mail::MailSource;
 use crate::{insights, list, mail};
@@ -788,9 +790,12 @@ fn senders_card<'a>(
     } else {
         responsive(move |room| {
             let wide = room.width >= size::form_max();
+            // Words or icons once for the whole card, by the widest bar a row can have, so the bars do
+            // not switch between rows; measured at the row's real width (the panel's is 400).
+            let words = widgets::row_actions_words(&widest_actions(), room.width);
             let lines = senders.iter().map(|sender| {
                 let muting = muting.as_deref() == Some(sender.address.as_str());
-                sender_line(sender, &catalogue, days, wide, muting, &mute_at)
+                sender_line(sender, &catalogue, days, (wide, words), muting, &mute_at)
             });
             column(lines).spacing(space::xs()).into()
         })
@@ -801,12 +806,14 @@ fn senders_card<'a>(
 }
 
 /// One sender: avatar, name, address and usual category; "Opened x of y" with its bar and "Rarely
-/// opened" (wide only); how many and how many a week; on hover the bar with "Show mails" and "Mute".
+/// opened" (wide only); how many and how many a week; on hover the bar with "Show mails",
+/// "Unsubscribe…" (issue #416, only for a sender with a mail that offers it) and "Mute", with words
+/// as the card decided (`words`).
 fn sender_line<'a>(
     sender: &OverviewSender,
     catalogue: &[CategoryInfo],
     days: usize,
-    wide: bool,
+    (wide, words): (bool, bool),
     muting: bool,
     mute_at: &Anchor,
 ) -> Element<'a, Message> {
@@ -859,13 +866,40 @@ fn sender_line<'a>(
     .align_x(Alignment::End);
     line = line.push(number);
     let row_ = container(line).width(Fill).padding(Padding::new(space::xs()).left(space::s()).right(space::s()));
-    let mute = RowAction::new(Icon::BellOff, tr("Mute"), "", Message::MailOverviewMute(sender.address.clone()));
-    let actions = vec![
-        RowAction::new(Icon::Search, tr("Show mails"), "", Message::MailOverviewSender(sender.address.clone())),
-        if muting { mute.at(mute_at) } else { mute },
-    ];
-    let words = widgets::row_actions_words(&actions, size::form_max());
+    let actions = sender_actions(&sender.address, sender.unsubscribe.as_ref(), &name, muting, mute_at);
     widgets::row_actions(row_, actions, muting, words)
+}
+
+/// The bar of a sender's row: "Show mails", "Unsubscribe…" (issue #416, only with a mail to
+/// unsubscribe by, asked about under the sender's `name`) and "Mute", whose menu hangs at its button
+/// while `muting`.
+fn sender_actions<'a>(
+    address: &str,
+    unsubscribe: Option<&UnsubscribeTarget>,
+    name: &str,
+    muting: bool,
+    mute_at: &Anchor,
+) -> Vec<RowAction<'a, Message>> {
+    let mute = RowAction::new(Icon::BellOff, tr("Mute"), "", Message::MailOverviewMute(address.to_owned()));
+    let mut actions =
+        vec![RowAction::new(Icon::Search, tr("Show mails"), "", Message::MailOverviewSender(address.to_owned()))];
+    if let Some(target) = unsubscribe {
+        let ask = UnsubscribeAsk {
+            account: target.account.clone(),
+            id: target.id.clone(),
+            sender: name.to_owned(),
+            address: address.to_owned(),
+        };
+        actions.push(RowAction::new(Icon::MailX, tr("Unsubscribe…"), "", Message::AskUnsubscribe(ask)));
+    }
+    actions.push(if muting { mute.at(mute_at) } else { mute });
+    actions
+}
+
+/// The widest bar a sender's row can have: with "Unsubscribe…", for [`widgets::row_actions_words`].
+fn widest_actions<'a>() -> Vec<RowAction<'a, Message>> {
+    let target = UnsubscribeTarget { account: String::new(), id: String::new() };
+    sender_actions("", Some(&target), "", false, &Anchor::new())
 }
 
 /// "What is in your inbox": the inbox by main category as a strip, by age, and at most one
@@ -981,6 +1015,11 @@ pub fn demo(today: NaiveDate, range: StatsRange, one: bool, inbox: &[MessageSumm
             opened: (count * opened / per_week.max(&1)).min(count),
             category: mail.category.map(|held| held.category),
             latest: mail.clone(),
+            // Issue #416: newsletters and promotions offer unsubscribing, by their newest mail.
+            unsubscribe: mail
+                .category
+                .is_some_and(|held| matches!(held.category, Category::Newsletter | Category::Promotion))
+                .then(|| UnsubscribeTarget { account: mail.account.clone(), id: mail.id.clone() }),
         });
     }
     let mut held: Vec<OverviewInbox> = Vec::new();
@@ -1111,6 +1150,33 @@ mod tests {
         assert_eq!(people.note, trf("{share} of what came in", &[("share", &insights::percent(14, 91))]));
         assert_eq!(ads.value, insights::percent(70, 91));
         assert_eq!(ads.note, trf("{n} of {total} mails", &[("n", &"70"), ("total", &"91")]));
+    }
+
+    /// Issue #416: a sender's bar offers "Unsubscribe" between "Show mails" and "Mute" only with a
+    /// mail to unsubscribe by, which it asks about under the sender's name; the demo's newsletters
+    /// have one, people do not.
+    #[test]
+    fn unsubscribe_stands_only_for_a_sender_with_a_mail_to_unsubscribe_by() {
+        let today = day(30);
+        let source = torro_inbox::demo::DemoSource::new(chrono::Utc::now());
+        let inbox = source.by_role(torro_mail::Role::Inbox, None, None, torro_mail::Order::NewestFirst);
+        let demo = demo(today, StatsRange::Month, false, &inbox);
+        let words = |sender: &OverviewSender| {
+            sender_actions(&sender.address, sender.unsubscribe.as_ref(), "Shop", false, &Anchor::new())
+                .iter()
+                .map(|action| action.label.to_string())
+                .collect::<Vec<_>>()
+        };
+        let with = demo.senders.iter().find(|sender| sender.unsubscribe.is_some()).expect("a newsletter");
+        assert_eq!(words(with), [tr("Show mails"), tr("Unsubscribe…"), tr("Mute")]);
+        assert_eq!(widest_actions().len(), 3, "the card measures its bars with Unsubscribe…");
+        let actions = sender_actions(&with.address, with.unsubscribe.as_ref(), "Shop", false, &Anchor::new());
+        let Message::AskUnsubscribe(ask) = &actions[1].on_press else { panic!("it asks") };
+        let target = with.unsubscribe.clone().expect("a target");
+        assert_eq!((&ask.account, &ask.id, ask.sender.as_str()), (&target.account, &target.id, "Shop"));
+        assert_eq!(ask.address, with.address);
+        let without = demo.senders.iter().find(|sender| sender.unsubscribe.is_none()).expect("a person");
+        assert_eq!(words(without), [tr("Show mails"), tr("Mute")]);
     }
 
     #[test]

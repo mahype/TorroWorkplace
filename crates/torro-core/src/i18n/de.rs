@@ -7117,4 +7117,36 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Texts waiting for the search index", "Texte warten auf den Suchindex"),
     ("Up to date", "Aktuell"),
     ("What the sync does shows here once it begins.", "Was die Synchronisierung tut, steht hier, sobald sie beginnt."),
+    // Unsubscribing from mailing lists (issue #416): mail window, core and approvals
+    ("Couldn't unsubscribe: {reason}", "Abbestellen hat nicht geklappt: {reason}"),
+    ("Finish unsubscribing on the sender's page", "Schließe das Abbestellen auf der Seite des Absenders ab"),
+    (
+        "The sender's server did not take the request to unsubscribe.",
+        "Der Server des Absenders hat die Abbestellung nicht angenommen.",
+    ),
+    (
+        "The unsubscribe mail may not have gone out; check your sent mail",
+        "Die Abbestell-Mail ist vielleicht nicht rausgegangen; sieh in deinen gesendeten Mails nach",
+    ),
+    ("This mail offers no way to unsubscribe.", "Diese Mail bietet keinen Weg zum Abbestellen."),
+    (
+        "Torro asks the sender to stop sending these mails. This can't be undone here.",
+        "Torro bittet den Absender, diese Mails nicht mehr zu schicken. Das lässt sich hier nicht rückgängig machen.",
+    ),
+    (
+        "Unsubscribe {account} from {sender}: nothing is sent, only the address {target} is given",
+        "{account} bei {sender} abbestellen: Es wird nichts gesendet, nur die Adresse {target} genannt",
+    ),
+    (
+        "Unsubscribe {account} from {sender}: one click at {target}",
+        "{account} bei {sender} abbestellen: ein Klick bei {target}",
+    ),
+    (
+        "Unsubscribe {account} from {sender}: send a mail to {target} with the subject {subject}",
+        "{account} bei {sender} abbestellen: eine Mail an {target} mit dem Betreff {subject} senden",
+    ),
+    ("Unsubscribe from an unknown mailing list", "Eine unbekannte Mailingliste abbestellen"),
+    ("Unsubscribe from {sender}?", "{sender} abbestellen?"),
+    ("Unsubscribe mail sent to {sender}", "Abbestell-Mail an {sender} gesendet"),
+    ("Unsubscribed from {sender}", "{sender} abbestellt"),
 ];

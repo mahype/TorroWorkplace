@@ -36,7 +36,8 @@
 //! assistant at all (`tools::callable`). The event made from an inbox entry (task E8.5b) is
 //! withheld like its task: its title and description can be a mail's subject and sender. The answer
 //! to an invitation (`mail.respond_to_invitation`, task E8.3b) is a `mail.*` answer with the event
-//! made of the invitation in it, so it is withheld as well; only its errors go through. Quiet
+//! made of the invitation in it, so it is withheld as well; only its errors go through. So is what
+//! unsubscribing answers (`mail.unsubscribe`, issue #416): the list's address or page from the mail. Quiet
 //! (`inbox.get_quiet`) names a calendar event at most, no mail.
 //!
 //! The assistant's memory (task C.10): a note a model on this computer kept after the conversation
@@ -359,6 +360,21 @@ mod tests {
         // Errors, and what the assistant wrote itself, still reach it.
         let error = Response::Error { code: "not-found".into(), message: "no such message".into() };
         assert_eq!(for_model(&search, &error, Place::Remote).value["result"], "error");
+    }
+
+    #[test]
+    fn an_unsubscribe_goes_to_local_models_only() {
+        // Issue #416: the answer names the list's address or page, taken from the mail; a model
+        // elsewhere reads that something was withheld, or the error.
+        let request = Request::Unsubscribe { account: "mail:anna@example.org".into(), id: "m:1".into() };
+        let via = torro_ipc::mail::UnsubscribeVia::Web { url: "https://shop.example/u?anna@example.org".into() };
+        let answered = Response::Unsubscribed { via };
+        assert!(!MAIL_ANSWERS_ALLOWED.contains(&"unsubscribed"));
+        assert!(!for_model(&request, &answered, Place::Local).withheld);
+        let remote = for_model(&request, &answered, Place::Remote);
+        assert_eq!((remote.withheld, remote.value.clone()), (true, json!({ "withheld": WITHHELD })));
+        let error = Response::Error { code: "unsupported".into(), message: "no way to unsubscribe".into() };
+        assert_eq!(for_model(&request, &error, Place::Remote).value["result"], "error");
     }
 
     #[test]

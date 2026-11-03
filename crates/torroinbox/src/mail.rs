@@ -102,7 +102,7 @@ use torro_ipc::inbox::{
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
     AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MailOverview, MoveRole, MoveTarget, PileFilter,
-    PlannedPlace, SaveTo, SavedFile,
+    PlannedPlace, SaveTo, SavedFile, UnsubscribeVia,
 };
 use torro_ipc::{Request, Response, StatsRange};
 use torro_mail::{
@@ -110,7 +110,7 @@ use torro_mail::{
     Message as Mail, MessageSummary, Order, Role,
 };
 
-use crate::app::{INBOX, Message, View};
+use crate::app::{INBOX, Message, UnsubscribeAsk, View};
 use crate::compose::{self, ComposeError, ComposeSource};
 use crate::detail;
 use crate::keys::Command as Key;
@@ -282,6 +282,18 @@ pub trait MailSource: Send + Sync {
         answer: InvitationAnswer,
         collection: Option<String>,
     ) -> impl Future<Output = Result<Delivery, InboxError>> + Send;
+
+    /// `mail.unsubscribe` (issue #416, "Unsubscribe…"): unsubscribes from the list the message `id`
+    /// of the mail account `account` came from, by its `List-Unsubscribe` header as the core reads
+    /// it. Answers the way it took ([`UnsubscribeVia`]); for `Web` nothing was sent and the window
+    /// opens the page. Errors as the core maps them: [`InboxError::NotFound`],
+    /// [`InboxError::Unsupported`] for a mail without a way, [`InboxError::Other`] with the core's
+    /// words for a refused one click or a failed send.
+    fn unsubscribe(
+        &self,
+        account: String,
+        id: String,
+    ) -> impl Future<Output = Result<UnsubscribeVia, InboxError>> + Send;
 
     /// `calendar.list_events` (task E8.3c): the events of the shown calendars that overlap
     /// `[start, end)`, in instants ([`CalendarEvent`]), for the line on what an invitation overlaps
@@ -610,6 +622,10 @@ impl MailSource for InboxClient {
         InboxClient::respond_to_invitation(self, account, id, answer, collection).await
     }
 
+    async fn unsubscribe(&self, account: String, id: String) -> Result<UnsubscribeVia, InboxError> {
+        InboxClient::unsubscribe(self, account, id).await
+    }
+
     async fn list_events(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
         InboxClient::list_events(self, start, end).await
     }
@@ -857,6 +873,22 @@ impl MailSource for DemoSource {
         }
     }
 
+    /// The demo sends nothing: a mail of its own that offers unsubscribing – or that its overview
+    /// offers it for, a newsletter or promotion ([`crate::mail_overview::demo`]) – is left by one click
+    /// at its sender's domain, any other is [`InboxError::Unsupported`].
+    async fn unsubscribe(&self, _account: String, id: String) -> Result<UnsubscribeVia, InboxError> {
+        let mail = DemoSource::get_mail(self, &id)?;
+        let listed = mail.summary.category.as_ref().is_some_and(|held| {
+            matches!(held.category, torro_mail::Category::Newsletter | torro_mail::Category::Promotion)
+        });
+        if !mail.traits.list_unsubscribe && !listed {
+            return Err(InboxError::Unsupported);
+        }
+        let from = mail.summary.from.map(|from| from.address).unwrap_or_default();
+        let host = from.rsplit_once('@').map_or("example.org", |(_, domain)| domain).to_string();
+        Ok(UnsubscribeVia::OneClick { host })
+    }
+
     /// The demo's calendar ([`demo_events`]), as far as it overlaps `[start, end)`.
     async fn list_events(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
         let lunch = DemoSource::get_mail(self, "m:w4").ok().and_then(|mail| demo_invite("m:w4", mail.summary.date));
@@ -983,6 +1015,10 @@ impl MailSource for crate::empty::EmptySource {
         _answer: InvitationAnswer,
         _collection: Option<String>,
     ) -> Result<Delivery, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn unsubscribe(&self, _account: String, _id: String) -> Result<UnsubscribeVia, InboxError> {
         Err(InboxError::NotFound)
     }
 
@@ -2400,6 +2436,9 @@ pub struct Reading<'a> {
     /// The attachment whose menu is open (its place among the mail's attachments that are not
     /// `inline`, [`files_of`]): its triangle carries the menu's anchor.
     pub file_menu: Option<usize>,
+    /// The senders (addresses in lower case) the window unsubscribed from while it runs (issue #416):
+    /// their mail offers "Unsubscribe…" no more.
+    pub unsubscribed: &'a HashSet<String>,
 }
 
 /// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
@@ -2989,7 +3028,7 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    Close (Escape, `CloseDetail`).
 ///
 /// A group without items is left out (Mark and More while the mail loads, Mute for an entry that
-/// cannot be muted). Every group has its fixed icon, as design D draws it (finding 8): Reply, the
+/// cannot be muted and whose mail offers no unsubscribing). Every group has its fixed icon, as design D draws it (finding 8): Reply, the
 /// check of File, Torro's task, Mark's flag – in the attention colour while the mail is flagged –,
 /// the bell and "…". A click on it sends its first item; Delete is marked `danger` and never that
 /// click – a File whose first item would be Delete opens its card instead. Each group registers its icon in `anchors.rail`, each item that opens a
@@ -3162,18 +3201,47 @@ fn mark_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
 }
 
 /// The items of the rail's group "Mute" ([`action_groups`]): the bell of the entry where it can be
-/// muted, else nothing; the bell of a folder's message on its own traits (issue #123).
+/// muted, else none; the bell of a folder's message on its own traits (issue #123); then
+/// "Unsubscribe…" where the mail offers it ([`unsubscribe_ask`], issue #416), also for an entry that
+/// cannot be muted.
 fn mute_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
     let bell = match entry {
-        Some(ReaderEntry { item, hide: true }) => Message::AskHide(item.id.clone()),
-        Some(ReaderEntry { hide: false, .. }) => return Vec::new(),
-        None => Message::AskMuteMail(reading.id.to_owned()),
+        Some(ReaderEntry { item, hide: true }) => Some(Message::AskHide(item.id.clone())),
+        Some(ReaderEntry { hide: false, .. }) => None,
+        None => Some(Message::AskMuteMail(reading.id.to_owned())),
     };
-    vec![RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide)]
+    let mut items: Vec<RailItem<'a, Message>> = bell
+        .map(|bell| RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide))
+        .into_iter()
+        .collect();
+    // Issue #416: after the bell. It cannot be taken back, so a click on the group's icon never
+    // sends it (`RailItem::danger`); it asks first anyway.
+    if let Some(ask) = unsubscribe_ask(reading) {
+        items.push(RailItem::new(Icon::MailX, tr("Unsubscribe…"), "", Some(Message::AskUnsubscribe(ask))).danger());
+    }
+    items
+}
+
+/// What "Unsubscribe…" asks about for the mail read (issue #416): only once it is loaded, carries
+/// `List-Unsubscribe`, is not sorted as phishing, has a sender and the window has not unsubscribed
+/// from that sender in this run. The core checks all of it again.
+pub fn unsubscribe_ask(reading: &Reading<'_>) -> Option<UnsubscribeAsk> {
+    let Some(Ok(mail)) = reading.loaded else { return None };
+    let phishing = mail.summary.category.as_ref().is_some_and(|held| held.category == torro_mail::Category::Phishing);
+    if !mail.traits.list_unsubscribe || phishing {
+        return None;
+    }
+    let from = mail.summary.from.as_ref()?;
+    let address = from.address.trim().to_lowercase();
+    if address.is_empty() || reading.unsubscribed.contains(&address) {
+        return None;
+    }
+    let sender = from.name.clone().filter(|name| !name.trim().is_empty()).unwrap_or_else(|| from.address.clone());
+    Some(UnsubscribeAsk { account: mail.summary.account.clone(), id: mail.summary.id.clone(), sender, address })
 }
 
 /// The sender a filter of "Create filter…" (issue #339) is made for: the address of the loaded mail's
@@ -4872,6 +4940,7 @@ mod tests {
         let text = Selectable::new(&mail.as_ref().map(text_of).unwrap_or_default());
         let html = mail.as_ref().ok().and_then(|mail| HtmlMail::new(mail, &demo, true));
         let summary = mail.as_ref().ok().map(|mail| mail.summary.clone());
+        let unsubscribed = HashSet::new();
         let reading = Reading {
             categories: &[],
             id,
@@ -4897,6 +4966,7 @@ mod tests {
             saving: None,
             click: &OPEN,
             file_menu: None,
+            unsubscribed: &unsubscribed,
         };
         check(&reading)
     }
@@ -4941,6 +5011,50 @@ mod tests {
 
     fn strings(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    /// Issue #416: "Unsubscribe…" stands in Mute after the bell, only for a loaded mail with
+    /// `List-Unsubscribe` that is not sorted as phishing and whose sender this run did not leave yet;
+    /// it never is the click on the bell and asks first.
+    #[test]
+    fn unsubscribe_stands_in_mute_only_where_it_can_be_done() {
+        let folders = folders();
+        let anchors = detail::Anchors::default().with_rail();
+        let mute_words = |reading: &Reading<'_>| {
+            let groups = action_groups(reading, None, &folders, true, &anchors);
+            groups
+                .iter()
+                .find(|group| group.label == tr("Mute"))
+                .map(|group| group.items.iter().map(|item| item.label.to_string()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        reading_of("m:p2", MailFormat::Text, true, |reading| {
+            assert_eq!(mute_words(reading), strings(&[tr("Mute…"), tr("Unsubscribe…")]));
+            let groups = action_groups(reading, None, &folders, true, &anchors);
+            let mute = group(&groups, tr("Mute"));
+            assert!(mute.items[1].danger, "never the click on the bell");
+            assert!(matches!(mute.first_press(), Some(Message::AskMuteMail(_))));
+            let Some(Message::AskUnsubscribe(ask)) = sends(&groups, tr("Mute"), tr("Unsubscribe…")) else {
+                panic!("it asks")
+            };
+            assert_eq!(
+                (ask.id.as_str(), ask.sender.as_str(), ask.address.as_str()),
+                ("m:p2", "Shop", "news@shop.example")
+            );
+            let left = HashSet::from(["news@shop.example".to_string()]);
+            assert_eq!(mute_words(&Reading { unsubscribed: &left, ..*reading }), strings(&[tr("Mute…")]));
+            let Some(Ok(mail)) = reading.loaded else { panic!("loaded") };
+            let mut fake = mail.clone();
+            fake.summary.category = Some(MailCategory::by_rule(torro_mail::Category::Phishing));
+            let fake = Ok(fake);
+            assert_eq!(mute_words(&Reading { loaded: Some(&fake), ..*reading }), strings(&[tr("Mute…")]));
+        });
+        reading_of("m:p2", MailFormat::Text, false, |reading| {
+            assert_eq!(mute_words(reading), strings(&[tr("Mute…")]), "not before it is loaded");
+        });
+        reading_of("m:w1", MailFormat::Html, true, |reading| {
+            assert_eq!(mute_words(reading), strings(&[tr("Mute…")]), "no List-Unsubscribe");
+        });
     }
 
     /// Task E14.3: for a mail entry the rail holds Reply, File, Torro, Mark, Mute and More in this
@@ -5737,6 +5851,7 @@ mod tests {
                         Some(message.summary.id.clone()),
                     ))
                     .expect("the demo plans");
+                    let none_left = HashSet::new();
                     let reading = Reading {
                         categories: &[],
                         task,
@@ -5757,6 +5872,7 @@ mod tests {
                         saving: Some(&saving),
                         click: &OPEN,
                         file_menu: Some(0),
+                        unsubscribed: &none_left,
                     };
                     let anchors = detail::Anchors::default();
                     let _ = panel(&reading, Some(&folder), &anchors, Bars::Split);

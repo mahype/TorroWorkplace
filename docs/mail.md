@@ -311,6 +311,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Löschen | Liste, Lesebereich | `mail.delete_messages` · Delete | `mail_delete_messages` |
 | Entwurf senden | Schreibfenster | `mail.send_draft` · Write + Senden-Schalter | `mail_send_draft` (antwortet ggf. `pending`) |
 | Einladung beantworten (E8.3b) | Leser, Karte | `mail.respond_to_invitation` · Write + Nach außen | `mail_respond_to_invitation` (antwortet ggf. `pending`) |
+| Newsletter abbestellen (#416) | Aktionsleiste › Mute › „Unsubscribe…“, Übersicht „Who sends the most“ › „Unsubscribe…“, nur mit `List-Unsubscribe` | `mail.unsubscribe` · Write + Nach außen | `mail_unsubscribe` (antwortet ggf. `pending`; bei `via: web` nur die Adresse) |
 | Freigabe entscheiden | Steuerzentrale › Approvals, Benachrichtigung | `approvals.decide` · Admin | **Never** (Liste Punkt 3) |
 | Agenten-Rechte | Steuerzentrale › MCP (Agenten), › API (Skripte) | `clients.*` · Admin | **Never** (Liste Punkt 2) |
 
