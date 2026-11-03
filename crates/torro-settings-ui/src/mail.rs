@@ -4411,7 +4411,7 @@ mod tests {
         let mut state = categorization::State::default();
         assert!(update(&mut state, Message::Enabled(true), &last).is_empty());
         assert!(categorization::asking_cloud(&state));
-        assert_eq!(update(&mut state, Message::UseCloud, &last), [no_exception(), set_slot(ollama, "clef:cloud")]);
+        assert_eq!(update(&mut state, Message::UseCloud, &last), [set_slot(ollama, "clef:cloud"), no_exception()]);
         // The same for an account in the cloud that picks its model itself ("Automatic").
         let openrouter = "ai:openrouter@openrouter.ai";
         let automatic = torro_core::ai::AiAssignment {
@@ -4432,7 +4432,16 @@ mod tests {
             model: None,
             effort: None,
         };
-        assert_eq!(update(&mut state, Message::UseCloud, &auto), [no_exception(), slot]);
+        assert_eq!(update(&mut state, Message::UseCloud, &auto), [slot, no_exception()]);
+        // A server of one's own picks elsewhere in the core's eyes, also at this computer's address.
+        let own = "ai:openai_compatible@localhost:8080";
+        let mut mine = auto.clone();
+        for info in &mut mine.assignments {
+            info.assignment.engine = Some(own.into());
+        }
+        let mut state = categorization::State::default();
+        assert!(update(&mut state, Message::Enabled(true), &mine).is_empty());
+        assert!(categorization::asking_cloud(&state));
     }
 
     /// Task S.26 (and MW.3): only models turned on are offered for sorting mail – switching it on
@@ -4536,8 +4545,9 @@ mod tests {
         let _ = categorization::view(&Default::default(), &data);
     }
 
-    /// Issue #431: a model row names its account, where it computes and what is known of its size, in
-    /// this order; unknown parts are left out, and a model without any size says only account and place.
+    /// Issue #431: a model row names its account and what is known of its size, in this order; unknown
+    /// parts are left out, and a model without any size says only its account. Where it computes says
+    /// the head of its part (issue #424).
     #[test]
     fn a_model_row_names_account_place_and_size() {
         use torro_core::ai::AiModel;
@@ -4564,11 +4574,7 @@ mod tests {
             ..AiModel::named("qwen3:8b")
         };
         let disk = torro_gui::units::format_bytes(5_225_388_164);
-        let here = tr("On this computer");
-        assert_eq!(
-            categorization::model_facts(&data, ollama, &local),
-            format!("Ollama · {here} · 8.2B · {disk} · Q4_K_M")
-        );
+        assert_eq!(categorization::model_facts(&data, ollama, &local), format!("Ollama · 8.2B · {disk} · Q4_K_M"));
 
         let cloud = AiModel {
             parameters: Some("671B".into()),
@@ -4578,14 +4584,10 @@ mod tests {
             ..AiModel::named("deepseek:cloud")
         };
         let context = crate::parts::context_text(131_072);
-        let elsewhere = tr("Cloud");
-        assert_eq!(
-            categorization::model_facts(&data, ollama, &cloud),
-            format!("Ollama · {elsewhere} · 671B · {context}")
-        );
+        assert_eq!(categorization::model_facts(&data, ollama, &cloud), format!("Ollama · 671B · {context}"));
 
         let plain = AiModel { enabled: true, tools: Some(true), ..AiModel::named("gpt-5-mini") };
-        assert_eq!(categorization::model_facts(&data, openai, &plain), format!("OpenAI · {elsewhere}"));
+        assert_eq!(categorization::model_facts(&data, openai, &plain), "OpenAI");
 
         // The page builds with a note line under the facts, too (a chat model answers in a fixed format).
         let chat = AiModel { tools: Some(true), decision: Some(false), ..cloud };
@@ -4829,10 +4831,10 @@ pub mod categorization {
     struct CloudPick {
         /// Its AI account (`ai:…`).
         engine: String,
-        /// The model; `None` where the account picks it ("Automatic").
-        model: Option<String>,
         /// What the question calls it: the model's name, or the account's.
         name: String,
+        /// What "Use" sends: what the pick or the switch would have sent without the question.
+        requests: Vec<Request>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -4991,15 +4993,19 @@ pub mod categorization {
             // Picking a model switches the sorting on: that is what picking one means. A model in the
             // cloud asks first (issue #424) – choosing it is the consent that mail leaves this
             // computer –, unless it sorts already with that consent.
-            Message::Model(engine, model) => match in_cloud(data, &engine, Some(&model)) {
-                Some(pick) if !consented(data, &engine, &model) => {
-                    state.asking_cloud = Some(pick);
-                    Action::None
+            Message::Model(engine, model) => {
+                let pick = in_cloud(data, &engine, Some(&model)).filter(|_| !consented(data, &engine, &model));
+                let requests = use_model(data, engine, Some(model));
+                match pick {
+                    Some(pick) => {
+                        state.asking_cloud = Some(CloudPick { requests, ..pick });
+                        Action::None
+                    }
+                    None => Action::Send(requests),
                 }
-                _ => use_model(data, engine, Some(model)),
-            },
+            }
             Message::UseCloud => match state.asking_cloud.take() {
-                Some(pick) => use_model(data, pick.engine, pick.model),
+                Some(pick) => Action::Send(pick.requests),
                 None => Action::None,
             },
             Message::CancelCloud => {
@@ -5018,24 +5024,25 @@ pub mod categorization {
     /// stop at the first refused ([`crate::send`]), so a refused take-back sets no slot. For a model in
     /// the cloud the core sets the consent (`decide_mail_to_cloud`) with the slot, for one here it takes
     /// it back.
-    fn use_model<A>(data: &Data, engine: String, model: Option<String>) -> Action<A> {
+    fn use_model(data: &Data, engine: String, model: Option<String>) -> Vec<Request> {
         let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
         let mut requests: Vec<Request> = stored_exception(data).map(|_| no_exception()).into_iter().collect();
         requests.push(set_slot(engine, model, effort));
-        Action::Send(requests)
+        requests
     }
 
     /// The model `id` of `engine` when it computes in the cloud, as the question names it; `None` for one
     /// on this computer. A listed model by what its server says ([`stays_here`]); one the list lacks by
     /// its account alone, so a model at Ollama that is not listed (yet) counts as elsewhere – a copy of a
     /// cloud model may carry no `:cloud` in its name. Naming no model ("Automatic"), by the account's
-    /// seat: an account on this computer picks only models here (review of #325).
+    /// seat as the core weighs it: only an account on this computer (Ollama, LM Studio, Strata) picks
+    /// only models here (review of #325) – a server of one's own counts as elsewhere, also at
+    /// `localhost`. The pick sends nothing yet ([`CloudPick::requests`] is empty).
     fn in_cloud(data: &Data, engine: &str, id: Option<&str>) -> Option<CloudPick> {
-        let pick = |name: String| CloudPick { engine: engine.to_string(), model: id.map(str::to_string), name };
+        let pick = |name: String| CloudPick { engine: engine.to_string(), name, requests: Vec::new() };
         let Some(id) = id else {
-            let seat_here = crate::accounts::ai_provider(engine)
+            let here = crate::accounts::ai_provider(engine)
                 .is_some_and(|provider| provider.seat() == torro_core::ai::Seat::ThisComputer);
-            let here = seat_here || stays_here(engine, &AiModel::named(""));
             return (!here).then(|| pick(account_label(data, engine)));
         };
         let listed = data
@@ -5113,14 +5120,13 @@ pub mod categorization {
     fn switched_on<A>(state: &mut State, data: &Data) -> Action<A> {
         let exception = stored_exception(data);
         let mut requests = Vec::new();
+        let mut cloud = None;
         if data.settings.ai_slots.decide.is_none() {
             if let Some(held) = &exception
                 && let Some(engine) = &held.engine
-                && let Some(pick) = in_cloud(data, engine, held.model.as_deref())
                 && !data.settings.mail_to_cloud_in(AiSlot::Decide)
             {
-                state.asking_cloud = Some(pick);
-                return Action::None;
+                cloud = in_cloud(data, engine, held.model.as_deref());
             }
             let from_exception = exception
                 .as_ref()
@@ -5137,9 +5143,14 @@ pub mod categorization {
             }
         }
         requests.extend(exception.map(|_| no_exception()));
-        match requests.is_empty() {
-            true => Action::None,
-            false => Action::Send(requests),
+        match (requests.is_empty(), cloud) {
+            (true, _) => Action::None,
+            // The same requests, in the same order, once the person says yes.
+            (false, Some(pick)) => {
+                state.asking_cloud = Some(CloudPick { requests, ..pick });
+                Action::None
+            }
+            (false, None) => Action::Send(requests),
         }
     }
 
@@ -5660,10 +5671,18 @@ pub mod categorization {
     }
 
     /// Whether `model` of the AI account `engine` (`ai:<provider>@<host>`) computes on this computer,
-    /// as far as the list tells: what its server says (`AiModel::remote`, Ollama and Strata), else
-    /// by the account – LM Studio, or a server of one's own at an address of this computer. A cloud
-    /// provider says nothing and counts as elsewhere. Only for what is offered; the core judges again.
+    /// as far as the list tells: a provider in the cloud (OpenRouter, OpenAI …) never, whatever a model
+    /// says, as the core judges it (`place_of`; design review of #424); else what its server says
+    /// (`AiModel::remote`, Ollama and Strata), else by the account – LM Studio, or a server of one's own
+    /// at an address of this computer. An unknown provider counts as elsewhere. Only for what is
+    /// offered; the core judges again.
     fn stays_here(engine: &str, model: &AiModel) -> bool {
+        use torro_core::ai::Seat;
+        if crate::accounts::ai_provider(engine)
+            .is_some_and(|provider| !matches!(provider.seat(), Seat::ThisComputer | Seat::OwnServer))
+        {
+            return false;
+        }
         if let Some(remote) = model.remote {
             return !remote;
         }
@@ -5753,11 +5772,20 @@ pub mod categorization {
             off.iter().map(|(engine, name)| off_row(label(engine, name))).collect();
         // The section AI of the same settings (issue #410): a page below, not another window.
         let arrow = crate::parts::chevron::<Message>;
-        let heading = |title: &str| row_frame(typo::text(typo::body_strong(), title.to_owned()), false);
-        // The kinds of model under "On this computer": quieter than the place above them, on the
-        // same axis as the rows.
-        let subheading =
-            |title: &str| row_frame(typo::text(typo::meta(), title.to_owned()).style(theme::text_2), false);
+        // Where the models compute, as the head of a part (design review of #424): a group head of a
+        // list (`row_group`), not a row of its own height, so it does not read as a choice.
+        let head = |text: iced::widget::Text<'a>| -> Element<'a, Message> {
+            let height = torro_gui::theme::size::row_group();
+            iced::widget::container(text)
+                .width(iced::Fill)
+                .center_y(height)
+                .padding([0.0, torro_gui::theme::space::l()])
+                .into()
+        };
+        let heading = |title: &str| head(typo::text(typo::body_strong(), title.to_owned()));
+        // The kinds of model under "On this computer": quieter than the place above them, as the
+        // titles of a menu's sections, on the same axis as the rows.
+        let subheading = |title: &str| head(typo::text(typo::caption(), title.to_owned()).style(theme::text_3));
         if fast.is_empty() && other.is_empty() && cloud.is_empty() {
             if off.is_none() {
                 let detail = match deciders(data).is_empty() {
@@ -5830,15 +5858,11 @@ pub mod categorization {
         rows
     }
 
-    /// What a model row says under its name (issue #431): its account, where it computes ("On this
-    /// computer" or "Cloud", as [`stays_here`] judges) and how big it is ([`size_facts`]), joined with
-    /// " · ". What is unknown is left out.
+    /// What a model row says under its name (issue #431): its account and how big it is
+    /// ([`size_facts`]), joined with " · ". Where it computes is said once, by the head of its part and
+    /// the cloud at its end (issue #424), not again in each row. What is unknown is left out.
     pub(super) fn model_facts(data: &Data, engine: &str, model: &AiModel) -> String {
-        let place = match stays_here(engine, model) {
-            true => tr("On this computer"),
-            false => tr("Cloud"),
-        };
-        let mut facts = vec![account_label(data, engine), place.to_string()];
+        let mut facts = vec![account_label(data, engine)];
         facts.extend(crate::parts::size_facts(model));
         facts.join(" · ")
     }
