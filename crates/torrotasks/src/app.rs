@@ -5446,6 +5446,8 @@ mod tests {
     /// (commit 44ee2e2).
     #[test]
     fn no_key_reaches_a_dialog_behind_the_settings() {
+        // The core has answered what is installed, so the settings add no look-again tick (#419).
+        torro_gui::installed::start_demo();
         let mut app = launched_with_accounts(&["--demo", "--open", "new-list"]);
         assert!(app.new_list.is_some(), "the choice is open");
         let with_choice = app.subscription().units();

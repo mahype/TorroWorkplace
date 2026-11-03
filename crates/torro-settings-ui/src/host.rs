@@ -131,6 +131,10 @@ pub const ACCOUNTS: Section = Section { id: "accounts", icon: Icon::Cloud, label
 /// How often Accounts and AI load the accounts again while they are on screen ([`Host::subscription`]).
 const ACCOUNTS_TICK: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How often a host that guessed the main application installed looks whether the core has said
+/// otherwise ([`Host::suite_arrived`], issue #419).
+const APPS_TICK: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// How often while the add-account dialog waits for a sign-in in the browser.
 const ACCOUNTS_BUSY_TICK: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -315,6 +319,8 @@ pub enum Message {
     Accounts(Box<accounts::Message>),
     /// The tick of Accounts and AI while they are on screen ([`Host::subscription`]): load again.
     Tick,
+    /// Time to look whether the core has said what is installed ([`Host::suite_arrived`], issue #419).
+    Apps,
     /// The answer to a request of the pages Accounts and AI, for their add-account dialog and their
     /// dialogs ([`accounts::answered`]); then the data is asked for anew.
     AccountAnswered(Box<Result<Response, String>>),
@@ -405,6 +411,10 @@ pub struct Host {
     own: usize,
     /// The listing for Appearance was asked for ([`Host::looks_due`]); "Reload" asks again.
     looks_asked: bool,
+    /// The suite's pages were not asked for because the core had not said yet whether the main
+    /// application is installed (cold start with `--settings`, issue #419): the host looks again until
+    /// it has, and adds them then ([`Host::suite_arrived`]).
+    suite_pending: bool,
     /// The pages Accounts and AI while the app shows them ([`Host::with_accounts`]); `None` else.
     accounts: Option<accounts::State>,
     /// Where in `sections` the host put Accounts and AI, by position: an app may have a section of
@@ -431,7 +441,9 @@ impl Host {
     ///
     /// `suite`: the suite's pages are the app's too, because the main application is not installed
     /// (issue #408): the host adds [`SUITE_SECTIONS`] and the settings they show to `sections` and
-    /// `wanted`, and lists the designs for Appearance.
+    /// `wanted`, and lists the designs for Appearance. With `false` before the core has said what is
+    /// installed ([`torro_gui::installed::answered`]), the host adds them later if that answer says the
+    /// main application is missing (issue #419).
     pub fn with_memory(
         backend: Arc<dyn Backend>,
         mut sections: Vec<Section>,
@@ -477,6 +489,9 @@ impl Host {
             change: None,
             echoes: 0,
             suite: suite.then(suite::State::default),
+            // Before the core's first answer the main application counts as installed, so the app
+            // passes `false`: that is a guess, which the first answer may overturn (issue #419).
+            suite_pending: !suite && !torro_gui::installed::answered(),
             own,
             looks_asked: false,
             accounts: None,
@@ -536,7 +551,13 @@ impl Host {
     /// What the pages Accounts and AI need to run while the settings are open: the tick of a running
     /// download (issue #325). The app adds it to its own subscriptions.
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        let Some(state) = &self.accounts else { return iced::Subscription::none() };
+        // Until the core says whether the main application is installed, the host looks again
+        // (issue #419); it asks nothing, it only reads what the app noted.
+        let apps = match self.suite_pending {
+            true => iced::time::every(APPS_TICK).map(|_| Message::Apps),
+            false => iced::Subscription::none(),
+        };
+        let Some(state) = &self.accounts else { return apps };
         let page = accounts::subscription(state).map(|message| Message::Accounts(Box::new(message)));
         // While Accounts or AI is on screen the accounts are loaded again, as the control centre
         // does: a sign-in in the browser ends in the core, and an account another app connected
@@ -547,9 +568,32 @@ impl Host {
             (false, false) => None,
         };
         match every {
-            Some(every) => iced::Subscription::batch([page, iced::time::every(every).map(|_| Message::Tick)]),
-            None => page,
+            Some(every) => iced::Subscription::batch([page, apps, iced::time::every(every).map(|_| Message::Tick)]),
+            None => iced::Subscription::batch([page, apps]),
         }
+    }
+
+    /// The core has answered what is installed and the main application is not: the suite's pages
+    /// follow the app's sections now, as if the host had been made with them (issue #419). Returns the
+    /// load for the settings they show when the app did not ask for them. Nothing while the core has
+    /// not answered, and once only.
+    fn suite_arrived(&mut self) -> Option<Task<Message>> {
+        if !self.suite_pending || !torro_gui::installed::answered() {
+            return None;
+        }
+        self.suite_pending = false;
+        if torro_gui::installed::main_app() {
+            return None;
+        }
+        let added = suite_sections(&self.sections);
+        self.sections.extend(added);
+        self.suite = Some(suite::State::default());
+        self.suite_loaded();
+        if self.wanted.contains(&Request::Settings) {
+            return None;
+        }
+        self.wanted.push(Request::Settings);
+        Some(self.reload())
     }
 
     /// Whether the section on screen is Accounts or AI, which the host shows itself.
@@ -928,6 +972,7 @@ impl Host {
                     result: Box::new(result),
                 }))
             }
+            Message::Apps => work(self.suite_arrived().into_iter().collect()),
             Message::Accounts(message) => {
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
                 let action = accounts::update(state, *message, &self.data);
@@ -1643,6 +1688,45 @@ mod tests {
         assert!(!with_main.open("appearance") && !with_main.open("general"));
         let link: Outcome<()> = with_main.update(Message::Link(0));
         assert!(matches!(link, Outcome::ControlCentre(ref section) if section == "appearance"));
+    }
+
+    /// Issue #419: an app opened by a cold `--settings` guessed the main application installed; once the
+    /// core answers that it is not, Appearance and General replace the two links, and the settings
+    /// they show are loaded. Before the answer, and with the main application, nothing changes.
+    #[test]
+    fn the_suite_pages_arrive_when_the_core_says_the_main_app_is_missing() {
+        use torro_gui::installed;
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut host, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), false);
+        // Whatever other tests noted, this host is one that guessed.
+        host.suite_pending = true;
+        let apps: Vec<_> = AppId::ALL
+            .iter()
+            .map(|app| torro_ipc::AppInfo {
+                binary: app.binary.to_string(),
+                name: app.display_name.to_string(),
+                window_class: app.window_class.to_string(),
+                installed: true,
+            })
+            .collect();
+
+        installed::set(&apps, false);
+        assert!(host.suite_arrived().is_some(), "the settings the pages show are loaded");
+        let ids: Vec<&str> = host.sections().iter().map(|section| section.id).collect();
+        assert_eq!(ids, ["calendars", "reminders", "appearance", "general"]);
+        assert!(host.wanted.contains(&Request::Settings));
+        assert!(host.open("appearance") && host.on_suite_page());
+        assert!(host.suite_arrived().is_none() && host.sections().len() == 4, "once");
+
+        // With the main application the guess was right: the links stay.
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut linked, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), false);
+        linked.suite_pending = true;
+        installed::set(&apps, true);
+        assert!(linked.suite_arrived().is_none());
+        assert_eq!(linked.sections().len(), 2);
+        assert!(!linked.suite_pending, "asked once");
+        installed::start_demo();
     }
 
     /// Review of #408: the designs are listed only once Appearance is on screen, and once.
