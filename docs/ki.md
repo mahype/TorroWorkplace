@@ -30,10 +30,10 @@ benutzt nie den Schlüssel eines Agenten.
 4. **Daten nur dahin, wo du es erlaubt hast.** Je Quelle des Eingangs lässt sich festlegen, dass ihre
    Inhalte nur an **lokale** Modelle gehen (z. B. Mail und Messenger ja nur lokal, GitHub darf in die
    Cloud). Standard für Mail: nur lokal. Bis die Regeln je Quelle kommen (KI.1), gibt es dafür je Platz
-   einen Schalter (Aufgabe C.17 und #325, Abschnitt „Erlaubnis je Platz“): `mail_to_cloud` für Chat,
-   `decide_mail_to_cloud` für Sortieren, unter „Data rule“ in der Steuerzentrale › AI. Einschalten kann
-   nur die Person selbst; dann lesen auch Modelle außerhalb der eigenen Rechner Mail, soweit die Rechte
-   sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal.
+   eine Erlaubnis (Aufgabe C.17 und #325, Abschnitt „Erlaubnis je Platz“): `mail_to_cloud` für Chat, ein
+   Schalter unter „Data rule“ in der Steuerzentrale › AI, und `decide_mail_to_cloud` für Sortieren, die die
+   Wahl eines Modells in der Cloud nach einer Rückfrage gibt (#424). Einschalten kann nur die Person selbst;
+   dann lesen auch Modelle außerhalb der eigenen Rechner Mail, soweit die Rechte sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal.
    Der Schalter hieß bis Issue #219 „Mail an Claude Code und Cloud-Modelle“; Agenten als Antrieb
    (Antrieb B in [assistent.md](assistent.md)) werden nicht mehr angeboten, die Sperre gilt aber
    weiter für jeden Agenten-Antrieb, falls einer zurückkommt.
@@ -182,9 +182,14 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
 - `mail_to_cloud` ist die Erlaubnis für **Chat**, mit der Bedeutung von bisher.
 - `decide_mail_to_cloud` ist die Erlaubnis für **Sortieren**. Sie folgt der Wahl: Setzt man für Sortieren ein
   Modell anderswo (Cloud, Server im Netz), wird sie eingeschaltet (`ai.set_slot` setzt sie mit); wählt man ein
-  Modell hier, wird sie zurückgenommen. In der Oberfläche steht sie unter „Data rule“ als Zeile mit „Keep mail
-  here“, solange sie an ist; „Sorting sends mail to the cloud“ und wohin nur, solange das Modell, das gerade sortiert
-  (Ausnahme vor Platz), anderswo rechnet.
+  Modell hier oder „None“, wird sie zurückgenommen. Einen eigenen Schalter hat sie nicht mehr (#424): Beide
+  Auswahlen (Mail-Fenster › Categorization und Steuerzentrale › AI › Sorting) bieten alle Modelle an, die
+  in der Cloud unter „In the cloud – mail leaves this computer“ mit Wolke. Ein Modell dort fragt vorher
+  („Sort mail in the cloud?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
+  Anbieter gilt; erst „Use“ setzt Modell und Erlaubnis. Steht ein Modell in der Cloud im Platz, aber die
+  Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigen beide Orte „Waiting for
+  your OK – mail stays here“; es noch einmal zu wählen fragt wieder. Wohin Mail geht, sagt die Zeile unter
+  *Sortieren* in „Models“, solange das Modell, das gerade sortiert (Ausnahme vor Platz), anderswo rechnet.
 - **Einschalten nur Menschen**; ausschalten darf jeder Client mit Rechten.
 - **Ein Modell anderswo für Mail-Funktionen setzt nur ein Mensch**: als Platz *Sortieren* wie als Ausnahme
   `inbox.categorize` (`ai.set_assignment`), auch wenn die Erlaubnis schon an ist. Die Zustimmung gilt einem
@@ -242,7 +247,7 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 | Herunterladen | Steuerzentrale › AI, „Use suggestion“ | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt – außer er wurde inzwischen abgebrochen, dann die Liste mit ihm als `cancelled`. Antwortet der Start `busy`, hängt sich „Use suggestion“ an den laufenden Download desselben Modells | `ai_pull_model` (Freigabe) |
 | Stand der Downloads | dieselben Orte | `ai.list_pulls` · Read | `ai_list_pulls` |
 | Download abbrechen | „Cancel“ | `ai.cancel_pull` · Write | `ai_cancel_pull` |
-| Erlaubnis *Sortieren* | Steuerzentrale › AI, „Data rule“ („Keep mail here“) | `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit; ausgeschaltet hält ein laufender Sortierauftrag mit einem Modell anderswo vor der nächsten Mail an (`failed`) | `settings_set_setting` nur `false` |
+| Erlaubnis *Sortieren* | Wahl eines Modells in der Cloud mit Rückfrage (Mail-Fenster › Categorization, Steuerzentrale › AI › Sorting); kein eigener Schalter (#424) | `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit; ausgeschaltet hält ein laufender Sortierauftrag mit einem Modell anderswo vor der nächsten Mail an (`failed`) | `settings_set_setting` nur `false` |
 | Eintrag zusammenfassen | Paneel „Summarize“ | `inbox.summarize_item` · Write (löst einen Modellaufruf aus) | `inbox_summarize_item` |
 
 Neuer Bereich `ai` im Katalog für die Einstellungen; die Funktionen selbst gehören zu dem Bereich, in

@@ -338,11 +338,12 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   Chat-Modelle. Ist schmaler als ein Formular, steht das
   Bedienelement jeder Zeile unter ihrem Text, damit nichts abgeschnitten wird. Ein Modell für Sorting nimmt vorher eine gespeicherte Ausnahme
   `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`, wie Einstellungen › Categorization), damit der
-  Platz sortiert. Die Mail-Erlaubnisse stehen unter „Data rule“: `mailToCloud` („Chat may
-  read mail in the cloud“) für Chat, `decideMailToCloud` für Sorting. Solange die Erlaubnis für Sorting an ist, steht
-  dort eine Zeile mit „Keep mail here“, die sie ausschaltet. Rechnet das Modell, das gerade sortiert (Ausnahme vor
-  Platz), anderswo, heißt sie „Sorting sends mail to the cloud“ und sagt, wohin Mail geht; sonst „Sorting may send
-  mail to the cloud“.
+  Platz sortiert. Unter „Data rule“ steht nur die Erlaubnis des Chats, `mailToCloud` („Chat may read mail in the
+  cloud“). Die für Sorting, `decideMailToCloud`, hat keinen eigenen Schalter (#424): Das Menü von Sorting zeigt nach
+  „Other models“ den Abschnitt „In the cloud – mail leaves this computer“, jede Zeile mit Wolke; ein Modell dort
+  fragt vorher („Sort mail in the cloud?“, „Cancel“/„Use“, auch „Use suggestion“ für ein Modell in der Cloud), und
+  erst „Use“ setzt Modell und Erlaubnis. Ein Modell hier oder „None“ nimmt sie zurück. Steht ein Modell in der
+  Cloud im Platz und die Erlaubnis ist aus, sagt die Zeile unter Sorting „Waiting for your OK – mail stays here“.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.
   Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › AI“.
@@ -765,7 +766,7 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | New chats (The one used last, Engine), Model, Effort | womit ein neuer Chat beginnt | Assistant › New chats, Model, Effort; Einrichtung › AI › Use for (nur Engine) | `aiSlots.chat` (Platz Chat; `assistantDefault` nur noch Übernahme) | `ai.set_slot chat`; `set_setting assistant_default` als Alias | Assistent | bleibt, Assistent |
 | Engines (Zeile je KI-Konto) | nur Anzeige, führt zu Accounts | Assistant › Engines | – | `assistant.list_engines` | – | streichen, ersetzt durch Verweis auf AI |
 | What the assistant may use (Stufe je Bereich), Approval (Ask first), Auswahl (All/Selected je Kalender, Liste, Repo, Quelle, Mail-Konto), Send on my behalf, Admin-Schalter | Rechte des Assistenten | Assistant › Rechte-Gruppen (`agents::rights_groups`) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API |
-| Mail to cloud models | Datenregel für Mail, **gilt für die ganze Suite**; je Platz: `mailToCloud` für Chat, `decideMailToCloud` für Sorting (#325) | Assistant; jede Bot-Seite; AI › Data rule | `mailToCloud`, `decideMailToCloud` | `set_setting mail_to_cloud`, `set_setting decide_mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
+| Mail to cloud models | Datenregel für Mail, **gilt für die ganze Suite**; je Platz: `mailToCloud` für Chat, `decideMailToCloud` für Sorting (#325; seit #424 die Wahl eines Modells in der Cloud mit Rückfrage, kein Schalter) | Assistant; jede Bot-Seite; AI › Data rule (nur Chat); AI › Sorting und Mail › Categorization | `mailToCloud`, `decideMailToCloud` | `set_setting mail_to_cloud`, `set_setting decide_mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
 | Profile: Name, Description, Picture, Personality | wer der Assistent ist und wie er spricht | Assistant › Profile (Unterseite) | `<config>/assistant/profile.json`, `persona.md` | `assistant.update_profile` | Assistent | bleibt, Assistent |
 | Memory: Add note, Edit, Forget | Gedächtnis | Assistant › Profile › Memory | `memory.md` | `assistant.remember`, `assistant.forget` | Assistent | bleibt, Assistent |
 | Bots (Zeile je Bot) › What the bot may use … | Rechte eines Bots | Assistant › Bots › Bot; Assistent-App › Bot-Editor › Access (nur Stufen und Ask first) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API; der Bot-Editor verweist dorthin |

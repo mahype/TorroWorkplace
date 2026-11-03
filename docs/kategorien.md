@@ -192,9 +192,11 @@ echten Mails.
 
 - Solange die Erlaubnis des Platzes *Sortieren* aus ist (`decide_mail_to_cloud`, [ki.md](ki.md), Abschnitt
   „Erlaubnis je Platz“), gehen Mails nur an Modelle **auf diesem Rechner** (`AiModel::remote`,
-  `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Ein Entscheidermodell in der Cloud wird für Mail gar
-  nicht angeboten, ebenso kein Chat-Modell in der Cloud für den Ersatzweg. **Jev ist ein Cloud-Modell**:
-  Es ist nach dem Verbinden aus wie jedes Cloud-Modell und bekommt Mail nur mit dieser Erlaubnis.
+  `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Modelle in der Cloud stehen trotzdem in der Auswahl,
+  getrennt unter „In the cloud – mail leaves this computer“ und mit Wolke (#424); eins zu wählen fragt
+  vorher („Sort mail in the cloud?“), und erst „Use“ gibt die Erlaubnis. Ein lokales Modell nimmt sie zurück.
+  **Jev ist ein Cloud-Modell**: Es ist nach dem Verbinden aus wie jedes Cloud-Modell und bekommt Mail nur
+  mit dieser Erlaubnis.
   „Automatic“ an einem Konto auf
   diesem Rechner nimmt nur Modelle hier, auch bei eingeschalteter Erlaubnis ([ki.md](ki.md), „Erlaubnis je
   Platz“): ein `:cloud`-Modell des lokalen Ollama sortiert nur, wenn ein Mensch es ausdrücklich wählt.
