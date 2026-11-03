@@ -143,6 +143,8 @@ pub enum Icon {
     Mail,
     /// A read message, "Mark read".
     MailOpen,
+    /// Unsubscribe from a mailing list (issue #416).
+    MailX,
     /// Reply to a message.
     Reply,
     /// Reply to everyone on a message.
@@ -295,6 +297,7 @@ impl Icon {
         Icon::PinOff,
         Icon::Mail,
         Icon::MailOpen,
+        Icon::MailX,
         Icon::Reply,
         Icon::ReplyAll,
         Icon::Forward,
@@ -425,6 +428,7 @@ impl Icon {
             Icon::PinOff => include_bytes!("../assets/icons/pin-off.svg"),
             Icon::Mail => include_bytes!("../assets/icons/mail.svg"),
             Icon::MailOpen => include_bytes!("../assets/icons/mail-open.svg"),
+            Icon::MailX => include_bytes!("../assets/icons/mail-x.svg"),
             Icon::Reply => include_bytes!("../assets/icons/reply.svg"),
             Icon::ReplyAll => include_bytes!("../assets/icons/reply-all.svg"),
             Icon::Forward => include_bytes!("../assets/icons/forward.svg"),
