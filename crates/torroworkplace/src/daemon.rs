@@ -984,6 +984,8 @@ fn describe(request: &Request) -> String {
         Request::SendDraft { .. } => "send draft".into(),
         // Never the answer, the account or the mail (task E8.3b).
         Request::RespondToInvitation { .. } => "answer an invitation".into(),
+        // Never the account, the mail or the sender (issue #416).
+        Request::Unsubscribe { .. } => "unsubscribe from a mailing list".into(),
         // Ids only, never a message or a title (task C.1).
         Request::ListEngines => "assistant engines".into(),
         Request::ListConversations => "assistant conversations".into(),
@@ -1338,6 +1340,9 @@ mod tests {
             collection: Some("work".into()),
         };
         assert_eq!(describe(&answer), "answer an invitation");
+        // Issue #416: unsubscribing names nothing of the mail either.
+        let unsubscribe = Request::Unsubscribe { account: "mail:anna@mailbox.org".into(), id: "m:0a1b2c3d".into() };
+        assert_eq!(describe(&unsubscribe), "unsubscribe from a mailing list");
     }
 
     /// Set for this test binary as a child of [`a_stop_signal_ends_the_service_like_quit`]: only then
