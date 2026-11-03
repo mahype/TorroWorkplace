@@ -1091,7 +1091,14 @@ impl Backend for Demo {
             Request::ListTools => Response::Tools { tools: self.tools() },
             Request::ListExtensions => Response::Extensions { extensions: self.extensions() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
-            Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
+            // Each account its own models (design review of #424): OpenRouter's are in the cloud.
+            Request::AiModels { account, .. } => {
+                let models = match account.as_str() {
+                    crate::accounts::demo::DEMO_OPENROUTER => crate::accounts::demo::demo_models(),
+                    _ => self.models(),
+                };
+                Response::AiModels { account: account.clone(), models }
+            }
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments(), slots: self.slots() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
             Request::PreviewClearCategories => Response::CategoryClearPreview {
