@@ -873,11 +873,15 @@ impl MailSource for DemoSource {
         }
     }
 
-    /// The demo sends nothing: a mail of its own that offers unsubscribing is left by one click at
-    /// its sender's domain, any other is [`InboxError::Unsupported`].
+    /// The demo sends nothing: a mail of its own that offers unsubscribing – or that its overview
+    /// offers it for, a newsletter or promotion ([`crate::mail_overview::demo`]) – is left by one click
+    /// at its sender's domain, any other is [`InboxError::Unsupported`].
     async fn unsubscribe(&self, _account: String, id: String) -> Result<UnsubscribeVia, InboxError> {
         let mail = DemoSource::get_mail(self, &id)?;
-        if !mail.traits.list_unsubscribe {
+        let listed = mail.summary.category.as_ref().is_some_and(|held| {
+            matches!(held.category, torro_mail::Category::Newsletter | torro_mail::Category::Promotion)
+        });
+        if !mail.traits.list_unsubscribe && !listed {
             return Err(InboxError::Unsupported);
         }
         let from = mail.summary.from.map(|from| from.address).unwrap_or_default();
@@ -3024,7 +3028,7 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    Close (Escape, `CloseDetail`).
 ///
 /// A group without items is left out (Mark and More while the mail loads, Mute for an entry that
-/// cannot be muted). Every group has its fixed icon, as design D draws it (finding 8): Reply, the
+/// cannot be muted and whose mail offers no unsubscribing). Every group has its fixed icon, as design D draws it (finding 8): Reply, the
 /// check of File, Torro's task, Mark's flag – in the attention colour while the mail is flagged –,
 /// the bell and "…". A click on it sends its first item; Delete is marked `danger` and never that
 /// click – a File whose first item would be Delete opens its card instead. Each group registers its icon in `anchors.rail`, each item that opens a
@@ -3197,7 +3201,9 @@ fn mark_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
 }
 
 /// The items of the rail's group "Mute" ([`action_groups`]): the bell of the entry where it can be
-/// muted, else nothing; the bell of a folder's message on its own traits (issue #123).
+/// muted, else none; the bell of a folder's message on its own traits (issue #123); then
+/// "Unsubscribe…" where the mail offers it ([`unsubscribe_ask`], issue #416), also for an entry that
+/// cannot be muted.
 fn mute_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,

@@ -7199,6 +7199,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn unsubscribe(&mut self) -> Task<Message> {
         let Some(ask) = self.unsubscribe_ask.take() else { return Task::none() };
         self.close_menus();
+        // Offered no more at once, so it is not sent twice while the core works; a failure offers it
+        // again ([`App::unsubscribed`]).
+        self.unsubscribed.insert(ask.address.clone());
+        self.forget_unsubscribed();
         #[cfg(test)]
         self.sent.push(Sent::Unsubscribe(ask.account.clone(), ask.id.clone()));
         let inbox = self.inbox.clone();
@@ -7216,6 +7220,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let sender = list::one_line(&ask.sender);
         let (text, open) = match result {
             Err(err) => {
+                self.unsubscribed.remove(&ask.address);
                 let text = trf("Couldn't unsubscribe: {reason}", &[("reason", &err)]);
                 self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
                 return Task::none();
@@ -15327,6 +15332,7 @@ mod tests {
         let _ = app.update(Message::AskUnsubscribe(ask.clone()));
         let _ = app.update(Message::Unsubscribe);
         assert!(matches!(app.sent.last(), Some(Sent::Unsubscribe(..))), "the dialog's button does the same");
+        assert!(app.unsubscribed.contains("news@shop.example"), "not offered again while the core works");
 
         let hint_after = |app: &mut App<DemoSource>, result: Result<UnsubscribeVia, String>| {
             let _ = app.update(Message::Unsubscribed(ask.clone(), result));
