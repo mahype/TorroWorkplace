@@ -197,7 +197,7 @@ pub fn demo_data() -> Data {
                 effort: Some(torro_core::ai::Effort::High),
             }),
             // Issue #325: mail is sorted in the cloud, by a chat model through the fallback, so the
-            // group "Models" says where mail goes and the data rule shows the permission with "Keep mail here".
+            // group "Models" says where mail goes (with the consent, issue #424).
             decide: Some(torro_core::ai::SlotModel {
                 engine: DEMO_OPENROUTER.into(),
                 model: Some("qwen/qwen3-235b-a22b".into()),
