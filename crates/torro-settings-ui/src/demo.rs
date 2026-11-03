@@ -770,8 +770,8 @@ impl Demo {
     }
 
     /// The models the sample AI account offers (`ai.list_models`): one that writes and one that
-    /// only decides, which is what sorting mail needs (task E12.10), both turned on; and one turned
-    /// off, which no choice offers (task S.26).
+    /// only decides, which is what sorting mail needs (task E12.10), both turned on; one turned
+    /// off, which no choice offers (task S.26); and a decision model in Ollama's cloud (issue #424).
     fn models(&self) -> Vec<AiModel> {
         vec![
             AiModel {
@@ -815,6 +815,22 @@ impl Demo {
                 remote: Some(false),
                 decision: Some(true),
                 enabled: false,
+            },
+            // Issue #424: a model of Ollama's cloud, offered under "In the cloud – mail leaves this
+            // computer"; picking it asks first.
+            AiModel {
+                id: "clef:cloud".into(),
+                name: "clef:cloud".into(),
+                tools: Some(false),
+                open_weights: Some(true),
+                context: Some(131072),
+                parameters: None,
+                quantization: None,
+                size: None,
+                reasoning: Some(false),
+                remote: Some(true),
+                decision: Some(true),
+                enabled: true,
             },
         ]
     }

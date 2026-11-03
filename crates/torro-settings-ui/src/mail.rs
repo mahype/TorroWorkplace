@@ -5,7 +5,8 @@
 //! Accounts        identity and connection, offline content, folders and backup per account
 //! Reading         display, default sender, compose format and formatted signature
 //! Attachments     default click, Downloads folder and save targets (task M12.7, [`attachments`])
-//! Categorization  rules before model sorting, plus editable categories
+//! Categorization  rules before model sorting, plus editable categories; models here and in the
+//!                 cloud, one in the cloud only after its question (issue #424)
 //! Filters         saved searches that move, mark or file new mail in the inbox (issue #339, [`filters`])
 //! ```
 //!
@@ -263,6 +264,10 @@ pub fn overlay<'a>(
             attachments::overlay(&state.attachments, data, class).map(|dialog| dialog.map(Message::Attachments))
         }
         ACCOUNTS_SECTION => accounts::overlay(&state.accounts, data).map(|menu| menu.map(Message::Accounts)),
+        // The question before a model in the cloud sorts mail (issue #424).
+        "categorization" => {
+            categorization::overlay(&state.categorization, data).map(|dialog| dialog.map(Message::Categorization))
+        }
         _ => None,
     }
 }
@@ -300,10 +305,14 @@ pub fn accounts_escape(state: &State) -> Option<Message> {
     accounts::escape(&state.accounts).map(Message::Accounts)
 }
 
-/// What Escape means in these sections: a page of the categories' editor goes back to its list
-/// (task E15.5), asking first when something typed would go. `None` leaves it to the window,
-/// which closes the settings.
+/// What Escape means in these sections: the question before a model in the cloud sorts mail is
+/// cancelled (issue #424), else a page of the categories' editor goes back to its list (task E15.5),
+/// asking first when something typed would go. `None` leaves it to the window, which closes the
+/// settings.
 pub fn escape(state: &State) -> Option<Message> {
+    if categorization::asking_cloud(&state.categorization) {
+        return Some(Message::Categorization(categorization::Message::CancelCloud));
+    }
     editor::escape(&state.categorization.editor)
         .map(|message| Message::Categorization(categorization::Message::Editor(message)))
 }
@@ -4274,7 +4283,7 @@ mod tests {
         by_slot.settings.ai_slots.decide = Some(slot("nimble"));
         assert!(categorization::in_effect(&by_slot).is_ready(), "the slot sorts");
 
-        assert_eq!(sent(Message::Model("ai:x".into(), "tev1".into()), &by_slot), [set_slot("ai:x", "tev1")]);
+        assert_eq!(sent(Message::Model(ollama.into(), "tev1".into()), &by_slot), [set_slot(ollama, "tev1")]);
         let off = sent(Message::Enabled(false), &by_slot);
         let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = off.as_slice() else {
             panic!("the exception switched off: {off:?}")
@@ -4286,8 +4295,8 @@ mod tests {
         assert!(!categorization::in_effect(&switched_off).is_ready());
         assert_eq!(sent(Message::Enabled(true), &switched_off), [no_exception()]);
         assert_eq!(
-            sent(Message::Model("ai:x".into(), "tev1".into()), &switched_off),
-            [no_exception(), set_slot("ai:x", "tev1")],
+            sent(Message::Model(ollama.into(), "tev1".into()), &switched_off),
+            [no_exception(), set_slot(ollama, "tev1")],
             "the exception goes first, then the slot"
         );
         // Without a slot, "on" puts what sorted last into it before the exception goes.
@@ -4321,12 +4330,80 @@ mod tests {
         use categorization::Message;
         let mut data = Data { assignments: exception("nimble", true), ..Data::default() };
         data.settings.ai_slots.decide = Some(slot("nimble"));
-        let requests = sent(Message::Model("ai:x".into(), "tev1".into()), &data);
+        let requests = sent(Message::Model("ai:ollama@localhost:11434".into(), "tev1".into()), &data);
         let backend = std::sync::Arc::new(Refusing(std::sync::Mutex::new(Vec::new())));
         let failed = crate::send(backend.clone(), requests, Vec::new()).await;
         assert_eq!(failed.err().as_deref(), Some("Settings cannot be written."));
         let got = backend.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert_eq!(got, [no_exception()], "no ai.set_slot after the refusal");
+    }
+
+    /// Issue #424: a model in the cloud is set only after its question – "Cancel" sends nothing, "Use"
+    /// what a pick sends; one that sorts with the consent sets at once. In effect without the consent
+    /// it waits, and picking it asks again. Switching on never takes one in the cloud by itself.
+    #[test]
+    fn a_model_in_the_cloud_asks_before_it_sorts() {
+        use categorization::Message;
+        use torro_core::ai::AiModel;
+
+        let ollama = "ai:ollama@localhost:11434";
+        let model = |id: &str, remote: bool| {
+            let model = AiModel { decision: Some(true), remote: Some(remote), enabled: true, ..AiModel::named(id) };
+            (ollama.to_string(), model)
+        };
+        let mut data =
+            Data { decider_models: vec![model("clef:cloud", true), model("nimble", false)], ..Data::default() };
+        data.settings.ai_slots.decide = Some(slot("nimble"));
+        let update = |state: &mut categorization::State, message, data: &Data| -> Vec<torro_ipc::Request> {
+            match categorization::update::<()>(state, message, data) {
+                Action::Send(requests) => requests,
+                Action::None => Vec::new(),
+                _ => panic!("a request or nothing"),
+            }
+        };
+        let pick = || Message::Model(ollama.into(), "clef:cloud".into());
+
+        let mut state = super::State::default();
+        assert!(update(&mut state.categorization, pick(), &data).is_empty(), "nothing before the answer");
+        assert!(categorization::asking_cloud(&state.categorization));
+        assert!(categorization::overlay(&state.categorization, &data).is_some());
+        assert!(super::overlay(&state, &data, "categorization", torro_gui::layout::SizeClass::Wide).is_some());
+        let Some(super::Message::Categorization(Message::CancelCloud)) = super::escape(&state) else {
+            panic!("Escape cancels the question")
+        };
+        assert!(update(&mut state.categorization, Message::CancelCloud, &data).is_empty(), "Cancel changes nothing");
+        assert!(!categorization::asking_cloud(&state.categorization) && super::escape(&state).is_none());
+
+        let _ = update(&mut state.categorization, pick(), &data);
+        assert_eq!(update(&mut state.categorization, Message::UseCloud, &data), [set_slot(ollama, "clef:cloud")]);
+        assert!(!categorization::asking_cloud(&state.categorization));
+        assert!(update(&mut state.categorization, Message::UseCloud, &data).is_empty(), "asked once, set once");
+
+        // It sorts with the consent: picked again, nothing to ask; a model here never asks.
+        data.settings.ai_slots.decide = Some(slot("clef:cloud"));
+        data.settings.decide_mail_to_cloud = Some(true);
+        assert_eq!(sent(pick(), &data), [set_slot(ollama, "clef:cloud")]);
+        assert_eq!(sent(Message::Model(ollama.into(), "nimble".into()), &data), [set_slot(ollama, "nimble")]);
+        let _ = categorization::view(&Default::default(), &data);
+
+        // In effect without the consent (an old setting, or an agent kept the mail here): it waits.
+        data.settings.decide_mail_to_cloud = Some(false);
+        assert!(categorization::in_effect(&data).is_ready());
+        assert!(sent(pick(), &data).is_empty(), "picking it asks again");
+        let _ = categorization::view(&Default::default(), &data);
+
+        // Switching on with an empty slot takes the first model here, never one in the cloud.
+        data.settings.ai_slots.decide = None;
+        assert_eq!(sent(Message::Enabled(true), &data), [set_slot(ollama, "nimble")]);
+        let cloud_only = Data { decider_models: vec![model("clef:cloud", true)], ..data.clone() };
+        assert!(sent(Message::Enabled(true), &cloud_only).is_empty(), "nothing here to sort with");
+        // What sorted last in the cloud, switched off, asks before it sorts again.
+        let mut last = Data { assignments: exception("clef:cloud", false), ..data.clone() };
+        last.decider_models = data.decider_models.clone();
+        let mut state = categorization::State::default();
+        assert!(update(&mut state, Message::Enabled(true), &last).is_empty());
+        assert!(categorization::asking_cloud(&state));
+        assert_eq!(update(&mut state, Message::UseCloud, &last), [no_exception(), set_slot(ollama, "clef:cloud")]);
     }
 
     /// Task S.26 (and MW.3): only models turned on are offered for sorting mail – switching it on
@@ -4350,11 +4427,10 @@ mod tests {
         let _ = categorization::view(&Default::default(), &none);
     }
 
-    /// Task MW.3: chat models with tools are offered too, after nothing – a model that can do neither
-    /// is not –; while sorted mail stays here only those that compute here, judged by the slot's own
-    /// permission (`decide_mail_to_cloud`), not the chat's.
+    /// Task MW.3: chat models with tools are offered too – a model that can do neither is not. Issue
+    /// #424: those in the cloud are offered whatever the permission says, in a part of their own.
     #[test]
-    fn chat_models_are_offered_for_sorting_and_only_here_while_mail_stays_here() {
+    fn chat_models_and_models_in_the_cloud_are_offered_for_sorting() {
         use torro_core::ai::AiModel;
 
         let ollama = "ai:ollama@localhost:11434";
@@ -4378,10 +4454,15 @@ mod tests {
         let ids = |data: &Data| -> Vec<String> {
             categorization::offered(data).into_iter().map(|(_, model)| model.id).collect()
         };
-        data.settings.mail_to_cloud = true;
-        assert_eq!(ids(&data), ["nimble", "qwen3:8b", "gemma", "mine"], "the chat's permission opens nothing");
+        let all = ["nimble", "qwen3:8b", "glm:cloud", "qwen/qwen3-14b", "gemma", "mine", "far"];
+        assert_eq!(ids(&data), all, "mail stays here, and the cloud is offered all the same");
         data.settings.decide_mail_to_cloud = Some(true);
-        assert_eq!(ids(&data), ["nimble", "qwen3:8b", "glm:cloud", "qwen/qwen3-14b", "gemma", "mine", "far"]);
+        assert_eq!(ids(&data), all);
+        let names = |part: Vec<(String, AiModel)>| -> Vec<String> { part.into_iter().map(|(_, m)| m.id).collect() };
+        let (fast, other, cloud) = categorization::grouped(&data);
+        assert_eq!(names(fast), ["nimble"]);
+        assert_eq!(names(other), ["gemma", "qwen3:8b", "mine"], "by account");
+        assert_eq!(names(cloud), ["glm:cloud", "far", "qwen/qwen3-14b"]);
         data.settings.ai_slots.decide = Some(slot("qwen3:8b"));
         let _ = categorization::view(&Default::default(), &data);
     }
@@ -4411,15 +4492,16 @@ mod tests {
         let ids = |part: Vec<(String, AiModel)>| -> Vec<String> {
             part.into_iter().map(|(engine, model)| format!("{engine} {}", model.id)).collect()
         };
-        let (fast, other) = categorization::grouped(&data);
+        let (fast, other, cloud) = categorization::grouped(&data);
         let fast_ids = [format!("{ollama} brisk"), format!("{ollama} nimble"), format!("{strata} nimble")];
         assert_eq!(ids(fast), fast_ids);
         assert_eq!(ids(other), [format!("{ollama} qwen3:8b"), format!("{strata} qwen3:4b")]);
+        assert!(cloud.is_empty());
         data.settings.ai_slots.decide = Some(slot("qwen3:8b"));
         let _ = categorization::view(&Default::default(), &data);
 
         data.decider_models.retain(|(_, model)| model.decision != Some(true));
-        let (fast, other) = categorization::grouped(&data);
+        let (fast, other, _) = categorization::grouped(&data);
         assert!(fast.is_empty());
         assert_eq!(other.len(), 2);
         let _ = categorization::view(&Default::default(), &data);
@@ -4484,7 +4566,8 @@ mod tests {
     }
 
     /// Issue #323: in each part the accounts with a model here come first, Jev and the cloud after
-    /// them, although "Jev" comes before "Ollama" by name; Ollama's cloud model stays with Ollama.
+    /// them, although "Jev" comes before "Ollama" by name. Issue #424: the models elsewhere stand in a
+    /// part of their own, its decision models first.
     #[test]
     fn models_here_are_listed_before_jev() {
         use torro_core::ai::AiModel;
@@ -4507,9 +4590,11 @@ mod tests {
         let ids = |part: Vec<(String, AiModel)>| -> Vec<String> {
             part.into_iter().map(|(engine, model)| format!("{engine} {}", model.id)).collect()
         };
-        let (fast, other) = categorization::grouped(&data);
-        assert_eq!(ids(fast), [format!("{ollama} nimble"), format!("{jev} {}", torro_core::ai::JEV_MODEL)]);
-        assert_eq!(ids(other), [format!("{ollama} gpt-oss:120b-cloud")]);
+        let (fast, other, cloud) = categorization::grouped(&data);
+        assert_eq!(ids(fast), [format!("{ollama} nimble")]);
+        assert!(other.is_empty());
+        let jev_model = format!("{jev} {}", torro_core::ai::JEV_MODEL);
+        assert_eq!(ids(cloud), [jev_model, format!("{ollama} gpt-oss:120b-cloud")]);
         let _ = categorization::view(&Default::default(), &data);
     }
 
@@ -4696,6 +4781,9 @@ pub mod categorization {
         asking_clear: bool,
         /// `None` means the recommended choice: switch future automatic sorting off.
         disable_automatic_after_clear: Option<bool>,
+        /// A model in the cloud picked for sorting, with its AI account, while the question before it
+        /// sorts is open (issue #424): only "Use" sets it, "Cancel" changes nothing.
+        asking_cloud: Option<(String, AiModel)>,
     }
 
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -4724,8 +4812,13 @@ pub mod categorization {
         /// "Mail from contacts is personal" on or off (issue #390, `settings.set_setting
         /// mail_contacts_personal`).
         ContactsPersonal(bool),
-        /// A model picked for sorting mail.
+        /// A model picked for sorting mail. One in the cloud asks first (issue #424).
         Model(String, String),
+        /// "Use" in the question before a model in the cloud sorts mail: it goes into the slot, which
+        /// lets the mail out (`decide_mail_to_cloud`, set by the core with the slot).
+        UseCloud,
+        /// "Cancel" in that question, a click next to it, or Escape: nothing changes.
+        CancelCloud,
         /// "Catch up now" (`false`) or "Cancel" (`true`).
         CatchUp(bool),
         /// "Sort again" (task E15.5): the whole window anew, after new rules or descriptions.
@@ -4837,7 +4930,7 @@ pub mod categorization {
                 key: torro_ipc::SettingKey::MailContactsPersonal,
                 value: serde_json::json!(on),
             }),
-            Message::Enabled(true) => switched_on(data),
+            Message::Enabled(true) => switched_on(state, data),
             // Off is the exception switched off, with what sorts now: it goes before the slot and
             // keeps sorting off, also while the slot changes. Nothing sorts, nothing to switch off.
             Message::Enabled(false) => {
@@ -4853,21 +4946,82 @@ pub mod categorization {
                     None => Action::None,
                 }
             }
-            // Picking a model switches the sorting on: that is what picking one means. It goes into
-            // the slot; an exception would stand before it, so it is taken back – first (review of
-            // #325): setting the slot can let Sorting's mail out, and meanwhile an exception the person
-            // stopped with "Keep mail here" would sort again. The requests go one after the other and
-            // stop at the first refused ([`crate::send`]), so a refused take-back sets no slot.
-            Message::Model(engine, model) => {
-                let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
-                let mut requests: Vec<Request> = stored_exception(data).map(|_| no_exception()).into_iter().collect();
-                requests.push(set_slot(engine, Some(model), effort));
-                Action::Send(requests)
+            // Picking a model switches the sorting on: that is what picking one means. A model in the
+            // cloud asks first (issue #424) – choosing it is the consent that mail leaves this
+            // computer –, unless it sorts already with that consent.
+            Message::Model(engine, model) => match in_cloud(data, &engine, &model) {
+                Some(listed) if !consented(data, &engine, &model) => {
+                    state.asking_cloud = Some((engine, listed));
+                    Action::None
+                }
+                _ => use_model(data, engine, model),
+            },
+            Message::UseCloud => match state.asking_cloud.take() {
+                Some((engine, model)) => use_model(data, engine, model.id),
+                None => Action::None,
+            },
+            Message::CancelCloud => {
+                state.asking_cloud = None;
+                Action::None
             }
             Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel, again: false }),
             Message::Shown(category, shown) => Action::send(super::editor::shown_request(data, category, shown)),
             Message::ManageModels => Action::Open(crate::assistant::AI_SECTION),
         }
+    }
+
+    /// `model` of `engine` goes into the slot Sorting. An exception would stand before it, so it is
+    /// taken back – first (review of #325): setting the slot can let Sorting's mail out, and meanwhile
+    /// an exception the person switched off would sort again. The requests go one after the other and
+    /// stop at the first refused ([`crate::send`]), so a refused take-back sets no slot. For a model in
+    /// the cloud the core sets the consent (`decide_mail_to_cloud`) with the slot, for one here it takes
+    /// it back.
+    fn use_model<A>(data: &Data, engine: String, model: String) -> Action<A> {
+        let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
+        let mut requests: Vec<Request> = stored_exception(data).map(|_| no_exception()).into_iter().collect();
+        requests.push(set_slot(engine, Some(model), effort));
+        Action::Send(requests)
+    }
+
+    /// The model `id` of `engine` when it computes in the cloud ([`stays_here`]), as the list has it. One
+    /// the list lacks is judged as the core does: at an account on this computer (Ollama) only by a cloud
+    /// name (`:cloud`), elsewhere by its account, an unknown one as elsewhere in doubt. `None` for a model
+    /// on this computer.
+    fn in_cloud(data: &Data, engine: &str, id: &str) -> Option<AiModel> {
+        let listed = data.decider_models.iter().find(|(account, model)| account == engine && model.id == id);
+        let model = listed.map_or_else(
+            || {
+                let here = crate::accounts::ai_provider(engine)
+                    .is_some_and(|provider| provider.seat() == torro_core::ai::Seat::ThisComputer);
+                let remote = here.then(|| torro_core::ai::openai::ollama_cloud_name(id));
+                AiModel { remote, ..AiModel::named(id) }
+            },
+            |(_, model)| model.clone(),
+        );
+        (!stays_here(engine, &model)).then_some(model)
+    }
+
+    /// `model` of `engine` sorts now with the person's consent that mail leaves this computer: it is what
+    /// is in effect ([`in_effect`]), switched on, and the permission of Sorting is on.
+    fn consented(data: &Data, engine: &str, model: &str) -> bool {
+        let held = in_effect(data);
+        held.is_ready()
+            && held.engine.as_deref() == Some(engine)
+            && held.model.as_deref() == Some(model)
+            && data.settings.mail_to_cloud_in(AiSlot::Decide)
+    }
+
+    /// The question before a model in the cloud sorts mail is open (issue #424).
+    pub fn asking_cloud(state: &State) -> bool {
+        state.asking_cloud.is_some()
+    }
+
+    /// The question before a model in the cloud sorts mail (issue #424), over the window while it is
+    /// open: the model by its name, the provider by the name of its AI account.
+    pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+        let (engine, model) = state.asking_cloud.as_ref()?;
+        let provider = account_label(data, engine);
+        Some(crate::parts::cloud_consent(&model.name, &provider, Message::UseCloud, Message::CancelCloud))
     }
 
     /// The exception stored for sorting mail (`ai.set_assignment inbox.categorize`), on or off; `None`
@@ -4906,17 +5060,31 @@ pub mod categorization {
     }
 
     /// The switch "on": the exception switched off is taken back, so the slot sorts again. Without a
-    /// slot, it gets what sorted last – the exception's model – or the first model offered; nothing
-    /// to sort with, nothing to switch on. The slot first, so a refused one takes nothing back.
-    fn switched_on<A>(data: &Data) -> Action<A> {
+    /// slot, it gets what sorted last – the exception's model – or the first model offered on this
+    /// computer; nothing to sort with, nothing to switch on. The slot first, so a refused one takes
+    /// nothing back. What sorted last in the cloud without the consent asks first, as a pick does
+    /// (issue #424): a switch never lets mail out.
+    fn switched_on<A>(state: &mut State, data: &Data) -> Action<A> {
         let exception = stored_exception(data);
         let mut requests = Vec::new();
         if data.settings.ai_slots.decide.is_none() {
+            if let Some(held) = &exception
+                && let (Some(engine), Some(id)) = (&held.engine, &held.model)
+                && let Some(listed) = in_cloud(data, engine, id)
+                && !data.settings.mail_to_cloud_in(AiSlot::Decide)
+            {
+                state.asking_cloud = Some((engine.clone(), listed));
+                return Action::None;
+            }
             let from_exception = exception
                 .as_ref()
                 .and_then(|held| held.engine.clone().map(|engine| set_slot(engine, held.model.clone(), held.effort)));
-            let first =
-                || offered(data).into_iter().next().map(|(engine, model)| set_slot(engine, Some(model.id), None));
+            let first = || {
+                offered(data)
+                    .into_iter()
+                    .find(|(engine, model)| stays_here(engine, model))
+                    .map(|(engine, model)| set_slot(engine, Some(model.id), None))
+            };
             match from_exception.or_else(first) {
                 Some(request) => requests.push(request),
                 None => return Action::None,
@@ -5005,7 +5173,7 @@ pub mod categorization {
             ),
         };
         let fast = tr("Decision models answer directly and sort mail much faster than chat models.");
-        let note = format!("{cloud} {fast} {}", model_note(data));
+        let note = format!("{cloud} {fast}");
         let models = widgets::group(tr("2. Model sorting"), model_choices, Some(note));
         column![tabs, sorting_rules, contacts, models, job_group(state, data)].spacing(layout::section_gap()).into()
     }
@@ -5432,22 +5600,17 @@ pub mod categorization {
 
     /// The models that may sort mail: every AI account's models that can – decision models, and
     /// chat models with tools through the fallback (task MW.3, `AiModel::can_decide`) – and are
-    /// turned on for the suite (task S.26, `AiModel::enabled`), and – while sorted mail may not leave
-    /// this computer – only those that run here (`docs/ki.md`, principle 4). The core refuses the
-    /// others as well (task E12.5), so the rule holds even if this list were wrong.
+    /// turned on for the suite (task S.26, `AiModel::enabled`). Those in the cloud too (issue #424):
+    /// picking one asks first, and that answer is the consent that mail leaves this computer
+    /// (`docs/ki.md`, principle 4). The core refuses one without it (task E12.5), so the rule holds
+    /// even if this page were wrong.
     pub(super) fn offered(data: &Data) -> Vec<(String, AiModel)> {
         deciders(data).into_iter().filter(|(_, model)| model.enabled).collect()
     }
 
-    /// The models that can sort mail and may see it, turned on or not.
+    /// The models that can sort mail, turned on or not.
     fn deciders(data: &Data) -> Vec<(String, AiModel)> {
-        let local_only = !data.settings.mail_to_cloud_in(AiSlot::Decide);
-        data.decider_models
-            .iter()
-            .filter(|(_, model)| model.can_decide())
-            .filter(|(engine, model)| !local_only || stays_here(engine, model))
-            .cloned()
-            .collect()
+        data.decider_models.iter().filter(|(_, model)| model.can_decide()).cloned().collect()
     }
 
     /// Whether `model` of the AI account `engine` (`ai:<provider>@<host>`) computes on this computer,
@@ -5484,12 +5647,16 @@ pub mod categorization {
     /// A model offered for sorting with its AI account (`ai:…`), as [`offered`] lists it.
     pub(super) type Offered = (String, AiModel);
 
-    /// The models offered ([`offered`]) by how they sort (issue #421): the decision models, which
-    /// answer directly and much faster, then the others, which sort through the fallback. In each part
-    /// the accounts with a model on this computer come first, then those with models elsewhere only
-    /// (Jev, the cloud; issue #323, Open First), each by account name, then model name; an account
-    /// stays together.
-    pub(super) fn grouped(data: &Data) -> (Vec<Offered>, Vec<Offered>) {
+    /// The models offered ([`offered`]) in the parts of the list, as [`grouped`] splits them.
+    pub(super) type Parts = (Vec<Offered>, Vec<Offered>, Vec<Offered>);
+
+    /// The models offered ([`offered`]) by where they compute (issue #424) and how they sort (issue
+    /// #421): on this computer the decision models, which answer directly and much faster, then the
+    /// others, which sort through the fallback; then those in the cloud ([`stays_here`]), their
+    /// decision models first. In each part the accounts with a model on this computer come first, then
+    /// those with models elsewhere only (Jev, the cloud; issue #323, Open First), each by account name,
+    /// then model name; an account stays together.
+    pub(super) fn grouped(data: &Data) -> Parts {
         let mut offered = offered(data);
         let here: std::collections::BTreeSet<String> = offered
             .iter()
@@ -5503,25 +5670,33 @@ pub mod categorization {
                 .then_with(|| a_engine.cmp(b_engine))
                 .then_with(|| a_model.name.cmp(&b_model.name))
         });
-        offered.into_iter().partition(|(_, model)| model.decision == Some(true))
+        let decides = |(_, model): &Offered| model.decision == Some(true);
+        let (local, cloud): (Vec<Offered>, Vec<Offered>) =
+            offered.into_iter().partition(|(engine, model)| stays_here(engine, model));
+        let (fast, other) = local.into_iter().partition(decides);
+        let (cloud_fast, cloud_other): (Vec<Offered>, Vec<Offered>) = cloud.into_iter().partition(decides);
+        (fast, other, cloud_fast.into_iter().chain(cloud_other).collect())
     }
 
     /// One row per model that may sort mail, the one in effect checked; picking one switches the
-    /// sorting on. Grouped by how they sort (issue #421): "Decision models (fast)" first, then "Other
-    /// models"; each row names the model and, under it, its account, where it computes and how big it
-    /// is ([`model_facts`], issue #431). A chat model says that it answers in a fixed format (the
-    /// fallback, task MW.3), the model of an exception that it is only for sorting mail, in a third line. Without a decision model a row in place of the first group says
-    /// that sorting runs slower and leads to Settings › AI, which suggests one to download. Without any
-    /// model, one row says so instead of both groups: where to turn one on when there are models that
-    /// can sort but none is on (task S.26), else where to add one. The model in effect turned off since
-    /// comes first ([`assigned_off`]), "Manage models…" last.
+    /// sorting on. Grouped by where they compute (issue #424) and how they sort (issue #421): under "On
+    /// this computer" the "Decision models (fast)", then "Other models"; under "In the cloud – mail
+    /// leaves this computer" the models elsewhere, each with a cloud at the end. Each row names the
+    /// model and, under it, its account, where it computes and how big it is ([`model_facts`], issue
+    /// #431). A chat model says that it answers in a fixed format (the fallback, task MW.3), the model
+    /// of an exception that it is only for sorting mail, a model in the cloud in effect without the
+    /// consent that it waits for it, in a third line. Without a decision model here a row in place of
+    /// the first group says that sorting runs slower and leads to Settings › AI, which suggests one to
+    /// download. Without any model, one row says so instead of the groups: where to turn one on when
+    /// there are models that can sort but none is on (task S.26), else where to add one. The model in
+    /// effect turned off since comes first ([`assigned_off`]), "Manage models…" last.
     fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
-        let (fast, other) = grouped(data);
+        let (fast, other, cloud) = grouped(data);
         let off = assigned_off(data);
         // The turned-off model has no line with facts under its name: its account helps to tell it, as
         // soon as more than one account is in play.
         let mut engines: std::collections::BTreeSet<&str> =
-            fast.iter().chain(&other).map(|(engine, _)| engine.as_str()).collect();
+            fast.iter().chain(&other).chain(&cloud).map(|(engine, _)| engine.as_str()).collect();
         engines.extend(off.as_ref().map(|(engine, _)| engine.as_str()));
         let several = engines.len() > 1;
         let label = |engine: &str, name: &str| match several {
@@ -5533,7 +5708,11 @@ pub mod categorization {
         // The section AI of the same settings (issue #410): a page below, not another window.
         let arrow = crate::parts::chevron::<Message>;
         let heading = |title: &str| row_frame(typo::text(typo::body_strong(), title.to_owned()), false);
-        if fast.is_empty() && other.is_empty() {
+        // The kinds of model under "On this computer": quieter than the place above them, on the
+        // same axis as the rows.
+        let subheading =
+            |title: &str| row_frame(typo::text(typo::meta(), title.to_owned()).style(theme::text_2), false);
+        if fast.is_empty() && other.is_empty() && cloud.is_empty() {
             if off.is_none() {
                 let detail = match deciders(data).is_empty() {
                     true => tr("Add a local AI such as Ollama under AI and load a model that decides."),
@@ -5544,12 +5723,18 @@ pub mod categorization {
             }
         } else {
             let own = own_exception(data);
+            let consent = data.settings.mail_to_cloud_in(AiSlot::Decide);
             let choice = |(engine, model): (String, AiModel)| {
                 let is = |held: &AiAssignment| {
                     held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
                 };
-                let chosen = held.is_ready() && is(held);
+                let in_cloud = !stays_here(&engine, &model);
+                // In effect, but the core sorts nothing with it until the person says yes (an old
+                // setting, or an agent kept mail here): no check, and the line says why.
+                let waiting = held.is_ready() && is(held) && in_cloud && !consent;
+                let chosen = held.is_ready() && is(held) && !waiting;
                 let notes: Vec<&str> = [
+                    waiting.then(|| tr("Waiting for your OK – mail stays here")),
                     own.as_ref().filter(|own| is(own)).map(|_| tr("Only for sorting mail")),
                     model.decides_by_chat().then(|| tr("Answers in a fixed format, slower")),
                 ]
@@ -5558,8 +5743,10 @@ pub mod categorization {
                 .collect();
                 let note = (!notes.is_empty()).then(|| notes.join(" · "));
                 let facts = model_facts(data, &engine, &model);
-                model_choice(model.name, facts, note, chosen, Message::Model(engine, model.id))
+                let row = ModelRow { name: model.name, facts, note, chosen, in_cloud };
+                model_choice(row, Message::Model(engine, model.id))
             };
+            rows.push(heading(tr("On this computer")));
             if fast.is_empty() {
                 // In place of the group: loading one lives in Settings › AI with its progress, where "Use
                 // suggestion" offers one (and turns on one already loaded). The detail wraps instead of being
@@ -5580,12 +5767,16 @@ pub mod categorization {
                     .padding([air.max(0.0), torro_gui::theme::space::l()]);
                 rows.push(pressable(none.into(), Some(Message::ManageModels)));
             } else {
-                rows.push(heading(tr("Decision models (fast)")));
+                rows.push(subheading(tr("Decision models (fast)")));
                 rows.extend(fast.into_iter().map(choice));
             }
             if !other.is_empty() {
-                rows.push(heading(tr("Other models")));
+                rows.push(subheading(tr("Other models")));
                 rows.extend(other.into_iter().map(choice));
+            }
+            if !cloud.is_empty() {
+                rows.push(heading(tr("In the cloud – mail leaves this computer")));
+                rows.extend(cloud.into_iter().map(choice));
             }
         }
         // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
@@ -5606,22 +5797,34 @@ pub mod categorization {
         facts.join(" · ")
     }
 
+    /// What a row of [`model_choice`] shows.
+    struct ModelRow {
+        name: String,
+        /// Account, place and size ([`model_facts`]).
+        facts: String,
+        /// The third line, where there is one.
+        note: Option<String>,
+        /// The model that sorts: a check at the end.
+        chosen: bool,
+        /// The model computes in the cloud (issue #424): a cloud before the check.
+        in_cloud: bool,
+    }
+
     /// One model to pick, like [`choice`]: its name, its facts ([`model_facts`]) and, where it has
     /// one, a third line with a note. The row is the button, a check at the end marks the one that
-    /// sorts. A long line is cut off at the end.
-    fn model_choice<'a>(
-        name: String,
-        facts: String,
-        note: Option<String>,
-        chosen: bool,
-        on_press: Message,
-    ) -> Element<'a, Message> {
+    /// sorts; a model in the cloud has a cloud in a fixed place before it (issue #424), so a narrow
+    /// window cuts the lines, never the cloud. A long line is cut off at the end.
+    fn model_choice<'a>(row: ModelRow, on_press: Message) -> Element<'a, Message> {
+        let ModelRow { name, facts, note, chosen, in_cloud } = row;
         let check: Element<'a, Message> = match chosen {
             true => icon::icon(Icon::Check, icon::SIZE)
                 .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) })
                 .into(),
             false => iced::widget::space().width(icon::SIZE).into(),
         };
+        let cloud = in_cloud.then(|| {
+            icon::icon(Icon::Cloud, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+        });
         let extra = usize::from(note.is_some());
         let mut lines = column![
             widgets::ellipsized(typo::body(), name, theme::text),
@@ -5630,7 +5833,9 @@ pub mod categorization {
         if let Some(note) = note {
             lines = lines.push(widgets::ellipsized(typo::meta(), note, theme::text_2));
         }
-        let content = iced::widget::row![lines.width(iced::Fill), check]
+        let content = iced::widget::row![lines.width(iced::Fill)]
+            .push(cloud)
+            .push(check)
             .spacing(torro_gui::theme::space::l())
             .align_y(iced::Alignment::Center);
         let row = crate::parts::row_frame_with_lines(content, true, extra);
@@ -5657,16 +5862,5 @@ pub mod categorization {
             .find(|account| account.id == id)
             .map(|account| account.label.clone())
             .unwrap_or_else(|| id.to_string())
-    }
-
-    /// Under the models: why the list may be short.
-    fn model_note(data: &Data) -> String {
-        match data.settings.mail_to_cloud_in(AiSlot::Decide) {
-            true => tr("Mail may go to an AI elsewhere for sorting; every model that can sort it is offered.").to_owned(),
-            false => tr(
-                "Only models on this computer are offered: mail stays here unless you choose a model elsewhere for Sorting in Settings › AI.",
-            )
-            .to_owned(),
-        }
     }
 }
