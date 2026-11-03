@@ -1674,7 +1674,7 @@ impl MailStore {
     /// category this version cannot read counts as none: the overview must not fail on one message.
     pub fn overview_rows(&self, since: DateTime<Utc>) -> Result<Vec<CameIn>, MailStoreError> {
         let sql = "SELECT m.id, m.date, m.from_json, m.flags, m.category, m.rfc_message_id,
-                coalesce(f.role = 'trash', 0)
+                coalesce(f.role = 'trash', 0), m.list_unsubscribe
             FROM messages m JOIN folders f ON f.id = m.folder_id
             WHERE m.date >= ?1 AND coalesce(f.role, '') NOT IN ('sent', 'drafts')
                 AND (m.rfc_message_id IS NULL OR m.rfc_message_id NOT IN (
@@ -1695,6 +1695,7 @@ impl MailStore {
                 category: category.as_deref().and_then(Category::from_key),
                 message_id: row.get(5)?,
                 trash: row.get(6)?,
+                list_unsubscribe: row.get(7)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -3364,7 +3365,9 @@ mod tests {
         let read = add(&store, &inbox, &read);
         let old = add(&store, &inbox, &message(1, "Too old"));
         let filed = add(&store, &archive, &message(4, "Filed"));
-        let club = add(&store, &own, &message(5, "Club news"));
+        let mut club_news = message(5, "Club news");
+        club_news.traits.list_unsubscribe = true;
+        let club = add(&store, &own, &club_news);
         let thrown = add(&store, &trash, &message(6, "Thrown away"));
         add(&store, &sent, &message(7, "My answer"));
         add(&store, &drafts, &message(8, "Not yet sent"));
@@ -3384,6 +3387,7 @@ mod tests {
         assert_eq!(first.message_id.as_deref(), Some("<3@example.org>"));
         assert_eq!(of(&filed).category, None, "a key this version does not know");
         assert!(of(&thrown).trash && !of(&club).trash && !of(&club).seen);
+        assert!(of(&club).list_unsubscribe && !first.list_unsubscribe, "issue #416: the header is read");
 
         let inbox_rows = store.inbox_rows().expect("read");
         let dates: Vec<DateTime<Utc>> = inbox_rows.iter().map(|row| row.date).collect();
