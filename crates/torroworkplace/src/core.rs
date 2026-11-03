@@ -8359,7 +8359,9 @@ impl Core {
         if !reads_mail(reach, account) {
             return Err(Box::new(no_mail()));
         }
-        crate::mail::unsubscribe::plan(&self.mail, account, id).await
+        // Boxed, as the other mail futures: the handlers that await this stay small (a debug build
+        // runs the core's tests on a small stack).
+        Box::pin(crate::mail::unsubscribe::plan(&self.mail, account, id)).await
     }
 
     /// `mail.unsubscribe` (issue #416): unsubscribes from the list of the mail `id` of `account` for
@@ -8378,7 +8380,7 @@ impl Core {
                 message: "the mail changed after the approval was asked for; nothing ran, ask again".into(),
             };
         }
-        crate::mail::unsubscribe::run(&self.mail, self.poster(), account, &plan).await
+        Box::pin(crate::mail::unsubscribe::run(&self.mail, self.poster(), account, &plan)).await
     }
 
     /// `tasks.list_todos` with what the mail store holds about each mail link ([`Link::mail`],
