@@ -4278,12 +4278,15 @@ mod tests {
     #[test]
     fn the_model_goes_into_the_slot_and_the_switch_is_the_exception() {
         use categorization::Message;
+        use torro_core::ai::AiModel;
         let ollama = "ai:ollama@localhost:11434";
         let mut by_slot = Data::default();
         by_slot.settings.ai_slots.decide = Some(slot("nimble"));
         assert!(categorization::in_effect(&by_slot).is_ready(), "the slot sorts");
 
-        assert_eq!(sent(Message::Model(ollama.into(), "tev1".into()), &by_slot), [set_slot(ollama, "tev1")]);
+        // LM Studio computes here by its account, listed or not.
+        let here = "ai:lm_studio@localhost:1234";
+        assert_eq!(sent(Message::Model(here.into(), "tev1".into()), &by_slot), [set_slot(here, "tev1")]);
         let off = sent(Message::Enabled(false), &by_slot);
         let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = off.as_slice() else {
             panic!("the exception switched off: {off:?}")
@@ -4295,12 +4298,17 @@ mod tests {
         assert!(!categorization::in_effect(&switched_off).is_ready());
         assert_eq!(sent(Message::Enabled(true), &switched_off), [no_exception()]);
         assert_eq!(
-            sent(Message::Model(ollama.into(), "tev1".into()), &switched_off),
-            [no_exception(), set_slot(ollama, "tev1")],
+            sent(Message::Model(here.into(), "tev1".into()), &switched_off),
+            [no_exception(), set_slot(here, "tev1")],
             "the exception goes first, then the slot"
         );
         // Without a slot, "on" puts what sorted last into it before the exception goes.
-        let no_slot = Data { assignments: exception("nimble", false), ..Data::default() };
+        let listed = AiModel { decision: Some(true), remote: Some(false), enabled: true, ..AiModel::named("nimble") };
+        let no_slot = Data {
+            assignments: exception("nimble", false),
+            decider_models: vec![(ollama.to_string(), listed)],
+            ..Data::default()
+        };
         assert_eq!(sent(Message::Enabled(true), &no_slot), [set_slot(ollama, "nimble"), no_exception()]);
         // Nothing sorts: nothing to switch off.
         assert!(sent(Message::Enabled(false), &Data::default()).is_empty());
@@ -4330,7 +4338,7 @@ mod tests {
         use categorization::Message;
         let mut data = Data { assignments: exception("nimble", true), ..Data::default() };
         data.settings.ai_slots.decide = Some(slot("nimble"));
-        let requests = sent(Message::Model("ai:ollama@localhost:11434".into(), "tev1".into()), &data);
+        let requests = sent(Message::Model("ai:lm_studio@localhost:1234".into(), "tev1".into()), &data);
         let backend = std::sync::Arc::new(Refusing(std::sync::Mutex::new(Vec::new())));
         let failed = crate::send(backend.clone(), requests, Vec::new()).await;
         assert_eq!(failed.err().as_deref(), Some("Settings cannot be written."));
@@ -4404,6 +4412,27 @@ mod tests {
         assert!(update(&mut state, Message::Enabled(true), &last).is_empty());
         assert!(categorization::asking_cloud(&state));
         assert_eq!(update(&mut state, Message::UseCloud, &last), [no_exception(), set_slot(ollama, "clef:cloud")]);
+        // The same for an account in the cloud that picks its model itself ("Automatic").
+        let openrouter = "ai:openrouter@openrouter.ai";
+        let automatic = torro_core::ai::AiAssignment {
+            function: torro_core::ai::AiFunction::InboxCategorize,
+            engine: Some(openrouter.into()),
+            model: None,
+            effort: None,
+            enabled: false,
+        };
+        let info = torro_ipc::AiAssignmentInfo { assignment: automatic, label: String::new(), needs_decision: true };
+        let auto = Data { assignments: vec![info], ..data.clone() };
+        let mut state = categorization::State::default();
+        assert!(update(&mut state, Message::Enabled(true), &auto).is_empty());
+        assert!(categorization::overlay(&state, &auto).is_some());
+        let slot = torro_ipc::Request::SetAiSlot {
+            slot: torro_core::ai::AiSlot::Decide,
+            engine: Some(openrouter.into()),
+            model: None,
+            effort: None,
+        };
+        assert_eq!(update(&mut state, Message::UseCloud, &auto), [no_exception(), slot]);
     }
 
     /// Task S.26 (and MW.3): only models turned on are offered for sorting mail – switching it on
@@ -4783,9 +4812,9 @@ pub mod categorization {
         asking_clear: bool,
         /// `None` means the recommended choice: switch future automatic sorting off.
         disable_automatic_after_clear: Option<bool>,
-        /// A model in the cloud picked for sorting, with its AI account, while the question before it
-        /// sorts is open (issue #424): only "Use" sets it, "Cancel" changes nothing.
-        asking_cloud: Option<(String, AiModel)>,
+        /// A model in the cloud picked for sorting while the question before it sorts is open (issue
+        /// #424): only "Use" sets it, "Cancel" changes nothing.
+        asking_cloud: Option<CloudPick>,
     }
 
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -4793,6 +4822,17 @@ pub mod categorization {
         #[default]
         Automatic,
         Categories,
+    }
+
+    /// A model in the cloud waiting for the question before it sorts mail (issue #424).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct CloudPick {
+        /// Its AI account (`ai:…`).
+        engine: String,
+        /// The model; `None` where the account picks it ("Automatic").
+        model: Option<String>,
+        /// What the question calls it: the model's name, or the account's.
+        name: String,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -4951,15 +4991,15 @@ pub mod categorization {
             // Picking a model switches the sorting on: that is what picking one means. A model in the
             // cloud asks first (issue #424) – choosing it is the consent that mail leaves this
             // computer –, unless it sorts already with that consent.
-            Message::Model(engine, model) => match in_cloud(data, &engine, &model) {
-                Some(listed) if !consented(data, &engine, &model) => {
-                    state.asking_cloud = Some((engine, listed));
+            Message::Model(engine, model) => match in_cloud(data, &engine, Some(&model)) {
+                Some(pick) if !consented(data, &engine, &model) => {
+                    state.asking_cloud = Some(pick);
                     Action::None
                 }
-                _ => use_model(data, engine, model),
+                _ => use_model(data, engine, Some(model)),
             },
             Message::UseCloud => match state.asking_cloud.take() {
-                Some((engine, model)) => use_model(data, engine, model.id),
+                Some(pick) => use_model(data, pick.engine, pick.model),
                 None => Action::None,
             },
             Message::CancelCloud => {
@@ -4978,38 +5018,42 @@ pub mod categorization {
     /// stop at the first refused ([`crate::send`]), so a refused take-back sets no slot. For a model in
     /// the cloud the core sets the consent (`decide_mail_to_cloud`) with the slot, for one here it takes
     /// it back.
-    fn use_model<A>(data: &Data, engine: String, model: String) -> Action<A> {
+    fn use_model<A>(data: &Data, engine: String, model: Option<String>) -> Action<A> {
         let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
         let mut requests: Vec<Request> = stored_exception(data).map(|_| no_exception()).into_iter().collect();
-        requests.push(set_slot(engine, Some(model), effort));
+        requests.push(set_slot(engine, model, effort));
         Action::Send(requests)
     }
 
-    /// The model `id` of `engine` when it computes in the cloud ([`stays_here`]), as the list has it. One
-    /// the list lacks is judged as the core does: at an account on this computer (Ollama) only by a cloud
-    /// name (`:cloud`), elsewhere by its account, an unknown one as elsewhere in doubt. `None` for a model
-    /// on this computer.
-    fn in_cloud(data: &Data, engine: &str, id: &str) -> Option<AiModel> {
-        let listed = data.decider_models.iter().find(|(account, model)| account == engine && model.id == id);
-        let model = listed.map_or_else(
-            || {
-                let here = crate::accounts::ai_provider(engine)
-                    .is_some_and(|provider| provider.seat() == torro_core::ai::Seat::ThisComputer);
-                let remote = here.then(|| torro_core::ai::openai::ollama_cloud_name(id));
-                AiModel { remote, ..AiModel::named(id) }
-            },
-            |(_, model)| model.clone(),
-        );
-        (!stays_here(engine, &model)).then_some(model)
+    /// The model `id` of `engine` when it computes in the cloud, as the question names it; `None` for one
+    /// on this computer. A listed model by what its server says ([`stays_here`]); one the list lacks by
+    /// its account alone, so a model at Ollama that is not listed (yet) counts as elsewhere – a copy of a
+    /// cloud model may carry no `:cloud` in its name. Naming no model ("Automatic"), by the account's
+    /// seat: an account on this computer picks only models here (review of #325).
+    fn in_cloud(data: &Data, engine: &str, id: Option<&str>) -> Option<CloudPick> {
+        let pick = |name: String| CloudPick { engine: engine.to_string(), model: id.map(str::to_string), name };
+        let Some(id) = id else {
+            let seat_here = crate::accounts::ai_provider(engine)
+                .is_some_and(|provider| provider.seat() == torro_core::ai::Seat::ThisComputer);
+            let here = seat_here || stays_here(engine, &AiModel::named(""));
+            return (!here).then(|| pick(account_label(data, engine)));
+        };
+        let listed = data
+            .decider_models
+            .iter()
+            .find(|(account, model)| account == engine && crate::accounts::same_model(&model.id, id));
+        let model = listed.map_or_else(|| AiModel::named(id), |(_, model)| model.clone());
+        (!stays_here(engine, &model)).then(|| pick(model.name))
     }
 
     /// `model` of `engine` sorts now with the person's consent that mail leaves this computer: it is what
-    /// is in effect ([`in_effect`]), switched on, and the permission of Sorting is on.
+    /// is in effect ([`in_effect`], the model as Ollama names it with its tag or without), switched on,
+    /// and the permission of Sorting is on.
     fn consented(data: &Data, engine: &str, model: &str) -> bool {
         let held = in_effect(data);
         held.is_ready()
             && held.engine.as_deref() == Some(engine)
-            && held.model.as_deref() == Some(model)
+            && held.model.as_deref().is_some_and(|held| crate::accounts::same_model(held, model))
             && data.settings.mail_to_cloud_in(AiSlot::Decide)
     }
 
@@ -5021,9 +5065,9 @@ pub mod categorization {
     /// The question before a model in the cloud sorts mail (issue #424), over the window while it is
     /// open: the model by its name, the provider by the name of its AI account.
     pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-        let (engine, model) = state.asking_cloud.as_ref()?;
-        let provider = account_label(data, engine);
-        Some(crate::parts::cloud_consent(&model.name, &provider, Message::UseCloud, Message::CancelCloud))
+        let pick = state.asking_cloud.as_ref()?;
+        let provider = account_label(data, &pick.engine);
+        Some(crate::parts::cloud_consent(&pick.name, &provider, Message::UseCloud, Message::CancelCloud))
     }
 
     /// The exception stored for sorting mail (`ai.set_assignment inbox.categorize`), on or off; `None`
@@ -5071,11 +5115,11 @@ pub mod categorization {
         let mut requests = Vec::new();
         if data.settings.ai_slots.decide.is_none() {
             if let Some(held) = &exception
-                && let (Some(engine), Some(id)) = (&held.engine, &held.model)
-                && let Some(listed) = in_cloud(data, engine, id)
+                && let Some(engine) = &held.engine
+                && let Some(pick) = in_cloud(data, engine, held.model.as_deref())
                 && !data.settings.mail_to_cloud_in(AiSlot::Decide)
             {
-                state.asking_cloud = Some((engine.clone(), listed));
+                state.asking_cloud = Some(pick);
                 return Action::None;
             }
             let from_exception = exception
