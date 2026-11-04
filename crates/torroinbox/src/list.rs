@@ -1245,27 +1245,17 @@ impl<'a> MailLines<'a> {
     }
 }
 
-/// `text` cut at its start with "…" until it fits `max_width`, its first word kept ("via …@work.example.org"):
-/// the end of a mailbox tells two accounts apart (issue #445). Empty when fewer than [`TAIL_KEPT`]
-/// letters of its end would show – a stump like "vi…" says nothing.
+/// A mailbox ("via anna@work.example.org") shortened in whole parts only (issue #445): the address in
+/// full, else without its local part ("via work.example.org"), else nothing – never a piece of a
+/// domain, which would read as another account. Its first word ("via") stays.
 fn ellipsize_start(text: &str, level: typo::Level, max_width: f32) -> String {
-    if typo::text_width(text, level) <= max_width {
-        return text.to_owned();
-    }
-    let (head, rest) = text.split_at(text.find(' ').map_or(0, |at| at + 1));
-    let chars: Vec<char> = rest.chars().collect();
-    for cut in 1..(chars.len() + 1).saturating_sub(TAIL_KEPT) {
-        let tail: String = chars[cut..].iter().collect();
-        let shown = format!("{head}…{tail}");
-        if typo::text_width(&shown, level) <= max_width {
-            return shown;
-        }
-    }
-    String::new()
+    let (head, address) = text.split_at(text.find(' ').map_or(0, |at| at + 1));
+    let domain = address.split_once('@').map(|(_, domain)| format!("{head}{domain}"));
+    std::iter::once(text.to_owned())
+        .chain(domain)
+        .find(|shown| typo::text_width(shown, level) <= max_width)
+        .unwrap_or_default()
 }
-
-/// The letters of the end of a mailbox a cut one keeps at least ([`ellipsize_start`]).
-const TAIL_KEPT: usize = 8;
 
 /// `who` cut with "…" to `max_width`, a trailing " +2" (the further recipients of "Sent", issue #445)
 /// kept whole: how many people it went to must not be what is cut.
@@ -1432,7 +1422,7 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
         account_name,
         hits,
         face: _,
-        domain_tail: _,
+        domain_tail,
         no_marks,
     } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
@@ -1441,7 +1431,7 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
     let level = mail_text_level(new);
     let time_width = typo::text_width(&time, typo::meta().tabular());
     let columns = LineColumns::of_marks(width, time_width, if no_marks { 0.0 } else { line_marks_width() });
-    let shown = mail_line_words(
+    let mut shown = mail_line_words(
         columns,
         (&name, domain.as_deref()),
         (&subject, new, count.as_deref()),
@@ -1449,6 +1439,11 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
         &account_name,
         &time,
     );
+    if let Some(full) = domain.as_deref().filter(|_| domain_tail) {
+        // The mailbox of "Sent" is cut in whole parts, not at its end (issue #445).
+        let left = columns.who - typo::text_width(&shown.who, typo::body_strong()) - space::s();
+        shown.domain = Some(ellipsize_start(full, typo::meta(), left)).filter(|d| !d.is_empty());
+    }
     let marks = row(marks.into_iter().map(|(mark, _)| mark)).spacing(space::xs()).align_y(Alignment::Center);
     let cells =
         line_cells(columns, shown, marks.into(), (level, theme::text), level, count, account, (&words, hit_colour));
@@ -2289,9 +2284,9 @@ mod tests {
         let meta = typo::meta();
         let wide = typo::text_width(mailbox, meta);
         assert_eq!(ellipsize_start(mailbox, meta, wide), mailbox);
-        let cut = ellipsize_start(mailbox, meta, wide * 0.7);
-        assert!(cut.starts_with("via …") && cut.ends_with("example.org"), "{cut:?}");
-        assert_eq!(ellipsize_start(mailbox, meta, typo::text_width("via", meta)), "", "no stump");
+        let part = ellipsize_start(mailbox, meta, wide - 1.0);
+        assert_eq!(part, "via work.example.org", "whole parts only");
+        assert_eq!(ellipsize_start(mailbox, meta, typo::text_width("via work.example.or", meta)), "", "no stump");
     }
 
     #[test]
