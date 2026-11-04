@@ -64,7 +64,8 @@ impl<'a, Message> HtmlView<'a, Message> {
 
     /// The margin at the sides of a mail without a background of its own (none on `html`, on `body`,
     /// nor on a wrapper around the whole mail), in logical pixels, in place of the browser's 8; above
-    /// and below it keeps the browser's 8 unless [`HtmlView::margin_vertical`] says otherwise. When a wider mail is zoomed out the margin keeps its width on the screen. The app passes the inset
+    /// and below it keeps the browser's 8 unless [`HtmlView::margin_vertical`] says otherwise. When a
+    /// wider mail is zoomed out the margin keeps its width on the screen. The app passes the inset
     /// of what stands above the view, so the mail's text starts in line with it. A mail
     /// with a background of its own keeps the browser's margin: its colour fills the view to the
     /// edges and its content places itself. A margin the mail sets on `body` itself always wins.

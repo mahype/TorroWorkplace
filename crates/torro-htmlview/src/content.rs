@@ -608,8 +608,9 @@ impl Inner {
 
     /// Puts the asked margins at the sides and above and below `body` of a mail without a background of
     /// its own (the browser's 8 unless asked, so its text does not touch the edge of a light paper in a
-    /// dark window), as a user agent style sheet, so a margin the mail sets itself still wins. `true` when the styles changed and the mail
-    /// must be resolved again. Whether the mail has a background is looked at once, after its first
+    /// dark window), as a user agent style sheet, so a margin the mail sets itself still wins. `true`
+    /// when the styles changed and the mail must be resolved again. Whether the mail has a background is
+    /// looked at once, after its first
     /// styling: it does not change with the width.
     fn apply_margin(&mut self, zoom: f32) -> bool {
         let plain = match self.plain {
