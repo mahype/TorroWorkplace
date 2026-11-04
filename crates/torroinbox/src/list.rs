@@ -894,10 +894,10 @@ pub(crate) struct MailCard<'a> {
 pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Message> {
     let inner = card_inner(width);
     let MailCard { lines, chips, selected, on_press } = card;
-    let MailLines { name, domain, time, subject, new, preview, account, account_name, hits, .. } = lines;
+    let MailLines { name, domain, time, subject, new, preview, account, account_name, hits, face, .. } = lines;
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text);
-    let lead = avatar(&name, account, size::avatar());
+    let lead = avatar(face.as_deref().unwrap_or(&name), account, size::avatar());
     let account_name = account_shown(account_name, domain.as_deref());
     let meta: Vec<String> =
         [domain, account_name, Some(time)].into_iter().flatten().filter(|p| !p.is_empty()).collect();
@@ -1146,6 +1146,9 @@ pub(crate) struct MailLines<'a> {
     pub account_name: Option<String>,
     /// Where the words of a search matched (issue #136): stressed in the subject and the preview.
     pub hits: Option<Hits<'a>>,
+    /// The text the avatar takes its initials from, when it is not the `name` – "Sent" shows the
+    /// recipient as the name ("To: …"), the avatar the person themselves (issue #445). `None`: `name`.
+    pub face: Option<String>,
 }
 
 /// The matches of a search in a mail row or card (issue #136): the words that matched are stressed
@@ -1224,6 +1227,7 @@ impl<'a> MailLines<'a> {
             account: account_index(item, &rows.accounts),
             account_name: (rows.accounts.len() > 1).then(|| account_label(&item.source)),
             hits: None,
+            face: None,
         }
     }
 }
@@ -1254,7 +1258,8 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32, selected: bool)
 fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(look, selected);
     let room = mail_words_room_in(look, width);
-    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
+    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits, face } =
+        lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     // On the accent the matches keep the row's own colour (`on_accent`) and stand out by weight.
@@ -1307,7 +1312,7 @@ fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: boo
     let lead = lead_in(look, true);
     let marker = marker_slot(new, parts.bar, lead.max(typo::line_height(level)));
     let content: Element<'a, Message> = if look.avatar > 0.0 {
-        let face = container(avatar(&name, account, look.avatar)).center_x(lead);
+        let face = container(avatar(face.as_deref().unwrap_or(&name), account, look.avatar)).center_x(lead);
         row![face, text_lines].spacing(space::m()).align_y(Alignment::Start).into()
     } else {
         // No avatar: its place goes to the text, which starts at the row's edge.
@@ -1343,7 +1348,8 @@ fn marker_slot<'a>(new: bool, bar: bool, height: f32) -> Element<'a, Message> {
 /// [`account_shown`]) and the time at the right. What has no room is cut with "…" ([`LineWords`]).
 pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(look, selected);
-    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
+    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits, face: _ } =
+        lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
@@ -1918,6 +1924,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::Mail
         | View::Search(_)
         | View::All
+        | View::Sent
         | View::Archive
         | View::ReplyLater
         | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),

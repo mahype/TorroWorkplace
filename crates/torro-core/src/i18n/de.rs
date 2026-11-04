@@ -1213,7 +1213,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Mail window (E8.3)
     ("With attachments", "Mit Anhang"),
     // Mail window sidebar (#337)
-    ("Unfiltered", "Ungefiltert"),
     ("Pin folders", "Ordner pinnen"),
     ("Pin folder", "Ordner anpinnen"),
     ("Unpin folder", "Ordner lösen"),
@@ -6664,11 +6663,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "No MCP servers yet. Each one you add in the control centre under MCP servers gets its own level here.",
         "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, bekommt hier eine eigene Stufe.",
     ),
-    // The mail window: Unfiltered (once All), Later and Folders (E18.4, issue #301, #337, #339)
+    // The mail window: All (once Unfiltered), Later and Folders (E18.4, issue #301, #337, #339)
     ("No mail in your inboxes.", "Keine Mail in deinen Posteingängen."),
     ("New mail shows up here.", "Neue Mails erscheinen hier."),
     ("No archived mail.", "Keine archivierten Mails."),
     ("Mail you archive shows up here.", "Mails, die du archivierst, erscheinen hier."),
+    // The mail window: "Sent" below "All" (issue #445)
+    ("To: {recipient} +{more}", "An: {recipient} +{more}"),
+    ("via {account}", "über {account}"),
+    ("No recipient", "Kein Empfänger"),
+    ("No sent mail.", "Keine gesendeten Mails."),
+    ("Mail you send shows up here.", "Mails, die du sendest, erscheinen hier."),
     // Mail settings: an account's detail page (DS.6, issue #314)
     ("In use", "Belegt"),
     ("Not counted by folder", "Keinem Ordner zugeordnet"),
