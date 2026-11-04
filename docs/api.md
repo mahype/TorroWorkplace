@@ -509,11 +509,11 @@ Blättern. Jede Mail einer Suche trägt `back`, wenn sie aus „Später“ zurü
 An Mail ist `snooze_item` eine Wiedervorlage (E19.1, „Follow up“ im Mail-Fenster): Das optionale Feld `unless_reply`
 („Only if no reply“) lässt die Wiedervorlage entfallen, sobald eine Antwort kommt – eine Mail der Unterhaltung, nicht
 vom Konto selbst, datiert nach dem Aufruf, in jedem Ordner außer Entwürfen, gelesen oder nicht; die Unterhaltung steht dann ohne
-„back“ wieder in „Unfiltered“ und kommt am Datum nicht wieder. Ohne `unless_reply` öffnet eine Antwort die Unterhaltung, das
+„back“ wieder in „All“ und kommt am Datum nicht wieder. Ohne `unless_reply` öffnet eine Antwort die Unterhaltung, das
 Datum bleibt und holt sie noch einmal nach oben, solange sie nicht archiviert, gelöscht oder als Spam markiert ist. `unless_reply` an einem Eintrag, der
 keine Mail ist, ist `unsupported`, geprüft vor der Freigabe; ohne `until` zählt es nicht. Mit `snoozed: false` kommt
 zurückgekehrte Mail aus jedem Ordner außer Archiv, Papierkorb und Spam, unabhängig vom `in:` der Suche: Eine eigene gesendete
-Mail, auf die niemand antwortete, steht oben in „Unfiltered“ (verträglich, kein `v: 2`). Eine Mail des Kontos selbst in der
+Mail, auf die niemand antwortete, steht oben in „All“ (verträglich, kein `v: 2`). Eine Mail des Kontos selbst in der
 Unterhaltung (Bcc an sich, Echo einer Liste) öffnet sie, ist aber keine Antwort: `unless_reply` bleibt (Review von #315).
 Erledigt beendet jede Wiedervorlage. Eine fällige mit `unless_reply` kommt erst zurück, wenn der Kern im Mail-Speicher
 keine Antwort seit dem Setzen fand (spätestens eine Minute nach dem Datum); so zählt auch eine Antwort, die erst danach
@@ -533,7 +533,7 @@ sonst gilt nichts als zurückgestellt. Das Feld `hidden` (E18.1, Ansicht „Hidd
 (`inbox.set_mail_shown`, E18.2) sind mit Issue #339 entfallen (Fußnote 10, [Versionen](#versionen)). Archivieren ist
 `mail.move_messages` mit Rolle `archive`; das erledigt den Eintrag, sobald keine
 ungelesene Mail der Unterhaltung mehr im Posteingang liegt. Archiviert die App vom Eintrag aus (Zentrale, App Feed,
-„Later“), schließt sie ihn danach zusätzlich mit `inbox.set_item_done`; in „Unfiltered“ und den Ordnern überlässt
+„Later“), schließt sie ihn danach zusätzlich mit `inbox.set_item_done`; in „All“ und den Ordnern überlässt
 sie ihn dem Kern.
 „Reply later“ und „Set aside“ (E19.2) sind `inbox.set_mail_pile` (Zugriff Write, MCP `inbox_set_mail_pile`): `pile:
 reply_later` bzw. `set_aside` legt 1 bis 100 Mails (`ids`, `m:…`, auch mehrerer Konten) auf diesen Stapel, ohne `pile`
@@ -546,7 +546,7 @@ vor der Freigabe. Mail im Papierkorb oder im Spam kommt auf
 keinen Stapel (Review von #315): Mit `pile` ist der ganze Aufruf dann `unsupported`, geprüft vor der Freigabe; Mail im
 Archiv darf, und herunternehmen geht überall. Die Freigabe nennt die Betreffe aus dem
 Mail-Speicher, das Protokoll nur gehashte Kennungen. Dazu `mail.search_messages` mit dem optionalen Feld `pile`:
-`without` lässt Mail auf einem Stapel weg („Unfiltered“, bis #337 „All“, und die Kategorien), `reply_later` bzw. `set_aside` liefert nur
+`without` lässt Mail auf einem Stapel weg („All“, bis #445 „Unfiltered“, bis #337 „All“, und die Kategorien), `reply_later` bzw. `set_aside` liefert nur
 diesen Stapel; gefiltert wird vor dem Blättern, mit `snoozed` gelten beide, und wie dieses nur für Konten,
 deren Einträge der Schlüssel sieht. Jede Mail einer Suche trägt `pile`, wenn sie auf einem Stapel liegt, und
 `pile_since`, seit wann (verträglich, kein `v: 2`). Für Undo (Review von #315) nimmt `set_mail_pile` das optionale Feld

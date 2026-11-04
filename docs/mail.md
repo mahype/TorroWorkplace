@@ -462,7 +462,7 @@ nicht nur das Löschen.
 Absender, Domains oder Merkmale von Mail ausblendeten, `inbox.hide_sender`, `inbox.set_mail_shown`, das Feld `hidden`
 von `mail.search_messages` und die Wirkung `hide` von `inbox.mute_item` für Mail ([api.md](api.md#versionen)). Beim
 Update entfernt die Migration auf Schema 17 von `inbox.sqlite` diese Regeln und ihre Markierungen. Früher
-ausgeblendete Mail steht wieder in den Listen (unter „Unfiltered“). Nichts wird automatisch zu einem Filter. Ein
+ausgeblendete Mail steht wieder in den Listen (unter „All“). Nichts wird automatisch zu einem Filter. Ein
 stummgeschaltetes Konto (`inbox.mute_source`), gemerkte Spuren und die Regeln anderer Quellen bleiben.
 
 ## Verhältnis zu TorroMail
