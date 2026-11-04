@@ -31,13 +31,21 @@ pub struct HtmlView<'a, Message> {
     scheme: Scheme,
     scale: f32,
     margin: f32,
+    margin_y: f32,
     on_link: Option<Box<dyn Fn(String) -> Message + 'a>>,
 }
 
 impl<'a, Message> HtmlView<'a, Message> {
     /// A view of `content` in [`Scheme::Light`] at scale 1 with the browser's margin, reporting no links.
     pub fn new(content: &'a Content) -> Self {
-        Self { content, scheme: Scheme::Light, scale: 1.0, margin: BROWSER_MARGIN, on_link: None }
+        Self {
+            content,
+            scheme: Scheme::Light,
+            scale: 1.0,
+            margin: BROWSER_MARGIN,
+            margin_y: BROWSER_MARGIN,
+            on_link: None,
+        }
     }
 
     /// The colours of the mail (only the mail's, never the rest of the window).
@@ -56,12 +64,21 @@ impl<'a, Message> HtmlView<'a, Message> {
 
     /// The margin at the sides of a mail without a background of its own (none on `html`, on `body`,
     /// nor on a wrapper around the whole mail), in logical pixels, in place of the browser's 8; above
-    /// and below it keeps the browser's 8. The app passes the inset
+    /// and below it keeps the browser's 8 unless [`HtmlView::margin_vertical`] says otherwise. When a
+    /// wider mail is zoomed out the margin keeps its width on the screen. The app passes the inset
     /// of what stands above the view, so the mail's text starts in line with it. A mail
     /// with a background of its own keeps the browser's margin: its colour fills the view to the
     /// edges and its content places itself. A margin the mail sets on `body` itself always wins.
     pub fn margin(mut self, margin: f32) -> Self {
         self.margin = margin;
+        self
+    }
+
+    /// The margin above and below a mail without a background of its own, in logical pixels, in place of
+    /// the browser's 8 (issue #447): the app passes what a text mail has there, so the mail does not
+    /// start right under the line above it. The same rules as [`HtmlView::margin`].
+    pub fn margin_vertical(mut self, margin: f32) -> Self {
+        self.margin_y = margin;
         self
     }
 
@@ -98,6 +115,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HtmlView<'_, Message> {
         let width = limits.max().width;
         let width = if width.is_finite() { width } else { UNBOUNDED_WIDTH };
         self.content.set_margin(self.margin);
+        self.content.set_margin_vertical(self.margin_y);
         let height = self.content.height(width, self.scale, self.scheme);
         layout::Node::new(limits.resolve(Length::Fill, Length::Shrink, Size::new(width, height)))
     }
@@ -182,6 +200,7 @@ impl<Message> Widget<Message, Theme, Renderer> for HtmlView<'_, Message> {
         renderer.fill_quad(renderer::Quad { bounds: visible, ..renderer::Quad::default() }, surface(self.scheme));
         let top = visible.y - bounds.y;
         self.content.set_margin(self.margin);
+        self.content.set_margin_vertical(self.margin_y);
         let Some(frame) = self.content.frame(bounds.width, self.scale, self.scheme, top, visible.height) else {
             return;
         };

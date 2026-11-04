@@ -2699,8 +2699,8 @@ fn split_body<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Element<'
 
 /// The mail itself in the panel's body, both [`Bars`] alike: while it loads or after an error a
 /// quiet line; once in, the mail in the reading column (issue #291, [`reading_column`]) – a HTML with
-/// the note under it, or the text with the note on foreign text and its "Links" –, but a HTML with a
-/// background of its own from edge to edge of the panel's body (issue #377, [`html_letter`]).
+/// the note under it, or the text with the note on foreign text and its "Links" –, but every HTML from
+/// edge to edge of the panel's body (issues #377, #447, [`html_letter`]).
 fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
     match reading.loaded {
         None => vec![panel::inset(note(tr("Loading the message…")))],
@@ -2711,7 +2711,9 @@ fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
         }
         Some(Ok(_)) => match html_filling(reading) {
             // Out to the panel's edges; the note stays in line with the title (16 from the edge).
-            Some(html) => vec![panel::bleed(html_letter(html, Padding::ZERO.left(space::l()).right(space::l())))],
+            Some(html) => {
+                vec![panel::bleed(html_letter(html, Padding::ZERO.left(space::l()).right(space::l()), space::l()))]
+            }
             None => vec![reading_column(letter(reading).width(Fill))],
         },
     }
@@ -2720,7 +2722,7 @@ fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
 /// The loaded mail as the reading column holds it ([`panel_letter`], [`reader_mail`]): the HTML
 /// ([`html_view`], no margin of its own – the column's padding is its margin, so its text starts where
 /// a plain text does) with the note under it, or the text with the note on foreign text and its
-/// "Links". A HTML with a background of its own does not stand here ([`html_filling`]).
+/// "Links". The reader and the panel do not use it for HTML ([`html_filling`]); "Focus & reply" does.
 fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
     if let Some(html) = html_edge(reading) {
         return column![html_view(html).margin(0.0), html_note()].spacing(space::m());
@@ -2734,10 +2736,12 @@ fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
 
 /// The mail's HTML from edge to edge of its parent (issue #377): no padding around it and no limit to
 /// its width, so its background paints up to the edges and its content places itself; the note under
-/// it keeps `note_padding`, as the text of a plain mail does.
-fn html_letter<'a>(html: HtmlReading<'a>, note_padding: Padding) -> Element<'a, Message> {
+/// it keeps `note_padding`, as the text of a plain mail does. A mail without a background of its own
+/// keeps its text off the edge (issue #447): by the note's left side at the sides, in line with the
+/// head, and by `top` above and below, as a text mail stands under the line.
+fn html_letter<'a>(html: HtmlReading<'a>, note_padding: Padding, top: f32) -> Element<'a, Message> {
     let note = container(html_note()).padding(note_padding);
-    column![html_view(html), note].spacing(space::m()).width(Fill).into()
+    column![html_view(html).margin(note_padding.left).margin_vertical(top), note].spacing(space::m()).width(Fill).into()
 }
 
 /// The widest the mail's text or HTML stands in a reader or panel `width` wide (issue #291, the reading
@@ -2846,10 +2850,12 @@ fn reader_widths(width: f32) -> ReaderWidths {
     ReaderWidths { head: (width - pad.left - pad.right).max(0.0), mail: reading_width(width), html: width.max(0.0) }
 }
 
-/// The mail's HTML when it is loaded, shows as HTML and paints a background of its own (issue #377): it
-/// fills its parent instead of standing in the reading column.
+/// The mail's HTML when it is loaded and shows as HTML (issues #377, #447): every such mail fills its
+/// parent instead of standing in the reading column, with or without a background of its own – as in
+/// Apple Mail. Do not narrow this to mail with a background: a mail without one (a narrow invoice
+/// table) would sit as a light box in a dark reader.
 fn html_filling<'a>(reading: &Reading<'a>) -> Option<HtmlReading<'a>> {
-    html_edge(reading).filter(|html| html.content.has_own_background())
+    html_edge(reading)
 }
 
 /// The mail's HTML when it is loaded and shows as HTML.
@@ -2859,7 +2865,7 @@ fn html_edge<'a>(reading: &Reading<'a>) -> Option<HtmlReading<'a>> {
 
 /// The mail under the reader's head and its line (task E11.3, issues #291, #377): in the reading
 /// column `widths.mail` wide with the reading padding around it ([`letter`]: text with its links and the
-/// note on foreign text, or HTML with the note under it), but a HTML with a background of its own
+/// note on foreign text, or HTML with the note under it), but every HTML
 /// `widths.html` wide, without padding ([`html_letter`]; only its note keeps the reading padding). While
 /// it loads, or after an error, a quiet line says so.
 fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, Message> {
@@ -2874,7 +2880,7 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
         Some(Ok(_)) => match html_filling(reading) {
             Some(html) => {
                 let note = Padding { left: pad.left, right: pad.right, bottom: pad.bottom, top: 0.0 };
-                container(html_letter(html, note)).width(widths.html).into()
+                container(html_letter(html, note, pad.top)).width(widths.html).into()
             }
             None => container(letter(reading).width(widths.mail)).padding(pad).into(),
         },
@@ -4850,13 +4856,15 @@ mod tests {
         }
     }
 
-    /// Issue #377: only a loaded HTML mail with a background of its own fills the reader and the panel
-    /// edge to edge; a plain HTML mail, the text of a mail and one still loading stay in the reading column.
+    /// Issues #377, #447: every loaded HTML mail fills the reader and the panel edge to edge, with or
+    /// without a background of its own (as in Apple Mail); the text of a mail, a HTML shown as text and
+    /// one still loading stay in the reading column. Do not narrow this to mail with a background.
     #[test]
-    fn only_html_with_a_background_of_its_own_fills_the_reader() {
+    fn every_html_mail_fills_the_reader() {
         let fills = |id, format, loaded| reading_of(id, format, loaded, |reading| html_filling(reading).is_some());
         assert!(fills("m:p2", MailFormat::Html, true), "the newsletter paints its own background");
-        assert!(!fills("m:w2", MailFormat::Html, true), "a plain mail stands in the column");
+        assert!(fills("m:w2", MailFormat::Html, true), "a plain mail fills it too");
+        assert!(fills("m:p3", MailFormat::Html, true), "the invoice: a narrow table, no background on the body");
         assert!(!fills("m:p2", MailFormat::Text, true), "shown as text");
         assert!(!fills("m:p2", MailFormat::Html, false), "still loading");
     }

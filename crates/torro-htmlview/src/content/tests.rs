@@ -257,6 +257,33 @@ fn a_mail_without_a_background_gets_the_asked_margin() {
     assert_eq!(first_black(&back, 12), Some(8), "and back");
 }
 
+/// The last column in row `y` with a black pixel.
+fn last_black(snapshot: &Snapshot, y: u32) -> Option<u32> {
+    (0..snapshot.width).rev().find(|&x| snapshot.pixel(x, y) == Some([0, 0, 0, 255]))
+}
+
+/// Issue #447: the margin above a mail without a background of its own is asked for like the sides.
+#[test]
+fn a_mail_without_a_background_gets_the_asked_vertical_margin() {
+    let content = content(PLAIN);
+    content.set_margin_vertical(30.0);
+    let asked = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 60.0);
+    assert_eq!(asked.pixel(12, 20), Some(background(Scheme::Light)), "nothing in the top margin");
+    assert_eq!(asked.pixel(12, 34), Some([0, 0, 0, 255]), "the box starts at 30");
+    assert_eq!(asked.pixel(2, 2), Some(background(Scheme::Light)));
+}
+
+/// Issue #447: a mail wider than the view is zoomed out, and the asked margin keeps its width on both sides.
+#[test]
+fn a_zoomed_out_mail_keeps_the_asked_margin_on_both_sides() {
+    let content = content("<div style=\"background:#000;width:500px;height:20px\"></div><p>Text</p>");
+    content.set_margin(20.0);
+    let snapshot = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 40.0);
+    let (first, last) = (first_black(&snapshot, 8), last_black(&snapshot, 8));
+    assert!(matches!(first, Some(19..=21)), "20 at the left, got {first:?}");
+    assert!(matches!(last, Some(277..=281)), "20 at the right, got {last:?}");
+}
+
 #[test]
 fn a_mail_with_a_background_or_its_own_margin_keeps_it() {
     let wrapped = content(
