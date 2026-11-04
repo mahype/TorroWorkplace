@@ -1860,6 +1860,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         account_name: None,
         hits: data.hits(&message.id),
         face,
+        domain_tail: *data.view == View::Sent,
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -1926,6 +1927,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         account_name: several.then(|| account_name(&message.account)),
         hits: data.hits(&message.id),
         face,
+        domain_tail: *data.view == View::Sent,
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);

@@ -1149,6 +1149,9 @@ pub(crate) struct MailLines<'a> {
     /// The text the avatar takes its initials from, when it is not the `name` – "Sent" shows the
     /// recipient as the name ("To: …"), the avatar the person themselves (issue #445). `None`: `name`.
     pub face: Option<String>,
+    /// The `domain` is cut at its start when it does not fit (the mailbox of "Sent", whose end tells
+    /// the accounts apart, issue #445).
+    pub domain_tail: bool,
 }
 
 /// The matches of a search in a mail row or card (issue #136): the words that matched are stressed
@@ -1228,8 +1231,25 @@ impl<'a> MailLines<'a> {
             account_name: (rows.accounts.len() > 1).then(|| account_label(&item.source)),
             hits: None,
             face: None,
+            domain_tail: false,
         }
     }
+}
+
+/// `text` cut at its start with "…" until it fits `max_width`; empty when not even a few letters
+/// of its end fit (issue #445: the end of a mailbox tells two accounts apart).
+fn ellipsize_start(text: &str, level: typo::Level, max_width: f32) -> String {
+    if typo::text_width(text, level) <= max_width {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for cut in 1..chars.len() {
+        let shown: String = std::iter::once('…').chain(chars[cut..].iter().copied()).collect();
+        if typo::text_width(&shown, level) <= max_width {
+            return shown;
+        }
+    }
+    String::new()
 }
 
 /// The account a mail row or card names (`account_name`, the domain of its address), unless it is
@@ -1258,8 +1278,21 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32, selected: bool)
 fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(look, selected);
     let room = mail_words_room_in(look, width);
-    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits, face } =
-        lines;
+    let MailLines {
+        name,
+        domain,
+        time,
+        marks,
+        subject,
+        new,
+        count,
+        preview,
+        account,
+        account_name,
+        hits,
+        face,
+        domain_tail,
+    } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     // On the accent the matches keep the row's own colour (`on_accent`) and stand out by weight.
@@ -1270,7 +1303,15 @@ fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: boo
     let first_room = room - end_width(&time, typo::meta()) - marks_width;
     let (name_shown, name_width) = sender_cell(&name, first_room);
     let left = first_room - name_width - space::s();
-    let domain = domain.map(|domain| typo::ellipsize(&domain, typo::meta(), left)).filter(|d| !d.is_empty());
+    let domain = domain
+        .map(|domain| {
+            if domain_tail {
+                ellipsize_start(&domain, typo::meta(), left)
+            } else {
+                typo::ellipsize(&domain, typo::meta(), left)
+            }
+        })
+        .filter(|d| !d.is_empty());
     let sender = container(typo::text(mail_text_level(new), name_shown).style(theme::text).wrapping(Wrapping::None))
         .width(name_width)
         .clip(true);
@@ -1348,8 +1389,21 @@ fn marker_slot<'a>(new: bool, bar: bool, height: f32) -> Element<'a, Message> {
 /// [`account_shown`]) and the time at the right. What has no room is cut with "…" ([`LineWords`]).
 pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(look, selected);
-    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits, face: _ } =
-        lines;
+    let MailLines {
+        name,
+        domain,
+        time,
+        marks,
+        subject,
+        new,
+        count,
+        preview,
+        account,
+        account_name,
+        hits,
+        face: _,
+        domain_tail: _,
+    } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
