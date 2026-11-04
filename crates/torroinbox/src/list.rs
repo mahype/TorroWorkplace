@@ -315,7 +315,12 @@ impl LineColumns {
     /// in every row –, the time [`line_date_width`] in a wide line and its own width in a narrow one
     /// ([`line_narrow`], at most the wide column), the title the rest.
     pub(crate) fn of(width: f32, time: f32) -> LineColumns {
-        let (room, gap, marks) = (line_room(width), cell_gap(), line_marks_width());
+        LineColumns::of_marks(width, time, line_marks_width())
+    }
+
+    /// [`LineColumns::of`] with a marks column `marks` wide: none (0) in a list without marks.
+    pub(crate) fn of_marks(width: f32, time: f32, marks: f32) -> LineColumns {
+        let (room, gap) = (line_room(width), cell_gap());
         let narrow = line_narrow(width);
         let column = if narrow { line_clock_width() } else { line_date_width() };
         let free = (room - marks - column - 3.0 * gap).max(0.0);
@@ -373,7 +378,7 @@ impl LineWords {
         account: Option<&str>,
         time: &str,
     ) -> LineWords {
-        let who_shown = typo::ellipsize(who, who_level, columns.who);
+        let who_shown = ellipsize_who(who, who_level, columns.who);
         let left = columns.who - typo::text_width(&who_shown, who_level) - space::s();
         let domain = domain.map(|domain| typo::ellipsize(domain, typo::meta(), left)).filter(|d| !d.is_empty());
         let account_room = account.map_or(0.0, |name| {
@@ -894,10 +899,10 @@ pub(crate) struct MailCard<'a> {
 pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Message> {
     let inner = card_inner(width);
     let MailCard { lines, chips, selected, on_press } = card;
-    let MailLines { name, domain, time, subject, new, preview, account, account_name, hits, .. } = lines;
+    let MailLines { name, domain, time, subject, new, preview, account, account_name, hits, face, .. } = lines;
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text);
-    let lead = avatar(&name, account, size::avatar());
+    let lead = avatar(face.as_deref().unwrap_or(&name), account, size::avatar());
     let account_name = account_shown(account_name, domain.as_deref());
     let meta: Vec<String> =
         [domain, account_name, Some(time)].into_iter().flatten().filter(|p| !p.is_empty()).collect();
@@ -1077,7 +1082,7 @@ fn mail_text_level_in(unread: bool, strong: Level, regular: Level) -> Level {
 }
 
 fn sender_cell(name: &str, room: f32) -> (String, f32) {
-    let shown = typo::ellipsize(name, typo::body_strong(), room);
+    let shown = ellipsize_who(name, typo::body_strong(), room);
     let width = typo::text_width(&shown, typo::body_strong());
     (shown, width)
 }
@@ -1146,6 +1151,15 @@ pub(crate) struct MailLines<'a> {
     pub account_name: Option<String>,
     /// Where the words of a search matched (issue #136): stressed in the subject and the preview.
     pub hits: Option<Hits<'a>>,
+    /// The text the avatar takes its initials from, when it is not the `name` – "Sent" shows the
+    /// recipient as the name ("To: …"), the avatar the person themselves (issue #445). `None`: `name`.
+    pub face: Option<String>,
+    /// The `domain` is cut at its start when it does not fit (the mailbox of "Sent", whose end tells
+    /// the accounts apart, issue #445).
+    pub domain_tail: bool,
+    /// No row of the list has a mark: a line leaves the column of the marks out ([`LineColumns::of_marks`]);
+    /// "Sent" has few, and the column would only take the room of the names (issue #445).
+    pub no_marks: bool,
 }
 
 /// The matches of a search in a mail row or card (issue #136): the words that matched are stressed
@@ -1224,7 +1238,36 @@ impl<'a> MailLines<'a> {
             account: account_index(item, &rows.accounts),
             account_name: (rows.accounts.len() > 1).then(|| account_label(&item.source)),
             hits: None,
+            face: None,
+            domain_tail: false,
+            no_marks: false,
         }
+    }
+}
+
+/// A mailbox ("via anna@work.example.org") shortened in whole parts only (issue #445): the address in
+/// full, else without its local part ("via work.example.org"), else nothing – never a piece of a
+/// domain, which would read as another account. Its first word ("via") stays.
+fn ellipsize_start(text: &str, level: typo::Level, max_width: f32) -> String {
+    let (head, address) = text.split_at(text.find(' ').map_or(0, |at| at + 1));
+    let domain = address.split_once('@').map(|(_, domain)| format!("{head}{domain}"));
+    std::iter::once(text.to_owned())
+        .chain(domain)
+        .find(|shown| typo::text_width(shown, level) <= max_width)
+        .unwrap_or_default()
+}
+
+/// `who` cut with "…" to `max_width`, a trailing " +2" (the further recipients of "Sent", issue #445)
+/// kept whole: how many people it went to must not be what is cut.
+fn ellipsize_who(who: &str, level: typo::Level, max_width: f32) -> String {
+    let more = who.rsplit_once(" +").filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    match more {
+        Some((name, n)) => {
+            let tail = format!(" +{n}");
+            let room = max_width - typo::text_width(&tail, level);
+            format!("{}{tail}", typo::ellipsize(name, level, room))
+        }
+        None => typo::ellipsize(who, level, max_width),
     }
 }
 
@@ -1254,7 +1297,22 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32, selected: bool)
 fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(look, selected);
     let room = mail_words_room_in(look, width);
-    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
+    let MailLines {
+        name,
+        domain,
+        time,
+        marks,
+        subject,
+        new,
+        count,
+        preview,
+        account,
+        account_name,
+        hits,
+        face,
+        domain_tail,
+        no_marks: _,
+    } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     // On the accent the matches keep the row's own colour (`on_accent`) and stand out by weight.
@@ -1265,7 +1323,15 @@ fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: boo
     let first_room = room - end_width(&time, typo::meta()) - marks_width;
     let (name_shown, name_width) = sender_cell(&name, first_room);
     let left = first_room - name_width - space::s();
-    let domain = domain.map(|domain| typo::ellipsize(&domain, typo::meta(), left)).filter(|d| !d.is_empty());
+    let domain = domain
+        .map(|domain| {
+            if domain_tail {
+                ellipsize_start(&domain, typo::meta(), left)
+            } else {
+                typo::ellipsize(&domain, typo::meta(), left)
+            }
+        })
+        .filter(|d| !d.is_empty());
     let sender = container(typo::text(mail_text_level(new), name_shown).style(theme::text).wrapping(Wrapping::None))
         .width(name_width)
         .clip(true);
@@ -1307,7 +1373,7 @@ fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: boo
     let lead = lead_in(look, true);
     let marker = marker_slot(new, parts.bar, lead.max(typo::line_height(level)));
     let content: Element<'a, Message> = if look.avatar > 0.0 {
-        let face = container(avatar(&name, account, look.avatar)).center_x(lead);
+        let face = container(avatar(face.as_deref().unwrap_or(&name), account, look.avatar)).center_x(lead);
         row![face, text_lines].spacing(space::m()).align_y(Alignment::Start).into()
     } else {
         // No avatar: its place goes to the text, which starts at the row's edge.
@@ -1343,13 +1409,29 @@ fn marker_slot<'a>(new: bool, bar: bool, height: f32) -> Element<'a, Message> {
 /// [`account_shown`]) and the time at the right. What has no room is cut with "…" ([`LineWords`]).
 pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(look, selected);
-    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
+    let MailLines {
+        name,
+        domain,
+        time,
+        marks,
+        subject,
+        new,
+        count,
+        preview,
+        account,
+        account_name,
+        hits,
+        face: _,
+        domain_tail,
+        no_marks,
+    } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
     let level = mail_text_level(new);
-    let columns = LineColumns::of(width, typo::text_width(&time, typo::meta().tabular()));
-    let shown = mail_line_words(
+    let time_width = typo::text_width(&time, typo::meta().tabular());
+    let columns = LineColumns::of_marks(width, time_width, if no_marks { 0.0 } else { line_marks_width() });
+    let mut shown = mail_line_words(
         columns,
         (&name, domain.as_deref()),
         (&subject, new, count.as_deref()),
@@ -1357,6 +1439,11 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
         &account_name,
         &time,
     );
+    if let Some(full) = domain.as_deref().filter(|_| domain_tail) {
+        // The mailbox of "Sent" is cut in whole parts, not at its end (issue #445).
+        let left = columns.who - typo::text_width(&shown.who, typo::body_strong()) - space::s();
+        shown.domain = Some(ellipsize_start(full, typo::meta(), left)).filter(|d| !d.is_empty());
+    }
     let marks = row(marks.into_iter().map(|(mark, _)| mark)).spacing(space::xs()).align_y(Alignment::Center);
     let cells =
         line_cells(columns, shown, marks.into(), (level, theme::text), level, count, account, (&words, hit_colour));
@@ -1918,6 +2005,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::Mail
         | View::Search(_)
         | View::All
+        | View::Sent
         | View::Archive
         | View::ReplyLater
         | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),
@@ -2178,6 +2266,27 @@ mod tests {
         assert_eq!(mail_text_level(unread), typo::body_strong());
         assert_eq!(mail_text_level(read), typo::body());
         assert_eq!(mail_row_left(true) + SELECTED_BAR, left, "selection does not move the content");
+    }
+
+    /// Issue #445: a cut keeps the "+2" of "Sent" whole, and a mailbox is cut at its start, its first
+    /// word kept – or left out when only a stump would show.
+    #[test]
+    fn a_cut_keeps_the_recipient_count_and_the_end_of_the_mailbox() {
+        let level = typo::body_strong();
+        let who = "To: Maria Schulz-Musterfrau +2";
+        for room in [60.0, 90.0, 120.0] {
+            let shown = ellipsize_who(who, level, room);
+            assert!(shown.ends_with(" +2"), "{shown:?} in {room}");
+        }
+        assert_eq!(ellipsize_who(who, level, 1000.0), who, "fits: untouched");
+        assert_eq!(ellipsize_who("Tom", level, 1000.0), "Tom");
+        let mailbox = "via anna@work.example.org";
+        let meta = typo::meta();
+        let wide = typo::text_width(mailbox, meta);
+        assert_eq!(ellipsize_start(mailbox, meta, wide), mailbox);
+        let part = ellipsize_start(mailbox, meta, wide - 1.0);
+        assert_eq!(part, "via work.example.org", "whole parts only");
+        assert_eq!(ellipsize_start(mailbox, meta, typo::text_width("via work.example.or", meta)), "", "no stump");
     }
 
     #[test]

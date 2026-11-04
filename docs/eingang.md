@@ -374,15 +374,19 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
-- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398): oben die **Kategorien** ohne Überschrift (die Gruppen mit
+- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398, #445): ganz oben **All** (bis #445 „Unfiltered“, bis #337
+  „All“: der Posteingang aller gezeigten Konten, mit der Zahl ungelesener Mails) und darunter **Sent** (deutsch
+  „Gesendet“: die gesendeten Mails aller gezeigten Konten, neueste zuerst, ohne Zahl; jede Zeile nennt den Empfänger
+  und das Postfach, über das die Mail rausging). Ein Klick auf „All“ zeigt die Liste und im breiten Fenster rechts die
+  Übersicht; der Eintrag „Overview“ der Leiste (#409) entfällt, die Übersicht erreicht man über den Pfad „Overview ›
+  All“ über der Liste. Danach die **Kategorien** ohne Überschrift (die Gruppen mit
   ihren Kategorien, sobald eine Mail eine Kategorie hat; „Unsorted“ ist eine einfache Zeile ohne Aufklappen, ein Klick
-  zeigt ihre Mails), als letzter Eintrag **Unfiltered** (bis #337 „All“: der
-  Posteingang aller gezeigten Konten, mit der Zahl ungelesener Mails; ohne Kategorien allein oben). Darunter, nur durch
+  zeigt ihre Mails). Darunter, nur durch
   Abstand getrennt (in der Leiste durch eine Linie), **Reply later** und **Set aside** (die beiden Stapel, mit der
   Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“; „Hidden“ darunter ist mit #339 entfallen), dann **Folders**
   mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern (der Ordnername, darunter klein die Adresse des Kontos, wenn das Fenster Ordner aus mehr
   als einem Konto hat) und **Pin folders ›** (deutsch „Ordner pinnen“). Das Menü
-  der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „Unfiltered“. Die Smart views
+  der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „All“. Die Smart views
   „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
   Mail mit Anhang findet das Filter-Icon im Suchfeld (#336). Die ausgeklappte Seitenleiste lässt sich am rechten
   Rand mit der Maus breiter und schmaler ziehen (#376): zwischen drei Vierteln und dem Doppelten der Breite des
@@ -605,13 +609,13 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
   meldet etwa ein Agent dieselbe Sache noch einmal, bleibt sie zurückgestellt.
 - **Regel hält die Mail fern** (etwa ein stummgeschaltetes Konto): Dann gibt es keinen Eintrag zum Zurückstellen, die
   Antwort ist `unsupported`.
-- **All, Later** (E18, Issue #301): „All“ (seit #337 „Unfiltered“) zeigt die Mails des Posteingangs aller gezeigten
+- **All, Later** (E18, Issue #301): „All“ (von #337 bis #445 „Unfiltered“) zeigt die Mails des Posteingangs aller gezeigten
   Konten mit `snoozed: false`, „Later“ (seit E19 „Follow up“) die zurückgestellten Einträge. Was zurückgestellt ist,
   entscheidet nur der Kern über das Feld `snoozed` von `mail.search_messages`: Er nimmt die Mails schon in die Abfrage
   auf, damit Seiten und Cursor stimmen.
 - **Hidden und Show again** (E18, Entscheidungen 10 und 11) sind mit Issue #339 entfallen: die Ansicht „Hidden“, das Feld
   `hidden` von `mail.search_messages` und „Show again“ (`inbox.set_mail_shown`). Früher ausgeblendete Mail steht wieder
-  in „Unfiltered“; Mail, die man nicht im Blick haben will, verschiebt ein Filter ([mail.md](mail.md#filter)).
+  in „All“; Mail, die man nicht im Blick haben will, verschiebt ein Filter ([mail.md](mail.md#filter)).
 
 #### Reply later, Set aside, Follow up (E19, Issue #315, entschieden 2026-10-26)
 
@@ -632,8 +636,8 @@ und App Feed behalten „Later“ für alle Quellen, ohne „Only if no reply“
   ganzen Unterhaltung; eine heute zurückgestellte Mail ist eine Wiedervorlage ohne Bedingung, ohne Migration
   (Entscheidung 9).
 - **Nur lokal** (Entscheidung 2): kein IMAP-Schlagwort, andere Geräte sehen die Stapel nicht.
-- **Mail auf einem Stapel verschwindet wie bei HEY** (Entscheidung 3) aus „Unfiltered“ (bis #337 „All“), den Kategorien
-  und aus der Zahl ungelesener an „Unfiltered“ (`mail.search_messages` mit `pile: without`);
+- **Mail auf einem Stapel verschwindet wie bei HEY** (Entscheidung 3) aus „All“ (von #337 bis #445 „Unfiltered“), den Kategorien
+  und aus der Zahl ungelesener an „All“ (`mail.search_messages` mit `pile: without`);
   Ordner, Suche und Zentrale zeigen sie weiter. Ein Stapel listet seine Mails aus jedem Ordner außer Papierkorb und
   Spam (`pile: reply_later` bzw. `set_aside`), die Seitenleiste zählt sie.
 - **Eine Mail liegt auf höchstens einem Stapel** (Entscheidung 4): erneut legen verlegt sie, `inbox.set_mail_pile`

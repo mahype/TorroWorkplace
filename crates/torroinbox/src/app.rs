@@ -13,9 +13,9 @@
 //! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
-//! Its sidebar (issue #337) lists the groups of categories without a title, then "Unfiltered" (the
-//! mail of every inbox, with the unread mail it holds, [`App::unfiltered_entry`]); after a gap Reply
-//! later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
+//! Its sidebar (issues #337 and #445) starts with "All" (the mail of every inbox, with the unread
+//! mail it holds) and "Sent" ([`App::top_entries`]), then lists the groups of categories without a
+//! title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
 //! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
 //! folder browser grouped by account ([`App::folder_entries`]); no sources. The mail header filters combined views by account. In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
@@ -95,8 +95,8 @@
 //! `--message=m:…` starts the mail window on that mail ([`App::open_start_mail`]). With `--demo`
 //! the entries get the demo's tasks ([`demo_task`]).
 //!
-//! The mail window starts on "Unfiltered" (task E18.4, [`View::All`]): the mail of every inbox, at
-//! the end of the categories, with the piles and "Follow up" under it and "Folders" (Archive,
+//! The mail window starts on "All" (task E18.4, [`View::All`]): the mail of every inbox, on top of
+//! the sidebar, with "Sent", the categories, the piles and "Follow up" under it and "Folders" (Archive,
 //! pinned folders, "Pin folders") after them. The other windows start on the overview (task E3.9,
 //! [`View::Overview`]): the open entries in the column "Mail" and "Notifications". The app keeps
 //! which column has the
@@ -1167,11 +1167,15 @@ pub enum View {
     /// A search of mail (issue #136, the field over the list): the messages found, a page at a
     /// time, by relevance or by date; `mail.*` only.
     Search(SearchView),
-    /// "Unfiltered" of the mail window (task E18.4, decision 1 of E18; named "All" until issue #337):
-    /// the mail in the inbox of every account shown, not snoozed, newest first, a page
+    /// "All" of the mail window (task E18.4, decision 1 of E18; named "Unfiltered" from issue #337 to
+    /// issue #445): the mail in the inbox of every account shown, not snoozed, newest first, a page
     /// at a time (`MailSource::mail_by_role` with [`Role::Inbox`]); the mail window's start view, the
-    /// last row of the categories. `mail.*` only.
+    /// first row of its sidebar. `mail.*` only.
     All,
+    /// "Sent" of the mail window (issue #445): the mail in the sent folders of every account shown
+    /// ([`Role::Sent`]), newest first, a page at a time; no number, as sent mail is not unread.
+    /// `mail.*` only.
+    Sent,
     /// "Archive" under "Folders" of the mail window (task E18.4): the mail in the archive folders
     /// of every account shown ([`Role::Archive`]). `mail.*` only.
     Archive,
@@ -1199,6 +1203,7 @@ impl View {
             | View::Category(_)
             | View::Search(_)
             | View::All
+            | View::Sent
             | View::Archive
             | View::ReplyLater
             | View::SetAside => return None,
@@ -1222,7 +1227,8 @@ impl View {
             View::Mail => tr("Mail").into(),
             View::Category(view) => view.label(),
             View::Search(_) => tr("Search").into(),
-            View::All => tr("Unfiltered").into(),
+            View::All => tr("All").into(),
+            View::Sent => tr("Sent").into(),
             // The word of the folder (`mail::folder_name`), not the button's (`trc("action", …)`).
             View::Archive => tr("Archive").into(),
             View::ReplyLater => tr("Reply later").into(),
@@ -1244,6 +1250,7 @@ impl View {
             View::Category(view) => mail::group_mark(view.group).0,
             View::Search(_) => Icon::Search,
             View::All => Icon::Mail,
+            View::Sent => Icon::Send,
             View::Archive => Icon::Archive,
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
@@ -1258,7 +1265,7 @@ impl View {
         }
     }
 
-    /// A view of mail: a folder, a category, a search, "Unfiltered", "Archive", a pile, or a
+    /// A view of mail: a folder, a category, a search, "All", "Sent", "Archive", a pile, or a
     /// window of mail waiting for its folders.
     pub fn is_mail(&self) -> bool {
         matches!(
@@ -1268,6 +1275,7 @@ impl View {
                 | View::Category(_)
                 | View::Search(_)
                 | View::All
+                | View::Sent
                 | View::Archive
                 | View::ReplyLater
                 | View::SetAside
@@ -1284,7 +1292,7 @@ impl View {
     }
 
     /// Whether a mail leaves this view when it goes on a pile or off one (decision 4 of E19):
-    /// "Unfiltered" and the categories leave mail on a pile out, a pile lists only its own. A folder,
+    /// "All" and the categories leave mail on a pile out, a pile lists only its own. A folder,
     /// a search and "Archive" keep listing it, with its new pile.
     pub fn leaves_out_piles(&self) -> bool {
         matches!(self, View::All | View::Category(_) | View::ReplyLater | View::SetAside)
@@ -1308,6 +1316,7 @@ impl View {
             // typing does not flash "loading" (issue #136).
             View::Search(_) => Some("search".to_owned()),
             View::All => Some("all".to_owned()),
+            View::Sent => Some("sent".to_owned()),
             View::Archive => Some("archive".to_owned()),
             View::ReplyLater => Some("reply-later".to_owned()),
             View::SetAside => Some("set-aside".to_owned()),
@@ -1315,11 +1324,12 @@ impl View {
         }
     }
 
-    /// The folder role and snoozed mail of "All" and "Archive" (task E18.4), as
+    /// The folder role and snoozed mail of "All", "Sent" and "Archive" (task E18.4, issue #445), as
     /// `MailSource::mail_by_role` asks for them; `None` for every other view.
     pub fn by_role(&self) -> Option<(Role, Option<bool>)> {
         match self {
             View::All => Some((Role::Inbox, Some(false))),
+            View::Sent => Some((Role::Sent, None)),
             View::Archive => Some((Role::Archive, None)),
             _ => None,
         }
@@ -1481,9 +1491,9 @@ pub enum Open {
     /// A search of all mail for `has:attachment` (task E8.3; the smart view "With attachments" until
     /// issue #337, now the search field's filter), from the first account's inbox.
     Attachments,
-    /// The mail window's "Unfiltered" (task E8.3b; the smart view "Invitations" until issue #337).
+    /// The mail window's "All" (task E8.3b; the smart view "Invitations" until issue #337).
     Invitations,
-    /// "Unfiltered" with its first invitation open (in the reader of the wide window, else the
+    /// "All" with its first invitation open (in the reader of the wide window, else the
     /// panel), so its card with Accept · Maybe · Decline shows.
     Invitation,
     /// The notifications window arranged "By time" (task E8.4), where it has room for columns.
@@ -1537,7 +1547,7 @@ pub enum Open {
     AccountSync,
     /// That page's overview with its open questions: the open folder role and the sync problem.
     AccountQuestion,
-    /// "Unfiltered" (until issue #337 "With attachments") with the demo's invoice open (task M12.6)
+    /// "All" (until issue #337 "With attachments") with the demo's invoice open (task M12.6)
     /// and the menu of its first attachment open at its triangle.
     AttachmentMenu,
     /// That invoice with the menu of "Save all" open.
@@ -1553,6 +1563,8 @@ pub enum Open {
     /// That group open and shown with the navigation menu open (only the medium and narrow header
     /// have it).
     CategoryMenu,
+    /// The mail window's "Sent" below "All" (issue #445): the mail of every sent folder.
+    Sent,
     /// The mail window's "Archive" under "Folders" (task E18.4): the mail of every archive folder.
     Archive,
     /// The mail window's pile "Reply later" (task E19.4).
@@ -1575,13 +1587,13 @@ pub enum Open {
     MailOverviewError,
     /// The overview of a span without mail and an empty inbox, kept for good.
     MailOverviewEmpty,
-    /// "Unfiltered" with the demo's first newsletter open and the question "Unsubscribe from …?"
+    /// "All" with the demo's first newsletter open and the question "Unsubscribe from …?"
     /// over the window (issue #416).
     Unsubscribe,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 73] = [
+    const ALL: [(&'static str, Open); 74] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1644,6 +1656,7 @@ impl Open {
         ("category-group", Open::CategoryGroup),
         ("category", Open::Category),
         ("category-menu", Open::CategoryMenu),
+        ("sent", Open::Sent),
         ("archive", Open::Archive),
         ("reply-later", Open::ReplyLater),
         ("set-aside", Open::SetAside),
@@ -3377,7 +3390,7 @@ pub enum Message {
     StatsTable(bool),
     /// The answer to `inbox.get_stats` for this span; dropped when another span is chosen by then.
     Stats(torro_ipc::StatsRange, Result<torro_ipc::InboxStats, String>),
-    /// "Overview" in the path over the list or in the sidebar of the mail window (issue #409): closes
+    /// "Overview" in the path over the list of the mail window (issue #409): closes
     /// the mail and shows the overview – in the reader's column (wide), as a panel (medium) or in
     /// place of the list (narrow). The view and the list's place stay.
     ShowMailOverview,
@@ -3627,9 +3640,9 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
                 category_selected(&*inbox, view.categories(), limit, None, order, mail_accounts.as_deref()).await?;
             Some(page)
         }
-        // "All" and "Archive" (task E18.4): the mail of one folder role of every account shown, as
-        // the core leaves out what is snoozed.
-        View::All | View::Archive => {
+        // "All", "Sent" and "Archive" (task E18.4, issue #445): the mail of one folder role of every
+        // account shown, as the core leaves out what is snoozed.
+        View::All | View::Sent | View::Archive => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         // A pile (task E19.4): its mail from every folder of the accounts shown.
@@ -3704,7 +3717,7 @@ async fn category_selected<S: MailSource>(
     }
 }
 
-/// The page of "All" or "Archive" (`view`, task E18.4) from `cursor` on: one
+/// The page of "All", "Sent" or "Archive" (`view`, task E18.4, issue #445) from `cursor` on: one
 /// `MailSource::mail_by_role` for every account (`accounts` `None`) or the one chosen; with several
 /// chosen, the core's pages walked as [`category_selected`] does, keeping the chosen accounts' mail,
 /// so the cursor stays the core's and "Load more" skips nothing. Empty for any other view and for no
@@ -3718,8 +3731,8 @@ async fn role_selected<S: MailSource>(
     accounts: Option<&[String]>,
 ) -> Result<MailPage, String> {
     let Some((role, snoozed)) = view.by_role() else { return Ok(MailPage::of(Vec::new(), None)) };
-    // "All" leaves the mail on a pile out (task E19.4, decision 3 of E19); "Archive" is where it
-    // lies as well.
+    // "All" leaves the mail on a pile out (task E19.4, decision 3 of E19); "Sent" and "Archive" are
+    // where it lies as well.
     let pile = (*view == View::All).then_some(PileFilter::Without);
     let ask = |account: Option<String>, limit: u32, cursor: Option<String>| async move {
         let find = MailByRole { role, account, snoozed, pile, order, limit, cursor };
@@ -3976,6 +3989,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::Info) => View::Info,
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
+                Some(Open::Sent) => View::Sent,
                 Some(Open::Archive) => View::Archive,
                 Some(Open::ReplyLater | Open::Focus) => View::ReplyLater,
                 Some(Open::SetAside) => View::SetAside,
@@ -3994,7 +4008,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 // The first mail of "All" in the mail window (task E18.4).
                 Some(Open::MailEntry | Open::MailActions | Open::MailGroup) if mail_window => View::All,
                 Some(Open::MailEntry | Open::MailActions | Open::MailGroup) => View::ForMe,
-                // "Unfiltered" holds the demo's invoice and invitations (issue #337).
+                // "All" holds the demo's invoice and invitations (issue #337).
                 Some(
                     Open::AttachmentMenu
                     | Open::SaveAllMenu
@@ -5966,7 +5980,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.mail_overview_shown() && self.class() != SizeClass::Wide
     }
 
-    /// "Overview" in the path or the sidebar (issue #409): closes the mail and shows the overview.
+    /// "Overview" in the path over the list (issue #409; the sidebar row went in #445): closes the mail and shows the overview.
     /// The view, the cursor and the list's place stay; the numbers are asked for once it shows
     /// ([`App::follow_mail_overview`]).
     fn show_mail_overview(&mut self) -> Task<Message> {
@@ -6321,7 +6335,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// "Reply later", "Set aside" and "Remove from …" on the mail `id` (task E19.4, decisions 3 and 4
     /// of E19): `MailSource::set_mail_pile` with `pile` (`None`: off its pile). The row leaves a list
-    /// that leaves mail on a pile out ([`View::leaves_out_piles`]: "Unfiltered", a category, a
+    /// that leaves mail on a pile out ([`View::leaves_out_piles`]: "All", a category, a
     /// pile), as when it is archived ([`App::take_out`]); in a folder, a search and "Archive"
     /// it stays with its new pile. The numbers on the piles follow at once. The hint ("On Reply
     /// later.", "Set aside.", "Removed from Reply later.", "Removed from Set aside.") offers to undo it with the pile the mail lay on before
@@ -7517,8 +7531,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     category_selected(&*inbox, categories, mail::PAGE, Some(cursor), order, selected.as_deref()).await
                 })
             }
-            // "All" and "Archive" (task E18.4): the next page of the same role and fields.
-            View::All | View::Archive => {
+            // "All", "Sent" and "Archive" (task E18.4): the next page of the same role and fields.
+            View::All | View::Sent | View::Archive => {
                 let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
                 Box::pin(async move {
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
@@ -10789,6 +10803,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             None if self.view.search().is_some_and(|search| !search.query.is_empty()) => {
                 self.found.total.map_or_else(|| self.messages.len().to_string(), |total| total.to_string())
             }
+            // "All" counts its unread mail, as in the sidebar: "Overview › All 60" (issue #445).
+            None if self.view == View::All => number(self.unread_all).map(|n| n.to_string()).unwrap_or_default(),
             None if self.view.is_mail() => String::new(),
             // As in the sidebar: what is for the user; "Info" lies folded. The notifications window
             // counts all it shows in "New" (task E8.4): its cards show both lanes.
@@ -11063,8 +11079,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     ///
     /// The mail window lists Reply later and Set aside – with the mail they hold (task E19.4) – and
     /// Follow up, and no sources: they are all mail accounts, whose folders follow
-    /// ([`App::folder_entries`]). "Unfiltered" stands above them, at the end of the categories
-    /// ([`App::unfiltered_entry`], issue #337).
+    /// ([`App::folder_entries`]). "All" and "Sent" stand above them, on top of the sidebar
+    /// ([`App::top_entries`], issue #445).
     fn nav_entries(&self) -> (Vec<NavEntry>, Vec<NavEntry>) {
         let kind = self.launch.kind;
         let entry = |view: View, count: Option<usize>| NavEntry {
@@ -11150,23 +11166,25 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         (views, sources)
     }
 
-    /// "Unfiltered" of the mail window (issue #337, "All" before): the mail of every inbox with the
-    /// unread mail it holds (decision 4 of E18), the last row of the categories – the only one while
-    /// no mail has a category. None in the other windows and in a window of mail only.
-    fn unfiltered_entry(&self) -> Option<NavEntry> {
+    /// The two rows on top of the mail window's sidebar (issue #445): "All" – the mail of every inbox
+    /// with the unread mail it holds (decision 4 of E18), chosen while its list shows – and "Sent",
+    /// the sent mail of every account, without a number. The overview has no row: it opens beside
+    /// "All" and from the path over the list ([`App::mail_path`]). Empty in the other windows and in
+    /// a window of mail only.
+    fn top_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail || self.mail_only {
-            return None;
+            return Vec::new();
         }
-        let view = View::All;
-        Some(NavEntry {
+        let entry = |view: View, count: Option<usize>| NavEntry {
             mark: Mark::Icon(view.icon()),
             label: view.name(),
-            count: number(self.unread_all),
+            count,
             active: view == self.view && !self.sorting && !self.is_insights(),
             view,
             target: Target::View,
             detail: None,
-        })
+        };
+        vec![entry(View::All, number(self.unread_all)), entry(View::Sent, None)]
     }
 
     /// The group "Categories" of the mail window's sidebar (task E12.8, `docs/kategorien.md`):
@@ -11195,7 +11213,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             let unread: u32 = of_group.iter().map(|held| held.unread).sum();
             // "Unsorted" holds only "Other" out of the box: unfolding it would show the same mail
-            // once more (issue #398). It is one row that shows the group, like "Unfiltered".
+            // once more (issue #398). It is one row that shows the group, like "All".
             let folds = group != CategoryGroup::Unsorted;
             let open = folds && self.open_groups.contains(&group);
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
@@ -11596,24 +11614,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         };
         // What the mail is (task E12.8), on top and without a title (issue #337): the five groups,
         // with the categories of an open one indented under it (issue #300), once at least one mail
-        // has a category; then "Unfiltered", which the mail window always has.
+        // has a category. On top of them "All" and "Sent", which the mail window always has (issue #445).
         let mut items: Vec<Element<'a, Message>> = Vec::new();
-        // "Overview" of the mail window on top (issue #409), chosen while it shows.
-        if self.launch.kind == Kind::Mail && !self.mail_only {
-            items.push(widgets::sidebar_item_in(
-                mode,
-                Mark::Icon(Icon::ChartColumn),
-                tr("Overview"),
-                Trail::None,
-                self.mail_overview_shown(),
-                Message::ShowMailOverview,
-            ));
+        let top = self.top_entries();
+        let categories = self.category_entries();
+        let gap = !top.is_empty() && !categories.is_empty();
+        items.extend(top.into_iter().map(row));
+        if gap {
             items.push(widgets::sidebar_gap_in(mode));
         }
-        for branch in self.category_entries() {
+        for branch in categories {
             items.extend(self.category_rows(mode, branch));
         }
-        items.extend(self.unfiltered_entry().map(row));
         // The views: in the mail window the piles, Follow up and Hidden, set apart from the
         // categories by a gap without a title (issue #337).
         if !self.mail_only && !views.is_empty() {
@@ -11720,9 +11732,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
         };
         let mut sections = Vec::new();
-        // As in the sidebar (issue #337): the groups, and the categories of an open one nested under
-        // them (issue #300), then "Unfiltered", in one section without a title.
-        let mut top: Vec<_> = self
+        // As in the sidebar (issue #445): "All" and "Sent" in a section of their own, then the groups,
+        // and the categories of an open one nested under them (issue #300), in one without a title.
+        let first: Vec<_> = self.top_entries().into_iter().map(item).collect();
+        if !first.is_empty() {
+            sections.push(MenuSection::new(first));
+        }
+        let top: Vec<_> = self
             .category_entries()
             .into_iter()
             .flat_map(|branch| {
@@ -11737,7 +11753,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 std::iter::once(group).chain(children).collect::<Vec<_>>()
             })
             .collect();
-        top.extend(self.unfiltered_entry().map(item));
         if !top.is_empty() {
             sections.push(MenuSection::new(top));
         }
@@ -12178,7 +12193,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.cursor = self.messages.first().map(|message| message.id.clone());
                 self.reading = self.cursor.is_some();
             }
-            // The first invitation of "Unfiltered" (issue #337; "Invitations" before), so its card shows.
+            // The first invitation of "All" (issue #337; "Invitations" before), so its card shows.
             Some(Open::Invitation) => {
                 let invites = |message: &&MessageSummary| message.invite.is_some();
                 let first = self.messages.iter().find(invites).or(self.messages.first());
@@ -12236,7 +12251,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     _ => {}
                 }
             }
-            // The demo's invoice in "Unfiltered" (task M12.6): two PDFs and a guessed category.
+            // The demo's invoice in "All" (task M12.6): two PDFs and a guessed category.
             Some(open @ (Open::AttachmentMenu | Open::SaveAllMenu | Open::AttachmentSaved)) => {
                 let invoice = |message: &&MessageSummary| {
                     message.category.is_some_and(|held| held.category == torro_mail::Category::Invoice)
@@ -13230,11 +13245,7 @@ mod tests {
         let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.launch.kind.app().window_class, "torro-inbox-mail");
         assert_eq!((app.view.clone(), app.column), (View::All, Column::Mail));
-        assert_eq!(
-            app.title(),
-            trf("Mail · {view}", &[("view", &tr("Unfiltered"))]),
-            "it starts on \"Unfiltered\" (task E18.4)"
-        );
+        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("All"))]), "it starts on \"All\" (task E18.4)");
     }
 
     /// A workspace template stores the window's command line (`/proc/<pid>/cmdline`) and starts it
@@ -16079,10 +16090,10 @@ mod tests {
     }
 
     /// Issue #337: the demo states of the smart views that are gone still open – `attachments` searches
-    /// for `has:attachment` without the menu, `invitation` reads the first invitation of "Unfiltered",
-    /// and the others open "Unfiltered".
+    /// for `has:attachment` without the menu, `invitation` reads the first invitation of "All",
+    /// and the others open "All".
     #[test]
-    fn the_demo_states_of_the_smart_views_open_the_search_and_unfiltered() {
+    fn the_demo_states_of_the_smart_views_open_the_search_and_all() {
         let mut app = loaded(&["--source", "mail", "--open", "attachments"]);
         load(&mut app);
         load(&mut app);
@@ -16882,11 +16893,11 @@ mod tests {
     /// Task E18.4: the views without a number but the piles, then "Folders" with Archive, the
     /// pinned folders and "Pin folders" with its chevron; no sources, no "For me", "Info" or "Done".
     /// The menu has the same. Task E19.4: Reply later · Set aside · Follow up – the piles
-    /// with the mail they hold (`count_in_pile`), "Later" no more. Issue #337: "Unfiltered" (once
+    /// with the mail they hold (`count_in_pile`), "Later" no more. Issue #337: "All" (once
     /// "All") with the unread mail of every inbox at the end of the categories, the start view; no
     /// "Smart views". Issue #339: no "Hidden".
     #[test]
-    fn the_mail_windows_sidebar_lists_unfiltered_its_piles_and_folders() {
+    fn the_mail_windows_sidebar_lists_all_sent_its_piles_and_folders() {
         let mut app = mail_window(Density::Comfortable, &[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
@@ -16911,12 +16922,16 @@ mod tests {
         let counts: Vec<Option<usize>> = views.iter().map(|entry| entry.count).collect();
         assert_eq!(counts, [Some(2), Some(1), None], "the piles have numbers");
         assert!(views.iter().all(|entry| !entry.active), "no pile is the start view");
-        let unfiltered = app.unfiltered_entry().expect("the mail window has Unfiltered");
-        assert_eq!(unfiltered.label, tr("Unfiltered"));
-        assert_eq!((unfiltered.view.clone(), unfiltered.mark), (View::All, Mark::Icon(Icon::Mail)));
-        assert_eq!(unfiltered.count, Some(unread as usize), "the unread mail of every inbox");
-        assert!(unfiltered.active, "Unfiltered is the start view");
-        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("Unfiltered"))]));
+        // Issue #445: "All" and "Sent" on top; the overview and "Unfiltered" have no row.
+        let top = app.top_entries();
+        assert_eq!(top.iter().map(|entry| entry.label.clone()).collect::<Vec<_>>(), [tr("All"), tr("Sent")]);
+        let (all, sent) = (&top[0], &top[1]);
+        assert_eq!((all.view.clone(), all.mark), (View::All, Mark::Icon(Icon::Mail)));
+        assert_eq!(all.count, Some(unread as usize), "the unread mail of every inbox");
+        assert!(all.active && !sent.active, "All is the start view");
+        assert_eq!(app.count_note(), unread.to_string(), "the path reads \"Overview › All 60\"");
+        assert_eq!((sent.view.clone(), sent.mark, sent.count), (View::Sent, Mark::Icon(Icon::Send), None));
+        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("All"))]));
         assert!(sources.is_empty(), "every source is a mail account, listed by its folders");
         assert!(!app.mail_groups().is_empty(), "the folders of every account");
 
@@ -16952,7 +16967,7 @@ mod tests {
         app.folders.retain(|folder| folder.account == pin.account);
         let first = app.folder_entries().into_iter().next().expect("the pinned folder");
         assert_eq!((first.label, first.detail), (pinned, None));
-        assert!(overview_at(&["--view", "hub"]).unfiltered_entry().is_none(), "Unfiltered is the mail window's");
+        assert!(overview_at(&["--view", "hub"]).top_entries().is_empty(), "All and Sent are the mail window's");
         assert!(overview_at(&["--view", "hub"]).folder_entries().is_empty(), "folders are the mail window's");
         for open in ["menu", "drawer"] {
             for size in SIZES {
@@ -17033,6 +17048,49 @@ mod tests {
         assert!(page.expect("a page").messages.iter().all(|message| message.account == both[1]));
     }
 
+    /// Issue #445: "Sent" lists the mail of the sent folders of every account, newest first, with
+    /// the fields of "Archive" (no snoozed filter, no pile filter); `--open sent` starts on it; with
+    /// one account chosen it lists only that account's mail.
+    #[test]
+    fn sent_lists_the_sent_mail_of_every_account_newest_first() {
+        assert_eq!(View::Sent.by_role(), Some((Role::Sent, None)));
+        assert!(View::Sent.is_mail() && View::Sent.filter().is_none() && !View::Sent.leaves_out_piles());
+        assert_eq!((View::Sent.name(), View::Sent.icon()), (tr("Sent").to_owned(), Icon::Send));
+        assert_eq!(View::Sent.listing().as_deref(), Some("sent"));
+        assert_eq!(mail_window(Density::Compact, &["--open", "sent"]).view, View::Sent);
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Show(View::Sent));
+        load(&mut app);
+        assert_eq!(message_ids(&app), ["m:w15", "m:w7", "m:w16", "m:p4", "m:p8"], "both accounts, newest first");
+        let accounts: std::collections::HashSet<_> =
+            app.messages.iter().map(|message| message.account.clone()).collect();
+        assert_eq!(accounts.len(), 2, "mail of two accounts");
+        draw_everywhere(&mut app);
+        let private = torro_inbox::demo::MAIL_ACCOUNTS[1].to_owned();
+        app.mail_accounts = Some(vec![private.clone()]);
+        load(&mut app);
+        assert_eq!(message_ids(&app), ["m:p4", "m:p8"], "one account chosen");
+        app.mail_accounts = Some(Vec::new());
+        load(&mut app);
+        assert!(app.messages.is_empty(), "no account shown");
+        let _ = app.view();
+    }
+
+    /// Issue #445: a click on "All" while a mail is open in the wide window closes it and shows the
+    /// overview beside the list.
+    #[test]
+    fn all_closes_the_open_mail_and_shows_the_overview_beside_it() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        deliver_overview(&mut app);
+        let first = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(first));
+        assert!(!app.mail_overview_shown(), "a mail is open");
+        let all = app.top_entries().into_iter().next().expect("All on top");
+        let _ = app.update(all.message());
+        assert!(app.mail_overview_shown() && app.view == View::All, "the overview beside All");
+    }
+
     /// Runs the last change of a pile the window started against the demo, hands the answer to
     /// `update` as the task would, and loads the view again (task E19.4).
     fn deliver_pile(app: &mut App<DemoSource>) {
@@ -17046,7 +17104,7 @@ mod tests {
 
     /// Task E19.4: "Reply later" and "Set aside" are views of mail of their own – their names, icons,
     /// listings and `--open` words –, list their pile through `mail_in_pile` from every folder and load
-    /// more from its cursor; "Unfiltered" and the categories leave their mail out.
+    /// more from its cursor; "All" and the categories leave their mail out.
     #[test]
     fn the_piles_list_their_mail_and_load_more() {
         for (view, word, name, icon) in [
@@ -18392,7 +18450,7 @@ mod tests {
         for open in [&[][..], &["--open", "overview"], &["--open", "info"], &["--open", "done"]] {
             let app = mail_window(Density::Compact, open);
             assert_eq!(app.view, View::All, "{open:?}");
-            assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("Unfiltered"))]));
+            assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("All"))]));
         }
         for open in ["mail-entry", "mail-actions", "mail-group"] {
             let app = mail_window(Density::Compact, &["--open", open]);
@@ -19628,7 +19686,7 @@ mod tests {
         assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Mute), true));
     }
 
-    /// Task E8.11 (finding 3): in "Unfiltered" (issue #337; "Invitations" before) an invitation's card's
+    /// Task E8.11 (finding 3): in "All" (issue #337; "Invitations" before) an invitation's card's
     /// "Later" and "…" act on the mail's entry in "For me", and `s` does the same on the message under
     /// the cursor.
     #[test]
@@ -19713,7 +19771,7 @@ mod tests {
         assert!(matches!(app.sent.last(), Some(Sent::MailDone(ids)) if *ids == [first.clone()]), "e");
     }
 
-    /// Task E8.3b: "Unfiltered" (issue #337; "Invitations" before) holds the invitations of every
+    /// Task E8.3b: "All" (issue #337; "Invitations" before) holds the invitations of every
     /// account; Accept sends `mail.respond_to_invitation` once until the core answered, and the answer
     /// stays on the card and in the reader, also over later loads.
     #[test]

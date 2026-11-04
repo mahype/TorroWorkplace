@@ -22,7 +22,7 @@
 //!   asks with `include_html`).
 //! - [`list`] draws a folder's messages – rows, or cards in the comfortable density of the mail
 //!   window (task E8.3, [`message_card`]), in the mail window without buttons (task E14.2,
-//!   [`MailList::bare`]) – and the views of every account's mail ("Unfiltered", a category, a
+//!   [`MailList::bare`]) – and the views of every account's mail ("All", a category, a
 //!   search). [`body`] is the whole mail for the
 //!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3), the text in
 //!   the reading level (`typo::read()`); while no mail is open the overview keeps its column (issue
@@ -1785,6 +1785,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             }
             // The views of every account's mail (task E18.4).
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
+            View::Sent => (Icon::Send, tr("No sent mail."), tr("Mail you send shows up here.")),
             View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
             // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
             View::ReplyLater => (
@@ -1843,7 +1844,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         let flag = widgets::with_tooltip(small_icon(Icon::Flag, Some(data.attention)), tr("Flagged"));
         marks.push((flag, icon::SIZE_SM));
     }
-    let (name, domain) = sender_parts(message.from.as_ref());
+    let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
     let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
     let lines = list::MailLines {
@@ -1858,6 +1859,9 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         account,
         account_name: None,
         hits: data.hits(&message.id),
+        face,
+        domain_tail: *data.view == View::Sent,
+        no_marks: no_marks(data),
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -1893,7 +1897,7 @@ fn row_buttons<'a>(data: &MailList<'_>, message: &MessageSummary) -> Vec<RowActi
 
 /// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row and, as
 /// chips, "Attachments" and "Flagged"; no buttons (task E14.2). An invitation (task E8.3b)
-/// shows when it is and the answer given as chips. In a search, "Unfiltered" and
+/// shows when it is and the answer given as chips. In a search, "All" and
 /// "Archive", which hold every account's mail, the head names the account.
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut chips = Vec::new();
@@ -1908,7 +1912,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if message.flags.contains(&Flag::Flagged) {
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
-    let (name, domain) = sender_parts(message.from.as_ref());
+    let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
     let several = matches!(data.view, View::Search(_) | View::All | View::Archive) && data.accounts.len() > 1;
     let lines = list::MailLines {
@@ -1923,6 +1927,9 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         account,
         account_name: several.then(|| account_name(&message.account)),
         hits: data.hits(&message.id),
+        face,
+        domain_tail: *data.view == View::Sent,
+        no_marks: false,
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -1976,6 +1983,48 @@ pub fn message_card_height(message: &MessageSummary, width: f32) -> f32 {
     let chips = message.has_attachments || message.flags.contains(&Flag::Flagged) || message.invite.is_some();
     let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
     list::mail_card_height(list::preview_lines(snippet.as_deref(), width), chips)
+}
+
+/// Whether no message of "Sent" on the page has a mark (what the category, an invitation, an attachment
+/// or a flag show): a line then leaves the marks' column out (issue #445).
+fn no_marks(data: &MailList<'_>) -> bool {
+    *data.view == View::Sent
+        && !data.messages.iter().any(|message| {
+            message.category.is_some()
+                || message.invite.is_some()
+                || message.has_attachments
+                || message.flags.contains(&Flag::Flagged)
+        })
+}
+
+/// The name, the domain and the avatar's text of `message`'s row or card in `view`: the sender's, or
+/// in "Sent" the recipient's and the mailbox ([`sent_lines`]).
+fn row_names(view: &View, message: &MessageSummary) -> (String, Option<String>, Option<String>) {
+    if *view == View::Sent {
+        let (name, mailbox, face) = sent_lines(message);
+        return (name, mailbox, Some(face));
+    }
+    let (name, domain) = sender_parts(message.from.as_ref());
+    (name, domain, None)
+}
+
+/// What a row or card of "Sent" names (issue #445): "To: <first recipient>" – with "+n" from two
+/// recipients on – in place of the sender, the mailbox it went out through ("via <address>", the whole
+/// address, as two accounts may share a domain) in place of the sender's domain, and the text the
+/// avatar takes its initials from, the first recipient's name (none: "?").
+pub fn sent_lines(message: &MessageSummary) -> (String, Option<String>, String) {
+    let first = message.to.first();
+    let recipient = match first {
+        Some(_) => sender_name(first),
+        None => tr("No recipient").to_owned(),
+    };
+    let name = match message.to.len() {
+        0 | 1 => trf("To: {recipient}", &[("recipient", &recipient)]),
+        more => trf("To: {recipient} +{more}", &[("recipient", &recipient), ("more", &(more - 1))]),
+    };
+    let face = if first.is_some() { recipient } else { String::new() };
+    let mailbox = trf("via {account}", &[("account", &address(&message.account))]);
+    (name, Some(mailbox), face)
 }
 
 /// The name of the account `mail:<address>` on a card: the domain of its address, as a row names
@@ -4758,6 +4807,29 @@ mod tests {
         let categories = vec![CategoryInfo::of_with_group(&def, 0, 0, Some(&info))];
         assert_eq!(group_look(&categories, own), (Icon::Users, 4));
         assert_eq!(group_look(&[], CategoryGroup::Unsorted), (Icon::CircleDashed, 4));
+    }
+
+    /// Issue #445: a row of "Sent" names the first recipient ("+2" from three on) and the mailbox
+    /// with its whole address, and the avatar takes the recipient's initials; without a recipient
+    /// the name says so and the avatar shows "?".
+    #[test]
+    fn a_sent_row_names_the_recipient_and_the_mailbox() {
+        let sample = demo::mail_sample(now());
+        let summary =
+            |id: &str| sample.iter().find(|message| message.summary.id == id).expect("in the sample").summary.clone();
+        let (name, mailbox, face) = sent_lines(&summary("m:w15"));
+        assert_eq!(name, trf("To: {recipient} +{more}", &[("recipient", &"Maria Schulz"), ("more", &2)]));
+        assert_eq!(mailbox, Some(trf("via {account}", &[("account", &"anna@work.example.org")])));
+        assert_eq!(list::initials(&face), "MS");
+        let (name, mailbox, face) = sent_lines(&summary("m:p8"));
+        assert_eq!(name, trf("To: {recipient}", &[("recipient", &"Clara Berg")]));
+        assert_eq!(mailbox, Some(trf("via {account}", &[("account", &"anna@example.org")])));
+        assert_eq!(list::initials(&face), "CB");
+        let mut nobody = summary("m:p8");
+        nobody.to.clear();
+        let (name, _, face) = sent_lines(&nobody);
+        assert_eq!(name, trf("To: {recipient}", &[("recipient", &tr("No recipient"))]));
+        assert_eq!(list::initials(&face), "?");
     }
 
     /// The click of a reading in the tests: open, the default.
