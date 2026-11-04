@@ -2711,7 +2711,9 @@ fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
         }
         Some(Ok(_)) => match html_filling(reading) {
             // Out to the panel's edges; the note stays in line with the title (16 from the edge).
-            Some(html) => vec![panel::bleed(html_letter(html, Padding::ZERO.left(space::l()).right(space::l())))],
+            Some(html) => {
+                vec![panel::bleed(html_letter(html, Padding::ZERO.left(space::l()).right(space::l()), space::l()))]
+            }
             None => vec![reading_column(letter(reading).width(Fill))],
         },
     }
@@ -2735,10 +2737,11 @@ fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
 /// The mail's HTML from edge to edge of its parent (issue #377): no padding around it and no limit to
 /// its width, so its background paints up to the edges and its content places itself; the note under
 /// it keeps `note_padding`, as the text of a plain mail does. A mail without a background of its own
-/// keeps its text off the edge by the note's left side (issue #447), in line with the head.
-fn html_letter<'a>(html: HtmlReading<'a>, note_padding: Padding) -> Element<'a, Message> {
+/// keeps its text off the edge (issue #447): by the note's left side at the sides, in line with the
+/// head, and by `top` above and below, as a text mail stands under the line.
+fn html_letter<'a>(html: HtmlReading<'a>, note_padding: Padding, top: f32) -> Element<'a, Message> {
     let note = container(html_note()).padding(note_padding);
-    column![html_view(html).margin(note_padding.left), note].spacing(space::m()).width(Fill).into()
+    column![html_view(html).margin(note_padding.left).margin_vertical(top), note].spacing(space::m()).width(Fill).into()
 }
 
 /// The widest the mail's text or HTML stands in a reader or panel `width` wide (issue #291, the reading
@@ -2877,7 +2880,7 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
         Some(Ok(_)) => match html_filling(reading) {
             Some(html) => {
                 let note = Padding { left: pad.left, right: pad.right, bottom: pad.bottom, top: 0.0 };
-                container(html_letter(html, note)).width(widths.html).into()
+                container(html_letter(html, note, pad.top)).width(widths.html).into()
             }
             None => container(letter(reading).width(widths.mail)).padding(pad).into(),
         },

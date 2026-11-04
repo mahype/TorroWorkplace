@@ -332,6 +332,8 @@ struct Inner {
     press: Option<Press>,
     /// The margin for a mail without a background of its own, as the view asks ([`Content::set_margin`]).
     margin: f32,
+    /// The margin above and below such a mail ([`Content::set_margin_vertical`]).
+    margin_y: f32,
     /// Whether the mail has no background of its own ([`own_background`]), found at the first layout.
     plain: Option<bool>,
     /// The user agent style sheet with the margin in place of the browser's, while one is added.
@@ -395,6 +397,7 @@ impl Content {
             generation: 0,
             press: None,
             margin: BROWSER_MARGIN,
+            margin_y: BROWSER_MARGIN,
             plain: None,
             margin_css: None,
         };
@@ -429,6 +432,16 @@ impl Content {
         let Ok(mut inner) = self.inner.try_borrow_mut() else { return };
         if inner.margin != margin {
             inner.margin = margin;
+            inner.fit = None;
+        }
+    }
+
+    /// The margin above and below a mail without a background of its own ([`crate::HtmlView::margin_vertical`]);
+    /// lays the mail out again at the next use when it changed.
+    pub(crate) fn set_margin_vertical(&self, margin: f32) {
+        let Ok(mut inner) = self.inner.try_borrow_mut() else { return };
+        if inner.margin_y != margin {
+            inner.margin_y = margin;
             inner.fit = None;
         }
     }
@@ -574,26 +587,31 @@ impl Inner {
         self.zoom = 1.0;
         self.doc.set_viewport(fit.viewport(1.0));
         self.doc.resolve(0.0);
-        if self.apply_margin() {
+        if self.apply_margin(1.0) {
             self.doc.resolve(0.0);
         }
         let available = fit.logical_width();
         let needed = content_width(&self.doc);
         if needed > available + 1.0 {
-            self.zoom = (available / needed).max(MIN_ZOOM);
+            // The asked margin stays as wide on the screen as asked, on both sides: it is taken out of
+            // what the zoom has to fit, and widened in the document by what the zoom shrinks it.
+            let asked = self.margin_css.is_some();
+            let (inner, reserve) = if asked { (needed - self.margin, 2.0 * self.margin) } else { (needed, 0.0) };
+            self.zoom = ((available - reserve) / inner).max(MIN_ZOOM);
             self.doc.set_viewport(fit.viewport(self.zoom));
+            self.apply_margin(self.zoom);
             self.doc.resolve(0.0);
         }
         self.fit = Some(fit);
         self.measure();
     }
 
-    /// Puts the asked margin at the sides of `body` of a mail without a background of its own (above
-    /// and below it keeps the browser's, so its text does not touch the edge of a light paper in a dark
-    /// window), as a user agent style sheet, so a margin the mail sets itself still wins. `true` when the styles changed and the mail
+    /// Puts the asked margins at the sides and above and below `body` of a mail without a background of
+    /// its own (the browser's 8 unless asked, so its text does not touch the edge of a light paper in a
+    /// dark window), as a user agent style sheet, so a margin the mail sets itself still wins. `true` when the styles changed and the mail
     /// must be resolved again. Whether the mail has a background is looked at once, after its first
     /// styling: it does not change with the width.
-    fn apply_margin(&mut self) -> bool {
+    fn apply_margin(&mut self, zoom: f32) -> bool {
         let plain = match self.plain {
             Some(plain) => plain,
             None => {
@@ -602,8 +620,9 @@ impl Inner {
                 plain
             }
         };
-        let css = (plain && self.margin != BROWSER_MARGIN)
-            .then(|| format!("body {{ margin: {BROWSER_MARGIN}px {}px; }}", self.margin));
+        // In the document's pixels: a zoomed-out mail keeps its margin as wide on the screen.
+        let css = (plain && (self.margin != BROWSER_MARGIN || self.margin_y != BROWSER_MARGIN))
+            .then(|| format!("body {{ margin: {}px {}px; }}", self.margin_y / zoom, self.margin / zoom));
         if css == self.margin_css {
             return false;
         }
