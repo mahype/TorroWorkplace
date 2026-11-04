@@ -3390,7 +3390,7 @@ pub enum Message {
     StatsTable(bool),
     /// The answer to `inbox.get_stats` for this span; dropped when another span is chosen by then.
     Stats(torro_ipc::StatsRange, Result<torro_ipc::InboxStats, String>),
-    /// "Overview" in the path over the list or in the sidebar of the mail window (issue #409): closes
+    /// "Overview" in the path over the list of the mail window (issue #409): closes
     /// the mail and shows the overview – in the reader's column (wide), as a panel (medium) or in
     /// place of the list (narrow). The view and the list's place stay.
     ShowMailOverview,
@@ -5980,7 +5980,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.mail_overview_shown() && self.class() != SizeClass::Wide
     }
 
-    /// "Overview" in the path or the sidebar (issue #409): closes the mail and shows the overview.
+    /// "Overview" in the path over the list (issue #409; the sidebar row went in #445): closes the mail and shows the overview.
     /// The view, the cursor and the list's place stay; the numbers are asked for once it shows
     /// ([`App::follow_mail_overview`]).
     fn show_mail_overview(&mut self) -> Task<Message> {
