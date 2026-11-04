@@ -628,6 +628,8 @@ struct Letter {
     thread: &'static str,
     /// `(name, address)` of the sender; empty: Anna herself (sent mail, drafts).
     from: (&'static str, &'static str),
+    /// `(name, address)` of the recipients of sent mail; empty: the default recipient (issue #445).
+    to: &'static [(&'static str, &'static str)],
     subject: &'static str,
     /// How long before "now" it arrived.
     minutes: i64,
@@ -659,6 +661,7 @@ impl Letter {
             folder,
             thread: "",
             from: ("", ""),
+            to: &[],
             subject,
             minutes: 0,
             flags: &[],
@@ -684,7 +687,11 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
     let me = MAIL_ACCOUNTS[letter.account].trim_start_matches("mail:");
     let (name, from) = letter.from;
     let (from, to) = if from.is_empty() {
-        (address("Anna Berg", me), vec![address("", "team@work.example.org")])
+        let to = match letter.to {
+            [] => vec![address("", "team@work.example.org")],
+            people => people.iter().map(|&(name, mail)| address(name, mail)).collect(),
+        };
+        (address("Anna Berg", me), to)
     } else {
         (address(name, from), vec![address("Anna Berg", me)])
     };
@@ -944,6 +951,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
         },
         Letter {
             thread: "design",
+            to: &[("Lena Hoffmann", "lena.hoffmann@work.example.org")],
             minutes: 26 * 60,
             flags: READ,
             text: "Hi Lena,\n\ncan we move the design review to Thursday?\n\nAnna",
@@ -1022,6 +1030,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             ..Letter::new("m:p3", PRIVATE, "inbox", "Your invoice for September")
         },
         Letter {
+            to: &[("Paul Berg", "paul@example.org")],
             minutes: 3 * 24 * 60,
             flags: READ,
             text: "Thanks, see you on Sunday!",
@@ -1066,6 +1075,33 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             text: "Dinner for Mum’s birthday on the 24th? I would book the Italian place for seven.",
             pile: Some(MailPile::ReplyLater),
             ..Letter::new("m:p7", PRIVATE, "inbox", "Birthday dinner on the 24th")
+        },
+        // Sent mail for "Sent" of the mail window (issue #445): three more from both accounts, the
+        // first to three people so the row reads "+2".
+        Letter {
+            to: &[
+                ("Maria Schulz", "maria.schulz@work.example.org"),
+                ("Jonas Weber", "jonas.weber@work.example.org"),
+                ("Petra Lange", "petra.lange@work.example.org"),
+            ],
+            minutes: 75,
+            flags: READ,
+            text: "Hi all,\n\nthe offsite is booked, rooms are confirmed. Please send me your dietary needs by Friday.\n\nAnna",
+            ..Letter::new("m:w15", WORK, "sent", "Offsite: dietary needs")
+        },
+        Letter {
+            to: &[("Jonas Weber", "jonas.weber@work.example.org")],
+            minutes: 2 * 24 * 60,
+            flags: READ,
+            text: "Hi Jonas,\n\nthe budget sheet is attached to the thread, numbers for Q4 are in.\n\nAnna",
+            ..Letter::new("m:w16", WORK, "sent", "Re: Budget for Q4")
+        },
+        Letter {
+            to: &[("Clara Berg", "clara@example.org")],
+            minutes: 5 * 24 * 60,
+            flags: READ,
+            text: "Hi Clara,\n\nI can bring the cake on Saturday. Is seven o’clock still fine?\n\nAnna",
+            ..Letter::new("m:p8", PRIVATE, "sent", "Saturday cake")
         },
     ];
     letters.into_iter().map(|l| letter(now, l)).collect()
