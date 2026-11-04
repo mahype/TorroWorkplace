@@ -822,6 +822,18 @@ const WINTER_JACKETS_HTML: &str = r#"<div style="font-family:Arial,sans-serif;ma
 <p style="margin:0"><a href="https://shop.example/winter" style="color:#3b6ef0">See the collection</a></p>
 </div>"#;
 
+/// The HTML part of the demo's invoice (`m:p3`, issue #447), as invoice mails come: colours only on a
+/// narrow table, none on `html` or `body`. The reader fills its whole width all the same.
+const INVOICE_HTML: &str = r#"<table width="560" cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;border-collapse:collapse">
+<tr><td style="background:#1f3a5f;color:#ffffff;padding:16px 24px;font-size:18px">Mobile Example</td></tr>
+<tr><td style="background:#f3f5f8;padding:24px;color:#18191b;font-size:15px;line-height:22px">
+<h1 style="font-size:20px;margin:0 0 12px 0">Your invoice for September</h1>
+<p style="margin:0 0 16px 0">The amount of <b>34,90 &euro;</b> will be debited on 15 October.</p>
+<p style="margin:0"><a href="https://mobile.example/invoices/2026-09" style="background:#1f3a5f;color:#ffffff;padding:8px 16px;text-decoration:none">View invoice</a></p>
+</td></tr>
+<tr><td style="background:#e3e8ef;padding:12px 24px;font-size:12px;color:#4f535a">Mobile Example GmbH</td></tr>
+</table>"#;
+
 /// The HTML part of Lena's answer (`m:w2`), written in Outlook as the core keeps it cleaned:
 /// `MsoNormal` paragraphs under a style sheet, empty paragraphs as spacing, a signature in small
 /// grey type and the quoted mail under a rule with "From" and "Subject".
@@ -1019,6 +1031,8 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             // A guess of the model: "Invoices" is suggested with the sparkles, but a click never
             // saves by it (decision 4 of issue #290).
             category: Some(MailCategory::by_model(Category::Invoice, 0.91)),
+            // A text and an HTML part with a narrow table and no background on the page (issue #447).
+            html: Some(INVOICE_HTML),
             ..Letter::new("m:p3", PRIVATE, "inbox", "Your invoice for September")
         },
         Letter {
