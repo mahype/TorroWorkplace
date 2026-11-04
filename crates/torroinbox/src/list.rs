@@ -315,7 +315,12 @@ impl LineColumns {
     /// in every row –, the time [`line_date_width`] in a wide line and its own width in a narrow one
     /// ([`line_narrow`], at most the wide column), the title the rest.
     pub(crate) fn of(width: f32, time: f32) -> LineColumns {
-        let (room, gap, marks) = (line_room(width), cell_gap(), line_marks_width());
+        LineColumns::of_marks(width, time, line_marks_width())
+    }
+
+    /// [`LineColumns::of`] with a marks column `marks` wide: none (0) in a list without marks.
+    pub(crate) fn of_marks(width: f32, time: f32, marks: f32) -> LineColumns {
+        let (room, gap) = (line_room(width), cell_gap());
         let narrow = line_narrow(width);
         let column = if narrow { line_clock_width() } else { line_date_width() };
         let free = (room - marks - column - 3.0 * gap).max(0.0);
@@ -373,7 +378,7 @@ impl LineWords {
         account: Option<&str>,
         time: &str,
     ) -> LineWords {
-        let who_shown = typo::ellipsize(who, who_level, columns.who);
+        let who_shown = ellipsize_who(who, who_level, columns.who);
         let left = columns.who - typo::text_width(&who_shown, who_level) - space::s();
         let domain = domain.map(|domain| typo::ellipsize(domain, typo::meta(), left)).filter(|d| !d.is_empty());
         let account_room = account.map_or(0.0, |name| {
@@ -1077,7 +1082,7 @@ fn mail_text_level_in(unread: bool, strong: Level, regular: Level) -> Level {
 }
 
 fn sender_cell(name: &str, room: f32) -> (String, f32) {
-    let shown = typo::ellipsize(name, typo::body_strong(), room);
+    let shown = ellipsize_who(name, typo::body_strong(), room);
     let width = typo::text_width(&shown, typo::body_strong());
     (shown, width)
 }
@@ -1152,6 +1157,9 @@ pub(crate) struct MailLines<'a> {
     /// The `domain` is cut at its start when it does not fit (the mailbox of "Sent", whose end tells
     /// the accounts apart, issue #445).
     pub domain_tail: bool,
+    /// No row of the list has a mark: a line leaves the column of the marks out ([`LineColumns::of_marks`]);
+    /// "Sent" has few, and the column would only take the room of the names (issue #445).
+    pub no_marks: bool,
 }
 
 /// The matches of a search in a mail row or card (issue #136): the words that matched are stressed
@@ -1232,24 +1240,45 @@ impl<'a> MailLines<'a> {
             hits: None,
             face: None,
             domain_tail: false,
+            no_marks: false,
         }
     }
 }
 
-/// `text` cut at its start with "…" until it fits `max_width`; empty when not even a few letters
-/// of its end fit (issue #445: the end of a mailbox tells two accounts apart).
+/// `text` cut at its start with "…" until it fits `max_width`, its first word kept ("via …@work.example.org"):
+/// the end of a mailbox tells two accounts apart (issue #445). Empty when fewer than [`TAIL_KEPT`]
+/// letters of its end would show – a stump like "vi…" says nothing.
 fn ellipsize_start(text: &str, level: typo::Level, max_width: f32) -> String {
     if typo::text_width(text, level) <= max_width {
         return text.to_owned();
     }
-    let chars: Vec<char> = text.chars().collect();
-    for cut in 1..chars.len() {
-        let shown: String = std::iter::once('…').chain(chars[cut..].iter().copied()).collect();
+    let (head, rest) = text.split_at(text.find(' ').map_or(0, |at| at + 1));
+    let chars: Vec<char> = rest.chars().collect();
+    for cut in 1..(chars.len() + 1).saturating_sub(TAIL_KEPT) {
+        let tail: String = chars[cut..].iter().collect();
+        let shown = format!("{head}…{tail}");
         if typo::text_width(&shown, level) <= max_width {
             return shown;
         }
     }
     String::new()
+}
+
+/// The letters of the end of a mailbox a cut one keeps at least ([`ellipsize_start`]).
+const TAIL_KEPT: usize = 8;
+
+/// `who` cut with "…" to `max_width`, a trailing " +2" (the further recipients of "Sent", issue #445)
+/// kept whole: how many people it went to must not be what is cut.
+fn ellipsize_who(who: &str, level: typo::Level, max_width: f32) -> String {
+    let more = who.rsplit_once(" +").filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    match more {
+        Some((name, n)) => {
+            let tail = format!(" +{n}");
+            let room = max_width - typo::text_width(&tail, level);
+            format!("{}{tail}", typo::ellipsize(name, level, room))
+        }
+        None => typo::ellipsize(who, level, max_width),
+    }
 }
 
 /// The account a mail row or card names (`account_name`, the domain of its address), unless it is
@@ -1292,6 +1321,7 @@ fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: boo
         hits,
         face,
         domain_tail,
+        no_marks: _,
     } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
@@ -1403,12 +1433,14 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
         hits,
         face: _,
         domain_tail: _,
+        no_marks,
     } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
     let level = mail_text_level(new);
-    let columns = LineColumns::of(width, typo::text_width(&time, typo::meta().tabular()));
+    let time_width = typo::text_width(&time, typo::meta().tabular());
+    let columns = LineColumns::of_marks(width, time_width, if no_marks { 0.0 } else { line_marks_width() });
     let shown = mail_line_words(
         columns,
         (&name, domain.as_deref()),
@@ -2239,6 +2271,27 @@ mod tests {
         assert_eq!(mail_text_level(unread), typo::body_strong());
         assert_eq!(mail_text_level(read), typo::body());
         assert_eq!(mail_row_left(true) + SELECTED_BAR, left, "selection does not move the content");
+    }
+
+    /// Issue #445: a cut keeps the "+2" of "Sent" whole, and a mailbox is cut at its start, its first
+    /// word kept – or left out when only a stump would show.
+    #[test]
+    fn a_cut_keeps_the_recipient_count_and_the_end_of_the_mailbox() {
+        let level = typo::body_strong();
+        let who = "To: Maria Schulz-Musterfrau +2";
+        for room in [60.0, 90.0, 120.0] {
+            let shown = ellipsize_who(who, level, room);
+            assert!(shown.ends_with(" +2"), "{shown:?} in {room}");
+        }
+        assert_eq!(ellipsize_who(who, level, 1000.0), who, "fits: untouched");
+        assert_eq!(ellipsize_who("Tom", level, 1000.0), "Tom");
+        let mailbox = "via anna@work.example.org";
+        let meta = typo::meta();
+        let wide = typo::text_width(mailbox, meta);
+        assert_eq!(ellipsize_start(mailbox, meta, wide), mailbox);
+        let cut = ellipsize_start(mailbox, meta, wide * 0.7);
+        assert!(cut.starts_with("via …") && cut.ends_with("example.org"), "{cut:?}");
+        assert_eq!(ellipsize_start(mailbox, meta, typo::text_width("via", meta)), "", "no stump");
     }
 
     #[test]

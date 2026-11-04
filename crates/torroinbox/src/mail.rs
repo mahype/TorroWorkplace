@@ -1861,6 +1861,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         hits: data.hits(&message.id),
         face,
         domain_tail: *data.view == View::Sent,
+        no_marks: no_marks(data),
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -1928,6 +1929,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         hits: data.hits(&message.id),
         face,
         domain_tail: *data.view == View::Sent,
+        no_marks: false,
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -1981,6 +1983,18 @@ pub fn message_card_height(message: &MessageSummary, width: f32) -> f32 {
     let chips = message.has_attachments || message.flags.contains(&Flag::Flagged) || message.invite.is_some();
     let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
     list::mail_card_height(list::preview_lines(snippet.as_deref(), width), chips)
+}
+
+/// Whether no message of "Sent" on the page has a mark (what the category, an invitation, an attachment
+/// or a flag show): a line then leaves the marks' column out (issue #445).
+fn no_marks(data: &MailList<'_>) -> bool {
+    *data.view == View::Sent
+        && !data.messages.iter().any(|message| {
+            message.category.is_some()
+                || message.invite.is_some()
+                || message.has_attachments
+                || message.flags.contains(&Flag::Flagged)
+        })
 }
 
 /// The name, the domain and the avatar's text of `message`'s row or card in `view`: the sender's, or

@@ -10803,6 +10803,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             None if self.view.search().is_some_and(|search| !search.query.is_empty()) => {
                 self.found.total.map_or_else(|| self.messages.len().to_string(), |total| total.to_string())
             }
+            // "All" counts its unread mail, as in the sidebar: "Overview › All 60" (issue #445).
+            None if self.view == View::All => number(self.unread_all).map(|n| n.to_string()).unwrap_or_default(),
             None if self.view.is_mail() => String::new(),
             // As in the sidebar: what is for the user; "Info" lies folded. The notifications window
             // counts all it shows in "New" (task E8.4): its cards show both lanes.
@@ -16927,6 +16929,7 @@ mod tests {
         assert_eq!((all.view.clone(), all.mark), (View::All, Mark::Icon(Icon::Mail)));
         assert_eq!(all.count, Some(unread as usize), "the unread mail of every inbox");
         assert!(all.active && !sent.active, "All is the start view");
+        assert_eq!(app.count_note(), unread.to_string(), "the path reads \"Overview › All 60\"");
         assert_eq!((sent.view.clone(), sent.mark, sent.count), (View::Sent, Mark::Icon(Icon::Send), None));
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("All"))]));
         assert!(sources.is_empty(), "every source is a mail account, listed by its folders");

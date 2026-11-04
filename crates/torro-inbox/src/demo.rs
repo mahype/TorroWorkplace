@@ -1093,7 +1093,12 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             to: &[("Jonas Weber", "jonas.weber@work.example.org")],
             minutes: 2 * 24 * 60,
             flags: READ,
-            text: "Hi Jonas,\n\nthe budget sheet is attached to the thread, numbers for Q4 are in.\n\nAnna",
+            attachments: &[(
+                "budget-q4.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                18_400,
+            )],
+            text: "Hi Jonas,\n\nthe budget sheet is attached, numbers for Q4 are in.\n\nAnna",
             ..Letter::new("m:w16", WORK, "sent", "Re: Budget for Q4")
         },
         Letter {
