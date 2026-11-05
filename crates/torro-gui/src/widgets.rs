@@ -2495,6 +2495,96 @@ pub fn menu_button<'a, M: Clone + 'a>(
     anchored(anchor, b)
 }
 
+/// What the circle of a mail shows ([`sender_circle`], issue #458).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    /// The drawn portrait – head and shoulders – of a person (`assets/faces/portrait.svg`).
+    Portrait,
+    /// An icon in white: the mark of the mail's category, the envelope without one.
+    Icon(Icon),
+    /// Unwanted mail: the skull on deep red, never the sender's colour.
+    Junk,
+}
+
+/// The portrait of [`Face::Portrait`], its colours still to be filled in.
+const PORTRAIT: &str = include_str!("../assets/faces/portrait.svg");
+
+/// The index of the sender colour (`Palette::sender`) of `address` (issue #458): FNV-1a over the
+/// address in lower case, modulo the ten colours – the same sender has the same colour everywhere.
+pub fn sender_hue(address: &str) -> usize {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in address.trim().to_lowercase().bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    (hash % 10) as usize
+}
+
+/// The round mark in front of a mail (issue #458, the draft's list "A + Bild"), `edge` wide: `face` in
+/// white on a gradient of the sender colour at `hue` (`Palette::sender`, see [`sender_hue`]) – lighter
+/// at the top left, darker at the bottom right –, the portrait in two tones of it; [`Face::Junk`] the
+/// skull on `TORRO_RED_DEEP` whatever the hue. Without a hue the neutral `raised` surface. Room for
+/// a contact's photo (#358) and a sender's logo (#453) stays: they take the circle's place.
+pub fn sender_circle<'a, M: 'a>(face: Face, hue: Option<usize>, edge: f32) -> Element<'a, M> {
+    let mark: Element<'a, M> = match face {
+        Face::Portrait => portrait(hue, edge),
+        Face::Icon(which) => white_icon(which, edge),
+        Face::Junk => white_icon(Icon::Skull, edge),
+    };
+    container(mark)
+        .center(edge)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            let background = match (face, hue) {
+                (Face::Junk, _) => {
+                    let deep = torro_core::theme::TORRO_RED_DEEP;
+                    Background::Color(Color::from_rgb8(deep.0, deep.1, deep.2))
+                }
+                (_, Some(hue)) => {
+                    let base = p.sender[hue % p.sender.len()];
+                    let light = mix(base, Color::WHITE, 0.22);
+                    let dark = mix(base, Color::BLACK, 0.28);
+                    let gradient = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI * 0.75))
+                        .add_stop(0.0, light)
+                        .add_stop(1.0, dark);
+                    Background::Gradient(gradient.into())
+                }
+                (_, None) => Background::Color(p.raised),
+            };
+            container::Style {
+                background: Some(background),
+                border: iced::border::rounded(edge / 2.0),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// `which` in white at about half the circle's `edge`.
+fn white_icon<'a, M: 'a>(which: Icon, edge: f32) -> Element<'a, M> {
+    icon(which, (edge * 0.5).round()).style(|_, _| svg::Style { color: Some(Color::WHITE) }).into()
+}
+
+/// The portrait in the tones of `hue` (the sender colours are the same in both modes), as wide as
+/// the circle; a grey without a hue.
+fn portrait<'a, M: 'a>(hue: Option<usize>, edge: f32) -> Element<'a, M> {
+    let colours = crate::theme::Palette::dark();
+    let base = hue.map_or(colours.text_3, |hue| colours.sender[hue % colours.sender.len()]);
+    let hex = |c: Color| {
+        let [r, g, b, _] = c.into_rgba8();
+        format!("#{r:02X}{g:02X}{b:02X}")
+    };
+    let svg_text = PORTRAIT
+        .replace("#HEAD00", &hex(mix(base, Color::WHITE, 0.78)))
+        .replace("#BODY00", &hex(mix(base, Color::from_rgb8(0x10, 0x13, 0x1A), 0.5)));
+    iced::widget::svg(svg::Handle::from_memory(svg_text.into_bytes())).width(edge).height(edge).into()
+}
+
+/// `a` moved towards `b` by `t` (0: `a`, 1: `b`), alpha from `a`.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a }
+}
+
 /// The large field at the top of the mail window's sidebar that chooses the accounts shown (issue
 /// #455, `docs/prototypes/mail-layout/`): two lines without avatars – `title` in `BODY_STRONG`
 /// ("All accounts", "2 accounts", the account's domain) and `detail` in `META`, `text_3` (the names,
@@ -6622,6 +6712,24 @@ mod tests {
         }
     }
     use super::*;
+
+    /// Issue #458: a sender keeps its colour – by its address, whatever its case –, every index is one
+    /// of the ten, and the circle builds for a portrait, an icon and unwanted mail.
+    #[test]
+    fn the_sender_circle_takes_a_fixed_colour_by_address() {
+        assert_eq!(sender_hue("Anna@Example.org"), sender_hue("anna@example.org"));
+        let hues: Vec<usize> = (0..200).map(|i| sender_hue(&format!("person{i}@example.org"))).collect();
+        assert!(hues.iter().all(|&hue| hue < 10));
+        for hue in 0..10 {
+            assert!(hues.contains(&hue), "{hue} is used");
+        }
+        for face in [Face::Portrait, Face::Icon(Icon::Megaphone), Face::Junk] {
+            for hue in [None, Some(3)] {
+                let _: Element<'_, ()> = sender_circle(face, hue, 34.0);
+            }
+        }
+        assert!(PORTRAIT.contains("#HEAD00") && PORTRAIT.contains("#BODY00"), "the portrait's colours to fill in");
+    }
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {

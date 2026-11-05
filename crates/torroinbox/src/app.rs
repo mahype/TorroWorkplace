@@ -8625,6 +8625,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     let above = self.messages[..index].iter().map(|message| mail::message_card_height(message, width));
                     list::card_span(above, mail::message_card_height(message, width))
                 }
+                // The mail window's slim list (issue #458): its rows and the heads of their days.
+                Look::Rows if mail::slim(self.bare_rows()) => {
+                    mail::slim_span(&self.messages, index, mail::day_heads(&self.view)).unwrap_or_default()
+                }
                 Look::Rows => {
                     // The cursor's row carries the hub's strip below it; the mail window's rows are bare
                     // (task E14.2), as high as any.
@@ -11043,11 +11047,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let letter = self.letter.as_ref()?;
         let colours = palette(&self.theme());
         let summary = self.messages.iter().find(|message| message.id == letter.id);
-        let account = match &letter.loaded {
-            Some(Ok(mail)) => Some(mail.summary.account.as_str()),
-            _ => summary.map(|summary| summary.account.as_str()),
-        };
-        let accounts = mail::by_account(&self.folders);
         Some(Reading {
             id: &letter.id,
             categories: &self.categories,
@@ -11060,7 +11059,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             deciding: self.model_ready,
             dated: self.view.is_mail(),
             read: self.look().cards(),
-            account: account.and_then(|account| accounts.iter().position(|group| group.account == account)),
             task: self.task_of(&letter.id),
             answering: self.answering.as_deref() == Some(letter.id.as_str()),
             invite: mail::InviteSide {

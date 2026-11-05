@@ -826,6 +826,11 @@ pub struct Palette {
     /// set for colour blindness like [`Palette::chart`]. One colour per **group**, not per
     /// category: 23 colours could not stay distinguishable.
     pub category: [Rgba; 5],
+    /// The colours of the senders of mail (issue #458): the circle of a mail in the list and in the
+    /// reader takes one of them, chosen by the sender's address, the same everywhere. Ten, none of
+    /// them red – red stays for the selection, "Reply" and unwanted mail –, each dark enough for a
+    /// white mark (≥ 3:1). Colour schemes keep the suite's.
+    pub sender: [Rgba; 10],
     /// The colour of the shadow under menus, cards and dialogs; offset (0, 12) and blur 32 stay
     /// fixed in `torro_gui` (geometry, not colour).
     pub shadow: Rgba,
@@ -1293,6 +1298,20 @@ const STANDARD_DARK: Palette = Palette {
     // Waiting for me (blue), paper trail (amber), info (teal), unwanted (grey-violet), unsorted
     // (rosé, issue #338: a neutral grey would read like the teal for red-green colour blindness).
     category: [Rgba::hex(0x4C8DF0), Rgba::hex(0xCF8A2C), Rgba::hex(0x2BA39A), Rgba::hex(0xA99BD0), Rgba::hex(0xD9739A)],
+    // Blue, teal, green, olive, amber, violet, purple, indigo, slate, brown (issue #458): no red,
+    // white holds 3:1 on each, also on the lighter end of the circle's gradient.
+    sender: [
+        Rgba::hex(0x3767C8),
+        Rgba::hex(0x17807A),
+        Rgba::hex(0x2E8049),
+        Rgba::hex(0x7A6A12),
+        Rgba::hex(0xB05A0E),
+        Rgba::hex(0x6A4FC4),
+        Rgba::hex(0x9238A0),
+        Rgba::hex(0x3F4FB0),
+        Rgba::hex(0x4F6478),
+        Rgba::hex(0x8A5536),
+    ],
     shadow: Rgba::black(0.5),
     scrim: Rgba::black(0.62),
     night: Rgba::hex(0x121626),
@@ -1333,6 +1352,20 @@ const STANDARD_LIGHT: Palette = Palette {
     // The same hues stepped for the light panel, checked the same way (task E8.8b).
     chart: [Rgba::hex(0x2F6BC9), Rgba::hex(0xB8621A), Rgba::hex(0x2A9466), Rgba::hex(0xA8448C)],
     category: [Rgba::hex(0x3D77CE), Rgba::hex(0xB1741F), Rgba::hex(0x238A82), Rgba::hex(0x756990), Rgba::hex(0xB34A6E)],
+    // Blue, teal, green, olive, amber, violet, purple, indigo, slate, brown (issue #458): no red,
+    // white holds 3:1 on each, also on the lighter end of the circle's gradient.
+    sender: [
+        Rgba::hex(0x3767C8),
+        Rgba::hex(0x17807A),
+        Rgba::hex(0x2E8049),
+        Rgba::hex(0x7A6A12),
+        Rgba::hex(0xB05A0E),
+        Rgba::hex(0x6A4FC4),
+        Rgba::hex(0x9238A0),
+        Rgba::hex(0x3F4FB0),
+        Rgba::hex(0x4F6478),
+        Rgba::hex(0x8A5536),
+    ],
     chart_other: Rgba::hex(0x50545B),
     shadow: Rgba::black(0.12),
     scrim: Rgba::black(0.3),
@@ -1378,6 +1411,34 @@ mod tests {
         assert_eq!(translucent.a, 128.0 / 255.0);
         for bad in ["D50C0C", "#D50C0", "#D50C0C0", "#GG0000", "#D50C0C80FF", "", "#ÄÄÄÄÄÄ"] {
             assert_eq!(Rgba::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Issue #458: ten sender colours in both modes, none red, each carrying a white mark at 3:1.
+    #[test]
+    fn the_sender_colours_carry_white_and_are_no_red() {
+        let c = STANDARD_COLORS;
+        for palette in [&c.dark, &c.light] {
+            for colour in palette.sender {
+                assert!(Rgba::hex(0xFFFFFF).contrast(colour) >= 3.0, "{colour:?}: white below 3:1");
+                // The hue in degrees: red lies within 20° of 0.
+                let (r, g, b) = (colour.r, colour.g, colour.b);
+                let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+                let hue = if max == min {
+                    0.0
+                } else if max == r {
+                    60.0 * ((g - b) / (max - min)).rem_euclid(6.0)
+                } else if max == g {
+                    60.0 * ((b - r) / (max - min) + 2.0)
+                } else {
+                    60.0 * ((r - g) / (max - min) + 4.0)
+                };
+                let grey = max - min < 0.15;
+                assert!(grey || (20.0..=340.0).contains(&hue), "{colour:?}: red ({hue}°)");
+            }
+            let mut seen: Vec<String> = palette.sender.iter().map(|c| format!("{c:?}")).collect();
+            seen.dedup();
+            assert_eq!(seen.len(), 10, "ten colours");
         }
     }
 

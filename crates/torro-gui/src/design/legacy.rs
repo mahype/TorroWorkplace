@@ -75,6 +75,19 @@ pub const DARK: Palette = Palette {
     // New with E8.8b, nothing drew charts before: the standard's chart colours.
     chart: [hex(0x3B78D8), hex(0xC9701E), hex(0x2E9E6B), hex(0xB5509A)],
     category: [hex(0x4C8DF0), hex(0xCF8A2C), hex(0x2BA39A), hex(0xA99BD0), hex(0xD9739A)],
+    // Issue #458: new with the sender circles, as the standard gives them.
+    sender: [
+        hex(0x3767C8),
+        hex(0x17807A),
+        hex(0x2E8049),
+        hex(0x7A6A12),
+        hex(0xB05A0E),
+        hex(0x6A4FC4),
+        hex(0x9238A0),
+        hex(0x3F4FB0),
+        hex(0x4F6478),
+        hex(0x8A5536),
+    ],
     chart_other: hex(0x5C6068),
     shadow: shadow(0.5),
     scrim: black(0.62),
@@ -120,6 +133,19 @@ pub const LIGHT: Palette = Palette {
     // New with E8.8b, as in the dark palette.
     chart: [hex(0x2F6BC9), hex(0xB8621A), hex(0x2A9466), hex(0xA8448C)],
     category: [hex(0x3D77CE), hex(0xB1741F), hex(0x238A82), hex(0x756990), hex(0xB34A6E)],
+    // Issue #458: new with the sender circles, as the standard gives them.
+    sender: [
+        hex(0x3767C8),
+        hex(0x17807A),
+        hex(0x2E8049),
+        hex(0x7A6A12),
+        hex(0xB05A0E),
+        hex(0x6A4FC4),
+        hex(0x9238A0),
+        hex(0x3F4FB0),
+        hex(0x4F6478),
+        hex(0x8A5536),
+    ],
     chart_other: hex(0x50545B),
     shadow: shadow(0.12),
     scrim: black(0.3),

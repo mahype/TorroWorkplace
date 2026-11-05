@@ -1809,6 +1809,18 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
         let inner = width - list::cards_side();
         let cards = data.messages.iter().map(|message| message_card(data, message, inner));
         rows = rows.push(container(column(cards).spacing(size::card_gap())).padding(list::cards_inset()));
+    } else if slim(data.bare) {
+        // The mail window's slim list (issue #458): two lines a mail, under the head of its day.
+        let heads = day_heads(data.view);
+        let mut day = None;
+        for message in data.messages {
+            let this = local_day(message.date);
+            if heads && day != Some(this) {
+                rows = rows.push(list::day_head(day_label(this, local_day(data.now))));
+                day = Some(this);
+            }
+            rows = rows.push(slim_row(data, message, width));
+        }
     } else {
         rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
     }
@@ -1881,6 +1893,113 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     .on_right_press(Message::ContextMail(message.id.clone()))
     .into();
     // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
+    if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
+}
+
+/// Whether a list of mail is the slim one of issue #458: the mail window's (`bare`), in a design that
+/// draws its lists as rows – Console's single lines (`style = "line"`) and cards stay as they are.
+pub fn slim(bare: bool) -> bool {
+    bare && layout::list().style == torro_core::design::ListStyle::Rows
+}
+
+/// Whether the slim list shows the heads of the days (issue #458): wherever the mail stands by date –
+/// not in a search ordered by relevance.
+pub fn day_heads(view: &View) -> bool {
+    view.search().is_none_or(|search| search.sort == torro_ipc::mail::MailSort::Date)
+}
+
+/// The day of `at` in local time.
+pub fn local_day(at: DateTime<Utc>) -> NaiveDate {
+    at.with_timezone(&Local).date_naive()
+}
+
+/// The head of `day` seen on `today` (issue #458): "Today", "Yesterday", the weekday within the last
+/// six days, else the date – with its year only when it is not this one's.
+pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
+    let ago = (today - day).num_days();
+    match ago {
+        0 => tr("Today").to_owned(),
+        1 => tr("Yesterday").to_owned(),
+        2..=6 => datetime::weekday_name(day, false).to_owned(),
+        _ if chrono::Datelike::year(&day) == chrono::Datelike::year(&today) => datetime::format_day_month(day),
+        _ => datetime::format_short_date(day, today),
+    }
+}
+
+/// Where row `index` of the slim list lies as `(top, bottom)` (issue #458): the rows above, each
+/// [`list::slim_message_height`] high, and the heads of their days (with `heads`) – the row's own day's
+/// head counts to the row when it is its day's first, so scrolling up to it shows the head too.
+pub fn slim_span(messages: &[MessageSummary], index: usize, heads: bool) -> Option<(f32, f32)> {
+    messages.get(index)?;
+    let (row, head) = (list::slim_message_height(), list::day_head_height());
+    let mut top = 0.0;
+    let mut day = None;
+    for (at, message) in messages.iter().enumerate() {
+        let this = local_day(message.date);
+        let starts = heads && day != Some(this);
+        day = Some(this);
+        if at == index {
+            let first = if starts { top + head } else { top };
+            return Some((top, first + row));
+        }
+        top += row + if starts { head } else { 0.0 };
+    }
+    None
+}
+
+/// What the circle of `message` shows (issue #458): the skull for the group "Unwanted", the portrait
+/// for a category with the person's mark, the category's own mark otherwise, the envelope without a
+/// category. The match with the contacts (#358) and senders' logos (#453) come later.
+pub fn face_of(message: &MessageSummary, categories: &[CategoryInfo]) -> widgets::Face {
+    let Some(held) = message.category else { return widgets::Face::Icon(Icon::Mail) };
+    let (_, group) = category_look(categories, held.category);
+    if group == CategoryGroup::Junk {
+        return widgets::Face::Junk;
+    }
+    let icon = categories
+        .iter()
+        .find(|info| info.category == held.category)
+        .map(|info| info.icon)
+        .unwrap_or_else(|| held.category.default_icon());
+    match icon {
+        torro_mail::CategoryIcon::User => widgets::Face::Portrait,
+        icon => widgets::Face::Icon(category_symbol(icon)),
+    }
+}
+
+/// One mail of the slim list `width` wide (issue #458, [`list::slim_mail_content`]): the sender's
+/// circle in the colour its address picks, sender and paperclip and time, subject and the flag.
+fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
+    let (name, _, _) = row_names(data.view, message);
+    let address = message.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default();
+    let edge = layout::list().avatar;
+    let circle = (edge > 0.0)
+        .then(|| widgets::sender_circle(face_of(message, data.categories), Some(widgets::sender_hue(address)), edge));
+    let mut marks = Vec::new();
+    if message.flags.contains(&Flag::Flagged) {
+        marks.push(list::flag_field());
+    }
+    let lines = list::SlimLines {
+        name,
+        time: list::stamp(message.date, data.now),
+        subject: subject(message),
+        new: !message.flags.contains(&Flag::Seen),
+        attachment: message.has_attachments,
+        marks,
+        circle,
+    };
+    let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
+        || data.selected_ids.contains(&message.id);
+    let content = list::slim_mail_content(lines, width, selected);
+    let row: Element<'a, Message> = mouse_area(list::sized_row(
+        content,
+        selected,
+        Some(!message.flags.contains(&Flag::Seen)),
+        Message::SelectMail(message.id.clone()),
+        list::slim_message_height(),
+    ))
+    .on_right_press(Message::ContextMail(message.id.clone()))
+    .into();
     if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
@@ -2474,9 +2593,6 @@ pub struct Reading<'a> {
     /// The text in the reading level (`typo::read()`, task E8.3): the comfortable density of the
     /// mail window; `BODY` otherwise.
     pub read: bool,
-    /// The account's place among the mail accounts, for the colour of the reader's avatar
-    /// (`list::account_index`).
-    pub account: Option<usize>,
     /// The task made of this mail (task E8.7b): the one its entry carries ([`Item::task`]), or the
     /// one "Task" just made of a folder's message. Shown as a card over the text ([`task_card`]).
     pub task: Option<&'a ItemTask>,
@@ -3016,20 +3132,27 @@ fn sender_block<'a>(
 ) -> Element<'a, Message> {
     let name = sender_name(summary.from.as_ref());
     let edge = head_avatar_in(layout::list());
-    let face = (edge > 0.0).then(|| list::avatar(&name, reading.account, edge));
+    // The circle of the list's row (issue #458): the same colour and mark for the same mail.
+    let address = summary.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default();
+    let circle =
+        |edge| widgets::sender_circle(face_of(summary, reading.categories), Some(widgets::sender_hue(address)), edge);
+    let face = (edge > 0.0).then(|| circle(edge));
     let words_room = (room - face.as_ref().map_or(0.0, |_| edge + space::m())).max(0.0);
     let date = torro_gui::datetime::format_moment(summary.date, reading.now);
     let date_room = typo::text_width(&date, typo::meta()) + space::m();
     // A flagged mail says so at its sender: the name leaves room for the flag.
     let flagged = summary.flags.contains(&Flag::Flagged);
     let flag_room = if flagged { icon::SIZE_SM + space::s() } else { 0.0 };
-    let pill = summary.category.map(|held| category_pill(held, reading.categories));
-    // The pill takes what it needs – its word, its marks and its padding –, the name the rest.
+    // The pill takes what it needs – its word, its marks and its padding –, the name the rest; where
+    // both do not fit, the name goes first and the pill stays out.
     let pill_room = summary.category.map_or(0.0, |held| {
         let (label, _) = category_look(reading.categories, held.category);
         typo::text_width(&label, typo::caption()) + 3.0 * icon::SIZE_SM + 2.0 * space::m()
     });
-    let name_room = (words_room - date_room - flag_room - pill_room).max(0.0);
+    let free = (words_room - date_room - flag_room).max(0.0);
+    let fits = typo::text_width(&name, typo::body_strong()) + pill_room <= free;
+    let pill = summary.category.filter(|_| fits).map(|held| category_pill(held, reading.categories));
+    let name_room = if fits { free - pill_room } else { free };
     let name = typo::ellipsize(&name, typo::body_strong(), name_room);
     let mut first = row![typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)]
         .spacing(space::s())
@@ -5028,7 +5151,6 @@ mod tests {
             deciding: false,
             dated: true,
             read: true,
-            account: Some(0),
             task: None,
             answering: false,
             invite: InviteSide::default(),
@@ -5729,6 +5851,63 @@ mod tests {
         assert_eq!(saved_folder(&SavedAttachments::default()), None);
     }
 
+    /// Some of the demo's mail, newest first, for the tests of the slim list.
+    fn demo_messages() -> Vec<MessageSummary> {
+        let demo = DemoSource::new(now());
+        ["m:w1", "m:w2", "m:p1"]
+            .into_iter()
+            .map(|id| DemoSource::get_mail(&demo, id).expect("a demo mail").summary)
+            .collect()
+    }
+
+    /// Issue #458: the slim list's rows are two lines of `BODY` with `space::m()` above and below and
+    /// the hairline, its days head it ("Today", "Yesterday", the weekday, then the date), only where it
+    /// stands by date, and the span of a row counts the heads above it and its own day's.
+    #[test]
+    fn the_slim_list_has_two_lines_a_mail_under_the_heads_of_its_days() {
+        assert_eq!(
+            list::slim_message_height(),
+            2.0 * typo::line_height(typo::body()) + 2.0 * space::m() + size::HAIRLINE
+        );
+        let today = NaiveDate::from_ymd_opt(2026, 11, 5).expect("a day");
+        let day = |back: u64| today - chrono::Days::new(back);
+        assert_eq!(day_label(today, today), tr("Today"));
+        assert_eq!(day_label(day(1), today), tr("Yesterday"));
+        assert_eq!(day_label(day(3), today), datetime::weekday_name(day(3), false));
+        assert_eq!(day_label(day(7), today), datetime::format_day_month(day(7)));
+        let old = NaiveDate::from_ymd_opt(2025, 12, 24).expect("a day");
+        assert!(day_label(old, today).contains("2025") || day_label(old, today).contains("25"), "the year");
+        assert!(day_heads(&View::All), "All stands by date");
+        let relevance =
+            View::Search(crate::search::SearchView::new("x", crate::search::Scope::All, MailSort::Relevance));
+        assert!(!day_heads(&relevance), "no heads by relevance");
+        let mut messages = demo_messages();
+        messages.truncate(3);
+        let (row, head) = (list::slim_message_height(), list::day_head_height());
+        let first = slim_span(&messages, 0, true).expect("a row");
+        assert_eq!(first, (0.0, head + row), "the first row with its day's head");
+        let flat = slim_span(&messages, 2, false).expect("a row");
+        assert_eq!(flat, (2.0 * row, 3.0 * row), "without heads every row as high as the next");
+        assert!(slim_span(&messages, 3, true).is_none());
+    }
+
+    /// Issue #458: the circle shows the skull for unwanted mail, the portrait for a person's category,
+    /// the category's own mark otherwise and the envelope without one.
+    #[test]
+    fn the_circle_shows_who_or_what_wrote() {
+        use torro_mail::Category;
+        let message = |category: Option<Category>| MessageSummary {
+            category: category.map(MailCategory::by_rule),
+            ..demo_messages().remove(0)
+        };
+        assert_eq!(face_of(&message(None), &[]), widgets::Face::Icon(Icon::Mail));
+        assert_eq!(face_of(&message(Some(Category::Spam)), &[]), widgets::Face::Junk);
+        assert_eq!(face_of(&message(Some(Category::Phishing)), &[]), widgets::Face::Junk);
+        assert_eq!(face_of(&message(Some(Category::Personal)), &[]), widgets::Face::Portrait);
+        assert_eq!(face_of(&message(Some(Category::Newsletter)), &[]), widgets::Face::Icon(Icon::Newspaper));
+        assert_eq!(face_of(&message(Some(Category::Receipt)), &[]), widgets::Face::Icon(Icon::Receipt));
+    }
+
     /// The source of the function `name` in this file, up to its closing brace.
     fn function_source<'s>(source: &'s str, name: &str) -> &'s str {
         let start = [format!("fn {name}<"), format!("fn {name}(")]
@@ -5924,7 +6103,6 @@ mod tests {
                         deciding: false,
                         dated: true,
                         read,
-                        account: Some(0),
                         answering: false,
                         invite: InviteSide::default(),
                         html,
