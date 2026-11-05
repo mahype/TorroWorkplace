@@ -325,7 +325,8 @@ impl App {
     /// and the drawer lists them).
     fn sidebar<'a>(&'a self, mode: SidebarMode, anchors: &Anchors) -> Element<'a, Message> {
         // The switcher lies in the top row (issue #459), the sidebar begins with its tools.
-        let head = shell::sidebar_tools(mode, true, Message::Switcher);
+        // No magnifier: the field "Search conversations" stands right below (design review of #459).
+        let head = shell::sidebar_tools(mode, false, Message::Switcher);
         let mut items: Vec<Element<'a, Message>> = Vec::new();
         // Before the conversations came there is nothing to search.
         if mode == SidebarMode::Expanded && self.listed {

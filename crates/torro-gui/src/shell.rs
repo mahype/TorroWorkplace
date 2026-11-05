@@ -754,6 +754,7 @@ pub struct TopRow<M> {
     settings_open: bool,
     zoom: f32,
     cover: Cover,
+    panel: Option<f32>,
     on_drag: M,
 }
 
@@ -771,8 +772,16 @@ impl<M> TopRow<M> {
             settings_open: false,
             zoom,
             cover: Cover::Nothing,
+            panel: None,
             on_drag,
         }
+    }
+
+    /// How wide the side panel over the content is ([`Cover::Panel`]) where it is not
+    /// [`size::panel()`]: a panel that grew by a side column or a floating rail (issue #456).
+    pub fn panel_width(mut self, width: f32) -> Self {
+        self.panel = Some(width);
+        self
     }
 
     /// The panel button, which sends `on_press` – the same as `[` ([`is_sidebar_key`]); `label` is its
@@ -881,7 +890,8 @@ fn top_row_band<'a, M: Clone + 'a>(
         }
         Cover::Dialog => stack![plain_row(&top, header, class, lead), dimmer()].into(),
         Cover::Panel => {
-            let panel = container(blank()).width(size::panel()).height(Fill).style(style::container::panel_flush);
+            let width = top.panel.unwrap_or_else(size::panel);
+            let panel = container(blank()).width(width).height(Fill).style(style::container::panel_flush);
             stack![plain_row(&top, header, class, lead), row![dimmer(), opaque(panel)]].into()
         }
         Cover::Nothing => plain_row(&top, header, class, lead),
@@ -912,7 +922,12 @@ fn plain_row<'a, M: Clone + 'a>(
 /// The lead over the expanded sidebar, `width` wide: the lights' room, the switcher, free room, the
 /// panel button, on the sidebar's surface, then the line beside the sidebar.
 fn expanded_lead<'a, M: Clone + 'a>(top: &TopRow<M>, width: f32) -> Element<'a, M> {
-    let trigger = switcher_trigger(top.app, top.on, iced::Length::Shrink);
+    // The name gets what the lights, the panel button and the gaps leave; a longer one ends in "…"
+    // and shows whole in the tooltip, and the chevron and the panel button always stay.
+    let fixed = lights_room(top.zoom) + size::control_sm() + 3.0 * SIDEBAR_GAP + space::s();
+    let chrome = LOGO + icon::SIZE_SM + 2.0 * space::s() + 2.0 * TRIGGER_INSET;
+    let name_room = (width - LINE - fixed - chrome).max(0.0);
+    let trigger = switcher_trigger(top.app, top.on, iced::Length::Shrink, Some(name_room));
     let mut pieces = row![blank().width(lights_room(top.zoom)), widgets::anchored(&top.switcher, trigger)];
     pieces = pieces.push(blank::horizontal());
     if let Some((label, on_press)) = top.sidebar.clone() {
@@ -1481,7 +1496,7 @@ fn switcher_row<'a, M: Clone + 'a>(
     on_toggle: Option<M>,
     search: bool,
 ) -> Element<'a, M> {
-    let mut top = row![widgets::anchored(anchor, switcher_trigger(current, on, Fill))];
+    let mut top = row![widgets::anchored(anchor, switcher_trigger(current, on, Fill, None))];
     top = top.extend(head_tools(search).into_iter().map(|tool| tool.button(on)));
     if let Some(on_toggle) = on_toggle {
         top = top.push(widgets::icon_button(Icon::PanelLeft, tr("Collapse sidebar"), Some(on_toggle)));
@@ -1495,23 +1510,30 @@ fn switcher_trigger<'a, M: Clone + 'a>(
     current: AppId,
     on: fn(Switcher) -> M,
     width: impl Into<iced::Length>,
+    name_room: Option<f32>,
 ) -> Element<'a, M> {
+    let full = app_name(current);
+    let shown = name_room.map_or_else(|| full.to_owned(), |room| typo::ellipsize(full, typo::body_strong(), room));
+    let cut = shown != full;
     let name = row![
         app_mark(current),
-        typo::text(typo::body_strong(), app_name(current)).style(theme::text).wrapping(Wrapping::None),
+        typo::text(typo::body_strong(), shown).style(theme::text).wrapping(Wrapping::None),
         widgets::toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3),
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
     // 6 inside, as `.switcher{padding:0 6px}`, so the logo lines up with the row icons below.
-    button(container(name).center_y(Fill).clip(true))
+    let trigger = button(container(name).center_y(Fill).clip(true))
         .width(width)
         .height(switcher_height())
-        .padding(Padding::new(0.0).left(6.0).right(6.0))
+        .padding(Padding::new(0.0).left(TRIGGER_INSET).right(TRIGGER_INSET))
         .style(style::button::sidebar_item(false))
-        .on_press(on(Switcher::Toggle))
-        .into()
+        .on_press(on(Switcher::Toggle));
+    if cut { widgets::with_tooltip(trigger, full) } else { trigger.into() }
 }
+
+/// The padding of the switcher's trigger at its sides (`.switcher{padding:0 6px}`).
+const TRIGGER_INSET: f32 = 6.0;
 
 /// The menu of the app switcher: every app of the suite ([`AppId::ALL`]) whose component is on
 /// ([`crate::components`], task W.2) and that is installed ([`crate::installed`], issue #408), `current`
