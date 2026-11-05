@@ -8,3 +8,5 @@ __pycache__/
 .claude/settings.local.json
 .worktrees/
 .tbd/
+.claude/launch.json
+.playwright-mcp/
