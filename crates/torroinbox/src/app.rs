@@ -3300,8 +3300,8 @@ pub enum Message {
     /// "Clear filters": the operators of the quick filters out of the field, the words stay.
     ClearSearchFilters,
     /// "Create filter…" at a mail (`from:<address>`) or "Create filter from search…" in the menu of
-    /// the search field (issue #339): Settings › Filters with a new filter's page filled in. In the
-    /// mail window only; elsewhere the mail window comes forward.
+    /// the search field (issue #339): Settings › Categorization with a new filter's dialog filled in
+    /// (issue #454). In the mail window only; elsewhere the mail window comes forward.
     CreateFilter {
         query: String,
         account: Option<String>,

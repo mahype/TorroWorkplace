@@ -3308,7 +3308,7 @@ fn filter_sender<'r>(reading: &Reading<'r>) -> Option<&'r str> {
 
 /// The items of the rail's group "More" ([`action_groups`]) for `tools`: the other view of a mail
 /// with HTML, the other colours while its HTML shows, "Copy text", "Create filter…" for the mail's
-/// `sender` (issue #339: Settings › Filters with `from:<address>`), and with `close` Close.
+/// `sender` (issue #339: Settings › Categorization › Rules & filters with `from:<address>`, issue #454), and with `close` Close.
 fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
     // First, so a click on "…" copies the text (decision D): the safest of the group.
@@ -5202,7 +5202,7 @@ mod tests {
             assert!(mail(sends(&groups, file, tr("Delete")), MailAction::Delete));
             assert!(matches!(sends(&groups, torro, tr("Task")), Some(Message::AskTask(_))));
             assert!(matches!(sends(&groups, torro, tr("Event")), Some(Message::AskEvent(_))));
-            // Issue #339: a filter for the sender, in Settings › Filters.
+            // Issue #339: a filter for the sender, in Settings › Categorization (issue #454).
             let sender = &reading.summary().and_then(|summary| summary.from.as_ref()).expect("a sender").address;
             assert!(matches!(
                 sends(&groups, tr("More"), tr("Create filter…")),

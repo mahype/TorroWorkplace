@@ -448,18 +448,19 @@ nicht nur das Löschen.
 
 **Oberfläche:**
 
-- **Einstellungen des Mail-Fensters › Filters** (nach Categorization, `--settings filters`): die Filter in ihrer
-  Reihenfolge, je Zeile die Suche, darunter, was der Filter tut, mit Schalter; „New filter“ legt einen an.
-- **Seite eines Filters:** die Suche, das Konto („All accounts“), was der Filter jetzt findet („In Inbox now“), die
-  Aktionen „Move“ (Don’t move, Archive, Folder, Trash) mit dem Ordner des gewählten Kontos, „Mark as read“ und
-  „Category“, der Schalter „Filter is on“ und bei einem gespeicherten Filter „Delete filter“ mit Rückfrage. „Save“
-  steht in der Kopfleiste. Eine Kategorie, die es nicht mehr gibt, heißt „Unknown category“.
-- **Speichern** wartet auf den Dienst („Saving…“): Erst wenn er den Filter gespeichert hat, schließt die Seite.
-  Lehnt er ab, bleibt die Seite mit dem Eingegebenen offen, und die Meldung steht darüber.
-- **Anwenden:** Findet ein gerade gespeicherter Filter Mail im Posteingang, fragt die Liste danach „Apply to the {n}
-  mails in Inbox?“ mit „Not now“ und „Apply“; „Apply“ wendet den gespeicherten Filter an. Bleibt danach noch Mail
-  übrig, macht „Apply to more“ weiter.
-- **Schnell anlegen:** „Create filter…“ in der Gruppe More der Aktionsleiste einer Mail öffnet die Seite eines neuen
+- **Einstellungen des Mail-Fensters › Categorization › Rules & filters** (seit #454; die Seite „Filters“ und
+  `--settings filters` gibt es nicht mehr): Regeln und Filter in ihrer gemeinsamen Reihenfolge, je Zeile Griff, Suche,
+  was der Filter tut, Schalter und Menü (Edit…, Apply to existing mail, Move up/down, Delete…); „New filter…“ legt einen
+  an.
+- **Dialog eines Filters:** die Suche, das Konto („All accounts“), was der Filter jetzt findet („Finds {n} mails in
+  Inbox now.“), dann „Set category“ mit der Kategorie, „Mark as read“ und „Move to trash“, bei einem gespeicherten
+  Filter „Filter is on“ und „Delete filter“ mit Rückfrage. Eine Kategorie, die es nicht mehr gibt, heißt „Unknown
+  category“.
+- **Speichern** („Save filter“) wartet auf den Dienst („Saving…“): Erst wenn er den Filter gespeichert hat, schließt
+  der Dialog. Lehnt er ab, bleibt er mit dem Eingegebenen offen, und die Meldung steht darüber.
+- **Anwenden:** Mit „Also apply to the {n} existing mails“ (angehakt, solange die Suche nicht keine Mail findet) läuft
+  der gespeicherte Filter gleich einmal; das Ergebnis steht über der Liste, „Apply to more“ macht weiter.
+- **Schnell anlegen:** „Create filter…“ in der Gruppe More der Aktionsleiste einer Mail öffnet den Dialog eines neuen
   Filters mit `from:<Absender>`. „Create filter from search…“ im Filter-Menü des Suchfelds (nur mit Text im Feld)
   macht die Suche zur Bedingung, mit dem Konto, wenn die Suche auf „This account“ steht, sonst für alle Konten.
 
