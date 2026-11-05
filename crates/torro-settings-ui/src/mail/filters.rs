@@ -373,7 +373,8 @@ fn save<A>(state: &mut State, data: &Data) -> Action<A> {
     if form.action_mistake().is_some() {
         return Action::None;
     }
-    let found = matches!(hits, Some(Hits::Found(found)) if found.count > 0);
+    // Still counting: "Also apply…" holds all the same; only a search known to find nothing skips it.
+    let found = !matches!(hits, Some(Hits::Found(found)) if found.count == 0);
     let request = form.request();
     let target = match &form.id {
         Some(id) => Target::Stored(id.clone()),
@@ -925,6 +926,20 @@ mod tests {
         assert_eq!(state.apply, Some(Apply::Failed("The server refused.".into())));
         let _ = last(&mut state, &data, vec![Message::Dismiss]);
         assert!(state.apply.is_none() && apply_view(&state).is_none());
+    }
+
+    /// PR review of #463: saved while the search is still counted, "Also apply…" holds.
+    #[test]
+    fn a_filter_saved_while_counting_still_applies() {
+        let (mut data, mut state) = (data(), State::default());
+        let _ = last(
+            &mut state,
+            &data,
+            vec![Message::New { query: "from:z".into(), account: None }, Message::MarkRead(true)],
+        );
+        assert!(matches!(last(&mut state, &data, vec![Message::Save]), Action::Send(_)), "saved before the count");
+        data.mail_filters.push(MailFilter { mark_read: true, file: None, ..filter("f9", "from:z") });
+        assert_eq!(sent(&mut state, &Ok(data.clone())).as_deref(), Some("f9"));
     }
 
     /// Without "Also apply…", or when the search finds nothing, the stored filter does not run.

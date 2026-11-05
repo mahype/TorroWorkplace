@@ -100,6 +100,8 @@ pub struct State {
     preview: Option<CategoryJobPreview>,
     preview_error: Option<String>,
     pending_scope: Option<CategoryJobScope>,
+    /// Previews on their way: a refusal counts only for the last one (PR review of #463).
+    previews_waiting: u32,
 }
 
 /// A model in the cloud waiting for the question before it sorts mail (issue #424).
@@ -562,7 +564,7 @@ fn rule_switched(rule: &SortRule, on: bool) -> Request {
 /// rule's "Apply to existing mail") applies the rules and filters alone. Asks for its preview.
 fn open_sort<A>(state: &mut State, data: &Data, rules_only: bool) -> Action<A> {
     close_menus(state);
-    let model = !rules_only && in_effect(data).is_ready();
+    let model = !rules_only && model_sorts(data);
     state.sort = Some(SortForm {
         accounts: Vec::new(),
         folders: Vec::new(),
@@ -608,6 +610,7 @@ fn preview_action<A>(state: &mut State) -> Action<A> {
     }
     let scope = scope(form);
     state.pending_scope = Some(scope.clone());
+    state.previews_waiting += 1;
     Action::Ask(Request::PreviewCategoryJob { scope })
 }
 
@@ -618,14 +621,21 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
         return;
     }
     match answer {
-        Ok(Response::CategoryJobPreview { preview }) if preview.request_scope == state.pending_scope => {
-            state.preview = Some(preview.clone());
-            state.preview_error = None;
-            state.pending_scope = None;
+        Ok(Response::CategoryJobPreview { preview }) => {
+            state.previews_waiting = state.previews_waiting.saturating_sub(1);
+            if preview.request_scope == state.pending_scope {
+                state.preview = Some(preview.clone());
+                state.preview_error = None;
+                state.pending_scope = None;
+            }
         }
+        // A refusal names no preview: it counts only when no newer one is still on its way.
         Err(problem) => {
-            state.preview_error = Some(problem.clone());
-            state.pending_scope = None;
+            state.previews_waiting = state.previews_waiting.saturating_sub(1);
+            if state.previews_waiting == 0 {
+                state.preview_error = Some(problem.clone());
+                state.pending_scope = None;
+            }
         }
         _ => {}
     }
@@ -919,6 +929,12 @@ fn account_label(data: &Data, id: &str) -> String {
         .unwrap_or_else(|| id.trim_start_matches("mail:").to_string())
 }
 
+/// Whether a model sorts mail now (PR review of #463): one is in effect, on, and not waiting for the
+/// consent that mail leaves this computer. Else a run cannot apply it.
+fn model_sorts(data: &Data) -> bool {
+    assigned_off(data).is_none() && matches!(chosen(data), Chosen::Here(_) | Chosen::Cloud { waiting: false, .. })
+}
+
 /// Where the model that sorts stands, as the page says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Chosen {
@@ -1158,6 +1174,18 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         (Chosen::Cloud { provider, .. }, None) => Some(trf("In the cloud at {provider}", &[("provider", provider)])),
     };
     rows.push(setting_row(None, tr("Sort with model"), detail, pick));
+    // Only chat models on this computer (issue #421): the way to a fast one, which Settings › AI
+    // offers to download.
+    let (fast, other, _) = grouped(data);
+    if fast.is_empty() && !other.is_empty() {
+        let arrow = icon::icon(Icon::ArrowUpRight, icon::SIZE)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+        let detail = tr("Sorting runs slower with a chat model. Settings › AI suggests one to download.");
+        rows.push(pressable(
+            setting_row(None, tr("No decision model"), Some(detail.to_string()), arrow),
+            Some(Message::ManageModels),
+        ));
+    }
     let none = offered(data).is_empty();
     let hint = match &current {
         _ if none && assigned_off(data).is_none() => match deciders(data).is_empty() {
@@ -1645,7 +1673,7 @@ fn sort_dialog<'a>(
         many => trf("{n} folders", &[("n", &many.len())]),
     };
     let toggle = |menu| Message::SortMenu((form.menu != Some(menu)).then_some(menu));
-    let model_ready = in_effect(data).is_ready();
+    let model_ready = model_sorts(data);
     let choices = vec![
         setting_row(
             None,
@@ -2144,5 +2172,25 @@ mod tests {
         assert!(state.preview.is_some());
         let _ = overlay(&state, &data);
         assert!(matches!(update::<()>(&mut state, Message::StartJob, &data), Action::Send(_)));
+
+        // PR review of #463: a refusal of an older preview does not hide the newer answer.
+        let _ = update::<()>(&mut state, Message::OpenSort { rules_only: false }, &data);
+        let _ = update::<()>(&mut state, Message::Period(Period::Year), &data);
+        let Some(newer) = state.pending_scope.clone() else { panic!("asked") };
+        answered(&mut state, &Err("offline".into()));
+        assert!(state.preview_error.is_none(), "the newer one is still out");
+        let answer = CategoryJobPreview { eligible: 3, request_scope: Some(newer), ..CategoryJobPreview::default() };
+        answered(&mut state, &Ok(Response::CategoryJobPreview { preview: answer }));
+        assert!(state.preview.is_some() && state.preview_error.is_none());
+        // A model in the cloud that waits for the consent is not applied.
+        let mut waiting = data.clone();
+        waiting.settings.ai_slots.decide = Some(torro_core::ai::SlotModel {
+            engine: "ai:openrouter@openrouter.ai".into(),
+            model: Some("qwen".into()),
+            effort: None,
+        });
+        assert!(!model_sorts(&waiting));
+        let _ = update::<()>(&mut state, Message::OpenSort { rules_only: false }, &waiting);
+        assert!(state.sort.as_ref().is_some_and(|form| !form.model));
     }
 }

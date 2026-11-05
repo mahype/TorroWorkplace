@@ -4990,6 +4990,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Everything else", "Alles andere"),
     ("In this order", "In dieser Reihenfolge"),
+    (
+        "Sorting runs slower with a chat model. Settings › AI suggests one to download.",
+        "Mit einem Chat-Modell läuft das Einordnen langsamer. Einstellungen › KI schlägt eins zum Laden vor.",
+    ),
     ("Groups", "Gruppen"),
     ("1 mail in every folder", "1 Mail in allen Ordnern"),
     ("Mail with a category", "Mails mit Kategorie"),
