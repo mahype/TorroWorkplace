@@ -849,6 +849,14 @@ impl Answering {
             Outcome::Answered(response) => super::cards::after(&name, response),
             Outcome::Denied | Outcome::Expired => None,
         };
+        // Mail switched off in this conversation (issue #460): suggestions keep only what the address
+        // books know; the core read mail with the assistant's stored rights.
+        let outcome = match outcome {
+            Outcome::Answered(response) if self.job.without.contains(&Area::Mail) => {
+                Outcome::Answered(Box::new(data_rule::without_mail(*response)))
+            }
+            other => other,
+        };
         let (result, summary, error) = match outcome {
             // A bot that ran for the assistant (task B.2): its answer, as the data rule allows.
             Outcome::Answered(response) if matches!(request, Request::AskBot { .. }) => {

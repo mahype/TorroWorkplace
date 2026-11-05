@@ -170,6 +170,12 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
         Response::Todo { todo } => {
             Screened { value: json!({ "result": result, "todo": todo_for_remote(todo) }), withheld: names_a_mail(todo) }
         }
+        // Recipient suggestions (issue #460) know from mail whom the person writes to and when.
+        Response::RecipientSuggestions { suggestions } if !mail => {
+            let shown = torro_contacts::suggest::without_mail(suggestions);
+            let withheld = shown != *suggestions;
+            Screened { value: json!({ "result": result, "suggestions": shown }), withheld }
+        }
         // Notes a local model kept after reading mail (task C.10).
         Response::Memories { notes } => {
             let shown: Vec<&Note> = notes.iter().filter(|note| !note.local_only).collect();
@@ -181,6 +187,17 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
             withheld: true,
         },
         _ => Screened { value, withheld: false },
+    }
+}
+
+/// `response` without what it knows from mail when it is recipient suggestions (issue #460,
+/// [`torro_contacts::suggest::without_mail`]); every other answer as it is.
+pub fn without_mail(response: Response) -> Response {
+    match response {
+        Response::RecipientSuggestions { suggestions } => {
+            Response::RecipientSuggestions { suggestions: torro_contacts::suggest::without_mail(&suggestions) }
+        }
+        other => other,
     }
 }
 
@@ -618,6 +635,37 @@ mod tests {
         let none = Response::Error { code: "not-connected".into(), message: "Set up an AI first.".into() };
         let event = Request::SuggestEventFromItem { id: "a1".into() };
         assert_eq!(for_model(&event, &none, Place::Remote).value["result"], "error");
+    }
+
+    /// Issue #460: a model elsewhere without the mail rule gets the contacts of recipient suggestions,
+    /// by name, never an address known only from mail or when mail went there.
+    #[test]
+    fn recipient_suggestions_lose_what_they_know_from_mail_for_remote_models() {
+        use torro_contacts::{RecipientSuggestion, SuggestionKind};
+        let at = Utc.with_ymd_and_hms(2026, 11, 3, 9, 0, 0).single().expect("valid time");
+        let line = |kind, name: &str, address: &str| RecipientSuggestion {
+            kind,
+            name: name.into(),
+            address: address.into(),
+            last_sent: Some(at),
+            untrusted: true,
+            ..RecipientSuggestion::default()
+        };
+        let asked = Request::SuggestRecipients { query: "jo".into(), limit: None };
+        let answer = Response::RecipientSuggestions {
+            suggestions: vec![
+                line(SuggestionKind::Contact, "Jonas", "jonas@x.de"),
+                line(SuggestionKind::Contact, "Joanna", "joanna@x.de"),
+                line(SuggestionKind::Seen, "", "jo.secret@posteo.de"),
+            ],
+        };
+        let remote = for_model(&asked, &answer, Place::Remote);
+        let text = remote.value.to_string();
+        assert!(remote.withheld && !text.contains("secret") && !text.contains("2026"), "{text}");
+        assert_eq!(remote.value["suggestions"][0]["address"], "joanna@x.de", "by name");
+        assert!(for_model(&asked, &answer, Place::Local).value.to_string().contains("jo.secret"));
+        let Response::RecipientSuggestions { suggestions } = without_mail(answer) else { panic!("suggestions") };
+        assert_eq!(suggestions.len(), 2, "mail switched off in the conversation");
     }
 
     /// Task C.10: notes a local model kept after reading mail stay with local models.

@@ -267,6 +267,25 @@ pub fn rank(
     out
 }
 
+/// `suggestions` without what they know from mail (issue #460), for a reader that may not read it
+/// (a model elsewhere under the data rule, a conversation with mail switched off): no address known
+/// only from mail, no dates of mail, and the contacts in the order they have without mail –
+/// favourites, groups, the rest, each by name.
+pub fn without_mail(suggestions: &[RecipientSuggestion]) -> Vec<RecipientSuggestion> {
+    let mut kept: Vec<RecipientSuggestion> = suggestions
+        .iter()
+        .filter(|s| s.kind != SuggestionKind::Seen)
+        .map(|s| RecipientSuggestion { last_sent: None, last_seen: None, ..s.clone() })
+        .collect();
+    let rank = |s: &RecipientSuggestion| match (s.kind, s.favorite) {
+        (SuggestionKind::Contact, true) => 0,
+        (SuggestionKind::Group, _) => 1,
+        _ => 2,
+    };
+    kept.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| by_name(a, b)));
+    kept
+}
+
 /// By name as lists sort (folded), then by address.
 fn by_name(a: &RecipientSuggestion, b: &RecipientSuggestion) -> std::cmp::Ordering {
     fold(&a.name).cmp(&fold(&b.name)).then_with(|| a.address.cmp(&b.address))
@@ -399,6 +418,21 @@ mod tests {
         let twice = vec![contact("a", "Anna", &["anna@x.de"], false), contact("b", "Anna B", &["ANNA@x.de"], true)];
         assert_eq!(rank("anna", &twice, &[], &[], None).len(), 1);
         assert!(rank("   ", &twice, &[], &[], None).is_empty());
+    }
+
+    #[test]
+    fn without_mail_leaves_contacts_by_name_and_nothing_of_mail() {
+        let contacts = vec![
+            contact("c1", "Zora Abel", &["zora@x.de"], false),
+            contact("c2", "Anna", &["anna@x.de"], false),
+            contact("c3", "Mia Adler", &["mia@x.de"], true),
+        ];
+        let history = vec![person("zora@x.de", 4.0, Some(3), None), person("al@y.de", 0.0, None, Some(2))];
+        let found = rank("a", &contacts, &[], &history, None);
+        assert_eq!(lines(&found), ["zora@x.de", "mia@x.de", "anna@x.de", "seen al@y.de"]);
+        let kept = without_mail(&found);
+        assert_eq!(lines(&kept), ["mia@x.de", "anna@x.de", "zora@x.de"], "favourite, then by name");
+        assert!(kept.iter().all(|s| s.last_sent.is_none() && s.last_seen.is_none()));
     }
 
     #[test]
