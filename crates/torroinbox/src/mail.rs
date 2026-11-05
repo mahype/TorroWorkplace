@@ -2210,6 +2210,15 @@ pub(crate) fn category_symbol(icon: torro_mail::CategoryIcon) -> Icon {
         torro_mail::CategoryIcon::Ellipsis => Icon::Ellipsis,
         torro_mail::CategoryIcon::CircleDashed => Icon::CircleDashed,
         torro_mail::CategoryIcon::Tag => Icon::Tag,
+        torro_mail::CategoryIcon::Megaphone => Icon::Megaphone,
+        torro_mail::CategoryIcon::Bot => Icon::Bot,
+        torro_mail::CategoryIcon::Receipt => Icon::Receipt,
+        torro_mail::CategoryIcon::Package => Icon::Package,
+        torro_mail::CategoryIcon::Skull => Icon::Skull,
+        torro_mail::CategoryIcon::Newspaper => Icon::Newspaper,
+        torro_mail::CategoryIcon::Building2 => Icon::Building2,
+        torro_mail::CategoryIcon::Landmark => Icon::Landmark,
+        torro_mail::CategoryIcon::TriangleAlert => Icon::TriangleAlert,
     }
 }
 

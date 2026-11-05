@@ -1066,6 +1066,15 @@ impl std::fmt::Display for CategoryIconChoice {
             CategoryIcon::Ellipsis => tr("More"),
             CategoryIcon::CircleDashed => tr("Dashed circle"),
             CategoryIcon::Tag => tr("Tag"),
+            CategoryIcon::Megaphone => tr("Megaphone"),
+            CategoryIcon::Bot => tr("Robot"),
+            CategoryIcon::Receipt => tr("Receipt"),
+            CategoryIcon::Package => tr("Package"),
+            CategoryIcon::Skull => tr("Skull"),
+            CategoryIcon::Newspaper => tr("Newspaper"),
+            CategoryIcon::Building2 => tr("Building"),
+            CategoryIcon::Landmark => tr("Bank"),
+            CategoryIcon::TriangleAlert => tr("Warning"),
         })
     }
 }
@@ -1126,6 +1135,15 @@ pub(super) fn category_icon(icon: CategoryIcon) -> Icon {
         CategoryIcon::Ellipsis => Icon::Ellipsis,
         CategoryIcon::CircleDashed => Icon::CircleDashed,
         CategoryIcon::Tag => Icon::Tag,
+        CategoryIcon::Megaphone => Icon::Megaphone,
+        CategoryIcon::Bot => Icon::Bot,
+        CategoryIcon::Receipt => Icon::Receipt,
+        CategoryIcon::Package => Icon::Package,
+        CategoryIcon::Skull => Icon::Skull,
+        CategoryIcon::Newspaper => Icon::Newspaper,
+        CategoryIcon::Building2 => Icon::Building2,
+        CategoryIcon::Landmark => Icon::Landmark,
+        CategoryIcon::TriangleAlert => Icon::TriangleAlert,
     }
 }
 
