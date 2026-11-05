@@ -926,7 +926,12 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         style::button::secondary,
         Some(Message::OpenSort { rules_only: false }),
     );
-    Page::new(view(state, data)).actions(vec![sort])
+    let page = Page::new(view(state, data)).actions(vec![sort]);
+    // The categories stand in two columns where the window has room for them.
+    match state.tab {
+        Tab::Categories => page.max_width(2.0 * size::form_max() + space::l()),
+        _ => page,
+    }
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
@@ -1086,17 +1091,15 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     };
     let sorting = widgets::group(tr("Sorting"), rows, Some(hint));
     let chosen = data.categories.iter().filter(|info| info.model).count();
-    let edit = widgets::text_button(
-        Some(Icon::ChevronRight),
-        tr("Edit categories"),
-        style::button::ghost,
+    // The row leads to the tab Categories, where "Let the AI choose it" is set per category.
+    let may = pressable(
+        setting_row(
+            None,
+            tr("Categories the model may choose"),
+            Some(trf("{n} of {total}", &[("n", &chosen), ("total", &data.categories.len())])),
+            crate::parts::chevron(),
+        ),
         Some(Message::Tab(2)),
-    );
-    let may = setting_row(
-        None,
-        tr("Categories the model may choose"),
-        Some(trf("{n} of {total}", &[("n", &chosen), ("total", &data.categories.len())])),
-        edit,
     );
     let manage =
         pressable(setting_row(None, tr("Manage models…"), None, crate::parts::chevron()), Some(Message::ManageModels));
@@ -1192,7 +1195,13 @@ fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             tr("Built-in"),
             trf("Category · {category}", &[("category", &data.category_name(Category::Personal))])
         )),
-        switch(data.settings.mail_contacts_personal, Message::ContactsPersonal),
+        // Where the other rows have their "…": the switches stand on one axis.
+        row![
+            switch(data.settings.mail_contacts_personal, Message::ContactsPersonal),
+            blank().width(size::control_sm())
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center),
     );
     let contacts: Element<'a, Message> = match dragging {
         Some(_) => mouse_area(contacts).on_enter(Message::Over(steps.len())).into(),
@@ -1200,7 +1209,7 @@ fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     };
     rows.push(contacts);
     let list = widgets::group(
-        tr("Rules & filters"),
+        tr("In this order"),
         rows,
         Some(tr("Top to bottom, the first rule or filter that matches a new mail sets its category. Drag a row by its grip to change the order.").to_string()),
     );
@@ -1397,9 +1406,11 @@ fn group_card<'a>(
     if !folded {
         let dragging = state.category_drag.map(|(category, _)| category);
         rows.push(two_columns(data, children, color, dragging));
-        let add = format!("+ {}", trf("New category in {group}", &[("group", &group.label)]));
+        let add = trf("New category in {group}", &[("group", &group.label)]);
+        let plus =
+            icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
         rows.push(pressable(
-            setting_row(None, add, None, blank()),
+            setting_row(Some(plus.into()), add, None, blank()),
             Some(Message::Editor(editor::Message::NewCategoryInGroup(id))),
         ));
     }
@@ -1453,8 +1464,11 @@ fn two_columns<'a>(
 /// decide, how many mails, "Show in the sidebar"; a click opens its page.
 fn category_cell<'a>(data: &'a Data, info: &'a CategoryInfo, color: usize, dragged: bool) -> Element<'a, Message> {
     let category = info.category;
-    let dot = icon::icon(Icon::Circle, icon::SIZE_SM)
-        .style(move |t: &Theme, _| svg::Style { color: Some(palette(t).category[color]) });
+    let dot = container(blank().width(space::s()).height(space::s())).style(move |t: &Theme| container::Style {
+        background: Some(iced::Background::Color(palette(t).category[color])),
+        border: iced::border::rounded(space::s()),
+        ..container::Style::default()
+    });
     let mut name = row![widgets::ellipsized(typo::body(), info.label.clone(), theme::text)]
         .spacing(space::s())
         .align_y(Alignment::Center);
@@ -1475,7 +1489,9 @@ fn category_cell<'a>(data: &'a Data, info: &'a CategoryInfo, color: usize, dragg
     .align_y(Alignment::Center);
     // The one on its way into another group says so where its grip was taken.
     let open = (!dragged).then_some(Message::Editor(editor::Message::EditCategory(category)));
-    pressable(row_frame(line, false), open)
+    // As high as a row of a list, not of a settings group: a group holds many of them.
+    let line = container(line).width(Fill).center_y(size::row()).padding([0.0, space::l()]);
+    pressable(line.into(), open)
 }
 
 /// The "…" menu of the group whose menu is open: "Edit group…".

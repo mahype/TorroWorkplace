@@ -5048,6 +5048,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Von oben nach unten setzt die erste Regel oder der erste Filter, der auf eine neue Mail passt, ihre Kategorie. Zieh eine Zeile am Griff, um die Reihenfolge zu ändern.",
     ),
     ("Everything else", "Alles andere"),
+    ("In this order", "In dieser Reihenfolge"),
     ("AI · {model}", "KI · {model}"),
     ("Change in AI", "In KI ändern"),
     ("Drag to change the order", "Ziehen, um die Reihenfolge zu ändern"),
