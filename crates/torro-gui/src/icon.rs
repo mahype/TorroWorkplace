@@ -47,6 +47,12 @@ pub enum Icon {
     Settings,
     User,
     Users,
+    /// "+ Contact" in the recipient suggestions of the compose window (issue #460).
+    UserPlus,
+    /// The paper of the compose window, light or dark (issue #460).
+    Contrast,
+    /// "Clear formatting" in the toolbar of the compose window (issue #460).
+    RemoveFormatting,
     LayoutGrid,
     AppWindow,
     Search,
@@ -237,6 +243,9 @@ impl Icon {
         Icon::Settings,
         Icon::User,
         Icon::Users,
+        Icon::UserPlus,
+        Icon::Contrast,
+        Icon::RemoveFormatting,
         Icon::LayoutGrid,
         Icon::AppWindow,
         Icon::Search,
@@ -368,6 +377,9 @@ impl Icon {
             Icon::Settings => include_bytes!("../assets/icons/settings.svg"),
             Icon::User => include_bytes!("../assets/icons/user.svg"),
             Icon::Users => include_bytes!("../assets/icons/users.svg"),
+            Icon::UserPlus => include_bytes!("../assets/icons/user-plus.svg"),
+            Icon::Contrast => include_bytes!("../assets/icons/contrast.svg"),
+            Icon::RemoveFormatting => include_bytes!("../assets/icons/remove-formatting.svg"),
             Icon::LayoutGrid => include_bytes!("../assets/icons/layout-grid.svg"),
             Icon::AppWindow => include_bytes!("../assets/icons/app-window.svg"),
             Icon::Search => include_bytes!("../assets/icons/search.svg"),
