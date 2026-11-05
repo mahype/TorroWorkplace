@@ -1372,6 +1372,24 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         book: Option<String>,
     },
+    /// Who to send a mail to, for the letters typed into a recipient field (issue #460,
+    /// [`Response::RecipientSuggestions`], ranked by `torro_contacts::suggest::rank`): first the
+    /// addresses of contacts written to lately and often, then favourites, groups (each with its
+    /// members) and the other contacts, then addresses known only from mail (sent to, or a personal
+    /// mail from them; never lists, newsletters or automatic mail), the latest first. Contacts only
+    /// from the books the client reaches; mail only from the accounts it may read (read access to
+    /// `mail` and the account), else none and the contacts by name. Never the addresses of the
+    /// accounts themselves. An empty `query` gives an empty list. Codes: `error` for a `query` over
+    /// 500 characters or when the address books cannot be read. Every field is `untrusted`.
+    #[serde(rename = "contacts.suggest_recipients")]
+    SuggestRecipients {
+        /// What was typed: every word must start a word of the name or the address.
+        query: String,
+        /// The most suggestions: 1 to 20, 8 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 20))]
+        limit: Option<u32>,
+    },
     /// Birthdays within `days` days from today (14 when left out, at most 366), the soonest
     /// first ([`Response::Birthdays`]), of the books the client reaches.
     #[serde(rename = "contacts.upcoming_birthdays")]
@@ -3969,6 +3987,10 @@ pub enum SettingKey {
     /// dark background, pictures unchanged). Only the mail, never the rest of the window. Open
     /// windows follow (`torro_core::settings::MailAppearance`).
     MailAppearance,
+    /// The paper of the compose window (issue #460): `"light"` (the default) or `"dark"`, the
+    /// background of the text only and independent of the window's appearance and of
+    /// `mail_appearance`. The mail sent is the same either way (`torro_core::settings::ComposePaper`).
+    ComposePaper,
     /// Account id (`mail:<address>`) used as the sender of a new mail. `null` restores the first
     /// available account. Replies and forwards keep their message's account unless chosen anew.
     MailSender,
@@ -4239,6 +4261,10 @@ pub enum Response {
     /// The groups of [`Request::ListContactGroups`].
     ContactGroups {
         groups: Vec<torro_contacts::Group>,
+    },
+    /// The suggestions of [`Request::SuggestRecipients`], in the order to show them.
+    RecipientSuggestions {
+        suggestions: Vec<torro_contacts::RecipientSuggestion>,
     },
     /// The birthdays of [`Request::UpcomingBirthdays`], the soonest first.
     Birthdays {

@@ -1702,6 +1702,124 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The people of this account's mail since `since`, for the recipient suggestions (issue #460,
+    /// `contacts.suggest_recipients`): everyone mail went to from the sent folder (`To:` and `Cc:`),
+    /// each mail counting by its age at `now` ([`torro_contacts::suggest::sent_weight`]), and the
+    /// senders of personal mail in every other folder but drafts, junk and trash – mail of a list
+    /// (`List-Id`), automatic mail (`Auto-Submitted` other than `no`) and bulk mail (`Precedence:
+    /// bulk`, `list`, `junk`) say nothing about whom the person writes to, and would fill the list
+    /// with "noreply" addresses. The sent folder is the one with the role `sent`, else the one at
+    /// `sent_path`, the person's pick for it (the role stays empty until the folders sync again).
+    ///
+    /// `word`, the first word typed, narrows the rows read beforehand (`LIKE` on the names and
+    /// addresses as stored); a word with letters beyond ASCII does not, since SQLite folds only those,
+    /// and the caller's match decides anyway. A header this version cannot read counts as none.
+    pub fn correspondents(
+        &self,
+        word: &str,
+        since: DateTime<Utc>,
+        now: DateTime<Utc>,
+        sent_path: Option<&str>,
+    ) -> Result<Vec<torro_contacts::suggest::Correspondent>, MailStoreError> {
+        use std::collections::BTreeMap;
+
+        use torro_contacts::suggest::{Correspondent, sent_weight};
+
+        let sent: Option<String> = match self
+            .db
+            .query_row("SELECT id FROM folders WHERE role = 'sent' ORDER BY path LIMIT 1", [], |row| row.get(0))
+            .optional()?
+        {
+            Some(id) => Some(id),
+            None => match sent_path {
+                Some(path) => {
+                    self.db.query_row("SELECT id FROM folders WHERE path = ?1", [path], |row| row.get(0)).optional()?
+                }
+                None => None,
+            },
+        };
+        let narrow = (!word.is_empty() && word.is_ascii()).then(|| {
+            let mut pattern = String::from("%");
+            for c in word.chars() {
+                if matches!(c, '%' | '_' | '\\') {
+                    pattern.push('\\');
+                }
+                pattern.push(c);
+            }
+            pattern.push('%');
+            pattern
+        });
+        let mut people: BTreeMap<String, Correspondent> = BTreeMap::new();
+        let mut note = |who: &MailAddress, date: DateTime<Utc>, sent: bool| {
+            let address = who.address.trim();
+            if address.is_empty() {
+                return;
+            }
+            let person = people
+                .entry(address.to_lowercase())
+                .or_insert_with(|| Correspondent { address: address.to_string(), ..Correspondent::default() });
+            if person.name.as_deref().is_none_or(|name| name.trim().is_empty()) {
+                person.name = who.name.clone().filter(|name| !name.trim().is_empty());
+            }
+            if sent {
+                person.score += sent_weight((now - date).num_days());
+                person.last_sent = person.last_sent.max(Some(date));
+            } else {
+                person.last_received = person.last_received.max(Some(date));
+            }
+        };
+        let date_of = |seconds: i64| DateTime::from_timestamp(seconds, 0);
+
+        if let Some(sent) = &sent {
+            let mut sql =
+                String::from("SELECT to_json, cc_json, date FROM messages WHERE folder_id = ?1 AND date >= ?2");
+            let mut values: Vec<Value> = vec![Value::Text(sent.clone()), Value::Integer(since.timestamp())];
+            if let Some(pattern) = &narrow {
+                sql.push_str(" AND recipients LIKE ?3 ESCAPE '\\'");
+                values.push(Value::Text(pattern.clone()));
+            }
+            let mut statement = self.db.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            })?;
+            for row in rows {
+                let (to, cc, seconds) = row?;
+                let Some(date) = date_of(seconds) else { continue };
+                for json in [to, cc] {
+                    for who in serde_json::from_str::<Vec<MailAddress>>(&json).unwrap_or_default() {
+                        note(&who, date, true);
+                    }
+                }
+            }
+        }
+
+        let mut sql = String::from(
+            "SELECT m.from_json, m.date FROM messages m JOIN folders f ON f.id = m.folder_id
+             WHERE m.date >= ?1 AND m.from_json IS NOT NULL AND f.id IS NOT ?2
+                AND coalesce(f.role, '') NOT IN ('sent', 'drafts', 'junk', 'trash')
+                AND m.list_id IS NULL
+                AND (m.auto_submitted IS NULL OR lower(trim(m.auto_submitted)) = 'no')
+                AND (m.precedence IS NULL OR lower(trim(m.precedence)) NOT IN ('bulk', 'list', 'junk'))",
+        );
+        let mut values: Vec<Value> =
+            vec![Value::Integer(since.timestamp()), sent.clone().map_or(Value::Null, Value::Text)];
+        if let Some(pattern) = &narrow {
+            sql.push_str(" AND m.sender LIKE ?3 ESCAPE '\\'");
+            values.push(Value::Text(pattern.clone()));
+        }
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement
+            .query_map(params_from_iter(values), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+        for row in rows {
+            let (from, seconds) = row?;
+            let (Some(date), Ok(who)) = (date_of(seconds), serde_json::from_str::<MailAddress>(&from)) else {
+                continue;
+            };
+            note(&who, date, false);
+        }
+        Ok(people.into_values().collect())
+    }
+
     /// The mail of the inbox folder now for `mail.overview` (issue #409), newest first; none
     /// without an inbox folder. A category this version cannot read counts as none, as in
     /// [`MailStore::unread_by_category`].
@@ -3117,6 +3235,65 @@ mod tests {
     fn search_ids(store: &MailStore, text: &str) -> Vec<String> {
         let query = SearchQuery { query: parse(text).expect("a query"), ..SearchQuery::default() };
         store.search(&query, 50, 0).expect("search").into_iter().map(|summary| summary.id).collect()
+    }
+
+    /// Issue #460: the people of the mail are those written to from Sent, counted by age, and the
+    /// senders of personal mail; lists, automatic and bulk mail, drafts, junk and trash say nothing.
+    #[test]
+    fn correspondents_are_who_was_written_to_and_who_wrote_in_person() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let junk = folder(&store, "Junk", Some(Role::Junk));
+        let picked = folder(&store, "INBOX.Gesendet", None);
+        let now = day(30);
+        let to = |uid: u32, people: Vec<MailAddress>| NewMessage {
+            from: Some(address(None, "anna@example.org")),
+            to: people,
+            ..message(uid, "Sent")
+        };
+        let jonas = address(Some("Jonas Berger"), "jonas@berger.de");
+        add(&store, &picked, &to(28, vec![jonas.clone()]));
+        add(&store, &picked, &NewMessage { cc: vec![address(None, "JONAS@berger.de")], ..to(10, vec![]) });
+        add(&store, &picked, &to(1, vec![address(None, "mira@schulte.de")]));
+        let person = |uid: u32, from: &str| NewMessage { from: Some(address(None, from)), ..message(uid, "Hi") };
+        add(&store, &inbox, &person(20, "jo.meyer@posteo.de"));
+        let traits = |list: bool, auto: Option<&str>, precedence: Option<&str>| MessageTraits {
+            list_id: list.then(|| "<news.example.com>".to_string()),
+            auto_submitted: auto.map(str::to_string),
+            precedence: precedence.map(str::to_string),
+            ..MessageTraits::default()
+        };
+        add(&store, &inbox, &NewMessage { traits: traits(true, None, None), ..person(21, "news@shop.de") });
+        add(
+            &store,
+            &inbox,
+            &NewMessage { traits: traits(false, Some("auto-replied"), None), ..person(22, "away@x.de") },
+        );
+        add(&store, &inbox, &NewMessage { traits: traits(false, None, Some("bulk")), ..person(23, "bulk@x.de") });
+        add(&store, &inbox, &NewMessage { traits: traits(false, Some("no"), None), ..person(24, "lena@x.de") });
+        add(&store, &junk, &person(25, "spam@x.de"));
+
+        let found = store.correspondents("", day(1), now, Some("INBOX.Gesendet")).expect("people");
+        let by = |address: &str| found.iter().find(|p| p.address.eq_ignore_ascii_case(address));
+        let mut addresses: Vec<String> = found.iter().map(|p| p.address.to_lowercase()).collect();
+        addresses.sort();
+        assert_eq!(addresses, ["jo.meyer@posteo.de", "jonas@berger.de", "lena@x.de", "mira@schulte.de"]);
+        let jonas = by("jonas@berger.de").expect("jonas");
+        assert_eq!(
+            (jonas.score, jonas.last_sent, jonas.name.as_deref()),
+            (4.0 + 2.0, Some(day(28)), Some("Jonas Berger"))
+        );
+        assert_eq!(by("mira@schulte.de").expect("mira").score, 2.0, "29 days ago");
+        let meyer = by("jo.meyer@posteo.de").expect("meyer");
+        assert_eq!((meyer.score, meyer.last_received, meyer.last_sent), (0.0, Some(day(20)), None));
+
+        // Without the person's pick and no folder with the role, nothing counts as sent.
+        let unpicked = store.correspondents("", day(1), now, None).expect("people");
+        assert!(unpicked.iter().all(|p| p.last_sent.is_none()));
+        // The first word narrows the rows read; the window too.
+        let narrowed = store.correspondents("jonas", day(1), now, Some("INBOX.Gesendet")).expect("people");
+        assert_eq!(narrowed.iter().map(|p| p.address.to_lowercase()).collect::<Vec<_>>(), ["jonas@berger.de"]);
+        assert!(store.correspondents("", day(29), now, Some("INBOX.Gesendet")).expect("people").is_empty());
     }
 
     #[test]

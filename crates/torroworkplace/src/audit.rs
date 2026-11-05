@@ -276,7 +276,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListContacts { book, .. } | Request::ListContactGroups { book } => {
             book.iter().map(|book| collection(book)).collect()
         }
-        Request::UpcomingBirthdays { .. } => Vec::new(),
+        // Never what was typed (issue #460); the mail accounts read are added by the core
+        // ([`read_account_ids`]).
+        Request::UpcomingBirthdays { .. } | Request::SuggestRecipients { .. } => Vec::new(),
         Request::CreateContact { book, .. } => vec![collection(book)],
         Request::GetContact { id: contact }
         | Request::GetContactPhoto { id: contact, .. }
@@ -576,6 +578,18 @@ pub fn engine_id(engine: &str) -> String {
 /// not have the form the core makes are hashed.
 pub fn delegation_ids(bot: &str, assistant: &str) -> Vec<String> {
     vec![made_id("bot", bot), behalf_id(assistant)]
+}
+
+/// `account:<id>` for each mail account `contacts.suggest_recipients` read (issue #460), as
+/// `mail.search_messages` names its account; an id without the form of one is hashed.
+pub fn read_account_ids(accounts: &[String]) -> Vec<String> {
+    accounts
+        .iter()
+        .map(|account| match is_account_id(account) {
+            true => format!("account:{}", cut(account)),
+            false => format!("account:hash:{}", hashed(account)),
+        })
+        .collect()
 }
 
 /// `taken-from:<hash>`: the template that lost its key to `workspaces.set_template_shortcut` (issue

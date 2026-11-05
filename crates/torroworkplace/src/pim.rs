@@ -1385,6 +1385,7 @@ impl PimService {
             | Request::GetContact { .. }
             | Request::GetContactPhoto { .. }
             | Request::ListContactGroups { .. }
+            | Request::SuggestRecipients { .. }
             | Request::UpcomingBirthdays { .. }
             | Request::CreateContact { .. }
             | Request::AddToContact { .. }

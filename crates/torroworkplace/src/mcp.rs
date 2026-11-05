@@ -707,6 +707,8 @@ const STAYS_HERE: &[&str] = &[
     // Favourites and the contacts used last are kept on this device only (issue #351).
     "contacts.set_favorite",
     "contacts.mark_used",
+    // Suggestions read only the address books and the mail kept on this device (issue #460).
+    "contacts.suggest_recipients",
     "calendar.list_reminders",
     "calendar.snooze_reminder",
     "calendar.dismiss_reminder",
