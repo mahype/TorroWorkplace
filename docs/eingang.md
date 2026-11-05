@@ -375,17 +375,22 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
-- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398, #445): ganz oben **All** (bis #445 „Unfiltered“, bis #337
-  „All“: der Posteingang aller gezeigten Konten, mit der Zahl ungelesener Mails) und darunter **Sent** (deutsch
-  „Gesendet“: die gesendeten Mails aller gezeigten Konten, neueste zuerst, ohne Zahl; jede Zeile nennt den Empfänger
-  und das Postfach, über das die Mail rausging). Ein Klick auf „All“ zeigt die Liste und im breiten Fenster rechts die
-  Übersicht; der Eintrag „Overview“ der Leiste (#409) entfällt, die Übersicht erreicht man über den Pfad „Overview ›
-  All“ über der Liste. Danach die **Kategorien** ohne Überschrift (die Gruppen mit
+- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398, #445, #455): ganz oben das **Kontenfeld** (zwei Zeilen
+  ohne Avatare: „All accounts“ über den Domains, „{n} accounts“ über den gewählten Domains oder die Domain des einen
+  Kontos über seiner Adresse; sein Menü „Show accounts“ wählt eines, mehrere oder alle, je Zeile mit der Zahl
+  ungelesener Mails in „All“ und „Only this“, unten „Manage accounts…“; die Wahl bleibt in `ui.json`), darunter
+  **New email** (Kasten-Knopf mit Taste), dann **All** (bis #445 „Unfiltered“, bis #337 „All“: der Posteingang aller
+  gezeigten Konten, mit der Zahl ungelesener Mails). Ein Klick auf „All“ zeigt die Liste und im breiten Fenster rechts
+  die Übersicht; der Eintrag „Overview“ der Leiste (#409) entfällt, mittel und schmal öffnet sie der Knopf „Show
+  overview“ in der oberen Zeile (#459, kein Pfad mehr über der Liste). Direkt darunter die **Kategorien** ohne Überschrift (die Gruppen mit
   ihren Kategorien, sobald eine Mail eine Kategorie hat; „Unsorted“ ist eine einfache Zeile ohne Aufklappen, ein Klick
   zeigt ihre Mails). Darunter, nur durch
   Abstand getrennt (in der Leiste durch eine Linie), **Reply later** und **Set aside** (die beiden Stapel, mit der
   Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“; „Hidden“ darunter ist mit #339 entfallen), dann **Folders**
-  mit Archive (nur wenn ein Konto einen Archivordner hat), den angehefteten Ordnern (der Ordnername, darunter klein die Adresse des Kontos, wenn das Fenster Ordner aus mehr
+  mit **Sent** (deutsch „Gesendet“: die gesendeten Mails aller gezeigten Konten, ohne Zahl; jede Zeile nennt den
+  Empfänger und das Postfach), Archive (nur wenn ein Konto einen Archivordner hat), **Trash** (#455, „Papierkorb“: die
+  Mails im Papierkorb aller gezeigten Konten über die Ordnerrolle, ohne Zahl; nur wenn ein Konto einen hat), den
+  angehefteten Ordnern (der Ordnername, darunter klein die Adresse des Kontos, wenn das Fenster Ordner aus mehr
   als einem Konto hat) und **Pin folders ›** (deutsch „Ordner pinnen“). Das Menü
   der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „All“. Die Smart views
   „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
@@ -444,7 +449,7 @@ Design „Torro“ zeigt **kompakt**.
 Im Mail-Fenster stehen alle Aktionen einer Mail in **einer Leiste am rechten Rand** der Mail, über ihre ganze Höhe
 (Entwurf D in [`prototypes/inbox/mail-aktionsleiste.html`](prototypes/inbox/mail-aktionsleiste.html#d)). Der Leser hat
 keine Befehlsleiste, keine Pillen im Kopf und keinen Fuß mehr; die Liste zeigt keine Knöpfe (E14.2), es bleiben die
-Tasten. Unten im Leser stehen nur die Anhänge als Chips. Zentrale und App Feed behalten ihre Zeilenleiste und das Paneel
+Tasten. Die Anhänge stehen seit #457 im Kopf der Mail (einer mit Namen, ab zwei „{n} attachments ▾“ mit Menü). Zentrale und App Feed behalten ihre Zeilenleiste und das Paneel
 aus E9.4.
 
 - **Gruppen** in dieser Reihenfolge, jede nur mit dem, was für die Mail geht; leere Gruppen fallen weg:
@@ -452,17 +457,17 @@ aus E9.4.
   aside mit `b`, Follow up… mit `s`, Move to Info bzw. For me, Delete, Save attachments – kein Done und kein Reopen
   mehr, E18.5; liegt die Mail auf einem Stapel, steht an seiner Stelle „Remove from Reply later“ bzw. „Remove from Set
   aside“ mit derselben Taste, E19.4), **Torro** (Task, Event, Category…, Re-categorize nur mit Entscheidungsmodell),
-  **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…) und **More** (Show as text bzw. HTML,
-  Light bzw. Dark colours, Copy text, Create filter… für den Absender (#339), im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
+  **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…), **Display** (#456: ein Klick öffnet die
+  Karte „Display“ mit „View“ HTML oder Text, Taste `v`, und „Mail colors“ Light, Dark oder As app; die Wahl ist die
+  Einstellung `mail_view` bzw. `mail_appearance` und bleibt nach dem Neustart) und **More** (Copy text, Create filter…
+  für den Absender (#339), im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
   Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Move to, Event, Category, aber Follow up… (E19,
   Entscheidung 8). Ein Klick auf das Icon von File archiviert. „Show again“ in Mute (E18.4) ist mit #339 entfallen.
-- **Eingeklappt** (Breite der eingeklappten Seitenleiste): ein Icon je Gruppe, ein Klick tut die erste Aktion der
-  Gruppe, Hover öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile, für alle Gruppen
-  gleich breit. **Ausgeklappt** (Breite der Seitenleiste): alle Gruppen offen mit Namen, als Spalte im Layout; die Mail
-  rückt nach innen, nichts liegt über ihr.
-- **Umschalten** nur im breiten Fenster: Knopf `panel-right` oben in der Leiste („Expand actions“ / „Collapse
-  actions“) oder Taste `]`, wie `[` für die Seitenleiste. Gemerkt je Fensterart und Ausschnitt in `ui.json`, nicht über
-  die API. In Mittel und Schmal steht die Mail im Paneel, die Leiste dort bleibt eingeklappt und hat keinen Knopf.
+- **Schwebend** (#456, Entwurf `prototypes/mail-layout/`): eine Karte senkrecht mittig am rechten Rand über der Mail,
+  in jeder Größe, im Paneel an dessen rechtem Rand. Ein Icon je Gruppe, ein Klick tut die erste Aktion der Gruppe, Hover
+  öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile (nicht bei Display). Der Text der Mail
+  hält Abstand zur Leiste, der Kopf läuft darunter durch. Die ausgeklappte Leiste, ihr Knopf und die Taste `]` sind
+  entfallen (#333 damit hinfällig).
 - **Menüs und Dialoge** einer Aktion (Follow up, Move to, Task, Event, Category, Mute) öffnen links neben ihrer Zeile,
   eingeklappt neben dem Icon ihrer Gruppe; auch über die Taste geöffnet hängen sie an der Leiste.
 - **Einladungen:** Accept, Maybe, Decline bleiben als Karte im Kopf der Mail.

@@ -32,8 +32,9 @@ aus einem Guss wirkt:
 
 ```
 ┌ Seitenleiste 240 (Grund BG) ┐│ Inhalt: bündige Fläche PANEL, Linie zur Seitenleiste ──────────────┐
-│ [T] App ▾      🔍  [✎]      ││ Kopfleiste 64: Pfad/Titel · Navigation …… Ansicht · Filter · [+ Neu] │
-│ Navigation (Zeilen 32)      │├───────────────────────────────────────────┬───────────────────────┤
+│ ● ● ●  [T] App ▾       [▯]  ││ obere Zeile 40: Titel · Navigation … Ansicht · Filter · [+ Neu]  [☰] │
+│                🔍  [✎]      │├───────────────────────────────────────────┬───────────────────────┤
+│ Navigation (Zeilen 32)      ││                                           │                       │
 │ Gruppe ▾ (CAPTION, TEXT_3)  ││ Inhalt (Liste, Raster, Detail)            │ Eigenschaften 300     │
 │ Listen/Kalender mit Punkt   ││                                           │ (nur Breit)           │
 │ …                           ││                                           │                       │
@@ -41,8 +42,16 @@ aus einem Guss wirkt:
 └─────────────────────────────┘└───────────────────────────────────────────┴───────────────────────┘
 ```
 
-- **Oben links der App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü): öffnet die
-  anderen Apps der Suite (Kern-Befehl `OpenApp`), daneben Suche und „Neu“ (Kasten-Knopf).
+- **Eine obere Zeile** (#459, `shell::TopRow` an `Shell::top_row`, Entwurf `docs/prototypes/mail-layout/`):
+  40 pt hoch (doppelte Höhe der Ampel-Mitte), auf allen Systemen. Links Platz für die Ampel (nur macOS),
+  der **App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü, öffnet die anderen Apps, Kern-Befehl
+  `OpenApp`) und der Knopf `panel-left`; über der ausgeklappten Seitenleiste so breit wie sie, neben der
+  Leiste nur das Logo, schmal nur der Knopf (der Umschalter steht dann oben in der Schublade). Daneben die
+  **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
+  (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind). Die freie Fläche zieht das
+  Fenster, Dialoge und Schublade dimmen die Zeile (`Cover`). Wer seine Kopfzeile nach Spalten teilt, zieht
+  `shell::head_inset` vom ersten Teil ab. Suche und „Neu“ stehen als erste Zeile der Seitenleiste
+  (`shell::sidebar_tools`). Ohne Shell (Anmelden, Glance, Schreibfenster) bleibt `shell::titlebar`.
 - **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt bündig** (#291, `layout::inset()` = 0 in allen
   eingebauten Designs): die Fläche `PANEL` reicht bis an die Fensterränder, eine 1-px-`LINE` trennt sie von
   Seitenleiste bzw. Leiste – kein Rand, kein Radius. Ein eigenes Design mit `inset` > 0 bekommt die
@@ -64,18 +73,19 @@ aus einem Guss wirkt:
   `torro_gui::split` darüber (Doppelpfeil, Doppelklick = Standard, beim Ziehen die Linie in `LINE_SELECTED`),
   `shell::sidebar_limits` hält die Breite zwischen ¾ und 2 × `size::sidebar()` und lässt dem Inhalt seinen Rest.
   Leiste, Schublade und Titelband behalten `size::sidebar()` bzw. `shell::rail()`.
-- **Fensterknöpfe im Titelband** (macOS, U.10/U.11, wie Claude/Slack): der Knopf `panel-left` rechts
-  neben der Ampel, die Einstellungen (Zahnrad, „Settings“) in der Ecke oben rechts –
-  `shell::TitleButtons` an `shell::titlebar`. Alles auf einer Linie: Ampel (verschoben mit
-  `torro_gui::place_traffic_lights()` beim Start), Knöpfe und Zahnrad mit Mitte bei y = 20 (fest, kein
-  Token: mittig zwischen Oberkante und 8 unter dem Band, auch bei bündigem Inhalt); Schließen-Knopf und
-  Zahnrad je 20 vom Rand. Dort fehlen sie in Seitenleiste und Kopfleiste
-  (`shell::has_band()`); auf anderen Systemen (kein Band) bleibt der Knopf oben in der Seitenleiste
-  bzw. in der schmalen Kopfleiste und „Settings“ unten in der Seitenleiste. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal bauen, mit
-  dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_head`,
+- **Ampel** (macOS, U.11): verschoben mit `torro_gui::place_traffic_lights()` beim Start, Mitte bei y = 20 (fest,
+  kein Token) – die Mitte der oberen Zeile. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal
+  bauen, mit dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_tools`,
   `Shell::rail`.
-- **Kopfleiste** `size::header()` hoch im Inhalt (64 im Standard): links Pfad bzw. Titel (`typo::body_strong()`) mit leiser Ergänzung in
-  `TEXT_3`, dann Navigation; rechts Ansicht, Filter, genau ein Primärknopf.
+- **Kopfzeile** in der oberen Zeile: links Titel (`typo::body_strong()`) mit leiser Ergänzung in `TEXT_3`, dann
+  Navigation; rechts Ansicht, Filter, genau ein Primärknopf. Schmale Fenster haben neben Ampel und Knopf wenig Platz:
+  dort entfällt zuerst die leise Ergänzung. Andere Knöpfe als die Einstellungen zeigen keine Schieberegler
+  (Ansicht: `list-filter`).
+- **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
+  und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
+  Rand über der Mail (`widgets::floating_rail`); der Text hält `widgets::floating_rail_room()` Abstand, der Kopf läuft
+  darunter durch. Die **Mail-Zeile** hat zwei Zeilen (Absender · Büroklammer · Zeit, Betreff · Markierungen), Tagesköpfe
+  und vorn den Kreis des Absenders (`widgets::sender_circle`, Farbe aus `Palette::sender` über die Adresse).
 - **Eigenschaften-Spalte** 300 breit rechts (Linear „Properties“): Gruppen mit `typo::caption()`-Titel in
   `TEXT_3`, Zeilen 32 mit Icon und Wert.
 - **Kleiner werden** in dieser Reihenfolge, nie etwas Funktion verlieren: (1) Seitenleiste ins Menü
@@ -171,7 +181,7 @@ aus einem Guss wirkt:
 | `size::command()` | 46 | Bleibt im Paket-Format (E14, Entscheidung 9), kein Baustein nutzt es mehr: die Befehlsleiste des Lesers (E11.1) ist mit #241 entfernt |
 | `size::pill()` | 40 | Avatar im Kopf des Lesers (E11.1); die Torro-Pillen, die so hoch waren, sind mit #241 entfernt, das Maß bleibt im Paket-Format |
 | `size::row()` | 48 | Listenzeile (Aufgaben, `widgets::list_row`) |
-| `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen à 22, über der Haarlinie zentriert mit je 16,5 Luft – die Zeile nimmt von `row_padding` nur die Seiten (E3.9, E11.1); in Console eine Zeile 24 |
+| `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen à 22, über der Haarlinie zentriert mit je 16,5 Luft – die Zeile nimmt von `row_padding` nur die Seiten (E3.9, E11.1); in Console eine Zeile 24. Das Mail-Fenster hat eigene, schlanke Zeilen (#458, `list::slim_message_height()`: zwei Zeilen `body` + 2 × `space::m()` + Haarlinie) |
 | `size::row_notice()` | 80 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text – zwei Zeilen à 22, über der Haarlinie zentriert mit je 17,5 Luft (E3.9) |
 | `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
 | `size::avatar()` / `size::avatar_lg()` | 40 / 48 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die Mail-Zeile hat ihren eigenen (`[list] avatar`) |
@@ -183,7 +193,7 @@ aus einem Guss wirkt:
 | `size::props()` | 300 | Eigenschaften-Spalte |
 | `size::panel()` | 400 | Seitenpaneel für Details (`torro_gui::panel`): Breit daneben, in Schmal darüber in voller Höhe (die Aufgaben-App zeigt ihr Detail auch in Mittel daneben, Abschnitt 6) |
 | `shell::rail()` = `size::rail()` | 60 | Eingeklappte Seitenleiste (Leiste, nur Icons) und eingeklappte Aktionsleiste der Mail; mindestens `control_lg()` |
-| `size::rail_wide()` | 248 | Ausgeklappte Aktionsleiste der Mail (`RailMode::Expanded`) |
+| `size::rail_wide()` | 248 | Ausgeklappte Aktionsleiste (`RailMode::Expanded`); das Mail-Fenster nutzt seit #456 die schwebende Leiste |
 | `size::reading_max()` | 600 | Lesespalte: so breit steht der Text einer Mail höchstens im Leser (Console 1200) |
 | `size::list()` / `size::list_medium()` | 440 / 364 | Liste neben dem Detail (Breit / Mittel) |
 | `size::hour()` | 48 | Stundenhöhe im Kalender, Zeitachse 52 (Schmal 44) |
