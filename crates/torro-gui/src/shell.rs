@@ -1012,6 +1012,12 @@ pub fn sidebar_tools<'a, M: Clone + 'a>(mode: SidebarMode, search: bool, on: fn(
     }
 }
 
+/// The room the window's content gets under the top row ([`Shell::top_row`]), for a window of `size`
+/// in layout units at the zoom factor `zoom`: dialogs sized to the window measure with it.
+pub fn below_top_row(size: Size, zoom: f32) -> Size {
+    Size::new(size.width, (size.height - TOP_ROW / zoom).max(0.0))
+}
+
 /// The header bar: [`size::header()`] high (64 in the standard), the padding of the size class, a line below.
 fn header_box<'a, M: 'a>(class: SizeClass, header: Element<'a, M>) -> Element<'a, M> {
     let (left, right) = match class {

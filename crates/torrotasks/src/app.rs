@@ -112,7 +112,7 @@ use torro_gui::connect::{self, Connect};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -752,7 +752,8 @@ pub struct App {
 // counts one variant as oversized. Boxing them would only add an allocation.
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    /// The free top row (or the band of a window without it) was pressed: drag the window (see
+    /// [`shell::TopRow`], [`shell::titlebar`]).
     DragWindow,
     /// Another start of the tasks app asked for this window (issue #279, [`torro_gui::instance`]):
     /// bring it to the front.
@@ -813,8 +814,6 @@ pub enum Message {
     ToggleNav,
     /// Open or close the Display menu in the header.
     ToggleDisplay,
-    /// Open the sidebar drawer (medium and narrow layouts).
-    ShowDrawer,
     /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
     /// opens or closes the drawer (medium, narrow).
     ToggleSidebar,
@@ -1401,10 +1400,6 @@ impl App {
             Message::Switcher(Switcher::Search) => self.close_menus(),
             Message::ToggleNav => self.toggle_menu(Menu::Nav),
             Message::ToggleDisplay => self.toggle_menu(Menu::Display),
-            Message::ShowDrawer => {
-                self.menu = None;
-                self.drawer = true;
-            }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::LastRepo(repo) => self.last_repo = repo,
@@ -1553,7 +1548,11 @@ impl App {
     /// The room under the title band, which the glances and the filter dialog fill
     /// ([`shell::below_titlebar`]).
     fn content_size(&self) -> Size {
-        shell::below_titlebar(self.size, self.zoom.factor())
+        if self.has_top_row() {
+            shell::below_top_row(self.size, self.zoom.factor())
+        } else {
+            shell::below_titlebar(self.size, self.zoom.factor())
+        }
     }
 
     /// Mini or strip: a display without header, sidebar, menus or dialogs.
@@ -1703,24 +1702,50 @@ impl App {
         operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(target) })
     }
 
-    /// The window with the zoom badge over it.
+    /// The window with the zoom badge over it. The shell brings its top row (issue #459); the views
+    /// without it (signing in, the glance, a dialog that fills a narrow window) keep the band.
     pub fn view(&self) -> Element<'_, Message> {
         let content = self.zoom.view(self.content());
-        let (surface, cover, buttons) = (self.surface(), self.cover(), self.title_buttons());
+        if self.has_top_row() {
+            return widgets::ctrl_guard(content);
+        }
+        let (surface, cover) = (self.surface(), self.cover());
+        let buttons = TitleButtons::none();
         widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
     }
 
-    /// The panel button and "Settings" in the band above the window (U.10). Signing in and the
-    /// glance have no sidebar to toggle, nor room for the buttons.
-    fn title_buttons(&self) -> TitleButtons<Message> {
-        if !self.connected() || self.is_glance() {
-            return TitleButtons::none();
+    /// Whether [`App::content`] is the shell with its top row: not before the account is known, not
+    /// while signing in (unless the settings are open), not as a glance, and not while a dialog fills
+    /// a narrow window as a view of its own ([`App::window`]).
+    fn has_top_row(&self) -> bool {
+        match &self.account {
+            None => return false,
+            Some(AccountState::NotConnected | AccountState::SigningIn { .. }) if self.settings.is_none() => {
+                return false;
+            }
+            Some(_) => {}
         }
-        let label = shell::sidebar_button_label(self.class(), self.sidebar, self.drawer);
-        TitleButtons::none()
+        let class = self.class();
+        if matches!(class, SizeClass::Mini | SizeClass::Strip) {
+            return false;
+        }
+        if self.settings.is_some() {
+            return true;
+        }
+        let filter_full = self.filter_dialog.as_ref().is_some_and(|dialog| dialog.is_full(class));
+        let list_full = self.new_list.as_ref().is_some_and(|dialog| dialog.is_full(class));
+        !filter_full && !list_full
+    }
+
+    /// The window's top row (issue #459): the switcher, the panel button, the settings, and what lies
+    /// over the top of the window.
+    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        TopRow::new(AppId::TASKS, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
+            .cover(self.cover())
     }
 
     /// What lies over the top of the window, which the title band repeats: a filter list dialog,
@@ -1801,13 +1826,14 @@ impl App {
         let switcher = Anchor::new();
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
-            let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
+            let sidebar = self.sidebar(SidebarMode::Expanded);
             let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-                .then(|| self.sidebar(SidebarMode::Rail, &switcher));
+                .then(|| self.sidebar(SidebarMode::Rail));
             let window = shell::shell(class, sidebar, frame.header, frame.body, None)
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
-                .overlay(frame.overlay);
+                .overlay(frame.overlay)
+                .top_row(self.top_row(class, &switcher));
             return self.with_notice(window.into());
         }
         let (nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new());
@@ -1819,9 +1845,9 @@ impl App {
         if let Some(dialog) = self.new_list.as_ref().filter(|dialog| dialog.is_full(class)) {
             return dialog.view(class, self.content_size()).map(Message::NewList);
         }
-        let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
+        let sidebar = self.sidebar(SidebarMode::Expanded);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-            .then(|| self.sidebar(SidebarMode::Rail, &switcher));
+            .then(|| self.sidebar(SidebarMode::Rail));
         let columns = self.columns();
         let header = self.header(class, columns, [&nav, &display, &property, &list_menu]);
         let menu = self.menu.map(|menu| match menu {
@@ -1851,7 +1877,8 @@ impl App {
         let window = shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(dialog.or(menu).or_else(editor));
+            .overlay(dialog.or(menu).or_else(editor))
+            .top_row(self.top_row(class, &switcher));
         self.with_notice(window.into())
     }
 
@@ -1872,9 +1899,11 @@ impl App {
         if !matches!(class, SizeClass::Wide | SizeClass::Medium) || list_width >= content - 2.0 * LINE {
             return list_head;
         }
-        // The header bar pads 16 at the left; the list head keeps 12 at its right before the line.
+        // The header bar pads 16 at the left; the list head keeps 12 at its right before the line. In
+        // the top row the head starts after the lights, the logo and the panel button (issue #459).
+        let inset = shell::head_inset(class, self.sidebar, self.zoom.factor());
         let mut split = row![
-            container(list_head).width(list_width - space::l() - space::m()),
+            container(list_head).width((list_width - space::l() - space::m() - inset).max(0.0)),
             Space::new().width(space::m()),
             rule::vertical(LINE).style(style::rule),
         ]
@@ -1893,18 +1922,17 @@ impl App {
     fn list_head<'a>(&'a self, class: SizeClass, width: f32, anchors: [&Anchor; 3]) -> Element<'a, Message> {
         let [nav, display, list_menu] = anchors;
         let name = self.filter_name(&self.filter);
-        let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
         let icon = self.filter_mark(&self.filter);
         let new_task = Message::Switcher(Switcher::New);
         let show_display = if width >= HEAD_LABELS_FROM {
             widgets::text_button(
-                Some(Icon::SlidersHorizontal),
+                Some(Icon::ListFilter),
                 tr("Display"),
                 style::button::ghost,
                 Some(Message::ToggleDisplay),
             )
         } else {
-            widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay))
+            widgets::icon_button(Icon::ListFilter, tr("Display"), Some(Message::ToggleDisplay))
         };
         let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
         let new_button = if narrow {
@@ -1921,17 +1949,12 @@ impl App {
         }
         if !narrow {
             // Wide and medium have the sidebar or the rail for the navigation.
+            let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
             return shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing);
         }
-        let title = row![
-            widgets::menu_button(nav, icon, name, Message::ToggleNav),
-            typo::text(typo::body(), open).style(theme::text_3).wrapping(text::Wrapping::None),
-        ]
-        .spacing(space::xs())
-        .align_y(Alignment::Center);
-        // Where the band has the panel button (macOS), the header leaves it out.
-        let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer));
-        shell::header_bar(toggle, title, trailing)
+        // The top row has the panel button beside the lights (issue #459): a narrow window has no room
+        // left for "{n} open" too, and the list's groups count their tasks.
+        shell::header_bar([], widgets::menu_button(nav, icon, name, Message::ToggleNav), trailing)
     }
 
     /// How the detail lays itself out in `columns`: beside the properties column, with its
@@ -2187,7 +2210,7 @@ impl App {
     }
 
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons (U.2).
-    fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
+    fn sidebar<'a>(&'a self, mode: SidebarMode) -> Element<'a, Message> {
         let (views, lists) = self.nav_entries();
         // While a row is dragged, the lists that take it report the pointer and show a ring (G.6c).
         let targets = self.dragged_targets();
@@ -2254,18 +2277,8 @@ impl App {
                 open,
             ));
         }
-        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
-        if !shell::has_band() {
-            footer.push(widgets::sidebar_item_in(
-                mode,
-                Icon::Settings,
-                tr("Settings"),
-                Trail::None,
-                self.settings.is_some(),
-                Message::ToggleSettings,
-            ));
-        }
-        let head = shell::sidebar_head(mode, AppId::TASKS, switcher, Message::Switcher, Message::ToggleSidebar);
+        // "Settings" sits in the top row's right corner (issue #459), the switcher at its left.
+        let head = shell::sidebar_tools(mode, true, Message::Switcher);
         shell::sidebar(head, items, footer)
     }
 
@@ -2295,7 +2308,7 @@ impl App {
         let calendar = calendar_jump(torro_gui::installed::is_installed).map(|open| {
             MenuItem::new(Icon::Calendar, tr("Open Calendar"), open).trail(Trail::Icon(Icon::ArrowUpRight))
         });
-        let settings = MenuItem::new(Icon::Settings, tr("Settings"), Message::ToggleSettings);
+        let settings = MenuItem::new(shell::SETTINGS_ICON, tr("Settings"), Message::ToggleSettings);
         sections
             .push(MenuSection::new(calendar.into_iter().chain([settings.current(self.settings.is_some())]).collect()));
         widgets::menu(sections)
@@ -3952,7 +3965,7 @@ mod tests {
                 let _ = app.update(Message::UiState(UiState { sidebar }));
                 for size in [WIDE, MEDIUM, NARROW] {
                     let _ = app.update(Message::Resized(size));
-                    let _ = app.update(Message::ShowDrawer);
+                    app.drawer = true;
                     let _ = app.view();
                     let _ = app.nav_menu();
                 }
@@ -3989,7 +4002,9 @@ mod tests {
         assert_eq!(app.menu, None, "a second click closes the menu");
         let _ = app.update(Message::Switcher(Switcher::Toggle));
         assert_eq!(app.menu, Some(Menu::Switcher));
-        let _ = app.update(Message::ShowDrawer);
+        // The top row's panel button opens the drawer where the sidebar is not beside the content.
+        let _ = app.update(Message::Resized(MEDIUM));
+        let _ = app.update(Message::ToggleSidebar);
         assert!(app.drawer && app.menu.is_none(), "the drawer replaces an open menu");
         let _ = app.update(Message::SetFilter(Filter::Planned));
         assert!(!app.drawer && app.menu.is_none());
@@ -4002,7 +4017,7 @@ mod tests {
         let _ = app.update(Message::ToggleNav);
         let _ = app.update(Message::CloseMenu);
         assert_eq!(app.menu, None);
-        let _ = app.update(Message::ShowDrawer);
+        app.drawer = true;
         let _ = app.update(Message::CloseMenu);
         assert!(!app.drawer);
     }
@@ -4150,7 +4165,7 @@ mod tests {
         let _ = press(&mut app, Shortcut::Down);
         assert_eq!(cursor(&app), None, "a menu is in front of the list");
         let _ = app.update(Message::CloseMenu);
-        let _ = app.update(Message::ShowDrawer);
+        app.drawer = true;
         let _ = press(&mut app, Shortcut::Down);
         assert_eq!(cursor(&app), None, "so is the drawer");
     }
@@ -4552,6 +4567,26 @@ mod tests {
         connected(&mut app);
         let _ = app.update(Message::Loaded(Ok((collections, todos))));
         app
+    }
+
+    /// Issue #459: the window shows the shell with its top row – switcher, panel button and the
+    /// settings in one row – in every layout with a sidebar or drawer; the glance and a dialog that
+    /// fills a narrow window keep the band.
+    #[test]
+    fn the_window_has_the_top_row_where_it_shows_the_shell() {
+        let mut app = launched(&["--demo"]);
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            assert!(app.has_top_row(), "{size:?}");
+            let _ = app.view();
+        }
+        let _ = app.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert!(!app.has_top_row(), "a glance has no top row");
+        let mut dialog = launched_with_accounts(&["--demo", "--open", "filter-new"]);
+        let _ = dialog.update(Message::Resized(NARROW));
+        assert!(!dialog.has_top_row(), "the narrow editor fills the window as a view of its own");
+        let _ = dialog.update(Message::Resized(WIDE));
+        assert!(dialog.has_top_row(), "a dialog over the wide window");
     }
 
     #[test]
