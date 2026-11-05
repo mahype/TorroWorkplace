@@ -4405,7 +4405,8 @@ pub fn group_title<'a, M: 'a>(title: impl IntoFragment<'a>, buttons: Vec<Element
 /// A row of a settings [`group`]: `label` in `BODY`, an optional `detail` below it in `META`
 /// `text_2`, and one `control` at the right (toggler, pick list, button; the rest goes into a "…"
 /// menu). [`size::header()`] high, 12 more with a detail; the sides of [`layout::row_padding`], the
-/// content centred in the height.
+/// content centred in the height. The row and its line span the whole page (issue #464); the text
+/// wraps at the reading width [`size::content_max()`] at the latest, the control stays at the end.
 pub fn group_row<'a, M: 'a>(
     label: impl IntoFragment<'a>,
     detail: Option<String>,
@@ -4416,10 +4417,18 @@ pub fn group_row<'a, M: 'a>(
     if let Some(detail) = detail {
         text = text.push(typo::text(typo::meta(), detail).style(theme::text_2));
     }
-    container(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center))
+    container(row![reading_cell(text.width(Fill)), control.into()].spacing(space::l()).align_y(Alignment::Center))
         .center_y(height)
         .padding(group_row_padding(layout::row_padding()))
         .into()
+}
+
+/// The text of a settings row in a cell that takes the free width of the row while its content stays
+/// at most [`size::content_max()`] wide (issue #464), so a sentence keeps its reading width in a wide
+/// window and the control after it stays at the end of the row. The cap sits on an inner container:
+/// Iced does not hand the room a capped `Fill` cell leaves to its neighbours.
+pub fn reading_cell<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    container(container(content).max_width(size::content_max())).width(Fill).into()
 }
 
 /// The padding of a [`group_row`] from the row padding `pad`: only its sides. The row has a fixed
@@ -5233,8 +5242,9 @@ fn share_entry<'a, M: 'a>(
 
 /// A setting with what it is for (task DS.4, block 7): at the left `title` in `BODY_STRONG` and the
 /// `why` sentence in `META` and `text_2`, at the right the `control` (a field, a picker, an editor),
-/// the columns 1 : 1.6, aligned at the top. Narrower than [`size::form_max()`] the control moves
-/// under the sentence. `control` builds the control each time the pair is laid out anew, so it is a
+/// aligned at the top. The words take 10 of 26 parts of the width, at most [`size::content_max()`]
+/// (issue #464: in a wide page the sentence keeps its reading width), the control the rest
+/// ([`pair_words_width`]). Narrower than [`size::form_max()`] the control moves under the sentence. `control` builds the control each time the pair is laid out anew, so it is a
 /// closure. Put several pairs into [`setting_pairs`].
 ///
 /// ```ignore
@@ -5252,13 +5262,10 @@ pub fn setting_pair<'a, M: 'a>(
             words = words.push(typo::text(typo::meta(), why.clone()).style(theme::text_2));
         }
         if pair_is_wide(room.width) {
-            row![
-                container(words).width(Length::FillPortion(SETTING_WORDS)),
-                container(control()).width(Length::FillPortion(SETTING_CONTROL)),
-            ]
-            .spacing(space::xl())
-            .align_y(Alignment::Start)
-            .into()
+            row![container(words).width(pair_words_width(room.width)), container(control()).width(Fill)]
+                .spacing(space::xl())
+                .align_y(Alignment::Start)
+                .into()
         } else {
             column![words, control()].spacing(space::s()).into()
         }
@@ -5268,8 +5275,15 @@ pub fn setting_pair<'a, M: 'a>(
 }
 
 /// The portions of the two columns of a [`setting_pair`]: 1 : 1.6.
-const SETTING_WORDS: u16 = 10;
-const SETTING_CONTROL: u16 = 16;
+const SETTING_WORDS: f32 = 10.0;
+const SETTING_CONTROL: f32 = 16.0;
+
+/// The width of the words of a wide [`setting_pair`] `width` wide: their share of 1 : 1.6 of the room
+/// beside the gap, at most the reading width [`size::content_max()`].
+pub fn pair_words_width(width: f32) -> f32 {
+    let room = (width - space::xl()).max(0.0);
+    (room * SETTING_WORDS / (SETTING_WORDS + SETTING_CONTROL)).min(size::content_max())
+}
 
 /// Whether a [`setting_pair`] `width` wide keeps its two columns.
 fn pair_is_wide(width: f32) -> bool {
@@ -5596,6 +5610,64 @@ pub fn confirm_options() -> [(&'static str, Confirm); 3] {
 /// to the margins, never to gaps between elements.
 pub fn content<'a, M: 'a>(max_width: f32, body: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(container(body).max_width(max_width).width(Fill)).center_x(Fill).into()
+}
+
+/// How many columns a settings page `width` wide lays out its `blocks` in (issue #464): one below two
+/// form widths and a section gap ([`size::form_max()`], [`layout::section_gap()`]), two below three form
+/// widths and two gaps, else three – never more than there are blocks and at least one. The breaks go
+/// by the form width, so they follow every design.
+pub fn page_column_count(width: f32, blocks: usize) -> usize {
+    let (form, gap) = (size::form_max(), layout::section_gap());
+    let count = if width < 2.0 * form + gap {
+        1
+    } else if width < 3.0 * form + 2.0 * gap {
+        2
+    } else {
+        3
+    };
+    count.min(blocks).max(1)
+}
+
+/// How wide each column of [`page_columns`] is with `blocks` blocks in a page `width` wide, for blocks
+/// that lay themselves out by their width (the groups of Appearance).
+pub fn page_column_width(width: f32, blocks: usize) -> f32 {
+    let count = page_column_count(width, blocks) as f32;
+    ((width - layout::section_gap() * (count - 1.0)) / count).max(0.0)
+}
+
+/// How many of `blocks` stand in each of `columns` columns, in order: the first ones take one more
+/// while the blocks do not divide evenly (5 in 3: 2, 2, 1).
+fn page_column_sizes(blocks: usize, columns: usize) -> Vec<usize> {
+    let columns = columns.max(1);
+    (0..columns).map(|i| blocks / columns + usize::from(i < blocks % columns)).filter(|n| *n > 0).collect()
+}
+
+/// The independent blocks of a settings page (issue #464: groups like "Language" and "Apps") side by
+/// side in a wide page: in order, in [`page_column_count`] columns of equal width, top-aligned,
+/// [`layout::section_gap()`] apart; in one column under each other with the same gap. `blocks` builds
+/// them each time the page is laid out anew, so it is a closure. What must stay under everything (a
+/// danger zone, "Remove") goes after it, not into it.
+///
+/// ```ignore
+/// column![widgets::page_columns(move || vec![language(state), apps(state)]), danger_zone(state)]
+/// ```
+pub fn page_columns<'a, M: 'a>(blocks: impl Fn() -> Vec<Element<'a, M>> + 'a) -> Element<'a, M> {
+    responsive(move |room| {
+        let mut blocks = blocks();
+        let count = page_column_count(room.width, blocks.len());
+        if count == 1 {
+            return column(blocks).spacing(layout::section_gap()).width(Fill).into();
+        }
+        let mut columns = Vec::with_capacity(count);
+        for size in page_column_sizes(blocks.len(), count) {
+            let rest = blocks.split_off(size);
+            columns.push(column(blocks).spacing(layout::section_gap()).width(Length::FillPortion(1)).into());
+            blocks = rest;
+        }
+        row(columns).spacing(layout::section_gap()).align_y(Alignment::Start).into()
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// The loading state: a calm "Loading …" in `text_3`, centred; no spinner, nothing moves.
@@ -6180,34 +6252,59 @@ pub fn share_bar<'a, M: 'a>(part: u32, whole: u32) -> Element<'a, M> {
 /// `text_3`), then one row per entry of `rows`, and – with `total` – a last row in `BODY_STRONG`.
 /// The first column is the name (`BODY`, wider), the others are numbers, right-aligned with
 /// tabular figures. Rows are [`size::control`] high with a `line` between them; every row should
-/// have as many cells as `head`.
+/// have as many cells as `head`. Up to [`size::content_max()`] the name takes two parts of the row and
+/// each number one; wider, the numbers keep the width they had there and the name gets the rest
+/// (issue #464, [`table_value_width`]).
 pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: Option<Vec<String>>) -> Element<'a, M> {
-    let line = |cells: Vec<String>, level: typo::Level, colour: fn(&Theme) -> iced::widget::text::Style| {
-        let cells = cells.into_iter().enumerate().map(move |(i, cell)| {
-            if i == 0 {
-                container(typo::text(level, cell).style(colour).wrapping(Wrapping::None))
-                    .width(Length::FillPortion(2))
-                    .clip(true)
-                    .into()
-            } else {
-                let number = typo::text(level.tabular(), cell).style(colour).wrapping(Wrapping::None);
-                container(number).width(Fill).align_right(Fill).into()
-            }
-        });
-        container(row(cells).spacing(space::s()).align_y(Alignment::Center))
-            .center_y(size::control())
-            .padding([0.0, space::s()])
-    };
-    let mut table = column![line(head, typo::caption(), theme::text_3)];
-    let mut lines: Vec<(Vec<String>, typo::Level)> = rows.into_iter().map(|row| (row, typo::body())).collect();
+    let values = head.len().saturating_sub(1);
+    let mut lines: Vec<(Vec<String>, typo::Level, TextColour)> = vec![(head, typo::caption(), theme::text_3)];
+    lines.extend(rows.into_iter().map(|row| (row, typo::body(), theme::text as TextColour)));
     if let Some(total) = total {
-        lines.push((total, typo::body_strong()));
+        lines.push((total, typo::body_strong(), theme::text));
     }
-    for (cells, level) in lines {
-        table = table.push(rule::horizontal(LINE).style(style::rule));
-        table = table.push(line(cells, level, theme::text));
-    }
-    table.width(Fill).into()
+    responsive(move |room| {
+        let value = table_value_width(room.width, values);
+        let line = |cells: &[String], level: typo::Level, colour: TextColour| {
+            let cells = cells.iter().enumerate().map(move |(i, cell)| -> Element<'a, M> {
+                if i == 0 {
+                    container(typo::text(level, cell.clone()).style(colour).wrapping(Wrapping::None))
+                        .width(Fill)
+                        .clip(true)
+                        .into()
+                } else {
+                    let number = typo::text(level.tabular(), cell.clone()).style(colour).wrapping(Wrapping::None);
+                    container(number).align_right(value).into()
+                }
+            });
+            container(row(cells).spacing(space::s()).align_y(Alignment::Center))
+                .center_y(size::control())
+                .padding([0.0, space::s()])
+        };
+        let mut table = column![];
+        for (i, (cells, level, colour)) in lines.iter().enumerate() {
+            if i > 0 {
+                table = table.push(rule::horizontal(LINE).style(style::rule));
+            }
+            table = table.push(line(cells, *level, *colour));
+        }
+        table.width(Fill).into()
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// The colour of the text of a line of a [`data_table`].
+type TextColour = fn(&Theme) -> iced::widget::text::Style;
+
+/// The width of each of the `values` number columns of a [`data_table`] `width` wide: one part of the
+/// row beside the padding and the gaps, where the name takes two – but no more than at
+/// [`size::content_max()`], so in a wide page only the name column grows (issue #464).
+pub fn table_value_width(width: f32, values: usize) -> f32 {
+    let share = |width: f32| {
+        let room = width - 2.0 * space::s() - space::s() * values as f32;
+        (room / (values as f32 + 2.0)).max(0.0)
+    };
+    share(width).min(share(size::content_max()))
 }
 
 /// The widget behind [`badged`]: Iced has no layer that may reach past its parent's bounds, so the
@@ -6360,6 +6457,53 @@ mod tests {
         assert_eq!(share_percent(0, 1000), percent(&0));
         assert_eq!(share_percent(5, 0), percent(&0));
         assert_eq!(share_percent(1000, 1000), percent(&100));
+    }
+
+    /// Issue #464: a settings page breaks into two columns at two form widths and a gap, into three at
+    /// three and two gaps, never into more columns than it has blocks.
+    #[test]
+    fn page_columns_break_at_form_widths() {
+        let (form, gap) = (size::form_max(), layout::section_gap());
+        let two = 2.0 * form + gap;
+        let three = 3.0 * form + 2.0 * gap;
+        assert_eq!(page_column_count(two - 1.0, 5), 1);
+        assert_eq!(page_column_count(two, 5), 2);
+        assert_eq!(page_column_count(three - 1.0, 5), 2);
+        assert_eq!(page_column_count(three, 5), 3);
+        assert_eq!(page_column_count(3840.0, 5), 3, "no fourth column");
+        assert_eq!(page_column_count(three, 2), 2, "no more columns than blocks");
+        assert_eq!(page_column_count(three, 1), 1);
+        assert_eq!(page_column_count(three, 0), 1, "at least one");
+        assert_eq!(page_column_count(0.0, 3), 1);
+        assert_eq!(page_column_sizes(5, 3), vec![2, 2, 1], "in order, the first ones longer");
+        assert_eq!(page_column_sizes(4, 3), vec![2, 1, 1]);
+        assert_eq!(page_column_sizes(2, 2), vec![1, 1]);
+        assert_eq!(page_column_width(two - 1.0, 3), two - 1.0, "one column: the whole page");
+        assert_eq!(page_column_width(three, 3), form, "three columns of a form each");
+    }
+
+    /// Issue #464: up to the reading width a table keeps its parts (name 2, each number 1); wider, the
+    /// numbers stay as they were there and only the name grows.
+    #[test]
+    fn table_numbers_stop_growing_at_the_reading_width() {
+        let today =
+            |width: f32, values: usize| (width - 2.0 * space::s() - space::s() * values as f32) / (values as f32 + 2.0);
+        for values in 1..=4 {
+            for width in [200.0, 480.0, size::content_max()] {
+                assert!((table_value_width(width, values) - today(width, values)).abs() < 1e-3, "{values} at {width}");
+            }
+            let at_max = table_value_width(size::content_max(), values);
+            assert_eq!(table_value_width(3840.0, values), at_max, "{values} values in a wide page");
+        }
+        assert_eq!(table_value_width(0.0, 3), 0.0);
+    }
+
+    /// Issue #464: the words of a wide setting pair keep their 10 of 26 parts until the reading width.
+    #[test]
+    fn pair_words_stop_at_the_reading_width() {
+        let width = size::form_max();
+        assert!((pair_words_width(width) - (width - space::xl()) * 10.0 / 26.0).abs() < 1e-3);
+        assert_eq!(pair_words_width(3840.0), size::content_max());
     }
 
     /// DS.4: figures in one row while they fit, then two per row, then one.

@@ -2672,7 +2672,21 @@ impl Gallery {
             section("Quiet branch", branch.into()),
         ]
         .spacing(space::xxl());
-        row![first, second].spacing(space::xxl()).padding(space::xl()).into()
+        // Issue #464: the blocks of a settings page side by side, three at three form widths.
+        let group = |title: &'static str| -> Element<'static, Msg> {
+            let row = |label: &'static str| {
+                widgets::group_row(label, None, widgets::segmented([("On", Msg::Noop), ("Off", Msg::Noop)], 0))
+            };
+            widgets::group(
+                title,
+                vec![row("First setting"), row("Second setting")],
+                Some(format!("What {title} sets.")),
+            )
+        };
+        let columns = widgets::page_columns(move || vec![group("Language"), group("Apps"), group("Startup")]);
+        let three = 3.0 * size::form_max() + 2.0 * layout::section_gap();
+        let columns = section("Page columns", container(columns).width(three).into());
+        column![row![first, second].spacing(space::xxl()), columns].spacing(space::xxl()).padding(space::xl()).into()
     }
 }
 
