@@ -1699,7 +1699,8 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::DismissNotice => self.notice = None,
             Message::Focus(forward) => {
-                if let Some(open) = self.current_suggestions() {
+                // Tab takes the suggestion; Shift+Tab goes back to the field before, as ever.
+                if let Some(open) = self.current_suggestions().filter(|_| forward) {
                     return self.take(open.highlight);
                 }
                 if self.ready() && !self.asking && !self.is_glance() {
@@ -4557,6 +4558,11 @@ mod tests {
         assert!(window.suggestions.is_none() && !window.asking && !exited(&window));
         assert_eq!(window.to.typed, "emma");
         let _ = window.update(Message::To("emma ".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        let _ = window.update(Message::Focus(false));
+        assert!(!window.to.holds("emma.johansson@example.org"), "Shift+Tab takes nothing");
+        let _ = window.update(Message::To("emma ".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "emma".into()));
         let _ = window.update(Message::Suggested(window.asked, Field::To, found));
         let _ = window.update(Message::Focus(true));
         assert!(window.to.holds("emma.johansson@example.org"));
