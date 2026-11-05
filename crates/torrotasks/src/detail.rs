@@ -2050,6 +2050,14 @@ mod tests {
     use torro_pim::CollectionKind;
     use torro_pim::model::GitHubLabel;
 
+    /// The open state reads "Offen" in German, not the verb "Öffnen" of the button (#434).
+    #[test]
+    fn the_open_state_is_offen_in_german() {
+        use torro_core::i18n::{Lang, trc_in};
+        assert_eq!(trc_in(Lang::De, "state", "Open"), "Offen");
+        assert_eq!(trc_in(Lang::En, "state", "Open"), "Open");
+    }
+
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")
     }
