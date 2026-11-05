@@ -13,9 +13,9 @@
 //! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
-//! Its sidebar (issues #337 and #445) starts with "All" (the mail of every inbox, with the unread
-//! mail it holds) and "Sent" ([`App::top_entries`]), then lists the groups of categories without a
-//! title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
+//! Its sidebar (issues #337, #445 and #455) starts with the account field and "New email", then "All"
+//! (the mail of every inbox, with the unread mail it holds, [`App::top_entries`]) right above the groups
+//! of categories without a title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
 //! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
 //! folder browser grouped by account ([`App::folder_entries`]); no sources. The account field at the top of the sidebar chooses the accounts shown (issue #455). In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
@@ -4495,9 +4495,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// `--mail-colors` over them. When they changed, both switches go back to them; the same answer
     /// again (every tick) leaves the switches as the person set them.
     fn take_look(&mut self, stored: MailLook) -> Task<Message> {
-        let mut look = self.launch.look(stored);
-        if self.launch.demo && self.display_chosen {
-            (look.format, look.colors) = (self.look.format, self.look.colors);
+        let mut look = self.launch.look(stored.clone());
+        if self.display_chosen {
+            // A choice in "Display" is the setting from then on: it wins over `--mail-view` and
+            // `--mail-colors`, which only give the start. The demo stores none and holds its own.
+            (look.format, look.colors) =
+                if self.launch.demo { (self.look.format, self.look.colors) } else { (stored.format, stored.colors) };
         }
         if look == self.look {
             return Task::none();
@@ -10623,9 +10626,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let side = |panel| self.with_rail(class, &anchors, panel);
         let detail = if self.view.is_mail() {
             // A folder's message: the mail alone, no entry around it.
-            self.reading()
-                .filter(|_| self.reading)
-                .map(|reading| side(mail::panel(&reading, self.view.folder(), &anchors, self.panel_bars(class))))
+            self.reading().filter(|_| self.reading).map(|reading| {
+                let head = (self.launch.kind == Kind::Mail).then(|| self.mail_head_row()).flatten();
+                side(mail::panel(&reading, self.view.folder(), &anchors, self.panel_bars(class), head))
+            })
         } else {
             self.detail.as_ref().map(|item| {
                 // The mail window's panel of a mail entry has the reader's head and the rail (tasks
@@ -10633,7 +10637,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let (Some(reading), mail::Bars::Command { entry: Some(entry), width }) =
                     (self.reading(), self.panel_bars(class))
                 {
-                    return side(mail::entry_panel(&reading, entry, self.view_label(), width, &anchors));
+                    let head = self.mail_head_row();
+                    return side(mail::entry_panel(&reading, entry, self.view_label(), width, &anchors, head));
                 }
                 // The notifications window's panel and mail have the bell where the others have "…"
                 // (task E8.6b, issue #123).
@@ -10916,13 +10921,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// its own), the previous and the next mail (`k`, `j`; off at the ends) and "Open in new window".
     /// While no mail is open the reader's column holds the overview, and the head says so.
     fn reader_head<'a>(&'a self) -> Element<'a, Message> {
+        self.mail_head_row()
+            .unwrap_or_else(|| typo::text(typo::body_strong(), tr("Overview")).wrapping(Wrapping::None).into())
+    }
+
+    /// The row of the open mail (issue #457): subject, "n of m", previous and next mail, "Open in new
+    /// window" – over the wide reader in the top row, in medium and narrow windows as the head of the
+    /// mail's panel. `None` while no mail with headers is open.
+    fn mail_head_row<'a>(&'a self) -> Option<Element<'a, Message>> {
         let open = self.reading().filter(|_| self.panel_open()).and_then(|reading| {
             let summary = reading.summary()?;
             Some((reading.id.to_owned(), mail::subject(summary)))
         });
-        let Some((id, subject)) = open else {
-            return typo::text(typo::body_strong(), tr("Overview")).wrapping(Wrapping::None).into();
-        };
+        let (id, subject) = open?;
         let place = self.messages.iter().position(|message| message.id == id);
         let shown = subject.clone();
         let title = iced::widget::responsive(move |room| {
@@ -10939,11 +10950,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let last = self.messages.len().saturating_sub(1);
         let back = place.filter(|&at| at > 0).map(|_| Message::StepMail(false));
         let next = place.filter(|&at| at < last).map(|_| Message::StepMail(true));
-        head.push(Space::new().width(space::s()))
+        let row = head
+            .push(Space::new().width(space::s()))
             .push(widgets::icon_button(Icon::ChevronUp, tr("Previous mail"), back))
             .push(widgets::icon_button(Icon::ChevronDown, tr("Next mail"), next))
-            .push(widgets::icon_button(Icon::ExternalLink, tr("Open in new window"), Some(Message::OpenMailWindow(id))))
-            .into()
+            .push(widgets::icon_button(
+                Icon::ExternalLink,
+                tr("Open in new window"),
+                Some(Message::OpenMailWindow(id)),
+            ));
+        Some(row.into())
     }
 
     /// "6 of 9" for the mail at index `at` of the list held (issue #457), "6 of 9+" while further
@@ -15972,6 +15988,21 @@ mod tests {
         let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
         let _ = app.update(look(MailFormat::Html, MailAppearance::Dark));
         assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Dark), "dark though the app is light");
+    }
+
+    /// Review of #467: `--mail-view` and `--mail-colors` give the start; once "Display" chose, the
+    /// setting it stored counts, and the next tick does not set the window back to the start options.
+    #[test]
+    fn a_choice_in_display_wins_over_the_start_options() {
+        let mut app = reading_mail("f:private-inbox", "m:p2");
+        app.launch = Launch::parse(&args(&["--mail-view", "text", "--mail-colors", "dark"])).expect("valid");
+        let _ = app.update(look(MailFormat::Html, MailAppearance::App));
+        assert_eq!((app.look.format, app.look.colors), (MailFormat::Text, MailAppearance::Dark), "the start");
+        let _ = app.update(Message::ShowMailAs(MailFormat::Html));
+        let _ = app.update(Message::MailColors(MailAppearance::Light));
+        // The core answers with what was stored.
+        let _ = app.update(look(MailFormat::Html, MailAppearance::Light));
+        assert_eq!((app.look.format, app.look.colors), (MailFormat::Html, MailAppearance::Light), "the choice holds");
     }
 
     /// Issue #456: a switch is the setting – it takes at once, is stored, and the setting read back
