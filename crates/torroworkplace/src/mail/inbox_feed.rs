@@ -793,18 +793,30 @@ impl Feed {
     }
 
     /// Runs the mail filters of `account` on its new mail `new` of the inbox folder
-    /// ([`super::filters::on_arrival`], issue #339) and gives back the mails that got a filter's
-    /// category, with it. Without the catalogue of categories no category is set; reading and
-    /// moving still happen.
+    /// ([`super::filters::on_arrival`], issue #339) and gives back the mails a filter found that got
+    /// a category, with it: the first rule or filter of the sorting order that decides (issue #454).
+    /// Without the catalogue of categories, or while the categories are being removed, no category
+    /// is set; reading and the trash still happen.
     async fn filter(&self, store: &SharedStore, account: &str, new: &[String]) -> Vec<(String, MailCategory)> {
+        let clearing = self.inbox.category_clear_blocked().unwrap_or(true);
         let categories: Vec<torro_mail::Category> = match self.inbox.catalogue() {
+            Ok(_) if clearing => Vec::new(),
             Ok(catalogue) => catalogue.into_iter().map(|def| def.category).collect(),
             Err(err) => {
                 eprintln!("torroworkplace: inbox: cannot read the categories to filter mail of {account}: {err}");
                 Vec::new()
             }
         };
-        super::filters::on_arrival(&self.mail, store, account, new, &categories).await
+        let filters: Vec<String> =
+            self.mail.filters().list().unwrap_or_default().into_iter().map(|filter| filter.id).collect();
+        let sorting = match self.inbox.sorting(&filters) {
+            Ok(sorting) => sorting,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the sorting order to filter mail of {account}: {err}");
+                (filters.into_iter().map(torro_inbox::SortingStep::filter).collect(), Vec::new())
+            }
+        };
+        super::filters::on_arrival(&self.mail, store, account, new, &categories, &sorting).await
     }
 
     /// Files those of `ids` (messages of `folder`, the inbox folder of `account`) that are still
@@ -2355,6 +2367,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
         server.add("INBOX", &bernd("Bill", 0), &[]);
+        server.add("INBOX", &bernd("Later bill", 0), &[]);
         server.add("INBOX", &from("Carla", "Hello"), &[]);
         let (inbox, mail, feed) = quiet(dir.path(), &server).await;
         let rule = Request::CreateSortRule {
@@ -2380,27 +2393,34 @@ pub(crate) mod tests {
         assert_eq!(kept["Bill"].category, Some(MailCategory::by_rule(Category::Invoice)), "kept with the mail");
         assert_eq!(kept["Bill"].folder, all["Bill"].folder, "a category alone moves nothing");
         assert!(!kept["Bill"].flags.contains(&Flag::Seen));
+
+        // Issue #454: with the rule moved above the filter, the rule decides for what both find.
+        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, None, Utc::now()) else {
+            panic!("the rules")
+        };
+        let filters: Vec<String> = mail.filters().list().expect("read").into_iter().map(|filter| filter.id).collect();
+        let first =
+            Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: rules[0].id.clone(), position: 0 };
+        let plan = inbox.plan_sorting_move(&first, None, &filters, &filters).expect("planned");
+        inbox.apply_sorting_move(&plan, &filters).expect("moved");
+        feed.take(arrived(&[&all["Later bill"]]), Utc::now()).await;
+        let later = by_subject(&mail).await;
+        assert_eq!(later["Later bill"].category, Some(MailCategory::by_rule(Category::Newsletter)), "the rule's now");
     }
 
-    /// The moves: to the archive, to a folder of the account, to the trash (a move, nothing is
-    /// deleted for good). Moved mail gets no entry.
+    /// The one move left (issue #454): to the trash (a move, nothing is deleted for good). Moved
+    /// mail gets no entry.
     #[tokio::test]
-    async fn a_filter_moves_new_mail_to_the_archive_a_folder_or_the_trash() {
+    async fn a_filter_moves_new_mail_to_the_trash() {
         use torro_mail::FilterFile;
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
         server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
-        server.add_folder("Shop", "\\HasNoChildren", 16);
-        for (name, subject) in [("Archie", "To archive"), ("Shop", "To the shop folder"), ("Spam", "To the trash")] {
-            server.add("INBOX", &from(name, subject), &[]);
-        }
+        server.add("INBOX", &from("Spam", "To the trash"), &[]);
         server.add("INBOX", &bernd("Offer", 0), &[]);
         let (inbox, mail, feed) = quiet(dir.path(), &server).await;
         let store = mail.store(ANNA).await.expect("the store");
         let folders = store.run(|store| store.folders()).await.expect("folders");
-        let shop = folders.iter().find(|folder| folder.name == "Shop").expect("the shop folder").id.clone();
-        make_filter(&inbox, &mail, "from:archie", None, |spec| spec.file = Some(FilterFile::Archive));
-        make_filter(&inbox, &mail, "from:shop", Some(ANNA), |spec| spec.file = Some(FilterFile::Folder { id: shop }));
         make_filter(&inbox, &mail, "from:spam", None, |spec| spec.file = Some(FilterFile::Trash));
         let all = by_subject(&mail).await;
         let new: Vec<&torro_mail::MessageSummary> = all.values().collect();
@@ -2410,14 +2430,12 @@ pub(crate) mod tests {
         let lies_in = |folder: &str, subject: &str| {
             server.messages(folder).iter().any(|(_, _, raw)| raw.contains(&format!("Subject: {subject}\r\n")))
         };
-        assert!(lies_in("Archive", "To archive") && lies_in("Shop", "To the shop folder"));
         assert!(lies_in("Trash", "To the trash"), "the trash, not deleted for good");
         assert_eq!(server.messages("INBOX").len(), 1, "only the offer stays");
         let kept = by_subject(&mail).await;
         let role_of =
             |subject: &str| folders.iter().find(|folder| folder.id == kept[subject].folder).and_then(|f| f.role);
-        assert_eq!(role_of("To archive"), Some(Role::Archive), "the store keeps the id where it went");
-        assert_eq!(role_of("To the trash"), Some(Role::Trash));
+        assert_eq!(role_of("To the trash"), Some(Role::Trash), "the store keeps the id where it went");
     }
 
     /// Only a category alone leaves an entry; with reading or a move there is none. Several filters
@@ -2427,6 +2445,7 @@ pub(crate) mod tests {
         use torro_mail::{Category, FilterFile};
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
         for (name, subject) in [("Sorted", "Sorted only"), ("Read", "Sorted and read"), ("Moved", "Sorted and moved")] {
             server.add("INBOX", &from(name, subject), &[]);
         }
@@ -2437,7 +2456,7 @@ pub(crate) mod tests {
             spec.mark_read = true;
             spec.category = Some(Category::Newsletter);
         });
-        make_filter(&inbox, &mail, "from:moved", None, |spec| spec.file = Some(FilterFile::Archive));
+        make_filter(&inbox, &mail, "from:moved", None, |spec| spec.file = Some(FilterFile::Trash));
         let all = by_subject(&mail).await;
         let new: Vec<&torro_mail::MessageSummary> = all.values().collect();
 
@@ -2482,8 +2501,9 @@ pub(crate) mod tests {
         let secrets = anna(dir.path(), &server, Notify::All);
         let inbox = Arc::new(inbox_in(dir.path()));
         let mail = Arc::new(service_in(dir.path(), &secrets));
-        let archive = |spec: &mut super::super::filters::FilterSpec| spec.file = Some(FilterFile::Archive);
-        make_filter(&inbox, &mail, "from:bernd", None, archive);
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
+        let trash = |spec: &mut super::super::filters::FilterSpec| spec.file = Some(FilterFile::Trash);
+        make_filter(&inbox, &mail, "from:bernd", None, trash);
         start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None);
         mail.reload().await;
 
@@ -2493,11 +2513,11 @@ pub(crate) mod tests {
 
         eventually("the inbox watched", || async { idling(&server) }).await;
         server.add("INBOX", &bernd("Second offer", 0), &[]);
-        eventually("archived as it came", || async {
-            server.messages("Archive").iter().any(|(_, _, raw)| raw.contains("Subject: Second offer\r\n"))
+        eventually("moved to the trash as it came", || async {
+            server.messages("Trash").iter().any(|(_, _, raw)| raw.contains("Subject: Second offer\r\n"))
         })
         .await;
-        assert_eq!(titles(&inbox), ["Offer"], "no entry for the archived mail");
+        assert_eq!(titles(&inbox), ["Offer"], "no entry for the mail in the trash");
 
         // A catch-up files mail the feed missed, as it is.
         let dir = tempfile::tempdir().expect("temp dir");
@@ -2569,7 +2589,7 @@ pub(crate) mod tests {
         assert_eq!(kept["Re Offer"].category, Some(MailCategory::by_rule(Category::Invoice)), "a new mail gets it");
 
         let ids = vec![all["Offer"].id.clone()];
-        let none = super::super::filters::on_arrival(&mail, &store, ANNA, &ids, &[]).await;
+        let none = super::super::filters::on_arrival(&mail, &store, ANNA, &ids, &[], &Default::default()).await;
         assert!(none.is_empty(), "not in the catalogue: skipped");
         assert_eq!(by_subject(&mail).await["Offer"].category, None, "nothing set");
     }

@@ -2,10 +2,9 @@
 //! `docs/kategorien.md`, "Eigene Kategorien und Sortierregeln"), part of Settings ›
 //! Categorization in the mail window.
 //!
-//! ```text
-//! Sorting rules   one row per rule, in its order: category, conditions        + New sorting rule
-//! Categories      + New category; then one group per group of categories, a row opens its page
-//! ```
+//! The lists stand in [`super::categorization`] (issue #454): the rules among the filters in the
+//! tab "Rules & filters", the categories in their groups in the tab "Categories". This module holds
+//! the pages they open and the form of a group.
 //!
 //! A category's page: name, group, description, "Let the AI choose it" with how many of its group
 //! the AI chooses between ("7 of 20"), whether the sidebar shows it, for one of the suite "Reset"
@@ -23,7 +22,7 @@
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, responsive, row, space as blank, text_editor};
-use iced::{Alignment, Element, Fill, Length, Theme};
+use iced::{Alignment, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, size, space};
@@ -44,27 +43,18 @@ const NAME_FIELD: &str = "mail-category-name";
 /// The id of the first condition's field of a rule's page.
 const CONDITION_FIELD: &str = "mail-rule-condition";
 
-/// Enough room for a short description without making each category card tall.
-const INLINE_DESCRIPTION_HEIGHT: f32 = 100.0;
-
 /// What the editor keeps between two frames: the page that is open, and the question it asks.
 #[derive(Debug, Default)]
 pub struct State {
     form: Option<Form>,
     asking: Option<Ask>,
     group_form: Option<GroupForm>,
-    descriptions: std::collections::BTreeMap<Category, text_editor::Content>,
-    saved_descriptions: std::collections::BTreeMap<Category, String>,
 }
 
 impl State {
     /// A page of the editor is open: the section shows it instead of its list.
     pub fn is_open(&self) -> bool {
         self.form.is_some() || self.group_form.is_some()
-    }
-
-    pub fn is_rule_open(&self) -> bool {
-        matches!(self.form.as_ref(), Some(Form::Rule(_)))
     }
 }
 
@@ -135,8 +125,6 @@ pub enum Message {
     SaveGroup,
     CancelGroup,
     NewCategoryInGroup(CategoryGroup),
-    InlineDescription(Category, text_editor::Action),
-    SaveDescription(Category),
     /// "New category".
     NewCategory,
     /// A category's row: open its page.
@@ -284,27 +272,6 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }
             action
         }
-        Message::InlineDescription(category, action) => {
-            if let Some(content) = state.descriptions.get_mut(&category) {
-                content.perform(action);
-            }
-            Action::None
-        }
-        Message::SaveDescription(category) => {
-            let Some(content) = state.descriptions.get(&category) else { return Action::None };
-            let description = content.text().trim().to_string();
-            if description.is_empty() || description.chars().count() > DESCRIPTION_MAX {
-                return Action::None;
-            }
-            Action::send(Request::UpdateCategory {
-                category,
-                group: None,
-                name: None,
-                description: Some(description),
-                model: None,
-                icon: None,
-            })
-        }
         Message::NewCategory => {
             state.group_form = None;
             state.asking = None;
@@ -440,23 +407,6 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 state.form = None;
             }
             action
-        }
-    }
-}
-
-/// Refresh descriptions that were saved or have not been edited. A local unsaved change stays
-/// visible across unrelated reloads of the settings data.
-pub fn loaded(state: &mut State, data: &Data) {
-    state.descriptions.retain(|category, _| data.categories.iter().any(|held| held.category == *category));
-    state.saved_descriptions.retain(|category, _| data.categories.iter().any(|held| held.category == *category));
-    for info in &data.categories {
-        let previous = state.saved_descriptions.insert(info.category, info.description.clone());
-        let dirty = state
-            .descriptions
-            .get(&info.category)
-            .is_some_and(|content| previous.as_deref().is_some_and(|saved| content.text().trim() != saved.trim()));
-        if !dirty {
-            state.descriptions.insert(info.category, text_editor::Content::with_text(&info.description));
         }
     }
 }
@@ -891,164 +841,11 @@ fn question<'a>(asked: Ask) -> Element<'a, Message> {
     widgets::group(title, vec![setting_row(None, detail, None, buttons)], None)
 }
 
-/// "Sorting rules": a button to add a rule, then the rules in their checking order.
-pub fn rules_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    // "+ New …" as a row, as in Filters and Attachments; first here, where a new rule appears.
-    let mut rows: Vec<Element<'_, Message>> = vec![add_row(tr("New sorting rule"), Message::NewRule)];
-    if matches!(state.form.as_ref(), Some(Form::Rule(RuleForm { id: None, .. }))) {
-        rows.push(inline_rule(state, data));
-    }
-    for rule in &data.sort_rules {
-        // What the rule files as first: that is what one looks for in the list.
-        let category = crate::category_name_in(&data.categories, rule.category);
-        let mut detail = conditions_line(&rule.conditions);
-        if !rule.exceptions.is_empty() {
-            detail = trf(
-                "{conditions}, except {exceptions}",
-                &[("conditions", &detail), ("exceptions", &conditions_line(&rule.exceptions))],
-            );
-        }
-        if !rule.enabled {
-            detail = trf("Off · {rule}", &[("rule", &detail)]);
-        }
-        rows.push(setting_row(
-            None,
-            category,
-            Some(detail),
-            widgets::icon_button(Icon::SquarePen, tr("Edit rule"), Some(Message::EditRule(rule.id.clone()))),
-        ));
-        if matches!(&state.form, Some(Form::Rule(form)) if form.id.as_deref() == Some(rule.id.as_str())) {
-            rows.push(inline_rule(state, data));
-        }
-    }
-    widgets::group(
-        tr("1. Rules"),
-        rows,
-        Some(tr("Rules are checked from top to bottom. The first match wins; only then does the model use category descriptions.").to_string()),
-    )
-}
-
-/// The editor remains directly under the rule that was clicked, inside the same list card.
-fn inline_rule<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let Some(Form::Rule(form)) = state.form.as_ref() else { return blank().into() };
-    let ready = match &form.id {
-        None => true,
-        Some(id) => data.sort_rules.iter().find(|rule| &rule.id == id).is_none_or(|stored| !form.same_as(stored)),
-    };
-    let actions = row![
-        save_button(ready, Message::SaveRule),
-        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Back)),
-    ]
-    .spacing(space::s());
-    let mut body = column![rule_page(form, data), actions].spacing(layout::section_gap());
-    if let Some(asked) = state.asking {
-        body = body.push(question(asked));
-    }
-    container(body).width(Fill).padding([space::m(), space::l()]).into()
-}
-
-/// Main categories stay open; each child shows its editable description and a clear edit button.
-pub fn categories_groups<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a, Message>> {
-    let add = add_row(tr("New main category"), Message::NewGroup);
-    let mut groups = vec![widgets::group(tr("All categories"), vec![add], None)];
-    if matches!(state.group_form, Some(GroupForm { group: None, .. })) {
-        groups.push(group_editor(state));
-    }
-    let definitions = if data.category_groups.is_empty() {
-        torro_mail::CategoryGroupDef::defaults().iter().map(torro_ipc::inbox::CategoryGroupInfo::of).collect::<Vec<_>>()
-    } else {
-        data.category_groups.clone()
-    };
-    for main in definitions {
-        let group = main.group;
-        let color_at = usize::from(main.color.min(4));
-        let mark = torro_gui::icon::icon(category_icon(main.icon), torro_gui::icon::SIZE)
-            .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
-        let heading = row![
-            mark,
-            typo::text(typo::body(), main.label.clone()),
-            blank::horizontal(),
-            widgets::text_button(None, tr("Edit"), style::button::secondary, Some(Message::EditGroup(group))),
-            widgets::text_button(
-                Some(Icon::Plus),
-                tr("Subcategory"),
-                style::button::secondary,
-                Some(Message::NewCategoryInGroup(group))
-            ),
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-        let mut rows: Vec<Element<'a, Message>> = vec![row_frame(heading, false)];
-        if matches!(state.group_form, Some(GroupForm { group: Some(open), .. }) if open == group) {
-            rows.push(group_editor(state));
-        }
-        let children: Vec<&CategoryInfo> = data.categories.iter().filter(|info| info.group == group).collect();
-        if !children.is_empty() {
-            rows.push(
-                responsive(move |room| {
-                    // Two cards a line where two fit at half a form's width each, the cards' gap apart.
-                    let columns = if room.width >= size::form_max() * 1.5 { 2 } else { 1 };
-                    let mut grid = column![].spacing(size::card_gap());
-                    for pair in children.chunks(columns) {
-                        let mut line = row![].spacing(size::card_gap());
-                        for info in pair {
-                            line = line
-                                .push(container(subcategory_card(state, info, color_at)).width(Length::FillPortion(1)));
-                        }
-                        if columns == 2 && pair.len() == 1 {
-                            line = line.push(blank::horizontal().width(Length::FillPortion(1)));
-                        }
-                        grid = grid.push(line);
-                    }
-                    container(grid).width(Fill).padding([space::m(), space::l()]).into()
-                })
-                .into(),
-            );
-        }
-        groups.push(widgets::group(main.label, rows, None));
-    }
-    groups
-}
-
-fn subcategory_card<'a>(state: &'a State, info: &'a CategoryInfo, color_at: usize) -> Element<'a, Message> {
-    let category = info.category;
-    let icon = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
-        .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
-    let head = row![
-        icon,
-        typo::text(typo::body(), info.label.clone()),
-        blank::horizontal(),
-        widgets::icon_button(Icon::SquarePen, tr("Edit subcategory"), Some(Message::EditCategory(category))),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
-    let mut parts: Vec<Element<'a, Message>> =
-        vec![head.into(), typo::text(typo::meta(), tr("Description")).style(torro_gui::theme::text_2).into()];
-    if let Some(content) = state.descriptions.get(&category) {
-        parts.push(
-            text_editor(content)
-                .on_action(move |action| Message::InlineDescription(category, action))
-                .font(typo::body().font)
-                .size(typo::body().size)
-                .line_height(typo::body().line_height)
-                .padding(style::INPUT_PADDING)
-                .wrapping(Wrapping::WordOrGlyph)
-                .height(INLINE_DESCRIPTION_HEIGHT)
-                .style(style::text_editor)
-                .into(),
-        );
-        if content.text().trim() != info.description.trim() {
-            parts.push(widgets::text_button(
-                None,
-                tr("Save description"),
-                style::button::primary,
-                Some(Message::SaveDescription(category)),
-            ));
-        }
-    } else {
-        parts.push(typo::text(typo::body(), info.description.clone()).into());
-    }
-    widgets::card(parts, false, None)
+/// The form of a group – a new one for `group: None`, else that group's – when it is open, for the
+/// tab Categories (issue #454): name, icon, colour, "Cancel" and "Save".
+pub(super) fn group_form_view(state: &State, group: Option<CategoryGroup>) -> Option<Element<'_, Message>> {
+    state.group_form.as_ref().filter(|form| form.group == group)?;
+    Some(group_editor(state))
 }
 
 fn group_editor<'a>(state: &'a State) -> Element<'a, Message> {
@@ -1103,7 +900,7 @@ fn add_row<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
 }
 
 /// The conditions of a rule in one compact line, including each comparison.
-fn conditions_line(conditions: &[SortCondition]) -> String {
+pub(super) fn conditions_line(conditions: &[SortCondition]) -> String {
     conditions
         .iter()
         .map(|held| {
@@ -1301,7 +1098,7 @@ fn icon_picker<'a>(
     .into()
 }
 
-fn category_icon(icon: CategoryIcon) -> Icon {
+pub(super) fn category_icon(icon: CategoryIcon) -> Icon {
     match icon {
         CategoryIcon::MessageCircle => Icon::MessageCircle,
         CategoryIcon::ListTodo => Icon::ListTodo,
@@ -1705,20 +1502,6 @@ mod tests {
         assert!(matches!(&state.form, Some(Form::Category(form)) if form.group == CategoryGroup::Custom(5)));
     }
 
-    #[test]
-    fn a_subcategory_description_is_editable_in_its_open_card() {
-        let data = data();
-        let mut state = State::default();
-        loaded(&mut state, &data);
-        let _ = categories_groups(&state, &data);
-        let action = text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(" More.".into())));
-        let _ = update::<()>(&mut state, Message::InlineDescription(tax(), action), &data);
-        let sent = update::<()>(&mut state, Message::SaveDescription(tax()), &data);
-        assert!(
-            matches!(sent, Action::Send(requests) if matches!(requests.as_slice(), [Request::UpdateCategory { category, description: Some(_), .. }] if *category == tax()))
-        );
-    }
-
     /// A new category is made with what was typed, and its page closes.
     #[test]
     fn saving_a_new_category_makes_it() {
@@ -1984,8 +1767,6 @@ mod tests {
     #[test]
     fn the_pages_draw() {
         let (data, mut state) = (data(), State::default());
-        let _ = categories_groups(&state, &data);
-        let _ = rules_group(&State::default(), &data);
         for open in [Message::NewCategory, Message::EditCategory(Category::Invoice), Message::EditCategory(tax())] {
             let _ = update::<()>(&mut state, open, &data);
             let _ = update::<()>(&mut state, Message::Remove, &data);

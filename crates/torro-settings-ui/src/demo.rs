@@ -107,8 +107,26 @@ pub struct Demo {
     category_clear_job: Mutex<Option<CategoryClearJob>>,
     cache_policy: Mutex<Option<MailCachePolicy>>,
     cache_job: Mutex<Option<MailCacheJob>>,
+    /// The order of the sample rules and filters (`inbox.list_sorting_order`, issue #454): mixed, a
+    /// filter between two rules; `inbox.move_sorting_step` changes it for the demo's lifetime.
+    sorting_order: Mutex<Vec<torro_inbox::SortingStep>>,
     /// Why the sample mail account does not sync ([`Demo::with_mail_problem`]); `None` normally.
     mail_problem: Option<String>,
+}
+
+/// The sample order of rules and filters (issue #454): the kept sender, the newsletter filter, the
+/// bills of the sample account, the tax rule, the old forum to the trash, the digest, the sale.
+fn demo_sorting_order() -> Vec<torro_inbox::SortingStep> {
+    use torro_inbox::SortingStep;
+    vec![
+        SortingStep::rule("r1"),
+        SortingStep::filter("f1"),
+        SortingStep::filter("f2"),
+        SortingStep::rule("r2"),
+        SortingStep::filter("f4"),
+        SortingStep::filter("f3"),
+        SortingStep::rule("r3"),
+    ]
 }
 
 impl Demo {
@@ -157,6 +175,7 @@ impl Demo {
             category_clear_job: Mutex::new(None),
             cache_policy: Mutex::new(None),
             cache_job: Mutex::new(None),
+            sorting_order: Mutex::new(demo_sorting_order()),
             mail_problem: None,
         }
     }
@@ -572,12 +591,15 @@ impl Demo {
         let all = scope.since.is_none() && scope.folders.is_empty();
         let (total, unclassified, automatic, protected) =
             if all { (24_813, 3_012, 19_516, 2_285) } else { (153, 53, 88, 12) };
+        let eligible = unclassified + if scope.again { automatic } else { 0 };
         CategoryJobPreview {
             total,
             unclassified,
             automatic,
             protected,
-            eligible: unclassified + if scope.again { automatic } else { 0 },
+            eligible,
+            // About four mails a second with the model, the rules alone at once (issue #454).
+            seconds: Some(if scope.apply_model { eligible.div_ceil(4) } else { eligible.div_ceil(400) }),
             request_scope: Some(scope.clone()),
         }
     }
@@ -882,7 +904,15 @@ impl Demo {
                 icon: torro_mail::CategoryIcon::Tag,
             });
         }
-        defs.iter().map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0)).collect()
+        // Mail in each category (issue #454): the tab Categories shows its numbers, four digits too.
+        const MAILS: [u32; 12] = [214, 96, 42, 18, 1046, 7, 3, 1318, 402, 77, 2140, 0];
+        defs.iter()
+            .enumerate()
+            .map(|(at, def)| {
+                let messages = MAILS[at % MAILS.len()];
+                torro_ipc::inbox::CategoryInfo::of(def, messages / 10, messages)
+            })
+            .collect()
     }
 
     /// The sorting rules (`inbox.list_sort_rules`, task E15.5): a kept sender, a domain with an
@@ -979,8 +1009,9 @@ impl Demo {
         ]
     }
 
-    /// The mail filters (`mail.list_filters`, issue #339): a newsletter archived and read for every
-    /// account, bills of the sample account filed under "Bills", and one switched off whose
+    /// The mail filters (`mail.list_filters`, issue #339): a newsletter read and filed under
+    /// "Promotion" for every account, bills of the sample account filed under "Bills", spam of an old
+    /// forum moved to the trash (switched off), and one switched off whose
     /// category is no longer in the catalogue, so the list shows "Unknown category".
     fn mail_filters(&self) -> Vec<torro_mail::MailFilter> {
         use torro_mail::{Category, CustomCategory, FilterFile, MailFilter};
@@ -996,12 +1027,20 @@ impl Demo {
             created,
         };
         vec![
-            MailFilter { file: Some(FilterFile::Archive), mark_read: true, ..filter("f1", "from:news@shop.example") },
+            MailFilter {
+                mark_read: true,
+                category: Some(Category::Promotion),
+                ..filter("f1", "from:news@shop.example")
+            },
             MailFilter {
                 account: Some(format!("mail:{MAIL_ADDRESS}")),
-                file: Some(FilterFile::Folder { id: "f:demo-archive".into() }),
                 category: Some(Category::Invoice),
                 ..filter("f2", "from:billing@shop.example has:attachment")
+            },
+            MailFilter {
+                file: Some(FilterFile::Trash),
+                enabled: false,
+                ..filter("f4", "from:noreply@old-forum.example")
             },
             MailFilter {
                 category: CustomCategory::new(9).map(Category::Custom),
@@ -1173,7 +1212,11 @@ impl Backend for Demo {
                     updated_at: now,
                     generation: 1,
                     model_in_cloud: Some(false),
-                };
+                    sorted_with: Some("demo/qwen3-4b-decide".into()),
+                    run_millis: 2_750,
+                    left_seconds: None,
+                }
+                .with_estimate();
                 *self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job.clone());
                 self.note(request);
                 Response::CategoryJob { job: Some(job) }
@@ -1200,6 +1243,22 @@ impl Backend for Demo {
                     .collect(),
             },
             Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
+            Request::ListSortingOrder => Response::SortingOrder {
+                steps: self.sorting_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            },
+            // As the core moves (issue #454): among the shown steps, past the end last.
+            Request::MoveSortingStep { kind, id, position } => {
+                let mut order = self.sorting_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let step = torro_inbox::SortingStep { kind: *kind, id: id.clone() };
+                let others: Vec<torro_inbox::SortingStep> =
+                    order.iter().filter(|held| **held != step).cloned().collect();
+                let before = others.get(*position as usize).cloned();
+                *order = torro_inbox::rules::move_step(&order, &step, before.as_ref());
+                let steps = order.clone();
+                drop(order);
+                self.note(request);
+                Response::SortingOrder { steps }
+            }
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::MailAccountStats { .. } => Response::MailAccountStats { accounts: self.mail_stats() },
@@ -1307,7 +1366,7 @@ impl Backend for Demo {
             Request::PreviewMailFilter { account, .. } => self.mail_filter_preview(account.as_deref()),
             Request::CreateMailFilter { query, account, file, mark_read, category, enabled } => {
                 let filter = torro_mail::MailFilter {
-                    id: "f4".into(),
+                    id: "f5".into(),
                     query: query.clone(),
                     account: account.clone(),
                     file: file.clone(),

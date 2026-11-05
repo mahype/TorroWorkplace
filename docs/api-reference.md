@@ -57,7 +57,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`tasks`](#tasks) | [`tasks.list_lists`](#taskslist_lists), [`tasks.list_todos`](#taskslist_todos), [`tasks.save_todo`](#taskssave_todo), [`tasks.delete_todo`](#tasksdelete_todo), [`tasks.move_todo`](#tasksmove_todo), [`tasks.create_todo_from_mail`](#taskscreate_todo_from_mail), [`tasks.create_list`](#taskscreate_list), [`tasks.add_link`](#tasksadd_link) |
 | [`contacts`](#contacts) | [`contacts.list_address_books`](#contactslist_address_books), [`contacts.list_contacts`](#contactslist_contacts), [`contacts.get_contact`](#contactsget_contact), [`contacts.get_photo`](#contactsget_photo), [`contacts.list_groups`](#contactslist_groups), [`contacts.upcoming_birthdays`](#contactsupcoming_birthdays), [`contacts.create_contact`](#contactscreate_contact), [`contacts.add_to_contact`](#contactsadd_to_contact), [`contacts.update_contact`](#contactsupdate_contact), [`contacts.set_favorite`](#contactsset_favorite), [`contacts.add_to_group`](#contactsadd_to_group), [`contacts.remove_from_group`](#contactsremove_from_group), [`contacts.mark_used`](#contactsmark_used), [`contacts.set_photo`](#contactsset_photo), [`contacts.move_contact`](#contactsmove_contact), [`contacts.delete_contact`](#contactsdelete_contact), [`contacts.resolve_conflict`](#contactsresolve_conflict) |
 | [`github`](#github) | [`tasks.create_filter_list`](#taskscreate_filter_list), [`tasks.update_filter_list`](#tasksupdate_filter_list), [`tasks.delete_filter_list`](#tasksdelete_filter_list), [`tasks.preview_filter`](#taskspreview_filter), [`tasks.list_github_repos`](#taskslist_github_repos), [`tasks.describe_github_repo`](#tasksdescribe_github_repo), [`tasks.unpin_issue`](#tasksunpin_issue) |
-| [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.create_category_group`](#inboxcreate_category_group), [`inbox.update_category_group`](#inboxupdate_category_group), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.preview_category_job`](#inboxpreview_category_job), [`inbox.start_category_job`](#inboxstart_category_job), [`inbox.get_category_job`](#inboxget_category_job), [`inbox.control_category_job`](#inboxcontrol_category_job), [`inbox.preview_clear_categories`](#inboxpreview_clear_categories), [`inbox.clear_categories`](#inboxclear_categories), [`inbox.control_clear_categories`](#inboxcontrol_clear_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.move_sort_rule`](#inboxmove_sort_rule), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.set_mail_pile`](#inboxset_mail_pile), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
+| [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.create_category_group`](#inboxcreate_category_group), [`inbox.update_category_group`](#inboxupdate_category_group), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.preview_category_job`](#inboxpreview_category_job), [`inbox.start_category_job`](#inboxstart_category_job), [`inbox.get_category_job`](#inboxget_category_job), [`inbox.control_category_job`](#inboxcontrol_category_job), [`inbox.preview_clear_categories`](#inboxpreview_clear_categories), [`inbox.clear_categories`](#inboxclear_categories), [`inbox.control_clear_categories`](#inboxcontrol_clear_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.move_sort_rule`](#inboxmove_sort_rule), [`inbox.list_sorting_order`](#inboxlist_sorting_order), [`inbox.move_sorting_step`](#inboxmove_sorting_step), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.set_mail_pile`](#inboxset_mail_pile), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
 | [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.account_stats`](#mailaccount_stats), [`mail.sync_status`](#mailsync_status), [`mail.overview`](#mailoverview), [`mail.get_cache_policy`](#mailget_cache_policy), [`mail.preview_cache`](#mailpreview_cache), [`mail.set_cache_policy`](#mailset_cache_policy), [`mail.start_cache_job`](#mailstart_cache_job), [`mail.cache_job_status`](#mailcache_job_status), [`mail.control_cache_job`](#mailcontrol_cache_job), [`mail.backup_create`](#mailbackup_create), [`mail.backup_status`](#mailbackup_status), [`mail.backup_cancel`](#mailbackup_cancel), [`mail.backup_verify`](#mailbackup_verify), [`mail.restore_plan`](#mailrestore_plan), [`mail.restore_apply`](#mailrestore_apply), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.list_save_targets`](#maillist_save_targets), [`mail.create_save_target`](#mailcreate_save_target), [`mail.update_save_target`](#mailupdate_save_target), [`mail.remove_save_target`](#mailremove_save_target), [`mail.save_attachments`](#mailsave_attachments), [`mail.list_filters`](#maillist_filters), [`mail.create_filter`](#mailcreate_filter), [`mail.update_filter`](#mailupdate_filter), [`mail.remove_filter`](#mailremove_filter), [`mail.preview_filter`](#mailpreview_filter), [`mail.apply_filter`](#mailapply_filter), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation), [`mail.unsubscribe`](#mailunsubscribe) |
 | [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.set_search_key`](#accountsset_search_key), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.reconfigure_mail`](#accountsreconfigure_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
 | [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.set_model_enabled`](#aiset_model_enabled), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment), [`ai.set_slot`](#aiset_slot), [`ai.recommend`](#airecommend), [`ai.pull_model`](#aipull_model), [`ai.list_pulls`](#ailist_pulls), [`ai.cancel_pull`](#aicancel_pull) |
@@ -1161,13 +1161,15 @@ Starts sorting the mail that has no category yet, or stops a run with `cancel: t
 
 Zugriff `read` · MCP-Tool `inbox_preview_category_job`
 
-Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail.
+Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. `scope.apply_rules` and `scope.apply_model` (both true when left out) say what a run would apply. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail. `seconds` estimates how long sorting the eligible mail takes, at the pace of the running or last run that sorted the same way; left out without one.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. |
+| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. What the run applies (issue #454): the rules and filters, the model or both ([`Default`]: both). |
 | `scope.accounts` | array<string> | nein, Standard `[]` |  |
 | `scope.again` | boolean | nein, Standard `false` | Also revisit categories supplied by a model. Person and rule categories stay protected. |
+| `scope.apply_model` | boolean | nein | Ask the decision model where the rules leave a mail open (issue #454). Left out: true. With `false`, `engine` and `model` must be left out. |
+| `scope.apply_rules` | boolean | nein | Apply the sorting rules and mail filters in their order, the headers (invitations, auto-replies, junk) and mail from contacts (issue #454). A filter's category counts only for mail in the inbox folder; reading and the trash never run here (`mail.apply_filter` does that). Left out: true. |
 | `scope.before` | string (date-time) | nein | Exclusive upper date bound. `None` includes the newest locally known mail. |
 | `scope.engine` | string | nein | Optional explicit decision model. Both fields must be supplied together; otherwise the current `inbox.categorize` assignment is used. |
 | `scope.folders` | array<string> | nein, Standard `[]` |  |
@@ -1178,13 +1180,15 @@ Counts locally known mail in selected accounts, folders and date range before so
 
 Zugriff `write` · MCP-Tool `inbox_start_category_job`
 
-Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.
+Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.apply_rules` applies the sorting rules and mail filters in their order (inbox_list_sorting_order), the headers and mail from contacts; a filter's category counts for mail in the inbox folder only, and reading or the trash never run here (mail_apply_filter does that). `scope.apply_model` asks the decision model where they leave a mail open; at least one of the two, and a model only with `apply_model`, else `error`. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location, `left_seconds` (an estimate once mail was sorted) and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. |
+| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. What the run applies (issue #454): the rules and filters, the model or both ([`Default`]: both). |
 | `scope.accounts` | array<string> | nein, Standard `[]` |  |
 | `scope.again` | boolean | nein, Standard `false` | Also revisit categories supplied by a model. Person and rule categories stay protected. |
+| `scope.apply_model` | boolean | nein | Ask the decision model where the rules leave a mail open (issue #454). Left out: true. With `false`, `engine` and `model` must be left out. |
+| `scope.apply_rules` | boolean | nein | Apply the sorting rules and mail filters in their order, the headers (invitations, auto-replies, junk) and mail from contacts (issue #454). A filter's category counts only for mail in the inbox folder; reading and the trash never run here (`mail.apply_filter` does that). Left out: true. |
 | `scope.before` | string (date-time) | nein | Exclusive upper date bound. `None` includes the newest locally known mail. |
 | `scope.engine` | string | nein | Optional explicit decision model. Both fields must be supplied together; otherwise the current `inbox.categorize` assignment is used. |
 | `scope.folders` | array<string> | nein, Standard `[]` |  |
@@ -1286,7 +1290,7 @@ Removes a mail category the person made. Mail, inbox entries and sorting rules t
 
 Zugriff `read` · MCP-Tool `inbox_list_sort_rules`
 
-Lists the sorting rules for mail in their order. Each files mail as `category` when every one of its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower case never count. The first rule that holds decides, after a category the person set by hand and before the headers and the decision model; rules with `enabled: false` hold for nothing. "Always for this sender" keeps one of these too. The values are the person's own words.
+Lists the sorting rules for mail in their order. Each files mail as `category` when every one of its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower case never count. The first rule that holds decides, after a category the person set by hand and before the headers and the decision model; rules and mail filters stand in one order (inbox_list_sorting_order), so a filter above a rule decides first. Rules with `enabled: false` hold for nothing. "Always for this sender" keeps one of these too. The values are the person's own words.
 
 Keine Felder.
 
@@ -1344,12 +1348,32 @@ Removes a sorting rule and returns the rules left, in order. Mail it filed keeps
 
 Zugriff `admin` · MCP-Tool `inbox_move_sort_rule`
 
-Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order around it. Returns all rules in their new order. The first rule that holds decides, so the order is what makes a narrow rule win over a broad one. Places count in the list this key sees. `not-found` for a rule that is not there or out of reach. Needs the person's approval.
+Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order around it. Returns all rules in their new order. The first rule that holds decides, so the order is what makes a narrow rule win over a broad one. Places count in the list this key sees; mail filters keep theirs (inbox_move_sorting_step moves rules and filters in one list). Passing a filter needs the rights to change it, else `forbidden`. `not-found` for a rule that is not there or out of reach. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
 | `position` | integer | ja | Its new place, 0 first. |
+
+### `inbox.list_sorting_order`
+
+Zugriff `read` · MCP-Tool `inbox_list_sorting_order`
+
+Lists the sorting rules and mail filters in their one order, as `kind` (`rule` or `filter`) and `id`. New mail gets the category of the first step from the top that decides: a rule that holds or a filter that finds it and sets a category (inbox_list_sort_rules and mail_list_filters say what each does). Only the steps you can see; filters only with read access to mail.
+
+Keine Felder.
+
+### `inbox.move_sorting_step`
+
+Zugriff `admin` · MCP-Tool `inbox_move_sorting_step`
+
+Moves one sorting rule or mail filter (`kind`, `id`) to `position` (0 first, past the end: last) among the steps you see; the others keep their order around it. Returns the order. The first step that decides wins, so the order makes a narrow rule or filter win over a broad one. Moving a filter, or a step past a filter, needs the rights to change that filter (as mail_update_filter), else `forbidden`. `not-found` for a step that is not there or out of reach. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | Its id, as `inbox.list_sorting_order` gives it. |
+| `kind` | `"rule"` \| `"filter"` | ja | A rule or a filter. |
+| `position` | integer | ja | Its new place among the steps the caller sees, 0 first. |
 
 ### `inbox.list_mute_options`
 
@@ -1750,7 +1774,7 @@ Saves attachments of a message (`parts` from mail_get_message, empty for all but
 
 Zugriff `read` · MCP-Tool `mail_list_filters`
 
-Lists the mail filters you can see (those of the mail accounts you reach; a filter for every account only with access to every account), in their order: each a search in the language of mail_search_messages, the account it runs in (left out: every account) and its actions – `file` (`{"to": "archive"}`, `{"to": "trash"}` or `{"to": "folder", "id": "f:…"}`), `mark_read`, `category`. Enabled filters run on new mail in the inbox while Torro Workplace runs; every one that matches runs, for the move and the category the first one wins. The searches are the person's own words.
+Lists the mail filters you can see (those of the mail accounts you reach; a filter for every account only with access to every account), in their order: each a search in the language of mail_search_messages, the account it runs in (left out: every account) and its actions – `file` (only `{"to": "trash"}`), `mark_read`, `category`. Enabled filters run on new mail in the inbox while Torro Workplace runs; every one that matches runs. Which category new mail gets follows the order of filters and sorting rules together (inbox_list_sorting_order): the first that matches from the top. The searches are the person's own words.
 
 Keine Felder.
 
@@ -1758,14 +1782,14 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `mail_create_filter`
 
-Adds a mail filter at the end of the list and returns it with its id. From then on it runs on new mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and at least one action: `file`, `mark_read`, `category`. A folder needs `account`. A filter for every account needs access to every mail account, a category admin access to the inbox; marking as read, the archive and a folder need write access to mail, the trash delete access (as mail_set_flags, mail_move_messages and mail_delete_messages would), else `forbidden`. Needs the person's approval.
+Adds a mail filter at the end of the list and returns it with its id. From then on it runs on new mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and at least one action: `file` (only `{"to": "trash"}`: filters do not move mail to the archive or a folder, mail works with categories), `mark_read`, `category`. A filter for every account needs access to every mail account, a category admin access to the inbox; marking as read needs write access to mail, the trash delete access (as mail_set_flags and mail_delete_messages would), else `forbidden`. It goes below the last filter in the sorting order. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | nein | The mail account it runs in (`mail:<address>`); left out: every mail account. |
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | nein | Files the mail under this category of `inbox.list_categories`. |
 | `enabled` | boolean | nein | Switched off, it finds nothing on new mail. Left out: on. |
-| `file` | object | nein | Where the mail goes; left out: it stays in the inbox. |
+| `file` | object | nein | Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox. |
 | `mark_read` | boolean | nein | Marks the mail as read. |
 | `query` | string | ja | The search, in the language of `mail.search_messages`. |
 
@@ -1773,14 +1797,14 @@ Adds a mail filter at the end of the list and returns it with its id. From then 
 
 Zugriff `admin` · MCP-Tool `mail_update_filter`
 
-Changes a mail filter and returns it: `query`, `account` and the actions as given (left out, the account is every account and an action none), `enabled` where given (left out, it stays). Its place stays. `not-found` for a filter that is not there or out of reach, otherwise as mail_create_filter, the rights for its actions included; a category or folder it has already is not checked again. Needs the person's approval.
+Changes a mail filter and returns it: `query`, `account` and the actions as given (left out, the account is every account and an action none), `enabled` where given (left out, it stays). Its place stays. `not-found` for a filter that is not there or out of reach, otherwise as mail_create_filter, the rights for its actions included; a category it has already is not checked again. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | nein | The mail account it runs in (`mail:<address>`); left out: every mail account. |
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | nein | Files the mail under this category of `inbox.list_categories`. |
 | `enabled` | boolean | nein | On or off. Left out: as it is. |
-| `file` | object | nein | Where the mail goes; left out: it stays in the inbox. |
+| `file` | object | nein | Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox. |
 | `id` | string | ja | The filter's id from `mail.list_filters` (`f<n>`). |
 | `mark_read` | boolean | nein | Marks the mail as read. |
 | `query` | string | ja | The search, in the language of `mail.search_messages`. |
@@ -1789,7 +1813,7 @@ Changes a mail filter and returns it: `query`, `account` and the actions as give
 
 Zugriff `admin` · MCP-Tool `mail_remove_filter`
 
-Removes a mail filter and returns the filters left, in order. Mail it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.
+Removes a mail filter and returns the filters left, in order; it leaves the sorting order too. Mail it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1810,7 +1834,7 @@ Shows what a filter with `query` would find in the inbox now, in `account` or ev
 
 Zugriff `admin` · MCP-Tool `mail_apply_filter`
 
-Runs a mail filter once on the mail in the inbox now (also when it is switched off): up to the 500 newest it finds that still need one of its actions are marked as read, filed and moved. Returns how many were done and failed, and `more` when there are others: call again. Moving to the trash can be undone from there. Needs write access to mail for its actions, delete access for the trash, else `forbidden`. Needs the person's approval, which names how many mails it changes: when the filter finds other mail by the time the person allows it, it ends `conflict`.
+Runs a mail filter once on the mail in the inbox now (also when it is switched off): up to the 500 newest it finds that still need one of its actions are marked as read, filed and moved to the trash. Returns how many were done and failed, and `more` when there are others: call again. Moving to the trash can be undone from there. Needs write access to mail for its actions, delete access for the trash, else `forbidden`. Needs the person's approval, which names how many mails it changes: when the filter finds other mail by the time the person allows it, it ends `conflict`.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

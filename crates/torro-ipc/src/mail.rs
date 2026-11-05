@@ -997,12 +997,10 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
             };
             parts.iter().map(String::as_str).chain(target).collect()
         }
-        // Mail filters (issue #339): their ids and the folder they move to.
-        Request::CreateMailFilter { file, .. } => filter_folder(file.as_ref()).into_iter().collect(),
-        Request::UpdateMailFilter { id, file, .. } => {
-            std::iter::once(id.as_str()).chain(filter_folder(file.as_ref())).collect()
+        // Mail filters (issue #339): their ids.
+        Request::UpdateMailFilter { id, .. } | Request::RemoveMailFilter { id } | Request::ApplyMailFilter { id } => {
+            vec![id]
         }
-        Request::RemoveMailFilter { id } | Request::ApplyMailFilter { id } => vec![id],
         Request::MailBackupCreate { file_name, .. } => file_name.iter().map(String::as_str).collect(),
         Request::MailBackupStatus { job, .. } | Request::MailBackupCancel { job, .. } => vec![job],
         Request::MailBackupVerify { file, .. } | Request::MailRestorePlan { file, .. } => vec![file],
@@ -1018,14 +1016,6 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
         _ => Vec::new(),
     };
     request.mail_account().into_iter().chain(request.message_ids()).chain(more)
-}
-
-/// The folder a filter moves its mail to, if it names one.
-fn filter_folder(file: Option<&torro_mail::FilterFile>) -> Option<&str> {
-    match file {
-        Some(torro_mail::FilterFile::Folder { id }) => Some(id.as_str()),
-        _ => None,
-    }
 }
 
 impl Request {
@@ -1211,13 +1201,13 @@ mod tests {
     }
 
     /// Issue #339: a mail filter names its account for the reach check, its search keeps the length
-    /// of a search, and its id and folder the length of an id.
+    /// of a search, and its id the length of an id.
     #[test]
     fn mail_filters_name_their_account_and_keep_the_limits() {
-        let create = |query: String, account: Option<&str>, folder: &str| Request::CreateMailFilter {
+        let create = |query: String, account: Option<&str>, _: &str| Request::CreateMailFilter {
             query,
             account: account.map(str::to_string),
-            file: Some(torro_mail::FilterFile::Folder { id: folder.into() }),
+            file: Some(torro_mail::FilterFile::Trash),
             mark_read: false,
             category: None,
             enabled: true,
@@ -1233,7 +1223,6 @@ mod tests {
         assert!(!refused(&create(longest.clone(), anna, "f:1")));
         assert!(refused(&create(format!("{longest}y"), anna, "f:1")));
         let long = "x".repeat(MAX_ID_BYTES + 1);
-        assert!(refused(&create("from:x".into(), anna, &long)));
         assert!(refused(&Request::RemoveMailFilter { id: long.clone() }));
         assert!(refused(&Request::ApplyMailFilter { id: long }));
         assert!(!refused(&Request::ApplyMailFilter { id: "f12".into() }));

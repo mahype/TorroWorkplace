@@ -2072,6 +2072,13 @@ impl Gallery {
             .spacing(space::s())
             .align_y(Alignment::Center),
             row![bar(0, 3), bar(4, 4), bar(0, 0)].spacing(space::xl()),
+            // Issue #454: a long run across the width, a row's grip and where a dragged row goes.
+            typo::text(typo::meta().tabular(), "Sorting existing mail · 412 of 1,284").style(theme::text_2),
+            widgets::progress_line(412, 1284),
+            row![widgets::grip(Msg::Noop, "Drag to change the order"), typo::text(typo::body(), "Rule")]
+                .spacing(space::s())
+                .align_y(Alignment::Center),
+            widgets::drop_line(),
         ]
         .spacing(space::m());
         let hint = |which: Icon, label: &'static str| -> Element<'static, Msg> {

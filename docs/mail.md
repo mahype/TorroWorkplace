@@ -299,11 +299,12 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Ablageziel ändern (#290) | Einstellungen › Mail › Attachments | `mail.update_save_target` · Admin; anderer Ordner nur mit dem App-Schlüssel | `mail_update_save_target` (Ordner wie gespeichert) |
 | Ablageziel entfernen (#290) | Einstellungen › Mail › Attachments | `mail.remove_save_target` · Admin | `mail_remove_save_target` |
 | Anhänge speichern (#290) | Dreieck-Menü, „Save all ▾“, Kontextmenü der Liste, Klick auf den Namen | `mail.save_attachments` · Write; `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_attachments` (nur Downloads oder ein Ziel) |
-| Filter auflisten (#339) | Einstellungen › Mail › Filters | `mail.list_filters` · Read | `mail_list_filters` |
-| Filter anlegen, ändern, ein- und ausschalten (#339) | Einstellungen › Mail › Filters; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
-| Filter entfernen (#339) | Einstellungen › Mail › Filters › „Delete filter“ | `mail.remove_filter` · Admin | `mail_remove_filter` |
-| Treffer eines Filters zeigen (#339) | Seite des Filters, „In Inbox now“ | `mail.preview_filter` · Read | `mail_preview_filter` |
-| Filter auf vorhandene Mail anwenden (#339) | nach dem Speichern „Apply to the {n} mails in Inbox?“ | `mail.apply_filter` · Admin | `mail_apply_filter` |
+| Filter auflisten (#339) | Einstellungen › Categorization › Rules & filters (#454) | `mail.list_filters` · Read | `mail_list_filters` |
+| Filter anlegen, ändern, ein- und ausschalten (#339) | „New filter…“ und „Edit…“ unter Rules & filters, Schalter der Zeile; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
+| Filter entfernen (#339) | Menü der Zeile › „Delete…“, Dialog › „Delete filter“ | `mail.remove_filter` · Admin | `mail_remove_filter` |
+| Treffer eines Filters zeigen (#339) | Dialog des Filters, „Finds {n} mails in Inbox now.“ | `mail.preview_filter` · Read | `mail_preview_filter` |
+| Filter auf vorhandene Mail anwenden (#339) | „Also apply to the {n} existing mails“ im Dialog, Menü der Zeile › „Apply to existing mail“ | `mail.apply_filter` · Admin | `mail_apply_filter` |
+| Reihenfolge von Regeln und Filtern (#454) | Rules & filters, ziehen am Griff | `inbox.list_sorting_order` · Read, `inbox.move_sorting_step` · Admin | `inbox_list_sorting_order`, `inbox_move_sorting_step` |
 | Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
@@ -343,8 +344,8 @@ Dateinamen) und Bedingungen, wann es vorgeschlagen wird (Kategorie, Dateityp, Ab
 
 ## Filter
 
-Issue #339. Ein **Filter** ist eine gespeicherte Suche mit einer Aktion, etwa „alles von news@shop.example
-archivieren“. Er ersetzt das frühere Ausblenden von Mail (Ansicht „Hidden“, „Hide“, „Show again“): Ausgeblendete Mail
+Issue #339, seit Issue #454 unter Einstellungen › Categorization › Rules & filters. Ein **Filter** ist eine
+gespeicherte Suche mit einer Aktion, etwa „alles von news@shop.example als Werbung einordnen“. Er ersetzt das frühere Ausblenden von Mail (Ansicht „Hidden“, „Hide“, „Show again“): Ausgeblendete Mail
 war weg, ohne dass man sah, wohin. Ein Filter legt sie sichtbar dorthin, wo man sie wiederfindet. Im Notification Hub
 bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummschalten-nach-merkmalen)).
 
@@ -354,10 +355,13 @@ bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummsc
   höchstens 500 Zeichen. Ohne `in:`, weil ein Filter nur den Posteingang ansieht, und ohne `filename:`, weil die
   Namen der Anhänge beim Eintreffen nicht bekannt sind.
 - **Konto:** ein Mail-Konto oder alle („All accounts“, `account` fehlt).
-- **Aktionen**, mindestens eine: verschieben (`file`: Archiv, ein Ordner oder Papierkorb), als gelesen markieren
-  (`mark_read`), eine Kategorie des Katalogs setzen (`category`). Ein Ordner braucht ein Konto, muss diesem gehören
-  und darf nicht der Posteingang sein. Der Papierkorb ist ein Verschieben, das sich dort zurückholen lässt; endgültig
-  löscht ein Filter nie.
+- **Aktionen**, mindestens eine: eine Kategorie des Katalogs setzen (`category`), als gelesen markieren
+  (`mark_read`), in den Papierkorb legen (`file`: nur `{"to": "trash"}`). Mail arbeitet mit Kategorien: Ins Archiv
+  oder in einen Ordner verschiebt ein Filter seit Issue #454 nicht mehr. Ein Request mit Archiv oder Ordner ist `error`
+  („file only takes {"to": "trash"}“). Gespeicherte Filter verlieren ein solches Verschieben beim Lesen der Datei; bleibt
+  dann keine Aktion, wird der Filter ausgeschaltet und behält seinen Platz. Eine offene Freigabe für so einen Filter
+  endet als `conflict`. Der Papierkorb ist ein Verschieben, das sich dort zurückholen lässt; endgültig löscht ein Filter
+  nie.
 - **Schalter:** Ein ausgeschalteter Filter behält seinen Platz und wirkt nicht auf neue Mail.
 - **Ablage:** nur im Dienst, in einer eigenen Datei `<data>/mail/filters.json` (0600, wie die Ablageziele), nicht in
   `settings.json` und nicht als Sieve-Regel auf dem Server. Höchstens 200 Filter. Die Kennung hat die feste Form
@@ -388,13 +392,15 @@ bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummsc
   treffen.
 - Vorhandene Mail erreicht ein Filter nur über **Anwenden**, nach einer Vorschau der Treffer.
 
-**Mehrere Filter** laufen in der Reihenfolge der Liste (ein neuer kommt ans Ende), und jeder passende wirkt. Als gelesen markiert, sobald einer es
-verlangt; beim Verschieben und bei der Kategorie entscheidet der erste Filter, der eines setzt
-(`FilterActions::of`). Ausgeführt wird in der Folge gelesen → Kategorie → Ordner.
+**Mehrere Filter**: Jeder passende wirkt. Als gelesen markiert, sobald einer es verlangt; in den Papierkorb, sobald
+einer es verlangt (`FilterActions::of`). Die **Kategorie** entscheidet die gemeinsame Reihenfolge von Sortierregeln und
+Filtern (Issue #454, `inbox.list_sorting_order`, [kategorien.md](kategorien.md#vorrang)): der erste Schritt von oben,
+der gilt – eine Regel über dem Filter gewinnt also. Ein neuer Filter kommt unter den letzten Filter. Ausgeführt wird in
+der Folge gelesen → Kategorie → Papierkorb.
 
 **Folgen im Notification Hub:** Mail, die ein Filter als gelesen markiert oder verschoben hat, wird kein Eintrag,
 denn der Abgleich legt nur ab, was noch ungelesen im Posteingang liegt. Setzt ein Filter nur eine Kategorie, kommt
-die Mail mit dieser Kategorie in den Hub, vor den Sortierregeln und ohne das Modell zu fragen; eine von Hand
+die Mail mit der Kategorie des ersten Schritts der Reihenfolge in den Hub, ohne das Modell zu fragen; eine von Hand
 gesetzte Kategorie bleibt ([kategorien.md](kategorien.md#vorrang)). Eine Kategorie, die nicht mehr im Katalog steht,
 überspringt der Filter. Scheitert eine Aktion, schreibt der Dienst Konto und Fehlercode ins Protokoll, nie Suche oder
 Betreff. Die Mail bleibt dann in diesem Punkt, wie sie kam, und bekommt einen Eintrag, wenn sie noch ungelesen im
@@ -406,9 +412,9 @@ Posteingang liegt.
   erreichbaren), und nennt die fünf neuesten Mails. Sie ändert nichts.
 - `mail.apply_filter { id }` wendet einen gespeicherten Filter einmal auf den Posteingang an, auch einen
   ausgeschalteten. Je Aufruf nimmt er die 500 neuesten Treffer, die noch eine seiner Aktionen brauchen: ungelesene für
-  „gelesen“, Mail ohne diese Kategorie (und ohne eine von Hand gesetzte) für „Kategorie“, jede für das Verschieben.
-  Die Änderungen laufen in Stücken zu 100 über dieselben Wege wie `mail.set_flags`, `mail.move_messages` und
-  `mail.delete_messages` (nur in den Papierkorb). Antwort `applied`, `failed` und `more`: Mit `more` bleibt noch
+  „gelesen“, Mail ohne diese Kategorie (und ohne eine von Hand gesetzte) für „Kategorie“, jede für den Papierkorb.
+  Die Änderungen laufen in Stücken zu 100 über dieselben Wege wie `mail.set_flags` und `mail.delete_messages` (nur in
+  den Papierkorb). Antwort `applied`, `failed` und `more`: Mit `more` bleibt noch
   etwas, ein weiterer Aufruf macht weiter. Setzt der Filter eine Kategorie, bekommt auch der Eintrag der Mail im
   Notification Hub sie, wie bei den Kategorie-Läufen; ein erledigter Eintrag und eine dort von Hand gewählte
   Kategorie bleiben.
@@ -424,37 +430,37 @@ nicht nur das Löschen.
   Kategorie. Der Dienst prüft das vor der Freigabe und noch einmal bei der Ausführung, ebenso Suche, Aktionen,
   Ordner und Kategorie (`error`, dann gibt es nichts freizugeben).
 - **Rechte der Aktionen:** Admin auf `mail` allein reicht nicht. Weil der Dienst die Aktionen eines Filters selbst
-  ausführt, braucht ein Client dazu die Rechte, die sie einzeln bräuchten: Schreiben für „gelesen“, Archiv und Ordner
-  (wie `mail.set_flags` und `mail.move_messages`), Löschen für den Papierkorb (wie `mail.delete_messages`, auch für
-  einen Ordner mit der Rolle Papierkorb). Sonst ist Anlegen, Ändern und Anwenden `forbidden`, vor der Freigabe und
+  ausführt, braucht ein Client dazu die Rechte, die sie einzeln bräuchten: Schreiben für „gelesen“ (wie
+  `mail.set_flags`), Löschen für den Papierkorb (wie `mail.delete_messages`). Sonst ist Anlegen, Ändern und Anwenden `forbidden`, vor der Freigabe und
   noch einmal bei der Ausführung.
-- **Fehlende Kategorie oder fehlender Ordner:** Beim Ändern prüft der Dienst Kategorie und Ordner nur, wenn sie neu sind. Ein Filter,
-  dessen Kategorie der Mensch gelöscht hat oder dessen Ordner es auf dem Server nicht mehr gibt, lässt sich so weiter
-  ausschalten und ändern. Beim Eintreffen und Anwenden überspringt er die fehlende Kategorie; das Verschieben in den
-  fehlenden Ordner scheitert, kommt ins Protokoll und zählt beim Anwenden als `failed`.
-- Die Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos und dem Namen des Ordners aus dem Speicher
-  des Dienstes, nie die Worte des Clients außer der neuen Suche: beim Ändern alt und neu, beim Anwenden „up to n“. Sie
+- **Fehlende Kategorie:** Beim Ändern prüft der Dienst die Kategorie nur, wenn sie neu ist. Ein Filter, dessen
+  Kategorie der Mensch gelöscht hat, lässt sich so weiter ausschalten und ändern. Beim Eintreffen und Anwenden
+  überspringt er die fehlende Kategorie.
+- **Reihenfolge:** Einen Filter verschieben oder einen Schritt an ihm vorbei (`inbox.move_sorting_step`,
+  `inbox.move_sort_rule`) braucht die Rechte, ihn zu ändern ([kategorien.md](kategorien.md#vorrang)).
+- Die Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos aus dem Speicher des Dienstes, nie die Worte des Clients außer der neuen Suche: beim Ändern alt und neu, beim Anwenden „up to n“. Sie
   ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die er da fand: Hat ihn jemand
   inzwischen geändert oder findet er bis zur Zustimmung andere Mail (ein ausgeschalteter Filter findet neue Mail
   weiter), endet sie mit `conflict` und ändert nichts.
-- Ins Protokoll kommen Kennung und Konto, nie die Suche, ein Ordner oder eine Kategorie.
+- Ins Protokoll kommen Kennung und Konto, nie die Suche oder eine Kategorie.
 - Filter bleiben auf dem Rechner. Nur `mail.apply_filter` ändert Mail auf dem Server; die Tools der übrigen fünf
   Befehle sind entsprechend gekennzeichnet.
 
 **Oberfläche:**
 
-- **Einstellungen des Mail-Fensters › Filters** (nach Categorization, `--settings filters`): die Filter in ihrer
-  Reihenfolge, je Zeile die Suche, darunter, was der Filter tut, mit Schalter; „New filter“ legt einen an.
-- **Seite eines Filters:** die Suche, das Konto („All accounts“), was der Filter jetzt findet („In Inbox now“), die
-  Aktionen „Move“ (Don’t move, Archive, Folder, Trash) mit dem Ordner des gewählten Kontos, „Mark as read“ und
-  „Category“, der Schalter „Filter is on“ und bei einem gespeicherten Filter „Delete filter“ mit Rückfrage. „Save“
-  steht in der Kopfleiste. Eine Kategorie, die es nicht mehr gibt, heißt „Unknown category“.
-- **Speichern** wartet auf den Dienst („Saving…“): Erst wenn er den Filter gespeichert hat, schließt die Seite.
-  Lehnt er ab, bleibt die Seite mit dem Eingegebenen offen, und die Meldung steht darüber.
-- **Anwenden:** Findet ein gerade gespeicherter Filter Mail im Posteingang, fragt die Liste danach „Apply to the {n}
-  mails in Inbox?“ mit „Not now“ und „Apply“; „Apply“ wendet den gespeicherten Filter an. Bleibt danach noch Mail
-  übrig, macht „Apply to more“ weiter.
-- **Schnell anlegen:** „Create filter…“ in der Gruppe More der Aktionsleiste einer Mail öffnet die Seite eines neuen
+- **Einstellungen des Mail-Fensters › Categorization › Rules & filters** (seit #454; die Seite „Filters“ und
+  `--settings filters` gibt es nicht mehr): Regeln und Filter in ihrer gemeinsamen Reihenfolge, je Zeile Griff, Suche,
+  was der Filter tut, Schalter und Menü (Edit…, Apply to existing mail, Move up/down, Delete…); „New filter…“ legt einen
+  an.
+- **Dialog eines Filters:** die Suche, das Konto („All accounts“), was der Filter jetzt findet („Finds {n} mails in
+  Inbox now.“), dann „Set category“ mit der Kategorie, „Mark as read“ und „Move to trash“, bei einem gespeicherten
+  Filter „Filter is on“ und „Delete filter“ mit Rückfrage. Eine Kategorie, die es nicht mehr gibt, heißt „Unknown
+  category“.
+- **Speichern** („Save filter“) wartet auf den Dienst („Saving…“): Erst wenn er den Filter gespeichert hat, schließt
+  der Dialog. Lehnt er ab, bleibt er mit dem Eingegebenen offen, und die Meldung steht darüber.
+- **Anwenden:** Mit „Also apply to the {n} existing mails“ (angehakt, solange die Suche nicht keine Mail findet) läuft
+  der gespeicherte Filter gleich einmal; das Ergebnis steht über der Liste, „Apply to more“ macht weiter.
+- **Schnell anlegen:** „Create filter…“ in der Gruppe More der Aktionsleiste einer Mail öffnet den Dialog eines neuen
   Filters mit `from:<Absender>`. „Create filter from search…“ im Filter-Menü des Suchfelds (nur mit Text im Feld)
   macht die Suche zur Bedingung, mit dem Konto, wenn die Suche auf „This account“ steht, sonst für alle Konten.
 

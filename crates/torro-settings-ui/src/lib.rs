@@ -203,12 +203,12 @@ pub struct Data {
     /// The folder "Save to Downloads" uses, an absolute path, as the same answer names it: the one a
     /// person chose, else the system's. Empty until that answer came.
     pub downloads: String,
-    /// The mail filters in the order the person keeps them (`mail.list_filters`, issue #339): the
-    /// mail window's section "Filters" lists and edits them.
+    /// The mail filters (`mail.list_filters`, issue #339): the mail window's section
+    /// "Categorization" lists and edits them among the sorting rules.
     pub mail_filters: Vec<torro_mail::MailFilter>,
-    /// The folders of every mail account in reach (`mail.list_folders`, issue #339): what a filter
-    /// can move mail into, and the names its list shows.
-    pub mail_folders: Vec<torro_mail::Folder>,
+    /// The sorting rules and mail filters in their one order (`inbox.list_sorting_order`, issue
+    /// #454). Empty from a load that did not ask for it, and from a core before #454.
+    pub sorting_order: Vec<torro_inbox::SortingStep>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
     /// The requests whose first answer is still on its way since the settings opened (issue
@@ -344,7 +344,7 @@ impl Data {
                 self.rule_hits = hits;
             }
             Response::MailFilters { filters } => self.mail_filters = filters,
-            Response::MailFolders { folders } => self.mail_folders = folders,
+            Response::SortingOrder { steps } => self.sorting_order = steps,
             _ => {}
         }
     }

@@ -7,41 +7,43 @@
 //! the stores, like the save targets (`super::save`), so `settings.update_settings` never writes
 //! them. The file holds the next number to give besides the list, so an id `f<n>` is given once
 //! ([`torro_mail::filter::filter_id`]). A missing file holds none; one that cannot be read is
-//! `error` without its path, and is left as it is.
+//! `error` without its path, and is left as it is. A move to the archive or a folder, stored before
+//! issue #454, is dropped when the file is read; a filter left without an action is switched off
+//! and keeps its place ([`MailFilters::read`]).
 //!
 //! **Checks** ([`check`]): the search must read ([`super::query::parse`]), not be empty and not use
 //! `in:` (a filter looks at the inbox only) or `filename:` (the names of attachments are not known
-//! when mail arrives); at least one action; a folder only with an account, and one of that account
-//! that is not its inbox ([`check_folder`]); a category of the catalogue; at most
-//! [`torro_mail::FILTERS_MAX`] filters. A change checks only what it brings anew: the category and
-//! the folder a filter has already pass as they are, even when the person removed the category or
-//! the folder is gone from the server, so such a filter can still be switched off or changed.
+//! when mail arrives); at least one action; a category of the catalogue; at most
+//! [`torro_mail::FILTERS_MAX`] filters. A change checks only what it brings anew: the category a
+//! filter has already passes as it is, even when the person removed it, so such a filter can still
+//! be switched off or changed.
 //!
 //! **Reach** ([`visible`], [`client_refusal`]): a client sees a filter of an account it reaches,
 //! and one for every account only when it reaches every account; any other filter behaves as if it
 //! were not there (`not-found`). Making a filter for every account without reaching every account is
 //! `forbidden`, and so is a category from a client without admin access to `inbox` (the category
 //! works like a sorting rule), and an action the client could not do by hand with the single mail
-//! commands ([`actions_refusal`]: write access to `mail`, delete access for the trash). The core
+//! commands ([`actions_refusal`]: write access to `mail` for reading, delete access for the trash). The core
 //! checks this before anyone is asked to approve and again when an approved call runs.
 //!
 //! **Finding mail** ([`preview`], [`apply`], [`matching`]): a [`SearchQuery`] over the inbox folder
 //! (`in_inbox`) of every account the caller reaches and the filter names. `mail.apply_filter` takes
 //! the 500 newest that still need an action per call ([`APPLY_MAX`], `more` for the rest) and runs
 //! them through the changing mail commands (`super::write`) in pieces of [`MAX_IDS`]: read, then the
-//! category ([`MailService::set_category`], never over one the person set by hand), then the move.
-//! The trash is a move, never deleting for good.
+//! category ([`MailService::set_category`], never over one the person set by hand), then the trash
+//! (a move, never deleting for good).
 //!
 //! **New mail** ([`on_arrival`]): the mail feed hands over the mail that just arrived in an
 //! account's inbox folder (not a folder's first sync, not a catch-up); the enabled filters of that
-//! account run on it with the same steps, and a category one of them set goes on the inbox entry.
+//! account run on it with the same steps. Which category a mail a filter found gets is decided by
+//! the order of the sorting steps (issue #454): the first rule or filter from the top that matches
+//! ([`torro_inbox::rules::first_category`]); it goes on the inbox entry too.
 //!
 //! **Approvals** ([`to_approve`]): what a person is shown comes from the stored filter and the mail
-//! store (the account's address, the folder's name), never from the client's words but the new
-//! search; an approval of a change, a removal or a run is pinned to the stored filter
+//! store (the account's address), never from the client's words but the new search; an approval of a change, a removal or a run is pinned to the stored filter
 //! ([`fingerprint`]), so a filter a person changed meanwhile ends it `conflict`.
 //!
-//! **Log.** Nothing here writes a search, a folder or a category anywhere; error messages hold no path.
+//! **Log.** Nothing here writes a search or a category anywhere; error messages hold no path.
 
 use std::collections::HashSet;
 use std::fs;
@@ -53,7 +55,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::i18n::tr;
 use torro_ipc::api::{Access, Area, Rights, Selection};
-use torro_ipc::mail::{MAX_IDS, MoveRole, MoveTarget, limit_refusal};
+use torro_ipc::mail::{MAX_IDS, limit_refusal};
 use torro_ipc::{Request, Response};
 use torro_mail::filter::{filter_id, filter_number};
 use torro_mail::{
@@ -223,8 +225,7 @@ impl MailFilters {
     }
 
     /// Adds `spec` as a new filter at the end, with the next id `f<n>` ([`check`], the search
-    /// trimmed). `Invalid` for a spec that breaks a rule or a filter past [`FILTERS_MAX`]. Whether its
-    /// folder is one of its account is the caller's check ([`check_folder`]): it needs the store.
+    /// trimmed). `Invalid` for a spec that breaks a rule or a filter past [`FILTERS_MAX`].
     pub fn create(
         &self,
         spec: FilterSpec,
@@ -276,13 +277,36 @@ impl MailFilters {
         Ok(stored.filters)
     }
 
+    /// The file as stored. A move this version no longer knows (the archive or a folder, before
+    /// issue #454) is dropped from its filter, and a filter left without an action is switched off:
+    /// it keeps its place, search and account, so the person sees it and can give it an action. The
+    /// file itself is written again only with the next change.
     fn read(&self) -> Result<StoredFilters, FilterError> {
         let Some(file) = &self.file else { return Ok(StoredFilters::default()) };
-        match fs::read(file) {
-            Ok(bytes) => serde_json::from_slice::<StoredFilters>(&bytes).map_err(|_| FilterError::Damaged),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(StoredFilters::default()),
-            Err(err) => Err(FilterError::Io(err)),
+        let bytes = match fs::read(file) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(StoredFilters::default()),
+            Err(err) => return Err(FilterError::Io(err)),
+        };
+        let mut json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| FilterError::Damaged)?;
+        let mut dropped = HashSet::new();
+        if let Some(filters) = json.get_mut("filters").and_then(serde_json::Value::as_array_mut) {
+            for (at, filter) in filters.iter_mut().enumerate() {
+                if let Some(entry) = filter.as_object_mut()
+                    && entry.get("file").is_some_and(|file| serde_json::from_value::<FilterFile>(file.clone()).is_err())
+                {
+                    entry.remove("file");
+                    dropped.insert(at);
+                }
+            }
         }
+        let mut stored = serde_json::from_value::<StoredFilters>(json).map_err(|_| FilterError::Damaged)?;
+        for (at, filter) in stored.filters.iter_mut().enumerate() {
+            if dropped.contains(&at) && !filter.has_action() {
+                filter.enabled = false;
+            }
+        }
+        Ok(stored)
     }
 
     fn write(&self, stored: &StoredFilters) -> Result<(), FilterError> {
@@ -317,16 +341,14 @@ pub fn filter_query(text: &str) -> Result<Query, FilterError> {
     Ok(parsed)
 }
 
-/// Whether `filter` may be stored, without the folder's account ([`check_folder`]): its search
-/// ([`filter_query`]), at least one action, a folder only with an account, a category of
-/// `categories` (the catalogue).
+/// Whether `filter` may be stored: its search ([`filter_query`]), at least one action, a category
+/// of `categories` (the catalogue).
 pub fn check(filter: &MailFilter, categories: &[Category]) -> Result<(), FilterError> {
     filter_query(&filter.query)?;
     if !filter.has_action() {
-        return Err(invalid(tr("A mail filter needs an action: move the mail, mark it as read or set a category.")));
-    }
-    if matches!(filter.file, Some(FilterFile::Folder { .. })) && filter.account.is_none() {
-        return Err(invalid(tr("A mail filter that moves mail to a folder needs an account.")));
+        return Err(invalid(tr(
+            "A mail filter needs an action: set a category, mark the mail as read or move it to the trash.",
+        )));
     }
     if filter.category.is_some_and(|category| !categories.contains(&category)) {
         return Err(invalid(tr("The category of the mail filter is not in the catalogue.")));
@@ -342,33 +364,6 @@ fn with_kept(categories: &[Category], stored: Option<&MailFilter>) -> Vec<Catego
     let mut known = categories.to_vec();
     known.extend(stored.and_then(|filter| filter.category).filter(|kept| !categories.contains(kept)));
     known
-}
-
-/// Whether `spec` moves its mail to the same folder of the same account as `stored`: then the
-/// folder is not looked up again ([`spec_refusal`]). A folder gone from the server (renamed,
-/// removed) must not lock the filter; when it runs, the move fails and is logged (`failed` for
-/// `mail.apply_filter`), the mail stays.
-fn same_folder(spec: &FilterSpec, stored: Option<&MailFilter>) -> bool {
-    stored.is_some_and(|stored| {
-        matches!(spec.file, Some(FilterFile::Folder { .. }))
-            && stored.file == spec.file
-            && stored.account == spec.account
-    })
-}
-
-/// Whether the folder `spec` moves its mail to is a folder of its account other than the inbox
-/// (`Invalid` otherwise). Nothing to check without a folder; without an account [`check`] refuses
-/// it already.
-pub async fn check_folder(mail: &MailService, spec: &FilterSpec) -> Result<(), FilterError> {
-    let (Some(FilterFile::Folder { id }), Some(account)) = (&spec.file, &spec.account) else { return Ok(()) };
-    let no_folder = || invalid(tr("The mail filter's account has no such folder."));
-    let store = mail.store(account).await.map_err(|_| no_folder())?;
-    let id = id.clone();
-    let folder = store.run(move |store| store.folder(&id)).await.map_err(|_| no_folder())?.ok_or_else(no_folder)?;
-    match folder.role {
-        Some(Role::Inbox) => Err(invalid(tr("A mail filter cannot move mail into the inbox."))),
-        _ => Ok(()),
-    }
 }
 
 // ----- reach -----
@@ -415,8 +410,8 @@ pub fn changes_filters(request: &Request) -> bool {
 /// - what a new, changed or applied filter does with the mail needs the rights the single mail
 ///   commands would need ([`actions_refusal`]: write access, delete access for the trash): else
 ///   `forbidden`;
-/// - a new or changed filter passes [`check`] and [`check_folder`] (a change only with what it brings
-///   anew, [`spec_refusal`]): else `error`, nothing to approve.
+/// - a new or changed filter passes [`check`] (a change only with what it brings anew,
+///   [`spec_refusal`]): else `error`, nothing to approve.
 pub async fn client_refusal(
     mail: &MailService,
     rights: &Rights,
@@ -439,72 +434,64 @@ pub async fn client_refusal(
         if stored.category.is_some() && !sets_category(reach) {
             return Some(no_category().response());
         }
-        let account = stored.account.as_deref();
-        return actions_refusal(mail, rights, account, stored.mark_read, stored.file.as_ref())
-            .await
-            .err()
-            .map(|err| err.response());
+        return actions_refusal(rights, stored.mark_read, stored.file.as_ref()).err().map(|err| err.response());
     }
     let spec = FilterSpec::of(request)?;
-    if let Err(err) = spec_refusal(mail, reach, &spec, stored.as_ref(), categories).await {
+    if let Err(err) = spec_refusal(reach, &spec, stored.as_ref(), categories) {
         return Some(err.response());
     }
-    let account = spec.account.as_deref();
-    actions_refusal(mail, rights, account, spec.mark_read, spec.file.as_ref()).await.err().map(|err| err.response())
+    actions_refusal(rights, spec.mark_read, spec.file.as_ref()).err().map(|err| err.response())
 }
 
 /// `forbidden` unless a client with `rights` may do one by one what a filter does with the mail:
-/// `mail.set_flags` for `mark_read`, `mail.move_messages` for the archive and a folder of
-/// `account`, `mail.delete_messages` for the trash – and for a folder whose role is trash, as
-/// `mail.move_messages` asks delete access there (`super::write`). The filter commands need admin
-/// access only, and a filter's changes run as the suite's ([`carry_out`]), so without this a client
-/// could have mail moved to the trash or changed that it may not delete or change itself.
-async fn actions_refusal(
-    mail: &MailService,
-    rights: &Rights,
-    account: Option<&str>,
-    mark_read: bool,
-    file: Option<&FilterFile>,
-) -> Result<(), FilterError> {
-    let to_trash = match (file, account) {
-        (Some(FilterFile::Trash), _) => true,
-        (Some(FilterFile::Folder { id }), Some(account)) => folder_role(mail, account, id).await == Some(Role::Trash),
-        _ => false,
-    };
+/// `mail.set_flags` for `mark_read`, `mail.delete_messages` for the trash. The filter commands need
+/// admin access only, and a filter's changes run as the suite's ([`carry_out`]), so without this a
+/// client could have mail moved to the trash or changed that it may not delete or change itself.
+fn actions_refusal(rights: &Rights, mark_read: bool, file: Option<&FilterFile>) -> Result<(), FilterError> {
+    let to_trash = matches!(file, Some(FilterFile::Trash));
     if to_trash && !rights.allows_request(&Request::DeleteMail { ids: Vec::new(), permanent: false }) {
         return Err(FilterError::Forbidden(
             tr("A mail filter that moves mail to the trash needs delete access to mail.").into(),
         ));
     }
-    let moves = match file {
-        Some(FilterFile::Folder { id }) => Some(MoveTarget::Folder(id.clone())),
-        Some(FilterFile::Archive) => Some(MoveTarget::Role(MoveRole::Archive)),
-        Some(FilterFile::Trash) | None => None,
-    };
     let reads = Request::SetMailFlags { ids: Vec::new(), add: vec![Flag::Seen], remove: Vec::new() };
-    let refused = moves.is_some_and(|to| !rights.allows_request(&Request::MoveMail { ids: Vec::new(), to }))
-        || (mark_read && !rights.allows_request(&reads));
-    if refused {
+    if mark_read && !rights.allows_request(&reads) {
         return Err(FilterError::Forbidden(
-            tr("A mail filter that moves mail or marks it as read needs write access to mail.").into(),
+            tr("A mail filter that marks mail as read needs write access to mail.").into(),
         ));
     }
     Ok(())
 }
 
-/// The role of the folder `id` of `account` in its store; `None` when it has none or is not there.
-async fn folder_role(mail: &MailService, account: &str, id: &str) -> Option<Role> {
-    let store = mail.store(account).await.ok()?;
-    let id = id.to_string();
-    store.run(move |store| store.folder(&id)).await.ok().flatten().and_then(|folder| folder.role)
+/// `forbidden` unless a client with `rights` may change `filter` (issue #454): moving a sorting step
+/// past a filter, or the filter itself, changes what it decides, so it needs what
+/// `mail.update_filter` of it would need – admin access to mail, the filter's account in reach (every
+/// account for a filter of every account), admin access to `inbox` for its category and the rights
+/// its actions need ([`actions_refusal`]).
+pub fn passing_refusal(rights: &Rights, filter: &MailFilter) -> Option<Response> {
+    let reach = Reach::Client(rights);
+    let change = Request::UpdateMailFilter {
+        id: filter.id.clone(),
+        query: filter.query.clone(),
+        account: filter.account.clone(),
+        file: filter.file.clone(),
+        mark_read: filter.mark_read,
+        category: filter.category,
+        enabled: None,
+    };
+    let may = rights.allows_request(&change)
+        && visible(reach, filter.account.as_deref())
+        && (filter.category.is_none() || sets_category(reach))
+        && actions_refusal(rights, filter.mark_read, filter.file.as_ref()).is_ok();
+    let why =
+        tr("Moving a sorting step past a mail filter, or the filter itself, needs the rights to change that filter.");
+    (!may).then(|| FilterError::Forbidden(why.to_string()).response())
 }
 
 /// `forbidden`, `not-found` or `error` for a filter `spec` from `reach` (see [`client_refusal`]).
-/// `stored` is the filter a change replaces (`None` for a new one): its category and folder pass
-/// unchanged without being looked up again ([`with_kept`], [`same_folder`]); everything else is
-/// checked as for a new filter.
-async fn spec_refusal(
-    mail: &MailService,
+/// `stored` is the filter a change replaces (`None` for a new one): its category passes unchanged
+/// ([`with_kept`]); everything else is checked as for a new filter.
+fn spec_refusal(
     reach: Reach<'_>,
     spec: &FilterSpec,
     stored: Option<&MailFilter>,
@@ -524,11 +511,7 @@ async fn spec_refusal(
         return Err(no_category());
     }
     let candidate = spec.clone().into_filter(filter_id(1), true, DateTime::<Utc>::UNIX_EPOCH);
-    check(&candidate, &with_kept(categories, stored))?;
-    if same_folder(spec, stored) {
-        return Ok(());
-    }
-    check_folder(mail, spec).await
+    check(&candidate, &with_kept(categories, stored))
 }
 
 fn no_category() -> FilterError {
@@ -569,14 +552,14 @@ async fn answered(
         Request::ListMailFilters => Ok(Response::MailFilters { filters: seen(filters.list()?, reach) }),
         request @ Request::CreateMailFilter { .. } => {
             let spec = FilterSpec::of(&request).ok_or(FilterError::NotFound)?;
-            spec_refusal(mail, reach, &spec, None, categories).await?;
+            spec_refusal(reach, &spec, None, categories)?;
             Ok(Response::MailFilter { filter: filters.create(spec, categories, Utc::now())? })
         }
         request @ Request::UpdateMailFilter { .. } => {
             let Request::UpdateMailFilter { id, .. } = &request else { return Err(FilterError::NotFound) };
             let stored = visible_filter(mail, reach, id)?;
             let spec = FilterSpec::of(&request).ok_or(FilterError::NotFound)?;
-            spec_refusal(mail, reach, &spec, Some(&stored), categories).await?;
+            spec_refusal(reach, &spec, Some(&stored), categories)?;
             Ok(Response::MailFilter { filter: filters.update(id, spec, categories)? })
         }
         Request::RemoveMailFilter { id } => {
@@ -695,7 +678,7 @@ impl Applied {
     }
 }
 
-/// Whether `filter` still has something to do with `message` (in the inbox): a move always; reading
+/// Whether `filter` still has something to do with `message` (in the inbox): the trash always; reading
 /// an unread mail; its category (when still in `categories`) on a mail without it, unless the person
 /// set one by hand (decision 4).
 fn needs(filter: &MailFilter, message: &MessageSummary, categories: &[Category]) -> bool {
@@ -778,8 +761,8 @@ pub async fn due(
 }
 
 /// `mail.apply_filter`: carries out `filter`'s actions on the mails [`due`] finds for `reach`, account
-/// by account, in pieces of [`MAX_IDS`]: read, then the category, then the move (the trash as a move,
-/// never for good). The changes run as the suite's (they were approved); a piece that fails counts
+/// by account, in pieces of [`MAX_IDS`]: read, then the category, then the trash (a move, never for
+/// good). The changes run as the suite's (they were approved); a piece that fails counts
 /// its mails as `failed` and the rest goes on. The mails that got the category come back with it
 /// ([`Applied::categorised`]), for their inbox entries.
 pub async fn apply(
@@ -817,7 +800,7 @@ struct CarriedOut {
 
 /// Carries out `actions` on `messages` (all of `account`, in its inbox), in pieces of [`MAX_IDS`]:
 /// read (the unread ones), then the category ([`category_due`]: in `categories`, never over one the
-/// person set by hand), then the move (the trash as a move, never for good). The changes run as the
+/// person set by hand), then the trash (a move, never for good). The changes run as the
 /// suite's: a person approved them, or made the filter. A step that fails notes its mails as failed
 /// (logged with a code, never a subject) and the next step goes on.
 async fn carry_out(
@@ -850,18 +833,10 @@ async fn carry_out(
             }
         }
     }
-    if let Some(file) = &actions.file {
+    if let Some(FilterFile::Trash) = &actions.file {
         let ids: Vec<String> = messages.iter().map(|message| message.id.clone()).collect();
         for piece in ids.chunks(MAX_IDS) {
-            let answer = match file {
-                FilterFile::Archive => {
-                    super::write::move_messages(mail, Reach::Suite, piece, &MoveTarget::Role(MoveRole::Archive)).await
-                }
-                FilterFile::Folder { id } => {
-                    super::write::move_messages(mail, Reach::Suite, piece, &MoveTarget::Folder(id.clone())).await
-                }
-                FilterFile::Trash => super::write::delete_messages(mail, Reach::Suite, piece, false).await,
-            };
+            let answer = super::write::delete_messages(mail, Reach::Suite, piece, false).await;
             note_failed(&mut done.failed, piece, &answer);
         }
     }
@@ -878,16 +853,15 @@ fn note_failed(failed: &mut HashSet<String>, piece: &[String], done: &Response) 
 
 // ----- new mail (issue #339, step 3) -----
 
-/// Which of the messages `new` (ids `m:…` of `account`, in its inbox) the `filters` find, each with
-/// what they do together ([`FilterActions::of`], in the order of `filters`); messages no filter
-/// finds are left out. For the core's handling of arriving mail: pass
-/// [`MailFilters::running_in`]. A filter whose search no longer reads is skipped (and logged by its
-/// id). Nothing is changed here.
-pub async fn matching(
+/// Which of the messages `new` (ids `m:…` of the store's account, in its inbox) the `filters`
+/// find, each with the filters that found it, in the order of `filters`; messages no filter finds
+/// are left out. A filter whose search no longer reads is skipped (and logged by its id). Nothing
+/// is changed here.
+pub async fn hits(
     store: &SharedStore,
     filters: &[MailFilter],
     new: &[String],
-) -> Result<Vec<(String, FilterActions)>, super::MailStoreError> {
+) -> Result<Vec<(String, Vec<MailFilter>)>, super::MailStoreError> {
     if filters.is_empty() || new.is_empty() {
         return Ok(Vec::new());
     }
@@ -901,32 +875,64 @@ pub async fn matching(
     let new = new.to_vec();
     store
         .run(move |store| {
-            let mut found: Vec<(String, Vec<&MailFilter>)> = Vec::new();
+            let mut found: Vec<(String, Vec<MailFilter>)> = Vec::new();
             for (filter, query) in &searches {
                 let search = SearchQuery { only: Some(new.clone()), ..in_inbox(query.clone()) };
                 for message in store.search(&search, new.len() as u32, 0)? {
                     match found.iter_mut().find(|(id, _)| *id == message.id) {
-                        Some((_, filters)) => filters.push(filter),
-                        None => found.push((message.id, vec![filter])),
+                        Some((_, filters)) => filters.push(filter.clone()),
+                        None => found.push((message.id, vec![filter.clone()])),
                     }
                 }
             }
-            Ok(found.into_iter().map(|(id, filters)| (id, FilterActions::of(filters))).collect())
+            Ok(found)
         })
         .await
 }
 
+/// Which of the messages `new` the `filters` find ([`hits`]), each with what they do together
+/// ([`FilterActions::of`], in the order of `filters`). For the core's handling of arriving mail:
+/// pass [`MailFilters::running_in`].
+#[cfg(test)]
+pub async fn matching(
+    store: &SharedStore,
+    filters: &[MailFilter],
+    new: &[String],
+) -> Result<Vec<(String, FilterActions)>, super::MailStoreError> {
+    let found = hits(store, filters, new).await?;
+    Ok(found.into_iter().map(|(id, filters)| (id, FilterActions::of(&filters))).collect())
+}
+
+/// The filters of `found` that set a category of `categories`, as [`torro_inbox::rules::first_category`]
+/// takes them: their ids with their categories.
+pub fn category_hits<'a>(found: &'a [MailFilter], categories: &[Category]) -> Vec<(&'a str, Category)> {
+    found
+        .iter()
+        .filter_map(|filter| {
+            filter.category.filter(|category| categories.contains(category)).map(|c| (filter.id.as_str(), c))
+        })
+        .collect()
+}
+
+/// The order of the sorting steps and the sorting rules (issue #454), as the inbox keeps them
+/// (`crate::inbox::Inbox::sorting`): which rule or filter decides the category of a mail.
+pub type Sorting = (Vec<torro_inbox::SortingStep>, Vec<torro_inbox::SortRule>);
+
 /// Runs the enabled filters of `account` ([`MailFilters::running_in`]) on its new mail `new` (ids
 /// `m:…` that just arrived in its inbox folder; the mail feed calls it, never on a folder's first
-/// sync nor on a catch-up) and gives back the mails that got a filter's category, with it, so their
-/// inbox entries carry it too (decision 4: before the sorting rules, without asking a model).
+/// sync nor on a catch-up) and gives back the mails that got a category, with it, so their inbox
+/// entries carry it too (without asking a model).
 ///
 /// - Mail whose `Message-ID` the account holds in another folder already is left alone
 ///   ([`delivered`]): it was moved or copied into the inbox, not delivered, and a filter must not
 ///   take it out again. Copies in the archive (Gmail's "All Mail") and in sent mail do not count.
-/// - What several filters do together follows their order ([`matching`], [`FilterActions::of`],
-///   decision 3); a category that is no longer in `categories` (the catalogue) is skipped.
-/// - Read, then the category, then the move ([`carry_out`]). Mail read or moved by a filter gets no
+/// - Reading and the trash: what the filters that found a mail do together ([`FilterActions::of`]).
+/// - The category of a mail a filter found (issue #454): the first step of `sorting` from the top
+///   that decides ([`torro_inbox::rules::first_category`]) – a rule above the filter wins over it,
+///   and so does a filter above a rule. A category that is no longer in `categories` (the
+///   catalogue) is skipped; without one the rules and headers have their say when the mail is
+///   filed, as for any mail.
+/// - Read, then the category, then the trash ([`carry_out`]). Mail read or moved by a filter gets no
 ///   entry: the feed files only what is still unread in the inbox folder, as the store says.
 /// - A failure goes to the log (the account and a code, never a search or a subject); the mail
 ///   stays as it came, and gets an entry as any other.
@@ -936,6 +942,7 @@ pub async fn on_arrival(
     account: &str,
     new: &[String],
     categories: &[Category],
+    sorting: &Sorting,
 ) -> Vec<(String, MailCategory)> {
     let filters = match mail.filters().running_in(account) {
         Ok(filters) => filters,
@@ -956,16 +963,33 @@ pub async fn on_arrival(
         }
     };
     let arrived_ids: Vec<String> = arrived.iter().map(|message| message.id.clone()).collect();
-    let found = match matching(store, &filters, &arrived_ids).await {
+    let found = match hits(store, &filters, &arrived_ids).await {
         Ok(found) => found,
         Err(err) => {
             eprintln!("torroworkplace: mail: cannot run the mail filters on new mail of {account}: {err}");
             return Vec::new();
         }
     };
+    let (order, rules) = sorting;
     // Mails that get the same actions go together, so each action runs once per kind.
     let mut groups: Vec<(FilterActions, Vec<&MessageSummary>)> = Vec::new();
-    for (id, mut actions) in found {
+    for (id, by) in found {
+        let mut actions = FilterActions::of(&by);
+        actions.category = match mail.sorting_facts(account, &id).await {
+            Ok(Some(facts)) => {
+                let input = torro_inbox::rules::SortInput {
+                    sender: facts.sender.as_deref(),
+                    subject: &facts.content.subject,
+                    text: &facts.content.text,
+                    account: Some(account),
+                    list_id: facts.content.list.as_deref(),
+                    facts: Some(&facts.sort_facts),
+                };
+                torro_inbox::rules::first_category(order, rules, &input, &category_hits(&by, categories))
+            }
+            // Without what the rules look at, the filters decide in their own order.
+            _ => actions.category,
+        };
         actions.category = actions.category.filter(|category| categories.contains(category));
         let Some(message) = arrived.iter().find(|message| message.id == id) else { continue };
         if actions.is_empty() {
@@ -1069,8 +1093,8 @@ pub async fn fingerprint_now(
     }
 }
 
-/// What the approval of a filter request of `reach` shows ([`MailFacts`] for the account and folder
-/// the request names and, for `mail.apply_filter`, how many mails it would change now;
+/// What the approval of a filter request of `reach` shows ([`MailFacts`] for the account the
+/// request names and, for `mail.apply_filter`, how many mails it would change now;
 /// [`FilterFacts`] for the stored filter), and the fingerprint it is pinned to (none for
 /// `mail.create_filter`: there is nothing stored yet). Looked up in the core's file and stores, never
 /// taken from the client's words but the new search. `categories` names the categories.
@@ -1089,39 +1113,23 @@ pub async fn to_approve(
     let mut pinned = stored.as_ref().map(fingerprint);
     let mut facts = MailFacts::default();
     if let Some(spec) = FilterSpec::of(request) {
-        (facts.account, facts.folder) = names(mail, spec.account.as_deref(), spec.file.as_ref()).await;
+        facts.account = address(mail, spec.account.as_deref()).await;
     }
     if let (Request::ApplyMailFilter { .. }, Some(filter)) = (request, &stored) {
         let known: Vec<Category> = categories.iter().map(|def| def.category).collect();
         let (print, count) = apply_fingerprint(mail, reach, filter, &known).await;
         (pinned, facts.count) = (Some(print), count);
     }
-    let (stored_account, stored_folder) = match &stored {
-        Some(filter) => names(mail, filter.account.as_deref(), filter.file.as_ref()).await,
-        None => (None, None),
+    let stored_account = match &stored {
+        Some(filter) => address(mail, filter.account.as_deref()).await,
+        None => None,
     };
-    (facts, FilterFacts { stored, stored_account, stored_folder, categories }, pinned)
+    (facts, FilterFacts { stored, stored_account, categories }, pinned)
 }
 
-/// The address of `account` and the name of the folder of `file`, as the core knows them.
-async fn names(
-    mail: &MailService,
-    account: Option<&str>,
-    file: Option<&FilterFile>,
-) -> (Option<String>, Option<String>) {
-    let Some(account) = account else { return (None, None) };
-    let address = mail.config(account).await.ok().map(|config| config.address);
-    let folder = match file {
-        Some(FilterFile::Folder { id }) => match mail.store(account).await {
-            Ok(store) => {
-                let id = id.clone();
-                store.run(move |store| store.folder(&id)).await.ok().flatten().map(|folder| folder.name)
-            }
-            Err(_) => None,
-        },
-        _ => None,
-    };
-    (address, folder)
+/// The address of `account`, as the core knows it.
+async fn address(mail: &MailService, account: Option<&str>) -> Option<String> {
+    mail.config(account?).await.ok().map(|config| config.address)
 }
 
 #[cfg(test)]
@@ -1132,7 +1140,7 @@ mod tests {
         FilterSpec {
             query: query.into(),
             account: None,
-            file: Some(FilterFile::Archive),
+            file: Some(FilterFile::Trash),
             mark_read: false,
             category: None,
             enabled: None,
@@ -1179,6 +1187,37 @@ mod tests {
         assert_eq!(filters.running_in("mail:anna@example.org").expect("read").len(), 1, "f1 is off");
     }
 
+    /// Issue #454: a move to the archive or a folder, stored before, is dropped when the file is read;
+    /// a filter left without an action is switched off and keeps its place, the others keep theirs.
+    #[test]
+    fn old_moves_are_dropped_and_a_filter_left_without_action_is_switched_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(dir.path().join("mail")).expect("dir");
+        let old = serde_json::json!({
+            "next": 5,
+            "filters": [
+                {"id": "f1", "query": "from:a", "file": {"to": "archive"}, "enabled": true,
+                 "created": "2026-10-01T09:00:00Z"},
+                {"id": "f2", "query": "from:b", "file": {"to": "folder", "id": "f:7"}, "mark_read": true,
+                 "account": "mail:anna@example.org", "enabled": true, "created": "2026-10-01T09:00:00Z"},
+                {"id": "f3", "query": "from:c", "file": {"to": "trash"}, "enabled": true,
+                 "created": "2026-10-01T09:00:00Z"},
+                {"id": "f4", "query": "from:d", "category": "invoice", "enabled": false,
+                 "created": "2026-10-01T09:00:00Z"},
+            ],
+        });
+        fs::write(dir.path().join("mail").join(FILE_NAME), serde_json::to_vec(&old).expect("json")).expect("write");
+        let filters = at(&dir);
+        let read = filters.list().expect("read");
+        let shown: Vec<(&str, bool, bool)> =
+            read.iter().map(|filter| (filter.id.as_str(), filter.file.is_some(), filter.enabled)).collect();
+        assert_eq!(shown, [("f1", false, false), ("f2", false, true), ("f3", true, true), ("f4", false, false)]);
+        assert!(read[1].mark_read, "the other actions stay");
+        let next = filters.create(spec("from:e"), &[], Utc::now()).expect("written again");
+        assert_eq!(next.id, "f5", "the next number stays");
+        assert_eq!(filters.list().expect("read").len(), 5);
+    }
+
     /// A file that does not read is left as it is and answers `error`.
     #[test]
     fn a_damaged_file_is_left_as_it_is() {
@@ -1194,7 +1233,7 @@ mod tests {
     }
 
     /// The checks of a filter: a search that reads and is not empty, no `in:` or `filename:`, an
-    /// action, a folder only with an account, a category of the catalogue, at most 200.
+    /// action, a category of the catalogue, at most 200.
     #[test]
     fn filters_are_checked_before_they_are_stored() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1207,8 +1246,6 @@ mod tests {
             assert_eq!(refused(spec(query), &[]), "error", "{query:?}");
         }
         assert_eq!(refused(FilterSpec { file: None, ..spec("from:x") }, &[]), "error", "no action");
-        let folder = Some(FilterFile::Folder { id: "f:3".into() });
-        assert_eq!(refused(FilterSpec { file: folder, ..spec("from:x") }, &[]), "error", "a folder needs an account");
         let invoice = FilterSpec { category: Some(Category::Invoice), ..spec("from:x") };
         assert_eq!(refused(invoice.clone(), &[Category::Newsletter]), "error", "not in the catalogue");
         assert!(filters.create(invoice, &[Category::Invoice], now).is_ok());
@@ -1307,13 +1344,13 @@ mod tests {
         };
         let filters = [
             filter("f1", "from:stadtwerke-bonn.de", Some(Category::Invoice), None),
-            filter("f2", "from:stadtwerke-bonn.de", Some(Category::Newsletter), Some(FilterFile::Archive)),
+            filter("f2", "from:stadtwerke-bonn.de", Some(Category::Newsletter), Some(FilterFile::Trash)),
             filter("f3", "in:archive", None, Some(FilterFile::Trash)),
         ];
         let new = vec![bill.clone(), hello];
         let found = matching(&store, &filters, &new).await.expect("searched");
         let expected =
-            FilterActions { mark_read: false, category: Some(Category::Invoice), file: Some(FilterFile::Archive) };
+            FilterActions { mark_read: false, category: Some(Category::Invoice), file: Some(FilterFile::Trash) };
         assert_eq!(
             found,
             vec![(bill, expected)],

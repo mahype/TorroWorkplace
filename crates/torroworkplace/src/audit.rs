@@ -355,6 +355,12 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UpdateSortRule { id: rule, .. }
         | Request::RemoveSortRule { id: rule }
         | Request::MoveSortRule { id: rule, .. } => vec![random("rule", rule)],
+        // The order of rules and filters (issue #454): the step by its id only.
+        Request::ListSortingOrder => Vec::new(),
+        Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: rule, .. } => vec![random("rule", rule)],
+        Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: filter, .. } => {
+            vec![random("filter", filter)]
+        }
         // The function and the account are ids, not content; the model's name is the server's.
         Request::AiAssignments => Vec::new(),
         Request::SetAiAssignment { engine, .. } => engine.iter().map(|id| account(id)).collect(),
@@ -469,7 +475,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         }
         Request::ListSaveTargets { id } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
         // Mail filters (issue #339): a filter by the id the core made (`f<n>`, hex digits) and the
-        // account it names, never its search, folder or category – the person's words about their mail.
+        // account it names, never its search or category – the person's words about their mail.
         Request::ListMailFilters => Vec::new(),
         Request::CreateMailFilter { account: named, .. } | Request::PreviewMailFilter { account: named, .. } => {
             named.iter().map(|name| account(name)).collect()
@@ -1122,14 +1128,14 @@ pub(crate) mod tests {
         }
     }
 
-    /// Issue #339: a mail filter by its id `f<n>` as it is and its account, never its search, folder
-    /// or category; an id of another form is hashed.
+    /// Issue #339: a mail filter by its id `f<n>` as it is and its account, never its search or
+    /// category; an id of another form is hashed.
     #[test]
     fn mail_filters_log_their_id_and_account_only() {
         let create = Request::CreateMailFilter {
             query: "from:salary@boss.example".into(),
             account: Some("mail:anna@mailbox.org".into()),
-            file: Some(torro_mail::FilterFile::Folder { id: "f:secret-folder".into() }),
+            file: Some(torro_mail::FilterFile::Trash),
             mark_read: true,
             category: Some(torro_mail::Category::Invoice),
             enabled: true,
@@ -1152,7 +1158,7 @@ pub(crate) mod tests {
         let odd = Request::RemoveMailFilter { id: "salary filter".into() };
         assert_eq!(super::ids(&odd), [format!("filter:hash:{}", hashed("salary filter"))]);
         let all = [create, update, preview].iter().flat_map(super::ids).collect::<Vec<_>>().join(" ");
-        for secret in ["salary", "boss", "secret-folder", "invoice"] {
+        for secret in ["salary", "boss", "invoice"] {
             assert!(!all.contains(secret), "{secret} in {all}");
         }
     }

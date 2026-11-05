@@ -2569,7 +2569,8 @@ pub enum CatchUpState {
 
 /// The mail selected for a deliberate categorization run (issue #263). Empty account or folder
 /// lists mean every accessible account or every folder of the selected accounts, respectively.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+/// What the run applies (issue #454): the rules and filters, the model or both ([`Default`]: both).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CategoryJobScope {
     #[serde(default)]
     pub accounts: Vec<String>,
@@ -2590,6 +2591,45 @@ pub struct CategoryJobScope {
     pub engine: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Apply the sorting rules and mail filters in their order, the headers (invitations,
+    /// auto-replies, junk) and mail from contacts (issue #454). A filter's category counts only for
+    /// mail in the inbox folder; reading and the trash never run here (`mail.apply_filter` does
+    /// that). Left out: true.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub apply_rules: bool,
+    /// Ask the decision model where the rules leave a mail open (issue #454). Left out: true. With
+    /// `false`, `engine` and `model` must be left out.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub apply_model: bool,
+}
+
+impl Default for CategoryJobScope {
+    /// Every account and folder, all the time, both the rules and the model.
+    fn default() -> Self {
+        CategoryJobScope {
+            accounts: Vec::new(),
+            folders: Vec::new(),
+            since: None,
+            before: None,
+            again: false,
+            engine: None,
+            model: None,
+            apply_rules: true,
+            apply_model: true,
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(value: &bool) -> bool {
+    *value
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Counts in the selected scope before a job starts. These are all mail, not sidebar unread counts.
@@ -2600,6 +2640,11 @@ pub struct CategoryJobPreview {
     pub automatic: u64,
     pub protected: u64,
     pub eligible: u64,
+    /// About how long sorting the eligible mail takes, in seconds (issue #454): at the pace of the
+    /// running or last run that sorted the same way (the same model, or the rules alone). `None`
+    /// without such a run to measure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u64>,
     /// The exact request scope echoed to correlate overlapping previews from a quickly edited
     /// form. Older servers may leave it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2657,6 +2702,45 @@ pub struct CategoryJob {
     /// used (for a rule-only recheck).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_in_cloud: Option<bool>,
+    /// How the run sorts (issue #454): `<engine>/<model>` of the model it asks, `None` for the rules
+    /// alone. A preview estimates its time at the pace of a run that sorted the same way. Missing
+    /// in runs stored before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sorted_with: Option<String>,
+    /// How long the run has worked, in milliseconds, without its pauses (issue #454). Missing (0)
+    /// in runs stored before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub run_millis: u64,
+    /// About how many seconds are left (issue #454), at the pace of this run so far; `None` before
+    /// it sorted a mail. Worked out when the run is read, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_seconds: Option<u64>,
+}
+
+impl CategoryJob {
+    /// The mails still to sort in every account of the run.
+    pub fn left(&self) -> u64 {
+        self.accounts.iter().map(|account| account.eligible.saturating_sub(account.processed)).sum()
+    }
+
+    /// The mails sorted so far in every account.
+    pub fn processed(&self) -> u64 {
+        self.accounts.iter().map(|account| account.processed).sum()
+    }
+
+    /// About how many seconds `mails` take at this run's pace so far; `None` before it sorted one or
+    /// without a measured time.
+    pub fn seconds_for(&self, mails: u64) -> Option<u64> {
+        let processed = self.processed();
+        (processed > 0 && self.run_millis > 0)
+            .then(|| (u128::from(mails) * u128::from(self.run_millis)).div_ceil(u128::from(processed) * 1000) as u64)
+    }
+
+    /// This run with [`CategoryJob::left_seconds`] worked out, at its own pace.
+    pub fn with_estimate(mut self) -> CategoryJob {
+        self.left_seconds = self.seconds_for(self.left());
+        self
+    }
 }
 
 /// Per-account count before removing every category in one deliberate action.

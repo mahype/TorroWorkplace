@@ -1214,6 +1214,29 @@ async fn category_job_decider(
     Ok((selected, cloud))
 }
 
+/// The model a sorting run of `scope` asks and whether it computes elsewhere (issue #454): none for a
+/// run that does not apply the model, and none for a run that sorts `again` with the rules while no
+/// model sorts; else the model of [`category_job_decider`], or why there is none.
+async fn job_decider(
+    settings: &SettingsStore,
+    ai: &AiAccounts,
+    scope: &torro_ipc::inbox::CategoryJobScope,
+) -> Result<(Option<(String, String)>, Option<bool>), categorize::Refusal> {
+    if !scope.apply_model {
+        return Ok((None, None));
+    }
+    match category_job_decider(settings, ai, scope).await {
+        Ok((decider, cloud)) => Ok((Some(decider), Some(cloud))),
+        Err(_) if scope.again && scope.apply_rules => Ok((None, None)),
+        Err(refusal) => Err(refusal),
+    }
+}
+
+/// How a run that asks `decider` sorts, as [`torro_ipc::inbox::CategoryJob::sorted_with`] keeps it.
+fn sorted_with((engine, model): &(String, String)) -> String {
+    format!("{engine}/{model}")
+}
+
 /// Asks the decision model what the mail `message` of `account` is and keeps the answer with it
 /// (task E12.6): the category, and the two answers the same call brings along. The options are
 /// the person's catalogue (task E15.4), asked in one call or two ([`categorize::decide`]).
@@ -1770,11 +1793,16 @@ impl JobRun<'_> {
     /// where the rules leave it open (issue #420): everything of [`category_job_run`] before it
     /// writes, so that several mails can be asked at once. "Keep mail here" and a change of the model
     /// for sorting are looked at right before each mail goes out.
+    ///
+    /// With `apply_rules` (issue #454) the rules and filters decide first, in their order
+    /// (`sorting`); `found` are the enabled filters of the account that found this mail in its inbox
+    /// folder. Without it neither they, the headers nor the contacts sort.
     async fn prepare(
         &self,
         job: &torro_ipc::inbox::CategoryJob,
         account: &str,
-        catalogue: &[torro_mail::CategoryDef],
+        (catalogue, sorting): (&[torro_mail::CategoryDef], &crate::mail::filters::Sorting),
+        found: &[torro_mail::MailFilter],
         message: &str,
     ) -> JobMail {
         if self.current().is_none() {
@@ -1797,13 +1825,21 @@ impl JobRun<'_> {
             list_id: facts.content.list.as_deref(),
             facts: Some(&facts.sort_facts),
         };
-        let ruled = match self.inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()) {
-            Ok(category) => category,
-            Err(err) => return JobMail::Stop(err),
+        let ruled = match job.scope.apply_rules {
+            true => {
+                let categories: Vec<torro_mail::Category> = catalogue.iter().map(|def| def.category).collect();
+                let hits = crate::mail::filters::category_hits(found, &categories);
+                match self.inbox.sorted_category(sorting, &input, &hits, facts.invite, facts.auto_submitted.as_deref())
+                {
+                    Ok(category) => category,
+                    Err(err) => return JobMail::Stop(err),
+                }
+            }
+            false => None,
         };
         // Mail of a contact goes to Personal when no rule spoke (issue #390); a model only chooses
         // within that group.
-        let contact = ruled.is_none() && from_contact(self.known, account, &facts);
+        let contact = job.scope.apply_rules && ruled.is_none() && from_contact(self.known, account, &facts);
         let personal = contact.then(|| (by_contact(), None));
         let (decided, asked) = match (ruled, self.decider) {
             (Some(category), _) => (Some((category, None)), false),
@@ -1882,6 +1918,8 @@ async fn category_job_run(
         None => CategoryPace::CAREFUL,
     };
     let mut fails = 0;
+    // The time the run works, without its pauses (issue #454): a pause ends this worker.
+    let mut tick = std::time::Instant::now();
     while let Some(job) = run.current() {
         let Some(account) = job.accounts.iter().find(|account| account.cursor < account.max_sequence).cloned() else {
             let _ = inbox.change_category_job(&id, |job| {
@@ -1918,21 +1956,28 @@ async fn category_job_run(
             });
             continue;
         }
-        // Without a model the rules alone sort, and they need no catalogue.
-        let catalogue = match &decider {
-            Some(_) => match inbox.catalogue() {
+        // The model and the filters' categories need the catalogue; the rules alone do not.
+        let catalogue = match decider.is_some() || job.scope.apply_rules {
+            true => match inbox.catalogue() {
                 Ok(catalogue) => catalogue,
                 Err(err) => {
                     category_job_error(&inbox, &id, generation, &account.account, &err);
                     break;
                 }
             },
-            None => Vec::new(),
+            false => Vec::new(),
         };
-        let (asking, held_job, name, offered) = (&run, &job, account.account.as_str(), catalogue.as_slice());
+        // The rules and filters in their order, and what the filters find of this batch (#454).
+        let (sorting, found) = match job.scope.apply_rules {
+            true => job_filters(&mail, &inbox, &account.account, &batch).await,
+            false => Default::default(),
+        };
+        let (asking, held_job, name) = (&run, &job, account.account.as_str());
+        let (offered, found) = ((catalogue.as_slice(), &sorting), &found);
         let steps = futures_util::stream::iter(batch)
             .map(move |(seq, message)| async move {
-                let step = asking.prepare(held_job, name, offered, &message).await;
+                let by = found.iter().find(|(id, _)| *id == message).map_or(&[][..], |(_, by)| by.as_slice());
+                let step = asking.prepare(held_job, name, offered, by, &message).await;
                 (seq, message, step)
             })
             .buffered(pace.parallel);
@@ -2010,6 +2055,8 @@ async fn category_job_run(
             // Counted also when a pause or cancel came while this mail was written (review of #420):
             // it ran when the answer was taken, and a resumed job would not find a sorted mail again.
             // A resume counts on under the next generation, after this worker let go.
+            let spent = u64::try_from(tick.elapsed().as_millis()).unwrap_or(u64::MAX);
+            tick = std::time::Instant::now();
             let _ = inbox.change_category_job(&id, |job| {
                 if job.generation == generation
                     && matches!(
@@ -2022,6 +2069,7 @@ async fn category_job_run(
                     progress.processed += 1;
                     progress.changed += u64::from(changed);
                     progress.failed += u64::from(unread);
+                    job.run_millis = job.run_millis.saturating_add(spent);
                 }
             });
             if asked && pace.pause {
@@ -2036,6 +2084,33 @@ async fn category_job_run(
     if active.as_ref() == Some(&(id, generation)) {
         *active = None;
     }
+}
+
+/// The order of rules and filters, and which enabled filters of `account` find the mails of
+/// `batch` in its inbox folder (issue #454), for a sorting run that applies the rules. What cannot be
+/// read goes to the log and leaves the filters out: the rules still sort.
+async fn job_filters(
+    mail: &MailService,
+    inbox: &Inbox,
+    account: &str,
+    batch: &[(i64, String)],
+) -> (crate::mail::filters::Sorting, Vec<(String, Vec<torro_mail::MailFilter>)>) {
+    let all = mail.filters().list().unwrap_or_default();
+    let ids: Vec<String> = all.iter().map(|filter| filter.id.clone()).collect();
+    let sorting = inbox.sorting(&ids).unwrap_or_else(|err| {
+        eprintln!("torroworkplace: inbox: a sorting run cannot read the sorting order: {err}");
+        Default::default()
+    });
+    let running: Vec<torro_mail::MailFilter> = all.into_iter().filter(|filter| filter.runs_in(account)).collect();
+    let messages: Vec<String> = batch.iter().map(|(_, message)| message.clone()).collect();
+    let found = match mail.store(account).await {
+        Ok(store) => crate::mail::filters::hits(&store, &running, &messages).await.unwrap_or_else(|err| {
+            eprintln!("torroworkplace: mail: a sorting run cannot run the mail filters of {account}: {err}");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    };
+    (sorting, found)
 }
 
 /// Whether the person chose another model for sorting while a run without a model of its own goes
@@ -3904,6 +3979,13 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Nor a move of a step the client does not see, or past a filter it may not change (#454).
+        if let Some(info) = &inbox_client
+            && matches!(request, Request::MoveSortingStep { .. } | Request::MoveSortRule { .. })
+            && let Err(refused) = self.plan_sorting_move(&request, Some(info))
+        {
+            return Ok(refused);
+        }
         // A question of an agent (task E2.5) is nothing but an approval: it always asks.
         let question = matches!(request, Request::AskPermission { .. });
         // Moving a file to the trash always asks too (issue #304, decision 30), also a client that is never asked
@@ -4489,6 +4571,10 @@ impl Core {
                 // The calendar of an event by the name the core caches (task E8.5b).
                 if let Request::CreateEventFromItem { collection, .. } = &request {
                     facts.list = self.calendar_name(collection).await;
+                }
+                // A move in the order of rules and filters names the filters as stored (#454).
+                if matches!(request, Request::MoveSortingStep { .. } | Request::MoveSortRule { .. }) {
+                    self.sorting_facts(&request, self.client_info(client, rights).as_ref(), &mut facts);
                 }
                 let request = with_entry_title(request, facts.item.as_ref());
                 let summary = crate::approvals::inbox_summary(&request, &facts);
@@ -5676,6 +5762,8 @@ impl Core {
             | Request::UpdateSortRule { .. }
             | Request::RemoveSortRule { .. }
             | Request::MoveSortRule { .. }
+            | Request::ListSortingOrder
+            | Request::MoveSortingStep { .. }
             | Request::GetStats { .. }
             | Request::GetQuiet) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -6892,6 +6980,19 @@ impl Core {
                 message: tr("The end must be after the start.").into(),
             });
         }
+        // What the run applies (issue #454): at least one of the two, a model only with the model.
+        if !scope.apply_rules && !scope.apply_model {
+            return Err(Response::Error {
+                code: "error".into(),
+                message: tr("Choose what to apply: rules and filters, the model or both.").into(),
+            });
+        }
+        if !scope.apply_model && (scope.engine.is_some() || scope.model.is_some()) {
+            return Err(Response::Error {
+                code: "error".into(),
+                message: tr("A model is named only when the model is applied.").into(),
+            });
+        }
         let available = self.mail.accounts_in(reach).await;
         if scope.accounts.is_empty() {
             scope.accounts = available;
@@ -6924,8 +7025,29 @@ impl Core {
             preview.protected += current.protected;
             preview.eligible += current.eligible;
         }
+        preview.seconds = self.category_pace_of(&scope, reach).await.and_then(|run| run.seconds_for(preview.eligible));
         preview.request_scope = Some(asked);
         Response::CategoryJobPreview { preview }
+    }
+
+    /// The run whose pace a preview of `scope` is estimated at (issue #454): the running or last run,
+    /// when it sorted the same way – with the model `scope` would ask now, or with the rules alone.
+    /// A run of accounts `reach` does not read counts as none, as `inbox.get_category_job` hides it.
+    async fn category_pace_of(
+        &self,
+        scope: &torro_ipc::inbox::CategoryJobScope,
+        reach: Reach<'_>,
+    ) -> Option<torro_ipc::inbox::CategoryJob> {
+        let last = self.inbox.category_job(None).ok().flatten()?;
+        let available = self.mail.accounts_in(reach).await;
+        if last.scope.accounts.iter().any(|account| !available.contains(account)) {
+            return None;
+        }
+        let now = match scope.apply_model {
+            true => category_job_decider(&self.settings, &self.ai, scope).await.ok().map(|(decider, _)| decider),
+            false => None,
+        };
+        (last.sorted_with == now.as_ref().map(sorted_with)).then_some(last)
     }
 
     /// The latest or named durable job, scoped to accounts this client can read.
@@ -6953,7 +7075,7 @@ impl Core {
                 }
             }
         }
-        Response::CategoryJob { job }
+        Response::CategoryJob { job: job.map(torro_ipc::inbox::CategoryJob::with_estimate) }
     }
 
     /// Start one deliberately selected, durable sorting run. The old catch-up command retains
@@ -6977,12 +7099,10 @@ impl Core {
         {
             return Response::Error { code: "busy".into(), message: tr("Categories are being removed.").into() };
         }
-        let (decider, model_in_cloud) =
-            match (category_job_decider(&self.settings, &self.ai, &scope).await, scope.again) {
-                (Ok((decider, cloud)), _) => (Some(decider), Some(cloud)),
-                (Err(_), true) => (None, None),
-                (Err(refusal), false) => return refused_decider(refusal),
-            };
+        let (decider, model_in_cloud) = match job_decider(&self.settings, &self.ai, &scope).await {
+            Ok(chosen) => chosen,
+            Err(refusal) => return refused_decider(refusal),
+        };
         if matches!(reach, Reach::Client(_))
             && scope.model.is_some()
             && model_in_cloud == Some(true)
@@ -7022,6 +7142,9 @@ impl Core {
             updated_at: now,
             generation: 1,
             model_in_cloud,
+            sorted_with: decider.as_ref().map(sorted_with),
+            run_millis: 0,
+            left_seconds: None,
         };
         let mut active = self.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.is_some() || self.catch_up.running.load(std::sync::atomic::Ordering::Acquire) {
@@ -7033,7 +7156,7 @@ impl Core {
         *active = Some((id.clone(), job.generation));
         drop(active);
         self.spawn_category_worker(id, job.generation, decider);
-        Response::CategoryJob { job: Some(job) }
+        Response::CategoryJob { job: Some(job.with_estimate()) }
     }
 
     /// Pause, resume or cancel an existing job without discarding its scope or cursor.
@@ -7054,8 +7177,8 @@ impl Core {
             };
         }
         let (decider, model_in_cloud) = if action == CategoryJobControl::Resume {
-            match (category_job_decider(&self.settings, &self.ai, &existing.scope).await, existing.scope.again) {
-                (Ok((decider, cloud)), _) => {
+            match job_decider(&self.settings, &self.ai, &existing.scope).await {
+                Ok((Some(decider), Some(cloud))) => {
                     // As at the start: a client resumes a run naming a model elsewhere only while it
                     // is what sorting uses now (PR review of #325), the last guard an approval runs on to.
                     if matches!(reach, Reach::Client(_))
@@ -7068,8 +7191,8 @@ impl Core {
                     }
                     (Some(decider), Some(cloud))
                 }
-                (Err(_), true) => (None, None),
-                (Err(refusal), false) => return refused_decider(refusal),
+                Ok(_) => (None, None),
+                Err(refusal) => return refused_decider(refusal),
             }
         } else {
             (None, None)
@@ -7094,6 +7217,7 @@ impl Core {
                 // Where the model of now computes (PR review of #325): a run without a fixed model may
                 // resume with another, and "Keep mail here" stops a run by this mark.
                 job.model_in_cloud = model_in_cloud;
+                job.sorted_with = decider.as_ref().map(sorted_with);
             }
             _ => {}
         });
@@ -7114,7 +7238,7 @@ impl Core {
         } else {
             drop(active);
         }
-        Response::CategoryJob { job: Some(job) }
+        Response::CategoryJob { job: Some(job.with_estimate()) }
     }
 
     fn spawn_category_worker(&self, id: String, generation: u64, decider: Option<(String, String)>) {
@@ -7427,6 +7551,22 @@ impl Core {
                 Box::pin(self.suggest_from_item(&id, Wanted::Event, Vec::new(), client)).await
             }
             Request::GetQuiet => self.get_quiet(client).await,
+            // One order of rules and filters (issue #454): the core keeps the filters.
+            Request::ListSortingOrder => {
+                let (filters, seen) = self.sorting_filters(client);
+                self.inbox.sorting_order(client, &filters, &seen)
+            }
+            request @ (Request::MoveSortingStep { .. } | Request::MoveSortRule { .. }) => {
+                let plan = match self.plan_sorting_move(&request, client) {
+                    Ok(plan) => plan,
+                    Err(refused) => return refused,
+                };
+                let (filters, seen) = self.sorting_filters(client);
+                if let Err(refused) = self.inbox.apply_sorting_move(&plan, &filters) {
+                    return refused;
+                }
+                self.inbox.moved_answer(&request, client, &filters, &seen)
+            }
             // The catalogue and the backlog need the mail stores, so the core answers them, not
             // the inbox database (task E12.4).
             Request::ListCategories { account } => Box::pin(self.list_categories(account, reach)).await,
@@ -8024,8 +8164,85 @@ impl Core {
     fn filter_request<'a>(&'a self, request: Request, reach: Reach<'a>) -> torro_core::ai::BoxFuture<'a, Response> {
         Box::pin(async move {
             let categories = self.filter_categories();
-            crate::mail::filters::answer(&self.mail, reach, &categories, request).await
+            let removed = match &request {
+                Request::RemoveMailFilter { id } => Some(id.clone()),
+                _ => None,
+            };
+            let answer = crate::mail::filters::answer(&self.mail, reach, &categories, request).await;
+            // A removed filter leaves the order of rules and filters too (issue #454).
+            if let (Some(id), Response::MailFilters { .. }) = (removed, &answer) {
+                self.inbox.forget_sorting_filter(&id);
+            }
+            answer
         })
+    }
+
+    /// The filter `inbox.move_sorting_step` moves and the filters a move passes, as stored, for the
+    /// summary of its approval (issue #454).
+    fn sorting_facts(
+        &self,
+        request: &Request,
+        client: Option<&torro_ipc::ClientInfo>,
+        facts: &mut crate::approvals::InboxFacts,
+    ) {
+        let (filters, seen) = self.sorting_filters(client);
+        let Ok(plan) = self.inbox.plan_sorting_move(request, client, &filters, &seen) else { return };
+        let stored = |id: &str| self.mail.filters().get(id).ok().flatten();
+        if plan.moved.kind == torro_inbox::SortingKind::Filter {
+            facts.sort_filter = stored(&plan.moved.id).map(Box::new);
+        }
+        facts.place = plan.new.iter().position(|step| *step == plan.moved).map(|at| at + 1);
+        facts.passed = torro_inbox::rules::passed_filters(&plan.old, &plan.new, &plan.moved)
+            .iter()
+            .filter_map(|id| stored(id))
+            .collect();
+    }
+
+    /// The ids of the mail filters in their file's order, and those `client` sees (issue #454): every
+    /// one for the app key; for a client only with read access to mail and the filter's account in
+    /// reach ([`crate::mail::filters::visible`]).
+    fn sorting_filters(&self, client: Option<&torro_ipc::ClientInfo>) -> (Vec<String>, Vec<String>) {
+        let all = match self.mail.filters().list() {
+            Ok(all) => all,
+            Err(_) => {
+                eprintln!("torroworkplace: mail: the mail filters cannot be read for the sorting order");
+                Vec::new()
+            }
+        };
+        let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+        let reads = client.is_none_or(|client| client.rights.area(Area::Mail).allows(Access::Read));
+        let seen = all
+            .iter()
+            .filter(|filter| reads && crate::mail::filters::visible(reach, filter.account.as_deref()))
+            .map(|filter| filter.id.clone())
+            .collect();
+        (all.into_iter().map(|filter| filter.id).collect(), seen)
+    }
+
+    /// What `inbox.move_sorting_step` or `inbox.move_sort_rule` of `client` would make of the order
+    /// of rules and filters (issue #454), checked: a step it does not see is `not-found`, and a client
+    /// that moves a filter or a step past one needs the rights to change that filter
+    /// ([`crate::mail::filters::passing_refusal`]) – before anyone is asked and again when it runs.
+    fn plan_sorting_move(
+        &self,
+        request: &Request,
+        client: Option<&torro_ipc::ClientInfo>,
+    ) -> Result<crate::inbox::SortingMove, Response> {
+        let (filters, seen) = self.sorting_filters(client);
+        let plan = self.inbox.plan_sorting_move(request, client, &filters, &seen)?;
+        let Some(client) = client else { return Ok(plan) };
+        let mut passed = torro_inbox::rules::passed_filters(&plan.old, &plan.new, &plan.moved);
+        if plan.moved.kind == torro_inbox::SortingKind::Filter {
+            passed.push(plan.moved.id.clone());
+        }
+        for id in passed {
+            if let Ok(Some(filter)) = self.mail.filters().get(&id)
+                && let Some(refused) = crate::mail::filters::passing_refusal(&client.rights, &filter)
+            {
+                return Err(refused);
+            }
+        }
+        Ok(plan)
     }
 
     /// [`crate::mail::filters::client_refusal`] for a client's `rights`, boxed in a frame of its own
@@ -14369,11 +14586,12 @@ mod tests {
         assert_eq!(core.mail.filters().list().expect("read").len(), 2);
     }
 
-    /// Issue #339, review: a filter whose category the person removed, or whose folder is gone from
-    /// the server, can still be switched off – by the person and by a client –, as the switch in the
-    /// list sends what the filter holds; a category or folder a change brings anew is still checked.
+    /// Issue #339, review: a filter whose category the person removed can still be switched off – by
+    /// the person and by a client –, as the switch in the list sends what the filter holds; a
+    /// category a change brings anew is still checked, and a move other than the trash is refused
+    /// (issue #454).
     #[tokio::test]
-    async fn a_filter_whose_category_or_folder_is_gone_can_still_be_switched_off() {
+    async fn a_filter_whose_category_is_gone_can_still_be_switched_off() {
         use torro_mail::{Category, CustomCategory, FilterFile};
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core_with_mail_data(dir.path());
@@ -14383,12 +14601,12 @@ mod tests {
         let spec = crate::mail::filters::FilterSpec {
             query: "from:shop.example".into(),
             account: Some(anna.into()),
-            file: Some(FilterFile::Folder { id: "f:9".into() }),
+            file: Some(FilterFile::Trash),
             mark_read: false,
             category: Some(gone),
             enabled: None,
         };
-        // Made while the category and the folder were there; neither is now.
+        // Made while the category was there; it is not now.
         let stored = core.mail.filters().create(spec, &[gone], Utc::now()).expect("stored");
         let switched =
             |enabled: bool, file: Option<FilterFile>, category: Option<Category>| Request::UpdateMailFilter {
@@ -14411,15 +14629,20 @@ mod tests {
         waits(ask(&core, Some(&key), switched(true, stored.file.clone(), stored.category)).await);
 
         let other = Some(Category::Custom(CustomCategory::new(8).expect("a number")));
-        let elsewhere = Some(FilterFile::Folder { id: "f:8".into() });
-        for request in [switched(true, stored.file.clone(), other), switched(true, elsewhere, stored.category)] {
-            assert_eq!(code(&ask(&core, Some(&app_key), request.clone()).await), "error", "{request:?}");
-            assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "error", "{request:?}");
-        }
+        let request = switched(true, stored.file.clone(), other);
+        assert_eq!(code(&ask(&core, Some(&app_key), request.clone()).await), "error", "{request:?}");
+        assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "error", "{request:?}");
+
+        // Issue #454: the archive or a folder does not even read as a request.
+        let folder = serde_json::json!({
+            "method": "mail.create_filter", "query": "from:shop.example", "file": {"to": "folder", "id": "f:8"},
+        });
+        let refused = serde_json::from_value::<Request>(folder).expect_err("refused").to_string();
+        assert!(refused.contains(torro_mail::FILE_ONLY_TRASH), "{refused}");
     }
 
     /// Issue #339, review: a filter needs what its actions would need one by one – admin access to
-    /// mail is not enough. Write access marks as read and moves, the trash needs delete access; this
+    /// mail is not enough. Write access marks as read, the trash needs delete access; this
     /// holds for making, changing and applying a filter, before anyone is asked.
     #[tokio::test]
     async fn a_filter_needs_the_rights_its_actions_need() {
@@ -14458,14 +14681,10 @@ mod tests {
         {
             assert_eq!(code(&ask(&core, Some(&writes), request.clone()).await), "forbidden", "{request:?}");
         }
-        waits(ask(&core, Some(&writes), make(Some(FilterFile::Archive), true)).await);
+        waits(ask(&core, Some(&writes), make(None, true)).await);
 
         let (_, reads) = client(&core, keyed(Level::Read)).await;
-        for request in [
-            make(None, true),
-            make(Some(FilterFile::Archive), false),
-            Request::ApplyMailFilter { id: reading.id.clone() },
-        ] {
+        for request in [make(None, true), Request::ApplyMailFilter { id: reading.id.clone() }] {
             assert_eq!(code(&ask(&core, Some(&reads), request.clone()).await), "forbidden", "{request:?}");
         }
         assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), 1, "only the allowed one");
@@ -14475,14 +14694,15 @@ mod tests {
     }
 
     /// Issue #339: the preview counts what a filter's search finds in the inbox; applying it marks
-    /// and moves exactly that mail, once – a second run finds nothing left to do. A client's run
-    /// waits for a person and says how many mails it changes.
+    /// and moves exactly that mail to the trash, once – a second run finds nothing left to do. A
+    /// client's run waits for a person and says how many mails it changes.
     #[tokio::test]
     async fn applying_a_mail_filter_changes_the_mail_it_finds_in_the_inbox() {
         use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
         use crate::mail::sync::fake::{FakeImap, mail};
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
         for subject in ["Bill one", "Bill two"] {
             server.add("INBOX", &crate::mail::save::tests::raw_on(Utc::now(), subject, &[]), &[]);
         }
@@ -14506,7 +14726,7 @@ mod tests {
         let create = Request::CreateMailFilter {
             query: query.into(),
             account: Some(anna.into()),
-            file: Some(torro_mail::FilterFile::Archive),
+            file: Some(torro_mail::FilterFile::Trash),
             mark_read: true,
             category: None,
             enabled: true,
@@ -14523,7 +14743,7 @@ mod tests {
                 &[
                     ("query", &format!("\"{query}\"")),
                     ("account", &"anna@example.org"),
-                    ("actions", &format!("{}, {}", tr("mark as read"), tr("move to the archive"))),
+                    ("actions", &format!("{}, {}", tr("mark as read"), tr("move to the trash"))),
                 ]
             )),
             "{}",
@@ -14535,7 +14755,7 @@ mod tests {
         let done = Response::MailFilterApplied { applied: 2, failed: 0, more: false };
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(done) });
 
-        let archived = server.messages("Archive");
+        let archived = server.messages("Trash");
         assert_eq!(archived.len(), 2);
         assert!(archived.iter().all(|(_, flags, _)| flags.iter().any(|flag| flag == "\\Seen")), "{archived:?}");
         assert_eq!(server.messages("INBOX").len(), 1, "Bernd's mail stays");
@@ -14629,6 +14849,88 @@ mod tests {
     }
 
     /// A core whose mail data (and so its save targets) live in `dir`, without mail accounts.
+    /// Issue #454: sorting rules and mail filters stand in one order. Nothing moved yet, the filters
+    /// stand above the rules; a move keeps the rules' own order in line. A client sees a filter only
+    /// with read access to mail and its account in reach, and moving a step past a filter – or the
+    /// filter itself – needs the rights to change that filter: without mail, with one account against
+    /// a filter of every account, and with every account (then it waits for the person).
+    #[tokio::test]
+    async fn rules_and_filters_move_in_one_order_with_the_rights_to_the_filters_they_pass() {
+        use torro_inbox::{SortComparison, SortCondition, SortField, SortingKind, SortingStep};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_mail_data(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let anna = "mail:anna@example.org";
+        let filter = |account: Option<&str>| Request::CreateMailFilter {
+            query: "from:shop.example".into(),
+            account: account.map(str::to_string),
+            file: None,
+            mark_read: true,
+            category: None,
+            enabled: true,
+        };
+        let own = mail_filter(ask(&core, Some(&app_key), filter(Some(anna))).await);
+        let every = mail_filter(ask(&core, Some(&app_key), filter(None)).await);
+        let rule = Request::CreateSortRule {
+            category: torro_mail::Category::Invoice,
+            conditions: vec![SortCondition {
+                comparison: SortComparison::Auto,
+                field: SortField::Domain,
+                value: "shop.example".into(),
+            }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        let Response::SortRule { rule, .. } = ask(&core, Some(&app_key), rule).await else { panic!("a rule") };
+        let steps = |response: Response| match response {
+            Response::SortingOrder { steps } => steps,
+            other => panic!("an order, not {other:?}"),
+        };
+        let (r, f) = (SortingStep::rule(rule.id.clone()), |id: &str| SortingStep::filter(id));
+        let order = steps(ask(&core, Some(&app_key), Request::ListSortingOrder).await);
+        assert_eq!(order, [f(&own.id), f(&every.id), r.clone()], "filters first, as before");
+        let first = Request::MoveSortingStep { kind: SortingKind::Rule, id: rule.id.clone(), position: 0 };
+        assert_eq!(steps(ask(&core, Some(&app_key), first).await), [r.clone(), f(&own.id), f(&every.id)]);
+        let moved = Request::MoveSortingStep { kind: SortingKind::Filter, id: every.id.clone(), position: 1 };
+        assert_eq!(steps(ask(&core, Some(&app_key), moved).await), [r.clone(), f(&every.id), f(&own.id)]);
+        // Removing a filter takes it out of the order.
+        let gone = mail_filter(ask(&core, Some(&app_key), filter(Some(anna))).await);
+        assert_eq!(steps(ask(&core, Some(&app_key), Request::ListSortingOrder).await).len(), 4);
+        ask(&core, Some(&app_key), Request::RemoveMailFilter { id: gone.id }).await;
+        assert_eq!(steps(ask(&core, Some(&app_key), Request::ListSortingOrder).await).len(), 3);
+
+        let last = |kind, id: &str| Request::MoveSortingStep { kind, id: id.into(), position: 9 };
+        // Inbox admin without mail: sees no step, as it sees no rule.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+        let (_, blind) = client(&core, rights.clone()).await;
+        assert!(steps(ask(&core, Some(&blind), Request::ListSortingOrder).await).is_empty());
+        assert_eq!(code(&ask(&core, Some(&blind), last(SortingKind::Rule, &rule.id)).await), "not-found");
+        // Reading mail only: sees every step, but may not pass or move a filter.
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        let (_, reads) = client(&core, rights.clone()).await;
+        assert_eq!(steps(ask(&core, Some(&reads), Request::ListSortingOrder).await).len(), 3);
+        assert_eq!(code(&ask(&core, Some(&reads), last(SortingKind::Rule, &rule.id)).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&reads), last(SortingKind::Filter, &own.id)).await), "forbidden");
+        let old = Request::MoveSortRule { id: rule.id.clone(), position: 9 };
+        assert_eq!(code(&ask(&core, Some(&reads), old).await), "forbidden", "inbox.move_sort_rule too");
+        let still = Request::MoveSortingStep { kind: SortingKind::Rule, id: rule.id.clone(), position: 0 };
+        waits(ask(&core, Some(&reads), still).await);
+        // One account: sees its filter, not the one of every account it would pass too.
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        rights.mail_accounts = Selection::Only(vec![anna.into()]);
+        let (_, one) = client(&core, rights.clone()).await;
+        assert_eq!(steps(ask(&core, Some(&one), Request::ListSortingOrder).await), [r.clone(), f(&own.id)]);
+        assert_eq!(code(&ask(&core, Some(&one), last(SortingKind::Rule, &rule.id)).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&one), last(SortingKind::Filter, &every.id)).await), "not-found");
+        // Every account: the move waits for the person.
+        rights.mail_accounts = Selection::All;
+        let (_, all) = client(&core, rights).await;
+        waits(ask(&core, Some(&all), last(SortingKind::Rule, &rule.id)).await);
+    }
+
     fn core_with_mail_data(dir: &std::path::Path) -> Core {
         let secrets = crate::account::github::tests::MemoryTokens::default();
         core(dir).with_mail(crate::mail::service::tests::service_in(dir, &secrets))
@@ -21283,6 +21585,113 @@ mod tests {
         assert_eq!(category_of("Re: Lunch"), None, "one's own sent mail is no contact's");
     }
 
+    /// Issue #454: a run applies the rules and filters, the model or both. With the rules alone, a
+    /// rule and a filter sort in their order; a filter only mail of the inbox folder, and reading or
+    /// the trash never happen here. Applying nothing, or naming a model without applying it, is
+    /// `error`; the run knows how it sorted and how long it worked.
+    #[tokio::test]
+    async fn a_sorting_run_applies_rules_and_filters_without_the_model() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_ipc::inbox::{CategoryJobScope, CategoryJobState};
+        use torro_mail::{Category, MailCategory};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        for (n, folder, from, subject) in [
+            (1, "INBOX", "tickets@rail.example", "Your ticket"),
+            (2, "INBOX", "news@shop.example", "Autumn sale"),
+            (3, "Archive", "news@shop.example", "Summer sale"),
+        ] {
+            let raw = format!(
+                "From: <{from}>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
+                 Message-ID: <apply{n}@example>\r\nContent-Type: text/plain\r\n\r\nText {n}\r\n"
+            );
+            server.add(folder, &raw, &[]);
+        }
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let rule = Request::CreateSortRule {
+            category: Category::Booking,
+            conditions: vec![torro_inbox::SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: torro_inbox::SortField::Domain,
+                value: "rail.example".into(),
+            }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert!(matches!(core.handle(rule).await, Response::SortRule { .. }));
+        let filter = Request::CreateMailFilter {
+            query: "from:shop.example".into(),
+            account: None,
+            file: None,
+            mark_read: true,
+            category: Some(Category::Promotion),
+            enabled: true,
+        };
+        assert!(matches!(core.handle(filter).await, Response::MailFilter { .. }));
+
+        let scope =
+            |apply_rules, apply_model| CategoryJobScope { apply_rules, apply_model, ..CategoryJobScope::default() };
+        let nothing = core.handle(Request::StartCategoryJob { scope: scope(false, false) }).await;
+        assert_eq!(code(&nothing), "error");
+        let named = CategoryJobScope { model: Some("qwen3:4b".into()), engine: Some("x".into()), ..scope(true, false) };
+        assert_eq!(code(&core.handle(Request::StartCategoryJob { scope: named }).await), "error");
+        assert_eq!(code(&core.handle(Request::StartCategoryJob { scope: scope(false, true) }).await), "not-connected");
+
+        let answer = core.handle(Request::StartCategoryJob { scope: scope(true, false) }).await;
+        assert!(matches!(&answer, Response::CategoryJob { job: Some(job) } if job.sorted_with.is_none()), "{answer:?}");
+        let mut ended = None;
+        for _ in 0..200 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let Response::CategoryJob { job: Some(job) } = core.handle(Request::GetCategoryJob { id: None }).await
+            else {
+                panic!("the run")
+            };
+            if job.state != CategoryJobState::Running {
+                ended = Some(job);
+                break;
+            }
+        }
+        let job = ended.expect("the run ends");
+        assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
+        assert_eq!(job.left_seconds.is_some(), job.run_millis > 0, "an estimate only with a measured time");
+
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        let of = |subject: &str| messages.iter().find(|m| m.subject == subject).expect("the mail");
+        assert_eq!(of("Your ticket").category, Some(MailCategory::by_rule(Category::Booking)), "the rule's");
+        assert_eq!(of("Autumn sale").category, Some(MailCategory::by_rule(Category::Promotion)), "the filter's");
+        assert!(!of("Autumn sale").flags.contains(&torro_mail::Flag::Seen), "reading is the filter's own run");
+        assert_eq!(of("Summer sale").category, None, "a filter sorts the inbox folder only");
+
+        // The preview of the same kind of run is estimated at this run's pace.
+        let preview = core.handle(Request::PreviewCategoryJob { scope: scope(true, false) }).await;
+        let Response::CategoryJobPreview { preview } = preview else { panic!("a preview: {preview:?}") };
+        assert_eq!(preview.seconds.is_some(), job.run_millis > 0);
+    }
+
     /// Issue #123: a folder's message without an entry is muted by its id – its traits only, from
     /// the mail store; a client needs the account, the admin switch and the person, who sees the
     /// sender as the store holds it.""
@@ -26244,6 +26653,9 @@ mod tests {
             updated_at: now,
             generation: 1,
             model_in_cloud: Some(true),
+            sorted_with: None,
+            run_millis: 0,
+            left_seconds: None,
         };
         core.inbox.save_category_job(&job).expect("saved");
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;

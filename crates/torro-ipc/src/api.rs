@@ -1710,6 +1710,8 @@ impl Request {
             Request::UpdateSortRule { .. } => &UPDATE_SORT_RULE,
             Request::RemoveSortRule { .. } => &REMOVE_SORT_RULE,
             Request::MoveSortRule { .. } => &MOVE_SORT_RULE,
+            Request::ListSortingOrder => &LIST_SORTING_ORDER,
+            Request::MoveSortingStep { .. } => &MOVE_SORTING_STEP,
             Request::ListMuteOptions { .. } => &LIST_MUTE_OPTIONS,
             Request::MuteItem { .. } => &MUTE_ITEM,
             Request::SetMailPile { .. } => &SET_MAIL_PILE,
@@ -2033,6 +2035,8 @@ pub static CATALOGUE: &[&Command] = &[
     &UPDATE_SORT_RULE,
     &REMOVE_SORT_RULE,
     &MOVE_SORT_RULE,
+    &LIST_SORTING_ORDER,
+    &MOVE_SORTING_STEP,
     &LIST_MUTE_OPTIONS,
     &MUTE_ITEM,
     &SET_MAIL_PILE,
@@ -3866,7 +3870,7 @@ static PREVIEW_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail.",
+    description: "Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. `scope.apply_rules` and `scope.apply_model` (both true when left out) say what a run would apply. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail. `seconds` estimates how long sorting the eligible mail takes, at the pace of the running or last run that sorted the same way; left out without one.",
 };
 
 static START_CATEGORY_JOB: Command = Command {
@@ -3874,7 +3878,7 @@ static START_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
+    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.apply_rules` applies the sorting rules and mail filters in their order (inbox_list_sorting_order), the headers and mail from contacts; a filter's category counts for mail in the inbox folder only, and reading or the trash never run here (mail_apply_filter does that). `scope.apply_model` asks the decision model where they leave a mail open; at least one of the two, and a model only with `apply_model`, else `error`. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location, `left_seconds` (an estimate once mail was sorted) and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
 };
 
 static GET_CATEGORY_JOB: Command = Command {
@@ -3970,7 +3974,9 @@ static LIST_SORT_RULES: Command = Command {
                   its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), \
                   `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower \
                   case never count. The first rule that holds decides, after a category the person set by hand \
-                  and before the headers and the decision model; rules with `enabled: false` hold for nothing. \
+                  and before the headers and the decision model; rules and mail filters stand in one order \
+                  (inbox_list_sorting_order), so a filter above a rule decides first. Rules with \
+                  `enabled: false` hold for nothing. \
                   \"Always for this sender\" keeps one of these too. The values are the person's own words.",
 };
 
@@ -4017,8 +4023,34 @@ static MOVE_SORT_RULE: Command = Command {
     mcp: Mcp::Tool,
     description: "Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order \
                   around it. Returns all rules in their new order. The first rule that holds decides, so the order \
-                  is what makes a narrow rule win over a broad one. Places count in the list this key sees. \
-                  `not-found` for a rule that is not there or out of reach. Needs the person's approval.",
+                  is what makes a narrow rule win over a broad one. Places count in the list this key sees; mail \
+                  filters keep theirs (inbox_move_sorting_step moves rules and filters in one list). Passing a \
+                  filter needs the rights to change it, else `forbidden`. `not-found` for a rule that is not \
+                  there or out of reach. Needs the person's approval.",
+};
+
+static LIST_SORTING_ORDER: Command = Command {
+    name: "inbox.list_sorting_order",
+    area: Area::Inbox,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the sorting rules and mail filters in their one order, as `kind` (`rule` or `filter`) and \
+                  `id`. New mail gets the category of the first step from the top that decides: a rule that holds \
+                  or a filter that finds it and sets a category (inbox_list_sort_rules and mail_list_filters say \
+                  what each does). Only the steps you can see; filters only with read access to mail.",
+};
+
+static MOVE_SORTING_STEP: Command = Command {
+    name: "inbox.move_sorting_step",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Moves one sorting rule or mail filter (`kind`, `id`) to `position` (0 first, past the end: last) \
+                  among the steps you see; the others keep their order around it. Returns the order. The first \
+                  step that decides wins, so the order makes a narrow rule or filter win over a broad one. Moving \
+                  a filter, or a step past a filter, needs the rights to change that filter (as \
+                  mail_update_filter), else `forbidden`. `not-found` for a step that is not there or out of \
+                  reach. Needs the person's approval.",
 };
 
 static LIST_MUTE_OPTIONS: Command = Command {
@@ -4420,10 +4452,10 @@ static LIST_MAIL_FILTERS: Command = Command {
     description: "Lists the mail filters you can see (those of the mail accounts you reach; a filter for every \
                   account only with access to every account), in their order: each a search in the language of \
                   mail_search_messages, the account it runs in (left out: every account) and its actions – `file` \
-                  (`{\"to\": \"archive\"}`, `{\"to\": \"trash\"}` or `{\"to\": \"folder\", \"id\": \"f:…\"}`), \
-                  `mark_read`, `category`. Enabled filters run on new mail in the inbox while Torro Workplace runs; \
-                  every one that matches runs, for the move and the category the first one wins. The searches are \
-                  the person's own words.",
+                  (only `{\"to\": \"trash\"}`), `mark_read`, `category`. Enabled filters run on new mail in the \
+                  inbox while Torro Workplace runs; every one that matches runs. Which category new mail gets follows \
+                  the order of filters and sorting rules together (inbox_list_sorting_order): the first that \
+                  matches from the top. The searches are the person's own words.",
 };
 
 static CREATE_MAIL_FILTER: Command = Command {
@@ -4434,11 +4466,11 @@ static CREATE_MAIL_FILTER: Command = Command {
     description: "Adds a mail filter at the end of the list and returns it with its id. From then on it runs on new \
                   mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in \
                   mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and \
-                  at least one action: `file`, `mark_read`, `category`. A folder needs `account`. A filter for every \
-                  account needs access to every mail account, a category admin access to the inbox; marking as \
-                  read, the archive and a folder need write access to mail, the trash delete access (as \
-                  mail_set_flags, mail_move_messages and mail_delete_messages would), else `forbidden`. Needs the \
-                  person's approval.",
+                  at least one action: `file` (only `{\"to\": \"trash\"}`: filters do not move mail to the archive \
+                  or a folder, mail works with categories), `mark_read`, `category`. A filter for every account needs \
+                  access to every mail account, a category admin access to the inbox; marking as read needs write \
+                  access to mail, the trash delete access (as mail_set_flags and mail_delete_messages would), else \
+                  `forbidden`. It goes below the last filter in the sorting order. Needs the person's approval.",
 };
 
 static UPDATE_MAIL_FILTER: Command = Command {
@@ -4449,8 +4481,8 @@ static UPDATE_MAIL_FILTER: Command = Command {
     description: "Changes a mail filter and returns it: `query`, `account` and the actions as given (left out, the \
                   account is every account and an action none), `enabled` where given (left out, it stays). Its \
                   place stays. `not-found` for a filter that is not there or out of reach, otherwise as \
-                  mail_create_filter, the rights for its actions included; a category or folder it has already \
-                  is not checked again. Needs the person's approval.",
+                  mail_create_filter, the rights for its actions included; a category it has already is not checked \
+                  again. Needs the person's approval.",
 };
 
 static REMOVE_MAIL_FILTER: Command = Command {
@@ -4458,8 +4490,8 @@ static REMOVE_MAIL_FILTER: Command = Command {
     area: Area::Mail,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Removes a mail filter and returns the filters left, in order. Mail it moved or filed stays where it \
-                  is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.",
+    description: "Removes a mail filter and returns the filters left, in order; it leaves the sorting order too. Mail \
+                  it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.",
 };
 
 static PREVIEW_MAIL_FILTER: Command = Command {
@@ -4479,7 +4511,7 @@ static APPLY_MAIL_FILTER: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Runs a mail filter once on the mail in the inbox now (also when it is switched off): up to the 500 \
-                  newest it finds that still need one of its actions are marked as read, filed and moved. Returns \
+                  newest it finds that still need one of its actions are marked as read, filed and moved to the trash. Returns \
                   how many were done and failed, and `more` when there are others: call again. Moving to the trash \
                   can be undone from there. Needs write access to mail for its actions, delete access for the \
                   trash, else `forbidden`. Needs the person's approval, which names how many mails it changes: \
@@ -5565,6 +5597,8 @@ mod tests {
             },
             Request::RemoveSortRule { id: "r1".into() },
             Request::MoveSortRule { id: "r1".into(), position: 0 },
+            Request::ListSortingOrder,
+            Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f1".into(), position: 2 },
             Request::ListMuteOptions { id: "i1".into() },
             Request::MuteItem {
                 id: "i1".into(),
@@ -5686,7 +5720,7 @@ mod tests {
             Request::CreateMailFilter {
                 query: "from:shop.example".into(),
                 account: Some("mail:anna@example.org".into()),
-                file: Some(torro_mail::FilterFile::Folder { id: "f:3".into() }),
+                file: Some(torro_mail::FilterFile::Trash),
                 mark_read: true,
                 category: Some(torro_mail::Category::Promotion),
                 enabled: false,
@@ -5694,8 +5728,8 @@ mod tests {
             Request::CreateMailFilter {
                 query: "from:news.example".into(),
                 account: None,
-                file: Some(torro_mail::FilterFile::Archive),
-                mark_read: false,
+                file: None,
+                mark_read: true,
                 category: None,
                 enabled: true,
             },
@@ -7439,6 +7473,8 @@ mod tests {
                 "inbox.update_sort_rule",
                 "inbox.remove_sort_rule",
                 "inbox.move_sort_rule",
+                "inbox.list_sorting_order",
+                "inbox.move_sorting_step",
                 "inbox.list_mute_options",
                 "inbox.mute_item",
                 "inbox.set_mail_pile",

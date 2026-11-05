@@ -1590,10 +1590,24 @@ pub enum Open {
     /// "All" with the demo's first newsletter open and the question "Unsubscribe from …?"
     /// over the window (issue #416).
     Unsubscribe,
+    /// Settings › Categorization on its tab AI (issue #454).
+    Categorization,
+    /// … on its tab "Rules & filters".
+    CategorizationRules,
+    /// … on its tab "Categories".
+    CategorizationCategories,
+    /// … with the dialog "Sort existing mail".
+    CategorizationSort,
+    /// … with the dialog "New filter" over "Rules & filters".
+    CategorizationFilter,
+    /// … with a run of "Sort existing mail" going, its line under the head.
+    CategorizationRunning,
+    /// … with the menu of "Sort with model" open.
+    CategorizationModel,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 74] = [
+    const ALL: [(&'static str, Open); 81] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1668,6 +1682,13 @@ impl Open {
         ("mail-overview-error", Open::MailOverviewError),
         ("mail-overview-empty", Open::MailOverviewEmpty),
         ("unsubscribe", Open::Unsubscribe),
+        ("categorization", Open::Categorization),
+        ("categorization-rules", Open::CategorizationRules),
+        ("categorization-categories", Open::CategorizationCategories),
+        ("categorization-sort", Open::CategorizationSort),
+        ("categorization-filter", Open::CategorizationFilter),
+        ("categorization-running", Open::CategorizationRunning),
+        ("categorization-model", Open::CategorizationModel),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -1678,6 +1699,21 @@ impl Open {
             Open::BackupPlan => Some(settings_mail::BackupScene::Plan),
             Open::BackupError => Some(settings_mail::BackupScene::Error),
             Open::BackupDone => Some(settings_mail::BackupScene::Done),
+            _ => None,
+        }
+    }
+
+    /// The state of Settings › Categorization the categorization states open (issue #454), as the
+    /// name [`settings_mail::categorization_scene`] takes; `None` for every other state.
+    fn categorization_scene(self) -> Option<&'static str> {
+        match self {
+            Open::Categorization => Some("ai"),
+            Open::CategorizationRules => Some("rules"),
+            Open::CategorizationCategories => Some("categories"),
+            Open::CategorizationSort => Some("sort"),
+            Open::CategorizationFilter => Some("filter"),
+            Open::CategorizationRunning => Some("running"),
+            Open::CategorizationModel => Some("model"),
             _ => None,
         }
     }
@@ -2090,6 +2126,9 @@ impl Launch {
         if open.and_then(Open::account_scene).is_some() && kind != Kind::Mail {
             return Err(LaunchError::Conflict("--open account…", "a --view other than mail"));
         }
+        if open.and_then(Open::categorization_scene).is_some() && kind != Kind::Mail {
+            return Err(LaunchError::Conflict("--open categorization…", "a --view other than mail"));
+        }
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         // The suite's sections too, which the window shows without the main application (issue #408).
         let own = kind.settings_sections();
@@ -2419,13 +2458,13 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
         CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
         ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
         settings_mail::ACCOUNTS_SECTION => settings_mail::accounts_escape(state).map(SettingsMessage::Mail),
-        settings_mail::FILTERS_SECTION => settings_mail::filters_escape(state).map(SettingsMessage::Mail),
         _ => None,
     }
 }
 
-/// The mail window's section with the categories' editor (task E15.5).
-const CATEGORIZATION_SECTION: &str = "categorization";
+/// The mail window's section with the categories' editor (task E15.5) and, since issue #454, the
+/// filters.
+const CATEGORIZATION_SECTION: &str = settings_mail::CATEGORIZATION_SECTION;
 
 /// The mail window's section with the save targets (task M12.7), where "Manage save targets…" leads
 /// (task M12.6).
@@ -2571,6 +2610,9 @@ pub struct App<S> {
     /// The tab of `--open account…` (task DS.6), opened on the first mail account like a backup
     /// state.
     staged_account: Option<AccountScene>,
+    /// The clicks of `--open categorization…` (issue #454), sent to Settings › Categorization once
+    /// the settings have loaded.
+    staged_categorization: Option<Vec<settings_mail::Message>>,
     /// The sync question of an account's page on its way (issue #422). The core holds it until
     /// something changes, up to 25 seconds; replacing the handle, because another account's page
     /// opened, drops the old question, so one stays out.
@@ -3258,8 +3300,8 @@ pub enum Message {
     /// "Clear filters": the operators of the quick filters out of the field, the words stay.
     ClearSearchFilters,
     /// "Create filter…" at a mail (`from:<address>`) or "Create filter from search…" in the menu of
-    /// the search field (issue #339): Settings › Filters with a new filter's page filled in. In the
-    /// mail window only; elsewhere the mail window comes forward.
+    /// the search field (issue #339): Settings › Categorization with a new filter's dialog filled in
+    /// (issue #454). In the mail window only; elsewhere the mail window comes forward.
     CreateFilter {
         query: String,
         account: Option<String>,
@@ -3972,6 +4014,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             settings_memory: torro_settings_ui::Memory::default(),
             staged_backup: open.and_then(Open::backup_scene),
             staged_account: open.and_then(Open::account_scene),
+            staged_categorization: open
+                .and_then(Open::categorization_scene)
+                .map(|name| settings_mail::categorization_scene(name).unwrap_or_default()),
             sync_query: None,
             opened: false,
             categories: Vec::new(),
@@ -4192,8 +4237,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // `--settings <section>`: the window opens with the settings in its content area; the
         // backup states of `--open` at Accounts.
         let staged = app.staged_backup.is_some() || app.staged_account.is_some();
-        let section =
-            app.launch.settings.clone().or_else(|| staged.then(|| settings_mail::ACCOUNTS_SECTION.to_string()));
+        let section = app
+            .launch
+            .settings
+            .clone()
+            .or_else(|| staged.then(|| settings_mail::ACCOUNTS_SECTION.to_string()))
+            .or_else(|| app.staged_categorization.is_some().then(|| CATEGORIZATION_SECTION.to_string()));
         let task = match section {
             Some(section) => Task::batch([task, app.open_settings(Some(&section))]),
             None => task,
@@ -4299,6 +4348,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // The same for the sidebar's edge (issue #376).
         if self.side.dragging {
             subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        // A drag of Settings › Categorization ends wherever the button is let go (issue #454).
+        if let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = &self.settings {
+            use settings_mail::categorization::{Dragging, Message as Categorization};
+            let page =
+                |message| Message::SettingsPage(SettingsMessage::Mail(settings_mail::Message::Categorization(message)));
+            match settings_mail::categorization_dragging(state) {
+                Some(Dragging::Step) => subscriptions.push(split::release().map(move |()| page(Categorization::Drop))),
+                Some(Dragging::Category) => {
+                    subscriptions.push(split::release().map(move |()| page(Categorization::DropCategory)))
+                }
+                None => {}
+            }
         }
         // A download under Settings › AI asks how far it is (issue #410).
         if let Some(pane) = &self.settings {
@@ -5016,13 +5078,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if loaded || matches!(message, host::Message::Sent { .. }) {
                     answered_settings(&mut pane.sections);
                 }
-                // Only a send's answer ends a save; a load of the tick on its way is no answer to it.
+                // Only a send's answer ends a save; a load of the tick on its way is no answer to it. A
+                // filter saved with "Also apply…" comes back as the click that runs it (issue #454).
+                let mut follow = None;
                 if let host::Message::Sent { result, .. } = &message
                     && let SettingsState::Mail(state) = &mut pane.sections
                 {
                     settings_mail::sent(state);
-                    settings_mail::filters_sent(state, result);
-                    settings_mail::editor_sent(state, result);
+                    follow = settings_mail::categorization_sent(state, result);
                 }
                 let outcome = pane.host.update(message);
                 if let SettingsState::Mail(state) = &mut pane.sections {
@@ -5033,7 +5096,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
                 // A load can open an account's page (`--open account…`): its sync is asked then.
                 let outcome = self.settings_outcome(outcome);
-                return Task::batch([outcome, self.ask_mail_sync()]);
+                let mut tasks = vec![outcome, self.ask_mail_sync()];
+                // `--open categorization-…`: once loaded, the page is clicked into its state.
+                let staged = if loaded { self.staged_categorization.take().unwrap_or_default() } else { Vec::new() };
+                for message in follow.into_iter().chain(staged) {
+                    tasks.push(self.update(Message::SettingsPage(SettingsMessage::Mail(message))));
+                }
+                return Task::batch(tasks);
             }
             Message::SettingsPage(message) => {
                 // "Choose…" on a backup page: the window opens the system's chooser, never the page.
@@ -5326,7 +5395,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if self.launch.kind != Kind::Mail {
                     return self.update(Message::OpenApp(Kind::Mail.app().window_class.to_string()));
                 }
-                let open = self.open_settings(Some(settings_mail::FILTERS_SECTION));
+                let open = self.open_settings(Some(CATEGORIZATION_SECTION));
                 let filled = SettingsMessage::Mail(settings_mail::new_filter(query, account));
                 return Task::batch([open, self.update(Message::SettingsPage(filled))]);
             }
@@ -20206,7 +20275,7 @@ mod tests {
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
             // Mail settings include attachments (task M12.7), categorization and filters; storage
             // controls live inside each account.
-            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization", "filters"]),
+            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization"]),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
@@ -20334,19 +20403,20 @@ mod tests {
         assert!(before.contains("demo-job"), "{before}");
     }
 
-    /// Issue #339: "Create filter…" opens Settings › Filters with a new filter's page filled in,
-    /// which asks what it finds; Escape goes back to the list first (asking, as something is typed).
+    /// Issue #339, since #454 in Settings › Categorization: "Create filter…" opens the dialog of a new
+    /// filter filled in over "Rules & filters", which asks what it finds; Escape asks before the
+    /// typed search goes.
     #[test]
-    fn create_filter_opens_the_filled_in_page() {
+    fn create_filter_opens_the_filled_in_dialog() {
         let mut app = mail_window(Density::Compact, &[]);
         let _ = app.update(Message::CreateFilter { query: "from:anna@example.org".into(), account: None });
         let pane = app.settings.as_ref().expect("the settings are open");
-        assert_eq!(pane.host.current().id, settings_mail::FILTERS_SECTION);
+        assert_eq!(pane.host.current().id, settings_mail::CATEGORIZATION_SECTION);
         let SettingsState::Mail(state) = &pane.sections else { panic!("the mail window has mail settings") };
-        assert!(state.filters.is_open(), "the new filter's page");
-        let name =
-            settings_mail::page(state, pane.host.data(), settings_mail::FILTERS_SECTION).sub_page.map(|(name, _)| name);
-        assert_eq!(name, Some(tr("New filter").to_owned()));
+        let class = torro_gui::layout::SizeClass::Wide;
+        let dialog =
+            settings_mail::overlay(state, pane.host.data(), settings_mail::CATEGORIZATION_SECTION, class).is_some();
+        assert!(dialog, "the new filter's dialog");
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_some(), "Escape asks before the typed search goes");
     }
@@ -20460,6 +20530,35 @@ mod tests {
         assert!(matches!(
             Launch::parse(&args(&["--demo", "--open", "account"])),
             Err(LaunchError::Conflict("--open account…", _))
+        ));
+    }
+
+    /// Issue #454: `--demo --open categorization…` opens Settings › Categorization and, once the
+    /// settings loaded, clicks it into its state – here the dialog "New filter" over "Rules &
+    /// filters"; other windows refuse it.
+    #[test]
+    fn the_categorization_states_open_their_page() {
+        let launch =
+            Launch::parse(&args(&["--demo", "--view", "mail", "--open", "categorization-filter"])).expect("valid");
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let mut app = pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0);
+        let pane = app.settings.as_ref().expect("the settings open at once");
+        assert_eq!(pane.host.current().id, settings_mail::CATEGORIZATION_SECTION);
+        let data =
+            block_on(torro_settings_ui::load(Arc::new(torro_settings_ui::demo::Demo::new()), settings_mail::wanted()));
+        let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+        assert!(app.staged_categorization.is_none(), "clicked once");
+        let Some(SettingsPane { sections: SettingsState::Mail(state), host, .. }) = app.settings.as_ref() else {
+            panic!("mail settings");
+        };
+        let class = torro_gui::layout::SizeClass::Wide;
+        assert!(settings_mail::overlay(state, host.data(), CATEGORIZATION_SECTION, class).is_some(), "the dialog");
+        for (name, _) in Open::ALL.iter().filter(|(_, open)| open.categorization_scene().is_some()) {
+            assert!(Launch::parse(&args(&["--demo", "--view", "mail", "--open", name])).is_ok(), "{name}");
+        }
+        assert!(matches!(
+            Launch::parse(&args(&["--demo", "--open", "categorization"])),
+            Err(LaunchError::Conflict("--open categorization…", _))
         ));
     }
 

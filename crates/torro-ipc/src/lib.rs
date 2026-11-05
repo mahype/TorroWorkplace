@@ -2400,6 +2400,25 @@ pub enum Request {
         /// Its new place, 0 first.
         position: u32,
     },
+    /// The sorting rules and mail filters in one order ([`Response::SortingOrder`], issue #454):
+    /// from the top, the first rule that holds or filter that finds a new mail and sets a category
+    /// decides its category. Only the steps the caller sees: rules as `inbox.list_sort_rules`,
+    /// filters only with read access to mail and as `mail.list_filters`.
+    #[serde(rename = "inbox.list_sorting_order")]
+    ListSortingOrder,
+    /// Moves one sorting rule or mail filter to `position` among the steps the caller sees, 0 first
+    /// ([`Response::SortingOrder`], issue #454); the others keep their order around it. A position
+    /// past the end puts it last. `not-found` for a step that is not there or that the caller does
+    /// not see; `forbidden` when the move passes a filter (or moves one) the caller may not change.
+    #[serde(rename = "inbox.move_sorting_step")]
+    MoveSortingStep {
+        /// A rule or a filter.
+        kind: torro_inbox::SortingKind,
+        /// Its id, as `inbox.list_sorting_order` gives it.
+        id: String,
+        /// Its new place among the steps the caller sees, 0 first.
+        position: u32,
+    },
     /// The ways to mute the entry `id` (task E8.6a), for the bell's menu: its conversation, then each
     /// of its traits (sender, domain, list, agent, project, …) with the value the stored entry has,
     /// the words for the menu and whether every choice needs admin access
@@ -2872,15 +2891,15 @@ pub enum Request {
     // an account it reaches, and one for every account only with every account; any other is
     // `not-found`.
     /// The mail filters the caller sees, in the order the person keeps them
-    /// ([`Response::MailFilters`]). Every filter that finds a new mail runs; for the move and the
-    /// category the first one wins.
+    /// ([`Response::MailFilters`]). Every filter that finds a new mail runs; for the trash the first
+    /// one wins, for the category the order of the sorting steps (`inbox.list_sorting_order`).
     #[serde(rename = "mail.list_filters")]
     ListMailFilters,
     /// Adds a mail filter at the end of the list ([`Response::MailFilter`], with its new id `f<n>`).
     /// From then on it runs on new mail in the inbox; mail already there only with
     /// `mail.apply_filter`. `error` for a search that is empty, longer than 500 characters, cannot be
-    /// read or uses `in:` or `filename:`, no action, a folder without `account` or not of that
-    /// account, a category not in the catalogue, or more than 200 filters; `not-found` for an account
+    /// read or uses `in:` or `filename:`, no action, a move other than the trash (issue #454:
+    /// "file only takes {"to": "trash"}"), a category not in the catalogue, or more than 200 filters; `not-found` for an account
     /// the caller does not reach; `forbidden` for a filter for every account from a client that does
     /// not reach every account, and for a `category` from a client without admin access to `inbox`.
     #[serde(rename = "mail.create_filter")]
@@ -2890,7 +2909,7 @@ pub enum Request {
         /// The mail account it runs in (`mail:<address>`); left out: every mail account.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
-        /// Where the mail goes; left out: it stays in the inbox.
+        /// Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file: Option<torro_mail::FilterFile>,
         /// Marks the mail as read.
@@ -2917,7 +2936,7 @@ pub enum Request {
         /// The mail account it runs in (`mail:<address>`); left out: every mail account.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
-        /// Where the mail goes; left out: it stays in the inbox.
+        /// Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file: Option<torro_mail::FilterFile>,
         /// Marks the mail as read.
@@ -4473,6 +4492,11 @@ pub enum Response {
     /// [`Request::RemoveSortRule`], [`Request::MoveSortRule`]).
     SortRules {
         rules: Vec<torro_inbox::SortRule>,
+    },
+    /// The sorting rules and mail filters in their one order ([`Request::ListSortingOrder`],
+    /// [`Request::MoveSortingStep`], issue #454).
+    SortingOrder {
+        steps: Vec<torro_inbox::SortingStep>,
     },
     /// One sorting rule as stored ([`Request::CreateSortRule`], [`Request::UpdateSortRule`]),
     /// with where it stands, 0 first.
