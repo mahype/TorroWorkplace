@@ -1235,31 +1235,36 @@ fn old_filter_move(entry: &mut serde_json::Value) -> bool {
         request.get("method").and_then(serde_json::Value::as_str),
         Some("mail.create_filter" | "mail.update_filter")
     );
-    let old =
-        request.get("file").is_some_and(|file| serde_json::from_value::<torro_mail::FilterFile>(file.clone()).is_err());
-    // An approval that ran holds the filters in its answer too (`mail_filter`, `mail_filters`):
-    // they lose the old move as well, else the entry would not read.
-    drop_old_moves(entry);
-    filter && old
+    let method = request.get("method").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let old = filter && drop_old_move(request);
+    // An approval of a filter command that ran holds filters in its answer too (`filter` of
+    // `mail_filter`, `filters` of `mail_filters`): they lose the old move as well, else the entry
+    // would not read. Only there – the arguments of other commands stay as they were sent.
+    let changes_filters = matches!(method.as_str(), "mail.create_filter" | "mail.update_filter" | "mail.remove_filter");
+    if changes_filters
+        && let Some(answer) = entry.pointer_mut("/info/response").and_then(serde_json::Value::as_object_mut)
+    {
+        if let Some(filter) = answer.get_mut("filter").and_then(serde_json::Value::as_object_mut) {
+            drop_old_move(filter);
+        }
+        if let Some(filters) = answer.get_mut("filters").and_then(serde_json::Value::as_array_mut) {
+            filters.iter_mut().filter_map(serde_json::Value::as_object_mut).for_each(|filter| {
+                drop_old_move(filter);
+            });
+        }
+    }
+    old
 }
 
-/// Takes every move this version does not read out of the filters in `value`: any object with a
-/// `query` and a `file` that is not the trash – a filter, or the request of one.
-fn drop_old_moves(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(object) => {
-            let old = object.contains_key("query")
-                && object
-                    .get("file")
-                    .is_some_and(|file| serde_json::from_value::<torro_mail::FilterFile>(file.clone()).is_err());
-            if old {
-                object.remove("file");
-            }
-            object.values_mut().for_each(drop_old_moves);
-        }
-        serde_json::Value::Array(items) => items.iter_mut().for_each(drop_old_moves),
-        _ => {}
+/// Takes a move this version does not read out of the filter (or the request of one) `filter`;
+/// `true` when there was one.
+fn drop_old_move(filter: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    let old =
+        filter.get("file").is_some_and(|file| serde_json::from_value::<torro_mail::FilterFile>(file.clone()).is_err());
+    if old {
+        filter.remove("file");
     }
+    old
 }
 
 /// Runs file work on a blocking thread, so other requests are not held up.
@@ -3196,11 +3201,19 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             sentence
         }
         Request::RemoveSortRule { .. } => trf("Remove {rule}", &[("rule", &sort_rule_words(facts))]),
+        // The place in the whole order where the core knows it, as the person sees the list (a client
+        // may see fewer rules); else the rule's place as asked.
         Request::MoveSortRule { position, .. } => passing(
-            trf(
-                "Move {rule} to place {n}",
-                &[("rule", &sort_rule_words(facts)), ("n", &(u64::from(*position) + 1).to_string())],
-            ),
+            match facts.place {
+                Some(place) => trf(
+                    "Move {step} to place {n} of the sorting order",
+                    &[("step", &sort_rule_words(facts)), ("n", &place.to_string())],
+                ),
+                None => trf(
+                    "Move {rule} to place {n}",
+                    &[("rule", &sort_rule_words(facts)), ("n", &(u64::from(*position) + 1).to_string())],
+                ),
+            },
             facts,
         ),
         // Issue #454: a rule or a filter, by what is stored, and the filters it passes.
@@ -4247,6 +4260,12 @@ pub(crate) mod tests {
                 created: DateTime::<Utc>::UNIX_EPOCH,
             },
         };
+        // Another command's arguments with a `query` and a `file` stay as they were sent.
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("query".into(), serde_json::json!("report"));
+        arguments.insert("file".into(), serde_json::json!({"to": "trash"}));
+        let tool = Request::CallExtensionTool { extension: "files".into(), tool: "find".into(), arguments };
+        let foreign = approvals.open("c1", "One", tool, None, "z".into(), at(0)).await.expect("opened");
         approvals.decide(&ran.id, true, at(1)).await.expect("allowed");
         approvals.finish(&ran.id, answer, at(1)).await.expect("done");
         let stored = fs::read_to_string(file_in(dir.path())).expect("stored");
@@ -4268,6 +4287,12 @@ pub(crate) mod tests {
             "a decided one keeps its answer, without the move"
         );
         assert!(!dir.path().join("state").join("approvals.json.damaged").exists());
+        let reread = restarted.decide(&foreign.id, true, at(1)).await.expect("allowed");
+        let Decision::Run { request, .. } = reread else { panic!("it runs") };
+        assert!(
+            matches!(request.as_ref(), Request::CallExtensionTool { arguments, .. } if arguments.get("file") == Some(&serde_json::json!({"to": "archive"}))),
+            "{request:?}"
+        );
     }
 
     #[tokio::test]
