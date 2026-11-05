@@ -2874,6 +2874,9 @@ pub struct App<S> {
     /// The settings `mail_view` and `mail_appearance` as last read, with `--mail-view` and
     /// `--mail-colors` over them ([`App::take_look`]).
     look: MailLook,
+    /// "Display" chose the view or the colours in the demo (issue #456), which stores no setting: its
+    /// choice holds over the demo's settings read every tick.
+    display_chosen: bool,
     /// HTML or text, as the switch "HTML | Text" (or `v`) stands: [`App::look`] until it is used,
     /// and again whenever the setting changes.
     mail_format: MailFormat,
@@ -3979,7 +3982,8 @@ async fn count_unread_all<S: MailSource>(
     for account in every {
         each.push((account.clone(), inbox.unread_in_all(Some(account.clone())).await.ok()));
     }
-    let Some(accounts) = accounts else { return (inbox.unread_in_all(None).await.ok(), each) };
+    // Every account: the sum of their numbers, none where one could not be counted.
+    let Some(accounts) = accounts else { return (each.iter().map(|(_, count)| *count).sum(), each) };
     let mut total = Some(0_u64);
     for account in accounts {
         let known = each.iter().find(|(held, _)| held == account).map(|(_, count)| *count);
@@ -4205,6 +4209,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             html: None,
             saving: None,
             look: launch.look(MailLook::default()),
+            display_chosen: false,
             mail_format: launch.look(MailLook::default()).format,
             window_scale: 1.0,
             filter: None,
@@ -4487,7 +4492,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// `--mail-colors` over them. When they changed, both switches go back to them; the same answer
     /// again (every tick) leaves the switches as the person set them.
     fn take_look(&mut self, stored: MailLook) -> Task<Message> {
-        let look = self.launch.look(stored);
+        let mut look = self.launch.look(stored);
+        if self.launch.demo && self.display_chosen {
+            (look.format, look.colors) = (self.look.format, self.look.colors);
+        }
         if look == self.look {
             return Task::none();
         }
@@ -5660,7 +5668,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.error = Some(Failure::new(tr("Couldn't open the compose window."), err));
             }
             Message::ShowMailAs(format) => return self.choose_display(Some(format), None),
-            Message::MailColors(colors) => return self.choose_display(None, Some(colors)),
+            Message::MailColors(colors) => {
+                // "Light | Dark" of the hub's footer shows the colours as they come out: a click on the one
+                // shown while they follow the app changes nothing to see, so it stores nothing either.
+                let dark = self.theme().extended_palette().is_dark;
+                let shown = mail::scheme_for(self.look.colors, dark);
+                let same = self.look.colors == MailAppearance::App && mail::scheme_for(colors, dark) == shown;
+                if !same {
+                    return self.choose_display(None, Some(colors));
+                }
+            }
             Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_link(url),
             Message::HtmlLink(_) => {}
             Message::MailLook(Ok(look)) => return self.take_look(look),
@@ -7057,6 +7074,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             };
             changes.push((torro_ipc::SettingKey::MailAppearance, value));
         }
+        self.display_chosen |= !changes.is_empty();
         #[cfg(test)]
         self.sent.extend(changes.iter().map(|(key, value)| Sent::Setting(*key, (*value).to_owned())));
         let Source::Core(client) = &self.suite else { return Task::none() };
@@ -10563,6 +10581,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 focus,
                 reading: self.reading(),
                 narrow: !matches!(class, SizeClass::Wide | SizeClass::Medium),
+                anchors: anchors.clone(),
             });
             let placed = panel::place(class, page, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
@@ -10824,7 +10843,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Icon::ChartColumn,
                 None,
                 tr("Show overview"),
-                Some("Esc"),
+                // Esc shows the overview only beside the mail (wide); here it closes it.
+                None,
                 self.mail_overview_shown(),
                 Some(Message::ShowMailOverview),
             );
@@ -15942,6 +15962,8 @@ mod tests {
     #[test]
     fn the_switches_are_the_setting() {
         let mut app = reading_mail("f:private-inbox", "m:p2");
+        // As with the core: what the settings say counts (the demo holds its own choice instead).
+        app.launch.demo = false;
         let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
         let _ = app.update(Message::ShowMailAs(MailFormat::Text));
         let _ = app.update(Message::MailColors(MailAppearance::Dark));
@@ -19845,9 +19867,12 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailView, "text".into())));
         let _ = app.update(Message::ToggleMailDisplay);
         let _ = app.view();
-        let _ = app.update(Message::MailColors(MailAppearance::Dark));
-        assert_eq!(app.look.colors, MailAppearance::Dark);
-        assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailAppearance, "dark".into())));
+        let _ = app.update(Message::MailColors(MailAppearance::Light));
+        assert_eq!(app.look.colors, MailAppearance::Light);
+        assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailAppearance, "light".into())));
+        // The demo stores no setting and reads its defaults every tick: the choice holds over them.
+        let _ = app.update(look(MailFormat::Html, MailAppearance::App));
+        assert_eq!((app.mail_format, app.look.colors), (MailFormat::Text, MailAppearance::Light), "the demo holds it");
         let _ = app.update(Message::CloseMenu);
         if app.html_for_letter().is_some() {
             let _ = press(&mut app, Key::V);

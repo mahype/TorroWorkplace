@@ -1403,6 +1403,8 @@ pub(crate) struct SlimLines<'a> {
     pub marks: Vec<(Element<'a, Message>, f32)>,
     /// The circle in front ([`torro_gui::widgets::sender_circle`]); `None` in a design without avatars.
     pub circle: Option<Element<'a, Message>>,
+    /// The words a search matched (#136), stressed in the sender and the subject.
+    pub hits: Option<Hits<'a>>,
 }
 
 /// The height of a row of the mail window's slim list (issue #458): two lines of `BODY`, [`space::m()`]
@@ -1433,14 +1435,16 @@ pub(crate) fn day_head<'a>(label: String) -> Element<'a, Message> {
 /// at the right; the subject with the marks at the right. No domain, no preview, no category pill.
 pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(layout::list(), selected);
-    let SlimLines { name, time, subject, new, attachment, marks, circle } = lines;
+    let SlimLines { name, time, subject, new, attachment, marks, circle, hits } = lines;
+    let words = hits.as_ref().map(Hits::words).unwrap_or_default();
+    let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
     let lead = circle.as_ref().map_or(0.0, |_| layout::list().avatar + space::m());
     let room = (width - mail_row_left(parts.bar) - layout::row_padding().right - lead).max(0.0);
     let strong = |new: bool| if new { typo::body_strong() } else { typo::body() };
     let clip = if attachment { icon::SIZE_SM + space::xs() } else { 0.0 };
     let name_room = (room - end_width(&time, typo::meta()) - clip).max(0.0);
     let name = typo::ellipsize(&name, strong(true), name_room);
-    let mut who = row![typo::text(strong(new), name).style(theme::text).wrapping(Wrapping::None)]
+    let mut who = row![marked(name, strong(new), theme::text, &words, hit_colour)]
         .spacing(space::xs())
         .align_y(Alignment::Center);
     if attachment {
@@ -1456,28 +1460,27 @@ pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: 
     .align_y(Alignment::Center);
     let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
     let subject = typo::ellipsize(&subject, strong(true), (room - marks_width).max(0.0));
-    let subject = typo::text(strong(new), subject).style(if new { theme::text } else { theme::text_2 });
-    let mut second = row![container(subject.wrapping(Wrapping::None)).width(Fill).clip(true)]
-        .spacing(cell_gap())
-        .align_y(Alignment::Center);
+    let tone = if new { theme::text } else { theme::text_2 };
+    let subject = marked(subject, strong(new), tone, &words, hit_colour);
+    let mut second = row![container(subject).width(Fill).clip(true)].spacing(cell_gap()).align_y(Alignment::Center);
     for (mark, _) in marks {
         second = second.push(mark);
     }
-    let words = column![first, second].width(Fill);
+    let lines = column![first, second].width(Fill);
     let height = slim_message_height() - size::HAIRLINE;
     let mut content = row![marker_slot(new, parts.bar, height)];
     if let Some(circle) = circle {
         content = content.push(circle).push(blank().width(space::m()));
     }
-    widgets::row_content(content.push(words).align_y(Alignment::Center), selected)
+    widgets::row_content(content.push(lines).align_y(Alignment::Center), selected)
 }
 
-/// The flag of a flagged mail at the end of the slim row's second line (issue #458): the flag in the
-/// panel's colour on a small field in `attention`, radius `xs`.
+/// The flag of a flagged mail at the end of the slim row's second line (issue #458): a dark flag –
+/// the dark design's ground, in light and dark alike – on a small field in `attention`, radius `xs`.
 pub(crate) fn flag_field<'a>() -> (Element<'a, Message>, f32) {
     let edge = typo::line_height(typo::body());
     let flag = icon::icon(Icon::Flag, icon::SIZE_SM)
-        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).panel) });
+        .style(|_: &Theme, _| iced::widget::svg::Style { color: Some(theme::Palette::dark().bg) });
     let field = container(flag).center(edge).style(|t: &Theme| container::Style {
         background: Some(Background::Color(palette(t).attention)),
         border: border::rounded(radius::xs()),

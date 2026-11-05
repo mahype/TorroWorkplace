@@ -1971,11 +1971,17 @@ pub fn face_of(message: &MessageSummary, categories: &[CategoryInfo]) -> widgets
 /// circle in the colour its address picks, sender and paperclip and time, subject and the flag.
 fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let (name, _, _) = row_names(data.view, message);
-    let address = message.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default();
+    // In "Sent" the row names the recipient, and the circle takes the recipient's colour.
+    let address = match (data.view, message.to.first()) {
+        (View::Sent, Some(to)) => to.address.as_str(),
+        _ => message.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default(),
+    };
     let edge = layout::list().avatar;
     let circle = (edge > 0.0)
         .then(|| widgets::sender_circle(face_of(message, data.categories), Some(widgets::sender_hue(address)), edge));
     let mut marks = Vec::new();
+    // An invitation (task E8.3b) keeps its mark; its time and answers stand in the reader.
+    marks.extend(message.invite.as_ref().map(|invite| invite_mark(invite, data.now)));
     if message.flags.contains(&Flag::Flagged) {
         marks.push(list::flag_field());
     }
@@ -1987,6 +1993,7 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
         attachment: message.has_attachments,
         marks,
         circle,
+        hits: data.hits(&message.id),
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -3540,7 +3547,7 @@ fn display_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
     if !matches!(reading.loaded, Some(Ok(_))) {
         return Vec::new();
     }
-    vec![RailItem::new(Icon::Contrast, tr("Display"), "V", Some(Message::ToggleMailDisplay))]
+    vec![RailItem::new(Icon::Contrast, tr("Display"), "", Some(Message::ToggleMailDisplay))]
 }
 
 /// The attachments of the loaded mail that are not `inline`, in its order – what the block, the rows
@@ -4657,7 +4664,7 @@ impl FocusReply {
 }
 
 /// What [`focus_page`] draws.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FocusPage<'a> {
     /// The round.
     pub focus: &'a FocusReply,
@@ -4667,6 +4674,8 @@ pub struct FocusPage<'a> {
     /// A narrow window: the page's padding at the sides instead of the reading padding, which would
     /// leave the mail a strip there.
     pub narrow: bool,
+    /// The window's anchors, for the menu of the mail's attachments in its head (issue #457).
+    pub anchors: detail::Anchors,
 }
 
 /// "Focus & reply" (task E19.5) in place of list and reader, in every layout from narrow to wide
@@ -4707,7 +4716,7 @@ pub fn focus_page<'a>(page: FocusPage<'a>) -> Element<'a, Message> {
                 let title = typo::text(typo::headline(), subject(summary)).style(theme::text);
                 mail = mail.push(title.wrapping(Wrapping::WordOrGlyph));
             }
-            mail = mail.push(head(reading, None, width, &detail::Anchors::default())).push(line());
+            mail = mail.push(head(reading, None, width, &page.anchors)).push(line());
         }
         mail = mail.push(focus_letter(page.reading, width));
         let mail = scrollable(container(mail).padding(Padding { bottom: layout::section_gap(), ..pad }))
@@ -5347,7 +5356,7 @@ mod tests {
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
-                    vec!["V"],
+                    vec![""],
                     vec!["", "", "Esc"]
                 ]
             );
