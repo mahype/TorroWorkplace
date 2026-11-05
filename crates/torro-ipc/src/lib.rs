@@ -2872,15 +2872,15 @@ pub enum Request {
     // an account it reaches, and one for every account only with every account; any other is
     // `not-found`.
     /// The mail filters the caller sees, in the order the person keeps them
-    /// ([`Response::MailFilters`]). Every filter that finds a new mail runs; for the move and the
-    /// category the first one wins.
+    /// ([`Response::MailFilters`]). Every filter that finds a new mail runs; for the trash the first
+    /// one wins, for the category the order of the sorting steps (`inbox.list_sorting_order`).
     #[serde(rename = "mail.list_filters")]
     ListMailFilters,
     /// Adds a mail filter at the end of the list ([`Response::MailFilter`], with its new id `f<n>`).
     /// From then on it runs on new mail in the inbox; mail already there only with
     /// `mail.apply_filter`. `error` for a search that is empty, longer than 500 characters, cannot be
-    /// read or uses `in:` or `filename:`, no action, a folder without `account` or not of that
-    /// account, a category not in the catalogue, or more than 200 filters; `not-found` for an account
+    /// read or uses `in:` or `filename:`, no action, a move other than the trash (issue #454:
+    /// "file only takes {"to": "trash"}"), a category not in the catalogue, or more than 200 filters; `not-found` for an account
     /// the caller does not reach; `forbidden` for a filter for every account from a client that does
     /// not reach every account, and for a `category` from a client without admin access to `inbox`.
     #[serde(rename = "mail.create_filter")]
@@ -2890,7 +2890,7 @@ pub enum Request {
         /// The mail account it runs in (`mail:<address>`); left out: every mail account.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
-        /// Where the mail goes; left out: it stays in the inbox.
+        /// Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file: Option<torro_mail::FilterFile>,
         /// Marks the mail as read.
@@ -2917,7 +2917,7 @@ pub enum Request {
         /// The mail account it runs in (`mail:<address>`); left out: every mail account.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
-        /// Where the mail goes; left out: it stays in the inbox.
+        /// Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file: Option<torro_mail::FilterFile>,
         /// Marks the mail as read.

@@ -979,8 +979,9 @@ impl Demo {
         ]
     }
 
-    /// The mail filters (`mail.list_filters`, issue #339): a newsletter archived and read for every
-    /// account, bills of the sample account filed under "Bills", and one switched off whose
+    /// The mail filters (`mail.list_filters`, issue #339): a newsletter read and filed under
+    /// "Promotion" for every account, bills of the sample account filed under "Bills", spam of an old
+    /// forum moved to the trash (switched off), and one switched off whose
     /// category is no longer in the catalogue, so the list shows "Unknown category".
     fn mail_filters(&self) -> Vec<torro_mail::MailFilter> {
         use torro_mail::{Category, CustomCategory, FilterFile, MailFilter};
@@ -996,12 +997,20 @@ impl Demo {
             created,
         };
         vec![
-            MailFilter { file: Some(FilterFile::Archive), mark_read: true, ..filter("f1", "from:news@shop.example") },
+            MailFilter {
+                mark_read: true,
+                category: Some(Category::Promotion),
+                ..filter("f1", "from:news@shop.example")
+            },
             MailFilter {
                 account: Some(format!("mail:{MAIL_ADDRESS}")),
-                file: Some(FilterFile::Folder { id: "f:demo-archive".into() }),
                 category: Some(Category::Invoice),
                 ..filter("f2", "from:billing@shop.example has:attachment")
+            },
+            MailFilter {
+                file: Some(FilterFile::Trash),
+                enabled: false,
+                ..filter("f4", "from:noreply@old-forum.example")
             },
             MailFilter {
                 category: CustomCategory::new(9).map(Category::Custom),

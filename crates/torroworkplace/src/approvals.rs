@@ -371,8 +371,6 @@ pub struct FilterFacts {
     pub stored: Option<torro_mail::MailFilter>,
     /// The address of the stored filter's account; `None` for every account or when unknown.
     pub stored_account: Option<String>,
-    /// The name of the folder the stored filter moves to; `None` without one or when unknown.
-    pub stored_folder: Option<String>,
     /// The catalogue of mail categories, for the names of the categories.
     pub categories: Vec<torro_mail::CategoryDef>,
 }
@@ -1173,14 +1171,18 @@ fn tidy(entries: &mut Vec<Entry>, now: DateTime<Utc>) -> bool {
 ///
 /// An approval that was running when the core stopped is done with an error: nobody knows whether
 /// its command took effect, and it must never run twice.
+///
+/// The entries are read one by one, so an approval of a mail filter that moves mail to the archive
+/// or a folder (before issue #454, [`old_filter_move`]) does not take the others with it: it ends as
+/// done with `conflict` (still open) or keeps how it was decided, and never runs.
 fn read(file: &Path) -> Result<Vec<Entry>, ApprovalsError> {
     let bytes = match fs::read(file) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(ApprovalsError::Io { path: file.to_path_buf(), err }),
     };
-    let mut entries = match serde_json::from_slice::<ApprovalsFile>(&bytes) {
-        Ok(content) => content.approvals,
+    let mut entries = match entries_of(&bytes) {
+        Ok(entries) => entries,
         Err(err) => {
             let aside = file.with_extension("json.damaged");
             eprintln!("torroworkplace: {} is damaged ({err}); moved to {}", file.display(), aside.display());
@@ -1196,6 +1198,49 @@ fn read(file: &Path) -> Result<Vec<Entry>, ApprovalsError> {
         }
     }
     Ok(entries)
+}
+
+/// The entries of an approvals file, read one by one: an approval of a filter with an old move is
+/// read without it and settled ([`old_filter_move`]); any other entry that does not read makes the
+/// whole file unreadable, as before.
+fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
+    let mut json: serde_json::Value = serde_json::from_slice(bytes)?;
+    let Some(list) = json.get_mut("approvals").and_then(serde_json::Value::as_array_mut) else {
+        return Ok(serde_json::from_value::<ApprovalsFile>(json)?.approvals);
+    };
+    let mut entries = Vec::with_capacity(list.len());
+    for value in list.iter_mut() {
+        let old = old_filter_move(value);
+        let mut entry: Entry = serde_json::from_value(value.take())?;
+        if old
+            && !matches!(entry.info.state, ApprovalState::Done { .. } | ApprovalState::Denied | ApprovalState::Expired)
+        {
+            let message = tr("The mail filter moves mail to the archive or a folder, which mail filters no longer do.");
+            entry.info.state = ApprovalState::Done {
+                response: Box::new(Response::Error { code: "conflict".into(), message: message.to_string() }),
+            };
+            entry.info.decided = Some(Utc::now());
+        }
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+/// Whether the approval `entry` (as stored) asks to create or change a mail filter that moves mail
+/// to the archive or a folder, which this version no longer reads (issue #454); the move is taken
+/// out of it, so the entry reads.
+fn old_filter_move(entry: &mut serde_json::Value) -> bool {
+    let Some(request) = entry.get_mut("request").and_then(serde_json::Value::as_object_mut) else { return false };
+    let filter = matches!(
+        request.get("method").and_then(serde_json::Value::as_str),
+        Some("mail.create_filter" | "mail.update_filter")
+    );
+    let old =
+        request.get("file").is_some_and(|file| serde_json::from_value::<torro_mail::FilterFile>(file.clone()).is_err());
+    if filter && old {
+        request.remove("file");
+    }
+    filter && old
 }
 
 /// Runs file work on a blocking thread, so other requests are not held up.
@@ -3773,20 +3818,16 @@ fn subject(text: &str) -> String {
 }
 
 /// What a mail filter command does, in words (issue #339): `Add the mail filter "from:shop.example"
-/// in anna@example.org: mark as read, move to "Receipts"`; a change as the stored filter and what it
+/// in anna@example.org: mark as read, move to the trash`; a change as the stored filter and what it
 /// becomes, a removal and a run by the stored filter, a run with how many mails it changes now ("up
-/// to 500"). The stored filter, the accounts and folders from [`Facts::filter`] and [`Facts::mail`],
+/// to 500"). The stored filter and the accounts from [`Facts::filter`] and [`Facts::mail`],
 /// never the client's words; the new search is quoted as it will be written.
 fn filter_summary(request: &Request, facts: &Facts) -> String {
     let stored_facts = facts.filter.as_deref();
     let categories = stored_facts.map(|filter| filter.categories.as_slice()).unwrap_or_default();
-    let new_shown = (
-        facts.mail.as_ref().and_then(|mail| mail.account.as_deref()),
-        facts.mail.as_ref().and_then(|mail| mail.folder.as_deref()),
-    );
+    let new_shown = facts.mail.as_ref().and_then(|mail| mail.account.as_deref());
     let stored = stored_facts.and_then(|filter| {
-        let shown = (filter.stored_account.as_deref(), filter.stored_folder.as_deref());
-        filter.stored.as_ref().map(|stored| filter_words(stored, shown, categories))
+        filter.stored.as_ref().map(|stored| filter_words(stored, filter.stored_account.as_deref(), categories))
     });
     // What a create or an update writes, as a filter: the client's search and actions.
     let written = |query: &str, account: &Option<String>, file: &Option<FilterFile>, mark_read, category, enabled| {
@@ -3830,11 +3871,9 @@ fn filter_summary(request: &Request, facts: &Facts) -> String {
 }
 
 /// A mail filter in words, for the summaries of [`filter_summary`]: `"from:shop.example" in
-/// anna@example.org: mark as read, move to "Receipts"` (and `, switched off`). `shown` is how its
-/// account and folder read (the address, the folder's name); without them the ids it runs with.
-/// `categories` names a category.
-fn filter_words(filter: &MailFilter, shown: (Option<&str>, Option<&str>), categories: &[CategoryDef]) -> String {
-    let (account, folder) = shown;
+/// anna@example.org: mark as read, move to the trash` (and `, switched off`). `account` is how its
+/// account reads (the address); without it the id it runs with. `categories` names a category.
+fn filter_words(filter: &MailFilter, account: Option<&str>, categories: &[CategoryDef]) -> String {
     let account = match (&filter.account, account) {
         (None, _) => tr("every mail account").to_string(),
         (Some(_), Some(address)) => quote(address),
@@ -3851,14 +3890,8 @@ fn filter_words(filter: &MailFilter, shown: (Option<&str>, Option<&str>), catego
         };
         actions.push(trf("file as {category}", &[("category", &format!("\"{}\"", quote(&name)))]));
     }
-    match &filter.file {
-        Some(FilterFile::Archive) => actions.push(tr("move to the archive").to_string()),
-        Some(FilterFile::Trash) => actions.push(tr("move to the trash").to_string()),
-        Some(FilterFile::Folder { id }) => {
-            let name = format!("\"{}\"", quote(folder.unwrap_or(id)));
-            actions.push(trf("move to {folder}", &[("folder", &name)]));
-        }
-        None => {}
+    if let Some(FilterFile::Trash) = &filter.file {
+        actions.push(tr("move to the trash").to_string());
     }
     if actions.is_empty() {
         actions.push(tr("nothing").to_string());
@@ -4118,6 +4151,39 @@ pub(crate) mod tests {
         assert!(approvals.list(None, at(0)).await.expect("list").is_empty());
         assert!(dir.path().join("state").join("approvals.json.damaged").exists());
         approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+    }
+
+    /// Issue #454: an open approval of a filter that moves mail to the archive or a folder ends as
+    /// `conflict` when the file is read; the other approvals stay as they were.
+    #[tokio::test]
+    async fn an_old_filter_move_ends_its_approval_and_leaves_the_others() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let filter = Request::CreateMailFilter {
+            query: "from:shop.example".into(),
+            account: None,
+            file: Some(FilterFile::Trash),
+            mark_read: false,
+            category: None,
+            enabled: true,
+        };
+        let old = approvals.open("c1", "One", filter, None, "x".into(), at(0)).await.expect("opened");
+        let other = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+        let stored = fs::read_to_string(file_in(dir.path())).expect("stored");
+        let archived = stored.replace(r#""to": "trash""#, r#""to": "archive""#);
+        assert_ne!(stored, archived, "the move is in the file");
+        fs::write(file_in(dir.path()), archived).expect("an old move");
+
+        let restarted = quiet_in(dir.path());
+        let list = restarted.list(None, at(1)).await.expect("read");
+        let state = |id: &str| list.iter().find(|info| info.id == id).map(|info| info.state.clone());
+        assert!(
+            matches!(state(&old.id), Some(ApprovalState::Done { response })
+                if matches!(response.as_ref(), Response::Error { code, .. } if code == "conflict")),
+            "{list:?}"
+        );
+        assert_eq!(state(&other.id), Some(ApprovalState::Pending));
+        assert!(!dir.path().join("state").join("approvals.json.damaged").exists());
     }
 
     #[tokio::test]

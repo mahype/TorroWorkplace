@@ -1750,7 +1750,7 @@ Saves attachments of a message (`parts` from mail_get_message, empty for all but
 
 Zugriff `read` · MCP-Tool `mail_list_filters`
 
-Lists the mail filters you can see (those of the mail accounts you reach; a filter for every account only with access to every account), in their order: each a search in the language of mail_search_messages, the account it runs in (left out: every account) and its actions – `file` (`{"to": "archive"}`, `{"to": "trash"}` or `{"to": "folder", "id": "f:…"}`), `mark_read`, `category`. Enabled filters run on new mail in the inbox while Torro Workplace runs; every one that matches runs, for the move and the category the first one wins. The searches are the person's own words.
+Lists the mail filters you can see (those of the mail accounts you reach; a filter for every account only with access to every account), in their order: each a search in the language of mail_search_messages, the account it runs in (left out: every account) and its actions – `file` (only `{"to": "trash"}`), `mark_read`, `category`. Enabled filters run on new mail in the inbox while Torro Workplace runs; every one that matches runs. Which category new mail gets follows the order of filters and sorting rules together (inbox_list_sorting_order): the first that matches from the top. The searches are the person's own words.
 
 Keine Felder.
 
@@ -1758,14 +1758,14 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `mail_create_filter`
 
-Adds a mail filter at the end of the list and returns it with its id. From then on it runs on new mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and at least one action: `file`, `mark_read`, `category`. A folder needs `account`. A filter for every account needs access to every mail account, a category admin access to the inbox; marking as read, the archive and a folder need write access to mail, the trash delete access (as mail_set_flags, mail_move_messages and mail_delete_messages would), else `forbidden`. Needs the person's approval.
+Adds a mail filter at the end of the list and returns it with its id. From then on it runs on new mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and at least one action: `file` (only `{"to": "trash"}`: filters do not move mail to the archive or a folder, mail works with categories), `mark_read`, `category`. A filter for every account needs access to every mail account, a category admin access to the inbox; marking as read needs write access to mail, the trash delete access (as mail_set_flags and mail_delete_messages would), else `forbidden`. It goes below the last filter in the sorting order. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | nein | The mail account it runs in (`mail:<address>`); left out: every mail account. |
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | nein | Files the mail under this category of `inbox.list_categories`. |
 | `enabled` | boolean | nein | Switched off, it finds nothing on new mail. Left out: on. |
-| `file` | object | nein | Where the mail goes; left out: it stays in the inbox. |
+| `file` | object | nein | Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox. |
 | `mark_read` | boolean | nein | Marks the mail as read. |
 | `query` | string | ja | The search, in the language of `mail.search_messages`. |
 
@@ -1773,14 +1773,14 @@ Adds a mail filter at the end of the list and returns it with its id. From then 
 
 Zugriff `admin` · MCP-Tool `mail_update_filter`
 
-Changes a mail filter and returns it: `query`, `account` and the actions as given (left out, the account is every account and an action none), `enabled` where given (left out, it stays). Its place stays. `not-found` for a filter that is not there or out of reach, otherwise as mail_create_filter, the rights for its actions included; a category or folder it has already is not checked again. Needs the person's approval.
+Changes a mail filter and returns it: `query`, `account` and the actions as given (left out, the account is every account and an action none), `enabled` where given (left out, it stays). Its place stays. `not-found` for a filter that is not there or out of reach, otherwise as mail_create_filter, the rights for its actions included; a category it has already is not checked again. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | nein | The mail account it runs in (`mail:<address>`); left out: every mail account. |
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | nein | Files the mail under this category of `inbox.list_categories`. |
 | `enabled` | boolean | nein | On or off. Left out: as it is. |
-| `file` | object | nein | Where the mail goes; left out: it stays in the inbox. |
+| `file` | object | nein | Moves the mail to the trash (`{"to": "trash"}`, the only move); left out: it stays in the inbox. |
 | `id` | string | ja | The filter's id from `mail.list_filters` (`f<n>`). |
 | `mark_read` | boolean | nein | Marks the mail as read. |
 | `query` | string | ja | The search, in the language of `mail.search_messages`. |
@@ -1789,7 +1789,7 @@ Changes a mail filter and returns it: `query`, `account` and the actions as give
 
 Zugriff `admin` · MCP-Tool `mail_remove_filter`
 
-Removes a mail filter and returns the filters left, in order. Mail it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.
+Removes a mail filter and returns the filters left, in order; it leaves the sorting order too. Mail it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1810,7 +1810,7 @@ Shows what a filter with `query` would find in the inbox now, in `account` or ev
 
 Zugriff `admin` · MCP-Tool `mail_apply_filter`
 
-Runs a mail filter once on the mail in the inbox now (also when it is switched off): up to the 500 newest it finds that still need one of its actions are marked as read, filed and moved. Returns how many were done and failed, and `more` when there are others: call again. Moving to the trash can be undone from there. Needs write access to mail for its actions, delete access for the trash, else `forbidden`. Needs the person's approval, which names how many mails it changes: when the filter finds other mail by the time the person allows it, it ends `conflict`.
+Runs a mail filter once on the mail in the inbox now (also when it is switched off): up to the 500 newest it finds that still need one of its actions are marked as read, filed and moved to the trash. Returns how many were done and failed, and `more` when there are others: call again. Moving to the trash can be undone from there. Needs write access to mail for its actions, delete access for the trash, else `forbidden`. Needs the person's approval, which names how many mails it changes: when the filter finds other mail by the time the person allows it, it ends `conflict`.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

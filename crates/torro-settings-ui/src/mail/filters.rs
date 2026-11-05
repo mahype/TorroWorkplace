@@ -1,6 +1,6 @@
 //! Settings › Filters in the mail window (issue #339): the mail filters, each a saved search with
-//! what to do with the mail it finds in the inbox – move it, mark it as read, file it under a
-//! category.
+//! what to do with the mail it finds in the inbox – file it under a category, mark it as read,
+//! move it to the trash.
 //!
 //! ```text
 //! Filters   one row per filter, in its order: the search, then what it does   [switch] ›
@@ -9,8 +9,8 @@
 //!
 //! A filter's page: the search (the language of the search field: `from:`, `to:`, `subject:`,
 //! `has:attachment` …) and the account it runs in ("All accounts"), what it finds in the inbox now
-//! (`mail.preview_filter`), the actions – "Move" (Don't move, Archive, Folder, Trash) with the
-//! folder of the chosen account, "Mark as read", "Category" –, the switch and, for a stored one,
+//! (`mail.preview_filter`), the actions – "Move" (Don't move, Trash), "Mark as read",
+//! "Category" –, the switch and, for a stored one,
 //! "Delete filter" after a question. "Save" stands in the header bar and waits for the core
 //! ([`sent`]): only once it stored the filter does the page close; a refusal leaves the page with
 //! what was typed. Saved with mail in the inbox that it finds, the list then asks "Apply to the {n}
@@ -29,14 +29,14 @@ use chrono::Utc;
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, space as blank};
 use iced::{Alignment, Element, Theme};
-use torro_core::i18n::{tr, trc, trf};
+use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::format_moment;
 use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, space};
 use torro_gui::widgets::PageAction;
 use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{Request, Response};
-use torro_mail::{Category, CategoryGroup, FILTER_QUERY_MAX, FilterFile, MailFilter, MessageSummary, Role};
+use torro_mail::{Category, CategoryGroup, FILTER_QUERY_MAX, FilterFile, MailFilter, MessageSummary};
 
 use crate::parts::{chevron, field, notice, pressable, row_frame, setting_row, switch};
 use crate::{Action, Data, Page};
@@ -84,20 +84,15 @@ enum Ask {
 pub enum Move {
     /// "Don't move": the mail stays in the inbox.
     Stay,
-    Archive,
-    /// A folder of the filter's account, chosen in the row under it.
-    Folder,
     Trash,
 }
 
 impl Move {
-    const ALL: [Move; 4] = [Move::Stay, Move::Archive, Move::Folder, Move::Trash];
+    const ALL: [Move; 2] = [Move::Stay, Move::Trash];
 
     fn label(self) -> &'static str {
         match self {
             Move::Stay => tr("Don’t move"),
-            Move::Archive => trc("action", "Archive"),
-            Move::Folder => tr("Folder"),
             Move::Trash => tr("Trash"),
         }
     }
@@ -110,8 +105,6 @@ struct Form {
     query: String,
     account: Option<String>,
     moving: Move,
-    /// The folder of [`Move::Folder`] (`f:…`); kept while another move is chosen, sent only with it.
-    folder: Option<String>,
     mark_read: bool,
     category: Option<Category>,
     enabled: bool,
@@ -192,8 +185,6 @@ pub enum Message {
     /// The account the filter runs in; `None`: every account.
     Account(Option<String>),
     Move(Move),
-    /// The folder of "Move" › "Folder" (`f:…`).
-    Folder(String),
     MarkRead(bool),
     Category(Option<Category>),
     /// "Filter is on" on the page.
@@ -279,19 +270,11 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                     true
                 }
                 Message::Account(account) => {
-                    // A folder belongs to one account: another account starts without one.
-                    if form.account != account {
-                        form.folder = None;
-                    }
                     form.account = account;
                     true
                 }
                 Message::Move(moving) => {
                     form.moving = moving;
-                    false
-                }
-                Message::Folder(folder) => {
-                    form.folder = Some(folder);
                     false
                 }
                 Message::MarkRead(on) => {
@@ -445,7 +428,6 @@ impl Form {
             query,
             account,
             moving: Move::Stay,
-            folder: None,
             mark_read: false,
             category: None,
             enabled: true,
@@ -454,18 +436,15 @@ impl Form {
     }
 
     fn of(filter: &MailFilter) -> Form {
-        let (moving, folder) = match &filter.file {
-            None => (Move::Stay, None),
-            Some(FilterFile::Archive) => (Move::Archive, None),
-            Some(FilterFile::Trash) => (Move::Trash, None),
-            Some(FilterFile::Folder { id }) => (Move::Folder, Some(id.clone())),
+        let moving = match &filter.file {
+            None => Move::Stay,
+            Some(FilterFile::Trash) => Move::Trash,
         };
         Form {
             id: Some(filter.id.clone()),
             query: filter.query.clone(),
             account: filter.account.clone(),
             moving,
-            folder,
             mark_read: filter.mark_read,
             category: filter.category,
             enabled: filter.enabled,
@@ -473,13 +452,11 @@ impl Form {
         }
     }
 
-    /// The move as the core takes it; a folder only with [`Move::Folder`].
+    /// The move as the core takes it.
     fn file(&self) -> Option<FilterFile> {
         match self.moving {
             Move::Stay => None,
-            Move::Archive => Some(FilterFile::Archive),
             Move::Trash => Some(FilterFile::Trash),
-            Move::Folder => self.folder.clone().map(|id| FilterFile::Folder { id }),
         }
     }
 
@@ -497,10 +474,6 @@ impl Form {
     fn same_as(&self, stored: &MailFilter) -> bool {
         let mut page = Form { tried: false, ..self.clone() };
         let held = Form::of(stored);
-        // A folder kept for another move is not sent, so it is no change.
-        if page.moving != Move::Folder {
-            page.folder = held.folder.clone();
-        }
         page.query = page.query.trim().to_string();
         page == held
     }
@@ -527,14 +500,6 @@ impl Form {
     fn action_mistake(&self) -> Option<String> {
         if !self.has_action() {
             return Some(tr("Choose at least one thing the filter does.").to_string());
-        }
-        if self.moving == Move::Folder {
-            if self.account.is_none() {
-                return Some(tr("Choose an account to move mail into one of its folders.").to_string());
-            }
-            if self.folder.is_none() {
-                return Some(tr("Choose the folder the mail goes to.").to_string());
-            }
         }
         None
     }
@@ -650,11 +615,8 @@ pub fn summary(filter: &MailFilter, data: &Data) -> String {
     if let Some(account) = &filter.account {
         parts.push(account_label(data, account));
     }
-    match &filter.file {
-        None => {}
-        Some(FilterFile::Archive) => parts.push(trc("action", "Archive").to_string()),
-        Some(FilterFile::Trash) => parts.push(tr("Move to Trash").to_string()),
-        Some(FilterFile::Folder { id }) => parts.push(trf("Move to {folder}", &[("folder", &folder_name(data, id))])),
+    if let Some(FilterFile::Trash) = &filter.file {
+        parts.push(tr("Move to Trash").to_string());
     }
     if filter.mark_read {
         parts.push(tr("Mark as read").to_string());
@@ -676,14 +638,6 @@ fn account_label(data: &Data, id: &str) -> String {
         .find(|account| account.id == id)
         .map(|account| account.label.clone())
         .unwrap_or_else(|| id.trim_start_matches("mail:").to_string())
-}
-
-/// The name of a folder (`f:…`), "Unknown folder" for one the load does not know.
-fn folder_name(data: &Data, id: &str) -> String {
-    data.mail_folders
-        .iter()
-        .find(|folder| folder.id == id)
-        .map_or_else(|| tr("Unknown folder").to_string(), |folder| folder.name.clone())
 }
 
 /// The last row of the list: "+ New filter".
@@ -848,25 +802,10 @@ fn hit_rows<'a>(found: &Hits<'_>) -> Vec<Element<'a, Message>> {
     }
 }
 
-/// "Move", the folder under it while "Folder" is chosen, "Mark as read" and "Category".
+/// "Move", "Mark as read" and "Category".
 fn action_rows<'a>(form: &'a Form, data: &'a Data) -> Vec<Element<'a, Message>> {
     let moves: Vec<Choice<Move>> = Move::ALL.into_iter().map(|moving| Choice::new(moving, moving.label())).collect();
     let mut rows = vec![setting_row(None, tr("Move"), None, choose(moves, Some(form.moving), Message::Move, None))];
-    if form.moving == Move::Folder {
-        let control: Element<'a, Message> = match &form.account {
-            None => typo::text(typo::meta(), tr("Choose an account first")).style(torro_gui::theme::text_3).into(),
-            Some(account) => {
-                let folders: Vec<Choice<String>> = data
-                    .mail_folders
-                    .iter()
-                    .filter(|folder| &folder.account == account && folder.role != Some(Role::Inbox))
-                    .map(|folder| Choice::new(folder.id.clone(), folder.name.clone()))
-                    .collect();
-                choose(folders, form.folder.clone(), Message::Folder, Some(tr("Choose a folder")))
-            }
-        };
-        rows.push(setting_row(None, tr("Folder"), None, control));
-    }
     rows.push(setting_row(None, tr("Mark as read"), None, switch(form.mark_read, Message::MarkRead)));
     let mut categories = vec![Choice::new(None, tr("No category"))];
     categories.extend(category_choices(data));
@@ -1000,7 +939,7 @@ mod tests {
             id: id.into(),
             query: query.into(),
             account: None,
-            file: Some(FilterFile::Archive),
+            file: Some(FilterFile::Trash),
             mark_read: true,
             category: None,
             enabled: true,
@@ -1008,7 +947,7 @@ mod tests {
         }
     }
 
-    /// The suite's catalogue and two filters: "f1" archives and marks as read for every account,
+    /// The suite's catalogue and two filters: "f1" trashes and marks as read for every account,
     /// "f2" files bills of one account under a category that is no longer in the catalogue.
     fn data() -> Data {
         let gone = Category::Custom(CustomCategory::new(9).expect("a number"));
@@ -1171,7 +1110,7 @@ mod tests {
     }
 
     /// Mistakes keep the filter from being sent: no search (the cursor goes there), nothing it does,
-    /// a folder without an account or without a folder chosen, a search the core refused.
+    /// a search the core refused.
     #[test]
     fn a_filter_with_mistakes_is_not_sent() {
         let (data, mut state) = (data(), State::default());
@@ -1187,18 +1126,8 @@ mod tests {
         );
         let form = state.form.as_ref().expect("open");
         assert_eq!(form.action_mistake().as_deref(), Some(tr("Choose at least one thing the filter does.")));
-        let _ = last(&mut state, &data, vec![Message::Move(Move::Folder), Message::Save]);
-        let form = state.form.as_ref().expect("open");
-        assert_eq!(
-            form.action_mistake().as_deref(),
-            Some(tr("Choose an account to move mail into one of its folders."))
-        );
-        let _ = last(&mut state, &data, vec![Message::Account(Some(ACCOUNT.into())), Message::Save]);
-        let form = state.form.as_ref().expect("open");
-        assert_eq!(form.action_mistake().as_deref(), Some(tr("Choose the folder the mail goes to.")));
         // The core refuses `in:`: its message is the search's mistake.
-        let _ =
-            last(&mut state, &data, vec![Message::Folder("f:demo-archive".into()), Message::Query("in:sent".into())]);
+        let _ = last(&mut state, &data, vec![Message::Move(Move::Trash), Message::Query("in:sent".into())]);
         while state.preview.waiting > 0 {
             assert!(answered(&mut state, &Err("A filter looks at the inbox only.".into())));
         }
@@ -1270,7 +1199,7 @@ mod tests {
     fn the_list_says_what_a_filter_does() {
         let data = data();
         let first = summary(&data.mail_filters[0], &data);
-        assert_eq!(first, format!("{} · {}", trc("action", "Archive"), tr("Mark as read")));
+        assert_eq!(first, format!("{} · {}", tr("Move to Trash"), tr("Mark as read")));
         let second = summary(&data.mail_filters[1], &data);
         let line = format!("anna@mailbox.org · {}", tr("Unknown category"));
         assert_eq!(second, trf("Off · {rule}", &[("rule", &line)]));
@@ -1300,7 +1229,7 @@ mod tests {
         }
         for open in [Message::New { query: String::new(), account: None }, Message::Edit("f2".into())] {
             let _ = update::<()>(&mut state, open, &data);
-            let _ = update::<()>(&mut state, Message::Move(Move::Folder), &data);
+            let _ = update::<()>(&mut state, Message::Move(Move::Trash), &data);
             let _ = update::<()>(&mut state, Message::Delete, &data);
             let built = page(&state, &data);
             assert!(built.sub_page.is_some(), "a page below the section");
@@ -1313,7 +1242,7 @@ mod tests {
         let demo: Arc<dyn crate::Backend> = Arc::new(crate::demo::Demo::new());
         let data = crate::load(Arc::clone(&demo), super::super::wanted()).await;
         assert!(data.error.is_none(), "{:?}", data.error);
-        assert_eq!(data.mail_filters.len(), 3);
+        assert_eq!(data.mail_filters.len(), 4);
         assert!(!data.mail_folders.is_empty());
         assert!(data.mail_filters.iter().any(|filter| summary(filter, &data).contains(tr("Unknown category"))));
         let answer = demo.call(Request::PreviewMailFilter { query: "from:x".into(), account: None }).await;

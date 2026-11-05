@@ -14369,11 +14369,12 @@ mod tests {
         assert_eq!(core.mail.filters().list().expect("read").len(), 2);
     }
 
-    /// Issue #339, review: a filter whose category the person removed, or whose folder is gone from
-    /// the server, can still be switched off – by the person and by a client –, as the switch in the
-    /// list sends what the filter holds; a category or folder a change brings anew is still checked.
+    /// Issue #339, review: a filter whose category the person removed can still be switched off – by
+    /// the person and by a client –, as the switch in the list sends what the filter holds; a
+    /// category a change brings anew is still checked, and a move other than the trash is refused
+    /// (issue #454).
     #[tokio::test]
-    async fn a_filter_whose_category_or_folder_is_gone_can_still_be_switched_off() {
+    async fn a_filter_whose_category_is_gone_can_still_be_switched_off() {
         use torro_mail::{Category, CustomCategory, FilterFile};
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core_with_mail_data(dir.path());
@@ -14383,12 +14384,12 @@ mod tests {
         let spec = crate::mail::filters::FilterSpec {
             query: "from:shop.example".into(),
             account: Some(anna.into()),
-            file: Some(FilterFile::Folder { id: "f:9".into() }),
+            file: Some(FilterFile::Trash),
             mark_read: false,
             category: Some(gone),
             enabled: None,
         };
-        // Made while the category and the folder were there; neither is now.
+        // Made while the category was there; it is not now.
         let stored = core.mail.filters().create(spec, &[gone], Utc::now()).expect("stored");
         let switched =
             |enabled: bool, file: Option<FilterFile>, category: Option<Category>| Request::UpdateMailFilter {
@@ -14411,15 +14412,20 @@ mod tests {
         waits(ask(&core, Some(&key), switched(true, stored.file.clone(), stored.category)).await);
 
         let other = Some(Category::Custom(CustomCategory::new(8).expect("a number")));
-        let elsewhere = Some(FilterFile::Folder { id: "f:8".into() });
-        for request in [switched(true, stored.file.clone(), other), switched(true, elsewhere, stored.category)] {
-            assert_eq!(code(&ask(&core, Some(&app_key), request.clone()).await), "error", "{request:?}");
-            assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "error", "{request:?}");
-        }
+        let request = switched(true, stored.file.clone(), other);
+        assert_eq!(code(&ask(&core, Some(&app_key), request.clone()).await), "error", "{request:?}");
+        assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "error", "{request:?}");
+
+        // Issue #454: the archive or a folder does not even read as a request.
+        let folder = serde_json::json!({
+            "method": "mail.create_filter", "query": "from:shop.example", "file": {"to": "folder", "id": "f:8"},
+        });
+        let refused = serde_json::from_value::<Request>(folder).expect_err("refused").to_string();
+        assert!(refused.contains(torro_mail::FILE_ONLY_TRASH), "{refused}");
     }
 
     /// Issue #339, review: a filter needs what its actions would need one by one – admin access to
-    /// mail is not enough. Write access marks as read and moves, the trash needs delete access; this
+    /// mail is not enough. Write access marks as read, the trash needs delete access; this
     /// holds for making, changing and applying a filter, before anyone is asked.
     #[tokio::test]
     async fn a_filter_needs_the_rights_its_actions_need() {
@@ -14458,14 +14464,10 @@ mod tests {
         {
             assert_eq!(code(&ask(&core, Some(&writes), request.clone()).await), "forbidden", "{request:?}");
         }
-        waits(ask(&core, Some(&writes), make(Some(FilterFile::Archive), true)).await);
+        waits(ask(&core, Some(&writes), make(None, true)).await);
 
         let (_, reads) = client(&core, keyed(Level::Read)).await;
-        for request in [
-            make(None, true),
-            make(Some(FilterFile::Archive), false),
-            Request::ApplyMailFilter { id: reading.id.clone() },
-        ] {
+        for request in [make(None, true), Request::ApplyMailFilter { id: reading.id.clone() }] {
             assert_eq!(code(&ask(&core, Some(&reads), request.clone()).await), "forbidden", "{request:?}");
         }
         assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), 1, "only the allowed one");
@@ -14475,14 +14477,15 @@ mod tests {
     }
 
     /// Issue #339: the preview counts what a filter's search finds in the inbox; applying it marks
-    /// and moves exactly that mail, once – a second run finds nothing left to do. A client's run
-    /// waits for a person and says how many mails it changes.
+    /// and moves exactly that mail to the trash, once – a second run finds nothing left to do. A
+    /// client's run waits for a person and says how many mails it changes.
     #[tokio::test]
     async fn applying_a_mail_filter_changes_the_mail_it_finds_in_the_inbox() {
         use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
         use crate::mail::sync::fake::{FakeImap, mail};
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
         for subject in ["Bill one", "Bill two"] {
             server.add("INBOX", &crate::mail::save::tests::raw_on(Utc::now(), subject, &[]), &[]);
         }
@@ -14506,7 +14509,7 @@ mod tests {
         let create = Request::CreateMailFilter {
             query: query.into(),
             account: Some(anna.into()),
-            file: Some(torro_mail::FilterFile::Archive),
+            file: Some(torro_mail::FilterFile::Trash),
             mark_read: true,
             category: None,
             enabled: true,
@@ -14523,7 +14526,7 @@ mod tests {
                 &[
                     ("query", &format!("\"{query}\"")),
                     ("account", &"anna@example.org"),
-                    ("actions", &format!("{}, {}", tr("mark as read"), tr("move to the archive"))),
+                    ("actions", &format!("{}, {}", tr("mark as read"), tr("move to the trash"))),
                 ]
             )),
             "{}",
@@ -14535,7 +14538,7 @@ mod tests {
         let done = Response::MailFilterApplied { applied: 2, failed: 0, more: false };
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(done) });
 
-        let archived = server.messages("Archive");
+        let archived = server.messages("Trash");
         assert_eq!(archived.len(), 2);
         assert!(archived.iter().all(|(_, flags, _)| flags.iter().any(|flag| flag == "\\Seen")), "{archived:?}");
         assert_eq!(server.messages("INBOX").len(), 1, "Bernd's mail stays");

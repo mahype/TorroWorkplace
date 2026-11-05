@@ -43,7 +43,7 @@ pub use account::{
 pub use category::{
     Category, CategoryDef, CategoryGroup, CategoryGroupDef, CategoryIcon, CategorySource, CustomCategory, MailCategory,
 };
-pub use filter::{FILTER_QUERY_MAX, FILTERS_MAX, FilterActions, FilterFile, MailFilter};
+pub use filter::{FILE_ONLY_TRASH, FILTER_QUERY_MAX, FILTERS_MAX, FilterActions, FilterFile, MailFilter};
 pub use message::{
     AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailPile, Message,
     MessageSummary, MessageTraits, Role,

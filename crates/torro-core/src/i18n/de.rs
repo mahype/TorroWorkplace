@@ -5934,14 +5934,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("every mail account", "allen Mail-Konten"),
     ("file as {category}", "als {category} einordnen"),
     ("mark as read", "als gelesen markieren"),
-    ("move to the archive", "ins Archiv verschieben"),
     ("move to the trash", "in den Papierkorb verschieben"),
-    ("move to {folder}", "nach {folder} verschieben"),
     ("{query} in {account}: {actions}", "{query} in {account}: {actions}"),
-    (
-        "A mail filter cannot move mail into the inbox.",
-        "Ein Mail-Filter kann keine Mails in den Posteingang verschieben.",
-    ),
     (
         "A mail filter cannot search the names of attachments; leave out filename:.",
         "Ein Mail-Filter kann nicht in den Namen von Anhängen suchen; lass filename: weg.",
@@ -5955,17 +5949,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ein Mail-Filter sieht nur in den Posteingang; lass in: weg.",
     ),
     (
-        "A mail filter needs an action: move the mail, mark it as read or set a category.",
-        "Ein Mail-Filter braucht eine Aktion: die Mail verschieben, als gelesen markieren oder eine Kategorie setzen.",
+        "A mail filter needs an action: set a category, mark the mail as read or move it to the trash.",
+        "Ein Mail-Filter braucht eine Aktion: eine Kategorie setzen, die Mail als gelesen markieren oder sie in den Papierkorb legen.",
     ),
     ("A mail filter needs a search.", "Ein Mail-Filter braucht eine Suche."),
     (
-        "A mail filter that moves mail to a folder needs an account.",
-        "Ein Mail-Filter, der Mails in einen Ordner verschiebt, braucht ein Konto.",
-    ),
-    (
-        "A mail filter that moves mail or marks it as read needs write access to mail.",
-        "Ein Mail-Filter, der Mails verschiebt oder als gelesen markiert, braucht Schreibzugriff auf Mail.",
+        "A mail filter that marks mail as read needs write access to mail.",
+        "Ein Mail-Filter, der Mails als gelesen markiert, braucht Schreibzugriff auf Mail.",
     ),
     (
         "A mail filter that moves mail to the trash needs delete access to mail.",
@@ -5980,7 +5970,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The category of the mail filter is not in the catalogue.",
         "Die Kategorie des Mail-Filters steht nicht im Katalog.",
     ),
-    ("The mail filter's account has no such folder.", "Das Konto des Mail-Filters hat diesen Ordner nicht."),
+    (
+        "The mail filter moves mail to the archive or a folder, which mail filters no longer do.",
+        "Der Mail-Filter verschiebt Mails ins Archiv oder in einen Ordner; das tun Mail-Filter nicht mehr.",
+    ),
     ("The mail filters cannot be read or written.", "Die Mail-Filter können nicht gelesen oder geschrieben werden."),
     ("There can be at most 200 mail filters.", "Es kann höchstens 200 Mail-Filter geben."),
     // Saving attachments (issue #290): approvals (M12.1, M12.3).
@@ -6990,11 +6983,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Type what the filter looks for.", "Gib ein, wonach der Filter sucht."),
     ("A filter’s search has at most {most} characters.", "Die Suche eines Filters hat höchstens {most} Zeichen."),
     ("Choose at least one thing the filter does.", "Wähle mindestens eine Aktion für den Filter."),
-    (
-        "Choose an account to move mail into one of its folders.",
-        "Wähle ein Konto, um E-Mails in einen seiner Ordner zu verschieben.",
-    ),
-    ("Choose the folder the mail goes to.", "Wähle den Ordner, in den die E-Mails kommen."),
     ("New filter", "Neuer Filter"),
     ("Edit filter", "Filter bearbeiten"),
     (
@@ -7005,7 +6993,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Move to {folder}", "Nach {folder} verschieben"),
     ("Mark as read", "Als gelesen markieren"),
     ("Unknown category", "Unbekannte Kategorie"),
-    ("Unknown folder", "Unbekannter Ordner"),
     ("Apply to the 1 mail in Inbox?", "Auf die 1 E-Mail im Posteingang anwenden?"),
     ("Apply to the {n} mails in Inbox?", "Auf die {n} E-Mails im Posteingang anwenden?"),
     ("Apply", "Anwenden"),
@@ -7043,8 +7030,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Finds no mail in Inbox now.", "Findet gerade keine E-Mail im Posteingang."),
     ("Finds 1 mail in Inbox now.", "Findet gerade 1 E-Mail im Posteingang."),
     ("Finds {n} mails in Inbox now.", "Findet gerade {n} E-Mails im Posteingang."),
-    ("Choose an account first", "Wähle zuerst ein Konto"),
-    ("Choose a folder", "Ordner wählen"),
     ("No category", "Keine Kategorie"),
     ("Create filter…", "Filter erstellen…"),
     ("Create filter from search…", "Filter aus der Suche erstellen…"),
