@@ -127,6 +127,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Language", "Sprache"),
     ("Not installed", "Nicht installiert"),
     ("Open", "Öffnen"),
+    ("state|Open", "Offen"),
     ("Open link", "Link öffnen"),
     ("Window class: {class}", "Fensterklasse: {class}"),
     ("Start at login", "Beim Anmelden starten"),
