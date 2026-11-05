@@ -3098,8 +3098,10 @@ pub fn floating_rail<'a, M: Clone + 'a>(
         let faces = groups.into_iter().map(|(at, group)| {
             let press = group.first_press().unwrap_or_else(|| on_event(RailEvent::Open(at)));
             let face = rail_face(&group, active == Some(at), press);
+            // A card group opens nothing under the pointer, so its name stands in a tooltip.
             let face: Element<'a, M> = if group.card {
-                face
+                let name = typo::text(typo::caption(), group.label.clone()).style(theme::text_2);
+                tip(face, name, tooltip::Position::Left)
             } else {
                 mouse_area(face).on_enter(on_event(RailEvent::Enter(at))).on_exit(on_event(RailEvent::Leave(at))).into()
             };
