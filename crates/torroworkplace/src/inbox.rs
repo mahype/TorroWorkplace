@@ -1816,6 +1816,24 @@ impl Inbox {
         .map_err(|failure| failure.to_string())
     }
 
+    /// Mirror a late answer of the model (issue #406) unless the person chose the category
+    /// meanwhile: whatever a rule or a model put there is replaced, a choice by hand never.
+    /// `Ok(false)` when there is no such entry or the person's choice stands.
+    pub fn set_category_unless_person(&self, id: &str, category: torro_mail::MailCategory) -> Result<bool, String> {
+        self.with(|db| {
+            let Some(mut held) = read_items(db, &Scope::All, "id = ?", vec![text(id)], "")?.pop() else {
+                return Ok(false);
+            };
+            if held.item.category.is_some_and(|current| current.source == torro_mail::CategorySource::Person) {
+                return Ok(false);
+            }
+            held.item.category = Some(category);
+            update_item(db, &held.item)?;
+            Ok(true)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// The messages filed into the entry `id`, oldest first (task E12.4): what a category set by
     /// hand is written to, so the whole conversation reads alike. `Err` holds the message for the
     /// log.
@@ -10254,6 +10272,29 @@ pub(crate) mod tests {
         let other = inbox.handle_message(Request::GetItem { id: "m:9".into() }, &stand_in, None, at(8, 3));
         assert_eq!(code(&other), "error", "only muting takes a mail's id");
         assert_eq!(inbox.entry_of_message(ANNA, "m:1").as_deref(), Some(hidden.moved[0].as_str()));
+    }
+
+    /// Issue #406: a late answer of the model reaches the entry unless the person chose meanwhile.
+    #[test]
+    fn a_late_answer_does_not_replace_a_choice_by_hand() {
+        use torro_mail::{Category, CategorySource, MailCategory};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let answer = MailCategory::by_model(Category::Invoice, 0.9);
+        let held = |inbox: &Inbox| {
+            item(inbox.handle(Request::GetItem { id: id.clone() }, None, at(9, 0))).category.expect("a category")
+        };
+
+        assert!(!inbox.set_category_unless_person("nope", answer).expect("asked"), "no such entry");
+        inbox.set_category(&id, Some(MailCategory::by_rule(Category::Personal))).expect("kept");
+        assert!(inbox.set_category_unless_person(&id, answer).expect("asked"), "a rule's category is replaced");
+        assert_eq!((held(&inbox).category, held(&inbox).source), (Category::Invoice, CategorySource::Model));
+
+        inbox.set_category(&id, Some(MailCategory::by_person(Category::Newsletter))).expect("kept");
+        assert!(!inbox.set_category_unless_person(&id, answer).expect("asked"), "the person's choice stands");
+        assert_eq!((held(&inbox).category, held(&inbox).source), (Category::Newsletter, CategorySource::Person));
     }
 
     /// Issue #339: mail is never hidden – an entry's (in any scope) and a message's without an entry
