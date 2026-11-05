@@ -1179,6 +1179,10 @@ pub enum View {
     /// "Archive" under "Folders" of the mail window (task E18.4): the mail in the archive folders
     /// of every account shown ([`Role::Archive`]). `mail.*` only.
     Archive,
+    /// "Trash" under "Folders" of the mail window (issue #455): the mail in the trash folders of every
+    /// account shown ([`Role::Trash`]), as "Archive" lists its role, without a number. Deleting there
+    /// is refused as for any mail in the trash. `mail.*` only.
+    Trash,
     /// The pile "Reply later" of the mail window (task E19.4, decisions 1 and 3 of E19): the mail put
     /// there, from every folder but the trash and spam of every account shown, newest first, a page
     /// at a time (`MailSource::mail_in_pile`). `mail.*` only.
@@ -1205,6 +1209,7 @@ impl View {
             | View::All
             | View::Sent
             | View::Archive
+            | View::Trash
             | View::ReplyLater
             | View::SetAside => return None,
         };
@@ -1231,6 +1236,7 @@ impl View {
             View::Sent => tr("Sent").into(),
             // The word of the folder (`mail::folder_name`), not the button's (`trc("action", …)`).
             View::Archive => tr("Archive").into(),
+            View::Trash => tr("Trash").into(),
             View::ReplyLater => tr("Reply later").into(),
             // The pile, not the action (decision 11 of E19): "Beiseitegelegt", not "Beiseitelegen".
             View::SetAside => trc("pile", "Set aside").into(),
@@ -1252,6 +1258,7 @@ impl View {
             View::All => Icon::Mail,
             View::Sent => Icon::Send,
             View::Archive => Icon::Archive,
+            View::Trash => Icon::Trash2,
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
         }
@@ -1277,6 +1284,7 @@ impl View {
                 | View::All
                 | View::Sent
                 | View::Archive
+                | View::Trash
                 | View::ReplyLater
                 | View::SetAside
         )
@@ -1318,6 +1326,7 @@ impl View {
             View::All => Some("all".to_owned()),
             View::Sent => Some("sent".to_owned()),
             View::Archive => Some("archive".to_owned()),
+            View::Trash => Some("trash".to_owned()),
             View::ReplyLater => Some("reply-later".to_owned()),
             View::SetAside => Some("set-aside".to_owned()),
             _ => None,
@@ -1331,6 +1340,7 @@ impl View {
             View::All => Some((Role::Inbox, Some(false))),
             View::Sent => Some((Role::Sent, None)),
             View::Archive => Some((Role::Archive, None)),
+            View::Trash => Some((Role::Trash, None)),
             _ => None,
         }
     }
@@ -1604,10 +1614,14 @@ pub enum Open {
     CategorizationRunning,
     /// … with the menu of "Sort with model" open.
     CategorizationModel,
+    /// "All" of the mail window with the menu of the account field open (issue #455).
+    MailAccounts,
+    /// "Trash" of the mail window (issue #455): the mail in the trash of every account.
+    Trash,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 81] = [
+    const ALL: [(&'static str, Open); 83] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1689,6 +1703,8 @@ impl Open {
         ("categorization-filter", Open::CategorizationFilter),
         ("categorization-running", Open::CategorizationRunning),
         ("categorization-model", Open::CategorizationModel),
+        ("mail-accounts", Open::MailAccounts),
+        ("trash", Open::Trash),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2277,6 +2293,9 @@ pub struct Loaded {
     /// `MailSource::unread_in_all` counts, summed over the accounts shown. `None` in the other
     /// windows, without a mail account, and when one count failed – the list still shows then.
     pub unread_all: Option<u64>,
+    /// The unread mail of "All" of each mail account (issue #455), hidden ones too, for the menu of the
+    /// account field; `None` where its count failed. Empty outside the mail window.
+    pub unread_each: Vec<(String, Option<u64>)>,
     /// How much mail lies on "Reply later" in the mail window (task E19.4, `MailSource::count_in_pile`),
     /// summed over the accounts shown; `None` in the other windows, without a mail account and when a
     /// count failed – the sidebar then shows no number.
@@ -2639,6 +2658,8 @@ pub struct App<S> {
     /// The unread mail of "All" (task E18.4, [`Loaded::unread_all`]): the number on its row; `None`
     /// outside the mail window and when the core could not count.
     unread_all: Option<u64>,
+    /// The unread mail of "All" of each account (issue #455, [`Loaded::unread_each`]).
+    unread_each: Vec<(String, Option<u64>)>,
     /// How much mail lies on "Reply later" and "Set aside" (task E19.4, [`Loaded::reply_later`]): the
     /// numbers on their rows; `None` outside the mail window and when the core could not count.
     reply_later: Option<u64>,
@@ -3358,9 +3379,15 @@ pub enum Message {
     CopyText,
     /// The title of an account's browser group: fold its folders away or show them this session.
     ToggleAccount(String),
+    /// The account field at the top of the mail window's sidebar (issue #455): opens or closes its menu.
     ToggleMailAccounts,
     SelectAllMailAccounts,
     ToggleMailAccount(String),
+    /// "Only this" in the account field's menu (issue #455): show this account alone, kept like any
+    /// choice of accounts.
+    OnlyMailAccount(String),
+    /// "Manage accounts…" in the account field's menu (issue #455): the settings at Accounts.
+    ManageMailAccounts,
     StoredMailAccounts(Option<Vec<String>>),
     OpenFolders,
     ToggleFolderPin(String),
@@ -3537,6 +3564,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
             for_me: Vec::new(),
             info: Vec::new(),
             unread_all: None,
+            unread_each: Vec::new(),
             reply_later: None,
             set_aside: None,
             sources: Vec::new(),
@@ -3623,10 +3651,11 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
     // Whether a decision model is set up, so the reader offers "Re-categorize" only then.
     let model_ready = !folders.is_empty() && inbox.categorization_ready().await.unwrap_or(false);
     // The number on "All" (task E18.4): only the mail window has the view.
-    let unread_all = if kind == Kind::Mail && !folders.is_empty() {
-        count_unread_all(&*inbox, mail_accounts.as_deref()).await
+    let (unread_all, unread_each) = if kind == Kind::Mail && !folders.is_empty() {
+        let every: Vec<String> = mail::by_account(&folders).into_iter().map(|group| group.account.to_owned()).collect();
+        count_unread_all(&*inbox, mail_accounts.as_deref(), &every).await
     } else {
-        None
+        (None, Vec::new())
     };
     // The numbers on the piles (task E19.4): the mail window's alone, as "All".
     let (reply_later, set_aside) = if kind == Kind::Mail && !folders.is_empty() {
@@ -3682,7 +3711,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         }
         // "All", "Sent" and "Archive" (task E18.4, issue #445): the mail of one folder role of every
         // account shown, as the core leaves out what is snoozed.
-        View::All | View::Sent | View::Archive => {
+        View::All | View::Sent | View::Archive | View::Trash => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         // A pile (task E19.4): its mail from every folder of the accounts shown.
@@ -3706,6 +3735,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         for_me,
         info,
         unread_all,
+        unread_each,
         reply_later,
         set_aside,
         sources,
@@ -3935,13 +3965,28 @@ async fn count_piled<S: MailSource>(inbox: &S, pile: MailPile, accounts: Option<
 /// The number on "All" (task E18.4): `MailSource::unread_in_all` once for every account
 /// (`accounts` `None`), else for each account chosen, summed. `None` when one count failed, so the
 /// row shows no number rather than a wrong one.
-async fn count_unread_all<S: MailSource>(inbox: &S, accounts: Option<&[String]>) -> Option<u64> {
-    let Some(accounts) = accounts else { return inbox.unread_in_all(None).await.ok() };
-    let mut total = 0_u64;
-    for account in accounts {
-        total = total.saturating_add(inbox.unread_in_all(Some(account.clone())).await.ok()?);
+async fn count_unread_all<S: MailSource>(
+    inbox: &S,
+    accounts: Option<&[String]>,
+    every: &[String],
+) -> (Option<u64>, Vec<(String, Option<u64>)>) {
+    // Each account's own number for the menu of the account field (issue #455), the hidden ones too;
+    // one that fails leaves out only its own number.
+    let mut each = Vec::new();
+    for account in every {
+        each.push((account.clone(), inbox.unread_in_all(Some(account.clone())).await.ok()));
     }
-    Some(total)
+    let Some(accounts) = accounts else { return (inbox.unread_in_all(None).await.ok(), each) };
+    let mut total = Some(0_u64);
+    for account in accounts {
+        let known = each.iter().find(|(held, _)| held == account).map(|(_, count)| *count);
+        let count = match known {
+            Some(count) => count,
+            None => inbox.unread_in_all(Some(account.clone())).await.ok(),
+        };
+        total = total.zip(count).map(|(total, count)| total.saturating_add(count));
+    }
+    (total, each)
 }
 
 /// The same cursor walk for a search whose scope is "All mail". Explicit account and folder
@@ -4034,6 +4079,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::Done) => View::Done,
                 Some(Open::Sent) => View::Sent,
                 Some(Open::Archive) => View::Archive,
+                Some(Open::Trash) => View::Trash,
                 Some(Open::ReplyLater | Open::Focus) => View::ReplyLater,
                 Some(Open::SetAside) => View::SetAside,
                 // The first inbox, once the folders are in.
@@ -4076,6 +4122,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             for_me: Vec::new(),
             info: Vec::new(),
             unread_all: None,
+            unread_each: Vec::new(),
             reply_later: None,
             set_aside: None,
             sources: Vec::new(),
@@ -4176,6 +4223,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             menu: match open {
                 Some(Open::Menu | Open::CategoryMenu) => Some(Menu::Nav),
                 Some(Open::Switcher) => Some(Menu::Switcher),
+                Some(Open::MailAccounts) => Some(Menu::MailAccounts),
                 _ => None,
             },
             menu_at: MenuAt::default(),
@@ -5538,6 +5586,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
                 let save = ui_state::save_mail_accounts_task(INBOX, self.launch.window_key(), None);
                 return Task::batch([save, self.load()]);
+            }
+            Message::OnlyMailAccount(account) => {
+                let all = mail::by_account(&self.folders).len();
+                self.mail_accounts = (all != 1).then(|| vec![account]);
+                self.accounts_chosen = true;
+                self.more = None;
+                if self.launch.demo {
+                    return self.load();
+                }
+                let save =
+                    ui_state::save_mail_accounts_task(INBOX, self.launch.window_key(), self.mail_accounts.clone());
+                return Task::batch([save, self.load()]);
+            }
+            Message::ManageMailAccounts => {
+                self.close_menus();
+                return self.open_settings(Some(settings_mail::ACCOUNTS_SECTION));
             }
             Message::ToggleMailAccount(account) => {
                 let all: Vec<String> =
@@ -7605,7 +7669,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 })
             }
             // "All", "Sent" and "Archive" (task E18.4): the next page of the same role and fields.
-            View::All | View::Sent | View::Archive => {
+            View::All | View::Sent | View::Archive | View::Trash => {
                 let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
                 Box::pin(async move {
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
@@ -7979,6 +8043,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.for_me.sort_by_key(|item| !list::is_waiting(item));
         self.info = loaded.info;
         self.unread_all = loaded.unread_all;
+        self.unread_each = loaded.unread_each;
         self.reply_later = loaded.reply_later;
         self.set_aside = loaded.set_aside;
         self.sources = loaded.sources;
@@ -10412,7 +10477,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Some(Menu::MailAccounts) => Some(widgets::floating(
                 &accounts,
-                Placement::Below(Align::End),
+                Placement::Below(Align::Start),
                 self.mail_accounts_menu(),
                 Message::CloseMenu,
             )),
@@ -11280,11 +11345,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         (views, sources)
     }
 
-    /// The two rows on top of the mail window's sidebar (issue #445): "All" – the mail of every inbox
-    /// with the unread mail it holds (decision 4 of E18), chosen while its list shows – and "Sent",
-    /// the sent mail of every account, without a number. The overview has no row: it opens beside
-    /// "All" and from the path over the list ([`App::mail_path`]). Empty in the other windows and in
-    /// a window of mail only.
+    /// The row on top of the mail window's sidebar (issue #445): "All" – the mail of every inbox with
+    /// the unread mail it holds (decision 4 of E18), chosen while its list shows –, right above the
+    /// categories (issue #455; "Sent" moved under "Folders"). The overview has no row: it opens beside
+    /// "All" and from "Show overview" in the top row (issue #459). Empty in the other windows and in a
+    /// window of mail only.
     fn top_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail || self.mail_only {
             return Vec::new();
@@ -11298,7 +11363,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             target: Target::View,
             detail: None,
         };
-        vec![entry(View::All, number(self.unread_all)), entry(View::Sent, None)]
+        vec![entry(View::All, number(self.unread_all))]
     }
 
     /// The group "Categories" of the mail window's sidebar (task E12.8, `docs/kategorien.md`):
@@ -11529,10 +11594,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .collect()
     }
 
-    /// The rows of "Folders" in the mail window (task E18.4), in this order: "Archive" – the mail of
-    /// every archive folder ([`View::Archive`]) – while an account shown has a folder of the role
-    /// Archive, the pinned folders, and "Pin folders" ([`Target::OpenFolders`], with its chevron)
-    /// while there is a mail account. Empty in the other windows (but one of mail only).
+    /// The rows of "Folders" in the mail window (task E18.4, issue #455), in this order: "Sent" – the
+    /// sent mail of every account ([`View::Sent`]), always –, "Archive" ([`View::Archive`]) and "Trash"
+    /// ([`View::Trash`]) while an account shown has a folder of that role, the pinned folders, and
+    /// "Pin folders" ([`Target::OpenFolders`], with its chevron) while there is a mail account. Empty
+    /// in the other windows; a window of mail only has no "Sent" and no "Trash".
     fn folder_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail && !self.mail_only {
             return Vec::new();
@@ -11549,19 +11615,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         });
         let shown =
             |folder: &&Folder| self.mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&folder.account));
-        let archive = self.folders.iter().filter(shown).any(|folder| folder.role == Some(Role::Archive)).then(|| {
-            let view = View::Archive;
-            NavEntry {
-                mark: Mark::Icon(view.icon()),
-                label: view.name(),
-                count: None,
-                active: self.view == view,
-                view,
-                target: Target::View,
-                detail: None,
-            }
-        });
-        archive.into_iter().chain(self.pinned_entries()).chain(browse).collect()
+        let has_role = |role: Role| self.folders.iter().filter(shown).any(|folder| folder.role == Some(role));
+        let entry = |view: View| NavEntry {
+            mark: Mark::Icon(view.icon()),
+            label: view.name(),
+            count: None,
+            active: self.view == view && !self.sorting && !self.is_insights(),
+            view,
+            target: Target::View,
+            detail: None,
+        };
+        let whole = self.launch.kind == Kind::Mail && !self.mail_only;
+        let sent = whole.then(|| entry(View::Sent));
+        let archive = has_role(Role::Archive).then(|| entry(View::Archive));
+        let trash = (whole && has_role(Role::Trash)).then(|| entry(View::Trash));
+        sent.into_iter().chain(archive).chain(trash).chain(self.pinned_entries()).chain(browse).collect()
     }
 
     /// The pinned folders of "Folders" (task E18.4): the folder's name, and under it the address of
@@ -11592,31 +11660,69 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .collect()
     }
 
-    fn mail_accounts_label(&self) -> String {
+    /// The two lines of the account field (issue #455): "All accounts" over the domains of every
+    /// account, "{count} accounts" over the domains chosen, or one account's domain over its address;
+    /// the domains apart by " · ".
+    fn account_field_text(&self) -> (String, String) {
+        let domains =
+            |accounts: &mut dyn Iterator<Item = &str>| accounts.map(mail_domain).collect::<Vec<_>>().join(" · ");
         match &self.mail_accounts {
-            None => tr("All accounts").to_owned(),
-            Some(accounts) if accounts.is_empty() => tr("No accounts").to_owned(),
-            Some(accounts) if accounts.len() == 1 => mail::address(&accounts[0]).to_owned(),
-            Some(accounts) => trf("{count} accounts", &[("count", &accounts.len().to_string())]),
+            None => {
+                let every = mail::by_account(&self.folders);
+                (tr("All accounts").to_owned(), domains(&mut every.iter().map(|group| group.account)))
+            }
+            Some(chosen) if chosen.is_empty() => (tr("No accounts").to_owned(), String::new()),
+            Some(chosen) if chosen.len() == 1 => {
+                (mail_domain(&chosen[0]).to_owned(), mail::address(&chosen[0]).to_owned())
+            }
+            Some(chosen) => (
+                trf("{count} accounts", &[("count", &chosen.len().to_string())]),
+                domains(&mut chosen.iter().map(String::as_str)),
+            ),
         }
     }
 
+    /// The menu of the account field (issue #455, as the draft): "Show accounts", "All accounts" with
+    /// the unread mail of all of them, then each account with its tick, its domain over its address,
+    /// its unread mail of "All" and "Only this", and at the end "Manage accounts…". A number that
+    /// could not be counted is left out, and the sum with it.
     fn mail_accounts_menu(&self) -> Element<'_, Message> {
         let groups = self.mail_groups();
-        let mut list = column![menu_caption(tr("Shown mail accounts"))];
+        let mut list = column![menu_caption(tr("Show accounts"))];
         let colour = palette(&self.theme()).accent;
+        let count_of = |account: &str| self.unread_each.iter().find(|(held, _)| held == account).and_then(|(_, n)| *n);
+        let sum: Option<u64> = groups.iter().map(|group| count_of(&group.account)).sum();
+        let number = |count: Option<u64>| -> Element<'_, Message> {
+            let shown = count.filter(|&n| n > 0).map(|n| n.to_string()).unwrap_or_default();
+            typo::text(typo::meta().tabular(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+        };
         let all = MenuItem::new(
             Mark::Check(colour, self.mail_accounts.is_none()),
             tr("All accounts"),
             Message::SelectAllMailAccounts,
         );
-        list = list.push(widgets::menu_item(all)).push(menu_line());
+        let all_row = row![widgets::menu_item(all), number(sum), Space::new().width(space::s())];
+        list = list.push(all_row.spacing(space::s()).align_y(Alignment::Center)).push(menu_line());
         for group in groups {
             let selected = self.mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&group.account));
-            let item =
-                MenuItem::new(Mark::Check(colour, selected), group.title, Message::ToggleMailAccount(group.account));
-            list = list.push(widgets::menu_item(item));
+            let address = mail::address(&group.account).to_owned();
+            let item = MenuItem::new(
+                Mark::Check(colour, selected),
+                mail_domain(&group.account).to_owned(),
+                Message::ToggleMailAccount(group.account.clone()),
+            )
+            .detail(address);
+            let only = widgets::text_button(
+                None,
+                tr("Only this"),
+                style::button::ghost,
+                Some(Message::OnlyMailAccount(group.account.clone())),
+            );
+            let line = row![widgets::menu_item(item), number(count_of(&group.account)), only];
+            list = list.push(line.spacing(space::s()).align_y(Alignment::Center));
         }
+        let manage = MenuItem::new(shell::SETTINGS_ICON, tr("Manage accounts…"), Message::ManageMailAccounts);
+        list = list.push(menu_line()).push(widgets::menu_item(manage));
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::list_medium());
         let body = iced::widget::scrollable(list).height(iced::Length::Shrink).width(Fill);
@@ -11625,6 +11731,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .padding(style::MENU_INSET)
             .style(style::container::menu)
             .into()
+    }
+
+    /// The head of the mail window's sidebar (issue #455): the account field – in the rail its icon,
+    /// the field's words as tooltip – and under it "New email" with its key. Without a mail account
+    /// the field is left out and "New email" is off.
+    fn mail_sidebar_head<'a>(&'a self, mode: SidebarMode, accounts: &Anchor) -> Element<'a, Message> {
+        let has_account = !self.folders.is_empty();
+        let compose = has_account.then_some(Message::Switcher(Switcher::New));
+        let (title, detail) = self.account_field_text();
+        match mode {
+            SidebarMode::Expanded => {
+                let mut head = column![].spacing(space::s());
+                if has_account {
+                    head =
+                        head.push(widgets::account_select(title, detail, accounts, Some(Message::ToggleMailAccounts)));
+                }
+                head.push(new_mail_button(compose)).into()
+            }
+            SidebarMode::Rail => {
+                let mut head = column![].spacing(shell_gap()).align_x(Alignment::Center).width(Fill);
+                if has_account {
+                    let words = if detail.is_empty() { title } else { format!("{title} · {detail}") };
+                    let field = widgets::icon_button(Icon::Users, words, Some(Message::ToggleMailAccounts));
+                    head = head.push(widgets::anchored(accounts, field));
+                }
+                head.push(widgets::boxed_button(Icon::SquarePen, tr("New email"), compose)).into()
+            }
+        }
     }
 
     /// The menu at the filter icon of the search field (issue #336): a tick for each quick filter,
@@ -11728,16 +11862,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         };
         // What the mail is (task E12.8), on top and without a title (issue #337): the five groups,
         // with the categories of an open one indented under it (issue #300), once at least one mail
-        // has a category. On top of them "All" and "Sent", which the mail window always has (issue #445).
+        // has a category. Right on top of them "All", which the mail window always has (issue #455).
         let mut items: Vec<Element<'a, Message>> = Vec::new();
-        let top = self.top_entries();
-        let categories = self.category_entries();
-        let gap = !top.is_empty() && !categories.is_empty();
-        items.extend(top.into_iter().map(row));
-        if gap {
-            items.push(widgets::sidebar_gap_in(mode));
-        }
-        for branch in categories {
+        items.extend(self.top_entries().into_iter().map(row));
+        for branch in self.category_entries() {
             items.extend(self.category_rows(mode, branch));
         }
         // The views: in the mail window the piles, Follow up and Hidden, set apart from the
@@ -11784,8 +11912,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
         }
         // "Settings" sits in the top row's right corner, the switcher at its left (issue #459).
-        let _ = accounts;
-        let head = shell::sidebar_tools(mode, self.sidebar_search(), Message::Switcher);
+        let head = if self.launch.kind == Kind::Mail && !self.mail_only {
+            self.mail_sidebar_head(mode, accounts)
+        } else {
+            shell::sidebar_tools(mode, self.sidebar_search(), Message::Switcher)
+        };
         shell::sidebar(head, items, Vec::new())
     }
 
@@ -11833,16 +11964,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
         };
         let mut sections = Vec::new();
-        // As in the sidebar (issue #445): "All" and "Sent" in a section of their own, then the groups,
-        // and the categories of an open one nested under them (issue #300), in one without a title.
-        let first: Vec<_> = self.top_entries().into_iter().map(item).collect();
-        if !first.is_empty() {
-            sections.push(MenuSection::new(first));
-        }
-        let top: Vec<_> = self
-            .category_entries()
-            .into_iter()
-            .flat_map(|branch| {
+        // As in the sidebar (issue #455): "All" right above the groups, and the categories of an open
+        // one nested under them (issue #300), in one section without a title.
+        let first = self.top_entries().into_iter().map(item);
+        let top: Vec<_> = first
+            .chain(self.category_entries().into_iter().flat_map(|branch| {
                 // Folding shows nothing in the menu: its group only shows and opens. "Unsorted"
                 // (`Target::Show`, issue #398) only shows already.
                 let target = branch.group.target;
@@ -11852,7 +11978,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     group.on_press = Message::ShowCategoryGroup(of);
                 }
                 std::iter::once(group).chain(children).collect::<Vec<_>>()
-            })
+            }))
             .collect();
         if !top.is_empty() {
             sections.push(MenuSection::new(top));
@@ -12696,6 +12822,44 @@ fn path_chevron<'a>() -> Element<'a, Message> {
     icon::icon(Icon::ChevronRight, icon::SIZE_SM)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) })
         .into()
+}
+
+/// The domain of a mail account (`mail:<address>`, issue #455): what follows the "@" of its address,
+/// the address itself where it has none.
+fn mail_domain(account: &str) -> &str {
+    let address = mail::address(account);
+    address.rsplit_once('@').map_or(address, |(_, domain)| domain)
+}
+
+/// "New email" under the account field (issue #455): framed, as wide as the sidebar, with the pen and
+/// the key of the system's preset at its end; off without a mail account.
+fn new_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
+    let key = shortcuts::Preset::default()
+        .hint(shortcuts::Command::NewMail, shortcuts::System::current())
+        .unwrap_or_default();
+    let mut content = row![
+        icon::icon(Icon::SquarePen, icon::SIZE_SM)
+            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) }),
+        typo::text(typo::body_strong(), tr("New email")).wrapping(Wrapping::None),
+        Space::new().width(Fill),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    if !key.is_empty() {
+        content = content.push(widgets::kbd(key));
+    }
+    let button = iced::widget::button(container(content).center_y(Fill))
+        .width(Fill)
+        .height(size::control())
+        .padding(Padding::new(0.0).left(space::m()).right(space::s()))
+        .style(style::button::boxed)
+        .on_press_maybe(on_press);
+    button.into()
+}
+
+/// The gap between the rows of a sidebar, as `shell::sidebar` sets it.
+fn shell_gap() -> f32 {
+    2.0
 }
 
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
@@ -17002,7 +17166,7 @@ mod tests {
     /// "All") with the unread mail of every inbox at the end of the categories, the start view; no
     /// "Smart views". Issue #339: no "Hidden".
     #[test]
-    fn the_mail_windows_sidebar_lists_all_sent_its_piles_and_folders() {
+    fn the_mail_windows_sidebar_lists_all_its_piles_and_folders() {
         let mut app = mail_window(Density::Comfortable, &[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
@@ -17027,15 +17191,15 @@ mod tests {
         let counts: Vec<Option<usize>> = views.iter().map(|entry| entry.count).collect();
         assert_eq!(counts, [Some(2), Some(1), None], "the piles have numbers");
         assert!(views.iter().all(|entry| !entry.active), "no pile is the start view");
-        // Issue #445: "All" and "Sent" on top; the overview and "Unfiltered" have no row.
+        // Issue #455: "All" on top, right above the categories; the overview and "Unfiltered" have no
+        // row, "Sent" stands under "Folders".
         let top = app.top_entries();
-        assert_eq!(top.iter().map(|entry| entry.label.clone()).collect::<Vec<_>>(), [tr("All"), tr("Sent")]);
-        let (all, sent) = (&top[0], &top[1]);
+        assert_eq!(top.iter().map(|entry| entry.label.clone()).collect::<Vec<_>>(), [tr("All")]);
+        let all = &top[0];
         assert_eq!((all.view.clone(), all.mark), (View::All, Mark::Icon(Icon::Mail)));
         assert_eq!(all.count, Some(unread as usize), "the unread mail of every inbox");
-        assert!(all.active && !sent.active, "All is the start view");
-        assert_eq!(app.count_note(), unread.to_string(), "the path reads \"Overview › All 60\"");
-        assert_eq!((sent.view.clone(), sent.mark, sent.count), (View::Sent, Mark::Icon(Icon::Send), None));
+        assert!(all.active, "All is the start view");
+        assert_eq!(app.count_note(), unread.to_string());
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("All"))]));
         assert!(sources.is_empty(), "every source is a mail account, listed by its folders");
         assert!(!app.mail_groups().is_empty(), "the folders of every account");
@@ -17047,16 +17211,23 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let browse = (tr("Pin folders").to_owned(), Target::OpenFolders, Trail::Icon(Icon::ChevronRight));
+        let sent = (tr("Sent").to_owned(), Target::View, Trail::None);
         let archive = (tr("Archive").to_owned(), Target::View, Trail::None);
-        assert_eq!(folders(&app), [archive.clone(), browse.clone()], "nothing pinned yet");
-        assert_eq!(app.folder_entries()[0].view, View::Archive);
+        let trash = (tr("Trash").to_owned(), Target::View, Trail::None);
+        let roles = [sent.clone(), archive.clone(), trash.clone()];
+        assert_eq!(folders(&app), [roles.to_vec(), vec![browse.clone()]].concat(), "nothing pinned yet");
+        let views: Vec<View> = app.folder_entries().into_iter().take(3).map(|entry| entry.view).collect();
+        assert_eq!(views, [View::Sent, View::Archive, View::Trash]);
+        let marks: Vec<Mark> = app.folder_entries().into_iter().take(3).map(|entry| entry.mark).collect();
+        assert_eq!(marks, [Icon::Send, Icon::Archive, Icon::Trash2].map(Mark::Icon));
         let pin = app.folders.iter().find(|folder| folder.role == Some(Role::Sent)).expect("a sent folder").clone();
         let _ = app.update(Message::ToggleFolderPin(pin.id.clone()));
         // Issue #398: the folder's name, and its account's address as the second line – the demo
         // has two accounts.
         let pinned = mail::folder_name(&pin);
-        assert_eq!(folders(&app), [archive, (pinned.clone(), Target::View, Trail::None), browse.clone()]);
-        assert_eq!(app.folder_entries()[1].detail.as_deref(), Some(mail::address(&pin.account)));
+        let pinned_row = (pinned.clone(), Target::View, Trail::None);
+        assert_eq!(folders(&app), [roles.to_vec(), vec![pinned_row, browse.clone()]].concat());
+        assert_eq!(app.folder_entries()[3].detail.as_deref(), Some(mail::address(&pin.account)));
         assert!(
             app.folder_entries()
                 .iter()
@@ -17064,15 +17235,16 @@ mod tests {
                 .all(|entry| entry.detail.is_none())
         );
         assert_eq!(app.folder_entries()[0].detail, None, "only a pinned folder has a second line");
-        assert!(matches!(app.folder_entries()[2].message(), Message::OpenFolders), "the browser opens beside it");
-        // No account with an archive folder: no Archive.
-        app.folders.retain(|folder| folder.role != Some(Role::Archive));
-        assert_eq!(folders(&app).first().map(|row| row.0.clone()), Some(pinned.clone()));
+        assert!(matches!(app.folder_entries()[4].message(), Message::OpenFolders), "the browser opens beside it");
+        // No account with an archive or a trash folder: neither row; Sent always stands.
+        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Archive | Role::Trash)));
+        let labels: Vec<String> = folders(&app).into_iter().map(|row| row.0).collect();
+        assert_eq!(labels[..2], [tr("Sent").to_owned(), pinned.clone()]);
         // Folders of one account only: the address says nothing, the row keeps one line.
         app.folders.retain(|folder| folder.account == pin.account);
-        let first = app.folder_entries().into_iter().next().expect("the pinned folder");
+        let first = app.folder_entries().into_iter().nth(1).expect("the pinned folder");
         assert_eq!((first.label, first.detail), (pinned, None));
-        assert!(overview_at(&["--view", "hub"]).top_entries().is_empty(), "All and Sent are the mail window's");
+        assert!(overview_at(&["--view", "hub"]).top_entries().is_empty(), "All is the mail window's");
         assert!(overview_at(&["--view", "hub"]).folder_entries().is_empty(), "folders are the mail window's");
         for open in ["menu", "drawer"] {
             for size in SIZES {
@@ -17096,12 +17268,70 @@ mod tests {
         assert_eq!(app.unread_all, Some(unread));
         assert!(app.messages.iter().all(|message| message.account == private), "All of that account only");
         let archived = app.folders.iter().any(|folder| folder.account == private && folder.role == Some(Role::Archive));
-        let first = app.folder_entries().first().map(|entry| entry.view.clone());
-        assert_eq!(first == Some(View::Archive), archived, "Archive only with an archive folder of an account shown");
+        let has = |app: &App<DemoSource>, view: View| app.folder_entries().iter().any(|entry| entry.view == view);
+        assert_eq!(has(&app, View::Archive), archived, "Archive only with an archive folder of an account shown");
         app.mail_accounts = Some(Vec::new());
         load(&mut app);
         assert!(app.messages.is_empty() && app.unread_all == Some(0), "no account shown");
-        assert!(app.folder_entries().first().is_none_or(|entry| entry.view != View::Archive));
+        assert!(!has(&app, View::Archive) && !has(&app, View::Trash), "neither without an account shown");
+        assert!(has(&app, View::Sent), "Sent always stands");
+    }
+
+    /// Issue #455: the account field says what is shown – every account's domains, the domains chosen
+    /// or the one account's domain over its address –, its menu counts each account's unread mail of
+    /// "All", and "Only this" keeps one account; "Manage accounts…" opens the settings at Accounts.
+    #[test]
+    fn the_account_field_names_the_accounts_shown_and_chooses_them() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let [work, private] = [0, 1].map(|i| torro_inbox::demo::MAIL_ACCOUNTS[i].to_owned());
+        let domains = format!("{} · {}", mail_domain(&work), mail_domain(&private));
+        assert_eq!(app.account_field_text(), (tr("All accounts").to_owned(), domains.clone()));
+        assert_eq!(mail_domain(&work), "work.example.org");
+        assert_eq!(app.unread_each.len(), 2, "every account, counted");
+        for (account, count) in &app.unread_each {
+            let want = block_on(app.inbox.unread_in_all(Some(account.clone()))).expect("the demo counts");
+            assert_eq!(*count, Some(want), "{account}");
+        }
+        let _ = app.update(Message::ToggleMailAccounts);
+        assert_eq!(app.menu, Some(Menu::MailAccounts));
+        let _ = app.view();
+        let _ = app.update(Message::OnlyMailAccount(private.clone()));
+        load(&mut app);
+        assert_eq!(app.mail_accounts, Some(vec![private.clone()]), "this one alone");
+        assert!(app.messages.iter().all(|message| message.account == private));
+        assert_eq!(app.account_field_text(), (mail_domain(&private).to_owned(), mail::address(&private).to_owned()));
+        assert_eq!(app.unread_each.len(), 2, "the hidden account keeps its number in the menu");
+        app.mail_accounts = Some(vec![work.clone(), private.clone(), "mail:third@example.net".into()]);
+        assert_eq!(app.account_field_text().0, trf("{count} accounts", &[("count", &"3")]));
+        let _ = app.update(Message::SelectAllMailAccounts);
+        assert_eq!(app.account_field_text(), (tr("All accounts").to_owned(), domains));
+        let _ = app.update(Message::ManageMailAccounts);
+        assert!(app.settings.is_some() && app.menu.is_none(), "the settings, at Accounts");
+        // Without a mail account there is no field, and "New email" is off.
+        let mut bare = mail_window(Density::Compact, &[]);
+        bare.folders.clear();
+        let _ = bare.mail_sidebar_head(SidebarMode::Expanded, &Anchor::new());
+        let _ = bare.mail_sidebar_head(SidebarMode::Rail, &Anchor::new());
+    }
+
+    /// Issue #455: "Trash" lists the mail in the trash folders of every account shown, as "Archive"
+    /// lists its role, without a number; the demo has two mails there.
+    #[test]
+    fn the_trash_lists_the_mail_of_every_trash_folder() {
+        assert_eq!(View::Trash.by_role(), Some((Role::Trash, None)));
+        assert!(View::Trash.is_mail() && View::Trash.filter().is_none());
+        assert_eq!((View::Trash.name(), View::Trash.icon()), (tr("Trash").to_owned(), Icon::Trash2));
+        let mut app = mail_window(Density::Compact, &["--open", "trash"]);
+        load(&mut app);
+        assert_eq!(app.view, View::Trash);
+        assert_eq!(app.messages.len(), 2, "the demo's trash");
+        let trash: Vec<&str> =
+            app.folders.iter().filter(|folder| folder.role == Some(Role::Trash)).map(|f| f.id.as_str()).collect();
+        assert!(app.messages.iter().all(|message| trash.contains(&message.folder.as_str())));
+        assert!(app.in_trash(&app.messages[0].id.clone()), "deleting there is refused, as in a trash folder");
+        let entry = app.folder_entries().into_iter().find(|entry| entry.view == View::Trash).expect("a row");
+        assert_eq!(entry.count, None, "no number");
+        assert!(entry.active, "chosen while it shows");
     }
 
     /// Task E18.4: "All" and "Archive" ask for the mail of their role with the fields of decision 1

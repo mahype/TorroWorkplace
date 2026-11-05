@@ -1787,6 +1787,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Sent => (Icon::Send, tr("No sent mail."), tr("Mail you send shows up here.")),
             View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
+            View::Trash => (Icon::Trash2, tr("The trash is empty."), tr("Mail you delete shows up here.")),
             // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
             View::ReplyLater => (
                 Icon::MessageSquareReply,
@@ -1914,7 +1915,8 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     }
     let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let several = matches!(data.view, View::Search(_) | View::All | View::Archive) && data.accounts.len() > 1;
+    let several =
+        matches!(data.view, View::Search(_) | View::All | View::Archive | View::Trash) && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
         domain,

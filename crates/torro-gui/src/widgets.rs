@@ -2495,6 +2495,54 @@ pub fn menu_button<'a, M: Clone + 'a>(
     anchored(anchor, b)
 }
 
+/// The large field at the top of the mail window's sidebar that chooses the accounts shown (issue
+/// #455, `docs/prototypes/mail-layout/`): two lines without avatars – `title` in `BODY_STRONG`
+/// ("All accounts", "2 accounts", the account's domain) and `detail` in `META`, `text_3` (the names,
+/// the address) –, both cut with "…" to the width there is, and the up-down chevron at the end. As
+/// wide as the sidebar, on `raised` with a `line_strong` frame and radius `sm`; hover lightens it.
+/// Registers `anchor` for its menu; `None` disables it.
+///
+/// ```ignore
+/// widgets::account_select(tr("All accounts"), "mailbox.org · firma.de", &anchor, Some(Message::ToggleMailAccounts))
+/// ```
+pub fn account_select<'a, M: Clone + 'a>(
+    title: impl IntoFragment<'a>,
+    detail: impl IntoFragment<'a>,
+    anchor: &Anchor,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let (title, detail) = (title.into_fragment().to_string(), detail.into_fragment().to_string());
+    let title = measured_line(typo::body_strong(), move |size| {
+        let shown = typo::ellipsize(&title, typo::body_strong(), size.width);
+        typo::text(typo::body_strong(), shown).style(theme::text).wrapping(Wrapping::None).into()
+    });
+    let detail = measured_line(typo::meta(), move |size| {
+        let shown = typo::ellipsize(&detail, typo::meta(), size.width);
+        typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+    });
+    let content = row![column![title, detail].width(Fill), toned(Icon::ChevronsUpDown, icon::SIZE, Tone::Text3)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    let b = button(content)
+        .width(Fill)
+        .padding(Padding::new(space::s()).left(space::m()))
+        .style(|t: &Theme, status: button::Status| {
+            let p = palette(t);
+            let background = match status {
+                button::Status::Hovered | button::Status::Pressed => p.hover,
+                button::Status::Active | button::Status::Disabled => p.raised,
+            };
+            button::Style {
+                background: Some(Background::Color(background)),
+                text_color: p.text,
+                border: iced::Border { color: p.line_strong, width: LINE, radius: radius::sm().into() },
+                ..button::Style::default()
+            }
+        })
+        .on_press_maybe(on_press);
+    anchored(anchor, b)
+}
+
 /// A framed button that opens a menu of choices, with a chevron: "Week ▾". Secondary, label
 /// `CAPTION`. Registers `anchor`; its menu usually opens with [`Align::End`].
 pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragment<'a>, on_press: M) -> Element<'a, M> {
