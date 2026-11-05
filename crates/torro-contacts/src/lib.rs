@@ -5,20 +5,22 @@
 //! and changes them without losing fields it does not know; [`merge`] brings two changes of the
 //! same contact together. The core talks to servers through [`ContactsProvider`]
 //! (`torro-pim-caldav` speaks CardDAV), the app reads and writes through [`ContactsSource`]: the
-//! core over the socket, or [`demo::DemoSource`] for trying the app. No input or output here.
+//! core over the socket, or [`demo::DemoSource`] for trying the app. [`suggest`] ranks the recipients
+//! the compose window offers (issue #460). No input or output here.
 
 pub mod demo;
 pub mod merge;
 pub mod model;
 pub mod provider;
 pub mod source;
+pub mod suggest;
 pub mod vcard;
 
 pub use merge::{Merge, merge};
 pub use model::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactState, ContactSummary, FieldKind,
-    FieldsError, Geo, Group, Keep, Labeled, Moved, Name, PartialDate, PhotoRef, PhotoSize, PostalAddress, account_of,
-    book_id, book_of, contact_id,
+    FieldsError, Geo, Group, Keep, Labeled, Moved, Name, PartialDate, PhotoRef, PhotoSize, PostalAddress,
+    RecipientSuggestion, SuggestedAddress, SuggestionKind, account_of, book_id, book_of, contact_id,
 };
 pub use provider::{
     Changes, ContactsError, ContactsProvider, Entry, Listing, RemoteBook, RemoteCard, Stored, SyncToken,
