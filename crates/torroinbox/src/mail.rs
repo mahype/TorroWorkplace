@@ -2856,7 +2856,9 @@ fn command_body<'a>(
     if let Some(entry) = entry {
         // "Follow up" in the mail window's words (task E19.4).
         let properties = detail::properties(entry.item, reading.now, true);
-        body = body.push(widgets::prop_section(tr("Properties"), properties));
+        // Clear of the floating rail, as the mail (review of #467): only the head runs on under it.
+        let section = widgets::prop_section(tr("Properties"), properties);
+        body = body.push(container(section).padding(Padding::new(0.0).right(widgets::floating_rail_room())));
     }
     // A HTML mail starts right under the line, so its background meets it (issue #377).
     let gap = if html_filling(reading).is_some() { 0.0 } else { space::l() };
