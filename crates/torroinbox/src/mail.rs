@@ -2710,7 +2710,14 @@ pub fn panel<'a>(
     folder: Option<&'a FolderView>,
     anchors: &detail::Anchors,
     bars: Bars<'a>,
+    head: Option<Element<'a, Message>>,
 ) -> panel::Panel<'a, Message> {
+    let body = body(reading, bars, anchors);
+    // The mail window (issue #457): the mail's row – subject, "n of m", ⌃ ⌄, ↗ – is the panel's head,
+    // no path and no big title over the mail.
+    if let Some(head) = head {
+        return panel::panel(head, iced::widget::Space::new(), body, Message::CloseDetail);
+    }
     let mark = Some(Mark::Icon(folder_icon(folder.and_then(|folder| folder.role))));
     let parts: Vec<String> = folder.map(|f| vec![address(&f.account).to_owned(), f.name.clone()]).unwrap_or_default();
     let footer = match bars {
@@ -2718,7 +2725,6 @@ pub fn panel<'a>(
         // The attachments stand in the head (issue #457): no footer.
         Bars::Command { .. } => Vec::new(),
     };
-    let body = body(reading, bars, anchors);
     panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail).footer(footer)
 }
 
@@ -2734,8 +2740,13 @@ pub fn entry_panel<'a>(
     view_name: String,
     width: f32,
     anchors: &detail::Anchors,
+    head: Option<Element<'a, Message>>,
 ) -> panel::Panel<'a, Message> {
     let body = body(reading, Bars::Command { entry: Some(entry), width }, anchors);
+    // As [`panel`]: the mail's row as the head once the mail's headers are in (issue #457).
+    if let Some(head) = head {
+        return panel::panel(head, iced::widget::Space::new(), body, Message::CloseDetail);
+    }
     let (path, title) = (detail::path(entry.item, view_name), detail::heading(entry.item));
     panel::panel(path, title, body, Message::CloseDetail)
 }
@@ -2836,9 +2847,9 @@ fn command_body<'a>(
     anchors: &detail::Anchors,
 ) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
-    // The head lines up with the title: 16 from the panel's edges (`panel::inset`), the rail beside.
-    // The rail stands `space::xs()` apart from the body (`Panel::side`).
-    let room = (width - widgets::floating_rail_room() - 2.0 * space::l()).max(0.0);
+    // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and runs to the
+    // panel's right edge under the floating rail (issue #457); the mail keeps clear of the rail.
+    let room = (width - 2.0 * space::l()).max(0.0);
     let head = head(reading, entry, room, anchors);
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
@@ -2849,7 +2860,8 @@ fn command_body<'a>(
     }
     // A HTML mail starts right under the line, so its background meets it (issue #377).
     let gap = if html_filling(reading).is_some() { 0.0 } else { space::l() };
-    let letter = column(panel_letter(reading));
+    let letter =
+        container(column(panel_letter(reading))).padding(Padding::new(0.0).right(widgets::floating_rail_room()));
     body.spacing(space::l()).push(column![panel::bleed(line()), letter].spacing(gap)).into()
 }
 
@@ -5883,9 +5895,10 @@ mod tests {
     /// stands by date, and the span of a row counts the heads above it and its own day's.
     #[test]
     fn the_slim_list_has_two_lines_a_mail_under_the_heads_of_its_days() {
+        assert_eq!(list::slim_air(), space::m() + size::HAIRLINE, "13 in the standard, as #458 asks");
         assert_eq!(
             list::slim_message_height(),
-            2.0 * typo::line_height(typo::body()) + 2.0 * space::m() + size::HAIRLINE
+            2.0 * typo::line_height(typo::body()) + 2.0 * list::slim_air() + size::HAIRLINE
         );
         let today = NaiveDate::from_ymd_opt(2026, 11, 5).expect("a day");
         let day = |back: u64| today - chrono::Days::new(back);
@@ -5991,8 +6004,12 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default();
             for width in [width, 480.0, 0.0] {
-                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width, &anchors);
-                let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width });
+                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width, &anchors, None);
+                let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width }, None);
+                // The mail window's panels take the mail's row as their head (issue #457).
+                let head = || Some(iced::widget::Space::new().into());
+                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width, &anchors, head());
+                let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width }, head());
             }
         });
     }
@@ -6130,15 +6147,15 @@ mod tests {
                         unsubscribed: &none_left,
                     };
                     let anchors = detail::Anchors::default();
-                    let _ = panel(&reading, Some(&folder), &anchors, Bars::Split);
+                    let _ = panel(&reading, Some(&folder), &anchors, Bars::Split, None);
                     for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
                         // The mail window's panel (task E11.4), over the medium window and filling a
                         // narrow one.
                         for width in [size::panel(), 480.0] {
-                            let _ = panel(&reading, Some(&folder), &anchors, Bars::Command { entry, width });
+                            let _ = panel(&reading, Some(&folder), &anchors, Bars::Command { entry, width }, None);
                             let _ = body(&reading, Bars::Command { entry, width }, &anchors);
                             if let Some(entry) = entry {
-                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), width, &anchors);
+                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), width, &anchors, None);
                             }
                         }
                         let _ = body(&reading, Bars::Split, &anchors);
