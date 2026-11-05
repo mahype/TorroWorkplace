@@ -937,7 +937,10 @@ fn checked_group<'a>(
 ) -> Element<'a, Message> {
     let group = widgets::group(title, rows, None);
     match note {
-        Some(note) => column![group, container(note).padding([0.0, space::l()])].spacing(space::s()).into(),
+        // The sentence keeps the reading width in a wide page, as under `widgets::group` (issue #464).
+        Some(note) => {
+            column![group, container(widgets::reading_cell(note)).padding([0.0, space::l()])].spacing(space::s()).into()
+        }
         None => group,
     }
 }

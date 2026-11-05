@@ -198,7 +198,7 @@ aus einem Guss wirkt:
 | `size::list()` / `size::list_medium()` | 440 / 364 | Liste neben dem Detail (Breit / Mittel) |
 | `size::hour()` | 48 | Stundenhöhe im Kalender, Zeitachse 52 (Schmal 44) |
 | `layout::inset()` | 0 | Rand der Inhaltsfläche; 0 = bündig mit Linie zur Seitenleiste |
-| `size::content_max()` / `size::form_max()` | 720 / 640 | Lesbreite von Listen bzw. Formularen ohne Detail |
+| `size::content_max()` / `size::form_max()` | 720 / 640 | Lesbreite von Listen bzw. Formularen ohne Detail; in Einstellungsseiten (#464) `content_max` die Textbreite einer Zeile und die Breite der Wertspalten einer Tabelle, `form_max` die Spalten-Umbrüche (`widgets::page_columns`) |
 
 - Knöpfe: Höhe `size::control_sm()`, Innenabstand waagerecht `control_padding()` (12), Text `typo::caption()`-Größe 12/500; Icon-Knöpfe
   `control_sm()` im Quadrat; Icons 16 (in Knöpfen 14), Strich 1.75 – auch in den größeren Knöpfen von
@@ -496,7 +496,8 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
     hoch, 2 px Fläche dazwischen, Rest („Free“) als Spur in `LINE_STRONG`, Legende mit Wort, Wert und Anteil
     (`share_percent`: „24%“, „<1%“), höchstens vier Reihen und Other. `share_bar` bleibt für einen neutralen Anteil.
   - `setting_pair(title, why, control)` in `setting_pairs`: links Titel `body_strong` und Warum-Satz `meta`/`TEXT_2`,
-    rechts das Bedienelement (1 : 1.6), unter `size::form_max()` untereinander; Paare mit `LINE` getrennt.
+    rechts das Bedienelement (1 : 1.6, die Wörter höchstens `size::content_max()`, das Bedienelement den Rest), unter
+    `size::form_max()` untereinander; Paare mit `LINE` getrennt.
   - `save_bar(summary, discard, save, busy)`: nur auf Seiten, die nicht selbst speichern, und nur solange etwas
     geändert ist; im Einstellungs-Host über `Page::save_bar`.
   - `sidebar_branch_quiet(rows)`: das offene Objekt als Kind seines Abschnitts, Linie `LINE_STRONG`.
@@ -553,6 +554,24 @@ Regeln:
 - **Groß heißt nicht gestreckt:** Listen und Seiten max. `size::content_max()`, Formulare `size::form_max()`,
   zentriert bzw. links mit Seitenleiste; zusätzlicher Platz geht an Inhalt (mehr Tage, Detail
   daneben), nicht an Leerraum zwischen Elementen.
+- **Einstellungsseiten** (#464, Host der Einstellungen und Steuerzentrale) haben **keine Obergrenze**: Die Seite
+  steht bündig neben der Seitenleiste (Rand `page_margin`) und füllt die ganze Breite; statt eines festen Maßes
+  brechen die Inhalte nach Art um:
+  - **Zeilen** (`widgets::group_row`, `parts::setting_row`): Zeile und Trennlinie über die ganze Breite, der Text
+    wächst höchstens bis `size::content_max()` (`widgets::reading_cell`), das Bedienelement steht am Zeilenende in
+    seiner eigenen Breite – Schalter, Auswahl und kurze Felder werden nie gestreckt, lange Felder und Editoren
+    füllen ihre Spalte. Der erklärende Satz unter einer Gruppe bricht ebenfalls bei `content_max()` um.
+  - **Listen und Tabellen** (`widgets::settings_table`, Konten): volle Breite, die Namensspalte bekommt den Zuwachs,
+    die Wertspalten bleiben so breit wie bei `size::content_max()`; `widgets::data_table` außerhalb der Einstellungen
+    (Insights, Übersicht) behält seine Anteile.
+  - **Karten, Kennzahlen, Kacheln** (`stat_grid`): ein Raster, das mit der Breite mehr Spalten bekommt.
+  - **Unabhängige Blöcke** einer Seite (`widgets::page_columns`): ab 2 × `size::form_max()` + `layout::section_gap()`
+    zwei Spalten, ab 3 × `form_max()` + 2 × `section_gap()` drei, nie mehr Spalten als Blöcke; die Blöcke der Reihe
+    nach, oben bündig. Gefahrenzone („Remove…“, „Revoke…“) steht immer einspaltig darunter. So umbrechen
+    Darstellung, Allgemein und Workspaces der Steuerzentrale, die Seiten eines Kontos, eines Programmschlüssels und
+    eines MCP-Clients, Mail „Lesen und Schreiben“, Übersicht und Sicherung eines Mail-Kontos und Allgemein des
+    Assistenten; alle anderen Seiten bleiben einspaltig über die ganze Breite.
+  - Schmal und Mini, Dialoge (`form_max`) und Assistenten bleiben, wie sie sind.
 - Zustand bleibt beim Größenwechsel erhalten (Auswahl, Scrollposition, Datum, gewählte Ansicht –
   in Schmal wird nur die *dargestellte* Ansicht angepasst).
 - **Dauerbetrieb:** nichts blinkt oder bewegt sich ohne Anlass; neu zeichnen nur bei Änderung bzw.

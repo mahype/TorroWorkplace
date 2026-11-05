@@ -165,8 +165,8 @@ list_medium = 340              # dasselbe in Mittel
 hour = 40                      # Stunde im Kalender
 axis = 52                      # Zeitachse
 axis_narrow = 44               # Zeitachse in Schmal
-content_max = 720              # Lesebreite von Listen und Seiten
-form_max = 640                 # Lesebreite von Formularen
+content_max = 720              # Lesebreite von Listen; in Einstellungen die Textbreite einer Zeile
+form_max = 640                 # Lesebreite von Formularen; Spalten-Umbrüche der Einstellungen
 card_gap = 8                   # zwischen Karten und Teilen einer Karte
 avatar = 28                    # Avatar einer Karte
 avatar_lg = 32                 # großer Avatar
@@ -325,7 +325,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; `hero` 32–72 und `countdown` 20–48 (Erinnerung im Vollbild, ER1.5); jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
 | Layout-Abstände | `inset` 0–24; Innenränder 0–48; `reading_padding` je 0–80; `section_gap` 8–64; `item_gap` 2–24 |
 | Abstände | `space` aufsteigend, 2–64; `radius` nicht fallend (gleiche Stufen erlaubt, Console 0/0/0/0), 0–16 |
-| Maße | Bedienelemente (`control_sm` … `control_xl`) und `row_group` ≥ 24 (Klickziel); `row` 24–64; `row_two` 24–96; `row_message` 24–120 und `row_notice` 24–96 (Zeilen des Eingangs, Console zeigt eine Zeile von 24); `row_sidebar` 24–40; `header` 32–64; `sidebar` 180–320; `props`, `panel` 280–520; `list`, `list_medium` 280–640; `rail` 40–80 und mindestens `control_lg` (der Knopf der Leiste passt hinein); `rail_wide` 180–320; `reading_max` 480–1200; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64, `pill` 28–64 |
+| Maße | Bedienelemente (`control_sm` … `control_xl`) und `row_group` ≥ 24 (Klickziel); `row` 24–64; `row_two` 24–96; `row_message` 24–120 und `row_notice` 24–96 (Zeilen des Eingangs, Console zeigt eine Zeile von 24); `row_sidebar` 24–40; `header` 32–64; `sidebar` 180–320; `props`, `panel` 280–520; `list`, `list_medium` 280–640; `rail` 40–80 und mindestens `control_lg` (der Knopf der Leiste passt hinein); `rail_wide` 180–320; `reading_max` 480–1200; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64, `pill` 28–64. Einstellungsseiten (#464) haben keine Obergrenze: `form_max` bestimmt ihre Spalten-Umbrüche (zwei ab 2 × `form_max` + `section_gap`, drei ab 3 × `form_max` + 2 × `section_gap`), `content_max` die Textbreite ihrer Zeilen und die Breite der Wertspalten einer Tabelle |
 | Listen | `[list] style` nur `rows`, `line`, `cards` und `selection` nur `bar`, `fill` (ein anderes Wort lehnt schon das Lesen mit Zeilennummer ab); `avatar` 0 (aus) oder 20–48; `preview_lines` 1–2; `about.mail_view` nur `html` oder `text` |
 | Farbschema nur dunkel | mit `dark_only = true` kein `[colors.light]`; geprüft wird nur die dunkle Palette |
 | Dateien | Pfade nur innerhalb des Paketordners, keine Links nach außen; `design.toml` ≤ 64 KB, SVG ≤ 256 KB, PNG ≤ 2 MB, Schrift ≤ 5 MB, Paket ≤ 20 MB |

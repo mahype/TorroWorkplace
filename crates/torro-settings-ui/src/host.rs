@@ -232,7 +232,8 @@ pub struct Page<'a, M> {
     /// The bar that saves a page that does not save itself (`torro_gui::widgets::save_bar`), only
     /// while something is changed; it floats over the bottom of the page.
     pub save_bar: Option<Element<'a, M>>,
-    /// Optional wider reading width for pages with several useful columns.
+    /// An optional cap on the page's width, at the left; without it the page spans the whole content
+    /// area (issue #464).
     pub max_width: Option<f32>,
 }
 
@@ -242,7 +243,7 @@ impl<'a, M> Page<'a, M> {
         Page { body: body.into(), sub_page: None, actions: Vec::new(), save_bar: None, max_width: None }
     }
 
-    /// Give this page more room on a normal desktop; narrow windows still use their available width.
+    /// Cap this page at `width`, at the left; narrower windows still use their available width.
     pub fn max_width(mut self, width: f32) -> Self {
         self.max_width = Some(width);
         self
@@ -1332,7 +1333,9 @@ impl Host {
     }
 
     /// The page in the content area: the loading state until the first answer, else the notices
-    /// over it, at most `content_max` wide, scrolling inside the margin of the size class. A
+    /// over it, scrolling inside the margin of the size class. It starts at the margin beside the
+    /// sidebar and spans the whole width (issue #464: its rows, lists and columns adapt to it instead of
+    /// a cap leaving the sides empty); only a page's own `max_width` still caps it, at the left. A
     /// `save_bar` floats over its bottom, and the page gets the room to scroll out from under it.
     fn page_area<'a, M: Clone + 'a>(
         &'a self,
@@ -1350,7 +1353,11 @@ impl Host {
         if save_bar.is_some() {
             margin.bottom = widgets::floating_bar_clearance(1);
         }
-        let page = container(widgets::content(max_width.unwrap_or_else(size::content_max), page)).padding(margin);
+        let page = match max_width {
+            Some(max) => container(container(page).width(Fill).max_width(max)),
+            None => container(page.width(Fill)),
+        };
+        let page = page.width(Fill).padding(margin);
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)

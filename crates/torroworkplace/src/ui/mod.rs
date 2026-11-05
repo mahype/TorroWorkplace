@@ -33,7 +33,8 @@
 //! and the panel button opens the drawer. On macOS the panel button sits in the band right of the
 //! traffic lights and "General" in its top right corner (U.10); elsewhere at the sidebar's top and
 //! foot. The page sits under a 44-high header bar with
-//! its title and actions, at most [`size::content_max()`] wide.
+//! its title and actions, flush beside the sidebar and as wide as the content area (issue #464: its
+//! rows, lists and columns adapt to the width instead of a cap leaving the sides empty).
 //!
 //! Mini and strip tiles have no window frame: [`glance`] shows the status instead (design skill,
 //! section 6).
@@ -1955,8 +1956,8 @@ impl Ui {
     }
 
     /// The page: loading until the core answered, the error state when it does not answer (the
-    /// overview shows that itself), else the section's view under the notices – at most
-    /// `CONTENT_MAX` wide, scrolling inside the margin of the size class. Accounts' list has its
+    /// overview shows that itself), else the section's view under the notices – as wide as the
+    /// content area (issue #464), scrolling inside the margin of the size class. Accounts' list has its
     /// providers in a column at the left edge beside it (task S.37), which does not scroll with it.
     fn body(&self, class: SizeClass) -> Element<'_, Message> {
         if !self.loaded {
@@ -1992,16 +1993,10 @@ impl Ui {
             }
             _ => None,
         };
-        // Beside the providers' column the page starts at it, as beside the sidebar (design skill,
-        // section 6); centred, its distance to the column would grow with the window.
-        let page = if class == SizeClass::Medium || providers.is_some() {
-            // Flush with the window: the page starts at the margin (24), where the ink of the header's
-            // first symbol starts (16 padding, 6 around the symbol, 2 inside the icon), instead of
-            // floating in the middle between header and window edge.
-            container(container(page).width(Fill).max_width(size::content_max())).padding(page_margin(class))
-        } else {
-            container(widgets::content(size::content_max(), page)).padding(page_margin(class))
-        };
+        // Flush with the sidebar (or the providers' column) and as wide as the content (issue #464):
+        // the page starts at the margin (24), where the ink of the header's first symbol starts (16
+        // padding, 6 around the symbol, 2 inside the icon), and never floats to the middle.
+        let page = container(page.width(Fill)).width(Fill).padding(page_margin(class));
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)

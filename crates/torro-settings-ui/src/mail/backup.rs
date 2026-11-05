@@ -507,7 +507,14 @@ pub fn poll_request(state: &mut State, account: &str) -> Option<Request> {
 
 /// The groups "Backup" and "Restore" of `account`'s page. Status, warnings and errors carry an
 /// icon in their colour and wrap, so nothing is cut off in a narrow window.
-pub fn view<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
+pub fn view<'a>(state: &'a State, account: &'a str) -> Element<'a, Message> {
+    // Backing up beside restoring where the page is wide (issue #464).
+    let base = widgets::page_columns(move || vec![summary_group(state), restore_group(state, account)]);
+    if state.create_open { widgets::modal(base, backup_group(state), 700.0, Message::CloseCreate) } else { base }
+}
+
+/// The group "Backup": "Create backup", the job that runs or ran, and its problem.
+fn summary_group<'a>(state: &'a State) -> Element<'a, Message> {
     let create = if state.pending == Some(Pending::Create) {
         widgets::busy_button(tr("Starting backup…"), style::button::secondary)
     } else {
@@ -523,9 +530,7 @@ pub fn view<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
         job_rows(&mut rows, state, job);
     }
     error_row(&mut rows, state, Place::Job);
-    let summary = widgets::group(tr("Backup"), rows, None);
-    let base = column![summary, restore_group(state, account)].spacing(torro_gui::layout::section_gap());
-    if state.create_open { widgets::modal(base, backup_group(state), 700.0, Message::CloseCreate) } else { base.into() }
+    widgets::group(tr("Backup"), rows, None)
 }
 
 /// Escape dismisses the backup form or its date grid before the account page handles the key.

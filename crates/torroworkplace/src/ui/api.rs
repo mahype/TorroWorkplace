@@ -362,39 +362,43 @@ impl Page {
         pressable(row, Some(PageMessage::Open(client.id.clone())))
     }
 
-    /// The top of a client's page: its name with what it is and when it was last used, then the
-    /// rights editor ([`rights::groups`], the commands named after the section), the controls in
-    /// `column` ([`control_column`]). The name is the first part, so a section can put a group of its
-    /// own between it and the rights (MCP's "Notification Hub").
-    pub fn head<'a>(
+    /// The top of a client's page: its name with what it is and when it was last used.
+    pub fn title<'a>(&'a self, client: &'a ClientInfo, now: DateTime<Utc>) -> Element<'a, PageMessage> {
+        heading(client.name.as_str(), about(self.home, client, now))
+    }
+
+    /// The rights editor of a client's page ([`rights::groups`], the commands named after the
+    /// section), the controls in `column` ([`control_column`]).
+    pub fn rights_groups<'a>(
         &'a self,
         client: &'a ClientInfo,
         data: &'a Data,
-        now: DateTime<Utc>,
         column: Option<f32>,
     ) -> Vec<Element<'a, PageMessage>> {
         let rights = rights::shown(&self.rights, client);
         let editor =
             rights::groups(&self.rights, rights, &client.kind, &known(data), self.home.naming(), tr("Access"), column);
-        let mut parts = vec![heading(client.name.as_str(), about(self.home, client, now))];
-        parts.extend(editor.into_iter().map(|group| group.map(PageMessage::Rights)));
-        parts
+        editor.into_iter().map(|group| group.map(PageMessage::Rights)).collect()
     }
 
-    /// The end of a client's page: its latest requests, its key with "Create new key", and
-    /// "Revoke…" (API) or "Disconnect…" (MCP).
-    pub fn foot<'a>(
+    /// Beside the rights of a client's page (issue #464): its latest requests, then its key with
+    /// "Create new key" – the order of the page before, so one column reads as it did.
+    pub fn activity_and_key<'a>(
         &'a self,
         client: &ClientInfo,
         now: DateTime<Utc>,
         column: Option<f32>,
     ) -> Vec<Element<'a, PageMessage>> {
+        vec![self.activity_group(client, now), key_group(self.home, column)]
+    }
+
+    /// The end of a client's page, under its columns: "Revoke…" (API) or "Disconnect…" (MCP).
+    pub fn away<'a>(&self) -> Element<'a, PageMessage> {
         let away = match self.home {
             Home::Api => tr("Revoke…"),
             Home::Mcp => tr("Disconnect…"),
         };
-        let away = widgets::text_button(None, away, style::button::danger, Some(PageMessage::AskRemove));
-        vec![self.activity_group(client, now), key_group(self.home, column), on_axis(away)]
+        on_axis(widgets::text_button(None, away, style::button::danger, Some(PageMessage::AskRemove)))
     }
 
     /// The latest requests: command, time and result. The log holds no contents, so neither does
@@ -755,9 +759,12 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match state.page.client(data) {
-        Some(client) => responsive(move |size| detail(state, client, data, now, control_column(size.width)))
-            .height(Length::Shrink)
-            .into(),
+        // The rights' controls line up in the width of their column (issue #464).
+        Some(client) => responsive(move |size| {
+            detail(state, client, data, now, control_column(widgets::page_column_width(size.width, 2)))
+        })
+        .height(Length::Shrink)
+        .into(),
         None => list(state, data, now),
     }
 }
@@ -784,7 +791,8 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
     column![switch, keys].spacing(layout::section_gap()).into()
 }
 
-/// A key's page: the shared head and foot of [`Page`], the controls in `slot`.
+/// A key's page: the shared parts of [`Page`], the controls in `slot`; the rights beside the key and
+/// its activity where the page is wide (issue #464).
 fn detail<'a>(
     state: &'a State,
     client: &'a ClientInfo,
@@ -793,8 +801,24 @@ fn detail<'a>(
     slot: Option<f32>,
 ) -> Element<'a, Message> {
     let page = &state.page;
-    let parts = page.head(client, data, now, slot).into_iter().chain(page.foot(client, now, slot));
-    column(parts.map(|part| part.map(Message::Page))).spacing(layout::section_gap()).into()
+    let blocks = widgets::page_columns(move || {
+        let rights = page.rights_groups(client, data, slot);
+        let key = page.activity_and_key(client, now, slot);
+        page_blocks([rights, key].map(|parts| parts.into_iter().map(|part| part.map(Message::Page)).collect()))
+    });
+    column![page.title(client, now).map(Message::Page), blocks, page.away().map(Message::Page)]
+        .spacing(layout::section_gap())
+        .into()
+}
+
+/// The blocks of a client's page for [`widgets::page_columns`]: the groups of each block under each
+/// other, a block without any left out.
+pub fn page_blocks<'a, M: 'a, const N: usize>(blocks: [Vec<Element<'a, M>>; N]) -> Vec<Element<'a, M>> {
+    blocks
+        .into_iter()
+        .filter(|groups| !groups.is_empty())
+        .map(|groups| column(groups).spacing(layout::section_gap()).into())
+        .collect()
 }
 
 #[cfg(test)]

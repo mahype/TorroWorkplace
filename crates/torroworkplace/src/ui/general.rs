@@ -264,12 +264,19 @@ fn leave_address(state: &mut State, maps: &Maps, which: Address) -> Option<Reque
 
 /// The page General: language, apps, maps, startup, setup.
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let settings = &data.settings;
-    let language = suite::language(settings, Place::ControlCentre).map(Message::Suite);
-    let startup = suite::startup(settings, Place::ControlCentre).map(Message::Suite);
+    // Its groups side by side where the page is wide (issue #464).
+    widgets::page_columns(move || {
+        let settings = &data.settings;
+        let language = suite::language(settings, Place::ControlCentre).map(Message::Suite);
+        let startup = suite::startup(settings, Place::ControlCentre).map(Message::Suite);
+        vec![language, apps(data), maps(state, &settings.maps), startup, setup()]
+    })
+}
 
+/// The group "Setup": run the first-run setup again.
+fn setup<'a>() -> Element<'a, Message> {
     let run = widgets::text_button(None, tr("Run setup again"), style::button::secondary, Some(Message::RunSetup));
-    let setup = widgets::group(
+    widgets::group(
         tr("Setup"),
         vec![setting_row(
             None,
@@ -278,9 +285,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             run,
         )],
         Some(tr("What is connected stays; the steps show it.").to_string()),
-    );
-
-    column![language, apps(data), maps(state, &settings.maps), startup, setup].spacing(layout::section_gap()).into()
+    )
 }
 
 /// The links under "Maps": the usage rules of the OpenStreetMap services (map tiles and Nominatim on

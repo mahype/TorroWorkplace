@@ -658,9 +658,10 @@ mod tests {
         assert_eq!(status(&providers[1]), Status::Ok);
     }
 
-    /// The address field's placeholder stays whole beside its buttons in the half row of the widest page, also with
-    /// "Remove" and in German; the example address would not, so it stands under the label. Estimated as the
-    /// buttons choose their words ([`widgets::text_button_width`]).
+    /// The address field's placeholder stays whole beside its buttons in the half row of a page at the reading width
+    /// (a wider page, issue #464, only gives it more room), also with "Remove" and in German; the example address
+    /// would not, so it stands under the label. Estimated as the buttons choose their words
+    /// ([`widgets::text_button_width`]).
     #[test]
     fn the_address_placeholder_fits_beside_its_buttons() {
         // The group's row: its padding at both sides and the gap between the label and the control.

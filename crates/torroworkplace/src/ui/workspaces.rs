@@ -219,9 +219,23 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
+    // The templates beside the window manager where the page is wide (issue #464); in one column the
+    // manager stays on top, as before.
+    iced::widget::responsive(move |room| {
+        let side_by_side = widgets::page_column_count(room.width, 2) > 1;
+        widgets::page_columns(move || match side_by_side {
+            true => vec![templates(state, data, class), window_manager(data)],
+            false => vec![window_manager(data), templates(state, data, class)],
+        })
+    })
+    .height(iced::Length::Shrink)
+    .into()
+}
+
+/// The group "Templates", or the empty state without any.
+fn templates<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
-    let manager = window_manager(data);
-    let templates: Element<'a, Message> = if data.templates.is_empty() {
+    if data.templates.is_empty() {
         empty_state(tr("No templates yet"), tr("Arrange the windows of a workspace, then choose “Save workspace…”."))
     } else {
         let now = Utc::now();
@@ -238,8 +252,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
             false => trf("Templates load once {name} runs.", &[("name", &expected().0)]),
         };
         widgets::group(tr("Templates"), rows, Some(footer))
-    };
-    iced::widget::column![manager, templates].spacing(space::xl()).into()
+    }
 }
 
 /// The templates in the order of their keys on the keyboard (1 … 9, 0), then those without a key

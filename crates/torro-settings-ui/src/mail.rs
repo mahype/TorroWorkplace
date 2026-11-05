@@ -244,15 +244,9 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
         "reading" => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
         CATEGORIZATION_SECTION => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
-        // Only an account's page is wider than the usual reading width: identity and connection
-        // stand side by side there, two forms and the gap between them (issue #343).
-        _ => {
-            let page = wrap(accounts::page_with_storage(&state.accounts, &state.storage, data), Message::Accounts);
-            match accounts::current_account(&state.accounts) {
-                Some(_) => page.max_width(2.0 * torro_gui::theme::size::form_max() + torro_gui::theme::space::l()),
-                None => page,
-            }
-        }
+        // Every page takes the whole width (issue #464); an account's page puts its blocks side by
+        // side itself (issue #343).
+        _ => wrap(accounts::page_with_storage(&state.accounts, &state.storage, data), Message::Accounts),
     }
 }
 
@@ -1318,6 +1312,19 @@ pub mod accounts {
         state.draft.as_ref().map(|draft| draft.account.as_str())
     }
 
+    /// The widths of the inventory and the sync column of an account's row `width` wide: 4 and 3 of the
+    /// 10 parts (name 3) of the room beside the padding, the gaps and the chevron – but no more than at
+    /// [`size::content_max()`], so in a wide page only the name grows (issue #464).
+    pub(super) fn list_columns(width: f32) -> (f32, f32) {
+        let parts = |width: f32| {
+            let room = (width - 5.0 * space::l() - torro_gui::icon::SIZE).max(0.0);
+            (room * 0.4, room * 0.3)
+        };
+        let (inventory, sync) = parts(width);
+        let (inventory_max, sync_max) = parts(size::content_max());
+        (inventory.min(inventory_max), sync.min(sync_max))
+    }
+
     /// A compact inventory per account. Every bar compares RFC822.SIZE values from the same
     /// message inventory; the database's physical size is shown only on the storage detail.
     fn list(data: &Data) -> Element<'_, Message> {
@@ -1357,12 +1364,15 @@ pub mod accounts {
                             .padding([space::m(), space::l()])
                             .into()
                     } else {
+                        // The parts 3 : 4 : 3 up to the reading width; wider, inventory and sync keep
+                        // that width and the name gets the rest (issue #464).
+                        let (inventory_width, sync_width) = list_columns(room.width);
                         container(
                             row![
-                                name_col.width(Length::FillPortion(3)),
-                                container(inventory).width(Length::FillPortion(4)),
+                                name_col.width(Length::Fill),
+                                container(inventory).width(inventory_width),
                                 // Room for "Last synced 59 min ago" beside its dot.
-                                sync_col.width(Length::FillPortion(3)),
+                                sync_col.width(sync_width),
                                 chevron(),
                             ]
                             .spacing(space::l())
@@ -1539,8 +1549,9 @@ pub mod accounts {
                 );
             }
         };
-        // Groups and table read at the width of a list, not stretched across a wide window.
-        let mut page = column![].spacing(layout::section_gap()).max_width(size::content_max());
+        // The page spans the width (issue #464): the rows keep their text at the reading width, the
+        // table gives the room to the folder's name.
+        let mut page = column![].spacing(layout::section_gap());
         if let Some(run) = &status.running {
             page = page.push(now_block(status, run, now));
         }
@@ -1558,7 +1569,7 @@ pub mod accounts {
                     }
                     cells.into_iter().enumerate().filter(|(i, _)| SYNC_NARROW.contains(i)).map(|(_, c)| c).collect()
                 };
-                widgets::data_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
+                widgets::settings_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
             })
             .height(Length::Shrink);
             page = page.push(grid);
@@ -1855,14 +1866,36 @@ pub mod accounts {
 
     /// The tab "Overview": the open questions, the figures, storage, mail over time, the search
     /// index and the largest folders. While the statistics are `updating` (issue #394), "Updating…"
-    /// stands over the figures the window still knew, or in place of them.
+    /// stands over the figures the window still knew, or in place of them. Where the page is wide
+    /// (issue #464) the questions stand beside the storage; without questions the storage alone.
     fn overview<'a>(
         mail: &'a MailView,
         stats: Option<&'a MailAccountStats>,
         updating: bool,
         now: DateTime<Utc>,
     ) -> Element<'a, Message> {
-        let mut page = column![].spacing(layout::section_gap());
+        widgets::page_columns(move || {
+            let mut blocks = Vec::new();
+            let questions = overview_questions(mail, stats);
+            if !questions.is_empty() {
+                blocks.push(column(questions).spacing(size::card_gap()).into());
+            }
+            let mut storage = column![].spacing(layout::section_gap());
+            if updating {
+                storage = storage.push(widgets::refresh_note(tr("Updating…")));
+            }
+            storage = match stats {
+                Some(stats) => storage.extend(as_of(stats, now)).push(storage_card(stats)),
+                None if updating => storage,
+                None => storage.push(no_statistics()),
+            };
+            blocks.push(storage.into());
+            blocks
+        })
+    }
+
+    /// The open questions of the tab "Overview": a folder role to choose, a failed sync.
+    fn overview_questions<'a>(mail: &'a MailView, stats: Option<&'a MailAccountStats>) -> Vec<Element<'a, Message>> {
         let mut questions: Vec<Element<'a, Message>> = mail
             .open_roles
             .iter()
@@ -1880,16 +1913,7 @@ pub mod accounts {
                 vec![settings],
             ));
         }
-        if !questions.is_empty() {
-            page = page.push(column(questions).spacing(size::card_gap()));
-        }
-        if updating {
-            page = page.push(widgets::refresh_note(tr("Updating…")));
-        }
-        let Some(stats) = stats else {
-            return if updating { page.into() } else { page.push(no_statistics()).into() };
-        };
-        page.extend(as_of(stats, now)).push(storage_card(stats)).into()
+        questions
     }
 
     /// "As of Today 10:32" under the figures (issue #395): when the service counted them, the exact
@@ -2162,7 +2186,7 @@ pub mod accounts {
                 }
                 cells.into_iter().enumerate().filter(|(i, _)| NARROW_COLUMNS.contains(i)).map(|(_, c)| c).collect()
             };
-            widgets::data_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
+            widgets::settings_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
         })
         .height(iced::Length::Shrink);
         let mut table = column![grid].spacing(space::s());
@@ -2248,6 +2272,17 @@ pub mod accounts {
     pub(super) mod tests {
         use super::*;
         use crate::Action as Act;
+
+        /// Issue #464: in a wide page the inventory and the sync column of an account keep the width
+        /// they had at the reading width; only the name grows.
+        #[test]
+        fn only_the_name_of_an_account_row_grows() {
+            let at_max = list_columns(size::content_max());
+            assert_eq!(list_columns(3840.0), at_max);
+            let (inventory, sync) = list_columns(700.0);
+            assert!(inventory < at_max.0 && sync < at_max.1, "narrower than the reading width, the parts");
+            assert!((inventory / sync - 4.0 / 3.0).abs() < 1e-3);
+        }
 
         /// A mail account as `accounts.list_accounts` answers it.
         pub(in crate::mail) fn account(address: &str, sender_name: &str, signature: Option<&str>) -> AccountInfo {
@@ -3074,7 +3109,7 @@ pub mod reading {
     use iced::widget::{column, container, row, text_editor};
     use torro_core::settings::{MailAppearance, MailFormat};
     use torro_gui::theme::space;
-    use torro_gui::{layout, style, typo, widgets};
+    use torro_gui::{style, typo, widgets};
     use torro_ipc::{Request, SettingKey};
     use torro_mail::MailFormat as ComposeFormat;
 
@@ -3226,7 +3261,13 @@ pub mod reading {
         }
     }
 
+    /// The page: "Reading" beside "Writing" where it is wide (issue #464).
     pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+        widgets::page_columns(move || blocks(state, data))
+    }
+
+    /// The groups of [`view`]: "Reading", and "Writing" while an account sends mail.
+    fn blocks<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a, Message>> {
         let settings = &data.settings;
         let show = picker(SHOW_CHOICES, ShowChoice(settings.mail_view), |choice: ShowChoice| Message::Show(choice.0));
         let colors = picker(COLOR_CHOICES, ColorChoice(settings.mail_appearance), |choice: ColorChoice| {
@@ -3237,7 +3278,7 @@ pub mod reading {
             vec![setting_row(None, tr("Show mail as"), None, show), setting_row(None, tr("Mail colors"), None, colors)],
             None,
         );
-        let mut page = column![group].spacing(layout::section_gap());
+        let mut blocks = vec![group];
         let accounts: Vec<SenderChoice> = data
             .accounts
             .iter()
@@ -3301,9 +3342,9 @@ pub mod reading {
                     .into(),
                 );
             }
-            page = page.push(widgets::group(tr("Writing"), rows, None));
+            blocks.push(widgets::group(tr("Writing"), rows, None));
         }
-        page.into()
+        blocks
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
