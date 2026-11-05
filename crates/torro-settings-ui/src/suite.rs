@@ -776,7 +776,7 @@ fn designs<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<
     let footer = tr(
         "Spacing, sizes and corner radii of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
     );
-    block.push(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2)).into()
+    block.push(widgets::reading_cell(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2))).into()
 }
 
 /// `rows` in the framed card of a settings group with a line between them, as `widgets::group` draws
@@ -1013,7 +1013,7 @@ fn looks<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a
     );
     column![heading, card(vec![font, scheme])]
         .push(reasons)
-        .push(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2))
+        .push(widgets::reading_cell(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2)))
         .spacing(layout::item_gap())
         .into()
 }

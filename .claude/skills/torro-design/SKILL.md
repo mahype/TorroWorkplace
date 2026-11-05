@@ -563,7 +563,7 @@ Regeln:
   - **Zeilen** (`widgets::group_row`, `parts::setting_row`): Zeile und Trennlinie über die ganze Breite, der Text
     wächst höchstens bis `size::content_max()` (`widgets::reading_cell`), das Bedienelement steht am Zeilenende in
     seiner eigenen Breite – Schalter, Auswahl und kurze Felder werden nie gestreckt, lange Felder und Editoren
-    füllen ihre Spalte.
+    füllen ihre Spalte. Der erklärende Satz unter einer Gruppe bricht ebenfalls bei `content_max()` um.
   - **Listen und Tabellen** (`widgets::settings_table`, Konten): volle Breite, die Namensspalte bekommt den Zuwachs,
     die Wertspalten bleiben so breit wie bei `size::content_max()`; `widgets::data_table` außerhalb der Einstellungen
     (Insights, Übersicht) behält seine Anteile.

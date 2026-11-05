@@ -4387,7 +4387,8 @@ pub fn group_with<'a, M: 'a>(
         .push(container(card).width(Fill).style(style::container::group))
         .spacing(layout::item_gap());
     if let Some(footer) = footer {
-        block = block.push(typo::text(typo::meta(), footer).style(theme::text_2));
+        // The sentence keeps the reading width in a wide page (issue #464).
+        block = block.push(reading_cell(typo::text(typo::meta(), footer).style(theme::text_2)));
     }
     block.into()
 }
