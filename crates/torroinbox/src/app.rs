@@ -1032,6 +1032,8 @@ pub enum Sent {
     Edit(Edit, Option<After>),
     /// `settings.set_setting` with the key and the value (issue #456: "Display" stores its choice).
     Setting(torro_ipc::SettingKey, String),
+    /// A mail window of its own started for this mail (issue #457).
+    Window(String),
     /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
     Mute(SourceRef, bool, bool),
     Link(String),
@@ -1357,6 +1359,8 @@ pub enum Menu {
     MailAccounts,
     /// The card "Display" at the mail's action rail (issue #456): HTML or text, the mail's colours.
     MailDisplay,
+    /// The menu of "{n} attachments ▾" in the mail's head (issue #457).
+    Attachments,
     /// The quick filters at the end of the search field (issue #336).
     SearchFilters,
     /// The on-demand folder browser, grouped by mail account.
@@ -3191,6 +3195,13 @@ pub enum Message {
     RailTick(Instant),
     /// "Display" of the mail's action rail (issue #456): open or close its card.
     ToggleMailDisplay,
+    /// "{n} attachments ▾" in the head of the mail with this id (issue #457): open or close its menu.
+    AskAttachments(String),
+    /// ⌃ / ⌄ over the reader (issue #457): the previous (`false`) or next mail of the list, as `k`/`j`.
+    StepMail(bool),
+    /// "Open in new window" over the reader (issue #457): the mail with this id in a mail window of its
+    /// own.
+    OpenMailWindow(String),
     /// The answer to storing the display chosen there (`settings.set_setting`); an error is said.
     DisplaySaved(Result<(), String>),
     /// Close the open menu and the drawer (click beside them).
@@ -5017,6 +5028,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
             }
             Message::ToggleMailDisplay => self.toggle_menu(Menu::MailDisplay),
+            Message::AskAttachments(id) => self.ask_file_menu(&id, Menu::Attachments),
+            Message::StepMail(forward) => return self.step(forward),
+            Message::OpenMailWindow(id) => {
+                #[cfg(test)]
+                self.sent.push(Sent::Window(id.clone()));
+                let command = mail::window_command(&id, self.launch.demo);
+                return Task::perform(async move { mail::start(command) }, Message::AppOpened);
+            }
             Message::DisplaySaved(Ok(())) => {}
             Message::DisplaySaved(Err(_)) => self.note(tr("Couldn't save the display.").to_owned()),
             Message::StoredSplit(stored) => {
@@ -8352,6 +8371,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 | Menu::MailContext
                 | Menu::MailAccounts
                 | Menu::MailDisplay
+                | Menu::Attachments
                 | Menu::SearchFilters
                 | Menu::Folders
                 | Menu::Attachment(_)
@@ -10510,11 +10530,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::DeleteForGood | Menu::Unsubscribe | Menu::PhishingLink) => None,
             // At the triangle that opened it (task M12.6), its right edge in line, under it while
             // there is room – the reader's block stands at the bottom, so mostly over it.
+            // From the attachments' menu in the head (issue #457) at "{n} attachments ▾", which it replaced.
             Some(Menu::Attachment(at)) => self.file_menu(Some(at)).map(|card| {
-                widgets::floating(&anchors.attachment, Placement::Below(Align::End), card, Message::CloseMenu)
+                let at = anchors.attachment.or(&anchors.files);
+                widgets::floating(&at, Placement::Below(Align::End), card, Message::CloseMenu)
             }),
             Some(Menu::SaveAll { rail: false }) => self.file_menu(None).map(|card| {
-                widgets::floating(&anchors.save_all, Placement::Below(Align::End), card, Message::CloseMenu)
+                let at = anchors.save_all.or(&anchors.files);
+                widgets::floating(&at, Placement::Below(Align::End), card, Message::CloseMenu)
+            }),
+            Some(Menu::Attachments) => self.reading().and_then(|reading| {
+                let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
+                let card = mail::attachments_menu(&reading, width)?;
+                Some(widgets::floating(&anchors.files, Placement::Below(Align::End), card, Message::CloseMenu))
             }),
             // From the rail beside it, as Later…; from the list's context menu at the row.
             Some(Menu::SaveAll { rail: true }) => {
@@ -10850,9 +10878,51 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         .into()
     }
 
-    /// The head over the reader of the wide mail window (issue #457), in the top row beside the list's.
+    /// The head over the reader of the wide mail window (issue #457), in the top row beside the list's:
+    /// the subject (cut with "…", whole in its tooltip), where the mail stands in the list ("6 of 9",
+    /// "6 of 50+" while more pages wait; left out for a mail the list does not hold, as in a window of
+    /// its own), the previous and the next mail (`k`, `j`; off at the ends) and "Open in new window".
+    /// While no mail is open the reader's column holds the overview, and the head says so.
     fn reader_head<'a>(&'a self) -> Element<'a, Message> {
-        Space::new().into()
+        let open = self.reading().filter(|_| self.panel_open()).and_then(|reading| {
+            let summary = reading.summary()?;
+            Some((reading.id.to_owned(), mail::subject(summary)))
+        });
+        let Some((id, subject)) = open else {
+            return typo::text(typo::body_strong(), tr("Overview")).wrapping(Wrapping::None).into();
+        };
+        let place = self.messages.iter().position(|message| message.id == id);
+        let shown = subject.clone();
+        let title = iced::widget::responsive(move |room| {
+            let cut = typo::ellipsize(&shown, typo::body_strong(), room.width);
+            typo::text(typo::body_strong(), cut).wrapping(Wrapping::None).into()
+        });
+        let title = container(title).width(Fill).height(typo::line_height(typo::body_strong()));
+        let mut head = row![widgets::with_tooltip(title, subject)].spacing(space::xs()).align_y(Alignment::Center);
+        if let Some(at) = place {
+            head = head.push(
+                typo::text(typo::meta().tabular(), self.place_text(at)).style(theme::text_3).wrapping(Wrapping::None),
+            );
+        }
+        let last = self.messages.len().saturating_sub(1);
+        let back = place.filter(|&at| at > 0).map(|_| Message::StepMail(false));
+        let next = place.filter(|&at| at < last).map(|_| Message::StepMail(true));
+        head.push(Space::new().width(space::s()))
+            .push(widgets::icon_button(Icon::ChevronUp, tr("Previous mail"), back))
+            .push(widgets::icon_button(Icon::ChevronDown, tr("Next mail"), next))
+            .push(widgets::icon_button(Icon::ExternalLink, tr("Open in new window"), Some(Message::OpenMailWindow(id))))
+            .into()
+    }
+
+    /// "6 of 9" for the mail at index `at` of the list held (issue #457), "6 of 9+" while further
+    /// pages wait.
+    fn place_text(&self, at: usize) -> String {
+        let (n, total) = ((at + 1).to_string(), self.messages.len().to_string());
+        if self.more.is_some() {
+            trf("{n} of {total}+", &[("n", &n), ("total", &total)])
+        } else {
+            trf("{n} of {total}", &[("n", &n), ("total", &total)])
+        }
     }
 
     /// The header of Insights (task E8.8b): its title with the span counted ("7 Oct – 13 Oct"), then
@@ -19718,6 +19788,40 @@ mod tests {
         let mut hub = overview_at(&["--view", "hub", "--open", "mail-entry"]);
         let _ = hub.update(Message::Resized(WIDE));
         assert!(hub.rail_groups(SizeClass::Wide, &anchors).is_none(), "the hub keeps its panel");
+    }
+
+    /// Issue #457: over the reader the top row says where the mail stands in the list ("1 of 8", with
+    /// "+" while more pages wait), steps to the previous and next mail as `k` and `j` do, opens it in a
+    /// mail window of its own, and its attachments' menu opens from the head.
+    #[test]
+    fn the_reader_head_counts_steps_and_opens_its_own_window() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let id = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(id.clone()));
+        deliver_letter(&mut app, &id);
+        let at = 0;
+        let total = app.messages.len().to_string();
+        let more = app.more.is_some();
+        let n = (at + 1).to_string();
+        let want = if more {
+            trf("{n} of {total}+", &[("n", &n), ("total", &total)])
+        } else {
+            trf("{n} of {total}", &[("n", &n), ("total", &total)])
+        };
+        assert_eq!(app.place_text(at), want);
+        let _ = app.reader_head();
+        let _ = app.update(Message::StepMail(true));
+        assert_eq!(app.cursor.as_deref(), app.messages.get(at + 1).map(|message| message.id.as_str()), "the next mail");
+        let _ = app.update(Message::StepMail(false));
+        assert_eq!(app.cursor.as_deref(), Some(id.as_str()), "and back");
+        let _ = app.update(Message::OpenMailWindow(id.clone()));
+        assert_eq!(app.sent.last(), Some(&Sent::Window(id.clone())));
+        let _ = app.update(Message::AskAttachments(id));
+        let _ = app.view();
+        // Without a mail open the reader's column holds the overview, and its head says so.
+        let bare = mail_window(Density::Compact, &[]);
+        let _ = bare.reader_head();
     }
 
     /// Issue #456: "Display" opens its card – no group under the pointer –, Escape and a click beside
