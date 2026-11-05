@@ -998,19 +998,9 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         style::button::secondary,
         (!busy).then_some(Message::OpenSort { rules_only: false }),
     );
-    // One width for every tab, so head and tabs never move: the categories take two columns where
-    // the window has room, the other tabs keep the reading width at the left (design review #454).
-    Page::new(view(state, data)).actions(vec![sort]).max_width(page_width())
-}
-
-/// The width of the page in every tab: two columns of categories.
-fn page_width() -> f32 {
-    2.0 * size::form_max() + space::l()
-}
-
-/// A tab's content at the reading width of lists, at the left of the page.
-fn reading<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    container(content).max_width(size::content_max()).width(Fill).into()
+    // Every tab spans the whole width (issue #464), so head and tabs never move; the categories take
+    // two columns where there is room, the rows of the other tabs keep their text at the reading width.
+    Page::new(view(state, data)).actions(vec![sort])
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
@@ -1028,8 +1018,8 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     ];
     page = page.push(widgets::tabs(labels, state.tab.index(), Message::Tab));
     let tab = match state.tab {
-        Tab::Ai => reading(ai_tab(state, data)),
-        Tab::Rules => reading(rules_tab(state, data)),
+        Tab::Ai => ai_tab(state, data),
+        Tab::Rules => rules_tab(state, data),
         Tab::Categories => categories_tab(state, data),
     };
     page.push(tab).into()

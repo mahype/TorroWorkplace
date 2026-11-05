@@ -37,7 +37,11 @@ pub fn setting_row<'a, M: 'a>(
         lines = lines.push(widgets::ellipsized(typo::meta(), detail, theme::text_2));
     }
     let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
-    row_frame(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center), tall)
+    // The row spans the page, its text keeps the reading width (issue #464).
+    row_frame(
+        row![widgets::reading_cell(text.width(Fill)), control.into()].spacing(space::l()).align_y(Alignment::Center),
+        tall,
+    )
 }
 
 /// `content` as one line of a settings group: as high as the header bar (64 in Torro, 76 with two lines of
